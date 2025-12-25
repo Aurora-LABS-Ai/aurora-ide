@@ -1,13 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { MoreHorizontal, FolderOpen, RefreshCw, FilePlus, FolderPlus, Plus } from 'lucide-react';
+import { MoreHorizontal, FolderOpen, RefreshCw, FilePlus, FolderPlus, Plus, Save, Check } from 'lucide-react';
 import { FileTree } from './FileTree';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
+import { useSettingsStore } from '../../store/useSettingsStore';
 import { isTauri } from '../../lib/tauri';
 
 export const FileExplorer: React.FC = () => {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [autoSaveMenuOpen, setAutoSaveMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const { setRootPath, rootPath, files, loadDirectory } = useWorkspaceStore();
+  const { autoSave, setAutoSave } = useSettingsStore();
 
   // Close menu when clicking outside
   useEffect(() => {
@@ -105,6 +108,68 @@ export const FileExplorer: React.FC = () => {
                   </button>
                 </>
               )}
+              
+              {/* Autosave Section */}
+              <div className="h-[1px] bg-border my-1" />
+              <div 
+                className="relative group"
+                onMouseEnter={() => setAutoSaveMenuOpen(true)}
+                onMouseLeave={() => setAutoSaveMenuOpen(false)}
+              >
+                <button
+                  onClick={() => setAutoSaveMenuOpen(!autoSaveMenuOpen)}
+                  className="w-full px-3 py-1.5 text-left text-[12px] text-text-primary hover:bg-primary/20 flex items-center justify-between"
+                >
+                  <span className="flex items-center gap-2">
+                    <Save className="w-4 h-4" />
+                    Auto Save
+                  </span>
+                  <span className="text-text-secondary text-[10px]">
+                    {autoSave === 'off' ? 'Off' : 
+                     autoSave === 'afterDelay' ? 'After Delay' :
+                     autoSave === 'onFocusChange' ? 'Focus Change' : 'Window Change'}
+                  </span>
+                </button>
+                
+                {autoSaveMenuOpen && (
+                  <>
+                    {/* Invisible bridge to prevent hover gap */}
+                    <div className="absolute left-full top-0 w-2 h-full" />
+                    <div 
+                      className="absolute left-full top-0 ml-1 w-44 bg-input border border-border rounded-md shadow-lg z-50 py-1"
+                    >
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setAutoSave('off'); setMenuOpen(false); setAutoSaveMenuOpen(false); }}
+                        className="w-full px-3 py-1.5 text-left text-[12px] text-text-primary hover:bg-primary/20 flex items-center justify-between"
+                      >
+                        <span>Off</span>
+                        {autoSave === 'off' && <Check className="w-3 h-3 text-primary" />}
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setAutoSave('afterDelay'); setMenuOpen(false); setAutoSaveMenuOpen(false); }}
+                        className="w-full px-3 py-1.5 text-left text-[12px] text-text-primary hover:bg-primary/20 flex items-center justify-between"
+                      >
+                        <span>After Delay (1s)</span>
+                        {autoSave === 'afterDelay' && <Check className="w-3 h-3 text-primary" />}
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setAutoSave('onFocusChange'); setMenuOpen(false); setAutoSaveMenuOpen(false); }}
+                        className="w-full px-3 py-1.5 text-left text-[12px] text-text-primary hover:bg-primary/20 flex items-center justify-between"
+                      >
+                        <span>On Focus Change</span>
+                        {autoSave === 'onFocusChange' && <Check className="w-3 h-3 text-primary" />}
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setAutoSave('onWindowChange'); setMenuOpen(false); setAutoSaveMenuOpen(false); }}
+                        className="w-full px-3 py-1.5 text-left text-[12px] text-text-primary hover:bg-primary/20 flex items-center justify-between"
+                      >
+                        <span>On Window Change</span>
+                        {autoSave === 'onWindowChange' && <Check className="w-3 h-3 text-primary" />}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           )}
         </div>

@@ -53,12 +53,12 @@ export const writeFileContent = async (path: string, content: string): Promise<v
 };
 
 // Shell Operations
-export const executeCommand = async (command: string, cwd?: string): Promise<CommandOutput> => {
+export const executeCommand = async (command: string, cwd?: string, shell?: 'powershell' | 'bash'): Promise<CommandOutput> => {
   if (!isTauri()) {
     console.warn('executeCommand: Not running in Tauri');
     return { stdout: '', stderr: 'Not running in Tauri', exit_code: 1, success: false };
   }
-  return invoke<CommandOutput>('execute_command', { command, cwd });
+  return invoke<CommandOutput>('execute_command', { command, cwd, shell });
 };
 
 // System Operations
@@ -154,5 +154,19 @@ export const renamePath = async (oldPath: string, newPath: string): Promise<void
     return;
   }
   return invoke<void>('rename_path', { oldPath, newPath });
+};
+
+// Workspace helpers
+export const getWorkspaceRoot = async (): Promise<string | null> => {
+  if (!isTauri()) {
+    console.warn('getWorkspaceRoot: Not running in Tauri');
+    return null;
+  }
+  try {
+    return await invoke<string>('get_workspace_root');
+  } catch (err) {
+    console.error('Failed to fetch workspace root:', err);
+    return null;
+  }
 };
 

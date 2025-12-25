@@ -3,6 +3,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+pub mod state;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileEntry {
     pub name: String,
@@ -31,40 +33,40 @@ pub struct SystemInfo {
 #[tauri::command]
 pub async fn read_directory(path: String) -> Result<Vec<FileEntry>, String> {
     let dir_path = Path::new(&path);
-    
+
     if !dir_path.exists() {
         return Err(format!("Directory does not exist: {}", path));
     }
-    
+
     if !dir_path.is_dir() {
         return Err(format!("Path is not a directory: {}", path));
     }
-    
+
     let mut entries = Vec::new();
-    
+
     match fs::read_dir(dir_path) {
         Ok(read_dir) => {
             for entry in read_dir.flatten() {
                 let file_name = entry.file_name().to_string_lossy().to_string();
                 let file_path = entry.path();
                 let metadata = entry.metadata().ok();
-                
+
                 // Skip hidden files/folders (starting with .)
                 if file_name.starts_with('.') {
                     continue;
                 }
-                
+
                 // Skip node_modules, target, dist folders
                 if file_name == "node_modules" || file_name == "target" || file_name == "dist" {
                     continue;
                 }
-                
+
                 let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
                 let is_file = metadata.as_ref().map(|m| m.is_file()).unwrap_or(false);
                 let extension = file_path
                     .extension()
                     .map(|e| e.to_string_lossy().to_string());
-                
+
                 entries.push(FileEntry {
                     name: file_name,
                     path: file_path.to_string_lossy().to_string(),
@@ -76,7 +78,7 @@ pub async fn read_directory(path: String) -> Result<Vec<FileEntry>, String> {
         }
         Err(e) => return Err(format!("Failed to read directory: {}", e)),
     }
-    
+
     // Sort: directories first, then files, alphabetically
     entries.sort_by(|a, b| {
         match (a.is_dir, b.is_dir) {
@@ -85,7 +87,7 @@ pub async fn read_directory(path: String) -> Result<Vec<FileEntry>, String> {
             _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         }
     });
-    
+
     Ok(entries)
 }
 
@@ -93,15 +95,15 @@ pub async fn read_directory(path: String) -> Result<Vec<FileEntry>, String> {
 #[tauri::command]
 pub async fn read_file_content(path: String) -> Result<String, String> {
     let file_path = Path::new(&path);
-    
+
     if !file_path.exists() {
         return Err(format!("File does not exist: {}", path));
     }
-    
+
     if !file_path.is_file() {
         return Err(format!("Path is not a file: {}", path));
     }
-    
+
     fs::read_to_string(file_path)
         .map_err(|e| format!("Failed to read file: {}", e))
 }
@@ -110,7 +112,7 @@ pub async fn read_file_content(path: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn write_file_content(path: String, content: String) -> Result<(), String> {
     let file_path = Path::new(&path);
-    
+
     // Create parent directories if they don't exist
     if let Some(parent) = file_path.parent() {
         if !parent.exists() {
@@ -118,33 +120,67 @@ pub async fn write_file_content(path: String, content: String) -> Result<(), Str
                 .map_err(|e| format!("Failed to create directories: {}", e))?;
         }
     }
-    
+
     fs::write(file_path, content)
         .map_err(|e| format!("Failed to write file: {}", e))
 }
 
-/// Execute a shell command
+/// Execute a shell command with optional shell profile
 #[tauri::command]
-pub async fn execute_command(command: String, cwd: Option<String>) -> Result<CommandOutput, String> {
-    let shell = if cfg!(target_os = "windows") {
-        "cmd"
-    } else {
-        "sh"
+pub async fn execute_command(command: String, cwd: Option<String>, shell: Option<String>) -> Result<CommandOutput, String> {
+    let shell_profile = shell.as_deref().unwrap_or("powershell");
+    
+    // Determine shell and arguments based on profile
+    let (shell_exe, shell_args): (String, Vec<&str>) = match shell_profile {
+        "bash" => {
+            // Try common Git Bash locations on Windows
+            #[cfg(target_os = "windows")]
+            {
+                let git_bash_paths = [
+                    r"C:\Program Files\Git\bin\bash.exe",
+                    r"C:\Program Files (x86)\Git\bin\bash.exe",
+                    r"C:\Git\bin\bash.exe",
+                ];
+                
+                let bash_path = git_bash_paths.iter()
+                    .find(|p| std::path::Path::new(p).exists())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "bash".to_string());
+                
+                // Don't use -i flag - causes PTY warnings without proper terminal
+                (bash_path, vec!["-c"])
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                ("bash".to_string(), vec!["-c"])
+            }
+        }
+        _ => {
+            // Default to PowerShell
+            #[cfg(target_os = "windows")]
+            {
+                ("pwsh".to_string(), vec!["-NoProfile", "-NonInteractive", "-Command"])
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                ("sh".to_string(), vec!["-c"])
+            }
+        }
     };
+
+    let mut cmd = Command::new(&shell_exe);
     
-    let shell_arg = if cfg!(target_os = "windows") {
-        "/C"
-    } else {
-        "-c"
-    };
-    
-    let mut cmd = Command::new(shell);
-    cmd.arg(shell_arg).arg(&command);
-    
-    if let Some(working_dir) = cwd {
+    // Add shell arguments
+    for arg in &shell_args {
+        cmd.arg(arg);
+    }
+    cmd.arg(&command);
+
+    if let Some(ref working_dir) = cwd {
         cmd.current_dir(working_dir);
     }
-    
+
+    // Execute command
     match cmd.output() {
         Ok(output) => {
             Ok(CommandOutput {
@@ -154,7 +190,38 @@ pub async fn execute_command(command: String, cwd: Option<String>) -> Result<Com
                 success: output.status.success(),
             })
         }
-        Err(e) => Err(format!("Failed to execute command: {}", e)),
+        Err(e) => {
+            // On Windows with PowerShell, try fallback to powershell.exe
+            #[cfg(target_os = "windows")]
+            if shell_profile != "bash" {
+                let mut fallback_cmd = Command::new("powershell");
+                fallback_cmd
+                    .arg("-NoProfile")
+                    .arg("-NonInteractive")
+                    .arg("-Command")
+                    .arg(&command);
+                
+                if let Some(ref working_dir) = cwd {
+                    fallback_cmd.current_dir(working_dir);
+                }
+
+                match fallback_cmd.output() {
+                    Ok(output) => {
+                        return Ok(CommandOutput {
+                            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                            exit_code: output.status.code(),
+                            success: output.status.success(),
+                        });
+                    }
+                    Err(fallback_e) => {
+                        return Err(format!("Failed to execute with pwsh and powershell: {}, {}", e, fallback_e));
+                    }
+                }
+            }
+            
+            Err(format!("Failed to execute command with {}: {}", shell_exe, e))
+        }
     }
 }
 
@@ -174,12 +241,12 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
 #[tauri::command]
 pub async fn create_file(path: String) -> Result<(), String> {
     let file_path = Path::new(&path);
-    
+
     // Check if file already exists
     if file_path.exists() {
         return Err(format!("File already exists: {}", path));
     }
-    
+
     // Create parent directories if they don't exist
     if let Some(parent) = file_path.parent() {
         if !parent.exists() {
@@ -187,11 +254,11 @@ pub async fn create_file(path: String) -> Result<(), String> {
                 .map_err(|e| format!("Failed to create directories: {}", e))?;
         }
     }
-    
+
     // Create empty file
     fs::File::create(file_path)
         .map_err(|e| format!("Failed to create file: {}", e))?;
-    
+
     Ok(())
 }
 
@@ -199,12 +266,12 @@ pub async fn create_file(path: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn create_folder(path: String) -> Result<(), String> {
     let dir_path = Path::new(&path);
-    
+
     // Check if folder already exists
     if dir_path.exists() {
         return Err(format!("Folder already exists: {}", path));
     }
-    
+
     fs::create_dir_all(dir_path)
         .map_err(|e| format!("Failed to create folder: {}", e))
 }
@@ -213,11 +280,11 @@ pub async fn create_folder(path: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn delete_path(path: String) -> Result<(), String> {
     let target_path = Path::new(&path);
-    
+
     if !target_path.exists() {
         return Err(format!("Path does not exist: {}", path));
     }
-    
+
     if target_path.is_dir() {
         fs::remove_dir_all(target_path)
             .map_err(|e| format!("Failed to delete folder: {}", e))
@@ -232,16 +299,23 @@ pub async fn delete_path(path: String) -> Result<(), String> {
 pub async fn rename_path(old_path: String, new_path: String) -> Result<(), String> {
     let old = Path::new(&old_path);
     let new = Path::new(&new_path);
-    
+
     if !old.exists() {
         return Err(format!("Path does not exist: {}", old_path));
     }
-    
+
     if new.exists() {
         return Err(format!("Destination already exists: {}", new_path));
     }
-    
+
     fs::rename(old, new)
         .map_err(|e| format!("Failed to rename: {}", e))
 }
 
+/// Get the current workspace root directory
+#[tauri::command]
+pub async fn get_workspace_root() -> Result<String, String> {
+    std::env::current_dir()
+        .map(|path| path.to_string_lossy().to_string())
+        .map_err(|e| format!("Failed to get current directory: {}", e))
+}

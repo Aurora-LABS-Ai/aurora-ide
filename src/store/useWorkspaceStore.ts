@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import type { FileNode } from '../types';
 import { isTauri, readDirectory, readFileContent } from '../lib/tauri';
+import { databaseService } from '../services/database';
+import { useEditorStore } from './useEditorStore';
 
 interface WorkspaceState {
   rootPath: string;
@@ -8,7 +10,7 @@ interface WorkspaceState {
   expandedFolders: Set<string>;
   selectedFileId: string | null;
   isLoading: boolean;
-  
+
   // Actions
   setRootPath: (path: string) => void;
   loadDirectory: (path: string) => Promise<void>;
@@ -18,6 +20,10 @@ interface WorkspaceState {
   selectFile: (fileId: string) => void;
   setFiles: (files: FileNode[]) => void;
   clearWorkspace: () => void;
+
+  // Database actions
+  restoreExplorer: () => Promise<void>;
+  saveExplorer: () => Promise<void>;
 }
 
 const getLanguageFromExtension = (filename: string): string => {
@@ -51,14 +57,21 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   setRootPath: (path) => {
     set({ rootPath: path });
+
+    // Update editor store with workspace path
+    useEditorStore.getState().setWorkspacePath(path);
+
     get().loadDirectory(path);
   },
-  
+
   loadDirectory: async (path: string) => {
     if (!isTauri()) {
       console.log('Not in Tauri environment');
       return;
     }
+
+    // Try to restore explorer state first
+    await get().restoreExplorer();
 
     // Preserve current expanded folders
     const currentExpanded = get().expandedFolders;
@@ -67,10 +80,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     try {
       const entries = await readDirectory(path);
       const folderName = path.split(/[/\\]/).pop() || 'workspace';
-      
+
       const buildTree = async (dirPath: string, entries: Awaited<ReturnType<typeof readDirectory>>): Promise<FileNode[]> => {
         const nodes: FileNode[] = [];
-        
+
         for (const entry of entries) {
           if (entry.is_dir) {
             let children: FileNode[] = [];
@@ -80,7 +93,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             } catch {
               children = [];
             }
-            
+
             nodes.push({
               id: entry.path,
               name: entry.name,
@@ -98,7 +111,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             });
           }
         }
-        
+
         return nodes;
       };
 
@@ -109,10 +122,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       const newExpanded = new Set([...currentExpanded, path]);
 
       // Set files directly as children, not wrapped in root folder
-      set({ 
-        files: children, 
+      set({
+        files: children,
         expandedFolders: newExpanded,
-        isLoading: false 
+        isLoading: false
       });
     } catch (err) {
       console.error('Failed to load directory:', err);
@@ -126,7 +139,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       await get().loadDirectory(rootPath);
     }
   },
-  
+
   toggleFolder: (folderId) => set((state) => {
     const newExpanded = new Set(state.expandedFolders);
     if (newExpanded.has(folderId)) {
@@ -134,25 +147,73 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     } else {
       newExpanded.add(folderId);
     }
+    // Auto-save explorer state
+    get().saveExplorer();
     return { expandedFolders: newExpanded };
   }),
 
   expandFolder: (folderId) => set((state) => {
     const newExpanded = new Set(state.expandedFolders);
     newExpanded.add(folderId);
+    // Auto-save explorer state
+    get().saveExplorer();
     return { expandedFolders: newExpanded };
   }),
-  
-  selectFile: (fileId) => set({ selectedFileId: fileId }),
-  
+
+  selectFile: (fileId) => {
+    set({ selectedFileId: fileId });
+    // Auto-save explorer state
+    get().saveExplorer();
+  },
+
   setFiles: (files) => set({ files }),
 
-  clearWorkspace: () => set({ 
-    rootPath: '', 
-    files: [], 
+  clearWorkspace: () => set({
+    rootPath: '',
+    files: [],
     expandedFolders: new Set(),
-    selectedFileId: null 
+    selectedFileId: null
   }),
+
+  // Restore explorer state from database
+  restoreExplorer: async () => {
+    const { rootPath } = get();
+    if (!rootPath) {
+      return;
+    }
+
+    try {
+      const state = await databaseService.getExplorerState(rootPath);
+      if (state) {
+        set({
+          expandedFolders: new Set(state.expanded_folders),
+          selectedFileId: state.selected_file,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to restore explorer state:', error);
+    }
+  },
+
+  // Save explorer state to database
+  saveExplorer: async () => {
+    const { rootPath, expandedFolders, selectedFileId } = get();
+    if (!rootPath) {
+      return;
+    }
+
+    try {
+      const explorerState = {
+        workspace_path: rootPath,
+        expanded_folders: Array.from(expandedFolders),
+        selected_file: selectedFileId,
+      };
+
+      await databaseService.saveExplorerState(explorerState);
+    } catch (error) {
+      console.error('Failed to save explorer state:', error);
+    }
+  },
 }));
 
 // Helper to load file content
@@ -160,7 +221,7 @@ export const loadFileContent = async (path: string): Promise<string> => {
   if (!isTauri()) {
     return '// File content (desktop app only)';
   }
-  
+
   try {
     return await readFileContent(path);
   } catch (err) {

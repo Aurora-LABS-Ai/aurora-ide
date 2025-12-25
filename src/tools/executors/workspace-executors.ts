@@ -3,52 +3,50 @@
  * Implementations for workspace tools using Tauri commands
  */
 
-import { toolRegistry } from '../registry';
-import { 
-  isTauri, 
+import { toolRegistry } from "../registry";
+import {
+  isTauri,
   readDirectory,
   createFolder,
-  deletePath
-} from '../../lib/tauri';
-import { useWorkspaceStore } from '../../store/useWorkspaceStore';
+  deletePath,
+} from "../../lib/tauri";
+import { resolvePath, getWorkspaceRootPath } from "../utils/path-resolver";
+import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 
-// ============================================
-// HELPER: Resolve path relative to workspace
-// ============================================
-const resolvePath = (inputPath: string | undefined, rootPath: string): string => {
-  if (!inputPath || inputPath === '.' || inputPath === './') {
-    return rootPath;
-  }
-  
-  // If it's an absolute path, return as-is
-  if (inputPath.match(/^[A-Za-z]:[/\\]/) || inputPath.startsWith('/')) {
-    return inputPath;
-  }
-  
-  // Otherwise, join with root path
-  const separator = rootPath.includes('\\') ? '\\' : '/';
-  return `${rootPath}${separator}${inputPath.replace(/^\.?[/\\]/, '')}`;
+// Helper to trigger file tree refresh
+const triggerRefresh = () => {
+  setTimeout(() => {
+    useWorkspaceStore.getState().refreshDirectory();
+  }, 100);
 };
 
 // ============================================
 // WORKSPACE TREE EXECUTOR
 // ============================================
-const workspaceTreeExecutor = async (args: Record<string, any>): Promise<string> => {
+const workspaceTreeExecutor = async (
+  args: Record<string, any>,
+): Promise<string> => {
   if (!isTauri()) {
-    return JSON.stringify({ success: false, error: 'Workspace operations require desktop app' });
+    return JSON.stringify({
+      success: false,
+      error: "Workspace operations require desktop app",
+    });
   }
 
-  const rootPath = useWorkspaceStore.getState().rootPath;
+  const rootPath = getWorkspaceRootPath();
   if (!rootPath) {
-    return JSON.stringify({ success: false, error: 'No workspace open' });
+    return JSON.stringify({ success: false, error: "No workspace open" });
   }
 
-  const targetPath = resolvePath(args.path, rootPath);
+  const targetPath = resolvePath(args.path);
   const maxDepth = args.depth ?? 3;
   const includeHidden = args.include_hidden ?? false;
 
   try {
-    const buildTree = async (dirPath: string, currentDepth: number): Promise<any[]> => {
+    const buildTree = async (
+      dirPath: string,
+      currentDepth: number,
+    ): Promise<any[]> => {
       if (maxDepth !== -1 && currentDepth >= maxDepth) {
         return [];
       }
@@ -57,14 +55,14 @@ const workspaceTreeExecutor = async (args: Record<string, any>): Promise<string>
       const tree: any[] = [];
 
       for (const entry of entries) {
-        if (!includeHidden && entry.name.startsWith('.')) {
+        if (!includeHidden && entry.name.startsWith(".")) {
           continue;
         }
 
         const node: any = {
           name: entry.name,
           path: entry.path,
-          type: entry.is_dir ? 'directory' : 'file',
+          type: entry.is_dir ? "directory" : "file",
         };
 
         if (entry.is_dir) {
@@ -80,17 +78,17 @@ const workspaceTreeExecutor = async (args: Record<string, any>): Promise<string>
     };
 
     const tree = await buildTree(targetPath, 0);
-    
-    return JSON.stringify({ 
-      success: true, 
+
+    return JSON.stringify({
+      success: true,
       rootPath: targetPath,
       depth: maxDepth,
-      tree
+      tree,
     });
   } catch (error) {
-    return JSON.stringify({ 
-      success: false, 
-      error: error instanceof Error ? error.message : String(error) 
+    return JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
     });
   }
 };
@@ -98,48 +96,53 @@ const workspaceTreeExecutor = async (args: Record<string, any>): Promise<string>
 // ============================================
 // WORKSPACE LIST FILES EXECUTOR
 // ============================================
-const workspaceListFilesExecutor = async (args: Record<string, any>): Promise<string> => {
+const workspaceListFilesExecutor = async (
+  args: Record<string, any>,
+): Promise<string> => {
   if (!isTauri()) {
-    return JSON.stringify({ success: false, error: 'Workspace operations require desktop app' });
+    return JSON.stringify({
+      success: false,
+      error: "Workspace operations require desktop app",
+    });
   }
 
-  const rootPath = useWorkspaceStore.getState().rootPath;
+  const rootPath = getWorkspaceRootPath();
   if (!rootPath) {
-    return JSON.stringify({ success: false, error: 'No workspace open' });
+    return JSON.stringify({ success: false, error: "No workspace open" });
   }
 
-  const targetPath = resolvePath(args.path, rootPath);
+  const targetPath = resolvePath(args.path);
 
   try {
     const entries = await readDirectory(targetPath);
-    
-    let files = entries.map(entry => ({
+
+    let files = entries.map((entry) => ({
       name: entry.name,
       path: entry.path,
-      type: entry.is_dir ? 'directory' : 'file',
+      type: entry.is_dir ? "directory" : "file",
       extension: entry.extension,
     }));
 
     if (args.filter) {
       const filterRegex = new RegExp(
         args.filter
-          .replace(/\./g, '\\.')
-          .replace(/\*/g, '.*')
-          .replace(/\?/g, '.')
+          .replace(/\./g, "\\.")
+          .replace(/\*/g, ".*")
+          .replace(/\?/g, "."),
       );
-      files = files.filter(f => filterRegex.test(f.name));
+      files = files.filter((f) => filterRegex.test(f.name));
     }
-    
-    return JSON.stringify({ 
-      success: true, 
+
+    return JSON.stringify({
+      success: true,
       path: targetPath,
       count: files.length,
-      files
+      files,
     });
   } catch (error) {
-    return JSON.stringify({ 
-      success: false, 
-      error: `Directory does not exist: ${targetPath}` 
+    return JSON.stringify({
+      success: false,
+      error: `Directory does not exist: ${targetPath}`,
     });
   }
 };
@@ -147,17 +150,22 @@ const workspaceListFilesExecutor = async (args: Record<string, any>): Promise<st
 // ============================================
 // WORKSPACE FIND FILES EXECUTOR
 // ============================================
-const workspaceFindFilesExecutor = async (args: Record<string, any>): Promise<string> => {
+const workspaceFindFilesExecutor = async (
+  args: Record<string, any>,
+): Promise<string> => {
   if (!isTauri()) {
-    return JSON.stringify({ success: false, error: 'Workspace operations require desktop app' });
+    return JSON.stringify({
+      success: false,
+      error: "Workspace operations require desktop app",
+    });
   }
 
-  const rootPath = useWorkspaceStore.getState().rootPath;
+  const rootPath = getWorkspaceRootPath();
   if (!rootPath) {
-    return JSON.stringify({ success: false, error: 'No workspace open' });
+    return JSON.stringify({ success: false, error: "No workspace open" });
   }
 
-  const targetPath = resolvePath(args.path, rootPath);
+  const targetPath = resolvePath(args.path);
   const pattern = args.pattern as string;
   const maxResults = args.max_results ?? 100;
   const results: string[] = [];
@@ -165,12 +173,12 @@ const workspaceFindFilesExecutor = async (args: Record<string, any>): Promise<st
   // Convert glob pattern to regex
   const patternRegex = new RegExp(
     pattern
-      .replace(/\*\*/g, '{{GLOBSTAR}}')
-      .replace(/\./g, '\\.')
-      .replace(/\*/g, '[^/\\\\]*')
-      .replace(/\?/g, '.')
-      .replace(/{{GLOBSTAR}}/g, '.*'),
-    'i' // Case insensitive
+      .replace(/\*\*/g, "{{GLOBSTAR}}")
+      .replace(/\./g, "\\.")
+      .replace(/\*/g, "[^/\\\\]*")
+      .replace(/\?/g, ".")
+      .replace(/{{GLOBSTAR}}/g, ".*"),
+    "i", // Case insensitive
   );
 
   try {
@@ -183,15 +191,17 @@ const workspaceFindFilesExecutor = async (args: Record<string, any>): Promise<st
       } catch {
         return; // Skip directories we can't read
       }
-      
+
       for (const entry of entries) {
         if (results.length >= maxResults) break;
-        
-        // Skip hidden files/folders
-        if (entry.name.startsWith('.')) continue;
 
-        const relativePath = entry.path.replace(targetPath, '').replace(/^[/\\]/, '');
-        
+        // Skip hidden files/folders
+        if (entry.name.startsWith(".")) continue;
+
+        const relativePath = entry.path
+          .replace(targetPath, "")
+          .replace(/^[/\\]/, "");
+
         if (patternRegex.test(relativePath) || patternRegex.test(entry.name)) {
           results.push(entry.path);
         }
@@ -203,107 +213,83 @@ const workspaceFindFilesExecutor = async (args: Record<string, any>): Promise<st
     };
 
     await searchDir(targetPath);
-    
-    return JSON.stringify({ 
-      success: true, 
+
+    return JSON.stringify({
+      success: true,
       pattern,
       rootPath: targetPath,
       count: results.length,
       truncated: results.length >= maxResults,
-      files: results
+      files: results,
     });
   } catch (error) {
-    return JSON.stringify({ 
-      success: false, 
-      error: error instanceof Error ? error.message : String(error) 
+    return JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
     });
-  }
-};
-
-// ============================================
-// FILE EXISTS EXECUTOR
-// ============================================
-const fileExistsExecutor = async (args: Record<string, any>): Promise<string> => {
-  if (!isTauri()) {
-    return JSON.stringify({ success: false, error: 'File operations require desktop app' });
-  }
-
-  const rootPath = useWorkspaceStore.getState().rootPath;
-  if (!rootPath) {
-    return JSON.stringify({ success: false, error: 'No workspace open' });
-  }
-
-  const targetPath = resolvePath(args.path, rootPath);
-
-  try {
-    const entries = await readDirectory(targetPath.substring(0, targetPath.lastIndexOf(/[/\\]/.test(targetPath) ? targetPath.match(/[/\\]/g)!.pop()! : '')));
-    const fileName = targetPath.split(/[/\\]/).pop();
-    const exists = entries.some(e => e.name === fileName);
-    
-    return JSON.stringify({ 
-      success: true, 
-      exists,
-      path: targetPath
-    });
-  } catch {
-    // If we can't read the parent directory, check if the path itself is readable
-    try {
-      await readDirectory(targetPath);
-      return JSON.stringify({ success: true, exists: true, path: targetPath });
-    } catch {
-      return JSON.stringify({ success: true, exists: false, path: targetPath });
-    }
   }
 };
 
 // ============================================
 // WORKSPACE GREP EXECUTOR
 // ============================================
-const workspaceGrepExecutor = async (args: Record<string, any>): Promise<string> => {
+const workspaceGrepExecutor = async (
+  args: Record<string, any>,
+): Promise<string> => {
   if (!isTauri()) {
-    return JSON.stringify({ success: false, error: 'Workspace operations require desktop app' });
+    return JSON.stringify({
+      success: false,
+      error: "Workspace operations require desktop app",
+    });
   }
 
-  const rootPath = useWorkspaceStore.getState().rootPath;
+  const rootPath = getWorkspaceRootPath();
   if (!rootPath) {
-    return JSON.stringify({ success: false, error: 'No workspace open' });
+    return JSON.stringify({ success: false, error: "No workspace open" });
   }
 
-  return JSON.stringify({ 
-    success: true, 
-    message: 'Grep functionality requires shell_execute tool for full implementation',
+  return JSON.stringify({
+    success: true,
+    message:
+      "Grep functionality requires shell_execute tool for full implementation",
     pattern: args.pattern,
     rootPath,
-    suggestion: 'Use shell_execute with grep or ripgrep command for searching'
+    suggestion: "Use shell_execute with grep or ripgrep command for searching",
   });
 };
 
 // ============================================
 // FOLDER CREATE EXECUTOR
 // ============================================
-const folderCreateExecutor = async (args: Record<string, any>): Promise<string> => {
+const folderCreateExecutor = async (
+  args: Record<string, any>,
+): Promise<string> => {
   if (!isTauri()) {
-    return JSON.stringify({ success: false, error: 'Folder operations require desktop app' });
+    return JSON.stringify({
+      success: false,
+      error: "Folder operations require desktop app",
+    });
   }
 
-  const rootPath = useWorkspaceStore.getState().rootPath;
+  const rootPath = getWorkspaceRootPath();
   if (!rootPath) {
-    return JSON.stringify({ success: false, error: 'No workspace open' });
+    return JSON.stringify({ success: false, error: "No workspace open" });
   }
 
-  const targetPath = resolvePath(args.path, rootPath);
+  const targetPath = resolvePath(args.path);
 
   try {
     await createFolder(targetPath);
-    return JSON.stringify({ 
-      success: true, 
+    triggerRefresh(); // Auto-refresh file tree
+    return JSON.stringify({
+      success: true,
       message: `Folder created: ${targetPath}`,
-      path: targetPath
+      path: targetPath,
     });
   } catch (error) {
-    return JSON.stringify({ 
-      success: false, 
-      error: error instanceof Error ? error.message : String(error) 
+    return JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
     });
   }
 };
@@ -311,29 +297,35 @@ const folderCreateExecutor = async (args: Record<string, any>): Promise<string> 
 // ============================================
 // FOLDER DELETE EXECUTOR
 // ============================================
-const folderDeleteExecutor = async (args: Record<string, any>): Promise<string> => {
+const folderDeleteExecutor = async (
+  args: Record<string, any>,
+): Promise<string> => {
   if (!isTauri()) {
-    return JSON.stringify({ success: false, error: 'Folder operations require desktop app' });
+    return JSON.stringify({
+      success: false,
+      error: "Folder operations require desktop app",
+    });
   }
 
-  const rootPath = useWorkspaceStore.getState().rootPath;
+  const rootPath = getWorkspaceRootPath();
   if (!rootPath) {
-    return JSON.stringify({ success: false, error: 'No workspace open' });
+    return JSON.stringify({ success: false, error: "No workspace open" });
   }
 
-  const targetPath = resolvePath(args.path, rootPath);
+  const targetPath = resolvePath(args.path);
 
   try {
     await deletePath(targetPath);
-    return JSON.stringify({ 
-      success: true, 
+    triggerRefresh(); // Auto-refresh file tree
+    return JSON.stringify({
+      success: true,
       message: `Folder deleted: ${targetPath}`,
-      path: targetPath
+      path: targetPath,
     });
   } catch (error) {
-    return JSON.stringify({ 
-      success: false, 
-      error: error instanceof Error ? error.message : String(error) 
+    return JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
     });
   }
 };
@@ -341,23 +333,26 @@ const folderDeleteExecutor = async (args: Record<string, any>): Promise<string> 
 // ============================================
 // WORKSPACE INFO EXECUTOR
 // ============================================
-const workspaceInfoExecutor = async (_args: Record<string, any>): Promise<string> => {
+const workspaceInfoExecutor = async (
+  _args: Record<string, any>,
+): Promise<string> => {
+  // This executor needs direct store access for file tree data
   const { rootPath, files } = useWorkspaceStore.getState();
-  
+
   if (!rootPath) {
-    return JSON.stringify({ 
-      success: true, 
+    return JSON.stringify({
+      success: true,
       hasWorkspace: false,
-      message: 'No workspace open'
+      message: "No workspace open",
     });
   }
 
   const countFiles = (nodes: any[]): { files: number; folders: number } => {
     let fileCount = 0;
     let folderCount = 0;
-    
+
     for (const node of nodes) {
-      if (node.type === 'folder') {
+      if (node.type === "folder") {
         folderCount++;
         if (node.children) {
           const childCounts = countFiles(node.children);
@@ -368,33 +363,40 @@ const workspaceInfoExecutor = async (_args: Record<string, any>): Promise<string
         fileCount++;
       }
     }
-    
+
     return { files: fileCount, folders: folderCount };
   };
 
   const counts = countFiles(files);
-  const folderName = rootPath.split(/[/\\]/).pop() || 'workspace';
-  
-  return JSON.stringify({ 
-    success: true, 
+  const folderName = rootPath.split(/[/\\]/).pop() || "workspace";
+
+  return JSON.stringify({
+    success: true,
     hasWorkspace: true,
     rootPath,
     name: folderName,
     totalFiles: counts.files,
-    totalFolders: counts.folders
+    totalFolders: counts.folders,
   });
 };
 
 // ============================================
 // REGISTER ALL WORKSPACE EXECUTORS
+// Note: file_exists is registered in file-executors.ts
 // ============================================
 export const registerWorkspaceExecutors = (): void => {
-  toolRegistry.registerExecutor('workspace_tree', workspaceTreeExecutor);
-  toolRegistry.registerExecutor('workspace_list_files', workspaceListFilesExecutor);
-  toolRegistry.registerExecutor('workspace_find_files', workspaceFindFilesExecutor);
-  toolRegistry.registerExecutor('workspace_grep', workspaceGrepExecutor);
-  toolRegistry.registerExecutor('folder_create', folderCreateExecutor);
-  toolRegistry.registerExecutor('folder_delete', folderDeleteExecutor);
-  toolRegistry.registerExecutor('workspace_info', workspaceInfoExecutor);
-  toolRegistry.registerExecutor('file_exists', fileExistsExecutor);
+  toolRegistry.registerExecutor("workspace_tree", workspaceTreeExecutor);
+  toolRegistry.registerExecutor(
+    "workspace_list_files",
+    workspaceListFilesExecutor,
+  );
+  toolRegistry.registerExecutor(
+    "workspace_find_files",
+    workspaceFindFilesExecutor,
+  );
+  toolRegistry.registerExecutor("workspace_grep", workspaceGrepExecutor);
+  toolRegistry.registerExecutor("folder_create", folderCreateExecutor);
+  toolRegistry.registerExecutor("folder_delete", folderDeleteExecutor);
+  toolRegistry.registerExecutor("workspace_info", workspaceInfoExecutor);
+  // Removed duplicate file_exists registration - it's handled in file-executors.ts
 };

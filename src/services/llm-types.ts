@@ -3,13 +3,13 @@
  * Based on GLM-4.7 / OpenAI API specification
  */
 
-import type { ToolDefinition, ToolCallRequest } from '../tools/types';
+import type { ToolDefinition, ToolCallRequest } from "../tools/types";
 
 // ============================================
 // MESSAGE TYPES
 // ============================================
 
-export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
+export type MessageRole = "system" | "user" | "assistant" | "tool";
 
 export interface BaseMessage {
   role: MessageRole;
@@ -17,32 +17,36 @@ export interface BaseMessage {
 }
 
 export interface SystemMessage extends BaseMessage {
-  role: 'system';
+  role: "system";
 }
 
 export interface UserMessage extends BaseMessage {
-  role: 'user';
+  role: "user";
 }
 
 export interface AssistantMessage extends BaseMessage {
-  role: 'assistant';
+  role: "assistant";
   reasoning_content?: string; // Thinking content from model
   tool_calls?: ToolCallRequest[];
 }
 
 export interface ToolMessage extends BaseMessage {
-  role: 'tool';
+  role: "tool";
   tool_call_id: string;
 }
 
-export type ChatMessage = SystemMessage | UserMessage | AssistantMessage | ToolMessage;
+export type ChatMessage =
+  | SystemMessage
+  | UserMessage
+  | AssistantMessage
+  | ToolMessage;
 
 // ============================================
 // REQUEST TYPES
 // ============================================
 
 export interface ThinkingConfig {
-  type: 'enabled' | 'disabled';
+  type: "enabled" | "disabled";
   clear_thinking?: boolean; // For preserved thinking
 }
 
@@ -55,10 +59,10 @@ export interface ChatCompletionRequest {
   stream?: boolean;
   thinking?: ThinkingConfig;
   tools?: ToolDefinition[];
-  tool_choice?: 'auto' | 'none';
+  tool_choice?: "auto" | "none";
   tool_stream?: boolean; // GLM-4.6 specific
   stop?: string[];
-  response_format?: { type: 'text' | 'json_object' };
+  response_format?: { type: "text" | "json_object" };
 }
 
 // ============================================
@@ -68,7 +72,13 @@ export interface ChatCompletionRequest {
 export interface ChatCompletionChoice {
   index: number;
   message: AssistantMessage;
-  finish_reason: 'stop' | 'tool_calls' | 'length' | 'sensitive' | 'network_error' | null;
+  finish_reason:
+    | "stop"
+    | "tool_calls"
+    | "length"
+    | "sensitive"
+    | "network_error"
+    | null;
 }
 
 export interface UsageInfo {
@@ -79,7 +89,7 @@ export interface UsageInfo {
 
 export interface ChatCompletionResponse {
   id: string;
-  object: 'chat.completion';
+  object: "chat.completion";
   created: number;
   model: string;
   choices: ChatCompletionChoice[];
@@ -97,7 +107,7 @@ export interface StreamDelta {
   tool_calls?: Array<{
     index: number;
     id?: string;
-    type?: 'function';
+    type?: "function";
     function?: {
       name?: string;
       arguments?: string;
@@ -108,12 +118,18 @@ export interface StreamDelta {
 export interface StreamChoice {
   index: number;
   delta: StreamDelta;
-  finish_reason: 'stop' | 'tool_calls' | 'length' | 'sensitive' | 'network_error' | null;
+  finish_reason:
+    | "stop"
+    | "tool_calls"
+    | "length"
+    | "sensitive"
+    | "network_error"
+    | null;
 }
 
 export interface ChatCompletionChunk {
   id: string;
-  object: 'chat.completion.chunk';
+  object: "chat.completion.chunk";
   created: number;
   model: string;
   choices: StreamChoice[];
@@ -122,6 +138,13 @@ export interface ChatCompletionChunk {
 // ============================================
 // PROVIDER CONFIG
 // ============================================
+
+export type ProviderType =
+  | "openai"
+  | "deepseek"
+  | "glm"
+  | "anthropic"
+  | "custom";
 
 export interface LLMProviderConfig {
   id: string;
@@ -135,6 +158,10 @@ export interface LLMProviderConfig {
   contextWindow?: number; // Provider's context window
   supportsThinking?: boolean;
   supportsToolStream?: boolean;
+  // Extended configuration
+  providerType?: ProviderType; // Explicit provider type for correct handling
+  customHeaders?: Record<string, string>; // Extra headers to send with requests
+  customParams?: Record<string, unknown>; // Extra params to include in request body
 }
 
 // ============================================
@@ -149,4 +176,3 @@ export interface StreamCallbacks {
   onComplete?: (response: AssistantMessage) => void;
   onError?: (error: Error) => void;
 }
-

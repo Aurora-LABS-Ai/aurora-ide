@@ -3,6 +3,7 @@ import { useUiStore } from '../../store/useUiStore';
 import { useSettingsStore, type LLMProvider } from '../../store/useSettingsStore';
 import { X, Server, Layout, Shield, Brain, Eye, EyeOff, Plus, Trash2, ChevronDown } from 'lucide-react';
 import clsx from 'clsx';
+import { ToolSettingsTab } from './ToolSettingsTab';
 
 // ============================================
 // ADD PROVIDER FORM
@@ -370,8 +371,6 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
 export const SettingsPanel: React.FC = () => {
   const { isSettingsOpen, setSettingsOpen } = useUiStore();
   const { 
-    autoApproveTools, 
-    setAutoApproveTools, 
     fontSize, 
     setFontSize,
     providers,
@@ -542,39 +541,7 @@ export const SettingsPanel: React.FC = () => {
              )}
 
              {/* TOOLS TAB */}
-             {activeTab === 'tools' && (
-               <div className="space-y-3">
-                 <div className="p-3 border border-border rounded-lg bg-titlebar">
-                   <div className="flex items-center justify-between">
-                     <div>
-                       <h3 className="text-xs font-medium text-text-primary">Auto-approve Tools</h3>
-                       <p className="text-[10px] text-text-secondary">Execute without asking</p>
-                     </div>
-                     <button
-                       onClick={() => setAutoApproveTools(!autoApproveTools)}
-                       className={clsx(
-                         "relative w-8 h-4 rounded-full transition-colors",
-                         autoApproveTools ? "bg-primary" : "bg-input border border-border"
-                       )}
-                     >
-                       <div className={clsx(
-                         "absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform",
-                         autoApproveTools ? "translate-x-4" : "translate-x-0.5"
-                       )} />
-                     </button>
-                   </div>
-                 </div>
-
-                 <div className="p-3 border border-warning/30 rounded-lg bg-warning/5">
-                   <div className="flex items-start gap-2">
-                     <Shield className="w-4 h-4 text-warning shrink-0" />
-                     <p className="text-[10px] text-text-secondary">
-                       Auto-approving may execute unintended changes. Keep disabled for sensitive projects.
-                     </p>
-                   </div>
-                 </div>
-               </div>
-             )}
+             {activeTab === 'tools' && <ToolSettingsTab />}
 
              {/* GENERAL TAB */}
              {activeTab === 'general' && (

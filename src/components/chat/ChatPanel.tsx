@@ -1,16 +1,21 @@
-import React, { useRef, useCallback, useState, useEffect } from 'react';
-import { ChatHistory } from './ChatHistory';
-import { ChatInput } from './ChatInput';
-import { ChatHeader } from './ChatHeader';
-import { ThreadHistory } from './ThreadHistory';
-import { ToolApprovalBanner } from './ToolApprovalBanner';
-import { useChatStore } from '../../store/useChatStore';
-import { useThreadStore } from '../../store/useThreadStore';
-import { useSettingsStore } from '../../store/useSettingsStore';
-import { useWorkspaceStore } from '../../store/useWorkspaceStore';
-import { getAgentService, initLLMProvider } from '../../services';
-import { registerAllExecutors } from '../../tools';
-import type { ToolProposal, ToolCall, Message, TimelineEvent } from '../../types';
+import React, { useRef, useCallback, useState, useEffect } from "react";
+import { ChatHistory } from "./ChatHistory";
+import { ChatInput } from "./ChatInput";
+import { ChatHeader } from "./ChatHeader";
+import { ThreadHistory } from "./ThreadHistory";
+import { ToolApprovalBanner } from "./ToolApprovalBanner";
+import { useChatStore } from "../../store/useChatStore";
+import { useThreadStore } from "../../store/useThreadStore";
+import { useSettingsStore } from "../../store/useSettingsStore";
+import { useWorkspaceStore } from "../../store/useWorkspaceStore";
+import { getAgentService, initLLMProvider } from "../../services";
+import { registerAllExecutors } from "../../tools";
+import type {
+  ToolProposal,
+  ToolCall,
+  Message,
+  TimelineEvent,
+} from "../../types";
 
 // Initialize executors on module load
 let executorsInitialized = false;
@@ -24,14 +29,14 @@ const initExecutors = () => {
 // Generate unique ID
 const generateId = () => Math.random().toString(36).substr(2, 9);
 
-export const ChatPanel: React.FC = () => {
-  const { 
-    setLoading, 
-    isLoading, 
-    pendingApproval, 
-    setPendingApproval 
-  } = useChatStore();
-  
+interface ChatPanelProps {
+  isDetached?: boolean;
+}
+
+export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
+  const { setLoading, isLoading, pendingApproval, setPendingApproval } =
+    useChatStore();
+
   const {
     currentThreadId,
     threads,
@@ -40,19 +45,20 @@ export const ChatPanel: React.FC = () => {
     updateMessageInThread,
     clearCurrentThread,
   } = useThreadStore();
-  
+
   const { refreshDirectory, rootPath } = useWorkspaceStore();
-  
-  const { 
-    autoApproveTools, 
-    thinkingEnabled, 
+
+  const {
+    autoApproveTools,
+    thinkingEnabled,
     temperature,
     maxTokens,
-    getAvailableModels,
+    maxToolCallsPerRequest,
+    getToolApproval,
     getLLMConfig,
     selectedModel,
   } = useSettingsStore();
-  
+
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const currentMessageIdRef = useRef<string | null>(null);
   const pendingToolCallRef = useRef<any>(null);
@@ -70,14 +76,14 @@ export const ChatPanel: React.FC = () => {
   // Keyboard shortcut: Ctrl+H to open history
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === 'h') {
+      if (e.ctrlKey && e.key === "h") {
         e.preventDefault();
         setIsHistoryOpen(true);
       }
     };
-    
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
   const handleNewChat = useCallback(() => {
@@ -89,141 +95,158 @@ export const ChatPanel: React.FC = () => {
   }, [clearCurrentThread]);
 
   // Helper to add timeline event
-  const addTimelineEvent = useCallback((event: Omit<TimelineEvent, 'id' | 'timestamp'>) => {
-    const newEvent: TimelineEvent = {
-      ...event,
-      id: generateId(),
-      timestamp: Date.now(),
-    };
-    timelineRef.current = [...timelineRef.current, newEvent];
-    
-    if (currentMessageIdRef.current) {
-      updateMessageInThread(currentMessageIdRef.current, {
-        timeline: [...timelineRef.current],
-      });
-    }
-    
-    return newEvent.id;
-  }, [updateMessageInThread]);
+  const addTimelineEvent = useCallback(
+    (event: Omit<TimelineEvent, "id" | "timestamp">) => {
+      const newEvent: TimelineEvent = {
+        ...event,
+        id: generateId(),
+        timestamp: Date.now(),
+      };
+      timelineRef.current = [...timelineRef.current, newEvent];
+
+      if (currentMessageIdRef.current) {
+        updateMessageInThread(currentMessageIdRef.current, {
+          timeline: [...timelineRef.current],
+        });
+      }
+
+      return newEvent.id;
+    },
+    [updateMessageInThread],
+  );
 
   // Helper to update timeline event
-  const updateTimelineEvent = useCallback((eventId: string, updates: Partial<TimelineEvent>) => {
-    timelineRef.current = timelineRef.current.map(e => 
-      e.id === eventId ? { ...e, ...updates } : e
-    );
-    
-    if (currentMessageIdRef.current) {
-      updateMessageInThread(currentMessageIdRef.current, {
-        timeline: [...timelineRef.current],
-      });
-    }
-  }, [updateMessageInThread]);
+  const updateTimelineEvent = useCallback(
+    (eventId: string, updates: Partial<TimelineEvent>) => {
+      timelineRef.current = timelineRef.current.map((e) =>
+        e.id === eventId ? { ...e, ...updates } : e,
+      );
+
+      if (currentMessageIdRef.current) {
+        updateMessageInThread(currentMessageIdRef.current, {
+          timeline: [...timelineRef.current],
+        });
+      }
+    },
+    [updateMessageInThread],
+  );
 
   // Helper to refresh file explorer after file operations
   const refreshFileExplorer = useCallback(() => {
     if (rootPath) {
-      console.log('Refreshing file explorer for:', rootPath);
-      refreshDirectory(rootPath);
+      console.log("Refreshing file explorer for:", rootPath);
     }
+    refreshDirectory();
   }, [rootPath, refreshDirectory]);
 
-  const handleSend = useCallback(async (content: string) => {
-    // Reset timeline
-    timelineRef.current = [];
-    
-    // Ensure we have a thread
-    let threadId = currentThreadId;
-    if (!threadId) {
-      threadId = createThread();
-    }
+  const handleSend = useCallback(
+    async (content: string) => {
+      // Reset timeline
+      timelineRef.current = [];
 
-    // Add user message
-    const userMessage: Message = {
-      id: generateId(),
-      sender: 'user',
-      content,
-      timestamp: Date.now(),
-    };
-    addMessageToThread(userMessage);
+      // Ensure we have a thread
+      let threadId = currentThreadId;
+      if (!threadId) {
+        threadId = createThread();
+      }
 
-    setLoading(true);
-
-    // Get the current LLM config based on selected model
-    const llmConfig = getLLMConfig();
-    
-    if (!llmConfig) {
-      const errorMessage: Message = {
+      // Add user message
+      const userMessage: Message = {
         id: generateId(),
-        sender: 'assistant',
-        content: 'No models configured. Please add an API key for at least one provider in Settings.',
+        sender: "user",
+        content,
         timestamp: Date.now(),
       };
-      addMessageToThread(errorMessage);
-      setLoading(false);
-      return;
-    }
+      addMessageToThread(userMessage);
 
-    console.log('Using LLM config:', llmConfig);
+      setLoading(true);
 
-    // Initialize LLM provider with current settings (including maxOutputTokens)
-    initLLMProvider({
-      baseUrl: llmConfig.baseUrl,
-      apiKey: llmConfig.apiKey,
-      model: llmConfig.model,
-      maxOutputTokens: llmConfig.maxOutputTokens,
-      contextWindow: llmConfig.contextWindow,
-      supportsThinking: llmConfig.supportsThinking,
-    });
+      // Get the current LLM config based on selected model
+      const llmConfig = getLLMConfig();
 
-    // Create a new assistant message that we'll stream into
-    const assistantMessageId = generateId();
-    currentMessageIdRef.current = assistantMessageId;
-    
-    const assistantMessage: Message = {
-      id: assistantMessageId,
-      sender: 'assistant',
-      content: '',
-      timestamp: Date.now(),
-      timeline: [],
-    };
-    addMessageToThread(assistantMessage);
+      if (!llmConfig) {
+        const errorMessage: Message = {
+          id: generateId(),
+          sender: "assistant",
+          content:
+            "No models configured. Please add an API key for at least one provider in Settings.",
+          timestamp: Date.now(),
+        };
+        addMessageToThread(errorMessage);
+        setLoading(false);
+        return;
+      }
 
-    // Track current thinking event ID
-    let currentThinkingEventId: string | null = null;
-    let currentContentEventId: string | null = null;
-    let hasFileOperation = false;
+      console.log("Using LLM config:", llmConfig);
 
-    try {
-      const agent = getAgentService();
-      agent.updateConfig({
-        thinkingEnabled,
-        autoApproveTools,
-        temperature,
-        maxTokens,
+      // Initialize LLM provider with current settings (including maxOutputTokens)
+      initLLMProvider({
+        baseUrl: llmConfig.baseUrl,
+        apiKey: llmConfig.apiKey,
+        model: llmConfig.model,
+        maxOutputTokens: llmConfig.maxOutputTokens,
+        contextWindow: llmConfig.contextWindow,
+        supportsThinking: llmConfig.supportsThinking,
+        supportsToolStream: llmConfig.supportsToolStream,
+        customHeaders: llmConfig.customHeaders,
+        customParams: llmConfig.customParams,
+        providerType: llmConfig.providerType,
+        defaultTemperature: llmConfig.defaultTemperature,
+        defaultMaxTokens: llmConfig.defaultMaxTokens,
       });
 
-      await agent.chat(
-        content,
-        {
+      // Create a new assistant message that we'll stream into
+      const assistantMessageId = generateId();
+      currentMessageIdRef.current = assistantMessageId;
+
+      const assistantMessage: Message = {
+        id: assistantMessageId,
+        sender: "assistant",
+        content: "",
+        timestamp: Date.now(),
+        timeline: [],
+      };
+      addMessageToThread(assistantMessage);
+
+      // Track current thinking event ID
+      let currentThinkingEventId: string | null = null;
+      let currentContentEventId: string | null = null;
+      let hasFileOperation = false;
+
+      try {
+        const agent = getAgentService();
+        agent.updateConfig({
+          thinkingEnabled,
+          autoApproveTools,
+          temperature,
+          maxTokens,
+          maxToolIterations: maxToolCallsPerRequest,
+        });
+
+        await agent.chat(content, {
           onToken: (token) => {
             // Close current thinking block when content starts
             if (currentThinkingEventId) {
-              updateTimelineEvent(currentThinkingEventId, { isThinking: false });
+              updateTimelineEvent(currentThinkingEventId, {
+                isThinking: false,
+              });
               currentThinkingEventId = null;
             }
-            
+
             // Add content to timeline
             if (!currentContentEventId) {
               currentContentEventId = addTimelineEvent({
-                type: 'content',
+                type: "content",
                 content: token,
               });
             } else {
               // Find and update existing content event
-              const existingEvent = timelineRef.current.find(e => e.id === currentContentEventId);
+              const existingEvent = timelineRef.current.find(
+                (e) => e.id === currentContentEventId,
+              );
               if (existingEvent) {
                 updateTimelineEvent(currentContentEventId, {
-                  content: (existingEvent.content || '') + token,
+                  content: (existingEvent.content || "") + token,
                 });
               }
             }
@@ -232,15 +255,17 @@ export const ChatPanel: React.FC = () => {
             // Create or update thinking event
             if (!currentThinkingEventId) {
               currentThinkingEventId = addTimelineEvent({
-                type: 'thinking',
+                type: "thinking",
                 thinking: thinking,
                 isThinking: true,
               });
             } else {
-              const existingEvent = timelineRef.current.find(e => e.id === currentThinkingEventId);
+              const existingEvent = timelineRef.current.find(
+                (e) => e.id === currentThinkingEventId,
+              );
               if (existingEvent) {
                 updateTimelineEvent(currentThinkingEventId, {
-                  thinking: (existingEvent.thinking || '') + thinking,
+                  thinking: (existingEvent.thinking || "") + thinking,
                 });
               }
             }
@@ -248,16 +273,18 @@ export const ChatPanel: React.FC = () => {
           onToolCall: (toolCall) => {
             // Close current thinking block when tool call starts
             if (currentThinkingEventId) {
-              updateTimelineEvent(currentThinkingEventId, { isThinking: false });
+              updateTimelineEvent(currentThinkingEventId, {
+                isThinking: false,
+              });
               currentThinkingEventId = null; // Reset for next thinking block
             }
-            
+
             // Reset content event for after tool
             currentContentEventId = null;
 
             // Check if tool already exists in timeline
             const existingToolEvent = timelineRef.current.find(
-              e => e.type === 'tool' && e.tool?.id === toolCall.id
+              (e) => e.type === "tool" && e.tool?.id === toolCall.id,
             );
 
             if (!existingToolEvent) {
@@ -265,23 +292,33 @@ export const ChatPanel: React.FC = () => {
               const newToolCall: ToolCall = {
                 id: toolCall.id,
                 name: toolCall.function.name,
-                status: 'pending',
+                status: "pending",
                 args: {},
               };
-              
+
               try {
-                newToolCall.args = JSON.parse(toolCall.function.arguments || '{}');
+                newToolCall.args = JSON.parse(
+                  toolCall.function.arguments || "{}",
+                );
               } catch {
                 newToolCall.args = { raw: toolCall.function.arguments };
               }
 
               addTimelineEvent({
-                type: 'tool',
+                type: "tool",
                 tool: newToolCall,
               });
 
               // Track file operations
-              if (['file_create', 'file_write', 'file_delete', 'folder_create', 'folder_delete'].includes(toolCall.function.name)) {
+              if (
+                [
+                  "file_create",
+                  "file_write",
+                  "file_delete",
+                  "folder_create",
+                  "folder_delete",
+                ].includes(toolCall.function.name)
+              ) {
                 hasFileOperation = true;
               }
             } else {
@@ -289,26 +326,40 @@ export const ChatPanel: React.FC = () => {
               try {
                 const updatedTool = {
                   ...existingToolEvent.tool!,
-                  args: JSON.parse(toolCall.function.arguments || '{}'),
+                  args: JSON.parse(toolCall.function.arguments || "{}"),
                 };
-                updateTimelineEvent(existingToolEvent.id, { tool: updatedTool });
+                updateTimelineEvent(existingToolEvent.id, {
+                  tool: updatedTool,
+                });
               } catch {
                 // Arguments still streaming
               }
             }
           },
           onToolApprovalRequired: async (toolCall) => {
+            const toolName = toolCall.function.name;
+            const toolSetting = getToolApproval(toolName);
+
+            // Check per-tool settings first
+            if (toolSetting === 'auto') {
+              return true; // Auto-approve
+            }
+            if (toolSetting === 'deny') {
+              return false; // Auto-deny
+            }
+
+            // 'always_ask' - show approval UI
             const proposal: ToolProposal = {
               id: toolCall.id,
-              toolName: toolCall.function.name,
-              description: `Execute ${toolCall.function.name}`,
-              riskLevel: 'medium',
-              status: 'pending',
-              parameters: JSON.parse(toolCall.function.arguments || '{}'),
+              toolName: toolName,
+              description: `Execute ${toolName}`,
+              riskLevel: toolName.startsWith('shell_') || toolName.includes('delete') ? 'high' : 'medium',
+              status: "pending",
+              parameters: JSON.parse(toolCall.function.arguments || "{}"),
             };
-            
+
             pendingToolCallRef.current = { toolCall, resolve: null as any };
-            
+
             return new Promise<boolean>((resolve) => {
               pendingToolCallRef.current.resolve = resolve;
               setPendingApproval(proposal);
@@ -317,22 +368,22 @@ export const ChatPanel: React.FC = () => {
           onToolExecutionStart: (toolCall) => {
             // Find tool event and update status
             const toolEvent = timelineRef.current.find(
-              e => e.type === 'tool' && e.tool?.id === toolCall.id
+              (e) => e.type === "tool" && e.tool?.id === toolCall.id,
             );
             if (toolEvent) {
               updateTimelineEvent(toolEvent.id, {
-                tool: { ...toolEvent.tool!, status: 'executing' },
+                tool: { ...toolEvent.tool!, status: "executing" },
               });
             }
           },
           onToolExecutionComplete: (toolCall, result) => {
             // Find tool event and update status
             const toolEvent = timelineRef.current.find(
-              e => e.type === 'tool' && e.tool?.id === toolCall.id
+              (e) => e.type === "tool" && e.tool?.id === toolCall.id,
             );
             if (toolEvent) {
               updateTimelineEvent(toolEvent.id, {
-                tool: { ...toolEvent.tool!, status: 'complete', result },
+                tool: { ...toolEvent.tool!, status: "complete", result },
               });
             }
 
@@ -343,60 +394,80 @@ export const ChatPanel: React.FC = () => {
           },
           onComplete: (finalMessage) => {
             // Check if we have any content in timeline
-            const hasContentEvent = timelineRef.current.some(e => e.type === 'content' && e.content);
-            
+            const hasContentEvent = timelineRef.current.some(
+              (e) => e.type === "content" && e.content,
+            );
+
             // Check if we have tool calls (meaning this was a tool-using conversation)
-            const hasToolCalls = timelineRef.current.some(e => e.type === 'tool');
-            
+            const hasToolCalls = timelineRef.current.some(
+              (e) => e.type === "tool",
+            );
+
             // Get the last timeline event
-            const lastEvent = timelineRef.current[timelineRef.current.length - 1];
-            
+            const lastEvent =
+              timelineRef.current[timelineRef.current.length - 1];
+
             // If we have final content from the API that wasn't streamed, add it
             if (finalMessage?.content && !hasContentEvent) {
               // Close thinking first
               if (currentThinkingEventId) {
-                updateTimelineEvent(currentThinkingEventId, { isThinking: false });
+                updateTimelineEvent(currentThinkingEventId, {
+                  isThinking: false,
+                });
                 currentThinkingEventId = null;
               }
               addTimelineEvent({
-                type: 'content',
+                type: "content",
                 content: finalMessage.content,
               });
             }
             // If no content but last event is thinking after tool calls,
             // convert the last thinking to content (DeepSeek behavior)
-            else if (!hasContentEvent && hasToolCalls && lastEvent?.type === 'thinking' && lastEvent.thinking) {
+            else if (
+              !hasContentEvent &&
+              hasToolCalls &&
+              lastEvent?.type === "thinking" &&
+              lastEvent.thinking
+            ) {
               // Check if it looks like a final response (not just reasoning)
               const thinkingText = lastEvent.thinking;
-              const isFinalResponse = thinkingText.length > 50 && (
-                /^(Perfect|Great|Done|I've|The file|Here's|I have|Successfully|Based on|Now|So)/i.test(thinkingText) ||
-                /created|completed|finished|summary|covers|contains/i.test(thinkingText)
-              );
-              
+              const isFinalResponse =
+                thinkingText.length > 50 &&
+                (/^(Perfect|Great|Done|I've|The file|Here's|I have|Successfully|Based on|Now|So)/i.test(
+                  thinkingText,
+                ) ||
+                  /created|completed|finished|summary|covers|contains/i.test(
+                    thinkingText,
+                  ));
+
               if (isFinalResponse) {
                 // Convert this thinking event to content
-                updateTimelineEvent(lastEvent.id, { 
-                  type: 'content', 
-                  content: thinkingText, 
+                updateTimelineEvent(lastEvent.id, {
+                  type: "content",
+                  content: thinkingText,
                   thinking: undefined,
-                  isThinking: false 
+                  isThinking: false,
                 });
                 currentThinkingEventId = null;
               } else {
                 // Just close the thinking block
                 if (currentThinkingEventId) {
-                  updateTimelineEvent(currentThinkingEventId, { isThinking: false });
+                  updateTimelineEvent(currentThinkingEventId, {
+                    isThinking: false,
+                  });
                   currentThinkingEventId = null;
                 }
               }
             } else {
               // Just close any open thinking blocks
               if (currentThinkingEventId) {
-                updateTimelineEvent(currentThinkingEventId, { isThinking: false });
+                updateTimelineEvent(currentThinkingEventId, {
+                  isThinking: false,
+                });
                 currentThinkingEventId = null;
               }
             }
-            
+
             // Final refresh if there were file operations
             if (hasFileOperation) {
               refreshFileExplorer();
@@ -405,44 +476,48 @@ export const ChatPanel: React.FC = () => {
           onError: (error) => {
             // Add error as content
             addTimelineEvent({
-              type: 'content',
+              type: "content",
               content: `Error: ${error.message}`,
             });
-            
+
             if (currentThinkingEventId) {
-              updateTimelineEvent(currentThinkingEventId, { isThinking: false });
+              updateTimelineEvent(currentThinkingEventId, {
+                isThinking: false,
+              });
             }
           },
-        }
-      );
-
-    } catch (error) {
-      console.error('Chat error:', error);
-      addTimelineEvent({
-        type: 'content',
-        content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      });
-    } finally {
-      setLoading(false);
-      currentMessageIdRef.current = null;
-    }
-  }, [
-    currentThreadId,
-    createThread,
-    addMessageToThread, 
-    updateMessageInThread, 
-    setLoading, 
-    thinkingEnabled, 
-    autoApproveTools,
-    temperature,
-    maxTokens,
-    setPendingApproval,
-    addTimelineEvent,
-    updateTimelineEvent,
-    refreshFileExplorer,
-    getLLMConfig,
-    selectedModel,
-  ]);
+        });
+      } catch (error) {
+        console.error("Chat error:", error);
+        addTimelineEvent({
+          type: "content",
+          content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+        });
+      } finally {
+        setLoading(false);
+        currentMessageIdRef.current = null;
+      }
+    },
+    [
+      currentThreadId,
+      createThread,
+      addMessageToThread,
+      updateMessageInThread,
+      setLoading,
+      thinkingEnabled,
+      autoApproveTools,
+      temperature,
+      maxTokens,
+      maxToolCallsPerRequest,
+      getToolApproval,
+      setPendingApproval,
+      addTimelineEvent,
+      updateTimelineEvent,
+      refreshFileExplorer,
+      getLLMConfig,
+      selectedModel,
+    ],
+  );
 
   const handleApprove = useCallback(() => {
     if (pendingToolCallRef.current?.resolve) {
@@ -463,9 +538,11 @@ export const ChatPanel: React.FC = () => {
   const isEmpty = messages.length === 0;
 
   return (
-    <div className="h-full flex flex-col bg-sidebar border-l border-border">
+    <div
+      className={`h-full flex flex-col bg-sidebar ${isDetached ? "" : "border-l border-border"}`}
+    >
       {/* Header with New Chat and History buttons */}
-      <ChatHeader 
+      <ChatHeader
         onNewChat={handleNewChat}
         onOpenHistory={() => setIsHistoryOpen(true)}
       />
@@ -475,31 +552,38 @@ export const ChatPanel: React.FC = () => {
         <div className="flex-1 flex flex-col items-center justify-center text-text-secondary">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#6366f1] via-[#8b5cf6] to-[#ec4899] flex items-center justify-center mb-3 shadow-lg shadow-purple-900/20">
             <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5 text-white">
-              <path d="M12 2L13.5 9L20 8L14 12L17 19L12 14L7 19L10 12L4 8L10.5 9L12 2Z" fill="currentColor"/>
+              <path
+                d="M12 2L13.5 9L20 8L14 12L17 19L12 14L7 19L10 12L4 8L10.5 9L12 2Z"
+                fill="currentColor"
+              />
             </svg>
           </div>
-          <div className="text-lg font-medium text-text-primary mb-1">Aurora</div>
-          <div className="text-xs text-text-disabled">AI-powered coding assistant</div>
+          <div className="text-lg font-medium text-text-primary mb-1">
+            Aurora
+          </div>
+          <div className="text-xs text-text-disabled">
+            AI-powered coding assistant
+          </div>
         </div>
       ) : (
         <ChatHistory messages={messages} />
       )}
-      
+
       {/* Tool Approval Banner */}
       {pendingApproval && (
-        <ToolApprovalBanner 
+        <ToolApprovalBanner
           proposal={pendingApproval}
           onApprove={handleApprove}
           onReject={handleReject}
         />
       )}
-      
+
       <ChatInput onSend={handleSend} disabled={isLoading} />
 
       {/* Thread History Modal */}
-      <ThreadHistory 
-        isOpen={isHistoryOpen} 
-        onClose={() => setIsHistoryOpen(false)} 
+      <ThreadHistory
+        isOpen={isHistoryOpen}
+        onClose={() => setIsHistoryOpen(false)}
       />
     </div>
   );

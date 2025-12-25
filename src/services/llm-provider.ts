@@ -14,6 +14,7 @@ import type {
   StreamCallbacks,
   AssistantMessage,
   ThinkingConfig,
+  ProviderType,
 } from './llm-types';
 import type { ToolDefinition, ToolCallRequest } from '../tools/types';
 
@@ -62,17 +63,48 @@ export class LLMProvider {
   /**
    * Check if this is a DeepSeek provider
    */
+  private matchesProviderType(type: ProviderType): boolean {
+    return this.config.providerType === type;
+  }
+
   private isDeepSeek(): boolean {
-    return this.config.baseUrl.includes('deepseek.com') || 
-           this.config.model.includes('deepseek');
+    if (this.config.providerType) {
+      return this.matchesProviderType('deepseek');
+    }
+    return (
+      this.config.baseUrl.includes('deepseek.com') ||
+      this.config.model.includes('deepseek')
+    );
   }
 
   /**
    * Check if this is a GLM/Z.AI provider
    */
   private isGLM(): boolean {
-    return this.config.baseUrl.includes('z.ai') || 
-           this.config.model.includes('glm');
+    if (this.config.providerType) {
+      return this.matchesProviderType('glm');
+    }
+    return (
+      this.config.baseUrl.includes('z.ai') ||
+      this.config.model.includes('glm')
+    );
+  }
+
+  /**
+   * Build headers for requests, merging custom headers
+   */
+  private buildHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Accept-Language': 'en-US,en',
+      ...this.config.customHeaders,
+    };
+
+    if (this.config.apiKey && !headers.Authorization) {
+      headers.Authorization = `Bearer ${this.config.apiKey}`;
+    }
+
+    return headers;
   }
 
   /**
@@ -99,7 +131,11 @@ export class LLMProvider {
     };
 
     // Add max_tokens - use provider's maxOutputTokens limit if set
-    let maxTokens = options?.maxTokens ?? this.config.defaultMaxTokens ?? 4096;
+    const defaultMaxTokens =
+      this.config.defaultMaxTokens ??
+      this.config.maxOutputTokens ??
+      4096;
+    let maxTokens = options?.maxTokens ?? defaultMaxTokens;
     
     // Cap at provider's max output tokens limit if configured
     if (this.config.maxOutputTokens && maxTokens > this.config.maxOutputTokens) {
@@ -140,6 +176,15 @@ export class LLMProvider {
     if (options?.tools?.length) {
       request.tools = options.tools;
       request.tool_choice = 'auto';
+
+      if (this.config.supportsToolStream) {
+        request.tool_stream = true;
+      }
+    }
+
+    // Merge in any custom params
+    if (this.config.customParams) {
+      Object.assign(request, this.config.customParams);
     }
 
     return request;
@@ -164,11 +209,7 @@ export class LLMProvider {
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.apiKey}`,
-        'Accept-Language': 'en-US,en',
-      },
+      headers: this.buildHeaders(),
       body: JSON.stringify(request),
     });
 
@@ -214,11 +255,7 @@ export class LLMProvider {
 
       const response = await fetch(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.config.apiKey}`,
-          'Accept-Language': 'en-US,en',
-        },
+        headers: this.buildHeaders(),
         body: JSON.stringify(request),
         signal: this.abortController.signal,
       });
@@ -392,26 +429,25 @@ export const isProviderInitialized = (): boolean => {
  * Initialize LLM provider with config from settings
  * This MUST be called before using getLLMProvider
  */
-export const initLLMProvider = (config: {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  maxOutputTokens?: number;
-  contextWindow?: number;
-  supportsThinking?: boolean;
-}): LLMProvider => {
+type InitProviderConfig = Partial<Omit<LLMProviderConfig, 'baseUrl' | 'apiKey' | 'model'>> &
+  Pick<LLMProviderConfig, 'baseUrl' | 'apiKey' | 'model'>;
+
+export const initLLMProvider = (config: InitProviderConfig): LLMProvider => {
   const fullConfig: LLMProviderConfig = {
-    id: 'current',
-    name: 'Current Provider',
+    id: config.id ?? 'current',
+    name: config.name ?? 'Current Provider',
     baseUrl: config.baseUrl,
     apiKey: config.apiKey,
     model: config.model,
-    defaultTemperature: 1.0,
-    defaultMaxTokens: 8192,
+    defaultTemperature: config.defaultTemperature ?? 1.0,
+    defaultMaxTokens: config.defaultMaxTokens ?? 8192,
     maxOutputTokens: config.maxOutputTokens, // Provider's max output limit
     contextWindow: config.contextWindow, // Provider's context window
     supportsThinking: config.supportsThinking ?? true,
-    supportsToolStream: false,
+    supportsToolStream: config.supportsToolStream ?? false,
+    providerType: config.providerType,
+    customHeaders: config.customHeaders,
+    customParams: config.customParams,
   };
 
   if (providerInstance) {

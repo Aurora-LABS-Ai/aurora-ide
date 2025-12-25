@@ -1,6 +1,7 @@
 use tauri::Manager;
 
 mod commands;
+mod db;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -21,6 +22,14 @@ pub fn run() {
             commands::create_folder,
             commands::delete_path,
             commands::rename_path,
+            commands::get_workspace_root,
+            // State persistence commands
+            commands::state::save_workspace_state,
+            commands::state::get_workspace_state,
+            commands::state::save_editor_state,
+            commands::state::get_editor_state,
+            commands::state::save_explorer_state,
+            commands::state::get_explorer_state,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
@@ -28,6 +37,15 @@ pub fn run() {
                 let window = app.get_webview_window("main").unwrap();
                 window.open_devtools();
             }
+
+            // Initialize database
+            let handle = app.handle();
+            let db = db::Database::init(&handle)
+                .expect("Failed to initialize database");
+
+            // Store database in app state
+            app.manage(db);
+
             Ok(())
         })
         .run(tauri::generate_context!())

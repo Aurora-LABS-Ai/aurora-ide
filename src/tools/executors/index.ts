@@ -6,6 +6,7 @@
 import { registerFileExecutors } from './file-executors';
 import { registerWorkspaceExecutors } from './workspace-executors';
 import { registerShellExecutors } from './shell-executors';
+import { registerEditorExecutors } from './editor-executors';
 
 // Track if executors have been registered
 let executorsRegistered = false;
@@ -29,8 +30,8 @@ export const registerAllExecutors = (): void => {
   // Register shell tool executors
   registerShellExecutors();
   
-  // TODO: Register editor tool executors
-  // registerEditorExecutors();
+  // Register editor tool executors
+  registerEditorExecutors();
 
   executorsRegistered = true;
   console.log('Tool executors registered successfully');
@@ -47,4 +48,5 @@ export const areExecutorsRegistered = (): boolean => {
 export { registerFileExecutors } from './file-executors';
 export { registerWorkspaceExecutors } from './workspace-executors';
 export { registerShellExecutors } from './shell-executors';
+export { registerEditorExecutors } from './editor-executors';
 

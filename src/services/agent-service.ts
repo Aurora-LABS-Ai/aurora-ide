@@ -277,11 +277,16 @@ export class AgentService {
               }
             } else {
               // Tool was rejected
-              messages.push({
-                role: 'tool',
+              const rejectionMessage = {
+                role: 'tool' as const,
                 tool_call_id: toolCall.id,
-                content: JSON.stringify({ error: 'Tool execution rejected by user' }),
-              });
+                content: JSON.stringify({
+                  error: 'Tool execution rejected by user',
+                  tool: toolName,
+                }),
+              };
+              messages.push(rejectionMessage);
+              this.conversationHistory.push(rejectionMessage);
             }
 
             executedToolCalls.push(toolResult);

@@ -190,16 +190,22 @@ const TerminalSession: React.FC<{ sessionId: string }> = ({ sessionId }) => {
   const cwd = session.cwd || rootPath || '';
   const promptSymbol = session.profile === 'bash' ? '$' : '>';
 
+  // Focus input when clicking anywhere in terminal
+  const handleContainerClick = useCallback(() => {
+    inputRef.current?.focus();
+  }, []);
+
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-y-auto overflow-x-hidden p-3"
+      className="flex-1 overflow-y-auto overflow-x-hidden p-3 cursor-text"
       style={{ 
         backgroundColor: '#1e1e1e',
         fontFamily: '"Cascadia Code", "Cascadia Mono", "Consolas", "Courier New", monospace',
         fontSize: '13px',
         lineHeight: '1.5',
       }}
+      onClick={handleContainerClick}
     >
       {/* Previous commands and output - fully selectable */}
       <div className="select-text">

@@ -7,8 +7,13 @@ mod schema;
 
 pub use connection::DbConnection;
 pub use error::DbResult;
-pub use models::{EditorState, ExplorerState, WorkspaceState};
-pub use repositories::{EditorRepository, ExplorerRepository, WorkspaceRepository};
+pub use models::{
+    EditorState, ExplorerState, WorkspaceState,
+    AppSetting, LLMProvider, ToolSetting, AppSettings,
+};
+pub use repositories::{
+    EditorRepository, ExplorerRepository, WorkspaceRepository, SettingsRepository,
+};
 
 use tauri::AppHandle;
 
@@ -29,18 +34,23 @@ impl Database {
     }
 
     /// Get a workspace repository
-    pub fn workspace(&self) -> WorkspaceRepository {
+    pub fn workspace(&self) -> WorkspaceRepository<'_> {
         WorkspaceRepository::new(self._conn.connection())
     }
 
     /// Get an editor repository
-    pub fn editor(&self) -> EditorRepository {
+    pub fn editor(&self) -> EditorRepository<'_> {
         EditorRepository::new(self._conn.connection())
     }
 
     /// Get an explorer repository
-    pub fn explorer(&self) -> ExplorerRepository {
+    pub fn explorer(&self) -> ExplorerRepository<'_> {
         ExplorerRepository::new(self._conn.connection())
+    }
+
+    /// Get a settings repository
+    pub fn settings(&self) -> SettingsRepository<'_> {
+        SettingsRepository::new(self._conn.connection())
     }
 
     /// Get the underlying connection

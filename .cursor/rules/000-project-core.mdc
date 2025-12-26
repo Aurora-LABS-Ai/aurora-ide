@@ -1,0 +1,78 @@
+***
+alwaysApply: true
+***
+
+# Aurora Core Rules
+
+## Overview
+Follow these rules for every change in the Aurora agentic frontend. The project mimics a modular IDE with Tauri-native capabilities—maintain separation of concerns and keep documentation synchronized.
+
+## Technology Stack
+- React 18 + TypeScript + Vite 7
+- Zustand for state management
+- TailwindCSS (custom dark palette) + limited global CSS
+- Tauri 2 backend (Rust) for filesystem/shell persistence
+- PNPM workspace
+
+## Code Standards
+
+### Pre-change Checklist
+- Review `DOCS/01-ARCHITECTURE.md` and `DOCS/02-CODE-STYLE-PATTERNS.md` before touching code; align updates with the documented architecture.
+- Confirm the change belongs in its own dedicated module or file to keep concerns separated.
+- If the change alters flows, architecture, or conventions, update every relevant DOCS file in the same PR.
+
+### Naming Conventions
+- Components: PascalCase (`MainLayout`, `ChatPanel`).
+- Hooks/stores: `use<Name>Store.ts`, `useThing.ts` (camelCase export).
+- Services/utilities: kebab-case filenames (`llm-provider.ts`).
+- Directories: kebab-case.
+- Types/interfaces: live in `src/types`, PascalCase names.
+
+### Code Structure
+- Keep features split by domain folder (`components/chat`, `components/editor`, `services`, `store`, `tools`).
+- Prefer colocated files per concern instead of monoliths—create new files when logic grows.
+- Imports: external deps first, then absolute project paths, then relative siblings.
+- Avoid large anonymous functions inside components—extract helpers/hooks.
+
+### Essential Patterns
+```tsx
+// ✅ Compose panes with dedicated child components
+export const MainLayout = () => (
+  <PanelGroup>
+    <Panel id="explorer"><FileExplorer /></Panel>
+    <Panel id="editor"><EditorPanel /></Panel>
+    {showChat && <Panel id="chat"><ChatPanel /></Panel>}
+  </PanelGroup>
+)
+```
+
+### Deprecated Patterns - DO NOT USE
+```ts
+// ❌ Dumping unrelated logic into one mega file
+// ✅ Split into services, hooks, stores as needed
+```
+
+### Error Handling
+- Wrap Tauri calls in try/catch; log via `console.error('[Module]', err)`.
+- Return safe fallbacks (empty arrays, null) instead of throwing inside UI.
+
+### Performance Guidelines
+- Subscribe to Zustand slices to avoid rerender storms.
+- Use refs for streaming data buffers (see `ChatPanel`).
+- Keep heavy Tauri/file ops async and gated by `isTauri()`.
+
+### Testing Requirements
+- (Future) Use Vitest + RTL. Until tests exist, at least describe manual testing in PR notes.
+
+### Documentation Standards
+- Whenever architecture, conventions, or workflows change, update the corresponding `DOCS/*.md` files in the same PR.
+- Reference files inline using @filepath where possible.
+
+## File References
+- @src/components/layout/MainLayout.tsx
+- @src/services/agent-service.ts
+- @DOCS/01-ARCHITECTURE.md
+
+## Additional Context
+- Detached chat window relies on URL `/chat-detached`; keep route-specific logic only in `App.tsx` and chat components.
+- Keep Tailwind color tokens from `tailwind.config.js` authoritative; don’t hardcode colors elsewhere.

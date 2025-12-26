@@ -38,12 +38,82 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             initialize_schema(conn)?;
             Ok(())
         }
+        2 => {
+            // Migration from v1 to v2: Add settings tables
+            migration_v2(conn)?;
+            // Update schema version
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [2])?;
+            Ok(())
+        }
         // Future migrations go here
-        // 2 => migration_v2(conn)?,
         // 3 => migration_v3(conn)?,
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
         ))),
     }
+}
+
+/// Migration v2: Add app_settings, llm_providers, and tool_settings tables
+fn migration_v2(conn: &Connection) -> DbResult<()> {
+    // Create app_settings table
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    // Create llm_providers table
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS llm_providers (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            base_url TEXT NOT NULL,
+            api_key TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL,
+            context_window INTEGER NOT NULL DEFAULT 128000,
+            max_output_tokens INTEGER NOT NULL DEFAULT 16384,
+            supports_thinking INTEGER NOT NULL DEFAULT 0,
+            supports_tool_stream INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            is_custom INTEGER NOT NULL DEFAULT 0,
+            custom_models TEXT,
+            custom_headers TEXT,
+            custom_params TEXT,
+            provider_type TEXT,
+            default_temperature REAL,
+            default_max_tokens INTEGER,
+            requires_api_key INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    // Create index for sorting providers
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_llm_providers_sort
+         ON llm_providers (sort_order ASC)",
+        [],
+    )?;
+
+    // Create tool_settings table
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS tool_settings (
+            tool_name TEXT PRIMARY KEY,
+            approval_mode TEXT NOT NULL DEFAULT 'always_ask',
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    // Drop old settings table if exists (it was a placeholder)
+    conn.execute("DROP TABLE IF EXISTS settings", [])?;
+
+    Ok(())
 }

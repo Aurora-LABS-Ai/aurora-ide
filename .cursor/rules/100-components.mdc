@@ -1,0 +1,85 @@
+***
+description: Rules for React+TS components, layouts, and hooks
+globs: ["src/**/*.tsx", "src/**/*.ts"]
+***
+
+# Components & Hooks
+
+## Overview
+Applies to React components, hooks, and supporting TypeScript modules. Emphasizes separated files per concern, Tailwind styling, and documentation sync.
+
+## Technology Stack
+- React 18, hooks-only components
+- Zustand for shared state
+- TailwindCSS utilities + custom palette
+- Monaco editor integrations, Lucide icons, react-resizable-panels
+
+## Code Standards
+
+### Pre-change Checklist
+1. Confirm whether a new file/module is warranted instead of stuffing logic into existing components.
+2. Identify which store/service owns the state; update that owner before touching the UI.
+3. Check related docs (`DOCS/01-ARCHITECTURE.md`, `DOCS/02-CODE-STYLE-PATTERNS.md`) for guidance and plan doc updates.
+
+### Naming Conventions
+- Components: `PascalCase` exported constants.
+- Hooks: `useThing.ts` + `export const useThing = () => {}`.
+- Props interfaces: `ComponentNameProps` defined at top of file.
+- Zustand selectors: `const value = useStore((s) => s.value)`.
+
+### Code Structure
+- Extract subcomponents when JSX blocks exceed ~100 lines.
+- Use domain folders (`components/chat`, `components/editor`) to colocate logic.
+- Keep hook files focused (one responsibility). If a hook touches multiple systems, split.
+- Styling via Tailwind classes; extend `tailwind.config.js` for new tokens.
+
+### Essential Patterns
+```tsx
+const ChatPanel: React.FC = () => {
+  const { isLoading } = useChatStore();
+  useEffect(() => { initExecutors(); }, []);
+  return (
+    <div className="flex flex-col bg-sidebar">
+      <ChatHeader />
+      <ChatHistory />
+      <ChatInput />
+    </div>
+  );
+};
+```
+
+### Deprecated Patterns - DO NOT USE
+```tsx
+// ❌ Inline CSS or complex style objects
+<div style={{ background: '#000' }}>...
+
+// ✅ Tailwind tokens defined in tailwind.config
+<div className="bg-sidebar">...
+```
+
+### Error Handling
+- Wrap async callbacks (`handleSend`) in try/catch; show user-friendly messages via chat timeline.
+- Never swallow errors in hooks—log with module prefix and rethrow or return fallback state.
+
+### Performance Guidelines
+- Memoize heavy child components with `React.memo` when props are stable.
+- For streaming data (chat tokens), store mutable buffers in `useRef` and update Zustand minimally.
+- Avoid anonymous functions inside JSX lists; extract handlers or use `useCallback` with stable deps.
+
+### Testing Requirements
+- When tests exist, add RTL tests for new components and Vitest for hooks.
+- Until tests are in place, document manual verification steps (screens/flows) in PR description.
+
+### Documentation Standards
+- For UI or workflow changes, update `DOCS/03-EXPANSION-GUIDE.md` to describe new interactions.
+- Reference example components via @filepath in docs when relevant.
+
+## File References
+- @src/components/chat/ChatPanel.tsx
+- @src/components/layout/MainLayout.tsx
+- @src/hooks/useWorkspaceBootstrap.ts
+- @DOCS/02-CODE-STYLE-PATTERNS.md
+
+## Additional Context
+- Detached chat uses `useDetachedChatWindow` and `useWindowStateSync`; keep cross-window logic there instead of duplicating across components.
+- Terminal panel lives under `components/terminal`; keep shell/CLI logic out of chat modules.

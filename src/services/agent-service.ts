@@ -24,6 +24,7 @@ export interface AgentConfig {
   maxToolIterations?: number;
   temperature?: number;
   maxTokens?: number;
+  getToolApproval?: (toolName: string) => 'auto' | 'always_ask' | 'deny';
 }
 
 export interface AgentCallbacks extends StreamCallbacks {
@@ -214,18 +215,28 @@ export class AgentService {
           for (const toolCall of response.tool_calls) {
             if (!this.isRunning) break;
 
-            // Check if tool requires approval
-            const needsApproval = !this.config.autoApproveTools && 
-              toolRegistry.requiresApproval(toolCall.function.name);
+            const toolName = toolCall.function.name;
+            const toolSetting =
+              this.config.getToolApproval?.(toolName) ?? 'always_ask';
+            const riskRequiresApproval = toolRegistry.requiresApproval(toolName);
+            const shouldAutoDeny = toolSetting === 'deny';
+            const requiresUserApproval =
+              !shouldAutoDeny &&
+              (toolSetting === 'always_ask' ||
+                (!this.config.autoApproveTools && riskRequiresApproval));
 
-            let approved = true;
-            if (needsApproval && callbacks.onToolApprovalRequired) {
-              approved = await callbacks.onToolApprovalRequired(toolCall);
+            let approved = !shouldAutoDeny;
+            if (approved && requiresUserApproval) {
+              if (callbacks.onToolApprovalRequired) {
+                approved = await callbacks.onToolApprovalRequired(toolCall);
+              } else {
+                approved = false;
+              }
             }
 
             const toolResult: NonNullable<AgentResponse['toolCalls']>[0] = {
               id: toolCall.id,
-              name: toolCall.function.name,
+              name: toolName,
               args: JSON.parse(toolCall.function.arguments || '{}'),
               result: '',
               status: approved ? 'approved' : 'rejected',

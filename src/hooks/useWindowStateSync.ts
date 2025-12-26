@@ -6,7 +6,6 @@ import { useEffect, useCallback, useRef } from 'react';
 import { useThreadStore } from '../store/useThreadStore';
 import type { Thread, ThreadSummary } from '../store/useThreadStore';
 import { useChatStore } from '../store/useChatStore';
-import { useSettingsStore } from '../store/useSettingsStore';
 import {
   emitSyncEvent,
   listenForSyncEvent,
@@ -27,18 +26,20 @@ interface ChatSyncData {
   pendingApproval: any | null;
 }
 
-interface SettingsSyncData {
-  selectedModel: string;
-  thinkingEnabled: boolean;
-  autoApproveTools: boolean;
-  temperature: number;
-  maxTokens: number;
-}
+// Settings sync data interface (for future use)
+// interface SettingsSyncData {
+//   selectedModel: string;
+//   thinkingEnabled: boolean;
+//   autoApproveTools: boolean;
+//   temperature: number;
+//   maxTokens: number;
+// }
 
 export function useWindowStateSync() {
   const threadStore = useThreadStore();
   const chatStore = useChatStore();
-  const settingsStore = useSettingsStore();
+  // Settings sync currently handled by database
+  // const settingsStore = useSettingsStore();
 
   const isInitializedRef = useRef(false);
   const lastSyncRef = useRef<number>(0);

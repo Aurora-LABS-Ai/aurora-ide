@@ -1,5 +1,15 @@
 import React, { useState } from 'react';
-import { Check, X, AlertTriangle, Shield, ChevronDown, Terminal, FileText, FolderOpen } from 'lucide-react';
+import {
+  Check,
+  X,
+  AlertTriangle,
+  Shield,
+  ChevronDown,
+  Terminal,
+  FileText,
+  FolderOpen,
+  Sparkles,
+} from 'lucide-react';
 import type { ToolProposal } from '../../types';
 import clsx from 'clsx';
 
@@ -7,6 +17,7 @@ interface ToolApprovalBannerProps {
   proposal: ToolProposal;
   onApprove: () => void;
   onReject: () => void;
+  onApproveRemember: () => void;
 }
 
 // Tool category icons
@@ -30,20 +41,10 @@ export const ToolApprovalBanner: React.FC<ToolApprovalBannerProps> = ({
   proposal,
   onApprove,
   onReject,
+  onApproveRemember,
 }) => {
   const [showDetails, setShowDetails] = useState(false);
   const ToolIcon = getToolIcon(proposal.toolName);
-
-  const getRiskColor = () => {
-    switch (proposal.riskLevel) {
-      case 'high':
-        return 'border-danger/50 bg-danger/5';
-      case 'medium':
-        return 'border-warning/50 bg-warning/5';
-      default:
-        return 'border-primary/50 bg-primary/5';
-    }
-  };
 
   const getRiskIcon = () => {
     switch (proposal.riskLevel) {
@@ -59,83 +60,99 @@ export const ToolApprovalBanner: React.FC<ToolApprovalBannerProps> = ({
   const hasParameters = proposal.parameters && Object.keys(proposal.parameters).length > 0;
 
   return (
-    <div className={clsx(
-      "mx-3 mb-2 rounded-lg border overflow-hidden",
-      getRiskColor()
-    )}>
-      {/* Main Banner */}
-      <div className="p-3">
-        <div className="flex items-start gap-3">
-          <div className="mt-0.5 flex flex-col items-center gap-1">
+    <div
+      className={clsx(
+        'mx-3 mb-2 rounded-2xl border border-border bg-sidebar/95 backdrop-blur shadow-[0_18px_35px_rgba(0,0,0,0.45)]'
+      )}
+    >
+      <div className="px-3.5 py-3">
+        <div className="flex items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-input/60 text-primary">
             {getRiskIcon()}
-            <ToolIcon className="w-3.5 h-3.5 text-text-disabled" />
           </div>
-          
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-[13px] font-medium text-text-primary">
-                Approval Required
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] tracking-wide uppercase text-text-secondary">
+                Approval needed
               </span>
-              <span className={clsx(
-                "text-[10px] font-medium px-1.5 py-0.5 rounded uppercase",
-                proposal.riskLevel === 'high' ? 'bg-danger/20 text-danger' :
-                proposal.riskLevel === 'medium' ? 'bg-warning/20 text-warning' :
-                'bg-primary/20 text-primary'
-              )}>
+              <span
+                className={clsx(
+                  'text-[10px] font-semibold tracking-wide px-2 py-0.5 rounded-full',
+                  proposal.riskLevel === 'high'
+                    ? 'bg-danger/20 text-danger'
+                    : proposal.riskLevel === 'medium'
+                      ? 'bg-warning/20 text-warning'
+                      : 'bg-success/20 text-success',
+                )}
+              >
                 {proposal.riskLevel}
               </span>
             </div>
-            
-            <p className="text-[12px] text-text-secondary">
-              Execute <span className="font-mono font-medium text-text-primary bg-input px-1 py-0.5 rounded">{proposal.toolName}</span>
-            </p>
-            
-            {/* Toggle details button */}
+            <div className="mt-1 flex items-center gap-2 text-[13px] text-text-primary">
+              <ToolIcon className="h-3.5 w-3.5 text-text-secondary" />
+              <span className="font-mono rounded-lg bg-input/60 px-1.5 py-0.5 text-[12px] text-text-primary">
+                {proposal.toolName}
+              </span>
+              <span className="text-text-secondary">will run</span>
+            </div>
             {hasParameters && (
               <button
                 onClick={() => setShowDetails(!showDetails)}
-                className="flex items-center gap-1 mt-1.5 text-[11px] text-text-disabled hover:text-text-secondary transition-colors"
+                className="mt-1 flex items-center gap-1 text-[11px] text-text-disabled transition hover:text-text-secondary"
               >
-                <ChevronDown className={clsx("w-3 h-3 transition-transform", showDetails && "rotate-180")} />
-                {showDetails ? 'Hide' : 'Show'} parameters
+                <ChevronDown
+                  className={clsx('h-3 w-3 transition-transform', showDetails && 'rotate-180')}
+                />
+                {showDetails ? 'Hide parameters' : 'Show parameters'}
               </button>
             )}
           </div>
+        </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={onReject}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-text-secondary hover:text-danger bg-input hover:bg-danger/10 border border-border hover:border-danger/50 rounded-lg transition-all"
-            >
-              <X className="w-3.5 h-3.5" />
-              Reject
-            </button>
-            <button
-              onClick={onApprove}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-white bg-primary hover:bg-primary/80 rounded-lg transition-all shadow-sm"
-            >
-              <Check className="w-3.5 h-3.5" />
-              Approve
-            </button>
+        {showDetails && hasParameters && (
+          <div className="mt-2 rounded-xl border border-border/70 bg-input/50 p-2">
+            <dl className="space-y-1.5">
+              {Object.entries(proposal.parameters).map(([key, value]) => (
+                <div key={key} className="flex gap-2">
+                  <dt className="w-24 shrink-0 text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
+                    {key}
+                  </dt>
+                  <dd className="text-[11px] font-mono text-text-primary">
+                    {formatParamValue(value)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
           </div>
+        )}
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button
+            onClick={onReject}
+            className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1 text-[11px] font-medium text-text-secondary transition hover:border-danger hover:text-danger"
+          >
+            <X className="h-3.5 w-3.5" />
+            Reject
+          </button>
+          <button
+            onClick={onApprove}
+            className="inline-flex items-center gap-1 rounded-full bg-primary px-3.5 py-1 text-[11px] font-semibold text-white shadow-lg shadow-primary/20 transition hover:bg-primary/90"
+          >
+            <Check className="h-3.5 w-3.5" />
+            Approve
+          </button>
+          <button
+            onClick={onApproveRemember}
+            className="inline-flex items-center gap-1 rounded-full border border-primary/40 px-3.5 py-1 text-[11px] font-medium text-primary transition hover:bg-primary/10"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            Approve & remember
+          </button>
+          <p className="ml-auto text-[10px] text-text-disabled">
+            You can change this later in Settings → Tools.
+          </p>
         </div>
       </div>
-
-      {/* Parameters Detail Panel */}
-      {showDetails && hasParameters && (
-        <div className="border-t border-border/50 bg-titlebar/50 px-3 py-2">
-          <div className="space-y-1.5">
-            {Object.entries(proposal.parameters).map(([key, value]) => (
-              <div key={key} className="flex gap-2">
-                <span className="text-[10px] font-mono text-text-disabled w-20 shrink-0 truncate">{key}:</span>
-                <span className="text-[10px] font-mono text-text-secondary break-all">
-                  {formatParamValue(value)}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 };

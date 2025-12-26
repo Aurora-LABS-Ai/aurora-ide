@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::Command;
 
 pub mod state;
+pub mod settings;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileEntry {

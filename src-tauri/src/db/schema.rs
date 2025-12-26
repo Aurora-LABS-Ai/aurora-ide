@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 1;
+pub const SCHEMA_VERSION: i32 = 2;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -15,7 +15,9 @@ pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
     create_editor_state_table(conn)?;
     create_explorer_state_table(conn)?;
     create_threads_table(conn)?;
-    create_settings_table(conn)?;
+    create_app_settings_table(conn)?;
+    create_llm_providers_table(conn)?;
+    create_tool_settings_table(conn)?;
 
     Ok(())
 }
@@ -150,13 +152,65 @@ fn create_threads_table(conn: &Connection) -> DbResult<()> {
     Ok(())
 }
 
-/// Create settings table
-fn create_settings_table(conn: &Connection) -> DbResult<()> {
+/// Create app_settings table (key-value store for general settings)
+fn create_app_settings_table(conn: &Connection) -> DbResult<()> {
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS settings (
+        "CREATE TABLE IF NOT EXISTS app_settings (
             key TEXT PRIMARY KEY,
-            value TEXT NOT NULL, -- JSON value
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Create llm_providers table (LLM provider configurations)
+fn create_llm_providers_table(conn: &Connection) -> DbResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS llm_providers (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            base_url TEXT NOT NULL,
+            api_key TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL,
+            context_window INTEGER NOT NULL DEFAULT 128000,
+            max_output_tokens INTEGER NOT NULL DEFAULT 16384,
+            supports_thinking INTEGER NOT NULL DEFAULT 0,
+            supports_tool_stream INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            is_custom INTEGER NOT NULL DEFAULT 0,
+            custom_models TEXT,           -- JSON array of model names
+            custom_headers TEXT,          -- JSON object
+            custom_params TEXT,           -- JSON object
+            provider_type TEXT,           -- 'openai' | 'deepseek' | 'glm' | 'anthropic' | 'custom'
+            default_temperature REAL,
+            default_max_tokens INTEGER,
+            requires_api_key INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    // Create index for sorting
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_llm_providers_sort
+         ON llm_providers (sort_order ASC)",
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Create tool_settings table (per-tool approval settings)
+fn create_tool_settings_table(conn: &Connection) -> DbResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS tool_settings (
+            tool_name TEXT PRIMARY KEY,
+            approval_mode TEXT NOT NULL DEFAULT 'always_ask', -- 'auto' | 'always_ask' | 'deny'
             updated_at TEXT NOT NULL
         )",
         [],

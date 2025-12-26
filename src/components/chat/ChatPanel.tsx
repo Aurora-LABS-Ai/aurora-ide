@@ -55,6 +55,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
     maxTokens,
     maxToolCallsPerRequest,
     getToolApproval,
+    setToolApproval,
     getLLMConfig,
     selectedModel,
   } = useSettingsStore();
@@ -221,6 +222,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           temperature,
           maxTokens,
           maxToolIterations: maxToolCallsPerRequest,
+          getToolApproval,
         });
 
         await agent.chat(content, {
@@ -527,6 +529,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
     setPendingApproval(null);
   }, [setPendingApproval]);
 
+  const handleApproveRemember = useCallback(() => {
+    if (!pendingApproval) return;
+    setToolApproval(pendingApproval.toolName, "auto");
+    handleApprove();
+  }, [handleApprove, pendingApproval, setToolApproval]);
+
   const handleReject = useCallback(() => {
     if (pendingToolCallRef.current?.resolve) {
       pendingToolCallRef.current.resolve(false);
@@ -549,20 +557,45 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
       {/* Chat Content */}
       {isEmpty ? (
-        <div className="flex-1 flex flex-col items-center justify-center text-text-secondary">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#6366f1] via-[#8b5cf6] to-[#ec4899] flex items-center justify-center mb-3 shadow-lg shadow-purple-900/20">
-            <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5 text-white">
-              <path
-                d="M12 2L13.5 9L20 8L14 12L17 19L12 14L7 19L10 12L4 8L10.5 9L12 2Z"
-                fill="currentColor"
-              />
-            </svg>
-          </div>
+        <div className="flex-1 flex flex-col items-center justify-center text-text-secondary px-4">
+          <img 
+            src="/app-icon.svg" 
+            alt="Aurora" 
+            className="w-16 h-16 mb-4"
+          />
           <div className="text-lg font-medium text-text-primary mb-1">
             Aurora
           </div>
-          <div className="text-xs text-text-disabled">
+          <div className="text-xs text-text-disabled mb-6">
             AI-powered coding assistant
+          </div>
+          
+          {/* Suggested prompts */}
+          <div className="w-full max-w-sm space-y-2">
+            <div className="text-[10px] uppercase tracking-wider text-text-disabled mb-2 text-center">
+              Try asking
+            </div>
+            {[
+              "Explain this codebase structure",
+              "Find and fix bugs in the current file",
+              "Create a new React component",
+              "Write unit tests for selected code",
+            ].map((prompt, i) => (
+              <button
+                key={i}
+                onClick={() => {
+                  const input = document.querySelector('textarea[placeholder*="Message"]') as HTMLTextAreaElement;
+                  if (input) {
+                    input.value = prompt;
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.focus();
+                  }
+                }}
+                className="w-full px-3 py-2 text-left text-xs text-text-secondary bg-input/30 hover:bg-input/50 rounded-lg border border-border/50 hover:border-border transition-colors"
+              >
+                {prompt}
+              </button>
+            ))}
           </div>
         </div>
       ) : (
@@ -575,6 +608,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           proposal={pendingApproval}
           onApprove={handleApprove}
           onReject={handleReject}
+          onApproveRemember={handleApproveRemember}
         />
       )}
 

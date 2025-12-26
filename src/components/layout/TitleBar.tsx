@@ -100,18 +100,11 @@ export const TitleBar: React.FC = () => {
           data-tauri-drag-region
           className="flex items-center gap-2 px-3 h-full"
         >
-          <div className="w-4 h-4 rounded bg-primary flex items-center justify-center shrink-0">
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              className="w-2.5 h-2.5 text-white"
-            >
-              <path
-                d="M12 2L13.5 9L20 8L14 12L17 19L12 14L7 19L10 12L4 8L10.5 9L12 2Z"
-                fill="currentColor"
-              />
-            </svg>
-          </div>
+          <img 
+            src="/app-icon.svg" 
+            alt="Aurora" 
+            className="w-5 h-5 shrink-0"
+          />
           <span
             data-tauri-drag-region
             className="text-[12px] text-text-secondary"

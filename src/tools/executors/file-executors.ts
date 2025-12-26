@@ -22,6 +22,16 @@ const triggerRefresh = () => {
   }, 100);
 };
 
+// Helper to convert escape sequences to actual characters
+const processEscapeSequences = (content: string): string => {
+  if (!content) return content;
+  return content
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    .replace(/\\r/g, '\r')
+    .replace(/\\\\/g, '\\');
+};
+
 // ============================================
 // FILE CREATE EXECUTOR
 // ============================================
@@ -46,7 +56,8 @@ const fileCreateExecutor = async (
   try {
     await createFile(fullPath);
     if (args.content) {
-      await writeFileContent(fullPath, args.content);
+      const processedContent = processEscapeSequences(args.content);
+      await writeFileContent(fullPath, processedContent);
     }
     triggerRefresh(); // Auto-refresh file tree
     return JSON.stringify({
@@ -164,7 +175,8 @@ const fileWriteExecutor = async (
   console.log("[file_write] Writing file:", fullPath);
 
   try {
-    await writeFileContent(fullPath, args.content);
+    const processedContent = processEscapeSequences(args.content);
+    await writeFileContent(fullPath, processedContent);
     triggerRefresh(); // Auto-refresh file tree
     return JSON.stringify({
       success: true,

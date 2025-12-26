@@ -1,7 +1,8 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
 import { v4 as uuidv4 } from "uuid";
 import type { LLMProviderConfig } from "../services/llm-types";
+import { databaseService } from "../services/database";
+import type { DbLLMProvider, AppSettings as DbAppSettings } from "../types/database";
 
 // ============================================
 // PROVIDER TYPES
@@ -80,6 +81,10 @@ export const PRESET_PROVIDERS: Omit<LLMProvider, "apiKey" | "enabled">[] = [
 // ============================================
 
 interface SettingsState {
+  // Initialization state
+  isInitialized: boolean;
+  isLoading: boolean;
+
   // Providers
   providers: LLMProvider[];
   selectedModel: string; // Format: "providerId:model"
@@ -134,6 +139,10 @@ interface SettingsState {
   toolApprovalSettings: Record<string, 'auto' | 'always_ask' | 'deny'>;
   setToolApproval: (toolName: string, setting: 'auto' | 'always_ask' | 'deny') => void;
   getToolApproval: (toolName: string) => 'auto' | 'always_ask' | 'deny';
+
+  // Database operations
+  initializeFromDatabase: () => Promise<void>;
+  saveToDatabase: () => Promise<void>;
 }
 
 // ============================================
@@ -149,234 +158,213 @@ const createDefaultProviders = (): LLMProvider[] => {
   }));
 };
 
+const DEFAULT_TOOL_APPROVAL_SETTINGS: Record<string, 'auto' | 'always_ask' | 'deny'> = {
+  // Shell commands require approval
+  shell_execute: 'always_ask',
+  shell_spawn: 'always_ask',
+  // File write operations require approval
+  file_write: 'always_ask',
+  file_create: 'always_ask',
+  file_delete: 'always_ask',
+  file_patch: 'always_ask',
+  folder_create: 'always_ask',
+  folder_delete: 'always_ask',
+  // Read operations are generally safe
+  file_read: 'auto',
+  file_read_lines: 'auto',
+  file_exists: 'auto',
+  file_search: 'auto',
+  workspace_info: 'auto',
+  workspace_list_files: 'auto',
+  workspace_tree: 'auto',
+  workspace_find_files: 'auto',
+  workspace_grep: 'auto',
+  // Editor operations
+  editor_open_file: 'auto',
+  editor_get_active_file: 'auto',
+  editor_get_selection: 'auto',
+  editor_get_open_tabs: 'auto',
+  editor_insert_text: 'always_ask',
+  editor_close_tab: 'always_ask',
+};
+
+// ============================================
+// HELPER: Convert between store and DB formats
+// ============================================
+
+function providerToDb(provider: LLMProvider, sortOrder: number): DbLLMProvider {
+  const now = new Date().toISOString();
+  return {
+    id: provider.id,
+    name: provider.name,
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    model: provider.model,
+    contextWindow: provider.contextWindow,
+    maxOutputTokens: provider.maxOutputTokens,
+    supportsThinking: provider.supportsThinking,
+    supportsToolStream: provider.supportsToolStream || false,
+    enabled: provider.enabled,
+    isCustom: provider.isCustom || false,
+    customModels: provider.customModels || null,
+    customHeaders: provider.customHeaders || null,
+    customParams: provider.customParams || null,
+    providerType: provider.providerType || null,
+    defaultTemperature: provider.defaultTemperature || null,
+    defaultMaxTokens: provider.defaultMaxTokens || null,
+    requiresApiKey: provider.requiresApiKey ?? true,
+    sortOrder,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function dbToProvider(db: DbLLMProvider): LLMProvider {
+  return {
+    id: db.id,
+    name: db.name,
+    baseUrl: db.baseUrl,
+    apiKey: db.apiKey,
+    model: db.model,
+    contextWindow: db.contextWindow,
+    maxOutputTokens: db.maxOutputTokens,
+    supportsThinking: db.supportsThinking,
+    supportsToolStream: db.supportsToolStream,
+    enabled: db.enabled,
+    isCustom: db.isCustom,
+    customModels: db.customModels || undefined,
+    customHeaders: db.customHeaders || undefined,
+    customParams: db.customParams || undefined,
+    providerType: db.providerType as LLMProvider['providerType'],
+    defaultTemperature: db.defaultTemperature || undefined,
+    defaultMaxTokens: db.defaultMaxTokens || undefined,
+    requiresApiKey: db.requiresApiKey,
+  };
+}
+
 // ============================================
 // SETTINGS STORE
 // ============================================
 
-export const useSettingsStore = create<SettingsState>()(
-  persist(
-    (set, get) => ({
-      // Providers
-      providers: createDefaultProviders(),
-      selectedModel: "glm:glm-4.7",
+export const useSettingsStore = create<SettingsState>()((set, get) => ({
+  // Initialization state
+  isInitialized: false,
+  isLoading: false,
 
-      updateProvider: (id: string, updates: Partial<LLMProvider>) => {
-        set((state: SettingsState) => ({
-          providers: state.providers.map((p: LLMProvider) =>
-            p.id === id ? { ...p, ...updates } : p,
-          ),
-        }));
-      },
+  // Providers
+  providers: createDefaultProviders(),
+  selectedModel: "glm:glm-4.7",
 
-      addCustomProvider: (provider: Omit<LLMProvider, "id" | "isCustom">) => {
-        const id = uuidv4();
-        const newProvider: LLMProvider = {
-          ...provider,
-          id,
-          isCustom: true,
-        };
-        set((state: SettingsState) => ({
-          providers: [...state.providers, newProvider],
-        }));
-        return id;
-      },
+  // Tool Approval
+  autoApproveTools: false,
 
-      deleteProvider: (id: string) => {
-        const state = get();
-        const provider = state.providers.find((p: LLMProvider) => p.id === id);
-        // Only allow deleting custom providers
-        if (provider?.isCustom) {
-          set((state: SettingsState) => ({
-            providers: state.providers.filter((p: LLMProvider) => p.id !== id),
-            // Reset selected model if it was from deleted provider
-            selectedModel: state.selectedModel.startsWith(id + ":")
-              ? "glm:glm-4.7"
-              : state.selectedModel,
-          }));
-        }
-      },
+  // Editor Settings
+  fontSize: 14,
 
-      setSelectedModel: (model: string) => {
-        set({ selectedModel: model });
-      },
+  // Theme
+  theme: "dark",
 
-      getAvailableModels: () => {
-        const state = get();
-        const models: Array<{
-          providerId: string;
-          providerName: string;
-          model: string;
-          label: string;
-        }> = [];
+  // Thinking Settings
+  thinkingEnabled: true,
 
-        for (const provider of state.providers) {
-          // Only include if enabled and has API key (or is local)
-          const isLocal =
-            provider.baseUrl.includes("localhost") ||
-            provider.baseUrl.includes("127.0.0.1");
-          if (!provider.enabled) continue;
-          if (!isLocal && !provider.apiKey) continue;
+  // Max Tokens
+  maxTokens: 8192,
 
-          // Add all models for this provider
-          const providerModels = provider.customModels?.length
-            ? provider.customModels
-            : [provider.model];
+  // Temperature
+  temperature: 1.0,
 
-          for (const model of providerModels) {
-            models.push({
-              providerId: provider.id,
-              providerName: provider.name,
-              model,
-              label: model,
-            });
+  // Autosave Settings
+  autoSave: 'off',
+  autoSaveDelay: 1000,
+
+  // Tool Settings
+  maxToolCallsPerRequest: 25,
+  toolApprovalSettings: { ...DEFAULT_TOOL_APPROVAL_SETTINGS },
+
+  // ============================================
+  // DATABASE OPERATIONS
+  // ============================================
+
+  initializeFromDatabase: async () => {
+    const state = get();
+    if (state.isLoading || state.isInitialized) return;
+
+    set({ isLoading: true });
+
+    try {
+      // Check if we have providers in the database
+      const hasProviders = await databaseService.hasProviders();
+
+      if (hasProviders) {
+        // Load providers from database
+        const dbProviders = await databaseService.getAllProviders();
+        const providers = dbProviders.map(dbToProvider);
+        
+        // Merge with preset providers (in case new presets were added)
+        const mergedProviders = PRESET_PROVIDERS.map(preset => {
+          const dbProvider = providers.find(p => p.id === preset.id);
+          if (dbProvider) {
+            // Keep the stored API key and settings, but update with any new preset fields
+            return { ...preset, ...dbProvider, isCustom: false };
           }
+          return { ...preset, apiKey: "", enabled: true, isCustom: false };
+        });
+
+        // Add any custom providers (ensure isCustom is set)
+        const customProviders = providers
+          .filter(p => p.isCustom)
+          .map(p => ({ ...p, isCustom: true as const }));
+        mergedProviders.push(...customProviders);
+
+        set({ providers: mergedProviders });
+      } else {
+        // First time: save default providers to database
+        const defaultProviders = createDefaultProviders();
+        const dbProviders = defaultProviders.map((p, i) => providerToDb(p, i));
+        await databaseService.saveAllProviders(dbProviders);
+        set({ providers: defaultProviders });
+      }
+
+      // Load app settings
+      const appSettings = await databaseService.getAppSettings();
+      if (appSettings) {
+        set({
+          selectedModel: appSettings.selectedModel || "glm:glm-4.7",
+          autoApproveTools: appSettings.autoApproveTools ?? false,
+          fontSize: appSettings.fontSize ?? 14,
+          theme: (appSettings.theme as 'dark' | 'light') || "dark",
+          thinkingEnabled: appSettings.thinkingEnabled ?? true,
+          maxTokens: appSettings.maxTokens ?? 8192,
+          temperature: appSettings.temperature ?? 1.0,
+          autoSave: (appSettings.autoSave as SettingsState['autoSave']) || 'off',
+          autoSaveDelay: appSettings.autoSaveDelay ?? 1000,
+          maxToolCallsPerRequest: appSettings.maxToolCallsPerRequest ?? 25,
+        });
+      }
+
+      // Load tool settings
+      const toolSettings = await databaseService.getAllToolSettings();
+      if (toolSettings.length > 0) {
+        const settings = { ...DEFAULT_TOOL_APPROVAL_SETTINGS };
+        for (const ts of toolSettings) {
+          settings[ts.toolName] = ts.approvalMode;
         }
+        set({ toolApprovalSettings: settings });
+      }
 
-        return models;
-      },
+      set({ isInitialized: true, isLoading: false });
+    } catch (error) {
+      console.error('Failed to initialize settings from database:', error);
+      set({ isInitialized: true, isLoading: false });
+    }
+  },
 
-      getSelectedProvider: () => {
-        const state = get();
-        const [providerId] = state.selectedModel.split(":");
-        return state.providers.find((p: LLMProvider) => p.id === providerId);
-      },
+  saveToDatabase: async () => {
+    const state = get();
 
-      // Tool Approval
-      autoApproveTools: false,
-      setAutoApproveTools: (value: boolean) => set({ autoApproveTools: value }),
-
-      // Editor Settings
-      fontSize: 14,
-      setFontSize: (size: number) => set({ fontSize: size }),
-
-      // Theme
-      theme: "dark",
-      setTheme: (theme: "dark" | "light") => set({ theme }),
-
-      // Thinking Settings
-      thinkingEnabled: true,
-      setThinkingEnabled: (enabled: boolean) =>
-        set({ thinkingEnabled: enabled }),
-
-      // Max Tokens
-      maxTokens: 8192,
-      setMaxTokens: (tokens: number) => set({ maxTokens: tokens }),
-
-      // Temperature
-      temperature: 1.0,
-      setTemperature: (temp: number) => set({ temperature: temp }),
-
-      // Autosave Settings
-      autoSave: 'off',
-      autoSaveDelay: 1000,
-      setAutoSave: (mode: 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange') => 
-        set({ autoSave: mode }),
-      setAutoSaveDelay: (delay: number) => set({ autoSaveDelay: delay }),
-
-      // Tool Settings
-      maxToolCallsPerRequest: 25,
-      setMaxToolCallsPerRequest: (max: number) => set({ maxToolCallsPerRequest: max }),
-      toolApprovalSettings: {
-        // Default: shell commands require approval, file reads are auto
-        shell_execute: 'always_ask',
-        shell_spawn: 'always_ask',
-        file_write: 'always_ask',
-        file_create: 'always_ask',
-        file_delete: 'always_ask',
-        file_patch: 'always_ask',
-        folder_create: 'always_ask',
-        folder_delete: 'always_ask',
-        // Read operations are generally safe
-        file_read: 'auto',
-        file_read_lines: 'auto',
-        file_exists: 'auto',
-        file_search: 'auto',
-        workspace_info: 'auto',
-        workspace_list_files: 'auto',
-        workspace_tree: 'auto',
-        workspace_find_files: 'auto',
-        workspace_grep: 'auto',
-        // Editor operations
-        editor_open_file: 'auto',
-        editor_get_active_file: 'auto',
-        editor_get_selection: 'auto',
-        editor_get_open_tabs: 'auto',
-        editor_insert_text: 'always_ask',
-        editor_close_tab: 'always_ask',
-      },
-      setToolApproval: (toolName: string, setting: 'auto' | 'always_ask' | 'deny') =>
-        set((state) => ({
-          toolApprovalSettings: {
-            ...state.toolApprovalSettings,
-            [toolName]: setting,
-          },
-        })),
-      getToolApproval: (toolName: string) => {
-        const state = get();
-        return state.toolApprovalSettings[toolName] || 'always_ask';
-      },
-
-      // Get current LLM provider config based on selectedModel
-      getLLMConfig: () => {
-        const state = get();
-        const [providerId, model] = state.selectedModel.split(":");
-        const provider = state.providers.find(
-          (p: LLMProvider) => p.id === providerId,
-        );
-
-        if (provider) {
-          return {
-            id: provider.id,
-            name: provider.name,
-            baseUrl: provider.baseUrl,
-            apiKey: provider.apiKey,
-            model: model || provider.model,
-            maxOutputTokens: provider.maxOutputTokens,
-            contextWindow: provider.contextWindow,
-            supportsThinking: provider.supportsThinking,
-            supportsToolStream: provider.supportsToolStream,
-            providerType: provider.providerType,
-            customHeaders: provider.customHeaders,
-            customParams: provider.customParams,
-            defaultTemperature: provider.defaultTemperature,
-            defaultMaxTokens:
-              provider.defaultMaxTokens ?? provider.maxOutputTokens,
-          };
-        }
-
-        // Fallback to first available provider with API key
-        const fallback = state.providers.find(
-          (p: LLMProvider) => p.enabled && p.apiKey,
-        );
-        if (fallback) {
-          return {
-            id: fallback.id,
-            name: fallback.name,
-            baseUrl: fallback.baseUrl,
-            apiKey: fallback.apiKey,
-            model: fallback.model,
-            maxOutputTokens: fallback.maxOutputTokens,
-            contextWindow: fallback.contextWindow,
-            supportsThinking: fallback.supportsThinking,
-            supportsToolStream: fallback.supportsToolStream,
-            providerType: fallback.providerType,
-            customHeaders: fallback.customHeaders,
-            customParams: fallback.customParams,
-            defaultTemperature: fallback.defaultTemperature,
-            defaultMaxTokens:
-              fallback.defaultMaxTokens ?? fallback.maxOutputTokens,
-          };
-        }
-
-        // No provider available
-        return null;
-      },
-    }),
-    {
-      name: "aurora-settings",
-      version: 3,
-      partialize: (state: SettingsState) => ({
-        providers: state.providers,
+    try {
+      // Save app settings
+      const appSettings: DbAppSettings = {
         selectedModel: state.selectedModel,
         autoApproveTools: state.autoApproveTools,
         fontSize: state.fontSize,
@@ -387,42 +375,239 @@ export const useSettingsStore = create<SettingsState>()(
         autoSave: state.autoSave,
         autoSaveDelay: state.autoSaveDelay,
         maxToolCallsPerRequest: state.maxToolCallsPerRequest,
-        toolApprovalSettings: state.toolApprovalSettings,
-      }),
-      merge: (
-        persistedState: unknown,
-        currentState: SettingsState,
-      ): SettingsState => {
-        const persisted = persistedState as Partial<SettingsState> | undefined;
+      };
+      await databaseService.saveAppSettings(appSettings);
 
-        // Merge persisted providers with defaults, keeping custom providers
-        const defaultProviders = createDefaultProviders();
-        const persistedProviders = persisted?.providers || [];
+      // Save providers
+      const dbProviders = state.providers.map((p, i) => providerToDb(p, i));
+      await databaseService.saveAllProviders(dbProviders);
 
-        // Start with default providers, update with persisted data
-        const mergedProviders = defaultProviders.map(
-          (defaultP: LLMProvider) => {
-            const found = persistedProviders.find(
-              (p: LLMProvider) => p.id === defaultP.id,
-            );
-            return found
-              ? { ...defaultP, ...found, isCustom: false }
-              : defaultP;
-          },
-        );
+      // Save tool settings
+      const toolSettingsArray: [string, string][] = Object.entries(state.toolApprovalSettings);
+      await databaseService.saveAllToolSettings(toolSettingsArray);
+    } catch (error) {
+      console.error('Failed to save settings to database:', error);
+    }
+  },
 
-        // Add any custom providers from persisted state
-        const customProviders = persistedProviders.filter(
-          (p: LLMProvider) => p.isCustom,
-        );
-        mergedProviders.push(...customProviders);
+  // ============================================
+  // PROVIDER ACTIONS
+  // ============================================
 
-        return {
-          ...currentState,
-          ...persisted,
-          providers: mergedProviders,
-        };
+  updateProvider: (id: string, updates: Partial<LLMProvider>) => {
+    set((state: SettingsState) => ({
+      providers: state.providers.map((p: LLMProvider) =>
+        p.id === id ? { ...p, ...updates } : p,
+      ),
+    }));
+    // Debounced save to database
+    setTimeout(() => get().saveToDatabase(), 500);
+  },
+
+  addCustomProvider: (provider: Omit<LLMProvider, "id" | "isCustom">) => {
+    const id = uuidv4();
+    const newProvider: LLMProvider = {
+      ...provider,
+      id,
+      isCustom: true,
+    };
+    set((state: SettingsState) => ({
+      providers: [...state.providers, newProvider],
+    }));
+    get().saveToDatabase();
+    return id;
+  },
+
+  deleteProvider: (id: string) => {
+    const state = get();
+    const provider = state.providers.find((p: LLMProvider) => p.id === id);
+    // Only allow deleting custom providers
+    if (provider?.isCustom) {
+      set((state: SettingsState) => ({
+        providers: state.providers.filter((p: LLMProvider) => p.id !== id),
+        // Reset selected model if it was from deleted provider
+        selectedModel: state.selectedModel.startsWith(id + ":")
+          ? "glm:glm-4.7"
+          : state.selectedModel,
+      }));
+      // Delete from database
+      databaseService.deleteProvider(id).catch(console.error);
+      get().saveToDatabase();
+    }
+  },
+
+  setSelectedModel: (model: string) => {
+    set({ selectedModel: model });
+    get().saveToDatabase();
+  },
+
+  getAvailableModels: () => {
+    const state = get();
+    const models: Array<{
+      providerId: string;
+      providerName: string;
+      model: string;
+      label: string;
+    }> = [];
+
+    for (const provider of state.providers) {
+      // Only include if enabled and has API key (or is local)
+      const isLocal =
+        provider.baseUrl.includes("localhost") ||
+        provider.baseUrl.includes("127.0.0.1");
+      if (!provider.enabled) continue;
+      if (!isLocal && !provider.apiKey) continue;
+
+      // Add all models for this provider
+      const providerModels = provider.customModels?.length
+        ? provider.customModels
+        : [provider.model];
+
+      for (const model of providerModels) {
+        models.push({
+          providerId: provider.id,
+          providerName: provider.name,
+          model,
+          label: model,
+        });
+      }
+    }
+
+    return models;
+  },
+
+  getSelectedProvider: () => {
+    const state = get();
+    const [providerId] = state.selectedModel.split(":");
+    return state.providers.find((p: LLMProvider) => p.id === providerId);
+  },
+
+  // ============================================
+  // SETTINGS ACTIONS
+  // ============================================
+
+  setAutoApproveTools: (value: boolean) => {
+    set({ autoApproveTools: value });
+    get().saveToDatabase();
+  },
+
+  setFontSize: (size: number) => {
+    set({ fontSize: size });
+    get().saveToDatabase();
+  },
+
+  setTheme: (theme: "dark" | "light") => {
+    set({ theme });
+    get().saveToDatabase();
+  },
+
+  setThinkingEnabled: (enabled: boolean) => {
+    set({ thinkingEnabled: enabled });
+    get().saveToDatabase();
+  },
+
+  setMaxTokens: (tokens: number) => {
+    set({ maxTokens: tokens });
+    get().saveToDatabase();
+  },
+
+  setTemperature: (temp: number) => {
+    set({ temperature: temp });
+    get().saveToDatabase();
+  },
+
+  setAutoSave: (mode: 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange') => {
+    set({ autoSave: mode });
+    get().saveToDatabase();
+  },
+
+  setAutoSaveDelay: (delay: number) => {
+    set({ autoSaveDelay: delay });
+    get().saveToDatabase();
+  },
+
+  setMaxToolCallsPerRequest: (max: number) => {
+    set({ maxToolCallsPerRequest: max });
+    get().saveToDatabase();
+  },
+
+  setToolApproval: (toolName: string, setting: 'auto' | 'always_ask' | 'deny') => {
+    set((state) => ({
+      toolApprovalSettings: {
+        ...state.toolApprovalSettings,
+        [toolName]: setting,
       },
-    },
-  ),
-);
+    }));
+    // Save individual tool setting
+    databaseService.setToolApproval(toolName, setting).catch(console.error);
+  },
+
+  getToolApproval: (toolName: string) => {
+    const state = get();
+    return state.toolApprovalSettings[toolName] || 'always_ask';
+  },
+
+  // Get current LLM provider config based on selectedModel
+  getLLMConfig: () => {
+    const state = get();
+    const [providerId, model] = state.selectedModel.split(":");
+    const provider = state.providers.find(
+      (p: LLMProvider) => p.id === providerId,
+    );
+
+    if (provider) {
+      return {
+        id: provider.id,
+        name: provider.name,
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey,
+        model: model || provider.model,
+        maxOutputTokens: provider.maxOutputTokens,
+        contextWindow: provider.contextWindow,
+        supportsThinking: provider.supportsThinking,
+        supportsToolStream: provider.supportsToolStream,
+        providerType: provider.providerType,
+        customHeaders: provider.customHeaders,
+        customParams: provider.customParams,
+        defaultTemperature: provider.defaultTemperature,
+        defaultMaxTokens:
+          provider.defaultMaxTokens ?? provider.maxOutputTokens,
+      };
+    }
+
+    // Fallback to first available provider with API key
+    const fallback = state.providers.find(
+      (p: LLMProvider) => p.enabled && p.apiKey,
+    );
+    if (fallback) {
+      return {
+        id: fallback.id,
+        name: fallback.name,
+        baseUrl: fallback.baseUrl,
+        apiKey: fallback.apiKey,
+        model: fallback.model,
+        maxOutputTokens: fallback.maxOutputTokens,
+        contextWindow: fallback.contextWindow,
+        supportsThinking: fallback.supportsThinking,
+        supportsToolStream: fallback.supportsToolStream,
+        providerType: fallback.providerType,
+        customHeaders: fallback.customHeaders,
+        customParams: fallback.customParams,
+        defaultTemperature: fallback.defaultTemperature,
+        defaultMaxTokens:
+          fallback.defaultMaxTokens ?? fallback.maxOutputTokens,
+      };
+    }
+
+    // No provider available
+    return null;
+  },
+}));
+
+// Initialize settings from database when the module loads (for Tauri)
+if (typeof window !== 'undefined') {
+  // Wait for Tauri to be ready
+  setTimeout(() => {
+    useSettingsStore.getState().initializeFromDatabase();
+  }, 100);
+}

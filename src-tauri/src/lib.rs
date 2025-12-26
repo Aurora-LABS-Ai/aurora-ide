@@ -1,3 +1,4 @@
+use std::sync::Mutex;
 use tauri::Manager;
 
 mod commands;
@@ -13,6 +14,7 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
+            // File system commands
             commands::read_directory,
             commands::read_file_content,
             commands::write_file_content,
@@ -30,6 +32,20 @@ pub fn run() {
             commands::state::get_editor_state,
             commands::state::save_explorer_state,
             commands::state::get_explorer_state,
+            // Settings commands
+            commands::settings::get_app_settings,
+            commands::settings::save_app_settings,
+            commands::settings::get_setting,
+            commands::settings::set_setting,
+            commands::settings::get_all_providers,
+            commands::settings::get_provider,
+            commands::settings::save_provider,
+            commands::settings::delete_provider,
+            commands::settings::has_providers,
+            commands::settings::save_all_providers,
+            commands::settings::get_all_tool_settings,
+            commands::settings::set_tool_approval,
+            commands::settings::save_all_tool_settings,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
@@ -43,12 +59,11 @@ pub fn run() {
             let db = db::Database::init(&handle)
                 .expect("Failed to initialize database");
 
-            // Store database in app state
-            app.manage(db);
+            // Store database in app state (wrapped in Mutex for thread safety)
+            app.manage(Mutex::new(db));
 
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-

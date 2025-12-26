@@ -1,0 +1,59 @@
+{
+  "id": "0e8e9867-6cf9-4d1e-b2ec-ebce0505a6fb",
+  "title": "test all avaible tools and report me which is work...",
+  "createdAt": 1766735782240,
+  "updatedAt": 1766735800000,
+  "messages": [
+    {
+      "id": "d3ybojmmg",
+      "sender": "user",
+      "content": "test all avaible tools and report me which is working which one have the issue",
+      "timestamp": 1766735782241
+    },
+    {
+      "id": "dpnxwtoe5",
+      "sender": "assistant",
+      "content": "",
+      "timestamp": 1766735782243,
+      "timeline": [
+        {
+          "type": "thinking",
+          "thinking": "I'll test all available tools systematically and report their status. Let's start by exploring the workspace structure.",
+          "isThinking": false,
+          "id": "4gb7rc38g",
+          "timestamp": 1766735783421
+        },
+        {
+          "type": "tool",
+          "tool": {
+            "id": "call_00_EyQJIx9AaU7cvejSnDznHHzN",
+            "name": "workspace_info",
+            "status": "complete",
+            "args": {},
+            "result": "{\"success\":true,\"hasWorkspace\":true,\"rootPath\":\"E:\\\\VOID-EDITOR\\\\new-testing\",\"name\":\"new-testing\",\"totalFiles\":6,\"totalFolders\":2}"
+          },
+          "id": "buxt3ohmg",
+          "timestamp": 1766735784916
+        },
+        {
+          "type": "thinking",
+          "thinking": "Good, workspace_info works. Now let's see the tree structure.",
+          "isThinking": false,
+          "id": "ixqovq1sc",
+          "timestamp": 1766735798759
+        },
+        {
+          "type": "tool",
+          "tool": {
+            "id": "call_00_Yo499M0zP6w9couSXGFpzzbG",
+            "name": "workspace_tree",
+            "status": "pending",
+            "args": {}
+          },
+          "id": "3d4kepgda",
+          "timestamp": 1766735799924
+        }
+      ]
+    }
+  ]
+}

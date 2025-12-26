@@ -79,9 +79,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     try {
       const entries = await readDirectory(path);
-      const folderName = path.split(/[/\\]/).pop() || 'workspace';
-
-      const buildTree = async (dirPath: string, entries: Awaited<ReturnType<typeof readDirectory>>): Promise<FileNode[]> => {
+      const buildTree = async (_dirPath: string, entries: Awaited<ReturnType<typeof readDirectory>>): Promise<FileNode[]> => {
         const nodes: FileNode[] = [];
 
         for (const entry of entries) {

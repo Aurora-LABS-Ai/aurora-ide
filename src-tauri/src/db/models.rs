@@ -81,7 +81,7 @@ pub struct ExplorerState {
 }
 
 // ============================================================
-// THREAD STATE
+// THREAD STATE (for future use)
 // ============================================================
 
 /// Thread/conversation state
@@ -115,12 +115,99 @@ pub struct ToolCall {
 }
 
 // ============================================================
-// SETTINGS STATE
+// APP SETTINGS
 // ============================================================
 
-/// Application setting
+/// Application setting (key-value)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Setting {
+pub struct AppSetting {
     pub key: String,
-    pub value: serde_json::Value,
+    pub value: String,  // JSON string value
+    pub updated_at: String,
+}
+
+// ============================================================
+// LLM PROVIDER
+// ============================================================
+
+/// LLM Provider configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LLMProvider {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+    pub context_window: i64,
+    pub max_output_tokens: i64,
+    pub supports_thinking: bool,
+    pub supports_tool_stream: bool,
+    pub enabled: bool,
+    pub is_custom: bool,
+    pub custom_models: Option<Vec<String>>,
+    pub custom_headers: Option<serde_json::Value>,
+    pub custom_params: Option<serde_json::Value>,
+    pub provider_type: Option<String>,
+    pub default_temperature: Option<f64>,
+    pub default_max_tokens: Option<i64>,
+    pub requires_api_key: bool,
+    pub sort_order: i32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+// ============================================================
+// TOOL SETTINGS
+// ============================================================
+
+/// Per-tool approval setting
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolSetting {
+    pub tool_name: String,
+    pub approval_mode: String,  // 'auto' | 'always_ask' | 'deny'
+    pub updated_at: String,
+}
+
+// ============================================================
+// SETTINGS STATE (Complete app settings)
+// ============================================================
+
+/// Complete application settings state
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    // General settings
+    pub selected_model: String,
+    pub auto_approve_tools: bool,
+    pub font_size: i32,
+    pub theme: String,
+    pub thinking_enabled: bool,
+    pub max_tokens: i32,
+    pub temperature: f64,
+    
+    // Autosave settings
+    pub auto_save: String,
+    pub auto_save_delay: i32,
+    
+    // Tool settings
+    pub max_tool_calls_per_request: i32,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            selected_model: "glm:glm-4.7".to_string(),
+            auto_approve_tools: false,
+            font_size: 14,
+            theme: "dark".to_string(),
+            thinking_enabled: true,
+            max_tokens: 8192,
+            temperature: 1.0,
+            auto_save: "off".to_string(),
+            auto_save_delay: 1000,
+            max_tool_calls_per_request: 25,
+        }
+    }
 }

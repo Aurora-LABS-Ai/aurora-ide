@@ -1,26 +1,34 @@
+use std::sync::Mutex;
 use tauri::State;
 
-use crate::db::{Database, DbResult, EditorState, ExplorerState, WorkspaceState};
+use crate::db::{Database, EditorState, ExplorerState, WorkspaceState};
 
 /// Save workspace state
 #[tauri::command]
 pub fn save_workspace_state(
     state: WorkspaceState,
-    db: State<Database>,
-) -> DbResult<()> {
-    db.workspace().save(&state)?;
-    Ok(())
+    db: State<'_, Mutex<Database>>,
+) -> Result<(), String> {
+    let db = db.lock().map_err(|e| e.to_string())?;
+    db.workspace()
+        .save(&state)
+        .map_err(|e| format!("Failed to save workspace state: {:?}", e))
 }
 
 /// Get workspace state by path
 #[tauri::command]
 pub fn get_workspace_state(
     workspace_path: Option<String>,
-    db: State<Database>,
-) -> DbResult<Option<WorkspaceState>> {
+    db: State<'_, Mutex<Database>>,
+) -> Result<Option<WorkspaceState>, String> {
+    let db = db.lock().map_err(|e| e.to_string())?;
     match workspace_path {
-        Some(path) => db.workspace().get_by_path(&path),
-        None => db.workspace().get_most_recent(),
+        Some(path) => db.workspace()
+            .get_by_path(&path)
+            .map_err(|e| format!("Failed to get workspace state: {:?}", e)),
+        None => db.workspace()
+            .get_most_recent()
+            .map_err(|e| format!("Failed to get workspace state: {:?}", e)),
     }
 }
 
@@ -28,36 +36,46 @@ pub fn get_workspace_state(
 #[tauri::command]
 pub fn save_editor_state(
     state: EditorState,
-    db: State<Database>,
-) -> DbResult<()> {
-    db.editor().save(&state)?;
-    Ok(())
+    db: State<'_, Mutex<Database>>,
+) -> Result<(), String> {
+    let db = db.lock().map_err(|e| e.to_string())?;
+    db.editor()
+        .save(&state)
+        .map_err(|e| format!("Failed to save editor state: {:?}", e))
 }
 
 /// Get editor state for a file
 #[tauri::command]
 pub fn get_editor_state(
     file_path: String,
-    db: State<Database>,
-) -> DbResult<Option<EditorState>> {
-    db.editor().get(&file_path)
+    db: State<'_, Mutex<Database>>,
+) -> Result<Option<EditorState>, String> {
+    let db = db.lock().map_err(|e| e.to_string())?;
+    db.editor()
+        .get(&file_path)
+        .map_err(|e| format!("Failed to get editor state: {:?}", e))
 }
 
 /// Save explorer state for a workspace
 #[tauri::command]
 pub fn save_explorer_state(
     state: ExplorerState,
-    db: State<Database>,
-) -> DbResult<()> {
-    db.explorer().save(&state)?;
-    Ok(())
+    db: State<'_, Mutex<Database>>,
+) -> Result<(), String> {
+    let db = db.lock().map_err(|e| e.to_string())?;
+    db.explorer()
+        .save(&state)
+        .map_err(|e| format!("Failed to save explorer state: {:?}", e))
 }
 
 /// Get explorer state for a workspace
 #[tauri::command]
 pub fn get_explorer_state(
     workspace_path: String,
-    db: State<Database>,
-) -> DbResult<Option<ExplorerState>> {
-    db.explorer().get(&workspace_path)
+    db: State<'_, Mutex<Database>>,
+) -> Result<Option<ExplorerState>, String> {
+    let db = db.lock().map_err(|e| e.to_string())?;
+    db.explorer()
+        .get(&workspace_path)
+        .map_err(|e| format!("Failed to get explorer state: {:?}", e))
 }

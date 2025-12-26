@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { useSettingsStore } from '../../store/useSettingsStore';
-import { Shield, Terminal, FileText, FolderOpen, Code, AlertTriangle } from 'lucide-react';
+import { Terminal, FileText, FolderOpen, Code, AlertTriangle } from 'lucide-react';
 import clsx from 'clsx';
 
 // Group tools by category for better organization
@@ -83,7 +83,7 @@ interface ApprovalSelectProps {
   onChange: (value: 'auto' | 'always_ask' | 'deny') => void;
 }
 
-const ApprovalSelect: React.FC<ApprovalSelectProps> = ({ toolName, value, onChange }) => {
+const ApprovalSelect: React.FC<ApprovalSelectProps> = ({ value, onChange }) => {
   return (
     <select
       value={value}

@@ -7,6 +7,7 @@ import { toolRegistry } from "../registry";
 import {
   isTauri,
   readDirectory,
+  readFileContent,
   createFolder,
   deletePath,
 } from "../../lib/tauri";
@@ -150,6 +151,34 @@ const workspaceListFilesExecutor = async (
 // ============================================
 // WORKSPACE FIND FILES EXECUTOR
 // ============================================
+
+// Helper to convert glob pattern to regex
+const globToRegex = (pattern: string): RegExp => {
+  // Handle special glob patterns
+  let regexStr = pattern
+    // Escape special regex characters except glob wildcards
+    .replace(/[.+^${}()|[\]]/g, '\\$&')
+    // Handle ** (match any path including /)
+    .replace(/\*\*/g, '{{GLOBSTAR}}')
+    // Handle * (match anything except /)
+    .replace(/\*/g, '[^/\\\\]*')
+    // Handle ? (match single character except /)
+    .replace(/\?/g, '[^/\\\\]')
+    // Restore globstar
+    .replace(/{{GLOBSTAR}}/g, '.*');
+  
+  // If pattern doesn't start with **, anchor it appropriately
+  // For patterns like "*.txt", match filename only
+  if (!pattern.startsWith('**')) {
+    // Match either the full relative path or just the filename
+    regexStr = `(^|[/\\\\])${regexStr}$`;
+  } else {
+    regexStr = `${regexStr}$`;
+  }
+  
+  return new RegExp(regexStr, 'i');
+};
+
 const workspaceFindFilesExecutor = async (
   args: Record<string, any>,
 ): Promise<string> => {
@@ -171,15 +200,7 @@ const workspaceFindFilesExecutor = async (
   const results: string[] = [];
 
   // Convert glob pattern to regex
-  const patternRegex = new RegExp(
-    pattern
-      .replace(/\*\*/g, "{{GLOBSTAR}}")
-      .replace(/\./g, "\\.")
-      .replace(/\*/g, "[^/\\\\]*")
-      .replace(/\?/g, ".")
-      .replace(/{{GLOBSTAR}}/g, ".*"),
-    "i", // Case insensitive
-  );
+  const patternRegex = globToRegex(pattern);
 
   try {
     const searchDir = async (dirPath: string): Promise<void> => {
@@ -198,14 +219,19 @@ const workspaceFindFilesExecutor = async (
         // Skip hidden files/folders
         if (entry.name.startsWith(".")) continue;
 
-        const relativePath = entry.path
-          .replace(targetPath, "")
-          .replace(/^[/\\]/, "");
+        // For files, check if pattern matches
+        if (!entry.is_dir) {
+          const relativePath = entry.path
+            .replace(targetPath, "")
+            .replace(/^[/\\]/, "")
+            .replace(/\\/g, "/"); // Normalize to forward slashes
 
-        if (patternRegex.test(relativePath) || patternRegex.test(entry.name)) {
-          results.push(entry.path);
+          if (patternRegex.test(relativePath) || patternRegex.test(entry.name)) {
+            results.push(entry.path);
+          }
         }
 
+        // Recurse into directories
         if (entry.is_dir) {
           await searchDir(entry.path);
         }
@@ -248,14 +274,127 @@ const workspaceGrepExecutor = async (
     return JSON.stringify({ success: false, error: "No workspace open" });
   }
 
-  return JSON.stringify({
-    success: true,
-    message:
-      "Grep functionality requires shell_execute tool for full implementation",
-    pattern: args.pattern,
-    rootPath,
-    suggestion: "Use shell_execute with grep or ripgrep command for searching",
-  });
+  const targetPath = resolvePath(args.path);
+  const searchPattern = args.pattern as string;
+  const filePattern = args.file_pattern as string | undefined;
+  const isRegex = args.is_regex ?? false;
+  const caseSensitive = args.case_sensitive ?? false;
+  const maxResults = args.max_results ?? 100;
+
+  interface GrepMatch {
+    file: string;
+    lineNumber: number;
+    content: string;
+    matches: string[];
+  }
+
+  const results: GrepMatch[] = [];
+
+  // Build the search regex
+  let searchRegex: RegExp;
+  try {
+    if (isRegex) {
+      searchRegex = new RegExp(searchPattern, caseSensitive ? 'g' : 'gi');
+    } else {
+      // Escape special regex characters for literal search
+      const escaped = searchPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      searchRegex = new RegExp(escaped, caseSensitive ? 'g' : 'gi');
+    }
+  } catch (e) {
+    return JSON.stringify({
+      success: false,
+      error: `Invalid regex pattern: ${e instanceof Error ? e.message : String(e)}`,
+    });
+  }
+
+  // Build file filter regex if provided
+  let fileFilterRegex: RegExp | null = null;
+  if (filePattern) {
+    fileFilterRegex = globToRegex(filePattern);
+  }
+
+  // Text file extensions to search
+  const textExtensions = new Set([
+    'txt', 'md', 'json', 'js', 'ts', 'jsx', 'tsx', 'css', 'scss', 'less',
+    'html', 'htm', 'xml', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf',
+    'sh', 'bash', 'zsh', 'ps1', 'bat', 'cmd', 'py', 'rb', 'php', 'java',
+    'c', 'cpp', 'h', 'hpp', 'cs', 'go', 'rs', 'swift', 'kt', 'scala',
+    'sql', 'graphql', 'vue', 'svelte', 'astro', 'mdx', 'log', 'env',
+    'gitignore', 'dockerignore', 'editorconfig', 'eslintrc', 'prettierrc',
+  ]);
+
+  const isTextFile = (filename: string): boolean => {
+    const ext = filename.split('.').pop()?.toLowerCase();
+    if (!ext) return false;
+    return textExtensions.has(ext);
+  };
+
+  try {
+    const searchDir = async (dirPath: string): Promise<void> => {
+      if (results.length >= maxResults) return;
+
+      let entries: any[];
+      try {
+        entries = await readDirectory(dirPath);
+      } catch {
+        return;
+      }
+
+      for (const entry of entries) {
+        if (results.length >= maxResults) break;
+
+        // Skip hidden files/folders
+        if (entry.name.startsWith(".")) continue;
+
+        if (entry.is_dir) {
+          await searchDir(entry.path);
+        } else if (isTextFile(entry.name)) {
+          // Check file pattern filter
+          if (fileFilterRegex && !fileFilterRegex.test(entry.name)) {
+            continue;
+          }
+
+          try {
+            const content = await readFileContent(entry.path);
+            const lines = content.split('\n');
+
+            for (let i = 0; i < lines.length && results.length < maxResults; i++) {
+              const line = lines[i];
+              const lineMatches = line.match(searchRegex);
+
+              if (lineMatches) {
+                results.push({
+                  file: entry.path,
+                  lineNumber: i + 1,
+                  content: line.length > 200 ? line.substring(0, 200) + '...' : line,
+                  matches: [...new Set(lineMatches)],
+                });
+              }
+            }
+          } catch {
+            // Skip files we can't read
+          }
+        }
+      }
+    };
+
+    await searchDir(targetPath);
+
+    return JSON.stringify({
+      success: true,
+      pattern: searchPattern,
+      filePattern: filePattern || '*',
+      rootPath: targetPath,
+      totalMatches: results.length,
+      truncated: results.length >= maxResults,
+      matches: results,
+    });
+  } catch (error) {
+    return JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 };
 
 // ============================================

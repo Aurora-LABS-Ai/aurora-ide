@@ -1,0 +1,157 @@
+{
+  "id": "13fd3674-8e29-40a1-b2ec-a4825f3a1d11",
+  "title": "test all avaible tools and report me which is work...",
+  "createdAt": 1766735341318,
+  "updatedAt": 1766735399588,
+  "messages": [
+    {
+      "id": "8k7c5kixn",
+      "sender": "user",
+      "content": "test all avaible tools and report me which is working which one have the issue",
+      "timestamp": 1766735341319
+    },
+    {
+      "id": "ra09t0bzx",
+      "sender": "assistant",
+      "content": "",
+      "timestamp": 1766735341320,
+      "timeline": [
+        {
+          "type": "thinking",
+          "thinking": "I'll help you test all available tools and report on their functionality. Let me start by getting an overview of the workspace and then systematically test each tool. First, let me check the workspace information.",
+          "isThinking": false,
+          "id": "9gdyi3utb",
+          "timestamp": 1766735342769
+        },
+        {
+          "type": "tool",
+          "tool": {
+            "id": "call_00_GVgHiJVQPios68AXC4rnrjnK",
+            "name": "workspace_info",
+            "status": "complete",
+            "args": {},
+            "result": "{\"success\":true,\"hasWorkspace\":true,\"rootPath\":\"E:\\\\VOID-EDITOR\\\\new-testing\",\"name\":\"new-testing\",\"totalFiles\":4,\"totalFolders\":2}"
+          },
+          "id": "rlvo1cacm",
+          "timestamp": 1766735344926
+        },
+        {
+          "type": "thinking",
+          "thinking": "Now let me check the workspace tree to understand the structure.",
+          "isThinking": false,
+          "id": "ahco5afvl",
+          "timestamp": 1766735353345
+        },
+        {
+          "type": "tool",
+          "tool": {
+            "id": "call_00_f7ygoB2kIMDpHdAXBTTeXHh3",
+            "name": "workspace_tree",
+            "status": "complete",
+            "args": {
+              "depth": 3
+            },
+            "result": "{\"success\":true,\"rootPath\":\"E:\\\\VOID-EDITOR\\\\new-testing\",\"depth\":3,\"tree\":[{\"name\":\"test-folder\",\"path\":\"E:\\\\VOID-EDITOR\\\\new-testing\\\\test-folder\",\"type\":\"directory\",\"children\":[{\"name\":\"subfolder\",\"path\":\"E:\\\\VOID-EDITOR\\\\new-testing\\\\test-folder\\\\subfolder\",\"type\":\"directory\",\"children\":[]}]},{\"name\":\"app-icon.svg\",\"path\":\"E:\\\\VOID-EDITOR\\\\new-testing\\\\app-icon.svg\",\"type\":\"file\",\"extension\":\"svg\"},{\"name\":\"test-creation.txt\",\"path\":\"E:\\\\VOID-EDITOR\\\\new-testing\\\\test-creation.txt\",\"type\":\"file\",\"extension\":\"txt\"},{\"name\":\"test-file.txt\",\"path\":\"E:\\\\VOID-EDITOR\\\\new-testing\\\\test-file.txt\",\"type\":\"file\",\"extension\":\"txt\"},{\"name\":\"test-write.txt\",\"path\":\"E:\\\\VOID-EDITOR\\\\new-testing\\\\test-write.txt\",\"type\":\"file\",\"extension\":\"txt\"}]}"
+          },
+          "id": "iib8s0bb3",
+          "timestamp": 1766735354511
+        },
+        {
+          "type": "thinking",
+          "thinking": "Good. Now let me start testing the tools systematically. I'll create a test log file to track the results. First, let me test file operations.\n\n1. **File Create**: Let me create a test file.",
+          "isThinking": false,
+          "id": "ma0x0f88x",
+          "timestamp": 1766735368351
+        },
+        {
+          "type": "tool",
+          "tool": {
+            "id": "call_00_EH2P6EcVuZrUc1kENDx4V4gC",
+            "name": "file_create",
+            "status": "complete",
+            "args": {
+              "path": "test_file_create.txt",
+              "content": "This is a test file created by file_create tool."
+            },
+            "result": "{\"success\":true,\"message\":\"File created: test_file_create.txt\",\"path\":\"test_file_create.txt\",\"fullPath\":\"E:\\\\VOID-EDITOR\\\\new-testing\\\\test_file_create.txt\"}"
+          },
+          "id": "fgxo6fo3u",
+          "timestamp": 1766735370820
+        },
+        {
+          "type": "thinking",
+          "thinking": "2. **File Read**: Let me read the file I just created.",
+          "isThinking": false,
+          "id": "5e12zip9x",
+          "timestamp": 1766735379572
+        },
+        {
+          "type": "tool",
+          "tool": {
+            "id": "call_00_yjPVoEaL2c8mn4o6areqN6Ie",
+            "name": "file_read",
+            "status": "complete",
+            "args": {
+              "path": "test_file_create.txt"
+            },
+            "result": "{\"success\":true,\"path\":\"test_file_create.txt\",\"fullPath\":\"E:\\\\VOID-EDITOR\\\\new-testing\\\\test_file_create.txt\",\"content\":\"This is a test file created by file_create tool.\",\"lines\":1}"
+          },
+          "id": "1ydobwmyo",
+          "timestamp": 1766735381107
+        },
+        {
+          "type": "thinking",
+          "thinking": "3. **File Read Lines**: Let me test reading specific lines. First, let me create a multi-line file.",
+          "isThinking": false,
+          "id": "xvq9a8n74",
+          "timestamp": 1766735385108
+        },
+        {
+          "type": "tool",
+          "tool": {
+            "id": "call_00_pTxIM1PWHBK8Nfb2T0hSPBnk",
+            "name": "file_create",
+            "status": "complete",
+            "args": {
+              "path": "test_multiline.txt",
+              "content": "Line 1: Test line\nLine 2: Another test line\nLine 3: Third line\nLine 4: Fourth line\nLine 5: Fifth line"
+            },
+            "result": "{\"success\":true,\"message\":\"File created: test_multiline.txt\",\"path\":\"test_multiline.txt\",\"fullPath\":\"E:\\\\VOID-EDITOR\\\\new-testing\\\\test_multiline.txt\"}"
+          },
+          "id": "ppi2hp8kz",
+          "timestamp": 1766735386743
+        },
+        {
+          "type": "thinking",
+          "thinking": "Now test file_read_lines:",
+          "isThinking": false,
+          "id": "0xc56i437",
+          "timestamp": 1766735392863
+        },
+        {
+          "type": "tool",
+          "tool": {
+            "id": "call_00_jVLEBdCtPwN1ZQfaDoll47bt",
+            "name": "file_read_lines",
+            "status": "complete",
+            "args": {
+              "path": "test_multiline.txt",
+              "start_line": 2,
+              "end_line": 4
+            },
+            "result": "{\"success\":true,\"path\":\"test_multiline.txt\",\"fullPath\":\"E:\\\\VOID-EDITOR\\\\new-testing\\\\test_multiline.txt\",\"startLine\":2,\"endLine\":4,\"totalLines\":5,\"lines\":[{\"lineNumber\":2,\"content\":\"Line 2: Another test line\"},{\"lineNumber\":3,\"content\":\"Line 3: Third line\"},{\"lineNumber\":4,\"content\":\"Line 4: Fourth line\"}]}"
+          },
+          "id": "3hn4dx0cm",
+          "timestamp": 1766735393960
+        },
+        {
+          "type": "thinking",
+          "thinking": "4. **File",
+          "isThinking": true,
+          "id": "eos9fki4c",
+          "timestamp": 1766735399298
+        }
+      ]
+    }
+  ]
+}

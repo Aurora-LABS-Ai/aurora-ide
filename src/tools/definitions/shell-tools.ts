@@ -71,17 +71,17 @@ export const shellKillTool: ToolDefinition = {
   type: 'function',
   function: {
     name: 'shell_kill',
-    description: 'Kill a running background process by its process ID or name.',
+    description: 'Kill a running background process by its process ID (e.g., "bg-1-1234567890") or name.',
     parameters: {
       type: 'object',
       properties: {
-        pid: {
-          type: 'number',
-          description: 'The process ID to kill',
+        processId: {
+          type: 'string',
+          description: 'The process ID to kill (string format, e.g., "bg-1-1234567890")',
         },
         name: {
           type: 'string',
-          description: 'The friendly name of the process to kill (if pid not provided)',
+          description: 'The friendly name of the process to kill (if processId not provided)',
         },
       },
       required: [],

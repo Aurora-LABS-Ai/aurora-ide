@@ -4,12 +4,25 @@ import { DetachedChatWindow } from "./components/chat/DetachedChatWindow";
 import { useUiStore } from "./store/useUiStore";
 import { useWorkspaceBootstrap } from "./hooks/useWorkspaceBootstrap";
 import { useEditorStore } from "./store/useEditorStore";
+import { useAutoSave } from "./hooks/useAutoSave";
+import { useTauriDragDrop } from "./hooks/useTauriDragDrop";
+import { useInternalDrag } from "./hooks/useInternalDrag";
+import { DragPreview } from "./components/ui/DragPreview";
 
 function App() {
   const { theme } = useUiStore();
   const [isDetachedWindow, setIsDetachedWindow] = useState(false);
   const restoreWorkspace = useEditorStore((state) => state.restoreWorkspace);
   useWorkspaceBootstrap();
+  
+  // Initialize auto-save functionality
+  useAutoSave();
+
+  // Handle external file drops from OS via Tauri
+  useTauriDragDrop();
+
+  // Handle internal drag-drop via mouse events
+  useInternalDrag();
 
   useEffect(() => {
     // Check if this is the detached chat window based on URL path
@@ -52,7 +65,12 @@ function App() {
     return <DetachedChatWindow />;
   }
 
-  return <MainLayout />;
+  return (
+    <>
+      <MainLayout />
+      <DragPreview />
+    </>
+  );
 }
 
 export default App;

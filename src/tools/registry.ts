@@ -3,15 +3,16 @@
  * Central registry for managing tool definitions and executors
  */
 
-import type { 
-  ToolDefinition, 
-  ToolExecutor, 
-  RegisteredTool, 
+import type {
+  ToolDefinition,
+  ToolExecutor,
+  RegisteredTool,
   ToolCallRequest,
   ToolCallResult,
-  TrackedToolCall 
+  TrackedToolCall
 } from './types';
-import { allTools, getToolRiskLevel } from './definitions';
+import { allTools } from './definitions';
+import { getEnhancedToolRiskLevel } from './definitions/risk-levels-enhanced';
 
 class ToolRegistry {
   private tools: Map<string, RegisteredTool> = new Map();
@@ -36,14 +37,14 @@ class ToolRegistry {
    */
   registerDefinition(definition: ToolDefinition): void {
     const name = definition.function.name;
-    const riskLevel = getToolRiskLevel(name);
-    
+    const riskLevel = getEnhancedToolRiskLevel(name);
+
     this.tools.set(name, {
       definition,
       executor: async () => {
         throw new Error(`Executor not implemented for tool: ${name}`);
       },
-      requiresApproval: riskLevel !== 'low',
+      requiresApproval: riskLevel === 'high', // Only HIGH risk requires approval
       riskLevel,
     });
   }

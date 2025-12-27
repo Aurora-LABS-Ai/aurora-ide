@@ -6,6 +6,8 @@ import { useEffect, useCallback, useRef } from 'react';
 import { useThreadStore } from '../store/useThreadStore';
 import type { Thread, ThreadSummary } from '../store/useThreadStore';
 import { useChatStore } from '../store/useChatStore';
+import { useTaskStore } from '../store/useTaskStore';
+import type { Task } from '../store/useTaskStore';
 import {
   emitSyncEvent,
   listenForSyncEvent,
@@ -26,6 +28,11 @@ interface ChatSyncData {
   pendingApproval: any | null;
 }
 
+interface TaskSyncData {
+  tasks: Task[];
+  isVisible: boolean;
+}
+
 // Settings sync data interface (for future use)
 // interface SettingsSyncData {
 //   selectedModel: string;
@@ -38,6 +45,7 @@ interface ChatSyncData {
 export function useWindowStateSync() {
   const threadStore = useThreadStore();
   const chatStore = useChatStore();
+  const taskStore = useTaskStore();
   // Settings sync currently handled by database
   // const settingsStore = useSettingsStore();
 
@@ -75,6 +83,17 @@ export function useWindowStateSync() {
     await emitSyncEvent(SYNC_EVENTS.CHAT_STATE_SYNC, data);
   }, [chatStore.isLoading, chatStore.pendingApproval, shouldSync]);
 
+  // Emit task state to other windows
+  const emitTaskState = useCallback(async () => {
+    if (!shouldSync()) return;
+
+    const data: TaskSyncData = {
+      tasks: taskStore.tasks,
+      isVisible: taskStore.isVisible,
+    };
+    await emitSyncEvent(SYNC_EVENTS.TASK_STATE_SYNC, data);
+  }, [taskStore.tasks, taskStore.isVisible, shouldSync]);
+
   // Request state from main window (used by detached window on mount)
   const requestStateFromMain = useCallback(async () => {
     await emitSyncEvent(SYNC_EVENTS.THREAD_STATE_REQUEST, {});
@@ -87,6 +106,7 @@ export function useWindowStateSync() {
 
     let unlistenThread: (() => void) | null = null;
     let unlistenChat: (() => void) | null = null;
+    let unlistenTask: (() => void) | null = null;
     let unlistenRequest: (() => void) | null = null;
 
     const setup = async () => {
@@ -117,6 +137,17 @@ export function useWindowStateSync() {
         }
       );
 
+      // Listen for task state sync
+      unlistenTask = await listenForSyncEvent<TaskSyncData>(
+        SYNC_EVENTS.TASK_STATE_SYNC,
+        (data) => {
+          useTaskStore.setState({
+            tasks: data.tasks,
+            isVisible: data.isVisible,
+          });
+        }
+      );
+
       // Main window listens for state requests
       if (isMain) {
         unlistenRequest = await listenForSyncEvent(
@@ -136,6 +167,13 @@ export function useWindowStateSync() {
               pendingApproval: useChatStore.getState().pendingApproval,
             };
             await emitSyncEvent(SYNC_EVENTS.CHAT_STATE_SYNC, chatData);
+
+            // Also send task state
+            const taskData: TaskSyncData = {
+              tasks: useTaskStore.getState().tasks,
+              isVisible: useTaskStore.getState().isVisible,
+            };
+            await emitSyncEvent(SYNC_EVENTS.TASK_STATE_SYNC, taskData);
           }
         );
       }
@@ -154,6 +192,7 @@ export function useWindowStateSync() {
     return () => {
       unlistenThread?.();
       unlistenChat?.();
+      unlistenTask?.();
       unlistenRequest?.();
     };
   }, [requestStateFromMain]);
@@ -169,9 +208,16 @@ export function useWindowStateSync() {
     emitChatState();
   }, [chatStore.isLoading, chatStore.pendingApproval, emitChatState]);
 
+  useEffect(() => {
+    if (!isTauri()) return;
+    emitTaskState();
+  }, [taskStore.tasks, taskStore.isVisible, emitTaskState]);
+
+
   return {
     emitThreadState,
     emitChatState,
+    emitTaskState,
     requestStateFromMain,
   };
 }

@@ -64,6 +64,7 @@ export interface AppSettings {
   autoSave: string;
   autoSaveDelay: number;
   maxToolCallsPerRequest: number;
+  wrapMode: boolean;
 }
 
 // ============================================================

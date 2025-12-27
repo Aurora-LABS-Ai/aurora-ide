@@ -1,8 +1,9 @@
 import { create } from 'zustand';
 import type { FileNode } from '../types';
-import { isTauri, readDirectory, readFileContent } from '../lib/tauri';
+import { isTauri, readDirectory, readFileContent, startFsWatcher, stopFsWatcher } from '../lib/tauri';
 import { databaseService } from '../services/database';
 import { useEditorStore } from './useEditorStore';
+import { listen } from '@tauri-apps/api/event';
 
 interface WorkspaceState {
   rootPath: string;
@@ -62,6 +63,32 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     useEditorStore.getState().setWorkspacePath(path);
 
     get().loadDirectory(path);
+
+    // Start filesystem watcher
+    if (isTauri()) {
+      const startWatch = async () => {
+        try {
+          // stop previous watcher if any
+          if (fsUnlisten) {
+            fsUnlisten();
+            fsUnlisten = null;
+          }
+          await startFsWatcher(path);
+          fsUnlisten = await listen('fs-changed', async (event: any) => {
+            const { rootPath } = get();
+            if (!rootPath) return;
+            const paths: string[] = event?.payload?.paths || [];
+            const hasMatch = paths.some(p => p.startsWith(rootPath));
+            if (hasMatch) {
+              await get().refreshDirectory();
+            }
+          });
+        } catch (err) {
+          console.error('Failed to start fs watcher:', err);
+        }
+      };
+      startWatch();
+    }
   },
 
   loadDirectory: async (path: string) => {
@@ -166,12 +193,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   setFiles: (files) => set({ files }),
 
-  clearWorkspace: () => set({
-    rootPath: '',
-    files: [],
-    expandedFolders: new Set(),
-    selectedFileId: null
-  }),
+  clearWorkspace: () => {
+    set({
+      rootPath: '',
+      files: [],
+      expandedFolders: new Set(),
+      selectedFileId: null
+    }, false);
+
+    if (fsUnlisten) {
+      fsUnlisten();
+      fsUnlisten = null;
+    }
+    if (isTauri()) {
+      stopFsWatcher().catch(() => {});
+    }
+  },
 
   // Restore explorer state from database
   restoreExplorer: async () => {
@@ -227,3 +264,6 @@ export const loadFileContent = async (path: string): Promise<string> => {
     return '// Failed to load file';
   }
 };
+
+// Global watcher cleanup
+let fsUnlisten: (() => void) | null = null;

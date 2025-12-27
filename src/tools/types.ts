@@ -3,16 +3,21 @@
  * Based on GLM-4.7 API specification
  */
 
+// Property definition for function parameters
+export interface PropertyDefinition {
+  type: string;
+  description?: string;
+  enum?: string[];
+  items?: PropertyDefinition | { type: string; properties?: Record<string, PropertyDefinition>; required?: string[] };
+  properties?: Record<string, PropertyDefinition>;
+  required?: string[];
+  default?: unknown;
+}
+
 // OpenAI-compatible function parameter schema
 export interface FunctionParameters {
   type: 'object';
-  properties: Record<string, {
-    type: string;
-    description: string;
-    enum?: string[];
-    items?: { type: string };
-    default?: any;
-  }>;
+  properties: Record<string, PropertyDefinition>;
   required: string[];
 }
 

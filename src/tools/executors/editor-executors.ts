@@ -7,6 +7,7 @@ import { toolRegistry } from '../registry';
 import { useEditorStore } from '../../store/useEditorStore';
 import { loadFileContent } from '../../store/useWorkspaceStore';
 import { isTauri, readFileContent, writeFileContent } from '../../lib/tauri';
+import { resolvePath } from '../utils/path-resolver';
 
 // ============================================
 // EDITOR OPEN FILE EXECUTOR
@@ -19,15 +20,18 @@ const editorOpenFileExecutor = async (args: Record<string, any>): Promise<string
   }
 
   try {
+    // Resolve relative paths to full paths
+    const fullPath = resolvePath(path);
+
     // Get filename from path
-    const filename = path.split(/[/\\]/).pop() || path;
-    
+    const filename = fullPath.split(/[/\\]/).pop() || fullPath;
+
     // Load file content
     let content = '';
     if (isTauri()) {
-      content = await readFileContent(path);
+      content = await readFileContent(fullPath);
     } else {
-      content = await loadFileContent(path);
+      content = await loadFileContent(fullPath);
     }
 
     // Detect language from extension
@@ -43,15 +47,13 @@ const editorOpenFileExecutor = async (args: Record<string, any>): Promise<string
     };
     const language = langMap[ext] || 'plaintext';
 
-    // Open file in editor
-    useEditorStore.getState().openFile(path, filename, content, language);
+    // Open file in editor using full path
+    useEditorStore.getState().openFile(fullPath, filename, content, language);
 
-    // TODO: Navigate to line/column when Monaco ref is available
-    // For now, just acknowledge the request
     return JSON.stringify({
       success: true,
       message: `Opened file: ${filename}`,
-      path,
+      path: fullPath,
       line: line || 1,
       column: column || 1,
     });
@@ -59,7 +61,7 @@ const editorOpenFileExecutor = async (args: Record<string, any>): Promise<string
     console.error('[editor_open_file] Error:', error);
     return JSON.stringify({
       success: false,
-      error: error instanceof Error ? error.message : String(error),
+      error: `File does not exist: ${path}`,
     });
   }
 };

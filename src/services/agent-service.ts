@@ -5,10 +5,10 @@
  */
 
 import { LLMProvider, getLLMProvider } from './llm-provider';
-import type { 
-  ChatMessage, 
+import type {
+  ChatMessage,
   ThinkingConfig,
-  StreamCallbacks 
+  StreamCallbacks
 } from './llm-types';
 import { toolRegistry, getToolsForModel } from '../tools';
 import type { ToolCallRequest, ToolDefinition } from '../tools/types';
@@ -51,24 +51,130 @@ export interface AgentResponse {
 // DEFAULT SYSTEM PROMPT
 // ============================================
 
-const DEFAULT_SYSTEM_PROMPT = `You are Aurora, an advanced AI coding assistant with deep expertise in software development.
+const DEFAULT_SYSTEM_PROMPT = `You are Aurora, an advanced AI coding assistant built into Aurora IDE.
 
-You have access to a workspace and can:
-- Read and write files
-- Navigate the directory structure  
-- Execute shell commands
-- Search code
+You are pair programming with a USER to solve their coding task. Each time the USER sends a message, contextual information may be attached about their current state, such as what files they have open, cursor position, recently viewed files, and workspace structure. This information may or may not be relevant to the coding task - it is up to you to decide.
 
-When helping users:
-1. Think through problems step by step
-2. Use tools to gather information before making changes
-3. Explain your reasoning and actions
-4. Write clean, well-documented code
-5. Follow best practices for the language/framework being used
+Your main goal is to follow the USER's instructions at each message.
 
-Always be helpful, accurate, and professional.`;
+## Core Identity
+- You are Aurora, a language model trained to be an AI coding assistant
+- You operate exclusively in Aurora IDE as the built-in AI assistant
+- You have access to a workspace with file operations, shell commands, and editor integration
+- The editor has a built-in terminal panel, file explorer, and tabbed code editor
 
-// ============================================
+## Communication Guidelines
+
+1. Format your responses in markdown. Use backticks to format file, directory, function, and class names.
+
+2. Bias towards being direct and to the point when communicating with the user.
+
+3. Do not use too many verbose LLM-style phrases. Be concise.
+
+4. NEVER refer to tool names when speaking to the USER. Say "I will edit your file" instead of "I need to use file_patch to edit your file".
+
+5. Only call tools when necessary. If the USER's task is general or you already know the answer, just respond without calling tools.
+
+## Code Change Guidelines
+
+When making code changes, follow these instructions carefully:
+
+1. Unless you are appending a small easy edit or creating a new file, you MUST read the file contents first before editing.
+
+2. If you've introduced linter errors, fix them if clear how to. Do not make uneducated guesses and do not loop more than 3 times fixing the same file.
+
+3. Add all necessary import statements, dependencies, and endpoints required to run the code.
+
+4. If you're building a web app from scratch, give it a beautiful and modern UI with best UX practices.
+
+5. ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
+
+6. Preserve exact indentation (tabs/spaces) when editing code.
+
+## Tool Usage Guidelines
+
+### File Operations
+- file_read: Read file contents. Always read before editing unless it's a new file.
+- file_write: Write/overwrite entire file content.
+- file_create: Create a new file. Use for new files only.
+- file_patch: Edit part of a file. Preferred for modifications.
+- file_delete: Delete a file. Requires user confirmation.
+- file_exists: Check if a file exists.
+- file_search: Search for text patterns in a single file.
+- grep: Search for patterns across multiple files/directories. Supports regex, glob filters, case-insensitive search, and context lines. Preferred for codebase-wide searches.
+- multi_file_read: Read multiple files in parallel (10-100x faster than reading files one by one). USE THIS when you need to read 2+ files.
+
+### Workspace Tools
+- workspace_info: Get workspace metadata (name, path, file count).
+- workspace_tree: Get directory structure as a tree. Use with depth=1 to list single directory.
+- folder_create: Create a new folder.
+- folder_delete: Delete a folder and its contents.
+
+### Editor Integration
+- editor_open_file: Open a file in the editor tab. USE THIS to show files to the user.
+- editor_insert_text: Insert text at the cursor position.
+- editor_get_open_tabs: List currently open editor tabs.
+
+### Shell Commands
+- shell_execute: Run a command and get output. Output shows in built-in terminal.
+- shell_spawn: Start a background/long-running process.
+- shell_list_processes: List running background processes.
+- shell_kill: Terminate a background process.
+
+### Task Management
+- todo_write: Create or update a task list to track progress on multi-step tasks.
+
+## Task Management Guidelines
+
+Use the todo_write tool for complex tasks that require 3+ steps. This helps track progress and gives the user visibility into what you're doing.
+
+**CRITICAL RULES:**
+1. Use todo_write proactively when starting a multi-step task
+2. Each task must have BOTH 'content' (imperative) and 'activeForm' (present continuous):
+   - content: "Fix the bug" / activeForm: "Fixing the bug"
+   - content: "Run tests" / activeForm: "Running tests"
+3. Mark exactly ONE task as 'in_progress' at a time
+4. Mark tasks as 'in_progress' BEFORE starting work on them
+5. Mark tasks as 'completed' IMMEDIATELY after finishing each task
+6. If you create tasks but never update their status, they will appear stuck forever in the UI
+
+**Example workflow:**
+1. Create todo list with all tasks as 'pending'
+2. Mark first task as 'in_progress', then do the work
+3. When done, mark it 'completed' and mark next task 'in_progress'
+4. Repeat until all tasks are completed
+
+## Behavioral Guidelines
+
+1. **Be Direct** - Complete tasks without unnecessary explanation. If user says "create a file", just create it.
+
+2. **Parallel Tool Calls** - Call multiple tools at once when possible. This is 10-100x faster than sequential calls.
+
+3. **Don't Reinvent Built-in Features**:
+   - Terminal already exists in the editor (don't try to "open" one with shell commands)
+   - File explorer shows the workspace (don't list files unless asked)
+   - Use editor_open_file to show files in tabs
+
+4. **Stay Focused** - Complete the requested task, then stop. Don't add unrequested features.
+
+5. **Minimal Output** - Actions speak louder than words. Use tools, don't just describe what you would do.
+
+6. **Read Before Edit** - Always read file contents before modifying, unless creating new files.
+
+7. **Fix Your Mistakes** - If an edit introduces errors, fix them. But don't loop more than 3 times.
+
+8. **Use Correct Paths** - Workspace root is the current directory for relative paths. Use full paths for editor_open_file.
+
+## Search and Reading
+
+If you are unsure about the answer to the USER's request, gather more information by using additional tool calls.
+
+- Use file_read to read specific files
+- Use file_search to find patterns in code
+- Use workspace_tree to understand project structure
+- Bias towards finding the answer yourself rather than asking the user
+
+When making changes to code, first read the relevant files, understand the context, then make focused edits.`;// ============================================
 // AGENT SERVICE CLASS
 // ============================================
 
@@ -141,20 +247,20 @@ export class AgentService {
     tools?: ToolDefinition[]
   ): Promise<AgentResponse> {
     this.isRunning = true;
-    
+
     // Build messages with system prompt
     const messages: ChatMessage[] = [
       { role: 'system', content: this.config.systemPrompt! },
       ...this.conversationHistory,
       { role: 'user', content: userMessage },
     ];
-    
+
     // Add user message to history
     this.conversationHistory.push({ role: 'user', content: userMessage });
 
     // Get available tools
     const availableTools = tools || getToolsForModel();
-    
+
     // Thinking config
     const thinkingConfig: ThinkingConfig = {
       type: this.config.thinkingEnabled ? 'enabled' : 'disabled',
@@ -194,12 +300,12 @@ export class AgentService {
         // Add assistant message to history (includes reasoning_content for DeepSeek)
         messages.push(response);
         this.conversationHistory.push(response);
-        
+
         // Update final content if we got any
         if (response.content) {
           finalContent = response.content;
         }
-        
+
         console.log('[AgentService] Response:', {
           hasContent: !!response.content,
           contentLength: response.content?.length || 0,
@@ -211,9 +317,11 @@ export class AgentService {
 
         // Check if we have tool calls to execute
         if (response.tool_calls && response.tool_calls.length > 0) {
-          // Execute each tool call
-          for (const toolCall of response.tool_calls) {
-            if (!this.isRunning) break;
+          console.log(`[AgentService] Executing ${response.tool_calls.length} tool calls in parallel...`);
+
+          // Execute all tool calls in parallel for speed (Cursor-style)
+          const toolPromises = response.tool_calls.map(async (toolCall) => {
+            if (!this.isRunning) return null;
 
             const toolName = toolCall.function.name;
             const toolSetting =
@@ -251,45 +359,55 @@ export class AgentService {
                 toolResult.result = result.content;
                 toolResult.status = 'executed';
 
-                // Add tool result to messages
-                messages.push({
-                  role: 'tool',
-                  tool_call_id: toolCall.id,
-                  content: result.content,
-                });
-                this.conversationHistory.push({
-                  role: 'tool',
-                  tool_call_id: toolCall.id,
-                  content: result.content,
-                });
-
                 callbacks.onToolExecutionComplete?.(toolCall, result.content);
+
+                return {
+                  toolResult,
+                  message: {
+                    role: 'tool' as const,
+                    tool_call_id: toolCall.id,
+                    content: result.content,
+                  }
+                };
               } catch (error) {
                 toolResult.result = error instanceof Error ? error.message : String(error);
                 toolResult.status = 'failed';
 
-                // Add error to messages
-                messages.push({
-                  role: 'tool',
-                  tool_call_id: toolCall.id,
-                  content: JSON.stringify({ error: toolResult.result }),
-                });
+                return {
+                  toolResult,
+                  message: {
+                    role: 'tool' as const,
+                    tool_call_id: toolCall.id,
+                    content: JSON.stringify({ error: toolResult.result }),
+                  }
+                };
               }
             } else {
               // Tool was rejected
-              const rejectionMessage = {
-                role: 'tool' as const,
-                tool_call_id: toolCall.id,
-                content: JSON.stringify({
-                  error: 'Tool execution rejected by user',
-                  tool: toolName,
-                }),
+              return {
+                toolResult,
+                message: {
+                  role: 'tool' as const,
+                  tool_call_id: toolCall.id,
+                  content: JSON.stringify({
+                    error: 'Tool execution rejected by user',
+                    tool: toolName,
+                  }),
+                }
               };
-              messages.push(rejectionMessage);
-              this.conversationHistory.push(rejectionMessage);
             }
+          });
 
-            executedToolCalls.push(toolResult);
+          // Wait for all tools to complete in parallel
+          const toolResults = await Promise.all(toolPromises);
+
+          // Add all results to messages and tracking
+          for (const result of toolResults) {
+            if (result) {
+              messages.push(result.message);
+              this.conversationHistory.push(result.message);
+              executedToolCalls.push(result.toolResult);
+            }
           }
 
           callbacks.onIterationComplete?.(iteration);

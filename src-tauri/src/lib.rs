@@ -24,7 +24,12 @@ pub fn run() {
             commands::create_folder,
             commands::delete_path,
             commands::rename_path,
+            commands::copy_path,
             commands::get_workspace_root,
+            commands::start_fs_watcher,
+            commands::stop_fs_watcher,
+            commands::reveal_in_explorer,
+            commands::open_in_terminal,
             // State persistence commands
             commands::state::save_workspace_state,
             commands::state::get_workspace_state,
@@ -46,6 +51,11 @@ pub fn run() {
             commands::settings::get_all_tool_settings,
             commands::settings::set_tool_approval,
             commands::settings::save_all_tool_settings,
+            // Threads (chat history) commands
+            commands::threads::save_thread,
+            commands::threads::get_thread,
+            commands::threads::list_threads,
+            commands::threads::delete_thread,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

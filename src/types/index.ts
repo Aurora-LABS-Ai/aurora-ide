@@ -21,7 +21,8 @@ export interface ToolCall {
   id: string;
   name: string;
   args: Record<string, any>;
-  status: 'pending' | 'executing' | 'complete' | 'failed';
+  status: 'pending' | 'executing' | 'complete' | 'failed' | 'rejected';
+  rawArgs?: string;
   result?: string;
   error?: string;
 }

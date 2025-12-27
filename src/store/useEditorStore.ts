@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { Tab } from '../types';
 import { databaseService } from '../services/database';
 import type { WorkspaceState as DbWorkspaceState, TabState, PanelSizes } from '../types/database';
+import { writeFileContent, isTauri } from '../lib/tauri';
 
 interface EditorState {
   tabs: Tab[];
@@ -14,6 +15,7 @@ interface EditorState {
   setActiveTab: (tabId: string) => void;
   updateTabContent: (tabId: string, content: string) => void;
   setFontSize: (size: number) => void;
+  saveTabToDisk: (tabId: string) => Promise<void>;
 
   // Database actions
   restoreWorkspace: () => Promise<void>;
@@ -84,6 +86,34 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setFontSize: (fontSize) => set({ fontSize }),
 
+  saveTabToDisk: async (tabId) => {
+    const state = get();
+    const tab = state.tabs.find((t) => t.id === tabId);
+    if (!tab) return;
+
+    if (!tab.path) {
+      console.warn('No path associated with tab, skipping save:', tabId);
+      return;
+    }
+
+    if (!isTauri()) {
+      console.warn('File saving is only available in the desktop app.');
+      return;
+    }
+
+    try {
+      await writeFileContent(tab.path, tab.content);
+      set((current) => ({
+        tabs: current.tabs.map((t) =>
+          t.id === tabId ? { ...t, isDirty: false } : t
+        ),
+      }));
+      get().saveWorkspace();
+    } catch (error) {
+      console.error('Failed to save file:', error);
+    }
+  },
+
   setWorkspacePath: (path) => {
     currentWorkspacePath = path;
     // Save workspace state immediately when path changes
@@ -98,22 +128,52 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   restoreWorkspace: async () => {
     try {
       const state = await databaseService.getWorkspaceState();
-      if (state) {
+      if (state && state.open_tabs.length > 0) {
         currentWorkspacePath = state.workspace_path;
         currentPanelSizes = state.panel_sizes;
 
-        // Convert database tabs to store tabs
-        const tabs: Tab[] = state.open_tabs.map(tab => ({
-          id: tab.path,
-          path: tab.path,
-          filename: tab.path.split(/[/\\]/).pop() || tab.path,
-          content: '', // Will be loaded on demand
-          isDirty: tab.is_dirty,
-          language: 'plaintext', // Will be detected on load
-        }));
+        // Language detection helper
+        const detectLanguage = (filename: string): string => {
+          const ext = filename.split('.').pop()?.toLowerCase() || '';
+          const langMap: Record<string, string> = {
+            'ts': 'typescript', 'tsx': 'typescript',
+            'js': 'javascript', 'jsx': 'javascript',
+            'json': 'json', 'css': 'css', 'scss': 'scss',
+            'html': 'html', 'md': 'markdown',
+            'rs': 'rust', 'toml': 'toml',
+            'yaml': 'yaml', 'yml': 'yaml',
+            'py': 'python', 'go': 'go',
+            'txt': 'plaintext',
+          };
+          return langMap[ext] || 'plaintext';
+        };
+
+        // Import readFileContent dynamically to avoid circular imports
+        const { readFileContent } = await import('../lib/tauri');
+
+        // Load file content for each tab
+        const tabs: Tab[] = await Promise.all(
+          state.open_tabs.map(async (tab) => {
+            const filename = tab.path.split(/[/\\]/).pop() || tab.path;
+            let content = '';
+            try {
+              content = await readFileContent(tab.path);
+            } catch (err) {
+              console.warn('Failed to load file content:', tab.path, err);
+            }
+            return {
+              id: tab.path,
+              path: tab.path,
+              filename,
+              content,
+              isDirty: tab.is_dirty,
+              language: detectLanguage(filename),
+            };
+          })
+        );
 
         const activeTab = state.open_tabs.find(t => t.is_active);
-        const activeTabId = activeTab?.path || null;
+        const activeTabId = activeTab?.path || (tabs.length > 0 ? tabs[0].id : null);
 
         set({ tabs, activeTabId });
       }

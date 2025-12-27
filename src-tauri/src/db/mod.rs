@@ -10,9 +10,11 @@ pub use error::DbResult;
 pub use models::{
     EditorState, ExplorerState, WorkspaceState,
     AppSetting, LLMProvider, ToolSetting, AppSettings,
+    ThreadState, Message,
 };
 pub use repositories::{
     EditorRepository, ExplorerRepository, WorkspaceRepository, SettingsRepository,
+    ThreadsRepository,
 };
 
 use tauri::AppHandle;
@@ -46,6 +48,11 @@ impl Database {
     /// Get an explorer repository
     pub fn explorer(&self) -> ExplorerRepository<'_> {
         ExplorerRepository::new(self._conn.connection())
+    }
+
+    /// Get a threads repository
+    pub fn threads(&self) -> ThreadsRepository<'_> {
+        ThreadsRepository::new(self._conn.connection())
     }
 
     /// Get a settings repository

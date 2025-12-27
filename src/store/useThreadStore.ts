@@ -1,7 +1,19 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Message } from '../types';
-import { isTauri, writeFileContent, readFileContent, deletePath, readDirectory } from '../lib/tauri';
+import {
+  isTauri,
+  writeFileContent,
+  readFileContent,
+  deletePath,
+  readDirectory,
+  saveThreadToDb,
+  getThreadFromDb,
+  listThreadsFromDb,
+  deleteThreadFromDb,
+  type DbThread,
+  type DbMessage,
+} from '../lib/tauri';
 
 // ============================================
 // THREAD TYPES
@@ -71,6 +83,53 @@ const getThreadFilePath = (threadId: string): string => {
   return `${getThreadsDir()}/${threadId}.json`;
 };
 
+const isDevMode = (): boolean => {
+  if (typeof import.meta !== 'undefined' && (import.meta as any).env?.MODE) {
+    return (import.meta as any).env.MODE === 'development';
+  }
+  return false;
+};
+
+const toDbMessage = (message: Message): DbMessage => ({
+  id: message.id,
+  role: (message as any).role || (message as any).sender || 'assistant',
+  content: message.content,
+  timestamp: new Date(message.timestamp).toISOString(),
+  tool_calls: (message as any).tool_calls,
+  thinking: message.thinking,
+  isThinking: (message as any).isThinking,
+  tools: (message as any).tools,
+  timeline: (message as any).timeline,
+  toolProposal: (message as any).toolProposal,
+});
+
+const toDbThread = (thread: Thread): DbThread => ({
+  id: thread.id,
+  title: thread.title,
+  summary: null,
+  messages: thread.messages.map(toDbMessage),
+  created_at: new Date(thread.createdAt).toISOString(),
+  updated_at: new Date(thread.updatedAt).toISOString(),
+});
+
+const fromDbThread = (dbThread: DbThread): Thread => ({
+  id: dbThread.id,
+  title: dbThread.title,
+  createdAt: Date.parse(dbThread.created_at) || Date.now(),
+  updatedAt: Date.parse(dbThread.updated_at) || Date.now(),
+  messages: (dbThread.messages || []).map((m: DbMessage) => ({
+    id: m.id,
+    sender: (m as any).sender || (m as any).role || 'assistant',
+    content: m.content,
+    timestamp: Date.parse(m.timestamp) || Date.now(),
+    thinking: (m as any).thinking,
+    isThinking: (m as any).isThinking,
+    tools: (m as any).tools || (m as any).tool_calls,
+    timeline: (m as any).timeline,
+    toolProposal: (m as any).toolProposal,
+  })),
+});
+
 // ============================================
 // THREAD STORE
 // ============================================
@@ -138,7 +197,7 @@ export const useThreadStore = create<ThreadState>()(
       },
 
       deleteThread: async (threadId) => {
-        // First delete the file
+        // First delete persistence (db + optional dev JSON)
         await get().deleteThreadFile(threadId);
         
         // Then remove from state
@@ -159,14 +218,23 @@ export const useThreadStore = create<ThreadState>()(
         }
 
         try {
-          const filePath = getThreadFilePath(threadId);
-          await deletePath(filePath);
-          console.log('Thread file deleted:', filePath);
-          return true;
+          await deleteThreadFromDb(threadId);
         } catch (error) {
-          console.error('Failed to delete thread file:', error);
-          return false;
+          console.error('Failed to delete thread from DB:', error);
+          // continue to attempt JSON deletion
         }
+
+        if (isDevMode()) {
+          try {
+            const filePath = getThreadFilePath(threadId);
+            await deletePath(filePath);
+            console.log('Thread file deleted (dev):', filePath);
+          } catch (error) {
+            console.error('Failed to delete thread file (dev):', error);
+          }
+        }
+
+        return true;
       },
 
       updateThreadTitle: (threadId, title) => {
@@ -266,10 +334,13 @@ export const useThreadStore = create<ThreadState>()(
         }
 
         try {
-          const filePath = getThreadFilePath(currentThreadId);
-          const content = JSON.stringify(thread, null, 2);
-          await writeFileContent(filePath, content);
-          console.log('Thread saved to file:', filePath);
+          await saveThreadToDb(toDbThread(thread));
+          if (isDevMode()) {
+            const filePath = getThreadFilePath(currentThreadId);
+            const content = JSON.stringify(thread, null, 2);
+            await writeFileContent(filePath, content);
+            console.log('Thread saved to file (dev):', filePath);
+          }
         } catch (error) {
           console.error('Failed to save thread:', error);
         }
@@ -280,15 +351,29 @@ export const useThreadStore = create<ThreadState>()(
           return null;
         }
 
+        // Try DB first
         try {
-          const filePath = getThreadFilePath(threadId);
-          const content = await readFileContent(filePath);
-          const thread: Thread = JSON.parse(content);
-          return thread;
+          const dbThread = await getThreadFromDb(threadId);
+          if (dbThread) {
+            return fromDbThread(dbThread);
+          }
         } catch (error) {
-          console.error('Failed to load thread:', error);
-          return null;
+          console.error('Failed to load thread from DB:', error);
         }
+
+        // Dev fallback: JSON file
+        if (isDevMode()) {
+          try {
+            const filePath = getThreadFilePath(threadId);
+            const content = await readFileContent(filePath);
+            const thread: Thread = JSON.parse(content);
+            return thread;
+          } catch (error) {
+            console.error('Failed to load thread from file:', error);
+          }
+        }
+
+        return null;
       },
 
       loadAllThreadsFromFiles: async () => {
@@ -300,33 +385,49 @@ export const useThreadStore = create<ThreadState>()(
         set({ isLoading: true });
 
         try {
-          const threadsDir = getThreadsDir();
-          const entries = await readDirectory(threadsDir);
-          
           const loadedThreads: Record<string, Thread> = {};
           const loadedThreadList: ThreadSummary[] = [];
 
-          for (const entry of entries) {
-            if (!entry.is_dir && entry.name.endsWith('.json')) {
-              try {
-                const content = await readFileContent(entry.path);
-                const thread: Thread = JSON.parse(content);
-                
-                loadedThreads[thread.id] = thread;
-                
-                // Get last message for preview
-                const lastMessage = thread.messages[thread.messages.length - 1];
-                
-                loadedThreadList.push({
-                  id: thread.id,
-                  title: thread.title,
-                  createdAt: thread.createdAt,
-                  updatedAt: thread.updatedAt,
-                  messageCount: thread.messages.length,
-                  preview: lastMessage?.content?.slice(0, 100) || '',
-                });
-              } catch (err) {
-                console.error('Failed to load thread file:', entry.path, err);
+          // Primary: DB
+          const dbThreads = await listThreadsFromDb();
+          for (const dbThread of dbThreads) {
+            const thread = fromDbThread(dbThread);
+            loadedThreads[thread.id] = thread;
+            const lastMessage = thread.messages[thread.messages.length - 1];
+            loadedThreadList.push({
+              id: thread.id,
+              title: thread.title,
+              createdAt: thread.createdAt,
+              updatedAt: thread.updatedAt,
+              messageCount: thread.messages.length,
+              preview: lastMessage?.content?.slice(0, 100) || '',
+            });
+          }
+
+          // Optional dev merge from JSON files (keep if not already present)
+          if (isDevMode()) {
+            const threadsDir = getThreadsDir();
+            const entries = await readDirectory(threadsDir);
+            for (const entry of entries) {
+              if (!entry.is_dir && entry.name.endsWith('.json')) {
+                try {
+                  const content = await readFileContent(entry.path);
+                  const thread: Thread = JSON.parse(content);
+                  if (!loadedThreads[thread.id]) {
+                    loadedThreads[thread.id] = thread;
+                    const lastMessage = thread.messages[thread.messages.length - 1];
+                    loadedThreadList.push({
+                      id: thread.id,
+                      title: thread.title,
+                      createdAt: thread.createdAt,
+                      updatedAt: thread.updatedAt,
+                      messageCount: thread.messages.length,
+                      preview: lastMessage?.content?.slice(0, 100) || '',
+                    });
+                  }
+                } catch (err) {
+                  console.error('Failed to load thread file:', entry.path, err);
+                }
               }
             }
           }
@@ -341,9 +442,9 @@ export const useThreadStore = create<ThreadState>()(
             isLoading: false,
           }));
 
-          console.log(`Loaded ${loadedThreadList.length} threads from files`);
+          console.log(`Loaded ${loadedThreadList.length} threads (db${isDevMode() ? '+dev files' : ''})`);
         } catch (error) {
-          console.error('Failed to load threads from files:', error);
+          console.error('Failed to load threads:', error);
           set({ isLoading: false });
         }
       },

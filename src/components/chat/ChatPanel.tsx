@@ -1,6 +1,7 @@
 import React, { useRef, useCallback, useState, useEffect } from "react";
+import { Search, Bug, Sparkles, TestTube } from 'lucide-react';
 import { ChatHistory } from "./ChatHistory";
-import { ChatInput } from "./ChatInput";
+import { ChatInput, type AttachedFile } from "./ChatInput";
 import { ChatHeader } from "./ChatHeader";
 import { ThreadHistory } from "./ThreadHistory";
 import { ToolApprovalBanner } from "./ToolApprovalBanner";
@@ -8,8 +9,13 @@ import { useChatStore } from "../../store/useChatStore";
 import { useThreadStore } from "../../store/useThreadStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
+import { useContextStore } from "../../store/useContextStore";
+import { useAuditStore } from "../../store/useAuditStore";
 import { getAgentService, initLLMProvider } from "../../services";
+import { estimateTokens, estimateToolsTokens } from "../../services/token-estimator";
+import { toolRegistry } from "../../tools";
 import { registerAllExecutors } from "../../tools";
+import { buildQueryContext, getIDEContext } from "../../services/context-builder";
 import type {
   ToolProposal,
   ToolCall,
@@ -91,6 +97,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
     // Clear agent history for new chat
     const agent = getAgentService();
     agent.clearHistory();
+    // Reset context usage tracking
+    useContextStore.getState().reset();
     // Don't create thread yet - just clear current
     clearCurrentThread();
   }, [clearCurrentThread]);
@@ -141,7 +149,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
   }, [rootPath, refreshDirectory]);
 
   const handleSend = useCallback(
-    async (content: string) => {
+    async (content: string, attachedFiles?: AttachedFile[]) => {
       // Reset timeline
       timelineRef.current = [];
 
@@ -151,11 +159,28 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
         threadId = createThread();
       }
 
-      // Add user message
+      // Build Cursor-style context with IDE state and attached files
+      const ideContext = getIDEContext();
+      const { formattedContext, filesWithContent, filesAsPathsOnly } = await buildQueryContext(
+        content,
+        attachedFiles,
+        ideContext
+      );
+
+      // Log context info for debugging
+      if (attachedFiles && attachedFiles.length > 0) {
+        console.log(`[Context] ${filesWithContent.length} files with content, ${filesAsPathsOnly.length} as paths only`);
+      }
+
+      // Add user message (show original content to user, but send full context to AI)
+      const displayContent = attachedFiles && attachedFiles.length > 0
+        ? `[${attachedFiles.map(f => f.name).join(', ')}]\n\n${content}`
+        : content;
+
       const userMessage: Message = {
         id: generateId(),
         sender: "user",
-        content,
+        content: displayContent,
         timestamp: Date.now(),
       };
       addMessageToThread(userMessage);
@@ -196,6 +221,49 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
         defaultMaxTokens: llmConfig.defaultMaxTokens,
       });
 
+      // Update context store with provider limits
+      const contextStore = useContextStore.getState();
+      contextStore.setContextWindow(
+        llmConfig.contextWindow || 128000,
+        llmConfig.maxOutputTokens || 8192
+      );
+
+      // Get agent to access conversation history
+      const agent = getAgentService();
+      const conversationHistory = agent.getHistory();
+
+      // Get all available tools for token estimation
+      const availableTools = toolRegistry.getToolDefinitions();
+
+      // Estimate FULL request context (system prompt + history + new message + tools)
+      // This gives an accurate picture of what's being sent to the LLM
+      const systemPromptTokens = estimateTokens(
+        "Aurora system prompt (~2000 chars)", // Approximate system prompt
+        'text'
+      ) + 500; // Add buffer for system prompt
+
+      // Simple token estimation for history - just count content
+      let historyTokens = 0;
+      for (const m of conversationHistory) {
+        historyTokens += estimateTokens(m.content || '', 'mixed');
+      }
+
+      const newMessageTokens = estimateTokens(formattedContext, 'mixed');
+      const toolsTokens = estimateToolsTokens(availableTools);
+
+      const totalEstimatedTokens = systemPromptTokens + historyTokens + newMessageTokens + toolsTokens;
+
+      console.log('[ChatPanel] Context estimation on send:', {
+        systemPrompt: systemPromptTokens,
+        history: historyTokens,
+        newMessage: newMessageTokens,
+        tools: toolsTokens,
+        total: totalEstimatedTokens,
+      });
+
+      // Update context store with estimated context BEFORE sending
+      contextStore.setEstimatedContext(totalEstimatedTokens);
+
       // Create a new assistant message that we'll stream into
       const assistantMessageId = generateId();
       currentMessageIdRef.current = assistantMessageId;
@@ -213,9 +281,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       let currentThinkingEventId: string | null = null;
       let currentContentEventId: string | null = null;
       let hasFileOperation = false;
+      let usageReceivedFromAPI = false;
+
+      // Get audit store for tracking tool executions
+      const auditStore = useAuditStore.getState();
+      const auditEntryIds = new Map<string, string>(); // toolCallId -> auditEntryId
 
       try {
-        const agent = getAgentService();
+        // Agent already obtained above for history access
         agent.updateConfig({
           thinkingEnabled,
           autoApproveTools,
@@ -225,7 +298,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           getToolApproval,
         });
 
-        await agent.chat(content, {
+        await agent.chat(formattedContext, {
           onToken: (token) => {
             // Close current thinking block when content starts
             if (currentThinkingEventId) {
@@ -368,6 +441,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             });
           },
           onToolExecutionStart: (toolCall) => {
+            const toolName = toolCall.function.name;
+            let parsedArgs = {};
+            try {
+              parsedArgs = JSON.parse(toolCall.function.arguments || '{}');
+            } catch {
+              parsedArgs = { raw: toolCall.function.arguments };
+            }
+
+            // Add to audit store
+            const riskLevel = toolRegistry.getRiskLevel(toolName);
+            const auditId = auditStore.addEntry({
+              toolName,
+              args: parsedArgs,
+              status: 'executing',
+              riskLevel,
+              threadId: threadId || undefined,
+            });
+            auditEntryIds.set(toolCall.id, auditId);
+
             // Find tool event and update status
             const toolEvent = timelineRef.current.find(
               (e) => e.type === "tool" && e.tool?.id === toolCall.id,
@@ -379,6 +471,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             }
           },
           onToolExecutionComplete: (toolCall, result) => {
+            // Update audit store entry
+            const auditId = auditEntryIds.get(toolCall.id);
+            if (auditId) {
+              const entry = auditStore.entries.find(e => e.id === auditId);
+              const duration = entry ? Date.now() - entry.timestamp : undefined;
+              auditStore.updateEntry(auditId, {
+                status: 'executed',
+                result: result.substring(0, 500), // Truncate for storage
+                duration,
+              });
+            }
+
             // Find tool event and update status
             const toolEvent = timelineRef.current.find(
               (e) => e.type === "tool" && e.tool?.id === toolCall.id,
@@ -394,6 +498,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
               setTimeout(() => refreshFileExplorer(), 100);
             }
           },
+          onUsage: (usage) => {
+            // Update context store with actual usage from API
+            usageReceivedFromAPI = true;
+            const contextStore = useContextStore.getState();
+            contextStore.updateUsage({
+              promptTokens: usage.prompt_tokens,
+              completionTokens: usage.completion_tokens,
+              totalTokens: usage.total_tokens,
+            });
+            console.log('[ChatPanel] Token usage from API:', usage);
+          },
           onComplete: (finalMessage) => {
             // Check if we have any content in timeline
             const hasContentEvent = timelineRef.current.some(
@@ -405,68 +520,45 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
               (e) => e.type === "tool",
             );
 
-            // Get the last timeline event
-            const lastEvent =
-              timelineRef.current[timelineRef.current.length - 1];
+            // Close any open thinking blocks first
+            if (currentThinkingEventId) {
+              updateTimelineEvent(currentThinkingEventId, {
+                isThinking: false,
+              });
+              currentThinkingEventId = null;
+            }
 
             // If we have final content from the API that wasn't streamed, add it
             if (finalMessage?.content && !hasContentEvent) {
-              // Close thinking first
-              if (currentThinkingEventId) {
-                updateTimelineEvent(currentThinkingEventId, {
-                  isThinking: false,
-                });
-                currentThinkingEventId = null;
-              }
               addTimelineEvent({
                 type: "content",
                 content: finalMessage.content,
               });
             }
-            // If no content but last event is thinking after tool calls,
-            // convert the last thinking to content (DeepSeek behavior)
-            else if (
-              !hasContentEvent &&
-              hasToolCalls &&
-              lastEvent?.type === "thinking" &&
-              lastEvent.thinking
-            ) {
-              // Check if it looks like a final response (not just reasoning)
-              const thinkingText = lastEvent.thinking;
-              const isFinalResponse =
-                thinkingText.length > 50 &&
-                (/^(Perfect|Great|Done|I've|The file|Here's|I have|Successfully|Based on|Now|So)/i.test(
-                  thinkingText,
-                ) ||
-                  /created|completed|finished|summary|covers|contains/i.test(
-                    thinkingText,
-                  ));
+            // If no content event exists, find the last thinking event after tool calls
+            // and convert it to content (handles DeepSeek/GLM behavior where response
+            // comes as reasoning_content instead of content)
+            else if (!hasContentEvent && hasToolCalls) {
+              // Find the last thinking event (the final response)
+              const thinkingEvents = timelineRef.current.filter(
+                (e) => e.type === "thinking" && e.thinking
+              );
 
-              if (isFinalResponse) {
-                // Convert this thinking event to content
-                updateTimelineEvent(lastEvent.id, {
-                  type: "content",
-                  content: thinkingText,
-                  thinking: undefined,
-                  isThinking: false,
-                });
-                currentThinkingEventId = null;
-              } else {
-                // Just close the thinking block
-                if (currentThinkingEventId) {
-                  updateTimelineEvent(currentThinkingEventId, {
+              if (thinkingEvents.length > 0) {
+                // Get the last thinking event
+                const lastThinking = thinkingEvents[thinkingEvents.length - 1];
+                const thinkingText = lastThinking.thinking!;
+
+                // If it's substantial content (more than just brief reasoning),
+                // convert it to content for display
+                if (thinkingText.length > 30) {
+                  updateTimelineEvent(lastThinking.id, {
+                    type: "content",
+                    content: thinkingText,
+                    thinking: undefined,
                     isThinking: false,
                   });
-                  currentThinkingEventId = null;
                 }
-              }
-            } else {
-              // Just close any open thinking blocks
-              if (currentThinkingEventId) {
-                updateTimelineEvent(currentThinkingEventId, {
-                  isThinking: false,
-                });
-                currentThinkingEventId = null;
               }
             }
 
@@ -474,13 +566,39 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             if (hasFileOperation) {
               refreshFileExplorer();
             }
+
+            // Fallback: If no usage was received from API, estimate based on content
+            if (!usageReceivedFromAPI) {
+              const contextStore = useContextStore.getState();
+              // Estimate total response tokens from timeline
+              let responseTokens = 0;
+              for (const event of timelineRef.current) {
+                if (event.type === 'content' && event.content) {
+                  responseTokens += estimateTokens(event.content, 'mixed');
+                } else if (event.type === 'thinking' && event.thinking) {
+                  responseTokens += estimateTokens(event.thinking, 'mixed');
+                } else if (event.type === 'tool' && event.tool?.result) {
+                  responseTokens += estimateTokens(event.tool.result, 'json');
+                }
+              }
+              // Add estimated response tokens to context
+              const currentContext = contextStore.usedContextTokens;
+              contextStore.setEstimatedContext(currentContext + responseTokens);
+              console.log('[ChatPanel] Estimated response tokens (no API usage):', responseTokens);
+            }
           },
           onError: (error) => {
-            // Add error as content
-            addTimelineEvent({
-              type: "content",
-              content: `Error: ${error.message}`,
-            });
+            // Don't show error if request was cancelled by user
+            const isCancelled = error.message === 'Request cancelled' ||
+                                error.name === 'AbortError' ||
+                                error.message.includes('aborted');
+
+            if (!isCancelled) {
+              addTimelineEvent({
+                type: "content",
+                content: `Error: ${error.message}`,
+              });
+            }
 
             if (currentThinkingEventId) {
               updateTimelineEvent(currentThinkingEventId, {
@@ -490,11 +608,40 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           },
         });
       } catch (error) {
-        console.error("Chat error:", error);
-        addTimelineEvent({
-          type: "content",
-          content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
-        });
+        // Don't show error if request was cancelled by user
+        const isCancelled = error instanceof Error && (
+          error.message === 'Request cancelled' ||
+          error.name === 'AbortError' ||
+          error.message.includes('aborted')
+        );
+
+        // Always close any open thinking blocks
+        if (currentThinkingEventId) {
+          updateTimelineEvent(currentThinkingEventId, {
+            isThinking: false,
+          });
+        }
+
+        // If cancelled, mark any executing tools as cancelled
+        if (isCancelled) {
+          for (const event of timelineRef.current) {
+            if (event.type === 'tool' && event.tool?.status === 'executing') {
+              updateTimelineEvent(event.id, {
+                tool: { ...event.tool, status: 'cancelled' as any },
+              });
+            }
+          }
+        }
+
+        if (!isCancelled) {
+          console.error("Chat error:", error);
+          addTimelineEvent({
+            type: "content",
+            content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+          });
+        } else {
+          console.log("[ChatPanel] Request cancelled by user");
+        }
       } finally {
         setLoading(false);
         currentMessageIdRef.current = null;
@@ -536,18 +683,52 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
   }, [handleApprove, pendingApproval, setToolApproval]);
 
   const handleReject = useCallback(() => {
-    if (pendingToolCallRef.current?.resolve) {
-      pendingToolCallRef.current.resolve(false);
+    const pending = pendingToolCallRef.current;
+    if (pending?.toolCall) {
+      const toolName = pending.toolCall.function.name;
+      let parsedArgs = {};
+      try {
+        parsedArgs = JSON.parse(pending.toolCall.function.arguments || '{}');
+      } catch {
+        parsedArgs = { raw: pending.toolCall.function.arguments };
+      }
+
+      // Add rejection to audit store
+      const auditStore = useAuditStore.getState();
+      const riskLevel = toolRegistry.getRiskLevel(toolName);
+      auditStore.addEntry({
+        toolName,
+        args: parsedArgs,
+        status: 'rejected',
+        riskLevel,
+        threadId: currentThreadId || undefined,
+      });
+
+      const toolEvent = timelineRef.current.find(
+        (e) => e.type === "tool" && e.tool?.id === pending.toolCall.id,
+      );
+      if (toolEvent) {
+        updateTimelineEvent(toolEvent.id, {
+          tool: {
+            ...toolEvent.tool!,
+            status: "rejected",
+            result: "User rejected this tool call.",
+          },
+        });
+      }
+    }
+    if (pending?.resolve) {
+      pending.resolve(false);
       pendingToolCallRef.current = null;
     }
     setPendingApproval(null);
-  }, [setPendingApproval]);
+  }, [setPendingApproval, updateTimelineEvent, currentThreadId]);
 
   const isEmpty = messages.length === 0;
 
   return (
     <div
-      className={`h-full flex flex-col bg-sidebar ${isDetached ? "" : "border-l border-border"}`}
+      className={`h-full flex flex-col bg-[#111111] ${isDetached ? "" : "border-l border-white/5"}`}
     >
       {/* Header with New Chat and History buttons */}
       <ChatHeader
@@ -557,45 +738,56 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
       {/* Chat Content */}
       {isEmpty ? (
-        <div className="flex-1 flex flex-col items-center justify-center text-text-secondary px-4">
-          <img 
-            src="/app-icon.svg" 
-            alt="Aurora" 
-            className="w-16 h-16 mb-4"
-          />
-          <div className="text-lg font-medium text-text-primary mb-1">
-            Aurora
-          </div>
-          <div className="text-xs text-text-disabled mb-6">
-            AI-powered coding assistant
-          </div>
-          
-          {/* Suggested prompts */}
-          <div className="w-full max-w-sm space-y-2">
-            <div className="text-[10px] uppercase tracking-wider text-text-disabled mb-2 text-center">
-              Try asking
+        <div className="flex-1 flex flex-col items-center justify-center px-6 relative overflow-hidden">
+          {/* Ambient Background Gradient */}
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 bg-primary/5 rounded-full blur-[100px] pointer-events-none" />
+
+          <div className="relative z-10 flex flex-col items-center max-w-sm w-full">
+            <div className="w-20 h-20 mb-6 relative group cursor-default">
+              <div className="absolute inset-0 bg-primary/20 rounded-2xl blur-xl group-hover:bg-primary/30 transition-all duration-500" />
+              <img
+                src="/app-icon.svg"
+                alt="Aurora"
+                className="relative z-10 w-full h-full drop-shadow-xl transform group-hover:scale-105 transition-transform duration-500"
+              />
             </div>
-            {[
-              "Explain this codebase structure",
-              "Find and fix bugs in the current file",
-              "Create a new React component",
-              "Write unit tests for selected code",
-            ].map((prompt, i) => (
-              <button
-                key={i}
-                onClick={() => {
-                  const input = document.querySelector('textarea[placeholder*="Message"]') as HTMLTextAreaElement;
-                  if (input) {
-                    input.value = prompt;
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    input.focus();
-                  }
-                }}
-                className="w-full px-3 py-2 text-left text-xs text-text-secondary bg-input/30 hover:bg-input/50 rounded-lg border border-border/50 hover:border-border transition-colors"
-              >
-                {prompt}
-              </button>
-            ))}
+
+            <h1 className="text-2xl font-bold text-white mb-2 tracking-tight">
+              Aurora
+            </h1>
+            <p className="text-sm text-zinc-400 text-center mb-10 leading-relaxed max-w-[280px]">
+              Your advanced AI engineering companion for complex tasks.
+            </p>
+
+            {/* Suggested prompts grid */}
+            <div className="w-full grid grid-cols-1 gap-2.5">
+              {[
+                { Icon: Search, label: "Analyze Codebase", prompt: "Explain the architecture of this project", color: "text-blue-400" },
+                { Icon: Bug, label: "Find Bugs", prompt: "Scan the current file for potential bugs", color: "text-red-400" },
+                { Icon: Sparkles, label: "Generate Feature", prompt: "Create a new React component for...", color: "text-purple-400" },
+                { Icon: TestTube, label: "Write Tests", prompt: "Write unit tests for the selected code", color: "text-emerald-400" },
+              ].map(({ Icon, label, prompt, color }, i) => (
+                <button
+                  key={i}
+                  onClick={() => {
+                    const input = document.querySelector('textarea[placeholder*="Message"]') as HTMLTextAreaElement;
+                    if (input) {
+                      input.value = prompt;
+                      input.dispatchEvent(new Event('input', { bubbles: true }));
+                      input.focus();
+                    }
+                  }}
+                  className="group flex items-center gap-3 px-3 py-2.5 text-left bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 hover:border-white/10 rounded-xl transition-all duration-200"
+                >
+                  <div className={`p-1.5 rounded-lg bg-white/5 group-hover:bg-white/10 transition-colors ${color}`}>
+                    <Icon size={14} strokeWidth={2.5} />
+                  </div>
+                  <span className="text-[13px] font-medium text-zinc-300 group-hover:text-white transition-colors">
+                    {label}
+                  </span>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       ) : (

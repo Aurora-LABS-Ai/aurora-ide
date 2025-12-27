@@ -2,9 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+
+use notify::{recommended_watcher, Config, Event, EventKind, RecursiveMode, Watcher};
+use tauri::Emitter;
 
 pub mod state;
 pub mod settings;
+pub mod threads;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileEntry {
@@ -30,6 +35,12 @@ pub struct SystemInfo {
     pub hostname: String,
 }
 
+static FS_WATCHER: OnceLock<Mutex<Option<notify::RecommendedWatcher>>> = OnceLock::new();
+
+fn get_watcher_handle() -> &'static Mutex<Option<notify::RecommendedWatcher>> {
+    FS_WATCHER.get_or_init(|| Mutex::new(None))
+}
+
 /// Read directory contents
 #[tauri::command]
 pub async fn read_directory(path: String) -> Result<Vec<FileEntry>, String> {
@@ -52,8 +63,8 @@ pub async fn read_directory(path: String) -> Result<Vec<FileEntry>, String> {
                 let file_path = entry.path();
                 let metadata = entry.metadata().ok();
 
-                // Skip hidden files/folders (starting with .)
-                if file_name.starts_with('.') {
+                // Skip hidden files/folders (starting with .) except .aurora
+                if file_name.starts_with('.') && file_name != ".aurora" {
                     continue;
                 }
 
@@ -313,10 +324,291 @@ pub async fn rename_path(old_path: String, new_path: String) -> Result<(), Strin
         .map_err(|e| format!("Failed to rename: {}", e))
 }
 
+/// Copy a file or folder to a new location
+#[tauri::command]
+pub async fn copy_path(source: String, destination: String) -> Result<(), String> {
+    let src = Path::new(&source);
+    let dest = Path::new(&destination);
+
+    if !src.exists() {
+        return Err(format!("Source does not exist: {}", source));
+    }
+
+    if dest.exists() {
+        return Err(format!("Destination already exists: {}", destination));
+    }
+
+    // Create parent directories if needed
+    if let Some(parent) = dest.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directories: {}", e))?;
+        }
+    }
+
+    if src.is_file() {
+        fs::copy(src, dest)
+            .map_err(|e| format!("Failed to copy file: {}", e))?;
+    } else if src.is_dir() {
+        copy_dir_recursive(src, dest)?;
+    }
+
+    Ok(())
+}
+
+/// Recursively copy a directory
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
+    fs::create_dir_all(dest)
+        .map_err(|e| format!("Failed to create directory: {}", e))?;
+
+    for entry in fs::read_dir(src).map_err(|e| format!("Failed to read directory: {}", e))? {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let src_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dest_path)?;
+        } else {
+            fs::copy(&src_path, &dest_path)
+                .map_err(|e| format!("Failed to copy file: {}", e))?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Get the current workspace root directory
 #[tauri::command]
 pub async fn get_workspace_root() -> Result<String, String> {
     std::env::current_dir()
         .map(|path| path.to_string_lossy().to_string())
         .map_err(|e| format!("Failed to get current directory: {}", e))
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct FsEventPayload {
+    pub paths: Vec<String>,
+    pub kind: String,
+}
+
+/// Start a filesystem watcher that emits `fs-changed` events to the frontend.
+#[tauri::command]
+pub async fn start_fs_watcher(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let target = Path::new(&path);
+    if !target.exists() {
+        return Err(format!("Watch path does not exist: {}", path));
+    }
+
+    // Stop existing watcher if any
+    {
+        let mut guard = get_watcher_handle()
+            .lock()
+            .map_err(|e| format!("Failed to lock watcher: {}", e))?;
+        *guard = None;
+    }
+
+    let app_handle = app.clone();
+    let mut watcher = recommended_watcher(move |res: Result<Event, notify::Error>| {
+        if let Ok(event) = res {
+            // Map event kind to string
+            let kind_str = match event.kind {
+                EventKind::Create(_) => "create",
+                EventKind::Modify(_) => "modify",
+                EventKind::Remove(_) => "remove",
+                EventKind::Any => "any",
+                EventKind::Access(_) => "access",
+                EventKind::Other => "other",
+                _ => "other",
+            };
+
+            let paths: Vec<String> = event
+                .paths
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+
+            // Emit to frontend; ignore errors if no windows
+            let _ = app_handle.emit(
+                "fs-changed",
+                FsEventPayload {
+                    paths,
+                    kind: kind_str.to_string(),
+                },
+            );
+        }
+    })
+    .map_err(|e| format!("Failed to create watcher: {}", e))?;
+
+    watcher
+        .configure(Config::default().with_compare_contents(false))
+        .map_err(|e| format!("Failed to configure watcher: {}", e))?;
+
+    watcher
+        .watch(target, RecursiveMode::Recursive)
+        .map_err(|e| format!("Failed to watch path: {}", e))?;
+
+    {
+        let mut guard = get_watcher_handle()
+            .lock()
+            .map_err(|e| format!("Failed to lock watcher: {}", e))?;
+        *guard = Some(watcher);
+    }
+
+    Ok(())
+}
+
+/// Stop the filesystem watcher
+#[tauri::command]
+pub async fn stop_fs_watcher() -> Result<(), String> {
+    let mut guard = get_watcher_handle()
+        .lock()
+        .map_err(|e| format!("Failed to lock watcher: {}", e))?;
+    *guard = None;
+    Ok(())
+}
+
+/// Reveal a file or folder in the system file explorer
+#[tauri::command]
+pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
+    let target_path = Path::new(&path);
+    
+    if !target_path.exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+
+    // Determine the path to reveal (parent folder if it's a file)
+    #[allow(unused_variables)]
+    let reveal_path = if target_path.is_file() {
+        target_path.parent().unwrap_or(target_path)
+    } else {
+        target_path
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, use explorer with /select to highlight the item
+        let select_path = if target_path.is_file() {
+            format!("/select,{}", path)
+        } else {
+            path.clone()
+        };
+        
+        Command::new("explorer")
+            .arg(&select_path)
+            .spawn()
+            .map_err(|e| format!("Failed to open explorer: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open Finder: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Try xdg-open first, then fall back to common file managers
+        let result = Command::new("xdg-open")
+            .arg(reveal_path.to_string_lossy().to_string())
+            .spawn();
+        
+        if result.is_err() {
+            // Try nautilus (GNOME)
+            let _ = Command::new("nautilus")
+                .arg("--select")
+                .arg(&path)
+                .spawn();
+        }
+    }
+
+    Ok(())
+}
+
+/// Open a terminal at the specified path
+#[tauri::command]
+pub async fn open_in_terminal(path: String) -> Result<(), String> {
+    let target_path = Path::new(&path);
+    
+    // Use the path directly if it's a directory, otherwise use its parent
+    let terminal_path = if target_path.is_dir() {
+        target_path.to_path_buf()
+    } else {
+        target_path.parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| target_path.to_path_buf())
+    };
+
+    if !terminal_path.exists() {
+        return Err(format!("Path does not exist: {}", terminal_path.display()));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Try Windows Terminal first, then fall back to cmd
+        let wt_result = Command::new("wt")
+            .arg("-d")
+            .arg(terminal_path.to_string_lossy().to_string())
+            .spawn();
+        
+        if wt_result.is_err() {
+            // Fall back to PowerShell in a new window
+            Command::new("powershell")
+                .arg("-NoExit")
+                .arg("-Command")
+                .arg(format!("cd '{}'", terminal_path.display()))
+                .spawn()
+                .map_err(|e| format!("Failed to open terminal: {}", e))?;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // Open Terminal.app with the specified directory
+        let script = format!(
+            "tell application \"Terminal\" to do script \"cd '{}'\"",
+            terminal_path.display()
+        );
+        Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .spawn()
+            .map_err(|e| format!("Failed to open Terminal: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Try common terminal emulators
+        let terminals = ["gnome-terminal", "konsole", "xfce4-terminal", "xterm"];
+        let mut opened = false;
+        
+        for terminal in terminals {
+            let result = match terminal {
+                "gnome-terminal" => Command::new(terminal)
+                    .arg("--working-directory")
+                    .arg(terminal_path.to_string_lossy().to_string())
+                    .spawn(),
+                "konsole" => Command::new(terminal)
+                    .arg("--workdir")
+                    .arg(terminal_path.to_string_lossy().to_string())
+                    .spawn(),
+                _ => Command::new(terminal)
+                    .current_dir(&terminal_path)
+                    .spawn(),
+            };
+            
+            if result.is_ok() {
+                opened = true;
+                break;
+            }
+        }
+        
+        if !opened {
+            return Err("No supported terminal emulator found".to_string());
+        }
+    }
+
+    Ok(())
 }

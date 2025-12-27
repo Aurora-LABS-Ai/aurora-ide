@@ -133,6 +133,7 @@ export interface ChatCompletionChunk {
   created: number;
   model: string;
   choices: StreamChoice[];
+  usage?: UsageInfo; // Some APIs include usage in final chunk
 }
 
 // ============================================
@@ -173,6 +174,7 @@ export interface StreamCallbacks {
   onToken?: (token: string) => void;
   onThinking?: (thinking: string) => void;
   onToolCall?: (toolCall: ToolCallRequest) => void;
+  onUsage?: (usage: UsageInfo) => void;
   onComplete?: (response: AssistantMessage) => void;
   onError?: (error: Error) => void;
 }

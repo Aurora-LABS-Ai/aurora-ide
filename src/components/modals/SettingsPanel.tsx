@@ -26,7 +26,7 @@ const AddProviderForm: React.FC<AddProviderFormProps> = ({ onSave, onCancel }) =
 
   const handleSubmit = () => {
     if (!name.trim() || !baseUrl.trim() || !model.trim()) return;
-    
+
     onSave({
       name: name.trim(),
       baseUrl: baseUrl.trim().replace(/\/$/, ''),
@@ -43,7 +43,7 @@ const AddProviderForm: React.FC<AddProviderFormProps> = ({ onSave, onCancel }) =
   return (
     <div className="p-3 border border-primary/30 rounded-lg bg-primary/5 space-y-2">
       <h3 className="text-xs font-medium text-text-primary">Add OpenAI-Compatible Provider</h3>
-      
+
       <div className="grid grid-cols-2 gap-2">
         <div>
           <label className="text-[10px] text-text-secondary block mb-0.5">Name *</label>
@@ -161,9 +161,9 @@ interface ProviderCardProps {
   onToggleApiKey: () => void;
 }
 
-const ProviderCard: React.FC<ProviderCardProps> = ({ 
-  provider, 
-  isExpanded, 
+const ProviderCard: React.FC<ProviderCardProps> = ({
+  provider,
+  isExpanded,
   onToggleExpand,
   showApiKey,
   onToggleApiKey,
@@ -201,7 +201,7 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
   return (
     <div className="border border-border rounded-lg bg-titlebar overflow-hidden">
       {/* Header */}
-      <div 
+      <div
         className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-input/30"
         onClick={onToggleExpand}
       >
@@ -341,8 +341,8 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
             <label className="text-[10px] text-text-disabled block mb-1">Available Models</label>
             <div className="flex flex-wrap gap-1">
               {(provider.customModels || [provider.model]).map((model) => (
-                <span 
-                  key={model} 
+                <span
+                  key={model}
                   className="group flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-input text-text-secondary font-mono border border-border hover:border-primary/50"
                 >
                   {model}
@@ -370,9 +370,11 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
 
 export const SettingsPanel: React.FC = () => {
   const { isSettingsOpen, setSettingsOpen } = useUiStore();
-  const { 
-    fontSize, 
+  const {
+    fontSize,
     setFontSize,
+    wrapMode,
+    setWrapMode,
     providers,
     addCustomProvider,
     thinkingEnabled,
@@ -381,8 +383,10 @@ export const SettingsPanel: React.FC = () => {
     setTemperature,
     maxTokens,
     setMaxTokens,
+    autoSave,
+    setAutoSave,
   } = useSettingsStore();
-  
+
   const [activeTab, setActiveTab] = useState<'providers' | 'tools' | 'general' | 'thinking'>('providers');
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
@@ -405,14 +409,14 @@ export const SettingsPanel: React.FC = () => {
         {/* Sidebar */}
         <div className="w-40 border-r border-border bg-titlebar p-2 flex flex-col gap-0.5">
           <div className="px-2 py-1.5 text-[10px] font-semibold text-text-disabled uppercase tracking-wider">Settings</div>
-          
+
           {[
             { id: 'providers', label: 'Providers', icon: Server },
             { id: 'thinking', label: 'Thinking', icon: Brain },
             { id: 'tools', label: 'Tools', icon: Shield },
             { id: 'general', label: 'General', icon: Layout },
           ].map(({ id, label, icon: Icon }) => (
-            <button 
+            <button
               key={id}
               onClick={() => setActiveTab(id as typeof activeTab)}
               className={clsx(
@@ -429,138 +433,178 @@ export const SettingsPanel: React.FC = () => {
         {/* Content */}
         <div className="flex-1 flex flex-col min-w-0">
           <div className="h-10 border-b border-border flex items-center justify-between px-4 bg-panel-header">
-             <h2 className="text-xs font-medium text-text-primary">
-               {activeTab === 'providers' ? 'LLM Providers' : 
-                activeTab === 'tools' ? 'Tool Approval' : 
-                activeTab === 'thinking' ? 'Thinking Mode' :
-                'General Settings'}
-             </h2>
-             <button 
-               onClick={() => setSettingsOpen(false)}
-               className="p-1 rounded text-text-secondary hover:bg-input hover:text-text-primary"
-             >
-               <X className="w-3.5 h-3.5" />
-             </button>
+            <h2 className="text-xs font-medium text-text-primary">
+              {activeTab === 'providers' ? 'LLM Providers' :
+                activeTab === 'tools' ? 'Tool Approval' :
+                  activeTab === 'thinking' ? 'Thinking Mode' :
+                    'General Settings'}
+            </h2>
+            <button
+              onClick={() => setSettingsOpen(false)}
+              className="p-1 rounded text-text-secondary hover:bg-input hover:text-text-primary"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
 
           <div className="flex-1 overflow-y-auto p-4 bg-sidebar scrollbar-thin">
-             {/* PROVIDERS TAB */}
-             {activeTab === 'providers' && (
-               <div className="space-y-3">
-                 <div className="flex items-center justify-between">
-                   <p className="text-[10px] text-text-secondary">
-                     Click provider to expand and edit Base URL, API Key, Models
-                   </p>
-                   <button
-                     onClick={() => setIsAddingProvider(true)}
-                     className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors"
-                   >
-                     <Plus className="w-3 h-3" />
-                     Add
-                   </button>
-                 </div>
+            {/* PROVIDERS TAB */}
+            {activeTab === 'providers' && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] text-text-secondary">
+                    Click provider to expand and edit Base URL, API Key, Models
+                  </p>
+                  <button
+                    onClick={() => setIsAddingProvider(true)}
+                    className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors"
+                  >
+                    <Plus className="w-3 h-3" />
+                    Add
+                  </button>
+                </div>
 
-                 {isAddingProvider && (
-                   <AddProviderForm
-                     onSave={handleAddProvider}
-                     onCancel={() => setIsAddingProvider(false)}
-                   />
-                 )}
+                {isAddingProvider && (
+                  <AddProviderForm
+                    onSave={handleAddProvider}
+                    onCancel={() => setIsAddingProvider(false)}
+                  />
+                )}
 
-                 <div className="space-y-2">
-                   {providers.map((provider) => (
-                     <ProviderCard
-                       key={provider.id}
-                       provider={provider}
-                       isExpanded={expandedProvider === provider.id}
-                       onToggleExpand={() => setExpandedProvider(
-                         expandedProvider === provider.id ? null : provider.id
-                       )}
-                       showApiKey={showApiKey[provider.id] || false}
-                       onToggleApiKey={() => toggleApiKeyVisibility(provider.id)}
-                     />
-                   ))}
-                 </div>
-               </div>
-             )}
+                <div className="space-y-2">
+                  {providers.map((provider) => (
+                    <ProviderCard
+                      key={provider.id}
+                      provider={provider}
+                      isExpanded={expandedProvider === provider.id}
+                      onToggleExpand={() => setExpandedProvider(
+                        expandedProvider === provider.id ? null : provider.id
+                      )}
+                      showApiKey={showApiKey[provider.id] || false}
+                      onToggleApiKey={() => toggleApiKeyVisibility(provider.id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
 
-             {/* THINKING TAB */}
-             {activeTab === 'thinking' && (
-               <div className="space-y-3">
-                 <div className="p-3 border border-border rounded-lg bg-titlebar">
-                   <div className="flex items-center justify-between">
-                     <div>
-                       <h3 className="text-xs font-medium text-text-primary">Enable Thinking</h3>
-                       <p className="text-[10px] text-text-secondary">Show reasoning process</p>
-                     </div>
-                     <button
-                       onClick={() => setThinkingEnabled(!thinkingEnabled)}
-                       className={clsx(
-                         "relative w-8 h-4 rounded-full transition-colors",
-                         thinkingEnabled ? "bg-primary" : "bg-input border border-border"
-                       )}
-                     >
-                       <div className={clsx(
-                         "absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform",
-                         thinkingEnabled ? "translate-x-4" : "translate-x-0.5"
-                       )} />
-                     </button>
-                   </div>
-                 </div>
-
-                 <div className="p-3 border border-border rounded-lg bg-titlebar space-y-3">
-                   <h3 className="text-xs font-medium text-text-primary">Generation</h3>
-                   
-                   <div>
-                     <div className="flex items-center justify-between mb-1">
-                       <label className="text-[10px] text-text-secondary">Temperature</label>
-                       <span className="text-[10px] text-primary font-mono">{temperature.toFixed(2)}</span>
-                     </div>
-                     <input
-                       type="range" min="0" max="1" step="0.05"
-                       value={temperature}
-                       onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                       className="w-full h-1 bg-input-border rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
-                     />
-                   </div>
-
-                   <div>
-                     <div className="flex items-center justify-between mb-1">
-                       <label className="text-[10px] text-text-secondary">Max Tokens</label>
-                       <span className="text-[10px] text-primary font-mono">{maxTokens.toLocaleString()}</span>
-                     </div>
-                     <input
-                       type="range" min="1024" max="131072" step="1024"
-                       value={maxTokens}
-                       onChange={(e) => setMaxTokens(parseInt(e.target.value))}
-                       className="w-full h-1 bg-input-border rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
-                     />
-                   </div>
-                 </div>
-               </div>
-             )}
-
-             {/* TOOLS TAB */}
-             {activeTab === 'tools' && <ToolSettingsTab />}
-
-             {/* GENERAL TAB */}
-             {activeTab === 'general' && (
-               <div className="space-y-3">
-                  <div className="p-3 border border-border rounded-lg bg-titlebar">
-                     <h3 className="text-xs font-medium text-text-primary mb-2">Editor</h3>
-                     <div className="flex items-center justify-between">
-                       <label className="text-[10px] text-text-secondary">Font Size</label>
-                       <select 
-                         value={fontSize}
-                         onChange={(e) => setFontSize(Number(e.target.value))}
-                         className="bg-input border border-input-border rounded px-2 py-1 text-[10px] text-text-primary"
-                       >
-                         {[12, 14, 16, 18].map(s => <option key={s} value={s}>{s}px</option>)}
-                       </select>
-                     </div>
+            {/* THINKING TAB */}
+            {activeTab === 'thinking' && (
+              <div className="space-y-3">
+                <div className="p-3 border border-border rounded-lg bg-titlebar">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-xs font-medium text-text-primary">Enable Thinking</h3>
+                      <p className="text-[10px] text-text-secondary">Show reasoning process</p>
+                    </div>
+                    <button
+                      onClick={() => setThinkingEnabled(!thinkingEnabled)}
+                      className={clsx(
+                        "relative w-8 h-4 rounded-full transition-colors",
+                        thinkingEnabled ? "bg-primary" : "bg-input border border-border"
+                      )}
+                    >
+                      <div className={clsx(
+                        "absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform",
+                        thinkingEnabled ? "translate-x-4" : "translate-x-0.5"
+                      )} />
+                    </button>
                   </div>
-               </div>
-             )}
+                </div>
+
+                <div className="p-3 border border-border rounded-lg bg-titlebar space-y-3">
+                  <h3 className="text-xs font-medium text-text-primary">Generation</h3>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[10px] text-text-secondary">Temperature</label>
+                      <span className="text-[10px] text-primary font-mono">{temperature.toFixed(2)}</span>
+                    </div>
+                    <input
+                      type="range" min="0" max="1" step="0.05"
+                      value={temperature}
+                      onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-input-border rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[10px] text-text-secondary">Max Tokens</label>
+                      <span className="text-[10px] text-primary font-mono">{maxTokens.toLocaleString()}</span>
+                    </div>
+                    <input
+                      type="range" min="1024" max="131072" step="1024"
+                      value={maxTokens}
+                      onChange={(e) => setMaxTokens(parseInt(e.target.value))}
+                      className="w-full h-1 bg-input-border rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TOOLS TAB */}
+            {activeTab === 'tools' && <ToolSettingsTab />}
+
+            {/* GENERAL TAB */}
+            {activeTab === 'general' && (
+              <div className="space-y-3">
+                <div className="p-3 border border-border rounded-lg bg-titlebar">
+                  <h3 className="text-xs font-medium text-text-primary mb-2">Editor</h3>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] text-text-secondary">Font Size</label>
+                      <select
+                        value={fontSize}
+                        onChange={(e) => setFontSize(Number(e.target.value))}
+                        className="bg-input border border-input-border rounded px-2 py-1 text-[10px] text-text-primary"
+                      >
+                        {[12, 14, 16, 18].map(s => <option key={s} value={s}>{s}px</option>)}
+                      </select>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-[10px] text-text-secondary">Auto line wrap</p>
+                        <p className="text-[9px] text-text-disabled">Controls wrapping in editors and previews</p>
+                      </div>
+                      <button
+                        onClick={() => setWrapMode(!wrapMode)}
+                        className={clsx(
+                          "relative w-9 h-4 rounded-full transition-all duration-200 flex-shrink-0 overflow-hidden",
+                          wrapMode ? "bg-primary shadow-[0_0_8px_rgba(99,102,241,0.35)]" : "bg-input border border-border"
+                        )}
+                        aria-pressed={wrapMode}
+                        aria-label="Toggle auto line wrap"
+                      >
+                        <span
+                          className={clsx(
+                            "absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform duration-200",
+                            wrapMode ? "translate-x-4" : "translate-x-0"
+                          )}
+                        />
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-[10px] text-text-secondary">Auto Save</p>
+                        <p className="text-[9px] text-text-disabled">Automatically save files</p>
+                      </div>
+                      <select
+                        value={autoSave}
+                        onChange={(e) => setAutoSave(e.target.value as 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange')}
+                        className="bg-input border border-input-border rounded px-2 py-1 text-[10px] text-text-primary"
+                      >
+                        <option value="off">Off</option>
+                        <option value="afterDelay">After Delay (1s)</option>
+                        <option value="onFocusChange">On Focus Change</option>
+                        <option value="onWindowChange">On Window Change</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

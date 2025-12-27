@@ -8,6 +8,7 @@ interface MenuItem {
   danger?: boolean;
   disabled?: boolean;
   divider?: boolean;
+  shortcut?: string;
 }
 
 interface ContextMenuProps {
@@ -101,7 +102,10 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }
             }`}
           >
             {item.icon && <span className="w-4 h-4 flex items-center justify-center">{item.icon}</span>}
-            <span>{item.label}</span>
+            <span className="flex-1">{item.label}</span>
+            {item.shortcut && (
+              <span className="text-[10px] text-text-disabled ml-4">{item.shortcut}</span>
+            )}
           </button>
         );
       })}

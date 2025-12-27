@@ -3,10 +3,11 @@
  * Central registration point for all tool executors
  */
 
-import { registerFileExecutors } from './file-executors';
+import { registerEnhancedFileExecutors } from './file-executors-enhanced';
 import { registerWorkspaceExecutors } from './workspace-executors';
 import { registerShellExecutors } from './shell-executors';
 import { registerEditorExecutors } from './editor-executors';
+import { registerTodoExecutors } from './todo-executors';
 
 // Track if executors have been registered
 let executorsRegistered = false;
@@ -21,17 +22,20 @@ export const registerAllExecutors = (): void => {
     return;
   }
 
-  // Register file tool executors
-  registerFileExecutors();
-  
+  // Register enhanced file tool executors with operation logging
+  registerEnhancedFileExecutors();
+
   // Register workspace tool executors
   registerWorkspaceExecutors();
-  
+
   // Register shell tool executors
   registerShellExecutors();
-  
+
   // Register editor tool executors
   registerEditorExecutors();
+
+  // Register todo tool executors
+  registerTodoExecutors();
 
   executorsRegistered = true;
   console.log('Tool executors registered successfully');
@@ -49,4 +53,5 @@ export { registerFileExecutors } from './file-executors';
 export { registerWorkspaceExecutors } from './workspace-executors';
 export { registerShellExecutors } from './shell-executors';
 export { registerEditorExecutors } from './editor-executors';
+export { registerTodoExecutors } from './todo-executors';
 

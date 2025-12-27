@@ -22,9 +22,55 @@ export interface SystemInfo {
   hostname: string;
 }
 
+// Thread persistence types (for DB bridge)
+export interface DbMessage {
+  id: string;
+  role: string;
+  content: string;
+  timestamp: string;
+  tool_calls?: Array<any>;
+  thinking?: string;
+  isThinking?: boolean;
+  tools?: any;
+  timeline?: any;
+  toolProposal?: any;
+}
+
+export interface DbThread {
+  id: string;
+  title: string;
+  summary?: string | null;
+  messages: DbMessage[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FsEventPayload {
+  paths: string[];
+  kind: string;
+}
+
 // Check if running in Tauri
 export const isTauri = (): boolean => {
   return typeof window !== 'undefined' && '__TAURI__' in window;
+};
+
+// Start filesystem watcher
+export const startFsWatcher = async (path: string): Promise<void> => {
+  if (!isTauri()) {
+    console.warn('startFsWatcher: Not running in Tauri');
+    return;
+  }
+  return invoke<void>('start_fs_watcher', { path });
+};
+
+// Stop filesystem watcher
+export const stopFsWatcher = async (): Promise<void> => {
+  if (!isTauri()) {
+    console.warn('stopFsWatcher: Not running in Tauri');
+    return;
+  }
+  return invoke<void>('stop_fs_watcher');
 };
 
 // File System Operations
@@ -156,6 +202,48 @@ export const renamePath = async (oldPath: string, newPath: string): Promise<void
   return invoke<void>('rename_path', { oldPath, newPath });
 };
 
+// Copy a file or folder to a new location
+export const copyPath = async (source: string, destination: string): Promise<void> => {
+  if (!isTauri()) {
+    console.warn('copyPath: Not running in Tauri');
+    return;
+  }
+  return invoke<void>('copy_path', { source, destination });
+};
+
+// Thread persistence (DB-backed)
+export const saveThreadToDb = async (thread: DbThread): Promise<void> => {
+  if (!isTauri()) {
+    console.warn('saveThreadToDb: Not running in Tauri');
+    return;
+  }
+  return invoke<void>('save_thread', { thread });
+};
+
+export const getThreadFromDb = async (id: string): Promise<DbThread | null> => {
+  if (!isTauri()) {
+    console.warn('getThreadFromDb: Not running in Tauri');
+    return null;
+  }
+  return invoke<DbThread | null>('get_thread', { id });
+};
+
+export const listThreadsFromDb = async (): Promise<DbThread[]> => {
+  if (!isTauri()) {
+    console.warn('listThreadsFromDb: Not running in Tauri');
+    return [];
+  }
+  return invoke<DbThread[]>('list_threads');
+};
+
+export const deleteThreadFromDb = async (id: string): Promise<void> => {
+  if (!isTauri()) {
+    console.warn('deleteThreadFromDb: Not running in Tauri');
+    return;
+  }
+  return invoke<void>('delete_thread', { id });
+};
+
 // Workspace helpers
 export const getWorkspaceRoot = async (): Promise<string | null> => {
   if (!isTauri()) {
@@ -168,5 +256,23 @@ export const getWorkspaceRoot = async (): Promise<string | null> => {
     console.error('Failed to fetch workspace root:', err);
     return null;
   }
+};
+
+// Reveal a file or folder in the system file explorer
+export const revealInExplorer = async (path: string): Promise<void> => {
+  if (!isTauri()) {
+    console.warn('revealInExplorer: Not running in Tauri');
+    return;
+  }
+  return invoke<void>('reveal_in_explorer', { path });
+};
+
+// Open a terminal at the specified path
+export const openInTerminal = async (path: string): Promise<void> => {
+  if (!isTauri()) {
+    console.warn('openInTerminal: Not running in Tauri');
+    return;
+  }
+  return invoke<void>('open_in_terminal', { path });
 };
 

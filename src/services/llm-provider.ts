@@ -182,6 +182,11 @@ export class LLMProvider {
       }
     }
 
+    // Request usage in streaming responses (OpenAI-compatible)
+    if (stream) {
+      request.stream_options = { include_usage: true };
+    }
+
     // Merge in any custom params
     if (this.config.customParams) {
       Object.assign(request, this.config.customParams);
@@ -304,7 +309,7 @@ export class LLMProvider {
 
     const decoder = new TextDecoder();
     let buffer = '';
-    
+
     // Accumulated message content
     let content = '';
     let reasoningContent = '';
@@ -313,47 +318,52 @@ export class LLMProvider {
     try {
       while (true) {
         const { done, value } = await reader.read();
-        
+
         if (done) break;
-        
+
         buffer += decoder.decode(value, { stream: true });
-        
+
         // Process complete SSE events
         const lines = buffer.split('\n');
         buffer = lines.pop() || ''; // Keep incomplete line in buffer
-        
+
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             const data = line.slice(6).trim();
-            
+
             // Check for stream end
             if (data === '[DONE]') {
               continue;
             }
-            
+
             try {
               const chunk: ChatCompletionChunk = JSON.parse(data);
-              
+
+              // Capture usage from chunk (usually in final chunk)
+              if (chunk.usage) {
+                callbacks.onUsage?.(chunk.usage);
+              }
+
               for (const choice of chunk.choices) {
                 const delta = choice.delta;
-                
+
                 // Handle reasoning/thinking content
                 if (delta.reasoning_content) {
                   reasoningContent += delta.reasoning_content;
                   callbacks.onThinking?.(delta.reasoning_content);
                 }
-                
+
                 // Handle regular content
                 if (delta.content) {
                   content += delta.content;
                   callbacks.onToken?.(delta.content);
                 }
-                
+
                 // Handle tool calls
                 if (delta.tool_calls) {
                   for (const tc of delta.tool_calls) {
                     const index = tc.index;
-                    
+
                     if (!toolCalls.has(index)) {
                       // New tool call
                       toolCalls.set(index, {
@@ -374,7 +384,7 @@ export class LLMProvider {
                         existing.function.arguments += tc.function.arguments;
                       }
                     }
-                    
+
                     // Notify about tool call update
                     const currentToolCall = toolCalls.get(index)!;
                     callbacks.onToolCall?.(currentToolCall);

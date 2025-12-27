@@ -211,6 +211,105 @@ export const fileSearchTool: ToolDefinition = {
   },
 };
 
+// ============================================
+// GREP TOOL (Ripgrep-style search)
+// ============================================
+export const grepTool: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'grep',
+    description: `Search for patterns in files using regex. Built on ripgrep for speed.
+
+Usage:
+- Use for exact symbol/string searches across the codebase
+- Supports full regex syntax (e.g., "log.*Error", "function\\s+\\w+")
+- Respects .gitignore by default
+- Output modes: "content" (default), "files_with_matches", "count"
+
+Examples:
+- grep(pattern="TODO", path="src/") - Find all TODOs in src
+- grep(pattern="function.*export", path=".", is_regex=true) - Find exported functions
+- grep(pattern="import.*react", path=".", case_insensitive=true) - Case-insensitive`,
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: {
+          type: 'string',
+          description: 'The search pattern. Supports regex syntax if is_regex is true.',
+        },
+        path: {
+          type: 'string',
+          description: 'Path to search in. Can be a file or directory. Defaults to workspace root.',
+          default: '.',
+        },
+        output_mode: {
+          type: 'string',
+          enum: ['content', 'files_with_matches', 'count'],
+          description: 'Output mode: "content" shows matching lines, "files_with_matches" shows file paths only, "count" shows match counts per file.',
+          default: 'content',
+        },
+        is_regex: {
+          type: 'boolean',
+          description: 'Whether to treat pattern as regex. Default: true',
+          default: true,
+        },
+        case_insensitive: {
+          type: 'boolean',
+          description: 'Case-insensitive search. Default: false',
+          default: false,
+        },
+        glob: {
+          type: 'string',
+          description: 'Glob pattern to filter files (e.g., "*.ts", "*.{js,jsx}")',
+        },
+        context_lines: {
+          type: 'number',
+          description: 'Number of context lines before and after match. Default: 0',
+          default: 0,
+        },
+        max_results: {
+          type: 'number',
+          description: 'Maximum number of results to return. Default: 50',
+          default: 50,
+        },
+      },
+      required: ['pattern'],
+    },
+  },
+};
+
+// ============================================
+// MULTI FILE READ TOOL (Cursor-style parallel reading)
+// ============================================
+export const multiFileReadTool: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'multi_file_read',
+    description: `Read multiple files in parallel (10-100x faster than reading files one by one).
+
+USE THIS TOOL when you need to read 2 or more files at once. This is significantly faster than calling file_read multiple times.
+
+Examples:
+- multi_file_read(paths=["src/App.tsx", "src/main.tsx", "src/types/index.ts"])
+- multi_file_read(paths=["package.json", "tsconfig.json", "vite.config.ts"])
+
+Returns: JSON with file contents, errors, and performance metrics.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        paths: {
+          type: 'array',
+          items: {
+            type: 'string',
+          },
+          description: 'Array of file paths to read. All files will be read in parallel for maximum speed.',
+        },
+      },
+      required: ['paths'],
+    },
+  },
+};
+
 // Export all file tools as an array
 export const fileTools: ToolDefinition[] = [
   fileCreateTool,
@@ -221,5 +320,7 @@ export const fileTools: ToolDefinition[] = [
   fileDeleteTool,
   fileExistsTool,
   fileSearchTool,
+  grepTool,
+  multiFileReadTool,
 ];
 

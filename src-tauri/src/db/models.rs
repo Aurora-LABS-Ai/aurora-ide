@@ -91,18 +91,28 @@ pub struct ThreadState {
     pub title: String,
     pub summary: Option<String>,
     pub messages: Vec<Message>,
-    pub created_at: OffsetDateTime,
-    pub updated_at: OffsetDateTime,
+    pub created_at: String, // ISO string or timestamp string
+    pub updated_at: String, // ISO string or timestamp string
 }
 
 /// Chat message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
+    #[serde(alias = "sender")]
     pub role: String, // "user", "assistant", "system", "tool"
     pub content: String,
-    pub timestamp: OffsetDateTime,
+    pub timestamp: String, // ISO string or timestamp string
     pub tool_calls: Option<Vec<ToolCall>>,
+    pub thinking: Option<String>,
+    #[serde(default)]
+    pub isThinking: Option<bool>,
+    #[serde(default)]
+    pub tools: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    pub timeline: Option<serde_json::Value>,
+    #[serde(rename = "toolProposal", default)]
+    pub tool_proposal: Option<serde_json::Value>,
 }
 
 /// Tool call in a message

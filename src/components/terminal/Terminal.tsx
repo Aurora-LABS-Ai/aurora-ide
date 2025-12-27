@@ -355,15 +355,24 @@ export const TerminalPanel: React.FC = () => {
                 {session.isRunning && (
                   <div className="w-1.5 h-1.5 rounded-full bg-[#007acc] animate-pulse flex-shrink-0" />
                 )}
-                <button
+                <span
+                  role="button"
+                  tabIndex={0}
                   onClick={(e) => {
                     e.stopPropagation();
                     closeSession(session.id);
                   }}
-                  className="opacity-0 group-hover:opacity-100 ml-1 p-0.5 hover:bg-[#3c3c3c] rounded transition-opacity flex-shrink-0"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      closeSession(session.id);
+                    }
+                  }}
+                  className="opacity-0 group-hover:opacity-100 ml-1 p-0.5 hover:bg-[#3c3c3c] rounded transition-opacity flex-shrink-0 outline-none focus:ring-1 focus:ring-[#3c3c3c]"
                 >
                   <X className="w-3 h-3" />
-                </button>
+                </span>
               </button>
             ))}
           </div>

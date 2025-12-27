@@ -110,6 +110,8 @@ interface SettingsState {
   // Editor Settings
   fontSize: number;
   setFontSize: (size: number) => void;
+  wrapMode: boolean;
+  setWrapMode: (enabled: boolean) => void;
 
   // Theme
   theme: "dark" | "light";
@@ -260,6 +262,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   // Editor Settings
   fontSize: 14,
+  wrapMode: true,
 
   // Theme
   theme: "dark",
@@ -332,6 +335,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           selectedModel: appSettings.selectedModel || "glm:glm-4.7",
           autoApproveTools: appSettings.autoApproveTools ?? false,
           fontSize: appSettings.fontSize ?? 14,
+          wrapMode: appSettings.wrapMode ?? true,
           theme: (appSettings.theme as 'dark' | 'light') || "dark",
           thinkingEnabled: appSettings.thinkingEnabled ?? true,
           maxTokens: appSettings.maxTokens ?? 8192,
@@ -368,6 +372,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         selectedModel: state.selectedModel,
         autoApproveTools: state.autoApproveTools,
         fontSize: state.fontSize,
+        wrapMode: state.wrapMode,
         theme: state.theme,
         thinkingEnabled: state.thinkingEnabled,
         maxTokens: state.maxTokens,
@@ -493,6 +498,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setFontSize: (size: number) => {
     set({ fontSize: size });
+    get().saveToDatabase();
+  },
+
+  setWrapMode: (enabled: boolean) => {
+    set({ wrapMode: enabled });
     get().saveToDatabase();
   },
 

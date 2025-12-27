@@ -28,6 +28,10 @@ export { toolRegistry, ToolRegistry } from './registry';
 // Export executors
 export { registerAllExecutors, areExecutorsRegistered } from './executors';
 
+// Export operation log
+export { operationLog, FsOperationType } from './operation-log';
+export type { FsOperation, OperationSummary } from './operation-log';
+
 // Re-export commonly used items
 import { toolRegistry } from './registry';
 import { allTools, getToolByName, getToolRiskLevel, toolCategories } from './definitions';

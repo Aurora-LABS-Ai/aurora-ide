@@ -1,6 +1,9 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import Editor, { loader } from '@monaco-editor/react';
 import { useEditorStore } from '../../store/useEditorStore';
+import { useSettingsStore } from '../../store/useSettingsStore';
+import { convertFileSrc } from '@tauri-apps/api/core';
+import { isTauri } from '../../lib/tauri';
 
 // Define custom theme before Monaco loads
 loader.init().then((monaco) => {
@@ -27,19 +30,56 @@ loader.init().then((monaco) => {
   });
 });
 
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
+
 export const CodeEditor: React.FC = () => {
   const { tabs, activeTabId, updateTabContent, fontSize } = useEditorStore();
-  
+  const { wrapMode } = useSettingsStore();
+
   const activeTab = tabs.find(t => t.id === activeTabId);
+
+  const isImage = useMemo(() => {
+    if (!activeTab?.path) return false;
+    const ext = activeTab.path.split('.').pop()?.toLowerCase();
+    return !!ext && IMAGE_EXTS.has(ext);
+  }, [activeTab]);
+
+  const imageSrc = useMemo(() => {
+    if (!isImage || !activeTab?.path) return null;
+    if (!isTauri()) return null;
+    return convertFileSrc(activeTab.path);
+  }, [isImage, activeTab]);
 
   if (!activeTab) {
     return (
       <div className="flex-1 flex items-center justify-center text-text-secondary bg-editor">
         <div className="text-center">
-          <div className="text-6xl mb-4 opacity-10 font-light">A</div>
-          <p className="text-sm">Select a file to start editing</p>
-          <p className="text-xs mt-2 text-text-disabled">Ctrl+P to search files</p>
+          <img
+            src="/app-icon.svg"
+            alt="Aurora"
+            className="w-16 h-16 mx-auto mb-4 opacity-20"
+          />
+          <p className="text-sm pb-1.5">Select a file to start editing</p>
+          <p className="text-xs text-text-disabled">Ctrl+P to search files</p>
         </div>
+      </div>
+    );
+  }
+
+  if (isImage) {
+    return (
+      <div className="flex-1 bg-editor overflow-auto flex items-center justify-center">
+        {imageSrc ? (
+          <img
+            src={imageSrc}
+            alt={activeTab.filename}
+            className="max-h-full max-w-full object-contain"
+          />
+        ) : (
+          <div className="text-text-secondary text-sm">
+            Image preview unavailable outside the desktop app.
+          </div>
+        )}
       </div>
     );
   }
@@ -64,6 +104,9 @@ export const CodeEditor: React.FC = () => {
           fontSize: fontSize,
           scrollBeyondLastLine: false,
           automaticLayout: true,
+          wordWrap: wrapMode ? 'on' : 'off',
+          wrappingIndent: 'same',
+          wrappingStrategy: 'advanced',
           padding: { top: 16, bottom: 16 },
           fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace",
           fontLigatures: true,

@@ -11,6 +11,7 @@ export const SYNC_EVENTS = {
   THREAD_STATE_REQUEST: 'thread-state-request',
   CHAT_STATE_SYNC: 'chat-state-sync',
   UI_STATE_SYNC: 'ui-state-sync',
+  TASK_STATE_SYNC: 'task-state-sync',
 } as const;
 
 interface SyncPayload<T> {

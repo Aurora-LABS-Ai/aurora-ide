@@ -48,66 +48,91 @@ Aurora is an AI-powered agentic code editor built with Tauri (Rust backend + Rea
 
 ## Architecture
 
+### Provider Presets System
+
+The provider system uses a **centralized preset configuration** located in `src/services/providers/provider-presets.ts`. This eliminates scattered provider-specific checks throughout the codebase.
+
+#### Provider Preset Structure
+
+```typescript
+interface ProviderPreset {
+  id: string;
+  name: string;
+  baseFormat: 'openai' | 'anthropic';  // API format
+  chatEndpoint: string;                 // '/chat/completions' or '/messages'
+  authType: 'bearer' | 'x-api-key';
+  authHeader: string;
+  thinkingConfig?: {
+    requestParam?: Record<string, unknown>;  // e.g., { thinking: { type: 'enabled' } }
+    responseField?: 'reasoning_content' | 'thinking';
+    usesContentBlocks?: boolean;
+  };
+  defaultParams?: Record<string, unknown>;   // e.g., { tool_stream: true }
+  requiredHeaders?: Record<string, string>;  // e.g., { 'anthropic-version': '2023-06-01' }
+  skipTemperature?: (model: string) => boolean;
+  includeStreamOptions?: boolean;
+  defaultContextWindow: number;
+  defaultMaxOutput: number;
+}
+```
+
+#### Available Presets
+
+| Provider | Base Format | Auth | Thinking | Special Params |
+|----------|-------------|------|----------|----------------|
+| `glm` | openai | Bearer | `{ thinking: { type: 'enabled' } }` → `reasoning_content` | `tool_stream: true` |
+| `deepseek` | openai | Bearer | `{ thinking: { type: 'enabled' } }` → `reasoning_content` | Skip temp for reasoner |
+| `openai` | openai | Bearer | N/A | `stream_options` |
+| `anthropic` | anthropic | x-api-key | Native thinking blocks | `anthropic-version` header |
+| `minimax` | anthropic | x-api-key | Native thinking blocks | `anthropic-version` header |
+| `custom` | openai | Bearer | Via customParams | None |
+
+#### Provider Routing
+
+```typescript
+// In src/services/providers/index.ts
+function createProvider(config: ProviderConfig): IProvider {
+  const type = config.providerType || detectProviderType(config.baseUrl, config.model);
+  const preset = getProviderPreset(type);
+
+  if (preset.baseFormat === 'anthropic') {
+    return new AnthropicProvider(config);
+  }
+  return new OpenAIProvider(config);
+}
+```
+
 ### State Management (Zustand Stores)
 
-The app uses nine specialized Zustand stores located in `src/store/`:
+Located in `src/store/`:
 
-1. **useSettingsStore** - Global app settings (LLM providers, model selection, tool approval, editor settings)
-   - Persists to localStorage (`aurora-settings`, version 3)
+1. **useSettingsStore** - Global app settings, LLM providers, model selection
+   - Persists to SQLite database
    - Model selection format: `"providerId:model"` (e.g., `"glm:glm-4.7"`)
-   - Supports preset providers (GLM, DeepSeek, OpenAI) and custom providers
    - Provider config includes: `baseUrl`, `apiKey`, `model`, `contextWindow`, `maxOutputTokens`, `supportsThinking`, `customHeaders`, `customParams`, `providerType`
 
-2. **useChatStore** - Chat messages and loading state
-   - Tool approval workflow state
-   - Message CRUD operations
-   - Syncs `todo_write` tool calls to TaskStore
+2. **useChatStore** - Chat messages, loading state, tool approval workflow
 
 3. **useThreadStore** - Conversation thread management
    - Persists threads to `.aurora/threads/{threadId}.json`
-   - Thread summaries for history
-   - Auto-saves on message changes
 
-4. **useEditorStore** - Code editor tabs
-   - Open tabs management
-   - Active tab tracking
-   - File content caching
-   - Dirty state tracking
+4. **useEditorStore** - Monaco editor tabs, active tab, file content caching
 
-5. **useWorkspaceStore** - File explorer
-   - Root path management
-   - File tree structure
-   - Folder expansion state
-   - Filesystem watcher integration (auto-refreshes on file changes)
+5. **useWorkspaceStore** - File explorer, root path, file tree, filesystem watcher
 
-6. **useUiStore** - UI state
-   - Theme toggling
-   - Modal states
-   - Chat panel visibility
-   - Detached chat window state
+6. **useUiStore** - Theme, modal states, chat panel visibility
 
 7. **useDragStore** - Drag-drop state for file operations
-   - Pending drag state (before threshold met)
-   - Active drag state (path, name, mouse position)
-   - Drop target tracking (folder, root, editor)
-   - 5px movement threshold before drag activates
 
-8. **useTaskStore** - Task management (UI only, not wired to AI)
-   - Task list storage (pending, in_progress, completed, cancelled)
-   - Task visibility state
-   - Used by `TaskView` component to display tasks from `todo_write` tool calls
-   - Note: Task system exists but `todo_write` tool is not registered in tool registry
+8. **useTaskStore** - Task management (UI only)
 
 9. **useTerminalStore** - Integrated terminal sessions
-   - Multiple terminal sessions (PowerShell, Bash)
-   - Session management (create, close, switch)
-   - Terminal output lines (input, output, error)
-   - Current working directory per session
-   - Terminal visibility and height state
 
-### Database Persistence System (SQLite)
+10. **useContextStore** - Context window usage tracking
 
-The app uses SQLite for persistent state storage, managed through a repository pattern.
+11. **useAuditStore** - Tool execution audit log
+
+### Database Persistence (SQLite)
 
 **Database Location:**
 - Windows: `%APPDATA%\com.aurora.agent\aurora.db`
@@ -119,341 +144,205 @@ The app uses SQLite for persistent state storage, managed through a repository p
 ```
 db/
   mod.rs          - Database manager, exposes repositories
-  connection.rs   - SQLite connection with WAL mode, performance tuning
-  error.rs        - DbError enum (Sqlite, Serialization, Io, Migration, NotFound, InvalidData)
-  schema.rs       - Table definitions, schema versioning
+  connection.rs   - SQLite connection with WAL mode
+  schema.rs       - Table definitions (version 3)
   migrations.rs   - Version-based migration system
-  models.rs       - Rust structs (WorkspaceState, EditorState, ExplorerState, etc.)
+  models.rs       - Rust structs
   repositories/
-    workspace.rs  - WorkspaceRepository (CRUD for workspace state)
-    editor.rs     - EditorRepository (CRUD for editor state per file)
-    explorer.rs   - ExplorerRepository (CRUD for file explorer state)
+    settings.rs   - LLM providers, app settings, tool settings
+    workspace.rs  - Workspace state
+    editor.rs     - Editor state per file
+    explorer.rs   - File explorer state
+    threads.rs    - Chat threads with token/context usage
 ```
 
-**Frontend Service:** `src/services/database.ts`
-- `DatabaseService` singleton class
-- Invokes Tauri commands for state operations
-- Types defined in `src/types/database.ts`
+**Key Tables:**
+- `llm_providers` - Provider configs (21 columns including customHeaders, customParams as JSON)
+- `app_settings` - Key-value settings store
+- `tool_settings` - Per-tool approval modes
+- `workspace_state`, `editor_state`, `explorer_state`
+- `threads` - Chat history with token usage
 
-**Tables:**
-1. `workspace_state` - Open tabs, panel sizes per workspace
-2. `editor_state` - Cursor position, scroll offset, folded regions per file
-3. `explorer_state` - Expanded folders, selected file per workspace
-4. `threads` - Chat threads with messages (future use)
-5. `settings` - Key-value settings storage (LLM providers, tool settings, app settings)
-6. `schema_version` - Database version tracking
+### Agent Service
 
-**Settings Repository:** `src-tauri/src/db/repositories/settings.rs`
-- `get_app_settings` / `save_app_settings` - App-wide settings
-- `get_all_providers` / `save_provider` / `delete_provider` - LLM provider management
-- `get_all_tool_settings` / `set_tool_setting` - Per-tool approval settings
+Located in `src/services/agent-service.ts`:
 
-**Tauri State Commands:** `src-tauri/src/commands/state.rs`
-- `save_workspace_state` / `get_workspace_state`
-- `save_editor_state` / `get_editor_state`
-- `save_explorer_state` / `get_explorer_state`
-
-**Tauri Settings Commands:** `src-tauri/src/commands/settings.rs`
-- `get_app_settings` / `save_app_settings`
-- `get_all_providers` / `get_provider` / `save_provider` / `delete_provider` / `has_providers` / `save_all_providers`
-- `get_all_tool_settings` / `set_tool_approval` / `save_all_tool_settings`
-
-### Application Flow
-
-```
-User Action → Component Event Handler → Zustand Store Action → Tauri Command → Rust Backend → Result → Store Update → Component Re-render
-```
-
-**Entry Points:**
-- Frontend: `src/main.tsx` → `src/App.tsx` (determines main vs detached chat view)
-- Backend: `src-tauri/src/lib.rs` → Tauri app setup with plugins
-
-### Tool System Architecture
-
-Located in `src/tools/`:
-
-- **definitions/** - Tool schemas (OpenAI function format)
-  - `file-tools.ts` - File operations (read, write, create, delete, grep, multi_file_read)
-  - `shell-tools.ts` - Shell command execution (execute, spawn, kill, list_processes)
-  - `workspace-tools.ts` - Workspace navigation (tree, folder_create, folder_delete, workspace_info)
-  - `editor-tools.ts` - Editor operations (open files, tabs, selection, insert text)
-  - `risk-levels-enhanced.ts` - Risk level definitions for all tools
-
-- **executors/** - Tool implementations
-  - `file-executors-enhanced.ts` - Enhanced file operations with operation logging
-  - `shell-executors.ts` - Shell execution with terminal integration
-  - `workspace-executors.ts` - Workspace operations
-  - `editor-executors.ts` - Editor operations
-  - Each tool has a risk level: low (auto-approve), medium/high (requires approval)
-
-- **registry.ts** - Central tool registry
-  - Registers all tool definitions and executors
-  - Tracks active tool calls
-  - Manages tool approval requirements
-
-**Available Tools:**
-- **File Tools:** `file_read`, `file_read_lines`, `file_write`, `file_patch`, `file_create`, `file_delete`, `file_exists`, `file_search`, `grep`, `multi_file_read`
-- **Workspace Tools:** `workspace_tree`, `folder_create`, `folder_delete`, `workspace_info`
-- **Shell Tools:** `shell_execute`, `shell_spawn`, `shell_kill`, `shell_list_processes`
-- **Editor Tools:** `editor_open_file`, `editor_get_active_file`, `editor_get_selection`, `editor_insert_text`, `editor_get_open_tabs`, `editor_close_tab`
-
-**Note:** `todo_write` tool exists in UI (`TaskView` component) but is NOT registered in the tool registry, so AI cannot use it.
-
-Tools are called by the AI agent through the agent service, executed via Tauri commands, and results are streamed back to the LLM.
-
-### LLM Provider System
-
-**Enterprise Provider System:** `src/services/providers/`
-
-The app uses a modular enterprise provider system supporting multiple API formats:
-
-**Provider Architecture:**
-- **Base Provider** (`base-provider.ts`) - Abstract base class
-- **OpenAI Provider** (`openai-provider.ts`) - OpenAI, DeepSeek, GLM, custom
-- **Anthropic Provider** (`anthropic-provider.ts`) - Claude, MiniMax M2.1
-- **Provider Registry** (`index.ts`) - Auto-detection and factory
-- **Token Counter** (`token-counter.ts`) - Character-based estimation
-- **Context Manager** (`context-manager.ts`) - KiloCode-style management
-
-**Agent Service Integration:**
-- `AgentService` uses enterprise provider system
-- `ChatPanel` builds `ProviderConfig` from settings
-- `agent.setProvider(config)` called before each request
-- Automatic routing to correct provider type
-
-**Legacy Provider:**
-- `llm-provider.ts` is **deprecated** (OpenAI-only)
-- Agent service **migrated** to enterprise providers ✅
-
-#### Provider Types
-```typescript
-type ProviderType = 'openai' | 'anthropic' | 'deepseek' | 'glm' | 'minimax' | 'custom'
-```
-
-#### Provider Architecture
-
-**Base Provider** (`base-provider.ts`):
-- Abstract base class with common functionality
-- Token counting integration
-- Abort handling
-- Context window from DB config
-
-**OpenAI Provider** (`openai-provider.ts`):
-- OpenAI and compatible APIs (DeepSeek, GLM, custom)
-- Streaming SSE implementation
-- Thinking mode support (DeepSeek/GLM)
-- DeepSeek reasoner: no temperature parameter
-- Custom base URL support
-
-**Anthropic Provider** (`anthropic-provider.ts`):
-- Native Claude API format (`/messages` endpoint)
-- Extended thinking blocks (content block type `thinking`)
-- Tool use with native format (`tool_use`, `tool_result` blocks)
-- Streaming with content block deltas
-- MiniMax M2.1 compatibility (uses same format)
-- Headers: `x-api-key` instead of Bearer token, `anthropic-version: 2023-06-01`
-- Custom base URL support
-
-**Token Counter** (`token-counter.ts`):
-- Character-based estimation with content type detection
-- 1.5x fudge factor for accuracy (KiloCode-style)
-- Handles text, code, JSON, images
-- Request/history token estimation
-
-**Context Manager** (`context-manager.ts`):
-- Enterprise context window management
-- Sliding window truncation (50% removal)
-- Non-destructive message tagging (rewind support)
-- 10% buffer zone for safety
-- Force reduction (75%) on overflow errors
-
-#### Context Window Defaults
-```typescript
-// From DB per model, with fallbacks:
-'gpt-5': 400000,
-'gemini-3-pro': 1000000,
-'claude-opus-4-5-20251101': 200000,
-'MiniMax-M2.1': 1000000,
-'default': 200000
-```
-
-#### Anthropic Streaming Format
-```
-event: message_start
-event: content_block_start (type: text|thinking|tool_use)
-event: content_block_delta (text_delta|thinking_delta|input_json_delta)
-event: content_block_stop
-event: message_delta (usage)
-event: message_stop
-```
-
-**Agent Service:** `src/services/agent-service.ts`
 - Orchestrates AI conversation with tool execution
 - Conversation loop: LLM → Tool Calls → Execution → Response
 - Max 25 tool iterations per request
-- Reads context window from provider config (DB)
+- Streaming callbacks: `onToken`, `onThinking`, `onToolCall`, `onToolExecution`, `onUsage`, `onComplete`
 
-### Rust Backend (Tauri Commands)
+**Flow:**
+```
+User Input → ChatPanel → context-builder.ts → agent.setProvider(config)
+→ agent.chat() → Provider.streamChat() → Tool Execution → Response
+```
 
-**File System Commands:** `src-tauri/src/commands/mod.rs`
-- `read_directory` - List directory contents (filters node_modules, target, dist, hidden files except .aurora)
-- `read_file_content` - Read file to string
-- `write_file_content` - Write string to file (creates parent dirs)
-- `execute_command` - Execute shell command (PowerShell on Windows, sh on Unix, supports bash profile)
-- `get_system_info` - Get OS, arch, hostname
-- `get_workspace_root` - Get current workspace root path
-- `create_file` / `create_folder` / `delete_path` / `rename_path` / `copy_path`
-- `start_fs_watcher` / `stop_fs_watcher` - Filesystem watcher (emits `fs-changed` events)
-- `reveal_in_explorer` - Open file/folder in system file explorer (Windows Explorer, Finder, etc.)
-- `open_in_terminal` - Open terminal at specified path (Windows Terminal, Terminal.app, etc.)
+### Tool System
 
-**State Persistence Commands:** `src-tauri/src/commands/state.rs`
-- `save_workspace_state` / `get_workspace_state` - Workspace tabs and panel layout
-- `save_editor_state` / `get_editor_state` - Per-file cursor, scroll, folds
-- `save_explorer_state` / `get_explorer_state` - Expanded folders, selection
+Located in `src/tools/`:
 
-All file commands return `Result<T, String>`. State commands return `Result<T, DbError>` (DbError is serializable for Tauri IPC).
+```
+tools/
+  definitions/
+    file-tools.ts      - File operations
+    shell-tools.ts     - Shell command execution
+    workspace-tools.ts - Workspace navigation
+    editor-tools.ts    - Editor operations
+  executors/
+    file-executors-enhanced.ts
+    shell-executors.ts
+    workspace-executors.ts
+    editor-executors.ts
+  registry.ts          - Central tool registration
+```
+
+**Available Tools:**
+- **File:** `file_read`, `file_write`, `file_patch`, `file_create`, `file_delete`, `file_exists`, `file_search`, `grep`, `multi_file_read`
+- **Workspace:** `workspace_tree`, `folder_create`, `folder_delete`, `workspace_info`
+- **Shell:** `shell_execute`, `shell_spawn`, `shell_kill`, `shell_list_processes`
+- **Editor:** `editor_open_file`, `editor_get_active_file`, `editor_get_selection`, `editor_insert_text`, `editor_get_open_tabs`, `editor_close_tab`
 
 ### Component Architecture
 
 **Layout:** `src/components/layout/MainLayout.tsx`
-- Three-panel layout using react-resizable-panels: Explorer (18%) | Editor (57%) | Chat (25%)
-- Custom title bar (no decorations, window controls in TitleBar component)
-- Detachable chat window (separate Tauri window at route `/chat-detached`)
+- Three-panel layout: Explorer (18%) | Editor (57%) | Chat (25%)
+- Custom title bar with window controls
+- Detachable chat window
 
 **Key Components:**
-- `ChatPanel` - Chat interface with message history, input, thread sidebar, task view
-- `EditorPanel` - Monaco editor with tab bar
-- `FileExplorer` - File tree with expand/collapse, context menu, drag-drop
-- `Terminal` - Integrated terminal with multiple sessions (PowerShell/Bash), command history, auto-scroll
-- `TaskView` - Task list display component (shows tasks from `todo_write` tool calls)
+- `ChatPanel` - Chat interface with message history, thread sidebar
+- `ChatInput` - Input with model selector, thinking toggle, file mentions
+- `EditorPanel` - Monaco editor with tabs
+- `FileExplorer` - File tree with context menu, drag-drop
+- `Terminal` - Integrated terminal with multiple sessions
 
-### Thread Persistence
+### Thinking Mode Integration
 
-Threads are stored as JSON files in `.aurora/threads/{threadId}.json`. Each thread contains messages and metadata. The thread store auto-saves when messages change.
+The thinking toggle in `ChatInput.tsx`:
+- Shows enabled/disabled based on `providerSupportsThinking`
+- User's `thinkingEnabled` preference stored in settings
+- Actual request uses: `userThinkingEnabled && providerSupportsThinking`
 
-### Unique Features
+```typescript
+// ChatInput.tsx - Toggle is disabled if provider doesn't support thinking
+const providerSupportsThinking = llmConfig?.supportsThinking ?? false;
 
-1. **Detachable Chat Window** - Chat can open in separate Tauri window with cross-window state sync via `useWindowStateSync` hook
+// ChatPanel.tsx - Combines user preference with provider capability
+const thinkingEnabled = userThinkingEnabled && (llmConfig?.supportsThinking ?? false);
+```
 
-2. **Timeline Event System** - Sequential tracking of AI response components (thinking, tool, content events) for granular display
+## File Structure
 
-3. **Multi-Provider LLM Support** - Preset + custom providers with explicit `providerType` field for correct handling
+### Services (`src/services/`)
 
-4. **Thinking Mode** - Provider-specific thinking content (DeepSeek uses `reasoning_content`, GLM uses `thinking` parameter)
+| File | Purpose |
+|------|---------|
+| `agent-service.ts` | AI conversation orchestration |
+| `context-builder.ts` | Cursor-style IDE context gathering |
+| `thread-converter.ts` | UI → API message format conversion |
+| `token-estimator.ts` | Character-based token estimation |
+| `database.ts` | Frontend database API |
 
-5. **VS Code-Inspired Design** - Color hierarchy: titlebar (darkest) → tabs → sidebar → editor (lightest)
+### Providers (`src/services/providers/`)
 
-6. **Dual Drag-Drop System** - Supports both internal and external file drag operations
-   - Internal drag (within app): Mouse-based system via `useInternalDrag` hook, uses `renamePath` to move files
-   - External drag (from OS): Tauri native events via `useTauriDragDrop` hook, uses `copyPath` to import files
-   - Visual feedback: `DragPreview` component follows cursor, drop targets highlight
-   - Data attributes for drop detection: `data-folder-path`, `data-editor-panel`, `data-explorer-content`
+| File | Purpose |
+|------|---------|
+| `provider-presets.ts` | **Centralized provider configurations** |
+| `types.ts` | Type definitions (Message, ProviderConfig, etc.) |
+| `base-provider.ts` | Abstract base with HTTP, token counting |
+| `openai-provider.ts` | OpenAI, DeepSeek, GLM implementation |
+| `anthropic-provider.ts` | Claude, MiniMax implementation |
+| `token-counter.ts` | Character-based token estimation |
+| `context-manager.ts` | Context overflow handling |
+| `index.ts` | Provider factory and registry |
 
-7. **Grep Search Tool** - Powerful regex-based file search (`grep` tool)
-   - Supports regex patterns, glob filtering, case-insensitive search
-   - Output modes: content (matching lines), files_with_matches, count
-   - Context lines support, max results limit
-   - Implemented in `file-executors-enhanced.ts` with recursive directory traversal
+### Key UI Components
 
-8. **Multi-File Read Tool** - Parallel file reading (`multi_file_read` tool)
-   - Reads multiple files simultaneously (10-100x faster than sequential reads)
-   - Returns JSON with file contents, errors, and performance metrics
-   - Used for reading multiple files at once
-
-9. **Integrated Terminal** - Native-like terminal with multiple sessions
-   - Supports PowerShell and Git Bash profiles
-   - Multiple concurrent sessions with tabbed interface
-   - Command history, auto-scroll, working directory tracking
-   - Integrated with `shell_execute` tool (commands appear in terminal)
-   - VS Code-inspired styling with syntax highlighting
-
-10. **Filesystem Watcher** - Real-time file change detection
-    - Watches workspace directory recursively
-    - Emits `fs-changed` events to frontend
-    - Auto-refreshes file explorer on file changes
-    - Uses `notify` crate in Rust backend
-
-11. **Task Management System** - UI for tracking AI tasks
-    - `useTaskStore` for task state (pending, in_progress, completed, cancelled)
-    - `TaskView` component displays tasks in chat
-    - Tasks synced from `todo_write` tool calls in chat messages
-    - **Note:** `todo_write` tool is NOT registered in tool registry, so AI cannot create tasks
-
-## File Structure Notes
-
-- **Settings modal:** `src/components/modals/SettingsPanel.tsx`
-- **Tool approval modal:** `src/components/modals/ToolApprovalModal.tsx`
-- **Terminal component:** `src/components/terminal/Terminal.tsx`
-- **Task view:** `src/components/chat/TaskView.tsx`
-- **Context indicator:** `src/components/chat/ContextUsageIndicator.tsx`
-- **Type definitions:** `src/types/index.ts` (shared), `src/services/llm-types.ts` (LLM-specific)
-- **Database types:** `src/types/database.ts` (WorkspaceState, EditorState, ExplorerState)
-- **Database service:** `src/services/database.ts` (frontend database API)
-- **Rust database module:** `src-tauri/src/db/` (SQLite persistence layer)
-- **Settings repository:** `src-tauri/src/db/repositories/settings.rs` (LLM providers, tool settings)
-- **Threads repository:** `src-tauri/src/db/repositories/threads.rs` (thread persistence with token/context usage)
-- **Tauri capabilities:** `src-tauri/capabilities/default.json` - defines frontend permissions
-- **Drag-drop hooks:** `src/hooks/useInternalDrag.ts` (internal), `src/hooks/useTauriDragDrop.ts` (external)
-- **Drag preview:** `src/components/ui/DragPreview.tsx`
-- **Drag store:** `src/store/useDragStore.ts`
-- **Task store:** `src/store/useTaskStore.ts` (task management, not wired to AI)
-- **Terminal store:** `src/store/useTerminalStore.ts` (terminal sessions)
-- **Tool registry:** `src/tools/registry.ts` (central tool registration)
-- **Tool executors:** `src/tools/executors/` (tool implementations)
-- **Provider system:** `src/services/providers/` (enterprise provider architecture)
-  - `types.ts` - Provider types and interfaces
-  - `base-provider.ts` - Abstract base class
-  - `openai-provider.ts` - OpenAI/DeepSeek/GLM provider
-  - `anthropic-provider.ts` - Claude/MiniMax provider
-  - `token-counter.ts` - Token estimation
-  - `context-manager.ts` - Context window management
-  - `index.ts` - Provider registry and factory
+| File | Purpose |
+|------|---------|
+| `components/chat/ChatPanel.tsx` | Main chat orchestration |
+| `components/chat/ChatInput.tsx` | Input with model/thinking controls |
+| `components/chat/ChatHistory.tsx` | Message display |
+| `components/modals/SettingsPanel.tsx` | Settings modal |
+| `components/terminal/Terminal.tsx` | Integrated terminal |
 
 ## Important Patterns
 
-- **Provider config access:** Use `useSettingsStore.getState().getLLMConfig()` to get current provider config
-- **Model selection format:** Always `"providerId:model"` (e.g., `"deepseek:deepseek-chat"`)
-- **Tool execution:** Tools go through agent service → Tauri commands → Rust executors
-- **State updates:** Always update via Zustand store actions, never mutate directly
-- **Thread saving:** Automatic via useThreadStore when messages change
-- **Database access:** Import `databaseService` from `src/services/database.ts`, use async methods
-- **Database repository pattern:** In Rust, use `db.workspace()`, `db.editor()`, `db.explorer()`, `db.settings()` to get repositories
-- **Terminal integration:** Shell commands executed via `shell_execute` tool automatically appear in terminal sessions
-- **Filesystem watcher:** Started automatically when workspace root is set, emits `fs-changed` events
-- **Task system:** Tasks are displayed in chat via `TaskView` component, but `todo_write` tool is not registered for AI use
+### Adding a New Provider
 
-## Provider-Specific Notes
+1. **Add preset** in `src/services/providers/provider-presets.ts`:
+```typescript
+newprovider: {
+  id: 'newprovider',
+  name: 'New Provider',
+  baseFormat: 'openai',  // or 'anthropic'
+  chatEndpoint: '/chat/completions',
+  authType: 'bearer',
+  authHeader: 'Authorization',
+  thinkingConfig: { ... },  // if supported
+  defaultParams: { ... },   // provider-specific params
+  defaultContextWindow: 128000,
+  defaultMaxOutput: 8192,
+}
+```
 
-When adding new LLM providers or debugging provider issues:
-- Check `providerType` field in settings (determines how the provider is handled)
-- Custom headers go in `customHeaders` object
-- Custom request params go in `customParams` object
+2. **Add to PRESET_PROVIDERS** in `src/store/useSettingsStore.ts` if it should be a built-in option.
 
-### OpenAI-Compatible Providers
-- DeepSeek reasoner (`deepseek-reasoner`) ignores temperature parameter
-- GLM thinking mode requires `thinking: true` in request body
-- Use `Authorization: Bearer {apiKey}` header
-- Endpoint: `/chat/completions`
+### Custom Headers/Params Flow
 
-### Anthropic/Claude Providers
-- Use `x-api-key: {apiKey}` header (NOT Bearer token)
-- Require `anthropic-version: 2023-06-01` header
-- Endpoint: `/messages` (NOT `/chat/completions`)
-- System prompt is separate field, not a message
-- Tool results go in `user` role with `tool_result` content block
-- Thinking mode returns `thinking` content blocks
-- Streaming uses different event types (content_block_start, content_block_delta, etc.)
+1. User configures in Settings → stored in `llm_providers` table as JSON
+2. `getLLMConfig()` returns config with `customHeaders` and `customParams`
+3. Provider's `buildHeaders()` merges: `preset headers + customHeaders`
+4. Provider's `buildRequestBody()` applies: `preset params, then customParams override`
 
-### MiniMax M2.1
-- Supports both OpenAI and Anthropic API formats
-- **IMPORTANT:** Use Anthropic format for thinking mode support
-- Base URL: `https://api.minimax.io/anthropic` (NOT `/v1`)
-- Provider type: `minimax` (routes to AnthropicProvider)
-- 1M context window
-- Uses same authentication (`x-api-key`) and headers as Claude
+### Provider-Specific Behaviors (Now Centralized)
 
-### Context Window Colors (UI)
-- Cold (cyan): 0-30%
-- Yellow: 30-80%
-- Red: 80-100%
+All provider quirks are defined in presets:
+- **GLM**: `tool_stream: true`, thinking via `{ thinking: { type: 'enabled' } }`
+- **DeepSeek**: Skip temperature for reasoner models
+- **Anthropic/MiniMax**: Use `x-api-key` header, `anthropic-version` required
+- **Custom**: No assumptions, user configures via customParams
+
+### Context Management
+
+```typescript
+// Token estimation before each request
+const totalTokens = systemPromptTokens + historyTokens + newMessageTokens + toolsTokens;
+
+// Context state tracking
+const contextState = {
+  usedTokens,
+  contextWindow,
+  percentage,
+  isNearLimit: percentage >= 80,
+  isOverLimit: usedTokens > allowedTokens,
+};
+
+// Automatic truncation at 50% when over limit
+```
+
+## Rust Backend Commands
+
+**File Operations:** `src-tauri/src/commands/mod.rs`
+- `read_directory`, `read_file_content`, `write_file_content`
+- `create_file`, `create_folder`, `delete_path`, `rename_path`, `copy_path`
+- `execute_command`, `get_system_info`
+- `start_fs_watcher`, `stop_fs_watcher`
+
+**Settings:** `src-tauri/src/commands/settings.rs`
+- `get_all_providers`, `save_provider`, `delete_provider`
+- `get_app_settings`, `save_app_settings`
+- `set_tool_approval`, `get_all_tool_settings`
+
+**LLM Streaming:** `src-tauri/src/commands/llm.rs`
+- `llm_request` - Non-streaming HTTP request
+- `llm_stream_request` - Streaming with Tauri events
+
+## VS Code-Inspired Design
+
+- Color hierarchy: titlebar (darkest) → tabs → sidebar → editor (lightest)
+- Integrated terminal with PowerShell/Bash profiles
+- File explorer with expand/collapse, context menu
+- Monaco editor with syntax highlighting
+- Detachable chat window

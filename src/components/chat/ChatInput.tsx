@@ -111,7 +111,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     selectedModel,
     setSelectedModel,
     getAvailableModels,
+    getLLMConfig,
   } = useSettingsStore();
+
+  // Check if current provider supports thinking mode
+  const llmConfig = getLLMConfig();
+  const providerSupportsThinking = llmConfig?.supportsThinking ?? false;
 
   // Re-compute available models when providers change
   const availableModels = getAvailableModels();
@@ -481,17 +486,24 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
             <ChevronDown size={10} className={clsx("text-zinc-500 transition-transform", showModelDropdown && "rotate-180")} />
           </button>
 
-          {/* Thinking Toggle */}
+          {/* Thinking Toggle - only active if provider supports it */}
           <button
-            onClick={() => setThinkingEnabled(!thinkingEnabled)}
+            onClick={() => providerSupportsThinking && setThinkingEnabled(!thinkingEnabled)}
+            disabled={!providerSupportsThinking}
+            title={providerSupportsThinking
+              ? (thinkingEnabled ? 'Disable thinking mode' : 'Enable thinking mode')
+              : 'Current model does not support thinking mode'
+            }
             className={clsx(
               "flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all border",
-              thinkingEnabled
-                ? "bg-primary/10 border-primary/20 text-primary shadow-[0_0_10px_rgba(var(--primary-rgb),0.1)]"
-                : "bg-transparent border-transparent text-zinc-500 hover:text-zinc-300"
+              !providerSupportsThinking
+                ? "bg-transparent border-transparent text-zinc-600 cursor-not-allowed opacity-50"
+                : thinkingEnabled
+                  ? "bg-primary/10 border-primary/20 text-primary shadow-[0_0_10px_rgba(var(--primary-rgb),0.1)]"
+                  : "bg-transparent border-transparent text-zinc-500 hover:text-zinc-300"
             )}
           >
-            <Brain size={12} className={thinkingEnabled ? "animate-pulse" : ""} />
+            <Brain size={12} className={thinkingEnabled && providerSupportsThinking ? "animate-pulse" : ""} />
             <span>Thinking</span>
           </button>
         </div>

@@ -241,6 +241,7 @@ export interface IProvider {
 
   // Lifecycle
   cancelRequest(): void;
+  updateConfig(config: Partial<ProviderConfig>): void;
 }
 
 // ============================================================

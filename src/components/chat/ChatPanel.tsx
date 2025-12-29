@@ -68,7 +68,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
   // Get provider-specific settings (each model has its own characteristics)
   const llmConfig = getLLMConfig();
-  const thinkingEnabled = llmConfig?.supportsThinking ?? false;
+  // Get user's thinking toggle preference from settings
+  const { thinkingEnabled: userThinkingEnabled } = useSettingsStore();
+  // Combine: user wants thinking AND provider supports it
+  const thinkingEnabled = userThinkingEnabled && (llmConfig?.supportsThinking ?? false);
   const temperature = llmConfig?.defaultTemperature ?? 1.0;
   const maxTokens = llmConfig?.defaultMaxTokens ?? llmConfig?.maxOutputTokens ?? 8192;
 

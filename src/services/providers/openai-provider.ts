@@ -1,5 +1,7 @@
 /**
- * OpenAI Provider - Handles OpenAI and compatible APIs
+ * OpenAI Provider - Handles OpenAI and Compatible APIs
+ *
+ * Uses the Provider Presets system for centralized configuration.
  *
  * Supports:
  * - OpenAI GPT models
@@ -12,6 +14,14 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { BaseProvider } from './base-provider';
+import {
+  getProviderPreset,
+  buildRequestHeaders,
+  buildThinkingParams,
+  shouldSkipTemperature,
+  getChatUrl,
+  type ProviderPreset,
+} from './provider-presets';
 import type {
   ProviderConfig,
   ChatRequest,
@@ -64,30 +74,34 @@ interface OpenAIStreamChunk {
 }
 
 export class OpenAIProvider extends BaseProvider {
+  private preset: ProviderPreset;
+
   constructor(config: ProviderConfig) {
     super(config);
+    // Get the preset for this provider type
+    this.preset = getProviderPreset(config.providerType);
   }
 
   /**
-   * Check if this is a DeepSeek provider
+   * Build headers using the preset system
    */
-  private isDeepSeek(): boolean {
-    if (this._config.providerType === 'deepseek') return true;
-    return (
-      this._config.baseUrl.includes('deepseek.com') ||
-      this._config.model.includes('deepseek')
+  protected buildHeaders(): Record<string, string> {
+    return buildRequestHeaders(
+      this.preset,
+      this._config.apiKey,
+      this._config.customHeaders
     );
   }
+
   /**
-   * Build request body based on provider type
+   * Build request body using preset-driven configuration
    */
   private buildRequestBody(request: ChatRequest): Record<string, unknown> {
-    const isDeepSeek = this.isDeepSeek();
-    const isReasonerModel = this._config.model.includes('reasoner');
+    const model = this._config.model;
 
     // Convert messages to OpenAI format (preserving necessary fields)
     const messages = request.messages.map(msg => {
-      const apiMsg: any = {
+      const apiMsg: Record<string, unknown> = {
         role: msg.role,
       };
 
@@ -120,19 +134,15 @@ export class OpenAIProvider extends BaseProvider {
           }
         }
 
-        // Preserve reasoning_content for DeepSeek/GLM thinking mode
-        if (assistantMsg.reasoning_content) {
-          // For DeepSeek - send reasoning_content directly
-          if (isDeepSeek || isReasonerModel || this._config.providerType === 'deepseek') {
-            apiMsg.reasoning_content = assistantMsg.reasoning_content;
-          }
-          // Note: GLM returns thinking in response but doesn't require it to be sent back
+        // Preserve reasoning_content for providers that support it (DeepSeek, GLM)
+        if (assistantMsg.reasoning_content && this.preset.thinkingConfig?.responseField === 'reasoning_content') {
+          apiMsg.reasoning_content = assistantMsg.reasoning_content;
         }
       }
 
       // Preserve tool_call_id for tool results
       if (msg.role === 'tool') {
-        const toolMsg = msg as any;
+        const toolMsg = msg as { tool_call_id?: string; content?: unknown };
         if (toolMsg.tool_call_id) {
           apiMsg.tool_call_id = toolMsg.tool_call_id;
         }
@@ -146,34 +156,22 @@ export class OpenAIProvider extends BaseProvider {
     });
 
     const body: Record<string, unknown> = {
-      model: this._config.model,
+      model,
       messages,
       stream: request.stream ?? false,
       max_tokens: this.getMaxTokens(request.maxTokens),
     };
 
-    // Temperature handling
-    // DeepSeek reasoner doesn't support temperature
-    if (!(isDeepSeek && isReasonerModel)) {
+    // Temperature handling - use preset to check if should skip
+    if (!shouldSkipTemperature(this.preset, model)) {
       body.temperature = this.getTemperature(request.temperature);
     }
 
-    // Thinking mode based on provider
-    // IMPORTANT: Only send thinking param to providers that support it
-    // Custom/generic OpenAI providers should NOT receive this param
+    // Thinking mode - use preset configuration
+    // Only enable if: provider supports it AND user has it enabled AND provider preset has config
     if (this._config.supportsThinking && request.thinkingEnabled !== false) {
-      const providerType = this._config.providerType;
-      
-      // Only send thinking param to known providers that support it
-      if (providerType === 'deepseek' && !isReasonerModel) {
-        // DeepSeek chat with thinking
-        body.thinking = { type: 'enabled' };
-      } else if (providerType === 'glm') {
-        // GLM/Z.AI thinking
-        body.thinking = { type: 'enabled' };
-      }
-      // Note: 'openai' and 'custom' providers do NOT get thinking param
-      // as standard OpenAI API doesn't support it
+      const thinkingParams = buildThinkingParams(this.preset, true);
+      Object.assign(body, thinkingParams);
     }
 
     // Tools
@@ -181,23 +179,28 @@ export class OpenAIProvider extends BaseProvider {
       body.tools = request.tools;
       body.tool_choice = 'auto';
 
-      // tool_stream is GLM-specific, only send to GLM providers
-      if (this._config.supportsToolStream && this._config.providerType === 'glm') {
+      // Apply provider-specific tool params from preset
+      if (this.preset.defaultParams?.tool_stream) {
         body.tool_stream = true;
       }
     }
 
-    // Stream options for usage tracking
-    // Only add stream_options for providers that support it (OpenAI, GLM, DeepSeek)
-    // Custom providers may not support this extension
-    if (request.stream) {
-      const providerType = this._config.providerType;
-      if (providerType === 'openai' || providerType === 'glm' || providerType === 'deepseek') {
-        body.stream_options = { include_usage: true };
+    // Stream options for usage tracking - use preset to determine support
+    if (request.stream && this.preset.includeStreamOptions) {
+      body.stream_options = { include_usage: true };
+    }
+
+    // Apply preset's default params first
+    if (this.preset.defaultParams) {
+      // Don't override already-set params
+      for (const [key, value] of Object.entries(this.preset.defaultParams)) {
+        if (!(key in body)) {
+          body[key] = value;
+        }
       }
     }
 
-    // Merge custom params
+    // Merge custom params (highest priority - user overrides everything)
     if (this._config.customParams) {
       Object.assign(body, this._config.customParams);
     }
@@ -210,7 +213,7 @@ export class OpenAIProvider extends BaseProvider {
    */
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const body = this.buildRequestBody({ ...request, stream: false });
-    const url = `${this._config.baseUrl}/chat/completions`;
+    const url = getChatUrl(this._config.baseUrl, this.preset);
 
     const response = await this.fetchWithAbort(url, {
       method: 'POST',
@@ -225,9 +228,9 @@ export class OpenAIProvider extends BaseProvider {
       role: 'assistant',
       content: choice?.message?.content || '',
       reasoning_content: choice?.message?.reasoning_content,
-      tool_calls: choice?.message?.tool_calls?.map((tc: any) => ({
+      tool_calls: choice?.message?.tool_calls?.map((tc: { id: string; function: { name: string; arguments: string } }) => ({
         id: tc.id,
-        type: 'function',
+        type: 'function' as const,
         function: {
           name: tc.function.name,
           arguments: tc.function.arguments,
@@ -254,7 +257,7 @@ export class OpenAIProvider extends BaseProvider {
     callbacks: StreamCallbacks
   ): Promise<AssistantMessage> {
     const body = this.buildRequestBody({ ...request, stream: true });
-    const url = `${this._config.baseUrl}/chat/completions`;
+    const url = getChatUrl(this._config.baseUrl, this.preset);
 
     // Generate unique request ID for event handling
     const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -294,7 +297,7 @@ export class OpenAIProvider extends BaseProvider {
               for (const choice of parsed.choices) {
                 const delta = choice.delta;
 
-                // Handle reasoning/thinking content
+                // Handle reasoning/thinking content (DeepSeek, GLM style)
                 if (delta.reasoning_content) {
                   reasoningContent += delta.reasoning_content;
                   callbacks.onThinking?.(delta.reasoning_content);

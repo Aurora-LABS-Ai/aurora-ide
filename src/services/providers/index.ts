@@ -3,7 +3,7 @@
  *
  * Features:
  * - Provider registration and lookup
- * - Auto-detection of provider type
+ * - Auto-detection of provider type using presets
  * - Context window management from DB
  * - Singleton pattern for global access
  */
@@ -11,9 +11,11 @@
 import type { ProviderConfig, ProviderType, IProvider } from './types';
 import { OpenAIProvider } from './openai-provider';
 import { AnthropicProvider } from './anthropic-provider';
+import { detectProviderType, getProviderPreset, PROVIDER_PRESETS } from './provider-presets';
 
-// Re-export types
+// Re-export types and utilities
 export * from './types';
+export * from './provider-presets';
 export { TokenCounter, tokenCounter } from './token-counter';
 export { OpenAIProvider } from './openai-provider';
 export { AnthropicProvider } from './anthropic-provider';
@@ -24,62 +26,22 @@ export { AnthropicProvider } from './anthropic-provider';
 
 /**
  * Create a provider instance based on type
+ * Uses the preset system for proper configuration
  */
 export function createProvider(config: ProviderConfig): IProvider {
-  const type = config.providerType || detectProviderType(config);
+  // Use explicit providerType if set, otherwise auto-detect
+  const type = config.providerType || detectProviderType(config.baseUrl, config.model);
 
-  switch (type) {
-    case 'anthropic':
-    case 'minimax':
-      return new AnthropicProvider({ ...config, providerType: type });
+  // Get the preset for this provider type
+  const preset = getProviderPreset(type);
 
-    case 'openai':
-    case 'deepseek':
-    case 'glm':
-    case 'custom':
-    default:
-      return new OpenAIProvider({ ...config, providerType: type });
-  }
-}
-
-/**
- * Auto-detect provider type from config
- */
-export function detectProviderType(config: Partial<ProviderConfig>): ProviderType {
-  const baseUrl = config.baseUrl?.toLowerCase() || '';
-  const model = config.model?.toLowerCase() || '';
-
-  // Anthropic
-  if (baseUrl.includes('anthropic.com') || model.includes('claude')) {
-    return 'anthropic';
+  // Route to appropriate provider class based on API format
+  if (preset.baseFormat === 'anthropic') {
+    return new AnthropicProvider({ ...config, providerType: type as ProviderType });
   }
 
-  // MiniMax (supports both OpenAI and Anthropic formats)
-  if (baseUrl.includes('minimax') || model.includes('minimax')) {
-    // Check if using Anthropic endpoint
-    if (baseUrl.includes('/anthropic')) {
-      return 'minimax';
-    }
-    return 'openai'; // MiniMax OpenAI-compatible
-  }
-
-  // DeepSeek
-  if (baseUrl.includes('deepseek.com') || model.includes('deepseek')) {
-    return 'deepseek';
-  }
-
-  // GLM / Z.AI
-  if (baseUrl.includes('z.ai') || model.includes('glm')) {
-    return 'glm';
-  }
-
-  // OpenAI
-  if (baseUrl.includes('openai.com') || model.includes('gpt')) {
-    return 'openai';
-  }
-
-  // Default to custom (OpenAI-compatible)
-  return 'custom';
+  // Default to OpenAI-compatible provider
+  return new OpenAIProvider({ ...config, providerType: type as ProviderType });
 }
 
 // ============================================================
@@ -199,7 +161,7 @@ export function isProviderInitialized(): boolean {
  */
 export function updateProvider(config: Partial<ProviderConfig>): void {
   if (activeProvider) {
-    (activeProvider as any).updateConfig(config);
+    activeProvider.updateConfig(config);
   }
 }
 
@@ -266,4 +228,20 @@ export function getDefaultContextWindow(model: string): number {
   }
 
   return DEFAULT_CONTEXT_WINDOWS['default'];
+}
+
+/**
+ * Get context window from preset
+ */
+export function getPresetContextWindow(providerType: string): number {
+  const preset = PROVIDER_PRESETS[providerType];
+  return preset?.defaultContextWindow || DEFAULT_CONTEXT_WINDOWS['default'];
+}
+
+/**
+ * Get max output tokens from preset
+ */
+export function getPresetMaxOutput(providerType: string): number {
+  const preset = PROVIDER_PRESETS[providerType];
+  return preset?.defaultMaxOutput || 8192;
 }

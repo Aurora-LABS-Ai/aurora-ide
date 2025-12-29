@@ -1,19 +1,26 @@
 /**
  * Anthropic Provider - Native Claude API support
  *
+ * Uses the Provider Presets system for centralized configuration.
+ *
  * Supports:
  * - Anthropic Claude models (Opus, Sonnet, Haiku)
  * - Extended thinking blocks
  * - Tool use with native format
  * - Streaming with usage tracking
  * - Tauri HTTP for CORS bypass
- *
- * Also works with MiniMax M2.1 via Anthropic-compatible API
+ * - MiniMax M2.1 via Anthropic-compatible API
  */
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { BaseProvider } from './base-provider';
+import {
+  getProviderPreset,
+  buildRequestHeaders,
+  getChatUrl,
+  type ProviderPreset,
+} from './provider-presets';
 import type {
   ProviderConfig,
   ChatRequest,
@@ -101,37 +108,30 @@ interface AnthropicStreamEvent {
 }
 
 export class AnthropicProvider extends BaseProvider {
+  private preset: ProviderPreset;
+
+  // Stream accumulators
+  private accumulatedContent = '';
+  private accumulatedThinking = '';
+  private accumulatedToolCalls: Map<number, ToolCallRequest> = new Map();
+  private currentBlockIndex = -1;
+  private currentBlockType = '';
+
   constructor(config: ProviderConfig) {
     super(config);
+    // Get the preset for this provider type
+    this.preset = getProviderPreset(config.providerType);
   }
 
   /**
-   * Check if this is MiniMax (Anthropic-compatible)
-   */
-  private isMiniMax(): boolean {
-    if (this._config.providerType === 'minimax') return true;
-    return (
-      this._config.baseUrl.includes('minimax.io') ||
-      this._config.baseUrl.includes('minimaxi.com') ||
-      this._config.model.includes('MiniMax')
-    );
-  }
-
-  /**
-   * Build Anthropic-style headers
+   * Build headers using the preset system
    */
   protected buildHeaders(): Record<string, string> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'anthropic-version': '2023-06-01',
-      ...this._config.customHeaders,
-    };
-
-    if (this._config.apiKey) {
-      headers['x-api-key'] = this._config.apiKey;
-    }
-
-    return headers;
+    return buildRequestHeaders(
+      this.preset,
+      this._config.apiKey,
+      this._config.customHeaders
+    );
   }
 
   /**
@@ -169,7 +169,7 @@ export class AnthropicProvider extends BaseProvider {
           role: 'user',
           content: [{
             type: 'tool_result',
-            tool_use_id: (msg as any).tool_call_id,
+            tool_use_id: (msg as { tool_call_id?: string }).tool_call_id,
             content: resultContent,
           }],
         });
@@ -181,8 +181,8 @@ export class AnthropicProvider extends BaseProvider {
 
       // For assistant messages with tool_calls, we need to include tool_use blocks
       // Anthropic format requires tool_use to be in the content array
-      if (msg.role === 'assistant' && (msg as any).tool_calls?.length > 0) {
-        const toolCalls = (msg as any).tool_calls;
+      if (msg.role === 'assistant' && (msg as AssistantMessage).tool_calls?.length) {
+        const toolCalls = (msg as AssistantMessage).tool_calls!;
 
         // Ensure content is an array
         let contentBlocks: AnthropicContentBlock[] = [];
@@ -227,29 +227,29 @@ export class AnthropicProvider extends BaseProvider {
     return content.map(block => {
       switch (block.type) {
         case 'text':
-          return { type: 'text', text: block.text };
+          return { type: 'text' as const, text: block.text };
         case 'thinking':
-          return { type: 'thinking', thinking: block.thinking, signature: block.signature };
+          return { type: 'thinking' as const, thinking: block.thinking, signature: block.signature };
         case 'image':
           return {
-            type: 'image',
+            type: 'image' as const,
             source: block.source,
           };
         case 'tool_use':
           return {
-            type: 'tool_use',
+            type: 'tool_use' as const,
             id: block.id,
             name: block.name,
             input: block.input,
           };
         case 'tool_result':
           return {
-            type: 'tool_result',
+            type: 'tool_result' as const,
             tool_use_id: block.tool_use_id,
             content: block.content,
           };
         default:
-          return { type: 'text', text: '' };
+          return { type: 'text' as const, text: '' };
       }
     }) as AnthropicContentBlock[];
   }
@@ -270,7 +270,7 @@ export class AnthropicProvider extends BaseProvider {
   }
 
   /**
-   * Build request body
+   * Build request body using preset-driven configuration
    */
   private buildRequestBody(request: ChatRequest): Record<string, unknown> {
     const { system, messages } = this.convertMessages(request.messages);
@@ -295,12 +295,19 @@ export class AnthropicProvider extends BaseProvider {
     }
 
     // Thinking mode (Anthropic extended thinking)
-    if (this._config.supportsThinking && request.thinkingEnabled !== false) {
-      // Anthropic uses thinking blocks natively
-      // MiniMax returns thinking in content blocks
+    // Anthropic returns thinking blocks natively when available
+    // No special request param needed - it's model-dependent
+
+    // Apply preset's default params
+    if (this.preset.defaultParams) {
+      for (const [key, value] of Object.entries(this.preset.defaultParams)) {
+        if (!(key in body)) {
+          body[key] = value;
+        }
+      }
     }
 
-    // Custom params
+    // Custom params (highest priority - user overrides everything)
     if (this._config.customParams) {
       Object.assign(body, this._config.customParams);
     }
@@ -313,7 +320,7 @@ export class AnthropicProvider extends BaseProvider {
    */
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const body = this.buildRequestBody({ ...request, stream: false });
-    const url = `${this._config.baseUrl}/messages`;
+    const url = getChatUrl(this._config.baseUrl, this.preset);
 
     const response = await this.fetchWithAbort(url, {
       method: 'POST',
@@ -337,7 +344,7 @@ export class AnthropicProvider extends BaseProvider {
     callbacks: StreamCallbacks
   ): Promise<AssistantMessage> {
     const body = this.buildRequestBody({ ...request, stream: true });
-    const url = `${this._config.baseUrl}/messages`;
+    const url = getChatUrl(this._config.baseUrl, this.preset);
 
     // Generate unique request ID for event handling
     const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -408,13 +415,12 @@ export class AnthropicProvider extends BaseProvider {
           url,
           model: this._config.model,
           baseUrl: this._config.baseUrl,
-          isMiniMax: this.isMiniMax(),
+          providerType: this._config.providerType,
         });
         throw streamError;
       }
 
       // Build result from accumulated data (stored in callback handlers)
-      // This will be built as events come in
       const result: AssistantMessage = {
         role: 'assistant',
         content: this.accumulatedContent,
@@ -435,29 +441,20 @@ export class AnthropicProvider extends BaseProvider {
         throw new Error('Request cancelled');
       }
 
-      // Enhanced error logging for MiniMax debugging
+      // Enhanced error logging
       console.error('[AnthropicProvider] Stream request failed:', {
         error,
         message: error instanceof Error ? error.message : String(error),
         url,
         model: this._config.model,
         baseUrl: this._config.baseUrl,
-        isMiniMax: this.isMiniMax(),
-        headers: this.buildHeaders(),
-        bodyPreview: JSON.stringify(body).substring(0, 200),
+        providerType: this._config.providerType,
       });
 
       callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
   }
-
-  // Stream accumulators
-  private accumulatedContent = '';
-  private accumulatedThinking = '';
-  private accumulatedToolCalls: Map<number, ToolCallRequest> = new Map();
-  private currentBlockIndex = -1;
-  private currentBlockType = '';
 
   /**
    * Process a single Anthropic stream event
@@ -515,7 +512,7 @@ export class AnthropicProvider extends BaseProvider {
   /**
    * Parse Anthropic response to internal format
    */
-  private parseResponse(data: any): AssistantMessage {
+  private parseResponse(data: { content?: AnthropicContentBlock[] }): AssistantMessage {
     let content = '';
     let reasoningContent = '';
     const toolCalls: ToolCallRequest[] = [];
@@ -530,10 +527,10 @@ export class AnthropicProvider extends BaseProvider {
           break;
         case 'tool_use':
           toolCalls.push({
-            id: block.id,
+            id: block.id!,
             type: 'function',
             function: {
-              name: block.name,
+              name: block.name!,
               arguments: JSON.stringify(block.input),
             },
           });
@@ -552,7 +549,12 @@ export class AnthropicProvider extends BaseProvider {
   /**
    * Parse usage from Anthropic response
    */
-  private parseUsage(usage: any): TokenUsage | undefined {
+  private parseUsage(usage: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  } | undefined): TokenUsage | undefined {
     if (!usage) return undefined;
 
     return {

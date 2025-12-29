@@ -56,6 +56,16 @@ pub fn run() {
             commands::threads::get_thread,
             commands::threads::list_threads,
             commands::threads::delete_thread,
+            // LLM HTTP proxy commands (bypasses CORS)
+            commands::llm::llm_request,
+            commands::llm::llm_stream_request,
+            // Chat state sync commands (bulletproof multi-window)
+            commands::chat::get_chat_state,
+            commands::chat::set_chat_loading,
+            commands::chat::set_current_thread,
+            commands::chat::set_pending_approval,
+            commands::chat::update_chat_state,
+            commands::chat::clear_chat_state,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
@@ -71,6 +81,9 @@ pub fn run() {
 
             // Store database in app state (wrapped in Mutex for thread safety)
             app.manage(Mutex::new(db));
+
+            // Store shared chat state for multi-window sync
+            app.manage(commands::chat::SharedChatState::default());
 
             Ok(())
         })

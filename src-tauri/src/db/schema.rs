@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 2;
+pub const SCHEMA_VERSION: i32 = 3;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -130,6 +130,8 @@ fn create_threads_table(conn: &Connection) -> DbResult<()> {
             title TEXT NOT NULL,
             summary TEXT,
             messages TEXT NOT NULL,    -- JSON array of Message
+            token_usage TEXT,          -- JSON: {promptTokens, completionTokens, totalTokens}
+            context_usage TEXT,        -- JSON: {usedTokens, contextWindow, percentage}
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )",

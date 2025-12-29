@@ -19,12 +19,28 @@ import {
 // THREAD TYPES
 // ============================================
 
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}
+
+export interface ContextUsage {
+  usedTokens: number;
+  contextWindow: number;
+  percentage: number;
+}
+
 export interface Thread {
   id: string;
   title: string;
   createdAt: number;
   updatedAt: number;
   messages: Message[];
+  tokenUsage?: TokenUsage;
+  contextUsage?: ContextUsage;
 }
 
 export interface ThreadSummary {
@@ -42,23 +58,26 @@ interface ThreadState {
   threads: Record<string, Thread>;
   threadList: ThreadSummary[];
   isLoading: boolean;
-  
+
   // Actions
   createThread: () => string;
   loadThread: (threadId: string) => void;
   deleteThread: (threadId: string) => Promise<void>;
   deleteThreadFile: (threadId: string) => Promise<boolean>;
   updateThreadTitle: (threadId: string, title: string) => void;
-  
+
   // Message actions (synced with thread)
   addMessageToThread: (message: Message) => void;
   updateMessageInThread: (messageId: string, updates: Partial<Message>) => void;
-  
+
+  // Token/Context usage tracking
+  updateThreadUsage: (tokenUsage: TokenUsage, contextUsage: ContextUsage) => void;
+
   // Persistence
   saveCurrentThread: () => Promise<void>;
   loadThreadFromFile: (threadId: string) => Promise<Thread | null>;
   loadAllThreadsFromFiles: () => Promise<void>;
-  
+
   // History
   getThreadList: () => ThreadSummary[];
   clearCurrentThread: () => void;
@@ -108,6 +127,16 @@ const toDbThread = (thread: Thread): DbThread => ({
   title: thread.title,
   summary: null,
   messages: thread.messages.map(toDbMessage),
+  token_usage: thread.tokenUsage ? {
+    promptTokens: thread.tokenUsage.promptTokens,
+    completionTokens: thread.tokenUsage.completionTokens,
+    totalTokens: thread.tokenUsage.totalTokens,
+  } : null,
+  context_usage: thread.contextUsage ? {
+    usedTokens: thread.contextUsage.usedTokens,
+    contextWindow: thread.contextUsage.contextWindow,
+    percentage: thread.contextUsage.percentage,
+  } : null,
   created_at: new Date(thread.createdAt).toISOString(),
   updated_at: new Date(thread.updatedAt).toISOString(),
 });
@@ -128,6 +157,16 @@ const fromDbThread = (dbThread: DbThread): Thread => ({
     timeline: (m as any).timeline,
     toolProposal: (m as any).toolProposal,
   })),
+  tokenUsage: dbThread.token_usage ? {
+    promptTokens: dbThread.token_usage.promptTokens,
+    completionTokens: dbThread.token_usage.completionTokens,
+    totalTokens: dbThread.token_usage.totalTokens,
+  } : undefined,
+  contextUsage: dbThread.context_usage ? {
+    usedTokens: dbThread.context_usage.usedTokens,
+    contextWindow: dbThread.context_usage.contextWindow,
+    percentage: dbThread.context_usage.percentage,
+  } : undefined,
 });
 
 // ============================================
@@ -145,7 +184,7 @@ export const useThreadStore = create<ThreadState>()(
       createThread: () => {
         const threadId = generateUUID();
         const now = Date.now();
-        
+
         const newThread: Thread = {
           id: threadId,
           title: 'New Chat',
@@ -199,7 +238,7 @@ export const useThreadStore = create<ThreadState>()(
       deleteThread: async (threadId) => {
         // First delete persistence (db + optional dev JSON)
         await get().deleteThreadFile(threadId);
-        
+
         // Then remove from state
         set((state) => {
           const { [threadId]: _, ...remainingThreads } = state.threads;
@@ -280,12 +319,12 @@ export const useThreadStore = create<ThreadState>()(
           threadList: state.threadList.map((t) =>
             t.id === currentThreadId
               ? {
-                  ...t,
-                  title: updatedThread.title,
-                  updatedAt: updatedThread.updatedAt,
-                  messageCount: updatedThread.messages.length,
-                  preview: message.content.slice(0, 100),
-                }
+                ...t,
+                title: updatedThread.title,
+                updatedAt: updatedThread.updatedAt,
+                messageCount: updatedThread.messages.length,
+                preview: message.content.slice(0, 100),
+              }
               : t
           ),
         }));
@@ -317,6 +356,29 @@ export const useThreadStore = create<ThreadState>()(
         }));
 
         // Auto-save (debounced would be better but keeping simple)
+        get().saveCurrentThread();
+      },
+
+      updateThreadUsage: (tokenUsage, contextUsage) => {
+        const { currentThreadId, threads } = get();
+        if (!currentThreadId) return;
+
+        const thread = threads[currentThreadId];
+        if (!thread) return;
+
+        set((state) => ({
+          threads: {
+            ...state.threads,
+            [currentThreadId]: {
+              ...thread,
+              tokenUsage,
+              contextUsage,
+              updatedAt: Date.now(),
+            },
+          },
+        }));
+
+        // Auto-save usage
         get().saveCurrentThread();
       },
 

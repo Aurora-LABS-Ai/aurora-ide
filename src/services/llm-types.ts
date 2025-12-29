@@ -73,12 +73,12 @@ export interface ChatCompletionChoice {
   index: number;
   message: AssistantMessage;
   finish_reason:
-    | "stop"
-    | "tool_calls"
-    | "length"
-    | "sensitive"
-    | "network_error"
-    | null;
+  | "stop"
+  | "tool_calls"
+  | "length"
+  | "sensitive"
+  | "network_error"
+  | null;
 }
 
 export interface UsageInfo {
@@ -119,12 +119,12 @@ export interface StreamChoice {
   index: number;
   delta: StreamDelta;
   finish_reason:
-    | "stop"
-    | "tool_calls"
-    | "length"
-    | "sensitive"
-    | "network_error"
-    | null;
+  | "stop"
+  | "tool_calls"
+  | "length"
+  | "sensitive"
+  | "network_error"
+  | null;
 }
 
 export interface ChatCompletionChunk {
@@ -145,6 +145,7 @@ export type ProviderType =
   | "deepseek"
   | "glm"
   | "anthropic"
+  | "minimax"
   | "custom";
 
 export interface LLMProviderConfig {

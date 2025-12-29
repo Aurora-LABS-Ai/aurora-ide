@@ -46,8 +46,14 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [2])?;
             Ok(())
         }
-        // Future migrations go here
-        // 3 => migration_v3(conn)?,
+        3 => {
+            // Migration from v2 to v3: Add token/context usage to threads
+            migration_v3(conn)?;
+            // Update schema version
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [3])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -114,6 +120,23 @@ fn migration_v2(conn: &Connection) -> DbResult<()> {
 
     // Drop old settings table if exists (it was a placeholder)
     conn.execute("DROP TABLE IF EXISTS settings", [])?;
+
+    Ok(())
+}
+
+/// Migration v3: Add token_usage and context_usage columns to threads table
+fn migration_v3(conn: &Connection) -> DbResult<()> {
+    // Add token_usage column to threads table
+    conn.execute(
+        "ALTER TABLE threads ADD COLUMN token_usage TEXT",
+        [],
+    )?;
+
+    // Add context_usage column to threads table
+    conn.execute(
+        "ALTER TABLE threads ADD COLUMN context_usage TEXT",
+        [],
+    )?;
 
     Ok(())
 }

@@ -15,6 +15,9 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  // Cache tokens (MiniMax/Anthropic)
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 }
 
 export interface ContextUsage {
@@ -73,9 +76,11 @@ export const useContextStore = create<ContextState>((set, get) => ({
   // Update with actual API usage - this REPLACES the estimate
   updateUsage: (usage: TokenUsage) => {
     const state = get();
-    // prompt_tokens = total context used (all messages + system prompt)
-    // This is the accurate value from the API
-    const usedContext = usage.promptTokens;
+    // Total context used = new prompt tokens + cached tokens
+    // cacheReadTokens represents cached content that was reused
+    // Without cache: promptTokens = total context
+    // With cache: promptTokens (new) + cacheReadTokens (cached) = total context
+    const usedContext = usage.promptTokens + (usage.cacheReadTokens || 0);
     const percentage = calculatePercentage(usedContext, state.contextWindow);
 
     set({

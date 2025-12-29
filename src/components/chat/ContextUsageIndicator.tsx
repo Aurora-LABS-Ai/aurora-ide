@@ -15,7 +15,6 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
         usedContextTokens,
         contextWindow,
         usagePercentage,
-        isNearLimit,
         isOverLimit,
     } = useContextStore();
 
@@ -35,25 +34,25 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
     const offset = circumference - (percentage / 100) * circumference;
 
     // Color based on usage level
+    // Cold (cyan) until 30%, slow yellow 30-80%, red after 80%
     const getProgressColor = () => {
-        if (isOverLimit || percentage >= 95) return 'text-red-500';
-        if (isNearLimit || percentage >= 80) return 'text-amber-500';
-        if (percentage >= 50) return 'text-yellow-500';
-        return 'text-emerald-500';
+        if (isOverLimit || percentage >= 80) return 'text-red-500';
+        if (percentage >= 30) return 'text-amber-400';
+        return 'text-cyan-400';
     };
 
     const getBarColor = () => {
-        if (isOverLimit || percentage >= 95) return 'bg-red-500';
-        if (isNearLimit || percentage >= 80) return 'bg-amber-500';
-        if (percentage >= 50) return 'bg-yellow-500';
-        return 'bg-emerald-500';
+        if (isOverLimit || percentage >= 80) return 'bg-red-500';
+        if (percentage >= 30) return 'bg-amber-400';
+        return 'bg-cyan-400';
     };
 
     const progressColor = getProgressColor();
     const barColor = getBarColor();
 
     // Format large numbers
-    const formatTokens = (n: number) => {
+    const formatTokens = (n: number | undefined) => {
+        if (n === undefined || n === null) return '0';
         if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
         if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
         return n.toLocaleString();
@@ -98,13 +97,12 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
                         Context Window
                     </div>
 
-                    {/* Warning Banner */}
-                    {(isNearLimit || isOverLimit) && (
-                        <div className={`flex items-center gap-1.5 px-2 py-1 mb-2 rounded text-[10px] ${
-                            isOverLimit ? 'bg-red-500/20 text-red-400' : 'bg-amber-500/20 text-amber-400'
-                        }`}>
+                    {/* Warning Banner - shows at 80%+ */}
+                    {percentage >= 80 && (
+                        <div className={`flex items-center gap-1.5 px-2 py-1 mb-2 rounded text-[10px] ${isOverLimit ? 'bg-red-500/20 text-red-400' : 'bg-red-500/20 text-red-400'
+                            }`}>
                             <AlertTriangle size={10} />
-                            {isOverLimit ? 'Context limit exceeded!' : 'Approaching limit'}
+                            {isOverLimit ? 'Context limit exceeded!' : 'Context running low'}
                         </div>
                     )}
 

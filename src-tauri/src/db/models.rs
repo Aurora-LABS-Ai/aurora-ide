@@ -16,6 +16,7 @@ pub struct WorkspaceState {
 
 impl WorkspaceState {
     /// Convert the ISO timestamp string to OffsetDateTime
+    #[allow(dead_code)]
     pub fn get_last_opened_at(&self) -> OffsetDateTime {
         OffsetDateTime::parse(&self.last_opened_at, &time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| OffsetDateTime::now_utc())
@@ -55,6 +56,7 @@ pub struct EditorState {
 
 impl EditorState {
     /// Convert the ISO timestamp string to OffsetDateTime
+    #[allow(dead_code)]
     pub fn get_last_edited_at(&self) -> OffsetDateTime {
         OffsetDateTime::parse(&self.last_edited_at, &time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| OffsetDateTime::now_utc())
@@ -81,8 +83,26 @@ pub struct ExplorerState {
 }
 
 // ============================================================
-// THREAD STATE (for future use)
+// THREAD STATE
 // ============================================================
+
+/// Token usage tracking for a thread
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsage {
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub total_tokens: i64,
+}
+
+/// Context usage tracking for a thread
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsage {
+    pub used_tokens: i64,
+    pub context_window: i64,
+    pub percentage: f64,
+}
 
 /// Thread/conversation state
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +111,8 @@ pub struct ThreadState {
     pub title: String,
     pub summary: Option<String>,
     pub messages: Vec<Message>,
+    pub token_usage: Option<TokenUsage>,
+    pub context_usage: Option<ContextUsage>,
     pub created_at: String, // ISO string or timestamp string
     pub updated_at: String, // ISO string or timestamp string
 }
@@ -105,8 +127,8 @@ pub struct Message {
     pub timestamp: String, // ISO string or timestamp string
     pub tool_calls: Option<Vec<ToolCall>>,
     pub thinking: Option<String>,
-    #[serde(default)]
-    pub isThinking: Option<bool>,
+    #[serde(default, alias = "isThinking")]
+    pub is_thinking: Option<bool>,
     #[serde(default)]
     pub tools: Option<Vec<serde_json::Value>>,
     #[serde(default)]

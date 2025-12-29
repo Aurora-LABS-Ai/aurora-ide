@@ -14,6 +14,7 @@ interface EditorState {
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   updateTabContent: (tabId: string, content: string) => void;
+  reloadTabContent: (tabId: string, content: string) => void;
   setFontSize: (size: number) => void;
   saveTabToDisk: (tabId: string) => Promise<void>;
 
@@ -80,6 +81,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     tabs: state.tabs.map(tab =>
       tab.id === tabId
         ? { ...tab, content, isDirty: true }
+        : tab
+    )
+  })),
+
+  // Reload content from external source (e.g., fs watcher) - doesn't mark dirty
+  reloadTabContent: (tabId, content) => set(state => ({
+    tabs: state.tabs.map(tab =>
+      tab.id === tabId
+        ? { ...tab, content, isDirty: false }
         : tab
     )
   })),

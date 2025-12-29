@@ -11,11 +11,13 @@ import { useSettingsStore } from "../../store/useSettingsStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { useContextStore } from "../../store/useContextStore";
 import { useAuditStore } from "../../store/useAuditStore";
-import { getAgentService, initLLMProvider } from "../../services";
+import { getAgentService, type ProviderConfig } from "../../services";
 import { estimateTokens, estimateToolsTokens } from "../../services/token-estimator";
 import { toolRegistry } from "../../tools";
 import { registerAllExecutors } from "../../tools";
 import { buildQueryContext, getIDEContext } from "../../services/context-builder";
+import { convertThreadToApiHistory } from "../../services/thread-converter";
+import { chatSyncBroadcast } from "../../hooks/useRustChatSync";
 import type {
   ToolProposal,
   ToolCall,
@@ -49,6 +51,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
     createThread,
     addMessageToThread,
     updateMessageInThread,
+    updateThreadUsage,
     clearCurrentThread,
   } = useThreadStore();
 
@@ -56,15 +59,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
   const {
     autoApproveTools,
-    thinkingEnabled,
-    temperature,
-    maxTokens,
     maxToolCallsPerRequest,
     getToolApproval,
     setToolApproval,
     getLLMConfig,
     selectedModel,
   } = useSettingsStore();
+
+  // Get provider-specific settings (each model has its own characteristics)
+  const llmConfig = getLLMConfig();
+  const thinkingEnabled = llmConfig?.supportsThinking ?? false;
+  const temperature = llmConfig?.defaultTemperature ?? 1.0;
+  const maxTokens = llmConfig?.defaultMaxTokens ?? llmConfig?.maxOutputTokens ?? 8192;
 
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const currentMessageIdRef = useRef<string | null>(null);
@@ -101,6 +107,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
     useContextStore.getState().reset();
     // Don't create thread yet - just clear current
     clearCurrentThread();
+    // Broadcast to other windows via Rust
+    chatSyncBroadcast.clear();
   }, [clearCurrentThread]);
 
   // Helper to add timeline event
@@ -186,6 +194,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       addMessageToThread(userMessage);
 
       setLoading(true);
+      chatSyncBroadcast.setLoading(true);
 
       // Get the current LLM config based on selected model
       const llmConfig = getLLMConfig();
@@ -205,31 +214,52 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
       console.log("Using LLM config:", llmConfig);
 
-      // Initialize LLM provider with current settings (including maxOutputTokens)
-      initLLMProvider({
+      // Initialize enterprise provider with current settings
+      const providerConfig: ProviderConfig = {
+        id: llmConfig.id,
+        name: llmConfig.name,
+        providerType: llmConfig.providerType as ProviderConfig['providerType'] || 'custom',
         baseUrl: llmConfig.baseUrl,
         apiKey: llmConfig.apiKey,
         model: llmConfig.model,
-        maxOutputTokens: llmConfig.maxOutputTokens,
-        contextWindow: llmConfig.contextWindow,
-        supportsThinking: llmConfig.supportsThinking,
-        supportsToolStream: llmConfig.supportsToolStream,
-        customHeaders: llmConfig.customHeaders,
-        customParams: llmConfig.customParams,
-        providerType: llmConfig.providerType,
+        contextWindow: llmConfig.contextWindow || 128000,
+        maxOutputTokens: llmConfig.maxOutputTokens || 8192,
+        supportsThinking: llmConfig.supportsThinking ?? false,
+        supportsToolStream: llmConfig.supportsToolStream ?? false,
+        supportsVision: false,
         defaultTemperature: llmConfig.defaultTemperature,
         defaultMaxTokens: llmConfig.defaultMaxTokens,
-      });
+        customHeaders: llmConfig.customHeaders,
+        customParams: llmConfig.customParams,
+      };
+
+      // Get agent and set provider (enterprise system)
+      const agent = getAgentService();
+      agent.setProvider(providerConfig);
+
+      // CRITICAL: Sync thread history to agent for conversation continuity
+      // This enables the AI to remember previous messages when resuming a thread
+      // We sync BEFORE adding the current user message (which happens in addMessageToThread above)
+      if (currentThread?.messages && currentThread.messages.length > 0) {
+        // Exclude the message we just added (it's the last one with our current timestamp)
+        const previousMessages = currentThread.messages.filter(
+          m => m.id !== userMessage.id
+        );
+        if (previousMessages.length > 0) {
+          const apiHistory = convertThreadToApiHistory(previousMessages);
+          agent.setHistory(apiHistory);
+          console.log(`[ChatPanel] Thread history synced: ${previousMessages.length} UI messages → ${apiHistory.length} API messages`);
+        }
+      }
 
       // Update context store with provider limits
       const contextStore = useContextStore.getState();
       contextStore.setContextWindow(
-        llmConfig.contextWindow || 128000,
-        llmConfig.maxOutputTokens || 8192
+        providerConfig.contextWindow,
+        providerConfig.maxOutputTokens
       );
 
-      // Get agent to access conversation history
-      const agent = getAgentService();
+      // Get conversation history
       const conversationHistory = agent.getHistory();
 
       // Get all available tools for token estimation
@@ -245,7 +275,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       // Simple token estimation for history - just count content
       let historyTokens = 0;
       for (const m of conversationHistory) {
-        historyTokens += estimateTokens(m.content || '', 'mixed');
+        // Handle content that can be string or ContentBlock[]
+        const contentStr = typeof m.content === 'string'
+          ? m.content
+          : (Array.isArray(m.content)
+            ? m.content.map(b => 'text' in b ? b.text : '').join('')
+            : '');
+        historyTokens += estimateTokens(contentStr || '', 'mixed');
       }
 
       const newMessageTokens = estimateTokens(formattedContext, 'mixed');
@@ -397,18 +433,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
                 hasFileOperation = true;
               }
             } else {
-              // Update existing tool call arguments
+              // Update existing tool call arguments (streaming)
+              // Store rawArgs for streaming display even if JSON is incomplete
+              const rawArgs = toolCall.function.arguments || '';
+              let parsedArgs = existingToolEvent.tool!.args || {};
+
               try {
-                const updatedTool = {
-                  ...existingToolEvent.tool!,
-                  args: JSON.parse(toolCall.function.arguments || "{}"),
-                };
-                updateTimelineEvent(existingToolEvent.id, {
-                  tool: updatedTool,
-                });
+                parsedArgs = JSON.parse(rawArgs);
               } catch {
-                // Arguments still streaming
+                // JSON still incomplete - keep existing parsed args but update rawArgs
               }
+
+              const updatedTool = {
+                ...existingToolEvent.tool!,
+                args: parsedArgs,
+                rawArgs: rawArgs, // Always store raw for streaming display
+              };
+              updateTimelineEvent(existingToolEvent.id, {
+                tool: updatedTool,
+              });
             }
           },
           onToolApprovalRequired: async (toolCall) => {
@@ -502,11 +545,33 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             // Update context store with actual usage from API
             usageReceivedFromAPI = true;
             const contextStore = useContextStore.getState();
+
+            // Provider sends camelCase (promptTokens, completionTokens, totalTokens, cacheReadTokens)
             contextStore.updateUsage({
-              promptTokens: usage.prompt_tokens,
-              completionTokens: usage.completion_tokens,
-              totalTokens: usage.total_tokens,
+              promptTokens: usage.promptTokens,
+              completionTokens: usage.completionTokens,
+              totalTokens: usage.totalTokens,
+              cacheReadTokens: usage.cacheReadTokens,
+              cacheWriteTokens: usage.cacheWriteTokens,
             });
+
+            // Persist to thread DB for conversation continuity
+            const newContextState = useContextStore.getState();
+            updateThreadUsage(
+              {
+                promptTokens: usage.promptTokens,
+                completionTokens: usage.completionTokens,
+                totalTokens: usage.totalTokens,
+                cacheReadTokens: usage.cacheReadTokens,
+                cacheWriteTokens: usage.cacheWriteTokens,
+              },
+              {
+                usedTokens: newContextState.usedContextTokens,
+                contextWindow: newContextState.contextWindow,
+                percentage: newContextState.usagePercentage,
+              }
+            );
+
             console.log('[ChatPanel] Token usage from API:', usage);
           },
           onComplete: (finalMessage) => {
@@ -530,10 +595,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
             // If we have final content from the API that wasn't streamed, add it
             if (finalMessage?.content && !hasContentEvent) {
-              addTimelineEvent({
-                type: "content",
-                content: finalMessage.content,
-              });
+              // Handle content that can be string or ContentBlock[]
+              const contentStr = typeof finalMessage.content === 'string'
+                ? finalMessage.content
+                : (Array.isArray(finalMessage.content)
+                  ? finalMessage.content.map(b => 'text' in b ? (b as any).text : '').join('')
+                  : '');
+              if (contentStr) {
+                addTimelineEvent({
+                  type: "content",
+                  content: contentStr,
+                });
+              }
             }
             // If no content event exists, find the last thinking event after tool calls
             // and convert it to content (handles DeepSeek/GLM behavior where response
@@ -590,8 +663,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           onError: (error) => {
             // Don't show error if request was cancelled by user
             const isCancelled = error.message === 'Request cancelled' ||
-                                error.name === 'AbortError' ||
-                                error.message.includes('aborted');
+              error.name === 'AbortError' ||
+              error.message.includes('aborted');
 
             if (!isCancelled) {
               addTimelineEvent({
@@ -644,6 +717,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
         }
       } finally {
         setLoading(false);
+        chatSyncBroadcast.setLoading(false);
         currentMessageIdRef.current = null;
       }
     },
@@ -653,10 +727,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       addMessageToThread,
       updateMessageInThread,
       setLoading,
-      thinkingEnabled,
       autoApproveTools,
-      temperature,
-      maxTokens,
       maxToolCallsPerRequest,
       getToolApproval,
       setPendingApproval,
@@ -665,6 +736,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       refreshFileExplorer,
       getLLMConfig,
       selectedModel,
+      // Provider-specific settings are derived from getLLMConfig/selectedModel
     ],
   );
 

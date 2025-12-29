@@ -2,16 +2,20 @@
  * Agent Service
  * Orchestrates AI interactions with tool calling and thinking
  * Manages the conversation loop with tool execution
+ * 
+ * Uses enterprise-grade provider system
  */
 
-import { LLMProvider, getLLMProvider } from './llm-provider';
+import { createProvider, type IProvider, type ProviderConfig } from './providers';
 import type {
-  ChatMessage,
-  ThinkingConfig,
-  StreamCallbacks
-} from './llm-types';
+  Message,
+  AssistantMessage,
+  ToolCallRequest,
+  ToolDefinition,
+  StreamCallbacks as ProviderStreamCallbacks,
+} from './providers/types';
 import { toolRegistry, getToolsForModel } from '../tools';
-import type { ToolCallRequest, ToolDefinition } from '../tools/types';
+import type { ToolDefinition as LegacyToolDefinition } from '../tools/types';
 
 // ============================================
 // AGENT TYPES
@@ -25,9 +29,10 @@ export interface AgentConfig {
   temperature?: number;
   maxTokens?: number;
   getToolApproval?: (toolName: string) => 'auto' | 'always_ask' | 'deny';
+  providerConfig?: ProviderConfig; // Enterprise provider config
 }
 
-export interface AgentCallbacks extends StreamCallbacks {
+export interface AgentCallbacks extends ProviderStreamCallbacks {
   onToolApprovalRequired?: (toolCall: ToolCallRequest) => Promise<boolean>;
   onToolExecutionStart?: (toolCall: ToolCallRequest) => void;
   onToolExecutionComplete?: (toolCall: ToolCallRequest, result: string) => void;
@@ -101,12 +106,12 @@ When making code changes, follow these instructions carefully:
 - file_delete: Delete a file. Requires user confirmation.
 - file_exists: Check if a file exists.
 - file_search: Search for text patterns in a single file.
-- grep: Search for patterns across multiple files/directories. Supports regex, glob filters, case-insensitive search, and context lines. Preferred for codebase-wide searches.
+- grep: Search for patterns INSIDE file contents across multiple files/directories. Searches line-by-line within files, NOT filenames. Use the 'glob' parameter to filter by file type (e.g., glob="*.ts"). Supports regex, case-insensitive search, and context lines.
 - multi_file_read: Read multiple files in parallel (10-100x faster than reading files one by one). USE THIS when you need to read 2+ files.
 
 ### Workspace Tools
 - workspace_info: Get workspace metadata (name, path, file count).
-- workspace_tree: Get directory structure as a tree. Use with depth=1 to list single directory.
+- workspace_tree: **IMPORTANT** - Get the complete project directory structure as a tree. This gives you a full picture of the codebase. Use this FIRST when starting work on a new project or unfamiliar codebase.
 - folder_create: Create a new folder.
 - folder_delete: Delete a folder and its contents.
 
@@ -146,32 +151,36 @@ Use the todo_write tool for complex tasks that require 3+ steps. This helps trac
 
 ## Behavioral Guidelines
 
-1. **Be Direct** - Complete tasks without unnecessary explanation. If user says "create a file", just create it.
+1. **Understand the Codebase First** - When starting work on a new or unfamiliar project, ALWAYS run workspace_tree first to understand the project structure. This is MANDATORY, not optional. Don't use shell commands like 'tree' or 'ls' - use the workspace_tree tool directly.
 
-2. **Parallel Tool Calls** - Call multiple tools at once when possible. This is 10-100x faster than sequential calls.
+2. **Be Direct** - Complete tasks without unnecessary explanation. If user says "create a file", just create it.
 
-3. **Don't Reinvent Built-in Features**:
+3. **Parallel Tool Calls** - Call multiple tools at once when possible. This is 10-100x faster than sequential calls.
+
+4. **Don't Reinvent Built-in Features**:
    - Terminal already exists in the editor (don't try to "open" one with shell commands)
    - File explorer shows the workspace (don't list files unless asked)
    - Use editor_open_file to show files in tabs
+   - Use workspace_tree for directory structure (don't use shell 'tree' command)
 
-4. **Stay Focused** - Complete the requested task, then stop. Don't add unrequested features.
+5. **Stay Focused** - Complete the requested task, then stop. Don't add unrequested features.
 
-5. **Minimal Output** - Actions speak louder than words. Use tools, don't just describe what you would do.
+6. **Minimal Output** - Actions speak louder than words. Use tools, don't just describe what you would do.
 
-6. **Read Before Edit** - Always read file contents before modifying, unless creating new files.
+7. **Read Before Edit** - Always read file contents before modifying, unless creating new files.
 
-7. **Fix Your Mistakes** - If an edit introduces errors, fix them. But don't loop more than 3 times.
+8. **Fix Your Mistakes** - If an edit introduces errors, fix them. But don't loop more than 3 times.
 
-8. **Use Correct Paths** - Workspace root is the current directory for relative paths. Use full paths for editor_open_file.
+9. **Use Correct Paths** - Workspace root is the current directory for relative paths. Use full paths for editor_open_file.
 
 ## Search and Reading
 
 If you are unsure about the answer to the USER's request, gather more information by using additional tool calls.
 
+- Use workspace_tree FIRST to understand the project structure
 - Use file_read to read specific files
-- Use file_search to find patterns in code
-- Use workspace_tree to understand project structure
+- Use grep to search for patterns INSIDE file contents (not filenames)
+- Use multi_file_read to read multiple files in parallel
 - Bias towards finding the answer yourself rather than asking the user
 
 When making changes to code, first read the relevant files, understand the context, then make focused edits.`;// ============================================
@@ -180,26 +189,42 @@ When making changes to code, first read the relevant files, understand the conte
 
 export class AgentService {
   private config: AgentConfig;
-  private conversationHistory: ChatMessage[] = [];
+  private conversationHistory: Message[] = [];
   private isRunning = false;
+  private provider: IProvider | null = null;
 
   constructor(config?: AgentConfig) {
     this.config = {
       systemPrompt: DEFAULT_SYSTEM_PROMPT,
       thinkingEnabled: true,
       autoApproveTools: false,
-      maxToolIterations: 25, // Increased to allow more complex tool chains
+      maxToolIterations: 25,
       temperature: 1.0,
       maxTokens: 4096,
       ...config,
     };
+
+    // Initialize enterprise provider if config provided
+    if (config?.providerConfig) {
+      this.provider = createProvider(config.providerConfig);
+    }
   }
 
   /**
-   * Get the current LLM provider (always fresh from singleton)
+   * Set provider configuration (enterprise system)
    */
-  private get provider(): LLMProvider {
-    return getLLMProvider();
+  setProvider(config: ProviderConfig): void {
+    this.provider = createProvider(config);
+  }
+
+  /**
+   * Get the current provider
+   */
+  private getProvider(): IProvider {
+    if (!this.provider) {
+      throw new Error('Provider not initialized. Call setProvider first.');
+    }
+    return this.provider;
   }
 
   /**
@@ -212,7 +237,7 @@ export class AgentService {
   /**
    * Get conversation history
    */
-  getHistory(): ChatMessage[] {
+  getHistory(): Message[] {
     return [...this.conversationHistory];
   }
 
@@ -224,11 +249,20 @@ export class AgentService {
   }
 
   /**
+   * Set conversation history from external source (e.g., thread store)
+   * This enables context continuity when resuming a thread
+   */
+  setHistory(messages: Message[]): void {
+    this.conversationHistory = [...messages];
+    console.log(`[AgentService] History set with ${messages.length} messages`);
+  }
+
+  /**
    * Stop the current agent run
    */
   stop(): void {
     this.isRunning = false;
-    this.provider.cancelRequest();
+    this.provider?.cancelRequest();
   }
 
   /**
@@ -244,12 +278,13 @@ export class AgentService {
   async chat(
     userMessage: string,
     callbacks: AgentCallbacks,
-    tools?: ToolDefinition[]
+    tools?: LegacyToolDefinition[]
   ): Promise<AgentResponse> {
     this.isRunning = true;
+    const provider = this.getProvider();
 
     // Build messages with system prompt
-    const messages: ChatMessage[] = [
+    const messages: Message[] = [
       { role: 'system', content: this.config.systemPrompt! },
       ...this.conversationHistory,
       { role: 'user', content: userMessage },
@@ -258,14 +293,15 @@ export class AgentService {
     // Add user message to history
     this.conversationHistory.push({ role: 'user', content: userMessage });
 
-    // Get available tools
-    const availableTools = tools || getToolsForModel();
-
-    // Thinking config
-    const thinkingConfig: ThinkingConfig = {
-      type: this.config.thinkingEnabled ? 'enabled' : 'disabled',
-      clear_thinking: false, // Preserve thinking for context
-    };
+    // Get available tools - convert legacy format to enterprise format
+    const availableTools: ToolDefinition[] = (tools || getToolsForModel()).map(t => ({
+      type: 'function' as const,
+      function: {
+        name: t.function.name,
+        description: t.function.description,
+        parameters: t.function.parameters,
+      },
+    }));
 
     let iteration = 0;
     let finalContent = '';
@@ -276,9 +312,16 @@ export class AgentService {
       while (this.isRunning && iteration < this.config.maxToolIterations!) {
         iteration++;
 
-        // Stream the response
-        const response = await this.provider.streamChatCompletion(
-          messages,
+        // Stream the response using enterprise provider
+        const response = await provider.streamChat(
+          {
+            messages,
+            tools: availableTools,
+            stream: true,
+            temperature: this.config.temperature,
+            maxTokens: this.config.maxTokens,
+            thinkingEnabled: this.config.thinkingEnabled,
+          },
           {
             onStart: callbacks.onStart,
             onToken: callbacks.onToken,
@@ -287,23 +330,23 @@ export class AgentService {
               callbacks.onThinking?.(thinking);
             },
             onToolCall: callbacks.onToolCall,
+            onUsage: callbacks.onUsage,
             onError: callbacks.onError,
-          },
-          {
-            tools: availableTools,
-            thinking: thinkingConfig,
-            temperature: this.config.temperature,
-            maxTokens: this.config.maxTokens,
           }
         );
 
-        // Add assistant message to history (includes reasoning_content for DeepSeek)
+        // Add assistant message to history
         messages.push(response);
         this.conversationHistory.push(response);
 
         // Update final content if we got any
         if (response.content) {
-          finalContent = response.content;
+          finalContent = Array.isArray(response.content) ? response.content.map(block => block.type === 'text' ? block.text : '').join('') : response.content;
+        }
+
+        // Update thinking from reasoning_content
+        if (response.reasoning_content) {
+          finalThinking += response.reasoning_content;
         }
 
         console.log('[AgentService] Response:', {
@@ -367,7 +410,7 @@ export class AgentService {
                     role: 'tool' as const,
                     tool_call_id: toolCall.id,
                     content: result.content,
-                  }
+                  } as Message
                 };
               } catch (error) {
                 toolResult.result = error instanceof Error ? error.message : String(error);
@@ -379,7 +422,7 @@ export class AgentService {
                     role: 'tool' as const,
                     tool_call_id: toolCall.id,
                     content: JSON.stringify({ error: toolResult.result }),
-                  }
+                  } as Message
                 };
               }
             } else {
@@ -393,7 +436,7 @@ export class AgentService {
                     error: 'Tool execution rejected by user',
                     tool: toolName,
                   }),
-                }
+                } as Message
               };
             }
           });
@@ -422,7 +465,7 @@ export class AgentService {
         role: 'assistant',
         content: finalContent,
         reasoning_content: finalThinking || undefined,
-      });
+      } as AssistantMessage);
 
       return {
         content: finalContent,

@@ -8,9 +8,8 @@ import {
   isTauri,
   readFileContent,
   writeFileContent,
-  createFile,
-  deletePath,
   readDirectory,
+  deletePath,
 } from "../../lib/tauri";
 import { resolvePath, getWorkspaceRootPath } from "../utils/path-resolver";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
@@ -129,10 +128,11 @@ const fileReadLinesExecutor = async (
 };
 
 // ============================================
-// FILE CREATE EXECUTOR (Enhanced with Logging)
+// FILE CREATE EXECUTOR (Cursor-style: Write immediately, revert on reject)
 // ============================================
 const fileCreateExecutor = async (
   args: Record<string, any>,
+  toolCallId?: string,
 ): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({
@@ -147,28 +147,60 @@ const fileCreateExecutor = async (
   }
 
   const fullPath = resolvePath(args.path);
-  console.log("[file_create] Creating file:", fullPath);
+  const fileName = fullPath.split(/[/\\]/).pop() || args.path;
+  console.log("[file_create] Writing file (Cursor-style):", fullPath);
 
   try {
-    await createFile(fullPath);
-    if (args.content) {
-      const processedContent = processEscapeSequences(args.content);
-      await writeFileContent(fullPath, processedContent);
-    }
+    const processedContent = args.content ? processEscapeSequences(args.content) : '';
+
+    // CURSOR-STYLE: Write to disk immediately
+    await writeFileContent(fullPath, processedContent);
+    triggerRefresh();
+
+    // Import pending changes store
+    const { usePendingChangesStore } = await import('../../store/usePendingChangesStore');
+
+    // Track the change for potential rollback (originalContent undefined = new file, delete on reject)
+    const changeId = usePendingChangesStore.getState().addChange({
+      filePath: fullPath,
+      fileName,
+      content: processedContent,
+      originalContent: undefined, // New file - delete on reject
+      operation: 'create',
+      toolCallId: toolCallId || '',
+    });
+
+    // Automatically open the file in the editor so the user sees the diff
+    import('../../store/useEditorStore').then(({ useEditorStore }) => {
+      const filename = fullPath.split(/[/\\]/).pop() || args.path;
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      const langMap: Record<string, string> = {
+        'ts': 'typescript', 'tsx': 'typescript',
+        'js': 'javascript', 'jsx': 'javascript',
+        'json': 'json', 'css': 'css', 'scss': 'scss',
+        'html': 'html', 'md': 'markdown',
+        'rs': 'rust', 'toml': 'toml',
+        'yaml': 'yaml', 'yml': 'yaml',
+        'py': 'python', 'go': 'go',
+      };
+      const language = langMap[ext] || 'plaintext';
+      useEditorStore.getState().openFile(fullPath, filename, processedContent, language);
+    });
 
     // Log the create operation
     operationLog.logOperation(FsOperationType.Create, args.path, {
       fullPath,
+      pending: true,
+      changeId,
       hasContent: !!args.content,
-      bytes: args.content?.length || 0,
-      lines: args.content ? processEscapeSequences(args.content).split("\n").length : 0,
+      bytes: processedContent.length,
     });
-
-    triggerRefresh();
 
     return JSON.stringify({
       success: true,
-      message: `File created: ${args.path}`,
+      pending: true,
+      changeId,
+      message: `File created (pending approval): ${args.path}`,
       path: args.path,
       fullPath,
     });
@@ -180,12 +212,12 @@ const fileCreateExecutor = async (
     });
   }
 };
-
 // ============================================
-// FILE WRITE EXECUTOR (Enhanced with Safety Check)
+// FILE WRITE EXECUTOR (Cursor-style: Write immediately, revert on reject)
 // ============================================
 const fileWriteExecutor = async (
   args: Record<string, any>,
+  toolCallId?: string,
 ): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({
@@ -200,37 +232,66 @@ const fileWriteExecutor = async (
   }
 
   const fullPath = resolvePath(args.path);
-  console.log("[file_write] Writing file:", fullPath);
+  const fileName = fullPath.split(/[/\\]/).pop() || args.path;
+  console.log("[file_write] Writing file (Cursor-style):", fullPath);
 
   try {
-    // Check if file exists to determine if it's create or update
-    let fileExists = false;
-    try {
-      await readFileContent(fullPath);
-      fileExists = true;
-    } catch {
-      fileExists = false;
-    }
+    // Import pending changes store
+    const { usePendingChangesStore, loadOriginalContent } = await import('../../store/usePendingChangesStore');
+
+    // Load original content for potential rollback
+    const originalContent = await loadOriginalContent(fullPath);
 
     const processedContent = processEscapeSequences(args.content);
+
+    // CURSOR-STYLE: Write to disk immediately
     await writeFileContent(fullPath, processedContent);
+    triggerRefresh();
+
+    // Track the change for potential rollback
+    const changeId = usePendingChangesStore.getState().addChange({
+      filePath: fullPath,
+      fileName,
+      content: processedContent,
+      originalContent, // Store original for revert on reject
+      operation: 'write',
+      toolCallId: toolCallId || '',
+    });
+
+    // Automatically open the file in the editor so the user sees the diff
+    import('../../store/useEditorStore').then(({ useEditorStore }) => {
+      const filename = fullPath.split(/[/\\]/).pop() || args.path;
+      const ext = filename.split('.').pop()?.toLowerCase() || '';
+      const langMap: Record<string, string> = {
+        'ts': 'typescript', 'tsx': 'typescript',
+        'js': 'javascript', 'jsx': 'javascript',
+        'json': 'json', 'css': 'css', 'scss': 'scss',
+        'html': 'html', 'md': 'markdown',
+        'rs': 'rust', 'toml': 'toml',
+        'yaml': 'yaml', 'yml': 'yaml',
+        'py': 'python', 'go': 'go',
+      };
+      const language = langMap[ext] || 'plaintext';
+      useEditorStore.getState().openFile(fullPath, filename, processedContent, language);
+    });
 
     // Log the write operation
     operationLog.logOperation(FsOperationType.Write, args.path, {
       fullPath,
-      action: fileExists ? 'updated' : 'created',
-      bytes: args.content.length,
+      pending: true,
+      changeId,
+      bytes: processedContent.length,
       lines: processedContent.split("\n").length,
     });
 
-    triggerRefresh();
-
     return JSON.stringify({
       success: true,
-      message: `File ${fileExists ? 'updated' : 'created'}: ${args.path}`,
+      pending: true,
+      changeId,
+      message: `File written (pending approval): ${args.path}`,
       path: args.path,
       fullPath,
-      bytes: args.content.length,
+      bytes: processedContent.length,
     });
   } catch (error) {
     console.error("[file_write] Error:", error);
@@ -242,10 +303,11 @@ const fileWriteExecutor = async (
 };
 
 // ============================================
-// FILE PATCH EXECUTOR (Enhanced with Validation)
+// FILE PATCH EXECUTOR (Cursor-style: Write immediately, revert on reject)
 // ============================================
 const filePatchExecutor = async (
   args: Record<string, any>,
+  toolCallId?: string,
 ): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({
@@ -255,17 +317,8 @@ const filePatchExecutor = async (
   }
 
   const fullPath = resolvePath(args.path);
-
-  // Validate: file must have been read first (optional safety check)
-  // Uncomment to enforce read-before-edit:
-  // try {
-  //   operationLog.validateEditPermission(args.path);
-  // } catch (error) {
-  //   return JSON.stringify({
-  //     success: false,
-  //     error: (error as Error).message,
-  //   });
-  // }
+  const fileName = fullPath.split(/[/\\]/).pop() || args.path;
+  console.log("[file_patch] Writing patched file (Cursor-style):", fullPath);
 
   try {
     const existingContent = await readFileContent(fullPath);
@@ -282,28 +335,69 @@ const filePatchExecutor = async (
     ];
 
     const patchedContent = patchedLines.join("\n");
-    await writeFileContent(fullPath, patchedContent);
 
-    // Log the edit operation
+    // CURSOR-STYLE: Write to disk immediately
+    await writeFileContent(fullPath, patchedContent);
+    triggerRefresh();
+
+    // Import pending changes store
+    const { usePendingChangesStore } = await import('../../store/usePendingChangesStore');
+
+    // Track the change for potential rollback
+    const changeId = usePendingChangesStore.getState().addChange({
+      filePath: fullPath,
+      fileName,
+      content: patchedContent,
+      originalContent: existingContent, // Store original for revert on reject
+      operation: 'patch',
+      toolCallId: toolCallId || '',
+      patchInfo: {
+        startLine: args.start_line || 1,
+        endLine: endIdx,
+        linesReplaced: endIdx - startIdx,
+        linesInserted: newLines.length,
+      },
+    });
+
+    // Automatically open the file in the editor so the user sees the diff
+    import('../../store/useEditorStore').then(({ useEditorStore }) => {
+      const ext = fileName.split('.').pop()?.toLowerCase() || '';
+      const langMap: Record<string, string> = {
+        'ts': 'typescript', 'tsx': 'typescript',
+        'js': 'javascript', 'jsx': 'javascript',
+        'json': 'json', 'css': 'css', 'scss': 'scss',
+        'html': 'html', 'md': 'markdown',
+        'rs': 'rust', 'toml': 'toml',
+        'yaml': 'yaml', 'yml': 'yaml',
+        'py': 'python', 'go': 'go',
+      };
+      const language = langMap[ext] || 'plaintext';
+      useEditorStore.getState().openFile(fullPath, fileName, patchedContent, language);
+    });
+
+    // Log the patch operation
     operationLog.logOperation(FsOperationType.Edit, args.path, {
       fullPath,
+      pending: true,
+      changeId,
       linesReplaced: endIdx - startIdx,
       linesInserted: newLines.length,
       startLine: args.start_line,
       endLine: args.end_line,
     });
 
-    triggerRefresh();
-
     return JSON.stringify({
       success: true,
-      message: `File patched: ${args.path}`,
+      pending: true,
+      changeId,
+      message: `File patched (pending approval): ${args.path}`,
       path: args.path,
       fullPath,
       linesReplaced: endIdx - startIdx,
       linesInserted: newLines.length,
     });
   } catch (error) {
+    console.error("[file_patch] Error:", error);
     return JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : String(error),
@@ -718,7 +812,7 @@ const multiFileReadExecutor = async (
   }
 
   const paths = args.paths as string[];
-  
+
   if (!Array.isArray(paths) || paths.length === 0) {
     return JSON.stringify({
       success: false,

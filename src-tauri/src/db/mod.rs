@@ -9,8 +9,8 @@ pub use connection::DbConnection;
 pub use error::DbResult;
 pub use models::{
     EditorState, ExplorerState, WorkspaceState,
-    AppSetting, LLMProvider, ToolSetting, AppSettings,
-    ThreadState, Message,
+    LLMProvider, ToolSetting, AppSettings,
+    ThreadState,
 };
 pub use repositories::{
     EditorRepository, ExplorerRepository, WorkspaceRepository, SettingsRepository,
@@ -60,7 +60,8 @@ impl Database {
         SettingsRepository::new(self._conn.connection())
     }
 
-    /// Get the underlying connection
+    /// Get the underlying connection (kept for potential future use)
+    #[allow(dead_code)]
     pub fn connection(&self) -> &rusqlite::Connection {
         self._conn.connection()
     }

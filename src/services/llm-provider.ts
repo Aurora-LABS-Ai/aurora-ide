@@ -2,10 +2,13 @@
  * LLM Provider Service
  * Handles communication with OpenAI-compatible APIs
  * Supports streaming with SSE for real-time responses
- * 
+ * Uses Tauri HTTP commands to bypass CORS restrictions
+ *
  * NOTE: This class has NO hardcoded defaults. All config must come from settings.
  */
 
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import type {
   ChatMessage,
   ChatCompletionResponse,
@@ -17,6 +20,26 @@ import type {
   ProviderType,
 } from './llm-types';
 import type { ToolDefinition, ToolCallRequest } from '../tools/types';
+
+// Tauri command types
+interface LlmRequest {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body?: string;
+  stream: boolean;
+}
+
+interface LlmResponse {
+  status: number;
+  body: string;
+  headers: Record<string, string>;
+}
+
+interface StreamChunk {
+  data: string;
+  done: boolean;
+}
 
 export class LLMProvider {
   private config: LLMProviderConfig;
@@ -122,7 +145,7 @@ export class LLMProvider {
   ): Record<string, unknown> {
     const isDeepSeek = this.isDeepSeek();
     const isReasonerModel = this.config.model.includes('reasoner');
-    
+
     // Base request
     const request: Record<string, unknown> = {
       model: this.config.model,
@@ -136,18 +159,18 @@ export class LLMProvider {
       this.config.maxOutputTokens ??
       4096;
     let maxTokens = options?.maxTokens ?? defaultMaxTokens;
-    
+
     // Cap at provider's max output tokens limit if configured
     if (this.config.maxOutputTokens && maxTokens > this.config.maxOutputTokens) {
       maxTokens = this.config.maxOutputTokens;
     }
-    
+
     request.max_tokens = maxTokens;
 
     // Handle thinking mode based on provider
     // Only add thinking param if provider supports it
     const supportsThinking = this.config.supportsThinking === true;
-    
+
     if (isDeepSeek) {
       // DeepSeek: Don't send temperature/top_p for reasoner model
       // Thinking is enabled by using "deepseek-reasoner" model
@@ -196,7 +219,7 @@ export class LLMProvider {
   }
 
   /**
-   * Non-streaming chat completion
+   * Non-streaming chat completion (uses Tauri HTTP to bypass CORS)
    */
   async chatCompletion(
     messages: ChatMessage[],
@@ -207,23 +230,26 @@ export class LLMProvider {
       maxTokens?: number;
     }
   ): Promise<ChatCompletionResponse> {
-    const request = this.buildRequestBody(messages, false, options);
+    const requestBody = this.buildRequestBody(messages, false, options);
 
     const url = `${this.config.baseUrl}/chat/completions`;
-    console.log('[LLMProvider] POST', url, 'request:', JSON.stringify(request, null, 2));
+    console.log('[LLMProvider] POST', url, 'request:', JSON.stringify(requestBody, null, 2));
 
-    const response = await fetch(url, {
+    const llmRequest: LlmRequest = {
+      url,
       method: 'POST',
       headers: this.buildHeaders(),
-      body: JSON.stringify(request),
-    });
+      body: JSON.stringify(requestBody),
+      stream: false,
+    };
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('[LLMProvider] Error response:', errorText);
+    const response = await invoke<LlmResponse>('llm_request', { request: llmRequest });
+
+    if (response.status >= 400) {
+      console.error('[LLMProvider] Error response:', response.body);
       let errorMessage = `HTTP ${response.status}`;
       try {
-        const errorJson = JSON.parse(errorText);
+        const errorJson = JSON.parse(response.body);
         errorMessage = errorJson.error?.message || errorJson.message || errorMessage;
       } catch {
         // Use status code if can't parse error
@@ -231,11 +257,11 @@ export class LLMProvider {
       throw new Error(errorMessage);
     }
 
-    return response.json();
+    return JSON.parse(response.body);
   }
 
   /**
-   * Streaming chat completion with SSE
+   * Streaming chat completion with SSE (uses Tauri HTTP to bypass CORS)
    */
   async streamChatCompletion(
     messages: ChatMessage[],
@@ -249,102 +275,56 @@ export class LLMProvider {
   ): Promise<AssistantMessage> {
     this.abortController = new AbortController();
 
-    const request = this.buildRequestBody(messages, true, options);
+    const requestBody = this.buildRequestBody(messages, true, options);
 
     const url = `${this.config.baseUrl}/chat/completions`;
     console.log('[LLMProvider] Streaming POST', url, 'model:', this.config.model);
-    console.log('[LLMProvider] Request body:', JSON.stringify(request, null, 2));
+    console.log('[LLMProvider] Request body:', JSON.stringify(requestBody, null, 2));
 
-    try {
-      callbacks.onStart?.();
-
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: this.buildHeaders(),
-        body: JSON.stringify(request),
-        signal: this.abortController.signal,
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('[LLMProvider] Error response:', errorText);
-        let errorMessage = `HTTP ${response.status}`;
-        try {
-          const errorJson = JSON.parse(errorText);
-          errorMessage = errorJson.error?.message || errorJson.message || errorMessage;
-        } catch {
-          // Use status code if can't parse error
-        }
-        throw new Error(errorMessage);
-      }
-
-      // Process SSE stream
-      const result = await this.processStream(response, callbacks);
-      
-      callbacks.onComplete?.(result);
-      return result;
-
-    } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error('Request cancelled');
-      }
-      callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
-      throw error;
-    } finally {
-      this.abortController = null;
-    }
-  }
-
-  /**
-   * Process SSE stream from the API
-   */
-  private async processStream(
-    response: Response,
-    callbacks: StreamCallbacks
-  ): Promise<AssistantMessage> {
-    const reader = response.body?.getReader();
-    if (!reader) {
-      throw new Error('No response body');
-    }
-
-    const decoder = new TextDecoder();
-    let buffer = '';
+    // Generate unique request ID for event handling
+    const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
     // Accumulated message content
     let content = '';
     let reasoningContent = '';
     const toolCalls: Map<number, ToolCallRequest> = new Map();
+    let streamBuffer = '';
 
     try {
-      while (true) {
-        const { done, value } = await reader.read();
+      callbacks.onStart?.();
 
-        if (done) break;
+      // Set up event listeners for stream chunks
+      const unlistenChunk = await listen<StreamChunk>(`llm-stream-${requestId}`, (event) => {
+        const chunk = event.payload;
 
-        buffer += decoder.decode(value, { stream: true });
+        if (chunk.done) {
+          return; // Stream completed
+        }
+
+        // Append to buffer and process SSE data
+        streamBuffer += chunk.data;
 
         // Process complete SSE events
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+        const lines = streamBuffer.split('\n');
+        streamBuffer = lines.pop() || ''; // Keep incomplete line in buffer
 
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             const data = line.slice(6).trim();
 
-            // Check for stream end
             if (data === '[DONE]') {
               continue;
             }
 
             try {
-              const chunk: ChatCompletionChunk = JSON.parse(data);
+              const parsed: ChatCompletionChunk = JSON.parse(data);
 
-              // Capture usage from chunk (usually in final chunk)
-              if (chunk.usage) {
-                callbacks.onUsage?.(chunk.usage);
+              // Capture usage from chunk
+              if (parsed.usage) {
+                callbacks.onUsage?.(parsed.usage);
               }
 
-              for (const choice of chunk.choices) {
+              for (const choice of parsed.choices) {
                 const delta = choice.delta;
 
                 // Handle reasoning/thinking content
@@ -365,7 +345,6 @@ export class LLMProvider {
                     const index = tc.index;
 
                     if (!toolCalls.has(index)) {
-                      // New tool call
                       toolCalls.set(index, {
                         id: tc.id || `tool_${index}`,
                         type: 'function',
@@ -375,7 +354,6 @@ export class LLMProvider {
                         },
                       });
                     } else {
-                      // Append to existing tool call
                       const existing = toolCalls.get(index)!;
                       if (tc.function?.name) {
                         existing.function.name = tc.function.name;
@@ -385,33 +363,69 @@ export class LLMProvider {
                       }
                     }
 
-                    // Notify about tool call update
-                    const currentToolCall = toolCalls.get(index)!;
-                    callbacks.onToolCall?.(currentToolCall);
+                    callbacks.onToolCall?.(toolCalls.get(index)!);
                   }
                 }
               }
             } catch (e) {
-              // Skip invalid JSON chunks
               console.warn('Invalid SSE chunk:', data);
             }
           }
         }
+      });
+
+      // Set up error listener
+      let streamError: Error | null = null;
+      const unlistenError = await listen<string>(`llm-stream-error-${requestId}`, (event) => {
+        streamError = new Error(event.payload);
+      });
+
+      // Start the streaming request
+      const llmRequest: LlmRequest = {
+        url,
+        method: 'POST',
+        headers: this.buildHeaders(),
+        body: JSON.stringify(requestBody),
+        stream: true,
+      };
+
+      await invoke('llm_stream_request', {
+        app: undefined, // Tauri handles this
+        requestId,
+        request: llmRequest,
+      });
+
+      // Clean up listeners
+      unlistenChunk();
+      unlistenError();
+
+      // Check for errors
+      if (streamError) {
+        throw streamError;
       }
+
+      // Build final message
+      const result: AssistantMessage = {
+        role: 'assistant',
+        content,
+        reasoning_content: reasoningContent || undefined,
+        tool_calls: toolCalls.size > 0 ? Array.from(toolCalls.values()) : undefined,
+      };
+
+      callbacks.onComplete?.(result);
+      return result;
+
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('Request cancelled');
+      }
+      callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
+      throw error;
     } finally {
-      reader.releaseLock();
+      this.abortController = null;
     }
-
-    // Build final message
-    const result: AssistantMessage = {
-      role: 'assistant',
-      content,
-      reasoning_content: reasoningContent || undefined,
-      tool_calls: toolCalls.size > 0 ? Array.from(toolCalls.values()) : undefined,
-    };
-
-    return result;
   }
+
 }
 
 // Singleton instance - starts as null, MUST be initialized before use
@@ -467,7 +481,7 @@ export const initLLMProvider = (config: InitProviderConfig): LLMProvider => {
     // Create new instance
     providerInstance = new LLMProvider(fullConfig);
   }
-  
+
   return providerInstance;
 };
 

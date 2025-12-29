@@ -78,6 +78,7 @@ impl<'a> EditorRepository<'a> {
     }
 
     /// Delete editor state for a file
+    #[allow(dead_code)]
     pub fn delete(&self, file_path: &str) -> DbResult<()> {
         self.conn.execute(
             "DELETE FROM editor_state WHERE file_path = ?1",
@@ -88,12 +89,14 @@ impl<'a> EditorRepository<'a> {
     }
 
     /// Delete all editor states
+    #[allow(dead_code)]
     pub fn delete_all(&self) -> DbResult<()> {
         self.conn.execute("DELETE FROM editor_state", [])?;
         Ok(())
     }
 
     /// Get all editor states
+    #[allow(dead_code)]
     pub fn get_all(&self) -> DbResult<Vec<EditorState>> {
         let mut stmt = self.conn.prepare(
             "SELECT file_path, cursor_line, cursor_col, scroll_offset, folded_regions, last_edited_at

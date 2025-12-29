@@ -102,7 +102,7 @@ class ToolRegistry {
    */
   async executeToolCall(toolCall: ToolCallRequest): Promise<ToolCallResult> {
     const tool = this.tools.get(toolCall.function.name);
-    
+
     if (!tool) {
       return {
         tool_call_id: toolCall.id,
@@ -135,8 +135,8 @@ class ToolRegistry {
 
     try {
       // Execute the tool
-      const result = await tool.executor(args);
-      
+      const result = await tool.executor(args, toolCall.id);
+
       // Update tracking
       trackedCall.status = 'complete';
       trackedCall.result = result;
@@ -156,8 +156,8 @@ class ToolRegistry {
       return {
         tool_call_id: toolCall.id,
         role: 'tool',
-        content: JSON.stringify({ 
-          error: error instanceof Error ? error.message : String(error) 
+        content: JSON.stringify({
+          error: error instanceof Error ? error.message : String(error)
         }),
       };
     }

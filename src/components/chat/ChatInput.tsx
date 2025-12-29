@@ -13,6 +13,17 @@ import { getDragFilePath, getFilename, getLanguageFromExtension } from '../../li
 import { FileIcon } from '../explorer/FileIcons';
 import { CompactTaskList } from './TaskView';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
+import { ShimmerText } from '../ui/ShimmerText';
+
+// Rotating status messages for AI generation
+const GENERATING_MESSAGES = [
+  "Aurora is thinking...",
+  "Analyzing your request...",
+  "Building solution...",
+  "Aurora agent working...",
+  "Processing context...",
+  "Crafting response...",
+];
 
 export interface AttachedFile {
   path: string;
@@ -34,6 +45,40 @@ const flattenFiles = (nodes: FileNode[]): FileNode[] => {
     }
   }
   return result;
+};
+
+// Status component that shows rotating shimmer messages during generation
+const GeneratingStatus: React.FC = () => {
+  const { isLoading } = useChatStore();
+  const [messageIndex, setMessageIndex] = useState(0);
+
+  // Rotate through messages every 2.5 seconds
+  useEffect(() => {
+    if (!isLoading) {
+      setMessageIndex(0);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setMessageIndex((prev) => (prev + 1) % GENERATING_MESSAGES.length);
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [isLoading]);
+
+  if (!isLoading) {
+    return (
+      <p className="text-[10px] text-zinc-600">
+        AI can make mistakes. Review generated code.
+      </p>
+    );
+  }
+
+  return (
+    <ShimmerText className="text-[10px] font-medium">
+      {GENERATING_MESSAGES[messageIndex]}
+    </ShimmerText>
+  );
 };
 
 export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
@@ -276,7 +321,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
       >
         <div className="px-2 py-1.5 bg-white/5 border-b border-white/5 text-[10px] items-center flex justify-between text-zinc-400">
           <span className="font-semibold uppercase tracking-wider">Suggested Files</span>
-          <span className="font-mono">{filteredFiles.length} found</span>
+          <span className="text-[10px]">{filteredFiles.length} found</span>
         </div>
 
         {filteredFiles.length === 0 ? (
@@ -291,7 +336,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                 onClick={() => selectFile(file)}
                 onMouseEnter={() => setSelectedFileIndex(idx)}
                 className={clsx(
-                  "w-full text-left flex items-center gap-2 px-2 py-1.5 rounded text-[11px] font-mono transition-colors",
+                  "w-full text-left flex items-center gap-2 px-2 py-1.5 rounded text-[11px] transition-colors",
                   idx === selectedFileIndex ? "bg-emerald-500/20 text-emerald-300" : "text-zinc-400 hover:bg-white/5"
                 )}
               >
@@ -462,7 +507,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                 title="Click to open file"
               >
                 <FileIcon name={file.name} path={file.path} className="w-3 h-3 min-w-3" />
-                <span className="truncate max-w-[150px] font-mono">{file.name}</span>
+                <span className="truncate max-w-[150px] font-medium">{file.name}</span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -521,9 +566,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
         {isVisible && tasks.length > 0 ? (
           <CompactTaskList todos={tasks} />
         ) : (
-          <p className="text-[10px] text-zinc-600">
-            {isLoading ? "Generating response..." : "AI can make mistakes. Review generated code."}
-          </p>
+          <GeneratingStatus />
         )}
       </div>
 

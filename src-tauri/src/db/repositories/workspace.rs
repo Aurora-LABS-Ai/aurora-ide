@@ -111,6 +111,7 @@ impl<'a> WorkspaceRepository<'a> {
     }
 
     /// Delete workspace state
+    #[allow(dead_code)]
     pub fn delete(&self, workspace_path: &str) -> DbResult<()> {
         self.conn.execute(
             "DELETE FROM workspace_state WHERE workspace_path = ?1",
@@ -121,6 +122,7 @@ impl<'a> WorkspaceRepository<'a> {
     }
 
     /// Get all workspaces
+    #[allow(dead_code)]
     pub fn get_all(&self) -> DbResult<Vec<WorkspaceState>> {
         let mut stmt = self.conn.prepare(
             "SELECT workspace_path, open_tabs, panel_sizes, last_opened_at

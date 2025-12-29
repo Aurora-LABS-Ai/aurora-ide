@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Check, CheckCircle2, Clock, Loader2, XCircle } from 'lucide-react';
 import clsx from 'clsx';
+import { ShimmerText } from '../ui/ShimmerText';
 
 export interface Task {
     id: string;
@@ -72,12 +73,15 @@ export const CompactTaskList: React.FC<{ todos: Task[] }> = ({ todos }) => {
                     </div>
 
                     {/* Active Label */}
-                    <span className={clsx(
-                        "truncate font-mono font-medium max-w-[400px] transition-colors duration-300",
-                        inProgress ? "text-amber-400" : "text-zinc-500"
-                    )}>
-                        {activeTask?.content || "Tasks initialized..."}
-                    </span>
+                    {inProgress ? (
+                        <ShimmerText className="truncate font-medium max-w-[400px] text-amber-400">
+                            {activeTask?.content || "Tasks initialized..."}
+                        </ShimmerText>
+                    ) : (
+                        <span className="truncate font-medium max-w-[400px] text-zinc-500">
+                            {activeTask?.content || "Tasks initialized..."}
+                        </span>
+                    )}
                 </>
             )}
         </div>
@@ -95,7 +99,7 @@ export const TaskList: React.FC<{ todos: Task[] }> = ({ todos }) => {
                     <Clock size={12} />
                     Task Progress
                 </span>
-                <span className="text-[10px] text-zinc-600 font-mono bg-black/20 px-1.5 py-0.5 rounded">
+                <span className="text-[10px] text-zinc-600 bg-black/20 px-1.5 py-0.5 rounded">
                     {todos.filter(t => t.status === 'completed').length}/{todos.length}
                 </span>
             </div>
@@ -143,7 +147,7 @@ export const TaskList: React.FC<{ todos: Task[] }> = ({ todos }) => {
                                 </span>
 
                                 {isProgress && (
-                                    <span className="text-[10px] text-emerald-500/60 mt-0.5 animate-pulse font-mono">
+                                    <span className="text-[10px] text-emerald-500/60 mt-0.5 animate-pulse">
                                         Processing...
                                     </span>
                                 )}

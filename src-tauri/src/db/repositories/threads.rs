@@ -2,7 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json;
 
 use crate::db::error::DbResult;
-use crate::db::models::{Message, ThreadState};
+use crate::db::models::{Message, ThreadState, TokenUsage, ContextUsage};
 
 /// Repository for thread/chat history.
 pub struct ThreadsRepository<'a> {
@@ -18,19 +18,31 @@ impl<'a> ThreadsRepository<'a> {
         let messages_json = serde_json::to_string(&thread.messages)
             .map_err(crate::db::error::DbError::Serialization)?;
 
+        let token_usage_json = thread.token_usage.as_ref()
+            .map(|u| serde_json::to_string(u).ok())
+            .flatten();
+
+        let context_usage_json = thread.context_usage.as_ref()
+            .map(|u| serde_json::to_string(u).ok())
+            .flatten();
+
         self.conn.execute(
-            "INSERT INTO threads (id, title, summary, messages, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO threads (id, title, summary, messages, token_usage, context_usage, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 summary = excluded.summary,
                 messages = excluded.messages,
+                token_usage = excluded.token_usage,
+                context_usage = excluded.context_usage,
                 updated_at = excluded.updated_at",
             params![
                 thread.id,
                 thread.title,
                 thread.summary,
                 messages_json,
+                token_usage_json,
+                context_usage_json,
                 thread.created_at,
                 thread.updated_at
             ],
@@ -41,7 +53,7 @@ impl<'a> ThreadsRepository<'a> {
 
     pub fn get(&self, id: &str) -> DbResult<Option<ThreadState>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, summary, messages, created_at, updated_at
+            "SELECT id, title, summary, messages, token_usage, context_usage, created_at, updated_at
              FROM threads WHERE id = ?1",
         )?;
 
@@ -55,13 +67,23 @@ impl<'a> ThreadsRepository<'a> {
                         Box::new(e),
                     ))?;
 
+                let token_usage_json: Option<String> = row.get(4)?;
+                let token_usage: Option<TokenUsage> = token_usage_json
+                    .and_then(|s| serde_json::from_str(&s).ok());
+
+                let context_usage_json: Option<String> = row.get(5)?;
+                let context_usage: Option<ContextUsage> = context_usage_json
+                    .and_then(|s| serde_json::from_str(&s).ok());
+
                 Ok(ThreadState {
                     id: row.get(0)?,
                     title: row.get(1)?,
                     summary: row.get(2)?,
                     messages,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
+                    token_usage,
+                    context_usage,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
                 })
             })
             .optional()?;
@@ -71,7 +93,7 @@ impl<'a> ThreadsRepository<'a> {
 
     pub fn list(&self) -> DbResult<Vec<ThreadState>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, summary, messages, created_at, updated_at
+            "SELECT id, title, summary, messages, token_usage, context_usage, created_at, updated_at
              FROM threads ORDER BY updated_at DESC",
         )?;
 
@@ -84,13 +106,23 @@ impl<'a> ThreadsRepository<'a> {
                     Box::new(e),
                 ))?;
 
+            let token_usage_json: Option<String> = row.get(4)?;
+            let token_usage: Option<TokenUsage> = token_usage_json
+                .and_then(|s| serde_json::from_str(&s).ok());
+
+            let context_usage_json: Option<String> = row.get(5)?;
+            let context_usage: Option<ContextUsage> = context_usage_json
+                .and_then(|s| serde_json::from_str(&s).ok());
+
             Ok(ThreadState {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 summary: row.get(2)?,
                 messages,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
+                token_usage,
+                context_usage,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
             })
         })?;
 
@@ -107,6 +139,7 @@ impl<'a> ThreadsRepository<'a> {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn connection(&self) -> &Connection {
         self.conn
     }

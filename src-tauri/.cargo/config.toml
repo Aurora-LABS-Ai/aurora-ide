@@ -1,0 +1,7 @@
+# Cargo configuration for Aurora
+# This sets the target directory to the project root's build folder
+
+[build]
+# Output build artifacts to project root build folder
+target-dir = "../build"
+

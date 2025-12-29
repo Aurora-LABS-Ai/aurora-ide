@@ -61,6 +61,7 @@ impl<'a> ExplorerRepository<'a> {
     }
 
     /// Delete explorer state for a workspace
+    #[allow(dead_code)]
     pub fn delete(&self, workspace_path: &str) -> DbResult<()> {
         self.conn.execute(
             "DELETE FROM explorer_state WHERE workspace_path = ?1",
@@ -71,12 +72,14 @@ impl<'a> ExplorerRepository<'a> {
     }
 
     /// Delete all explorer states
+    #[allow(dead_code)]
     pub fn delete_all(&self) -> DbResult<()> {
         self.conn.execute("DELETE FROM explorer_state", [])?;
         Ok(())
     }
 
     /// Get all explorer states
+    #[allow(dead_code)]
     pub fn get_all(&self) -> DbResult<Vec<ExplorerState>> {
         let mut stmt = self.conn.prepare(
             "SELECT workspace_path, expanded_folders, selected_file

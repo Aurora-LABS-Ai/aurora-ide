@@ -4,12 +4,22 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
+// Windows-specific imports for hiding console window
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+// Windows creation flags
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 use notify::{recommended_watcher, Config, Event, EventKind, RecursiveMode, Watcher};
 use tauri::Emitter;
 
 pub mod state;
 pub mod settings;
 pub mod threads;
+pub mod llm;
+pub mod chat;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileEntry {
@@ -192,6 +202,10 @@ pub async fn execute_command(command: String, cwd: Option<String>, shell: Option
         cmd.current_dir(working_dir);
     }
 
+    // On Windows, hide the console window to prevent popup
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
     // Execute command
     match cmd.output() {
         Ok(output) => {
@@ -216,6 +230,9 @@ pub async fn execute_command(command: String, cwd: Option<String>, shell: Option
                 if let Some(ref working_dir) = cwd {
                     fallback_cmd.current_dir(working_dir);
                 }
+
+                // Hide console window for fallback command too
+                fallback_cmd.creation_flags(CREATE_NO_WINDOW);
 
                 match fallback_cmd.output() {
                     Ok(output) => {
@@ -418,7 +435,6 @@ pub async fn start_fs_watcher(app: tauri::AppHandle, path: String) -> Result<(),
                 EventKind::Any => "any",
                 EventKind::Access(_) => "access",
                 EventKind::Other => "other",
-                _ => "other",
             };
 
             let paths: Vec<String> = event

@@ -53,12 +53,14 @@ export function useWindowStateSync() {
   const lastSyncRef = useRef<number>(0);
 
   // Debounce sync emissions to avoid flooding
+  // During streaming, use longer debounce to prevent flicker in detached window
   const shouldSync = useCallback(() => {
     const now = Date.now();
-    if (now - lastSyncRef.current < 100) return false;
+    const debounceMs = chatStore.isLoading ? 500 : 100;
+    if (now - lastSyncRef.current < debounceMs) return false;
     lastSyncRef.current = now;
     return true;
-  }, []);
+  }, [chatStore.isLoading]);
 
   // Emit thread state to other windows
   const emitThreadState = useCallback(async () => {

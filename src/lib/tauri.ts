@@ -36,11 +36,25 @@ export interface DbMessage {
   toolProposal?: any;
 }
 
+export interface DbTokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export interface DbContextUsage {
+  usedTokens: number;
+  contextWindow: number;
+  percentage: number;
+}
+
 export interface DbThread {
   id: string;
   title: string;
   summary?: string | null;
   messages: DbMessage[];
+  token_usage?: DbTokenUsage | null;
+  context_usage?: DbContextUsage | null;
   created_at: string;
   updated_at: string;
 }

@@ -20,9 +20,11 @@ pub enum DbError {
     Migration(String),
 
     #[error("Record not found: {0}")]
+    #[allow(dead_code)]
     NotFound(String),
 
     #[error("Invalid data: {0}")]
+    #[allow(dead_code)]
     InvalidData(String),
 }
 

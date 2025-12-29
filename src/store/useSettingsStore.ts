@@ -24,7 +24,7 @@ export interface LLMProvider {
   // Advanced configuration
   customHeaders?: Record<string, string>; // Extra headers to send
   customParams?: Record<string, unknown>; // Extra params in request body
-  providerType?: "openai" | "deepseek" | "glm" | "anthropic" | "custom"; // Explicit provider type
+  providerType?: "openai" | "deepseek" | "glm" | "anthropic" | "minimax" | "custom"; // Explicit provider type
   defaultTemperature?: number; // Provider-specific default temperature
   defaultMaxTokens?: number; // Provider-specific default max token request
   requiresApiKey?: boolean; // Whether API key is required (false for local)
@@ -49,6 +49,33 @@ export const PRESET_PROVIDERS: Omit<LLMProvider, "apiKey" | "enabled">[] = [
     requiresApiKey: true,
   },
   {
+    id: "anthropic",
+    name: "Anthropic",
+    baseUrl: "https://api.anthropic.com/v1",
+    model: "claude-sonnet-4-20250514",
+    contextWindow: 200000,
+    maxOutputTokens: 8192,
+    supportsThinking: true,
+    customModels: ["claude-opus-4-5-20251101", "claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"],
+    providerType: "anthropic",
+    defaultTemperature: 1.0,
+    requiresApiKey: true,
+  },
+  {
+    id: "minimax",
+    name: "MiniMax M2.1",
+    baseUrl: "https://api.minimax.io/anthropic/v1", // Correct path: baseURL + /messages
+    model: "MiniMax-M2.1",
+    contextWindow: 200000, // 200k context
+    maxOutputTokens: 128000,
+    supportsThinking: true, // Native thinking blocks (better than OpenAI format)
+    customModels: ["MiniMax-M2.1"],
+    providerType: "anthropic", // ✅ Use Anthropic provider (official recommendation)
+    defaultTemperature: 1.0,
+    requiresApiKey: true,
+    // No customParams needed - thinking mode is native in Anthropic format
+  },
+  {
     id: "deepseek",
     name: "DeepSeek",
     baseUrl: "https://api.deepseek.com/v1",
@@ -69,7 +96,7 @@ export const PRESET_PROVIDERS: Omit<LLMProvider, "apiKey" | "enabled">[] = [
     contextWindow: 128000,
     maxOutputTokens: 16384,
     supportsThinking: false,
-    customModels: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+    customModels: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo", "o1", "o1-mini"],
     providerType: "openai",
     defaultTemperature: 1.0,
     requiresApiKey: true,

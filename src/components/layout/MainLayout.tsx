@@ -10,15 +10,15 @@ import { ToolApprovalModal } from "../modals/ToolApprovalModal";
 import { AuditTimeline } from "../modals/AuditTimeline";
 import { TerminalPanel } from "../terminal/Terminal";
 import { useUiStore } from "../../store/useUiStore";
-import { useWindowStateSync } from "../../hooks/useWindowStateSync";
+import { useRustChatSync } from "../../hooks/useRustChatSync";
 import { useTerminalStore } from "../../store/useTerminalStore";
 
 export const MainLayout: React.FC = () => {
   const { isChatOpen, detachedChat } = useUiStore();
   const { isOpen: isTerminalOpen } = useTerminalStore();
 
-  // Initialize cross-window state sync for main window
-  useWindowStateSync();
+  // Initialize Rust-based cross-window state sync (bulletproof)
+  useRustChatSync();
 
   // Show chat panel only if it's open AND not detached
   const showChatPanel = isChatOpen && !detachedChat.isDetached;
@@ -45,10 +45,10 @@ export const MainLayout: React.FC = () => {
             <PanelResizeHandle className="w-[1px] bg-border hover:bg-primary transition-colors" />
 
             {/* Editor */}
-            <Panel 
+            <Panel
               id="editor-panel"
               order={2}
-              defaultSize={showChatPanel ? 57 : 82} 
+              defaultSize={showChatPanel ? 57 : 82}
               minSize={30}
             >
               <EditorPanel />

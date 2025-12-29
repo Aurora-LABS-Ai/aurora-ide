@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useUiStore } from '../../store/useUiStore';
 import { useSettingsStore, type LLMProvider } from '../../store/useSettingsStore';
-import { X, Server, Layout, Shield, Brain, Eye, EyeOff, Plus, Trash2, ChevronDown } from 'lucide-react';
+import { X, Server, Layout, Shield, Eye, EyeOff, Plus, Trash2, ChevronDown } from 'lucide-react';
 import clsx from 'clsx';
 import { ToolSettingsTab } from './ToolSettingsTab';
 
@@ -19,10 +19,11 @@ const AddProviderForm: React.FC<AddProviderFormProps> = ({ onSave, onCancel }) =
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
-  const [contextWindow, setContextWindow] = useState(32000);
-  const [maxOutputTokens, setMaxOutputTokens] = useState(4096);
+  const [contextWindow, setContextWindow] = useState(200000);
+  const [maxOutputTokens, setMaxOutputTokens] = useState(8192);
   const [supportsThinking, setSupportsThinking] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
+  const [providerType, setProviderType] = useState<'openai' | 'anthropic' | 'custom'>('openai');
 
   const handleSubmit = () => {
     if (!name.trim() || !baseUrl.trim() || !model.trim()) return;
@@ -37,12 +38,13 @@ const AddProviderForm: React.FC<AddProviderFormProps> = ({ onSave, onCancel }) =
       supportsThinking,
       enabled: true,
       customModels: [model.trim()],
+      providerType,
     });
   };
 
   return (
     <div className="p-3 border border-primary/30 rounded-lg bg-primary/5 space-y-2">
-      <h3 className="text-xs font-medium text-text-primary">Add OpenAI-Compatible Provider</h3>
+      <h3 className="text-xs font-medium text-text-primary">Add Custom Provider</h3>
 
       <div className="grid grid-cols-2 gap-2">
         <div>
@@ -56,12 +58,37 @@ const AddProviderForm: React.FC<AddProviderFormProps> = ({ onSave, onCancel }) =
           />
         </div>
         <div>
+          <label className="text-[10px] text-text-secondary block mb-0.5">API Format *</label>
+          <select
+            value={providerType}
+            onChange={(e) => setProviderType(e.target.value as 'openai' | 'anthropic' | 'custom')}
+            className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-primary"
+          >
+            <option value="openai">OpenAI Compatible</option>
+            <option value="anthropic">Anthropic Compatible</option>
+            <option value="custom">Custom (OpenAI-like)</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div>
           <label className="text-[10px] text-text-secondary block mb-0.5">Model *</label>
           <input
             type="text"
             value={model}
             onChange={(e) => setModel(e.target.value)}
             placeholder="llama3.2"
+            className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary"
+          />
+        </div>
+        <div>
+          <label className="text-[10px] text-text-secondary block mb-0.5">Context Window</label>
+          <input
+            type="number"
+            value={contextWindow}
+            onChange={(e) => setContextWindow(parseInt(e.target.value) || 200000)}
+            placeholder="200000"
             className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary"
           />
         </div>
@@ -97,27 +124,15 @@ const AddProviderForm: React.FC<AddProviderFormProps> = ({ onSave, onCancel }) =
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <label className="text-[10px] text-text-secondary block mb-0.5">Context Window</label>
-          <input
-            type="number"
-            value={contextWindow}
-            onChange={(e) => setContextWindow(parseInt(e.target.value) || 32000)}
-            placeholder="32000"
-            className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary"
-          />
-        </div>
-        <div>
-          <label className="text-[10px] text-text-secondary block mb-0.5">Max Output Tokens</label>
-          <input
-            type="number"
-            value={maxOutputTokens}
-            onChange={(e) => setMaxOutputTokens(parseInt(e.target.value) || 4096)}
-            placeholder="4096"
-            className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary"
-          />
-        </div>
+      <div>
+        <label className="text-[10px] text-text-secondary block mb-0.5">Max Output Tokens</label>
+        <input
+          type="number"
+          value={maxOutputTokens}
+          onChange={(e) => setMaxOutputTokens(parseInt(e.target.value) || 8192)}
+          placeholder="8192"
+          className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary"
+        />
       </div>
 
       <div className="flex items-center gap-2">
@@ -245,6 +260,22 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
       {/* Expanded Content */}
       {isExpanded && (
         <div className="px-3 pb-3 pt-1 border-t border-border space-y-2">
+          {/* API Format (only for custom providers) */}
+          {provider.isCustom && (
+            <div>
+              <label className="text-[10px] text-text-disabled block mb-0.5">API Format</label>
+              <select
+                value={provider.providerType || 'openai'}
+                onChange={(e) => updateProvider(provider.id, { providerType: e.target.value as LLMProvider['providerType'] })}
+                className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-primary"
+              >
+                <option value="openai">OpenAI Compatible</option>
+                <option value="anthropic">Anthropic Compatible</option>
+                <option value="custom">Custom (OpenAI-like)</option>
+              </select>
+            </div>
+          )}
+
           {/* Base URL */}
           <div>
             <label className="text-[10px] text-text-disabled block mb-0.5">Base URL</label>
@@ -377,17 +408,14 @@ export const SettingsPanel: React.FC = () => {
     setWrapMode,
     providers,
     addCustomProvider,
-    thinkingEnabled,
-    setThinkingEnabled,
-    temperature,
-    setTemperature,
-    maxTokens,
-    setMaxTokens,
     autoSave,
     setAutoSave,
   } = useSettingsStore();
 
-  const [activeTab, setActiveTab] = useState<'providers' | 'tools' | 'general' | 'thinking'>('providers');
+  // Note: Thinking, temperature, and maxTokens are now per-provider settings
+  // Each provider has its own supportsThinking, defaultTemperature, and defaultMaxTokens
+
+  const [activeTab, setActiveTab] = useState<'providers' | 'tools' | 'general'>('providers');
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [isAddingProvider, setIsAddingProvider] = useState(false);
@@ -412,7 +440,6 @@ export const SettingsPanel: React.FC = () => {
 
           {[
             { id: 'providers', label: 'Providers', icon: Server },
-            { id: 'thinking', label: 'Thinking', icon: Brain },
             { id: 'tools', label: 'Tools', icon: Shield },
             { id: 'general', label: 'General', icon: Layout },
           ].map(({ id, label, icon: Icon }) => (
@@ -435,9 +462,8 @@ export const SettingsPanel: React.FC = () => {
           <div className="h-10 border-b border-border flex items-center justify-between px-4 bg-panel-header">
             <h2 className="text-xs font-medium text-text-primary">
               {activeTab === 'providers' ? 'LLM Providers' :
-                activeTab === 'tools' ? 'Tool Approval' :
-                  activeTab === 'thinking' ? 'Thinking Mode' :
-                    'General Settings'}
+                activeTab === 'tools' ? 'Tool Settings' :
+                  'General Settings'}
             </h2>
             <button
               onClick={() => setSettingsOpen(false)}
@@ -484,62 +510,6 @@ export const SettingsPanel: React.FC = () => {
                       onToggleApiKey={() => toggleApiKeyVisibility(provider.id)}
                     />
                   ))}
-                </div>
-              </div>
-            )}
-
-            {/* THINKING TAB */}
-            {activeTab === 'thinking' && (
-              <div className="space-y-3">
-                <div className="p-3 border border-border rounded-lg bg-titlebar">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-xs font-medium text-text-primary">Enable Thinking</h3>
-                      <p className="text-[10px] text-text-secondary">Show reasoning process</p>
-                    </div>
-                    <button
-                      onClick={() => setThinkingEnabled(!thinkingEnabled)}
-                      className={clsx(
-                        "relative w-8 h-4 rounded-full transition-colors",
-                        thinkingEnabled ? "bg-primary" : "bg-input border border-border"
-                      )}
-                    >
-                      <div className={clsx(
-                        "absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform",
-                        thinkingEnabled ? "translate-x-4" : "translate-x-0.5"
-                      )} />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="p-3 border border-border rounded-lg bg-titlebar space-y-3">
-                  <h3 className="text-xs font-medium text-text-primary">Generation</h3>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="text-[10px] text-text-secondary">Temperature</label>
-                      <span className="text-[10px] text-primary font-mono">{temperature.toFixed(2)}</span>
-                    </div>
-                    <input
-                      type="range" min="0" max="1" step="0.05"
-                      value={temperature}
-                      onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                      className="w-full h-1 bg-input-border rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
-                    />
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="text-[10px] text-text-secondary">Max Tokens</label>
-                      <span className="text-[10px] text-primary font-mono">{maxTokens.toLocaleString()}</span>
-                    </div>
-                    <input
-                      type="range" min="1024" max="131072" step="1024"
-                      value={maxTokens}
-                      onChange={(e) => setMaxTokens(parseInt(e.target.value))}
-                      className="w-full h-1 bg-input-border rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
-                    />
-                  </div>
                 </div>
               </div>
             )}

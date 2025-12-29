@@ -73,6 +73,7 @@ impl<'a> SettingsRepository<'a> {
     }
 
     /// Delete a setting
+    #[allow(dead_code)]
     pub fn delete_setting(&self, key: &str) -> DbResult<()> {
         self.conn.execute(
             "DELETE FROM app_settings WHERE key = ?1",
@@ -315,6 +316,7 @@ impl<'a> SettingsRepository<'a> {
     }
 
     /// Get a tool setting by name
+    #[allow(dead_code)]
     pub fn get_tool_setting(&self, tool_name: &str) -> DbResult<Option<ToolSetting>> {
         let mut stmt = self.conn.prepare(
             "SELECT tool_name, approval_mode, updated_at FROM tool_settings WHERE tool_name = ?1"

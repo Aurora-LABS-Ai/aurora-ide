@@ -203,21 +203,95 @@ Tools are called by the AI agent through the agent service, executed via Tauri c
 
 ### LLM Provider System
 
-**Service:** `src/services/llm-provider.ts`
+**Enterprise Provider System:** `src/services/providers/`
 
-- Singleton pattern for provider instance
-- Supports multiple providers: OpenAI, DeepSeek, GLM, custom
-- Provider-specific handling:
-  - **DeepSeek**: `reasoning_content` field, no temperature for reasoner
-  - **GLM**: Full thinking mode support
-  - **OpenAI**: Standard implementation
-- Streaming SSE (Server-Sent Events) implementation
-- Custom headers and parameters support via provider config
+The app uses a modular enterprise provider system supporting multiple API formats:
+
+**Provider Architecture:**
+- **Base Provider** (`base-provider.ts`) - Abstract base class
+- **OpenAI Provider** (`openai-provider.ts`) - OpenAI, DeepSeek, GLM, custom
+- **Anthropic Provider** (`anthropic-provider.ts`) - Claude, MiniMax M2.1
+- **Provider Registry** (`index.ts`) - Auto-detection and factory
+- **Token Counter** (`token-counter.ts`) - Character-based estimation
+- **Context Manager** (`context-manager.ts`) - KiloCode-style management
+
+**Agent Service Integration:**
+- `AgentService` uses enterprise provider system
+- `ChatPanel` builds `ProviderConfig` from settings
+- `agent.setProvider(config)` called before each request
+- Automatic routing to correct provider type
+
+**Legacy Provider:**
+- `llm-provider.ts` is **deprecated** (OpenAI-only)
+- Agent service **migrated** to enterprise providers ✅
+
+#### Provider Types
+```typescript
+type ProviderType = 'openai' | 'anthropic' | 'deepseek' | 'glm' | 'minimax' | 'custom'
+```
+
+#### Provider Architecture
+
+**Base Provider** (`base-provider.ts`):
+- Abstract base class with common functionality
+- Token counting integration
+- Abort handling
+- Context window from DB config
+
+**OpenAI Provider** (`openai-provider.ts`):
+- OpenAI and compatible APIs (DeepSeek, GLM, custom)
+- Streaming SSE implementation
+- Thinking mode support (DeepSeek/GLM)
+- DeepSeek reasoner: no temperature parameter
+- Custom base URL support
+
+**Anthropic Provider** (`anthropic-provider.ts`):
+- Native Claude API format (`/messages` endpoint)
+- Extended thinking blocks (content block type `thinking`)
+- Tool use with native format (`tool_use`, `tool_result` blocks)
+- Streaming with content block deltas
+- MiniMax M2.1 compatibility (uses same format)
+- Headers: `x-api-key` instead of Bearer token, `anthropic-version: 2023-06-01`
+- Custom base URL support
+
+**Token Counter** (`token-counter.ts`):
+- Character-based estimation with content type detection
+- 1.5x fudge factor for accuracy (KiloCode-style)
+- Handles text, code, JSON, images
+- Request/history token estimation
+
+**Context Manager** (`context-manager.ts`):
+- Enterprise context window management
+- Sliding window truncation (50% removal)
+- Non-destructive message tagging (rewind support)
+- 10% buffer zone for safety
+- Force reduction (75%) on overflow errors
+
+#### Context Window Defaults
+```typescript
+// From DB per model, with fallbacks:
+'gpt-5': 400000,
+'gemini-3-pro': 1000000,
+'claude-opus-4-5-20251101': 200000,
+'MiniMax-M2.1': 1000000,
+'default': 200000
+```
+
+#### Anthropic Streaming Format
+```
+event: message_start
+event: content_block_start (type: text|thinking|tool_use)
+event: content_block_delta (text_delta|thinking_delta|input_json_delta)
+event: content_block_stop
+event: message_delta (usage)
+event: message_stop
+```
 
 **Agent Service:** `src/services/agent-service.ts`
 - Orchestrates AI conversation with tool execution
 - Conversation loop: LLM → Tool Calls → Execution → Response
 - Max 25 tool iterations per request
+- Reads context window from provider config (DB)
 
 ### Rust Backend (Tauri Commands)
 
@@ -312,11 +386,13 @@ Threads are stored as JSON files in `.aurora/threads/{threadId}.json`. Each thre
 - **Tool approval modal:** `src/components/modals/ToolApprovalModal.tsx`
 - **Terminal component:** `src/components/terminal/Terminal.tsx`
 - **Task view:** `src/components/chat/TaskView.tsx`
+- **Context indicator:** `src/components/chat/ContextUsageIndicator.tsx`
 - **Type definitions:** `src/types/index.ts` (shared), `src/services/llm-types.ts` (LLM-specific)
 - **Database types:** `src/types/database.ts` (WorkspaceState, EditorState, ExplorerState)
 - **Database service:** `src/services/database.ts` (frontend database API)
 - **Rust database module:** `src-tauri/src/db/` (SQLite persistence layer)
 - **Settings repository:** `src-tauri/src/db/repositories/settings.rs` (LLM providers, tool settings)
+- **Threads repository:** `src-tauri/src/db/repositories/threads.rs` (thread persistence with token/context usage)
 - **Tauri capabilities:** `src-tauri/capabilities/default.json` - defines frontend permissions
 - **Drag-drop hooks:** `src/hooks/useInternalDrag.ts` (internal), `src/hooks/useTauriDragDrop.ts` (external)
 - **Drag preview:** `src/components/ui/DragPreview.tsx`
@@ -325,6 +401,14 @@ Threads are stored as JSON files in `.aurora/threads/{threadId}.json`. Each thre
 - **Terminal store:** `src/store/useTerminalStore.ts` (terminal sessions)
 - **Tool registry:** `src/tools/registry.ts` (central tool registration)
 - **Tool executors:** `src/tools/executors/` (tool implementations)
+- **Provider system:** `src/services/providers/` (enterprise provider architecture)
+  - `types.ts` - Provider types and interfaces
+  - `base-provider.ts` - Abstract base class
+  - `openai-provider.ts` - OpenAI/DeepSeek/GLM provider
+  - `anthropic-provider.ts` - Claude/MiniMax provider
+  - `token-counter.ts` - Token estimation
+  - `context-manager.ts` - Context window management
+  - `index.ts` - Provider registry and factory
 
 ## Important Patterns
 
@@ -345,5 +429,31 @@ When adding new LLM providers or debugging provider issues:
 - Check `providerType` field in settings (determines how the provider is handled)
 - Custom headers go in `customHeaders` object
 - Custom request params go in `customParams` object
+
+### OpenAI-Compatible Providers
 - DeepSeek reasoner (`deepseek-reasoner`) ignores temperature parameter
 - GLM thinking mode requires `thinking: true` in request body
+- Use `Authorization: Bearer {apiKey}` header
+- Endpoint: `/chat/completions`
+
+### Anthropic/Claude Providers
+- Use `x-api-key: {apiKey}` header (NOT Bearer token)
+- Require `anthropic-version: 2023-06-01` header
+- Endpoint: `/messages` (NOT `/chat/completions`)
+- System prompt is separate field, not a message
+- Tool results go in `user` role with `tool_result` content block
+- Thinking mode returns `thinking` content blocks
+- Streaming uses different event types (content_block_start, content_block_delta, etc.)
+
+### MiniMax M2.1
+- Supports both OpenAI and Anthropic API formats
+- **IMPORTANT:** Use Anthropic format for thinking mode support
+- Base URL: `https://api.minimax.io/anthropic` (NOT `/v1`)
+- Provider type: `minimax` (routes to AnthropicProvider)
+- 1M context window
+- Uses same authentication (`x-api-key`) and headers as Claude
+
+### Context Window Colors (UI)
+- Cold (cyan): 0-30%
+- Yellow: 30-80%
+- Red: 80-100%

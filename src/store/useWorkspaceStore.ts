@@ -78,9 +78,33 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             const { rootPath } = get();
             if (!rootPath) return;
             const paths: string[] = event?.payload?.paths || [];
+            const kind: string = event?.payload?.kind || 'any';
             const hasMatch = paths.some(p => p.startsWith(rootPath));
+
             if (hasMatch) {
+              // Refresh file tree
               await get().refreshDirectory();
+
+              // CRITICAL: Also refresh any open editor tabs that were modified
+              // This enables live updates when AI tools write to files
+              if (kind === 'modify' || kind === 'create') {
+                const editorStore = useEditorStore.getState();
+                const openTabs = editorStore.tabs;
+
+                for (const changedPath of paths) {
+                  const matchingTab = openTabs.find(tab => tab.path === changedPath);
+                  if (matchingTab && !matchingTab.isDirty) {
+                    // Only refresh if tab is not dirty (avoid overwriting user edits)
+                    try {
+                      const newContent = await readFileContent(changedPath);
+                      editorStore.reloadTabContent(matchingTab.id, newContent);
+                      console.log(`[fs-changed] Refreshed editor tab: ${matchingTab.filename}`);
+                    } catch (err) {
+                      console.warn(`[fs-changed] Failed to refresh tab ${changedPath}:`, err);
+                    }
+                  }
+                }
+              }
             }
           });
         } catch (err) {
@@ -206,7 +230,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       fsUnlisten = null;
     }
     if (isTauri()) {
-      stopFsWatcher().catch(() => {});
+      stopFsWatcher().catch(() => { });
     }
   },
 

@@ -67,7 +67,7 @@ export interface TrackedToolCall {
 }
 
 // Tool executor function type
-export type ToolExecutor<T = Record<string, any>> = (args: T) => Promise<string>;
+export type ToolExecutor<T = Record<string, any>> = (args: T, toolCallId?: string) => Promise<string>;
 
 // Tool registry entry
 export interface RegisteredTool {

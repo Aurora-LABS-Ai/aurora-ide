@@ -2,15 +2,15 @@ import React, { useCallback, useState, useEffect } from "react";
 import { X, Minus, Pin, PinOff, ArrowLeftToLine } from "lucide-react";
 import { ChatPanel } from "./ChatPanel";
 import { useUiStore } from "../../store/useUiStore";
-import { useWindowStateSync } from "../../hooks/useWindowStateSync";
+import { useRustChatSync } from "../../hooks/useRustChatSync";
 
 export const DetachedChatWindow: React.FC = () => {
   const { reattachChat, theme } = useUiStore();
   const [isPinned, setIsPinned] = useState(false);
   const [isReady, setIsReady] = useState(false);
 
-  // Initialize cross-window state sync
-  useWindowStateSync();
+  // Initialize Rust-based cross-window state sync (bulletproof)
+  useRustChatSync();
 
   // Wait briefly for state sync to complete
   useEffect(() => {
@@ -90,9 +90,9 @@ export const DetachedChatWindow: React.FC = () => {
             data-tauri-drag-region
             className="flex items-center gap-2 px-3 h-full"
           >
-            <img 
-              src="/app-icon.svg" 
-              alt="Aurora" 
+            <img
+              src="/app-icon.svg"
+              alt="Aurora"
               className="w-5 h-5 shrink-0"
             />
             <span
@@ -155,9 +155,9 @@ export const DetachedChatWindow: React.FC = () => {
         ) : (
           <div className="h-full flex items-center justify-center">
             <div className="flex flex-col items-center gap-3">
-              <img 
-                src="/app-icon.svg" 
-                alt="Aurora" 
+              <img
+                src="/app-icon.svg"
+                alt="Aurora"
                 className="w-8 h-8 animate-pulse"
               />
               <span className="text-xs text-text-secondary">Syncing...</span>

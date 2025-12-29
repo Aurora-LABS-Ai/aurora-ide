@@ -47,7 +47,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
           </div>
 
           <div className="bg-[#252526] text-zinc-100 rounded-2xl rounded-tr-sm px-4 py-2.5 border border-white/5 shadow-sm">
-            <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed opacity-90 font-light">
+            <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed opacity-90 font-light select-text cursor-text">
               {message.content}
             </p>
           </div>
@@ -75,7 +75,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
           </span>
         </div>
 
-        <div className="space-y-1">
+        <div className="space-y-1 select-text cursor-text">
           {hasTimeline ? (
             message.timeline!.map((event) => (
               <TimelineEventItem key={event.id} event={event} />

@@ -207,8 +207,13 @@ export function useDetachedChatWindow() {
       if (windowRef.current) {
         closeDetachedWindow();
       }
+      // Safely cleanup main window close listener
       if (mainWindowCloseListenerRef.current) {
-        mainWindowCloseListenerRef.current();
+        try {
+          mainWindowCloseListenerRef.current();
+        } catch {
+          // Handler may already be destroyed
+        }
         mainWindowCloseListenerRef.current = null;
       }
     };

@@ -8,7 +8,6 @@ import {
   isTauri,
   readFileContent,
   writeFileContent,
-  createFile,
   deletePath,
 } from "../../lib/tauri";
 import { resolvePath, getWorkspaceRootPath } from "../utils/path-resolver";
@@ -37,6 +36,7 @@ const processEscapeSequences = (content: string): string => {
 // ============================================
 const fileCreateExecutor = async (
   args: Record<string, any>,
+  toolCallId?: string,
 ): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({
@@ -51,18 +51,30 @@ const fileCreateExecutor = async (
   }
 
   const fullPath = resolvePath(args.path);
-  console.log("[file_create] Creating file:", fullPath);
+  const fileName = fullPath.split(/[/\\]/).pop() || args.path;
+  console.log("[file_create] Queuing file:", fullPath);
 
   try {
-    await createFile(fullPath);
-    if (args.content) {
-      const processedContent = processEscapeSequences(args.content);
-      await writeFileContent(fullPath, processedContent);
-    }
-    triggerRefresh(); // Auto-refresh file tree
+    const processedContent = args.content ? processEscapeSequences(args.content) : '';
+
+    // Import pending changes store
+    const { usePendingChangesStore } = await import('../../store/usePendingChangesStore');
+
+    // Add to pending changes instead of writing directly
+    const changeId = usePendingChangesStore.getState().addChange({
+      filePath: fullPath,
+      fileName,
+      content: processedContent,
+      originalContent: undefined, // New file
+      operation: 'create',
+      toolCallId: toolCallId || `tool_${Date.now()}`,
+    });
+
     return JSON.stringify({
       success: true,
-      message: `File created: ${args.path}`,
+      pending: true,
+      changeId,
+      message: `File creation pending approval: ${args.path}`,
       path: args.path,
       fullPath,
     });
@@ -158,6 +170,7 @@ const fileReadLinesExecutor = async (
 // ============================================
 const fileWriteExecutor = async (
   args: Record<string, any>,
+  toolCallId?: string,
 ): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({
@@ -172,18 +185,37 @@ const fileWriteExecutor = async (
   }
 
   const fullPath = resolvePath(args.path);
-  console.log("[file_write] Writing file:", fullPath);
+  const fileName = fullPath.split(/[/\\]/).pop() || args.path;
+  console.log("[file_write] Queuing file:", fullPath);
 
   try {
     const processedContent = processEscapeSequences(args.content);
-    await writeFileContent(fullPath, processedContent);
-    triggerRefresh(); // Auto-refresh file tree
+
+    // Import pending changes store
+    const { usePendingChangesStore, loadOriginalContent } = await import('../../store/usePendingChangesStore');
+
+    // Load original content for diff (if file exists)
+    const originalContent = await loadOriginalContent(fullPath);
+
+    // Add to pending changes instead of writing directly
+    const changeId = usePendingChangesStore.getState().addChange({
+      filePath: fullPath,
+      fileName,
+      content: processedContent,
+      originalContent,
+      operation: 'write',
+      toolCallId: toolCallId || `tool_${Date.now()}`,
+    });
+
+    // Return pending status - file will be written when user accepts
     return JSON.stringify({
       success: true,
-      message: `File written: ${args.path}`,
+      pending: true,
+      changeId,
+      message: `File change pending approval: ${args.path}`,
       path: args.path,
       fullPath,
-      bytes: args.content.length,
+      bytes: processedContent.length,
     });
   } catch (error) {
     console.error("[file_write] Error:", error);

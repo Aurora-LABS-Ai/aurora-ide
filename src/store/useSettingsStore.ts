@@ -134,6 +134,16 @@ interface SettingsState {
   autoApproveTools: boolean;
   setAutoApproveTools: (value: boolean) => void;
 
+  // File Changes Approval
+  autoAcceptChanges: boolean;
+  setAutoAcceptChanges: (value: boolean) => void;
+
+  // Agent Guardrails
+  syntaxValidationEnabled: boolean; // Pre-save syntax validation
+  setSyntaxValidationEnabled: (value: boolean) => void;
+  projectLayoutEnabled: boolean; // Include file tree in first message
+  setProjectLayoutEnabled: (value: boolean) => void;
+
   // Editor Settings
   fontSize: number;
   setFontSize: (size: number) => void;
@@ -172,6 +182,10 @@ interface SettingsState {
   // Database operations
   initializeFromDatabase: () => Promise<void>;
   saveToDatabase: () => Promise<void>;
+
+  // Onboarding
+  hasSeenOnboarding: boolean;
+  setHasSeenOnboarding: (seen: boolean) => void;
 }
 
 // ============================================
@@ -287,6 +301,13 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // Tool Approval
   autoApproveTools: false,
 
+  // File Changes Approval
+  autoAcceptChanges: false,
+
+  // Agent Guardrails (default: enabled)
+  syntaxValidationEnabled: true,
+  projectLayoutEnabled: true,
+
   // Editor Settings
   fontSize: 14,
   wrapMode: true,
@@ -329,7 +350,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         // Load providers from database
         const dbProviders = await databaseService.getAllProviders();
         const providers = dbProviders.map(dbToProvider);
-        
+
         // Merge with preset providers (in case new presets were added)
         const mergedProviders = PRESET_PROVIDERS.map(preset => {
           const dbProvider = providers.find(p => p.id === preset.id);
@@ -361,6 +382,9 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         set({
           selectedModel: appSettings.selectedModel || "glm:glm-4.7",
           autoApproveTools: appSettings.autoApproveTools ?? false,
+          autoAcceptChanges: appSettings.autoAcceptChanges ?? false,
+          syntaxValidationEnabled: appSettings.syntaxValidationEnabled ?? true,
+          projectLayoutEnabled: appSettings.projectLayoutEnabled ?? true,
           fontSize: appSettings.fontSize ?? 14,
           wrapMode: appSettings.wrapMode ?? true,
           theme: (appSettings.theme as 'dark' | 'light') || "dark",
@@ -384,6 +408,10 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       }
 
       set({ isInitialized: true, isLoading: false });
+
+      // Load onboarding state from localStorage
+      const hasSeen = localStorage.getItem('aurora_has_seen_onboarding') === 'true';
+      set({ hasSeenOnboarding: hasSeen });
     } catch (error) {
       console.error('Failed to initialize settings from database:', error);
       set({ isInitialized: true, isLoading: false });
@@ -398,6 +426,9 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       const appSettings: DbAppSettings = {
         selectedModel: state.selectedModel,
         autoApproveTools: state.autoApproveTools,
+        autoAcceptChanges: state.autoAcceptChanges,
+        syntaxValidationEnabled: state.syntaxValidationEnabled,
+        projectLayoutEnabled: state.projectLayoutEnabled,
         fontSize: state.fontSize,
         wrapMode: state.wrapMode,
         theme: state.theme,
@@ -417,9 +448,21 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       // Save tool settings
       const toolSettingsArray: [string, string][] = Object.entries(state.toolApprovalSettings);
       await databaseService.saveAllToolSettings(toolSettingsArray);
+
+      // Save onboarding state
+      // (For now using localStorage as it's UI state, but could be DB if needed)
+      // Actually let's assume it's part of app settings in next migration or just use localStorage for this specific flag
+      // since it's purely frontend "seen" state.
     } catch (error) {
       console.error('Failed to save settings to database:', error);
     }
+  },
+
+  // Onboarding
+  hasSeenOnboarding: false,
+  setHasSeenOnboarding: (seen: boolean) => {
+    set({ hasSeenOnboarding: seen });
+    localStorage.setItem('aurora_has_seen_onboarding', String(seen));
   },
 
   // ============================================
@@ -520,6 +563,21 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setAutoApproveTools: (value: boolean) => {
     set({ autoApproveTools: value });
+    get().saveToDatabase();
+  },
+
+  setAutoAcceptChanges: (value: boolean) => {
+    set({ autoAcceptChanges: value });
+    get().saveToDatabase();
+  },
+
+  setSyntaxValidationEnabled: (value: boolean) => {
+    set({ syntaxValidationEnabled: value });
+    get().saveToDatabase();
+  },
+
+  setProjectLayoutEnabled: (value: boolean) => {
+    set({ projectLayoutEnabled: value });
     get().saveToDatabase();
   },
 
@@ -640,6 +698,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     return null;
   },
 }));
+
+
 
 // Initialize settings from database when the module loads (for Tauri)
 if (typeof window !== 'undefined') {

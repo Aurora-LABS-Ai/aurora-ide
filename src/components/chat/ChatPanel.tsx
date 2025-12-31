@@ -1,3 +1,25 @@
+/**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
+ * 
+ * Use theme tokens via CSS variables:
+ *   - CSS: var(--aurora-{category}-{token})
+ *   - Tailwind: bg-[var(--aurora-editor-background)]
+ *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ * See: src/types/theme.ts for TypeScript interfaces
+ * See: src/services/theme-service.ts for theme utilities
+ */
+
 import React, { useRef, useCallback, useState, useEffect } from "react";
 import { Search, Bug, Sparkles, TestTube } from 'lucide-react';
 import { ChatHistory } from "./ChatHistory";
@@ -6,7 +28,7 @@ import { ChatHeader } from "./ChatHeader";
 import { ThreadHistory } from "./ThreadHistory";
 import { ToolApprovalBanner } from "./ToolApprovalBanner";
 import { useChatStore } from "../../store/useChatStore";
-import { useThreadStore } from "../../store/useThreadStore";
+import { useThreadStore, setStreamingState } from "../../store/useThreadStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { useContextStore } from "../../store/useContextStore";
@@ -15,7 +37,7 @@ import { getAgentService, type ProviderConfig } from "../../services";
 import { estimateTokens, estimateToolsTokens } from "../../services/token-estimator";
 import { toolRegistry } from "../../tools";
 import { registerAllExecutors } from "../../tools";
-import { buildQueryContext, getIDEContext } from "../../services/context-builder";
+import { buildQueryContext, getIDEContext, getIDEContextLight } from "../../services/context-builder";
 import { convertThreadToApiHistory } from "../../services/thread-converter";
 import { chatSyncBroadcast } from "../../hooks/useRustChatSync";
 import type {
@@ -135,20 +157,53 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
     [updateMessageInThread],
   );
 
+  // Debounced timeline update to prevent state update storm during streaming
+  // This batches rapid token updates into periodic UI refreshes
+  const pendingTimelineUpdate = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const TIMELINE_UPDATE_DEBOUNCE_MS = 250; // Update UI at most every 250ms during streaming
+  
+  // Flush pending timeline updates immediately (for important state changes)
+  const flushTimelineUpdate = useCallback(() => {
+    if (pendingTimelineUpdate.current) {
+      clearTimeout(pendingTimelineUpdate.current);
+      pendingTimelineUpdate.current = null;
+    }
+    if (currentMessageIdRef.current) {
+      updateMessageInThread(currentMessageIdRef.current, {
+        timeline: [...timelineRef.current],
+      });
+    }
+  }, [updateMessageInThread]);
+  
   // Helper to update timeline event
+  // @param immediate - if true, bypasses debounce for important updates (tool status changes)
   const updateTimelineEvent = useCallback(
-    (eventId: string, updates: Partial<TimelineEvent>) => {
+    (eventId: string, updates: Partial<TimelineEvent>, immediate = false) => {
+      // Always update the ref immediately (this is synchronous, no re-render)
       timelineRef.current = timelineRef.current.map((e) =>
         e.id === eventId ? { ...e, ...updates } : e,
       );
 
-      if (currentMessageIdRef.current) {
-        updateMessageInThread(currentMessageIdRef.current, {
-          timeline: [...timelineRef.current],
-        });
+      // Important updates (tool completion, status changes) should render immediately
+      if (immediate) {
+        flushTimelineUpdate();
+        return;
       }
+
+      // Debounce the actual state update to batch rapid token callbacks
+      if (pendingTimelineUpdate.current) {
+        clearTimeout(pendingTimelineUpdate.current);
+      }
+      
+      pendingTimelineUpdate.current = setTimeout(() => {
+        if (currentMessageIdRef.current) {
+          updateMessageInThread(currentMessageIdRef.current, {
+            timeline: [...timelineRef.current],
+          });
+        }
+      }, TIMELINE_UPDATE_DEBOUNCE_MS);
     },
-    [updateMessageInThread],
+    [updateMessageInThread, flushTimelineUpdate],
   );
 
   // Helper to refresh file explorer after file operations
@@ -171,12 +226,23 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       }
 
       // Build Cursor-style context with IDE state and attached files
-      const ideContext = getIDEContext();
+      // Include project layout (file tree) only for first message in thread (if enabled)
+      // This gives the agent a persistent mental map of the project structure
+      const isFirstMessage = !currentThread?.messages || currentThread.messages.length === 0;
+      const projectLayoutEnabled = useSettingsStore.getState().projectLayoutEnabled;
+      const shouldIncludeLayout = isFirstMessage && projectLayoutEnabled;
+      const ideContext = shouldIncludeLayout ? getIDEContext(true) : getIDEContextLight();
+      
       const { formattedContext, filesWithContent, filesAsPathsOnly } = await buildQueryContext(
         content,
         attachedFiles,
         ideContext
       );
+      
+      // Log when project layout is included
+      if (shouldIncludeLayout && ideContext.projectLayout) {
+        console.log('[ChatPanel] Including project layout in first message (persistent file map)');
+      }
 
       // Log context info for debugging
       if (attachedFiles && attachedFiles.length > 0) {
@@ -198,6 +264,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
       setLoading(true);
       chatSyncBroadcast.setLoading(true);
+      // FIX: Mark streaming as started - no DB saves until streaming ends
+      setStreamingState(true);
 
       // Get the current LLM config based on selected model
       const llmConfig = getLLMConfig();
@@ -339,6 +407,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
         await agent.chat(formattedContext, {
           onToken: (token) => {
+            // #region agent log
+            tokenCallbackCount++;
+            // Only log every 100 tokens to avoid log spam
+            if (tokenCallbackCount % 100 === 0) {
+              debugLog('ChatPanel.tsx:390', 'onToken batch', { tokenCount: tokenCallbackCount, tokenLength: token.length }, 'F');
+            }
+            // #endregion
+            
             // Close current thinking block when content starts
             if (currentThinkingEventId) {
               updateTimelineEvent(currentThinkingEventId, {
@@ -506,14 +582,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             });
             auditEntryIds.set(toolCall.id, auditId);
 
-            // Find tool event and update status
+            // Find tool event and update status - immediate for responsive UI
             const toolEvent = timelineRef.current.find(
               (e) => e.type === "tool" && e.tool?.id === toolCall.id,
             );
             if (toolEvent) {
               updateTimelineEvent(toolEvent.id, {
                 tool: { ...toolEvent.tool!, status: "executing" },
-              });
+              }, true); // immediate: show "executing" status right away
             }
           },
           onToolExecutionComplete: (toolCall, result) => {
@@ -529,14 +605,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
               });
             }
 
-            // Find tool event and update status
+            // Find tool event and update status - immediate for responsive UI
             const toolEvent = timelineRef.current.find(
               (e) => e.type === "tool" && e.tool?.id === toolCall.id,
             );
             if (toolEvent) {
               updateTimelineEvent(toolEvent.id, {
                 tool: { ...toolEvent.tool!, status: "complete", result },
-              });
+              }, true); // immediate: show completion status right away
             }
 
             // Refresh file explorer after file operations
@@ -721,6 +797,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       } finally {
         setLoading(false);
         chatSyncBroadcast.setLoading(false);
+        // FIX: Mark streaming as ended - this triggers the final DB save
+        setStreamingState(false);
         currentMessageIdRef.current = null;
       }
     },
@@ -789,7 +867,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             status: "rejected",
             result: "User rejected this tool call.",
           },
-        });
+        }, true); // immediate: show rejection status right away
       }
     }
     if (pending?.resolve) {
@@ -803,7 +881,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
   return (
     <div
-      className={`h-full flex flex-col bg-[#111111] ${isDetached ? "" : "border-l border-white/5"}`}
+      className={`h-full flex flex-col bg-chat-bg ${isDetached ? "" : "border-l border-border"}`}
     >
       {/* Header with New Chat and History buttons */}
       <ChatHeader
@@ -827,10 +905,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
               />
             </div>
 
-            <h1 className="text-2xl font-bold text-white mb-2 tracking-tight">
+            <h1 className="text-2xl font-bold text-text-primary mb-2 tracking-tight">
               Aurora
             </h1>
-            <p className="text-sm text-zinc-400 text-center mb-10 leading-relaxed max-w-[280px]">
+            <p className="text-sm text-text-secondary text-center mb-10 leading-relaxed max-w-[280px]">
               Your advanced AI engineering companion for complex tasks.
             </p>
 
@@ -852,12 +930,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
                       input.focus();
                     }
                   }}
-                  className="group flex items-center gap-3 px-3 py-2.5 text-left bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 hover:border-white/10 rounded-xl transition-all duration-200"
+                  className="group flex items-center gap-3 px-3 py-2.5 text-left bg-input/50 hover:bg-input border border-border hover:border-border/80 rounded-xl transition-all duration-200"
                 >
-                  <div className={`p-1.5 rounded-lg bg-white/5 group-hover:bg-white/10 transition-colors ${color}`}>
+                  <div className={`p-1.5 rounded-lg bg-sidebar group-hover:bg-sidebar/80 transition-colors ${color}`}>
                     <Icon size={14} strokeWidth={2.5} />
                   </div>
-                  <span className="text-[13px] font-medium text-zinc-300 group-hover:text-white transition-colors">
+                  <span className="text-[13px] font-medium text-text-secondary group-hover:text-text-primary transition-colors">
                     {label}
                   </span>
                 </button>

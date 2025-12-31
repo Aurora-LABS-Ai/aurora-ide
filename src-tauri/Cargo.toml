@@ -38,6 +38,19 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 thiserror = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 
+# Diff library for comparing file changes
+similar = "2"
+
+# PTY support for native terminal
+tauri-plugin-pty = "0.1"
+
+# Dev profile: enable some optimizations for better dev mode performance
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
 [profile.release]
 panic = "abort"
 codegen-units = 1

@@ -1,3 +1,25 @@
+/**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
+ * 
+ * Use theme tokens via CSS variables:
+ *   - CSS: var(--aurora-{category}-{token})
+ *   - Tailwind: bg-[var(--aurora-editor-background)]
+ *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ * See: src/types/theme.ts for TypeScript interfaces
+ * See: src/services/theme-service.ts for theme utilities
+ */
+
 import React, { useCallback } from "react";
 import {
   Minus,
@@ -6,17 +28,14 @@ import {
   Settings,
   History,
   MessageSquare,
-  Sun,
-  Moon,
   ExternalLink,
 } from "lucide-react";
 import { useUiStore } from "../../store/useUiStore";
 import { useDetachedChatWindow } from "../../hooks/useDetachedChatWindow";
+import { ThemeDropdown } from "./ThemeDropdown";
 
 export const TitleBar: React.FC = () => {
   const {
-    theme,
-    toggleTheme,
     setSettingsOpen,
     setAuditOpen,
     isChatOpen,
@@ -100,9 +119,9 @@ export const TitleBar: React.FC = () => {
           data-tauri-drag-region
           className="flex items-center gap-2 px-3 h-full"
         >
-          <img 
-            src="/app-icon.svg" 
-            alt="Aurora" 
+          <img
+            src="/app-icon.svg"
+            alt="Aurora"
             className="w-5 h-5 shrink-0"
           />
           <span
@@ -125,17 +144,7 @@ export const TitleBar: React.FC = () => {
           >
             <History className="w-3.5 h-3.5" />
           </button>
-          <button
-            onClick={toggleTheme}
-            className="p-1.5 text-text-secondary hover:text-text-primary hover:bg-input/50 rounded transition-colors"
-            title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-          >
-            {theme === "dark" ? (
-              <Sun className="w-3.5 h-3.5" />
-            ) : (
-              <Moon className="w-3.5 h-3.5" />
-            )}
-          </button>
+          <ThemeDropdown />
           <button
             onClick={() => setSettingsOpen(true)}
             className="p-1.5 text-text-secondary hover:text-text-primary hover:bg-input/50 rounded transition-colors"
@@ -147,13 +156,12 @@ export const TitleBar: React.FC = () => {
           <button
             onClick={toggleChat}
             disabled={isDetached}
-            className={`p-1.5 rounded transition-colors ${
-              isDetached
-                ? "text-text-disabled cursor-not-allowed"
-                : isChatOpen
-                  ? "text-primary bg-primary/10"
-                  : "text-text-secondary hover:text-text-primary hover:bg-input/50"
-            }`}
+            className={`p-1.5 rounded transition-colors ${isDetached
+              ? "text-text-disabled cursor-not-allowed"
+              : isChatOpen
+                ? "text-primary bg-primary/10"
+                : "text-text-secondary hover:text-text-primary hover:bg-input/50"
+              }`}
             title={
               isDetached
                 ? "Chat is detached"
@@ -166,11 +174,10 @@ export const TitleBar: React.FC = () => {
           </button>
           <button
             onClick={handleDetachChat}
-            className={`p-1.5 rounded transition-colors ${
-              isDetached
-                ? "text-primary bg-primary/10"
-                : "text-text-secondary hover:text-text-primary hover:bg-input/50"
-            }`}
+            className={`p-1.5 rounded transition-colors ${isDetached
+              ? "text-primary bg-primary/10"
+              : "text-text-secondary hover:text-text-primary hover:bg-input/50"
+              }`}
             title={
               isDetached
                 ? "Focus detached chat window"

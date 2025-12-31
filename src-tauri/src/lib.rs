@@ -13,6 +13,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_pty::init())
         .invoke_handler(tauri::generate_handler![
             // File system commands
             commands::read_directory,
@@ -65,7 +66,14 @@ pub fn run() {
             commands::chat::set_current_thread,
             commands::chat::set_pending_approval,
             commands::chat::update_chat_state,
+            commands::chat::update_chat_state,
             commands::chat::clear_chat_state,
+            // Theme commands
+            commands::themes::get_custom_themes,
+            commands::themes::save_custom_theme,
+            commands::themes::delete_custom_theme,
+            commands::themes::set_active_theme_id,
+            commands::themes::get_active_theme_id,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

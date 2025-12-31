@@ -1,6 +1,7 @@
 /**
  * Shell Tool Executors
  * Implementations for shell command tools using Tauri commands
+ * Uses standard executeCommand for agent tool calls (simpler, no PTY needed)
  */
 
 import { toolRegistry } from '../registry';
@@ -24,103 +25,105 @@ let processIdCounter = 0;
 // ============================================
 // SHELL EXECUTE EXECUTOR
 // ============================================
-const getOrCreateTerminalSession = (cwd?: string): string | null => {
-  const terminal = useTerminalStore.getState();
-
-  if (!terminal.isOpen) {
-    terminal.openTerminal();
-  }
-
-  let sessionId = useTerminalStore.getState().activeSessionId;
-
-  if (!sessionId) {
-    const state = useTerminalStore.getState();
-
-    if (state.sessions.length === 0) {
-      sessionId = state.createSession(cwd);
-    } else {
-      sessionId = state.sessions[0].id;
-      state.setActiveSession(sessionId);
-    }
-  }
-
-  if (sessionId && cwd) {
-    useTerminalStore.getState().updateSessionCwd(sessionId, cwd);
-  }
-
-  return sessionId;
-};
-
-const shellExecuteExecutor = async (args: Record<string, any>): Promise<string> => {
+const shellExecuteExecutor = async (args: Record<string, unknown>): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({ success: false, error: 'Shell operations require desktop app' });
   }
 
+  const command = args.command as string;
   const rootPath = useWorkspaceStore.getState().rootPath;
-  const cwd = args.cwd || rootPath || undefined;
-  const terminalSessionId = getOrCreateTerminalSession(cwd);
+  const cwd = (args.cwd as string) || rootPath || undefined;
 
-  if (terminalSessionId) {
-    useTerminalStore.getState().addLine(terminalSessionId, {
-      type: 'input',
-      content: args.command,
-    });
-    useTerminalStore.getState().setSessionRunning(terminalSessionId, true);
+  console.log('[shell_execute] Running command:', command, 'in:', cwd);
+
+  // Open terminal to show activity
+  const terminal = useTerminalStore.getState();
+  if (!terminal.isOpen) {
+    terminal.openTerminal();
   }
+  
+  // Ensure we have an active session and wait for handler to be registered
+  const waitForTerminalReady = async (maxWaitMs = 3000): Promise<boolean> => {
+    const startTime = Date.now();
+    while (Date.now() - startTime < maxWaitMs) {
+      const state = useTerminalStore.getState();
+      const { activeSessionId, sessionHandlers } = state;
+      
+      // Check if we have an active session with a registered handler
+      if (activeSessionId && sessionHandlers.has(activeSessionId)) {
+        return true;
+      }
+      
+      // Wait a bit before checking again
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+    return false;
+  };
+  
+  await waitForTerminalReady();
 
-  console.log('[shell_execute] Running command:', args.command, 'in:', cwd);
+  // Get fresh reference to write handler after waiting
+  const writeOutput = (data: string) => {
+    const state = useTerminalStore.getState();
+    const { activeSessionId, sessionHandlers } = state;
+    
+    if (activeSessionId && sessionHandlers.has(activeSessionId)) {
+      const handler = sessionHandlers.get(activeSessionId);
+      handler?.(data);
+    }
+  };
+
+  // formatted output with colors
+  const green = '\x1b[32m';
+  const reset = '\x1b[0m';
+  const dim = '\x1b[2m';
+  const red = '\x1b[31m';
+  const yellow = '\x1b[33m';
+
+  // Echo command
+  writeOutput(`\r\n${green}[Aurora]${reset} ${command} ${dim}(in ${cwd || 'root'})${reset}\r\n`);
 
   try {
-    const result = await executeCommand(args.command, cwd);
+    const result = await executeCommand(command, cwd);
 
-    if (terminalSessionId) {
-      if (result.stdout?.trim()) {
-        useTerminalStore.getState().addLine(terminalSessionId, {
-          type: 'output',
-          content: result.stdout.trimEnd(),
-        });
-      }
-      if (result.stderr?.trim()) {
-        useTerminalStore.getState().addLine(terminalSessionId, {
-          type: 'error',
-          content: result.stderr.trimEnd(),
-        });
-      }
-      if (!result.success && !result.stdout && !result.stderr) {
-        useTerminalStore.getState().addLine(terminalSessionId, {
-          type: 'error',
-          content: `Command failed with exit code: ${result.exit_code ?? 'unknown'}`,
-        });
-      }
+    // Echo Output
+    if (result.stdout) {
+      // Normalize line endings
+      const normalized = result.stdout.replace(/\n/g, '\r\n');
+      writeOutput(normalized);
+      if (!normalized.endsWith('\n')) writeOutput('\r\n');
     }
 
-    if (terminalSessionId) {
-      useTerminalStore.getState().setSessionRunning(terminalSessionId, false);
+    if (result.stderr) {
+      const normalized = result.stderr.replace(/\n/g, '\r\n');
+      writeOutput(`${yellow}${normalized}${reset}`);
+      if (!normalized.endsWith('\n')) writeOutput('\r\n');
+    }
+
+    if (result.exit_code !== 0) {
+      writeOutput(`${red}Command failed with exit code ${result.exit_code}${reset}\r\n`);
     }
     
-    return JSON.stringify({ 
+    // Add a completion marker
+    writeOutput(`${dim}[Done]${reset}\r\n`);
+
+    return JSON.stringify({
       success: result.success,
-      command: args.command,
+      command,
       cwd,
       stdout: result.stdout,
       stderr: result.stderr,
       exitCode: result.exit_code,
-      terminalSessionId: terminalSessionId || undefined,
     });
   } catch (error) {
     console.error('[shell_execute] Error:', error);
+    const errorMsg = error instanceof Error ? error.message : String(error);
 
-    if (terminalSessionId) {
-      useTerminalStore.getState().setSessionRunning(terminalSessionId, false);
-      useTerminalStore.getState().addLine(terminalSessionId, {
-        type: 'error',
-        content: error instanceof Error ? error.message : String(error),
-      });
-    }
+    writeOutput(`${red}Execution Error: ${errorMsg}${reset}\r\n`);
 
-    return JSON.stringify({ 
-      success: false, 
-      error: error instanceof Error ? error.message : String(error) 
+    return JSON.stringify({
+      success: false,
+      error: errorMsg,
     });
   }
 };
@@ -128,12 +131,13 @@ const shellExecuteExecutor = async (args: Record<string, any>): Promise<string> 
 // ============================================
 // SHELL SPAWN EXECUTOR (Background Process)
 // ============================================
-const shellSpawnExecutor = async (args: Record<string, any>): Promise<string> => {
+const shellSpawnExecutor = async (args: Record<string, unknown>): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({ success: false, error: 'Shell operations require desktop app' });
   }
 
-  const { command, cwd: argCwd } = args;
+  const command = args.command as string;
+  const argCwd = args.cwd as string | undefined;
   const rootPath = useWorkspaceStore.getState().rootPath;
   const cwd = argCwd || rootPath || '';
 
@@ -157,7 +161,7 @@ const shellSpawnExecutor = async (args: Record<string, any>): Promise<string> =>
 
     backgroundProcesses.set(processId, process);
 
-    // Execute command asynchronously
+    // Execute in background
     executeCommand(command, cwd).then(result => {
       const proc = backgroundProcesses.get(processId);
       if (proc) {
@@ -194,15 +198,14 @@ const shellSpawnExecutor = async (args: Record<string, any>): Promise<string> =>
 // ============================================
 // SHELL KILL EXECUTOR
 // ============================================
-const shellKillExecutor = async (args: Record<string, any>): Promise<string> => {
-  // Support both processId (new) and pid (legacy) parameters
-  const processId = args.processId || (args.pid !== undefined ? String(args.pid) : undefined);
-  const processName = args.name;
+const shellKillExecutor = async (args: Record<string, unknown>): Promise<string> => {
+  const processId = (args.processId as string) || (args.pid !== undefined ? String(args.pid) : undefined);
+  const processName = args.name as string | undefined;
 
   if (!processId && !processName) {
-    return JSON.stringify({ 
-      success: false, 
-      error: 'Either processId or name is required' 
+    return JSON.stringify({
+      success: false,
+      error: 'Either processId or name is required'
     });
   }
 
@@ -210,11 +213,9 @@ const shellKillExecutor = async (args: Record<string, any>): Promise<string> => 
   let targetId: string | undefined;
 
   if (processId) {
-    // First try exact match
     targetProcess = backgroundProcesses.get(processId);
     targetId = processId;
 
-    // If not found, try to find by partial match (for cases where only the numeric part is passed)
     if (!targetProcess) {
       for (const [id, proc] of backgroundProcesses.entries()) {
         if (id.includes(processId) || id.endsWith(`-${processId}`)) {
@@ -225,7 +226,6 @@ const shellKillExecutor = async (args: Record<string, any>): Promise<string> => 
       }
     }
   } else if (processName) {
-    // Find by name (command contains the name)
     for (const [id, proc] of backgroundProcesses.entries()) {
       if (proc.command.includes(processName)) {
         targetProcess = proc;
@@ -234,7 +234,7 @@ const shellKillExecutor = async (args: Record<string, any>): Promise<string> => 
       }
     }
   }
-  
+
   if (!targetProcess || !targetId) {
     const identifier = processId || processName;
     return JSON.stringify({
@@ -244,15 +244,13 @@ const shellKillExecutor = async (args: Record<string, any>): Promise<string> => 
     });
   }
 
-  // Mark as completed (actual process termination would need native support)
   targetProcess.status = 'completed';
   targetProcess.output.push('[terminated by user]');
 
   return JSON.stringify({
     success: true,
     processId: targetId,
-    message: `Process ${targetId} marked for termination`,
-    note: 'Full process termination requires native implementation',
+    message: `Process ${targetId} marked as terminated`,
   });
 };
 
@@ -277,6 +275,63 @@ const shellListProcessesExecutor = async (): Promise<string> => {
 };
 
 // ============================================
+// TERMINAL CLOSE EXECUTOR
+// ============================================
+const terminalCloseExecutor = async (args: Record<string, unknown>): Promise<string> => {
+  const sessionId = args.sessionId as string | undefined;
+  const closeAll = args.closeAll as boolean | undefined;
+  
+  const terminal = useTerminalStore.getState();
+  
+  if (!terminal.isOpen && terminal.sessions.length === 0) {
+    return JSON.stringify({
+      success: true,
+      message: 'Terminal is already closed',
+    });
+  }
+
+  if (closeAll) {
+    // Close all sessions
+    const sessionIds = terminal.sessions.map(s => s.id);
+    for (const id of sessionIds) {
+      terminal.closeSession(id);
+    }
+    terminal.closeTerminal();
+    return JSON.stringify({
+      success: true,
+      message: `Closed all ${sessionIds.length} terminal session(s)`,
+      closedSessions: sessionIds,
+    });
+  }
+
+  if (sessionId) {
+    // Close specific session
+    const session = terminal.sessions.find(s => s.id === sessionId);
+    if (!session) {
+      return JSON.stringify({
+        success: false,
+        error: `Session not found: ${sessionId}`,
+        availableSessions: terminal.sessions.map(s => ({ id: s.id, name: s.name })),
+      });
+    }
+    terminal.closeSession(sessionId);
+    return JSON.stringify({
+      success: true,
+      message: `Closed terminal session: ${session.name}`,
+      sessionId,
+    });
+  }
+
+  // Close the terminal panel (hides it, sessions remain)
+  terminal.closeTerminal();
+  return JSON.stringify({
+    success: true,
+    message: 'Terminal panel closed',
+    remainingSessions: terminal.sessions.length,
+  });
+};
+
+// ============================================
 // REGISTER ALL SHELL EXECUTORS
 // ============================================
 export const registerShellExecutors = (): void => {
@@ -284,5 +339,5 @@ export const registerShellExecutors = (): void => {
   toolRegistry.registerExecutor('shell_spawn', shellSpawnExecutor);
   toolRegistry.registerExecutor('shell_kill', shellKillExecutor);
   toolRegistry.registerExecutor('shell_list_processes', shellListProcessesExecutor);
+  toolRegistry.registerExecutor('terminal_close', terminalCloseExecutor);
 };
-

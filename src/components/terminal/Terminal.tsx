@@ -1,255 +1,389 @@
 /**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
+ * 
+ * Use theme tokens via CSS variables:
+ *   - CSS: var(--aurora-{category}-{token})
+ *   - Tailwind: bg-[var(--aurora-editor-background)]
+ *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ * See: src/types/theme.ts for TypeScript interfaces
+ * See: src/services/theme-service.ts for theme utilities
+ */
+
+/**
  * Terminal Component
- * Native-like integrated terminal with PowerShell and Git Bash support
+ * Native PTY-based terminal using tauri-plugin-pty
+ * Properly manages multiple sessions with persistent PTY connections
+ * Uses CSS visibility toggling to ensure state persists across tab switches
  */
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { X, Plus, Terminal as TerminalIcon, ChevronDown, Trash2 } from 'lucide-react';
-import { useTerminalStore, type TerminalLine, type ShellProfile } from '../../store/useTerminalStore';
+import { X, Plus, Terminal as TerminalIcon, ChevronDown } from 'lucide-react';
+import { useTerminalStore, type ShellProfile } from '../../store/useTerminalStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
-import { executeCommand, isTauri } from '../../lib/tauri';
+import { useThemeStore } from '../../store/useThemeStore';
+import { isTauri } from '../../lib/tauri';
+import { spawn, type IPty } from 'tauri-pty';
+import { platform } from '@tauri-apps/plugin-os';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import { WebLinksAddon } from '@xterm/addon-web-links';
+import '@xterm/xterm/css/xterm.css';
 import clsx from 'clsx';
 
-// Shell profile icons
+// ============================================
+// Global PTY Session Manager
+// Keeps PTY connections alive and stores references
+// ============================================
+interface PtySessionData {
+  pty: IPty;
+  terminal: Terminal;
+  fitAddon: FitAddon;
+  profile: ShellProfile;
+}
+
+const ptySessionsMap = new Map<string, PtySessionData>();
+
+// Clean up a single session
+const cleanupSession = (sessionId: string, unregisterHandler?: (id: string) => void) => {
+  const session = ptySessionsMap.get(sessionId);
+  if (session) {
+    try {
+      session.pty.kill();
+    } catch (e) {
+      // Ignore errors during cleanup
+    }
+    try {
+      session.terminal.dispose();
+    } catch (e) {
+      // Ignore errors during cleanup
+    }
+    ptySessionsMap.delete(sessionId);
+  }
+  // Unregister the write handler if provided
+  if (unregisterHandler) {
+    unregisterHandler(sessionId);
+  }
+};
+
+// Clean up ALL sessions (called on app close)
+const cleanupAllSessions = () => {
+  ptySessionsMap.forEach((_, sessionId) => {
+    cleanupSession(sessionId);
+  });
+};
+
+// Register cleanup on window unload
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', cleanupAllSessions);
+}
+
+// Get shell executable based on profile and platform
+const getShellExecutable = async (profile: ShellProfile, currentPlatform: string): Promise<string> => {
+  if (profile === 'bash') {
+    if (currentPlatform === 'windows') {
+      // Common Git Bash paths
+      return 'C:\\Program Files\\Git\\bin\\bash.exe';
+    }
+    return '/bin/bash';
+  }
+  // PowerShell
+  if (currentPlatform === 'windows') {
+    return 'pwsh.exe';
+  }
+  return '/bin/bash'; // Fallback for non-windows if powershell requested
+};
+
+// ============================================
+// Shell Icons
+// ============================================
 const ShellIcon: React.FC<{ profile: ShellProfile; className?: string }> = ({ profile, className }) => {
   if (profile === 'bash') {
     return (
       <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
-        <path d="M21.8 14.4c-.1-.1-.2-.2-.4-.2-.1 0-.2 0-.3.1l-1.4.9c-.1.1-.2.1-.3.1-.2 0-.3-.1-.3-.3v-2c0-.2.1-.3.3-.3.1 0 .2 0 .3.1l1.4.9c.1.1.2.1.3.1.1 0 .3-.1.4-.2.1-.1.2-.3.2-.4V9c0-.2-.1-.3-.2-.4-.1-.1-.2-.2-.4-.2-.1 0-.2 0-.3.1l-1.4.9c-.1.1-.2.1-.3.1-.2 0-.3-.1-.3-.3V7c0-.2-.1-.4-.2-.5-.2-.1-.3-.2-.5-.2H5c-.2 0-.4.1-.5.2-.1.1-.2.3-.2.5v10c0 .2.1.4.2.5.1.1.3.2.5.2h13c.2 0 .4-.1.5-.2.2-.1.2-.3.2-.5v-2c0-.2.1-.3.3-.3.1 0 .2 0 .3.1l1.4.9c.1.1.2.1.3.1.1 0 .3-.1.4-.2.1-.1.2-.3.2-.4v-1c0-.1-.1-.3-.2-.4z"/>
+        <path d="M21.8 14.4c-.1-.1-.2-.2-.4-.2-.1 0-.2 0-.3.1l-1.4.9c-.1.1-.2.1-.3.1-.2 0-.3-.1-.3-.3v-2c0-.2.1-.3.3-.3.1 0 .2 0 .3.1l1.4.9c.1.1.2.1.3.1.1 0 .3-.1.4-.2.1-.1.2-.3.2-.4V9c0-.2-.1-.3-.2-.4-.1-.1-.2-.2-.4-.2-.1 0-.2 0-.3.1l-1.4.9c-.1.1-.2.1-.3.1-.2 0-.3-.1-.3-.3V7c0-.2-.1-.4-.2-.5-.2-.1-.3-.2-.5-.2H5c-.2 0-.4.1-.5.2-.1.1-.2.3-.2.5v10c0 .2.1.4.2.5.1.1.3.2.5.2h13c.2 0 .4-.1.5-.2.2-.1.2-.3.2-.5v-2c0-.2.1-.3.3-.3.1 0 .2 0 .3.1l1.4.9c.1.1.2.1.3.1.1 0 .3-.1.4-.2.1-.1.2-.3.2-.4v-1c0-.1-.1-.3-.2-.4z" />
       </svg>
     );
   }
   return <TerminalIcon className={className} />;
 };
 
-// Terminal Line Component - selectable text
-const TerminalLineItem: React.FC<{ line: TerminalLine; cwd: string; profile: ShellProfile }> = ({ line, cwd, profile }) => {
-  const getPromptSymbol = () => {
-    return profile === 'bash' ? '$' : '>';
-  };
-
-  // For input lines, show with prompt
-  if (line.type === 'input') {
-    return (
-      <div className="whitespace-pre-wrap break-all leading-relaxed select-text">
-        <span className="text-[#569cd6]">{cwd}</span>
-        <span className="text-[#dcdcaa]"> {getPromptSymbol()}</span>
-        <span className="text-[#d4d4d4]"> {line.content}</span>
-      </div>
-    );
-  }
-
-  // For error lines
-  if (line.type === 'error') {
-    return (
-      <div className="text-[#f14c4c] whitespace-pre-wrap break-all leading-relaxed select-text">
-        {line.content}
-      </div>
-    );
-  }
-
-  // For output lines
-  return (
-    <div className="text-[#cccccc] whitespace-pre-wrap break-all leading-relaxed select-text">
-      {line.content}
-    </div>
-  );
-};
-
-// Terminal Session Component
-const TerminalSession: React.FC<{ sessionId: string }> = ({ sessionId }) => {
-  const [inputValue, setInputValue] = useState('');
-  const [commandHistory, setCommandHistory] = useState<string[]>([]);
-  const [historyIndex, setHistoryIndex] = useState(-1);
-  const inputRef = useRef<HTMLInputElement>(null);
+// ============================================
+// XTerm Terminal Session Component
+// ============================================
+const XTermSession: React.FC<{ sessionId: string; isVisible: boolean }> = ({ sessionId, isVisible }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [isInitialized, setIsInitialized] = useState(() => ptySessionsMap.has(sessionId));
+  const [error, setError] = useState<string | null>(null);
+  const initializingRef = useRef(false);
 
-  const { sessions, addLine, setSessionRunning, updateSessionCwd } = useTerminalStore();
+  const {
+    sessions,
+    setPtyConnected,
+    setSessionRunning,
+    registerSessionHandler,
+    unregisterSessionHandler,
+  } = useTerminalStore();
   const { rootPath } = useWorkspaceStore();
+  const { themes, activeThemeId } = useThemeStore();
+  const activeTheme = themes.find(t => t.id === activeThemeId) || themes[0];
   const session = sessions.find(s => s.id === sessionId);
 
-  // Auto-scroll to bottom when new lines are added
+  // Update terminal theme when active activeTheme changes
   useEffect(() => {
-    if (containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    const sessionData = ptySessionsMap.get(sessionId);
+    if (!sessionData || !activeTheme) return;
+
+    const t = activeTheme.colors.terminal;
+    sessionData.terminal.options.theme = {
+      background: t.background,
+      foreground: t.foreground,
+      cursor: t.cursor,
+      selectionBackground: t.selection,
+      black: t.black,
+      red: t.red,
+      green: t.green,
+      yellow: t.yellow,
+      blue: t.blue,
+      magenta: t.magenta,
+      cyan: t.cyan,
+      white: t.white,
+      brightBlack: t.brightBlack,
+      brightRed: t.brightRed,
+      brightGreen: t.brightGreen,
+      brightYellow: t.brightYellow,
+      brightBlue: t.brightBlue,
+      brightMagenta: t.brightMagenta,
+      brightCyan: t.brightCyan,
+      brightWhite: t.brightWhite,
+    };
+  }, [activeThemeId, sessionId, activeTheme]);
+
+  // Initialize terminal only once
+  useEffect(() => {
+    if (!containerRef.current || !session || !isTauri()) return;
+
+    // Check if already initialized for this session
+    if (ptySessionsMap.has(sessionId)) {
+      setIsInitialized(true);
+      return;
     }
-  }, [session?.lines]);
 
-  // Focus input when session is first created or becomes active
-  useEffect(() => {
-    // Small delay to ensure the component is rendered
-    const timer = setTimeout(() => {
-      inputRef.current?.focus();
-    }, 50);
-    return () => clearTimeout(timer);
-  }, [sessionId]);
+    // Prevent double initialization
+    if (initializingRef.current) return;
+    initializingRef.current = true;
 
-  const executeShellCommand = useCallback(async (command: string) => {
-    if (!command.trim() || !session) return;
+    const initNewSession = async () => {
+      try {
+        const currentPlatform = await platform();
+        const shellExe = await getShellExecutable(session.profile, currentPlatform);
 
-    // Add command to history
-    setCommandHistory(prev => [...prev, command]);
-    setHistoryIndex(-1);
+        // Create xterm.js terminal
+        // Create xterm.js terminal
+        const t = activeTheme.colors.terminal;
+        const term = new Terminal({
+          cursorBlink: true,
+          cursorStyle: 'block',
+          fontSize: 13,
+          fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, "Courier New", monospace',
+          lineHeight: 1.2,
+          convertEol: true,
+          scrollback: 10000,
+          theme: {
+            background: t.background,
+            foreground: t.foreground,
+            cursor: t.cursor,
+            selectionBackground: t.selection,
+            black: t.black,
+            red: t.red,
+            green: t.green,
+            yellow: t.yellow,
+            blue: t.blue,
+            magenta: t.magenta,
+            cyan: t.cyan,
+            white: t.white,
+            brightBlack: t.brightBlack,
+            brightRed: t.brightRed,
+            brightGreen: t.brightGreen,
+            brightYellow: t.brightYellow,
+            brightBlue: t.brightBlue,
+            brightMagenta: t.brightMagenta,
+            brightCyan: t.brightCyan,
+            brightWhite: t.brightWhite,
+          },
+          allowProposedApi: true,
+        });
 
-    const cwd = session.cwd || rootPath || '';
-    
-    // Add input line (shows the command with prompt)
-    addLine(sessionId, { type: 'input', content: command });
-    setSessionRunning(sessionId, true);
+        // Load addons
+        const fitAddon = new FitAddon();
+        term.loadAddon(fitAddon);
+        term.loadAddon(new WebLinksAddon());
 
-    try {
-      // Handle built-in commands
-      if (command.trim().toLowerCase() === 'clear' || command.trim().toLowerCase() === 'cls') {
-        useTerminalStore.getState().clearSession(sessionId);
-        setSessionRunning(sessionId, false);
-        return;
-      }
-
-      // Handle cd command
-      if (command.trim().toLowerCase().startsWith('cd ')) {
-        const newPath = command.trim().slice(3).trim();
-        if (isTauri()) {
-          const result = await executeCommand(
-            session.profile === 'bash' ? `cd "${newPath}" && pwd` : `cd "${newPath}"; Get-Location | Select-Object -ExpandProperty Path`,
-            cwd || undefined,
-            session.profile
-          );
-          if (result.success && result.stdout) {
-            const newCwd = result.stdout.trim();
-            updateSessionCwd(sessionId, newCwd);
-          } else if (result.stderr) {
-            addLine(sessionId, { type: 'error', content: result.stderr.trimEnd() });
-          }
+        // Open terminal in container
+        if (containerRef.current) {
+          term.open(containerRef.current);
         }
-        setSessionRunning(sessionId, false);
-        return;
-      }
 
-      if (!isTauri()) {
-        addLine(sessionId, { type: 'error', content: 'Terminal requires desktop app' });
-        setSessionRunning(sessionId, false);
-        return;
-      }
+        // Spawn PTY
+        const pty = spawn(shellExe, [], {
+          cols: term.cols || 80,
+          rows: term.rows || 24,
+          cwd: rootPath || undefined,
+        });
 
-      const result = await executeCommand(command, cwd || undefined, session.profile);
+        // Store session data
+        const sessionData: PtySessionData = {
+          pty,
+          terminal: term,
+          fitAddon,
+          profile: session.profile,
+        };
+        ptySessionsMap.set(sessionId, sessionData);
 
-      if (result.stdout) {
-        addLine(sessionId, { type: 'output', content: result.stdout.trimEnd() });
-      }
-      if (result.stderr) {
-        addLine(sessionId, { type: 'error', content: result.stderr.trimEnd() });
-      }
-      if (!result.success && !result.stderr && !result.stdout) {
-        addLine(sessionId, { type: 'error', content: `Command failed with exit code: ${result.exit_code}` });
-      }
-    } catch (error) {
-      addLine(sessionId, {
-        type: 'error',
-        content: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      setSessionRunning(sessionId, false);
-    }
-  }, [session, sessionId, addLine, setSessionRunning, updateSessionCwd, rootPath]);
+        // Connect PTY output to terminal
+        pty.onData(data => {
+          term.write(data);
+        });
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && inputValue.trim()) {
-      executeShellCommand(inputValue);
-      setInputValue('');
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      if (commandHistory.length > 0) {
-        const newIndex = historyIndex < commandHistory.length - 1 ? historyIndex + 1 : historyIndex;
-        setHistoryIndex(newIndex);
-        setInputValue(commandHistory[commandHistory.length - 1 - newIndex] || '');
+        // Handle PTY exit
+        pty.onExit(({ exitCode }) => {
+          setPtyConnected(sessionId, false);
+          setSessionRunning(sessionId, false);
+          term.writeln(`\r\n\x1b[33m[Process exited with code: ${exitCode}]\x1b[0m`);
+        });
+
+        // Connect terminal input to PTY
+        term.onData(data => {
+          pty.write(data);
+        });
+
+        // Handle terminal resize
+        term.onResize(e => {
+          pty.resize(e.cols, e.rows);
+        });
+
+        setPtyConnected(sessionId, true);
+        setSessionRunning(sessionId, true);
+        setIsInitialized(true);
+        initializingRef.current = false;
+
+        // Register handler for external writes (agent shell_execute)
+        // This writes data directly to the xterm terminal display
+        registerSessionHandler(sessionId, (data: string) => {
+          term.write(data);
+        });
+
+        // Initial fit
+        setTimeout(() => {
+          try { fitAddon.fit(); } catch (e) { }
+        }, 50);
+
+      } catch (err) {
+        console.error('[Terminal] Failed to initialize:', err);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        setError(errorMsg);
+        setPtyConnected(sessionId, false);
+        initializingRef.current = false;
       }
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      if (historyIndex > 0) {
-        const newIndex = historyIndex - 1;
-        setHistoryIndex(newIndex);
-        setInputValue(commandHistory[commandHistory.length - 1 - newIndex] || '');
-      } else if (historyIndex === 0) {
-        setHistoryIndex(-1);
-        setInputValue('');
+    };
+
+    initNewSession();
+
+    // Cleanup handler on unmount
+    return () => {
+      unregisterSessionHandler(sessionId);
+    };
+  }, [sessionId, session, rootPath, setPtyConnected, setSessionRunning, registerSessionHandler, unregisterSessionHandler]);
+
+  // Handle Visibility Changes & Resizing
+  // When switching tabs, the container goes from display:none to block.
+  // XTerm needs to re-calculate dimensions immediately.
+  useEffect(() => {
+    if (!isInitialized || !isVisible) return;
+
+    const sessionData = ptySessionsMap.get(sessionId);
+    if (!sessionData) return;
+
+    // Small delay to allow DOM layout to settle after display:block
+    const timer = setTimeout(() => {
+      try {
+        sessionData.fitAddon.fit();
+        sessionData.terminal.focus();
+      } catch (e) {
+        // Ignore errors if terminal disposed
       }
-    } else if (e.key === 'c' && e.ctrlKey) {
-      if (session?.isRunning) {
-        setSessionRunning(sessionId, false);
-      } else {
-        setInputValue('');
-      }
-    } else if (e.key === 'l' && e.ctrlKey) {
-      e.preventDefault();
-      useTerminalStore.getState().clearSession(sessionId);
-    }
-  };
+    }, 10);
+
+    return () => clearTimeout(timer);
+  }, [isVisible, isInitialized, sessionId]);
+
+  // Handle Window/Panel resizing
+  useEffect(() => {
+    if (!containerRef.current || !isVisible) return;
+
+    const sessionData = ptySessionsMap.get(sessionId);
+    if (!sessionData) return;
+
+    let resizeTimeout: ReturnType<typeof setTimeout>;
+
+    const handleResize = () => {
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(() => {
+        try {
+          sessionData.fitAddon.fit();
+        } catch (e) { }
+      }, 100);
+    };
+
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(containerRef.current);
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', handleResize);
+      clearTimeout(resizeTimeout);
+    };
+  }, [sessionId, isVisible]);
 
   if (!session) return null;
 
-  const cwd = session.cwd || rootPath || '';
-  const promptSymbol = session.profile === 'bash' ? '$' : '>';
-
-  // Focus input when clicking anywhere in terminal
-  const handleContainerClick = useCallback(() => {
-    inputRef.current?.focus();
-  }, []);
-
   return (
-    <div
-      ref={containerRef}
-      className="flex-1 overflow-y-auto overflow-x-hidden p-3 cursor-text"
-      style={{ 
-        backgroundColor: '#1e1e1e',
-        fontFamily: '"Cascadia Code", "Cascadia Mono", "Consolas", "Courier New", monospace',
-        fontSize: '13px',
-        lineHeight: '1.5',
-      }}
-      onClick={handleContainerClick}
-    >
-      {/* Previous commands and output - fully selectable */}
-      <div className="select-text">
-        {session.lines.map(line => (
-          <TerminalLineItem 
-            key={line.id} 
-            line={line} 
-            cwd={cwd}
-            profile={session.profile}
-          />
-        ))}
-      </div>
-
-      {/* Current input prompt - always at the bottom */}
-      <div className="flex items-start whitespace-pre-wrap">
-        <span className="text-[#569cd6] select-none">{cwd}</span>
-        <span className="text-[#dcdcaa] select-none"> {promptSymbol}</span>
-        <div className="flex-1 ml-1 relative">
-          <input
-            ref={inputRef}
-            type="text"
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={session.isRunning}
-            autoComplete="off"
-            spellCheck={false}
-            className="w-full bg-transparent text-[#d4d4d4] outline-none caret-[#aeafad]"
-            style={{ 
-              fontFamily: 'inherit',
-              fontSize: 'inherit',
-              lineHeight: 'inherit',
-            }}
-          />
-          {session.isRunning && (
-            <span className="absolute right-0 top-0 text-[#569cd6] animate-pulse select-none">...</span>
-          )}
+    <div className="w-full h-full relative bg-editor">
+      {!isInitialized && !error && (
+        <div className="absolute inset-0 flex items-center justify-center bg-editor z-10">
+          <span className="text-primary">Connecting to terminal...</span>
         </div>
-      </div>
+      )}
+
+      {error && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-editor z-10">
+          <span className="text-danger">Failed to connect: {error}</span>
+        </div>
+      )}
+
+      <div
+        ref={containerRef}
+        className="w-full h-full"
+        style={{ padding: '4px 8px' }}
+      />
     </div>
   );
 };
 
+// ============================================
 // Resize Handle Component
+// ============================================
 const ResizeHandle: React.FC<{ onResize: (delta: number) => void }> = ({ onResize }) => {
   const [isDragging, setIsDragging] = useState(false);
 
@@ -277,14 +411,16 @@ const ResizeHandle: React.FC<{ onResize: (delta: number) => void }> = ({ onResiz
     <div
       onMouseDown={() => setIsDragging(true)}
       className={clsx(
-        "h-[3px] cursor-ns-resize transition-colors flex-shrink-0",
-        isDragging ? "bg-[#007acc]" : "bg-[#3c3c3c] hover:bg-[#007acc]"
+        "h-[3px] cursor-ns-resize transition-colors",
+        isDragging ? "bg-primary" : "bg-border hover:bg-primary"
       )}
     />
   );
 };
 
+// ============================================
 // Main Terminal Panel Component
+// ============================================
 export const TerminalPanel: React.FC = () => {
   const {
     sessions,
@@ -323,6 +459,14 @@ export const TerminalPanel: React.FC = () => {
     setShowProfileMenu(prev => !prev);
   };
 
+  const { unregisterSessionHandler } = useTerminalStore();
+
+  const handleCloseSession = (sessionId: string, e: React.MouseEvent | React.KeyboardEvent) => {
+    e.stopPropagation();
+    cleanupSession(sessionId, unregisterSessionHandler);
+    closeSession(sessionId);
+  };
+
   const handleResize = useCallback((delta: number) => {
     setHeight(height + delta);
   }, [height, setHeight]);
@@ -330,117 +474,141 @@ export const TerminalPanel: React.FC = () => {
   if (!isOpen) return null;
 
   return (
-    <div className="flex flex-col border-t border-[#3c3c3c]" style={{ height }}>
+    <div
+      className="flex flex-col border-t border-border bg-editor shadow-[0_-4px_6px_-1px_var(--aurora-common-shadow)]"
+      style={{ height, minHeight: 150, maxHeight: 800 }}
+    >
       {/* Resize Handle */}
       <ResizeHandle onResize={handleResize} />
 
-      {/* Tab Bar */}
-      <div className="h-[35px] flex items-center justify-between px-2 bg-[#252526] border-b border-[#3c3c3c] flex-shrink-0">
-        <div className="flex items-center gap-1 min-w-0 flex-1">
-          {/* Terminal tabs */}
-          <div className="flex items-center gap-1 min-w-0">
-            {sessions.map(session => (
+      {/* Toolbar / Tabs Header */}
+      <div className="h-9 flex items-center justify-between bg-sidebar border-b border-border select-none">
+
+        {/* Scrollable Tabs Container */}
+        <div className="flex-1 flex items-center min-w-0 overflow-x-auto scrollbar-none px-2 gap-1 h-full">
+          {sessions.map(session => {
+            const isActive = session.id === activeSessionId;
+            return (
               <button
                 key={session.id}
                 onClick={() => setActiveSession(session.id)}
                 className={clsx(
-                  'group flex items-center gap-1.5 px-3 py-1 text-[12px] rounded-sm transition-colors whitespace-nowrap',
-                  session.id === activeSessionId
-                    ? 'bg-[#1e1e1e] text-[#cccccc]'
-                    : 'text-[#969696] hover:bg-[#2a2a2a] hover:text-[#cccccc]'
+                  'group relative flex items-center gap-2 px-3 h-[28px] text-[12px] rounded-t-md transition-all duration-150 border-t-2',
+                  isActive
+                    ? 'bg-editor text-text-primary border-primary font-medium'
+                    : 'bg-transparent text-text-secondary hover:bg-input border-transparent hover:text-text-primary'
                 )}
+                title={session.name}
               >
-                <ShellIcon profile={session.profile} className="w-3.5 h-3.5 flex-shrink-0" />
-                <span>{session.name}</span>
-                {session.isRunning && (
-                  <div className="w-1.5 h-1.5 rounded-full bg-[#007acc] animate-pulse flex-shrink-0" />
+                <ShellIcon profile={session.profile} className={clsx("w-3.5 h-3.5 flex-shrink-0", isActive ? "text-primary" : "opacity-70")} />
+                <span className="truncate max-w-[150px]">{session.name}</span>
+
+                {/* Status Dot */}
+                {session.ptyConnected ? (
+                  isActive && <div className="w-1.5 h-1.5 rounded-full bg-[#89d185] flex-shrink-0 ml-1" />
+                ) : (
+                  <div className="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0 ml-1" title="Disconnected" />
                 )}
-                <span
+
+                <div
                   role="button"
                   tabIndex={0}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeSession(session.id);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      closeSession(session.id);
-                    }
-                  }}
-                  className="opacity-0 group-hover:opacity-100 ml-1 p-0.5 hover:bg-[#3c3c3c] rounded transition-opacity flex-shrink-0 outline-none focus:ring-1 focus:ring-[#3c3c3c]"
+                  onClick={(e) => handleCloseSession(session.id, e)}
+                  className={clsx(
+                    "ml-1 p-0.5 rounded-sm opacity-0 group-hover:opacity-100 transition-all",
+                    isActive ? "hover:bg-sidebar" : "hover:bg-sidebar"
+                  )}
                 >
                   <X className="w-3 h-3" />
-                </span>
+                </div>
               </button>
-            ))}
-          </div>
+            );
+          })}
+        </div>
 
-          {/* New Session Button with Dropdown */}
-          <div className="relative flex-shrink-0" ref={profileMenuRef}>
+        {/* Fixed Actions Area (New Session + Close Panel) */}
+        <div className="flex items-center px-2 gap-1 h-full border-l border-border bg-sidebar z-20">
+
+          {/* New Session Dropdown */}
+          <div className="relative" ref={profileMenuRef}>
             <button
               onClick={handlePlusClick}
-              className="p-1.5 text-[#969696] hover:text-[#cccccc] hover:bg-[#2a2a2a] rounded transition-colors flex items-center gap-0.5"
-              title="New Terminal"
+              className={clsx(
+                "h-[24px] px-2 flex items-center gap-1 rounded text-text-primary transition-colors",
+                showProfileMenu ? "bg-input text-white" : "hover:bg-input"
+              )}
+              title="New Terminal Profile"
             >
-              <Plus className="w-4 h-4" />
-              <ChevronDown className="w-3 h-3" />
+              <Plus className="w-3.5 h-3.5" />
+              <ChevronDown className="w-3 h-3 opacity-70" />
             </button>
 
+            {/* Dropdown Menu - Fixed Position to avoid clipping issues if container was overflow */}
             {showProfileMenu && (
-              <div className="absolute top-full left-0 mt-1 w-40 bg-[#252526] border border-[#3c3c3c] rounded shadow-xl z-[100] py-1">
+              <div className="absolute right-0 top-full mt-1 w-48 bg-sidebar border border-border rounded-md shadow-2xl z-[100] py-1 overflow-hidden ring-1 ring-black/20 animate-in fade-in zoom-in-95 duration-100 origin-top-right">
+                <div className="px-3 py-1.5 text-[10px] uppercase font-bold text-text-secondary tracking-wider bg-sidebar/50">
+                  Select Profile
+                </div>
                 <button
                   onClick={() => handleNewSession('powershell')}
-                  className="w-full px-3 py-1.5 text-left text-[12px] text-[#cccccc] hover:bg-[#094771] flex items-center gap-2"
+                  className="w-full px-3 py-2 text-left text-[13px] text-text-primary hover:bg-primary/20 hover:text-white flex items-center gap-2.5 transition-colors"
                 >
-                  <TerminalIcon className="w-4 h-4" />
+                  <TerminalIcon className="w-4 h-4 text-text-primary" />
                   <span>PowerShell</span>
                 </button>
                 <button
                   onClick={() => handleNewSession('bash')}
-                  className="w-full px-3 py-1.5 text-left text-[12px] text-[#cccccc] hover:bg-[#094771] flex items-center gap-2"
+                  className="w-full px-3 py-2 text-left text-[13px] text-text-primary hover:bg-primary/20 hover:text-white flex items-center gap-2.5 transition-colors"
                 >
-                  <ShellIcon profile="bash" className="w-4 h-4" />
+                  <ShellIcon profile="bash" className="w-4 h-4 text-[#f05033]" /> {/* Git color hint */}
                   <span>Git Bash</span>
                 </button>
               </div>
             )}
           </div>
-        </div>
 
-        {/* Right side actions */}
-        <div className="flex items-center gap-1 flex-shrink-0">
-          {activeSessionId && (
-            <button
-              onClick={() => useTerminalStore.getState().clearSession(activeSessionId)}
-              className="p-1.5 text-[#969696] hover:text-[#cccccc] rounded hover:bg-[#2a2a2a] transition-colors"
-              title="Clear (Ctrl+L)"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
-          )}
+          <div className="w-[1px] h-4 bg-border mx-1" />
+
           <button
             onClick={closeTerminal}
-            className="p-1.5 text-[#969696] hover:text-[#cccccc] rounded hover:bg-[#2a2a2a] transition-colors"
-            title="Hide Terminal"
+            className="h-[24px] w-[24px] flex items-center justify-center text-text-secondary hover:text-text-primary rounded hover:bg-danger hover:text-white transition-colors"
+            title="Close Panel"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      {/* Terminal Content */}
-      {activeSessionId ? (
-        <TerminalSession sessionId={activeSessionId} />
-      ) : (
-        <div 
-          className="flex-1 flex items-center justify-center text-[#969696] text-[12px]"
-          style={{ backgroundColor: '#1e1e1e' }}
-        >
-          No terminal session. Click + to create one.
-        </div>
-      )}
+      {/* Terminal Content Area */}
+      <div className="flex-1 relative bg-editor overflow-hidden">
+        {sessions.length === 0 && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-text-disabled gap-3">
+            <TerminalIcon className="w-12 h-12 opacity-20" />
+            <div className="text-sm">No active terminal sessions</div>
+            <button
+              onClick={() => handleNewSession('powershell')}
+              className="px-4 py-1.5 bg-primary text-white text-xs rounded hover:bg-primary-hover transition-colors"
+            >
+              Start New Session
+            </button>
+          </div>
+        )}
+
+        {sessions.map(session => (
+          <div
+            key={session.id}
+            className={clsx(
+              "absolute inset-0",
+              session.id === activeSessionId ? "z-10 visible" : "z-0 invisible pointer-events-none"
+            )}
+          >
+            <XTermSession
+              sessionId={session.id}
+              isVisible={session.id === activeSessionId}
+            />
+          </div>
+        ))}
+      </div>
     </div>
   );
 };

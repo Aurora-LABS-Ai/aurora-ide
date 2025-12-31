@@ -17,9 +17,11 @@ export interface CommandOutput {
 }
 
 export interface SystemInfo {
-  os: string;
-  arch: string;
+  os: string;           // e.g., "windows", "macos", "linux"
+  os_version: string;   // e.g., "10.0.26200" for Windows
+  arch: string;         // e.g., "x86_64", "aarch64"
   hostname: string;
+  shell: string | null; // Default shell path
 }
 
 // Thread persistence types (for DB bridge)
@@ -88,12 +90,20 @@ export const stopFsWatcher = async (): Promise<void> => {
 };
 
 // File System Operations
-export const readDirectory = async (path: string): Promise<FileEntry[]> => {
+export interface ReadDirectoryOptions {
+  /** Whether to include hidden files/folders (starting with .). Defaults to true. */
+  includeHidden?: boolean;
+}
+
+export const readDirectory = async (path: string, options?: ReadDirectoryOptions): Promise<FileEntry[]> => {
   if (!isTauri()) {
     console.warn('readDirectory: Not running in Tauri');
     return [];
   }
-  return invoke<FileEntry[]>('read_directory', { path });
+  return invoke<FileEntry[]>('read_directory', { 
+    path, 
+    includeHidden: options?.includeHidden ?? true  // Default to showing hidden files
+  });
 };
 
 export const readFileContent = async (path: string): Promise<string> => {
@@ -125,7 +135,7 @@ export const executeCommand = async (command: string, cwd?: string, shell?: 'pow
 export const getSystemInfo = async (): Promise<SystemInfo> => {
   if (!isTauri()) {
     console.warn('getSystemInfo: Not running in Tauri');
-    return { os: 'unknown', arch: 'unknown', hostname: 'unknown' };
+    return { os: 'unknown', os_version: 'unknown', arch: 'unknown', hostname: 'unknown', shell: null };
   }
   return invoke<SystemInfo>('get_system_info');
 };
@@ -290,3 +300,5 @@ export const openInTerminal = async (path: string): Promise<void> => {
   return invoke<void>('open_in_terminal', { path });
 };
 
+// PTY operations are now handled by tauri-plugin-pty
+// Import from 'tauri-pty' package instead

@@ -56,6 +56,9 @@ export interface ExplorerState {
 export interface AppSettings {
   selectedModel: string;
   autoApproveTools: boolean;
+  autoAcceptChanges?: boolean;
+  syntaxValidationEnabled?: boolean; // Pre-save syntax validation
+  projectLayoutEnabled?: boolean; // Include file tree in first message
   fontSize: number;
   theme: string;
   thinkingEnabled: boolean;

@@ -20,6 +20,7 @@ pub mod settings;
 pub mod threads;
 pub mod llm;
 pub mod chat;
+pub mod themes;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileEntry {
@@ -40,9 +41,11 @@ pub struct CommandOutput {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SystemInfo {
-    pub os: String,
-    pub arch: String,
+    pub os: String,           // e.g., "windows", "macos", "linux"
+    pub os_version: String,   // e.g., "10.0.26200" for Windows
+    pub arch: String,         // e.g., "x86_64", "aarch64"
     pub hostname: String,
+    pub shell: Option<String>, // Default shell path
 }
 
 static FS_WATCHER: OnceLock<Mutex<Option<notify::RecommendedWatcher>>> = OnceLock::new();
@@ -52,9 +55,14 @@ fn get_watcher_handle() -> &'static Mutex<Option<notify::RecommendedWatcher>> {
 }
 
 /// Read directory contents
+/// 
+/// Args:
+///   path: Directory path to read
+///   include_hidden: Whether to include hidden files/folders (starting with .)
 #[tauri::command]
-pub async fn read_directory(path: String) -> Result<Vec<FileEntry>, String> {
+pub async fn read_directory(path: String, include_hidden: Option<bool>) -> Result<Vec<FileEntry>, String> {
     let dir_path = Path::new(&path);
+    let show_hidden = include_hidden.unwrap_or(true); // Default to showing hidden files
 
     if !dir_path.exists() {
         return Err(format!("Directory does not exist: {}", path));
@@ -73,13 +81,20 @@ pub async fn read_directory(path: String) -> Result<Vec<FileEntry>, String> {
                 let file_path = entry.path();
                 let metadata = entry.metadata().ok();
 
-                // Skip hidden files/folders (starting with .) except .aurora
-                if file_name.starts_with('.') && file_name != ".aurora" {
+                // Skip hidden files/folders if not showing hidden
+                // Always show .aurora (our config folder)
+                if !show_hidden && file_name.starts_with('.') && file_name != ".aurora" {
+                    continue;
+                }
+                
+                // Always skip .git folder (too many internal files)
+                // But .gitignore, .gitattributes etc. are fine (they're files, not the .git folder)
+                if file_name == ".git" {
                     continue;
                 }
 
-                // Skip node_modules, target, dist folders
-                if file_name == "node_modules" || file_name == "target" || file_name == "dist" {
+                // Skip large generated folders that slow down the explorer
+                if file_name == "node_modules" || file_name == "target" || file_name == "dist" || file_name == ".pnpm" {
                     continue;
                 }
 
@@ -102,6 +117,7 @@ pub async fn read_directory(path: String) -> Result<Vec<FileEntry>, String> {
     }
 
     // Sort: directories first, then files, alphabetically
+    // Hidden files (starting with .) are sorted among their peers
     entries.sort_by(|a, b| {
         match (a.is_dir, b.is_dir) {
             (true, false) => std::cmp::Ordering::Less,
@@ -254,16 +270,125 @@ pub async fn execute_command(command: String, cwd: Option<String>, shell: Option
     }
 }
 
-/// Get system information
+/// Get system information (Cursor-style detailed info)
 #[tauri::command]
 pub async fn get_system_info() -> Result<SystemInfo, String> {
+    let os = std::env::consts::OS.to_string();
+    
+    // Get OS version
+    let os_version = get_os_version();
+    
+    // Get default shell
+    let shell = get_default_shell();
+    
     Ok(SystemInfo {
-        os: std::env::consts::OS.to_string(),
+        os,
+        os_version,
         arch: std::env::consts::ARCH.to_string(),
         hostname: hostname::get()
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_else(|_| "unknown".to_string()),
+        shell,
     })
+}
+
+/// Get OS version string
+fn get_os_version() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        // Try to get Windows version from registry or environment
+        if let Ok(output) = Command::new("cmd")
+            .args(["/c", "ver"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+        {
+            let version_str = String::from_utf8_lossy(&output.stdout);
+            // Parse "Microsoft Windows [Version 10.0.26200.2605]"
+            if let Some(start) = version_str.find("Version ") {
+                if let Some(end) = version_str[start..].find(']') {
+                    let ver = &version_str[start + 8..start + end];
+                    // Return just major.minor.build (e.g., "10.0.26200")
+                    let parts: Vec<&str> = ver.split('.').collect();
+                    if parts.len() >= 3 {
+                        return format!("{}.{}.{}", parts[0], parts[1], parts[2]);
+                    }
+                    return ver.to_string();
+                }
+            }
+        }
+        "unknown".to_string()
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+        {
+            return String::from_utf8_lossy(&output.stdout).trim().to_string();
+        }
+        "unknown".to_string()
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        // Try to read from /etc/os-release
+        if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
+            for line in content.lines() {
+                if line.starts_with("VERSION_ID=") {
+                    return line
+                        .trim_start_matches("VERSION_ID=")
+                        .trim_matches('"')
+                        .to_string();
+                }
+            }
+        }
+        // Fallback to uname
+        if let Ok(output) = Command::new("uname").arg("-r").output() {
+            return String::from_utf8_lossy(&output.stdout).trim().to_string();
+        }
+        "unknown".to_string()
+    }
+    
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        "unknown".to_string()
+    }
+}
+
+/// Get default shell path
+fn get_default_shell() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Check for PowerShell 7 first, then fall back to PowerShell 5, then cmd
+        let ps7_paths = [
+            r"C:\Program Files\PowerShell\7\pwsh.exe",
+            r"C:\Program Files (x86)\PowerShell\7\pwsh.exe",
+        ];
+        
+        for path in ps7_paths {
+            if Path::new(path).exists() {
+                return Some(path.to_string());
+            }
+        }
+        
+        // Check for Windows PowerShell
+        if let Ok(system_root) = std::env::var("SystemRoot") {
+            let ps5_path = format!(r"{}\System32\WindowsPowerShell\v1.0\powershell.exe", system_root);
+            if Path::new(&ps5_path).exists() {
+                return Some(ps5_path);
+            }
+        }
+        
+        // Fallback to cmd.exe
+        Some(std::env::var("COMSPEC").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".to_string()))
+    }
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Unix-like: check SHELL env var
+        std::env::var("SHELL").ok().or_else(|| Some("/bin/sh".to_string()))
+    }
 }
 
 /// Create a new file

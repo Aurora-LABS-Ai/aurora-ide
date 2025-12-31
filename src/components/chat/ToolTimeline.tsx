@@ -1,3 +1,25 @@
+/**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
+ * 
+ * Use theme tokens via CSS variables:
+ *   - CSS: var(--aurora-{category}-{token})
+ *   - Tailwind: bg-[var(--aurora-editor-background)]
+ *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ * See: src/types/theme.ts for TypeScript interfaces
+ * See: src/services/theme-service.ts for theme utilities
+ */
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   ChevronRight,
@@ -43,30 +65,30 @@ const FileExplorerView: React.FC<FileExplorerProps> = ({ files }) => {
   const remainingCount = sortedFiles.length - 6;
 
   return (
-    <div className="mt-2 rounded-lg border border-white/10 bg-[#151515] overflow-hidden">
-      <div className="flex items-center justify-between border-b border-white/5 bg-white/[0.02] px-3 py-2">
+    <div className="mt-2 rounded-lg border border-border bg-sidebar overflow-hidden">
+      <div className="flex items-center justify-between border-b border-border bg-sidebar px-3 py-2">
         <div className="flex items-center gap-2">
-          <LayoutGrid size={12} className="text-zinc-400" />
-          <span className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider">
+          <LayoutGrid size={12} className="text-text-secondary" />
+          <span className="text-[10px] font-medium text-text-secondary uppercase tracking-wider">
             Directory Listing
           </span>
         </div>
-        <span className="text-[10px] text-zinc-600 font-mono">
+        <span className="text-[10px] text-text-disabled font-mono">
           {files.length} items
         </span>
       </div>
 
       <div className="p-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
         {displayedFiles.map((file, idx) => (
-          <div key={idx} className="flex items-center gap-2 rounded-md bg-white/[0.03] px-2 py-1.5 border border-white/5">
+          <div key={idx} className="flex items-center gap-2 rounded-md bg-input px-2 py-1.5 border border-border">
             {file.type === 'directory' ? (
               <Folder size={14} className="text-blue-400/80 fill-blue-400/10" />
             ) : (
-              <File size={14} className="text-zinc-400" />
+              <File size={14} className="text-text-secondary" />
             )}
             <span className={cn(
               "truncate text-[11px]",
-              file.type === 'directory' ? "text-zinc-200 font-medium" : "text-zinc-400"
+              file.type === 'directory' ? "text-text-primary font-medium" : "text-text-secondary"
             )}>
               {file.name}
             </span>
@@ -77,7 +99,7 @@ const FileExplorerView: React.FC<FileExplorerProps> = ({ files }) => {
       {!isExpanded && remainingCount > 0 && (
         <button
           onClick={(e) => { e.stopPropagation(); setIsExpanded(true); }}
-          className="w-full border-t border-white/5 bg-white/[0.01] py-1.5 text-center text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+          className="w-full border-t border-border bg-input/50 py-1.5 text-center text-[10px] text-text-secondary hover:text-text-primary transition-colors"
         >
           + {remainingCount} more items...
         </button>
@@ -86,7 +108,7 @@ const FileExplorerView: React.FC<FileExplorerProps> = ({ files }) => {
       {isExpanded && files.length > 6 && (
         <button
           onClick={(e) => { e.stopPropagation(); setIsExpanded(false); }}
-          className="w-full border-t border-white/5 bg-white/[0.01] py-1.5 text-center font-mono text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+          className="w-full border-t border-border bg-input/50 py-1.5 text-center font-mono text-[10px] text-text-secondary hover:text-text-primary transition-colors"
         >
           Show less
         </button>
@@ -139,15 +161,15 @@ const MultiFileResultsView: React.FC<MultiFileResultsProps> = ({ files }) => {
   };
 
   return (
-    <div className="mt-2 rounded-lg border border-white/10 bg-[#151515] overflow-hidden">
-      <div className="flex items-center justify-between border-b border-white/5 bg-white/[0.02] px-3 py-2">
+    <div className="mt-2 rounded-lg border border-border bg-sidebar overflow-hidden">
+      <div className="flex items-center justify-between border-b border-border bg-sidebar px-3 py-2">
         <div className="flex items-center gap-2">
-          <FileCode size={12} className="text-zinc-400" />
-          <span className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider">
+          <FileCode size={12} className="text-text-secondary" />
+          <span className="text-[10px] font-medium text-text-secondary uppercase tracking-wider">
             Files Read
           </span>
         </div>
-        <span className="text-[10px] text-zinc-600 font-mono">
+        <span className="text-[10px] text-text-disabled font-mono">
           {files.length} files
         </span>
       </div>
@@ -171,7 +193,7 @@ const MultiFileResultsView: React.FC<MultiFileResultsProps> = ({ files }) => {
               ) : (
                 <X size={12} className="text-red-400 flex-shrink-0" />
               )}
-              <span className="truncate font-mono text-[11px] text-zinc-300 text-left">
+              <span className="truncate font-mono text-[11px] text-text-secondary text-left">
                 {file.path}
               </span>
             </div>
@@ -255,12 +277,12 @@ const CodeView: React.FC<CodeViewProps> = ({
   const isLongContent = content.split('\n').length > 8 || content.length > 300;
 
   return (
-    <div className="group/code mt-3 overflow-hidden rounded-md border border-white/5 bg-[#101010]">
+    <div className="group/code mt-3 overflow-hidden rounded-md border border-border bg-sidebar">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-white/5 bg-white/[0.02] px-3 py-1.5">
+      <div className="flex items-center justify-between border-b border-border bg-sidebar px-3 py-1.5">
         <div className="flex items-center gap-2">
-          <FileCode size={12} className="text-zinc-500" />
-          <span className="font-mono text-[10px] font-medium text-zinc-400 uppercase tracking-wider">
+          <FileCode size={12} className="text-text-disabled" />
+          <span className="font-mono text-[10px] font-medium text-text-secondary uppercase tracking-wider">
             {title || (isJson ? 'JSON' : 'OUTPUT')}
           </span>
         </div>
@@ -272,7 +294,7 @@ const CodeView: React.FC<CodeViewProps> = ({
                 e.stopPropagation();
                 setIsExpanded(!isExpanded);
               }}
-              className="flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-medium text-zinc-500 hover:bg-white/5 hover:text-zinc-300 transition-colors"
+              className="flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-medium text-text-secondary hover:bg-input hover:text-text-primary transition-colors"
             >
               {isExpanded ? (
                 <>
@@ -293,14 +315,14 @@ const CodeView: React.FC<CodeViewProps> = ({
       {/* Content */}
       <div
         className={cn(
-          "relative w-full overflow-hidden bg-[#0a0a0a]",
+          "relative w-full overflow-hidden bg-editor",
           isExpanded ? "max-h-none" : "max-h-[300px]"
         )}
       >
         <pre
           ref={contentRef}
           className={cn(
-            "font-mono text-[11px] leading-relaxed p-3 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words scrollbar-thin scrollbar-track-transparent scrollbar-thumb-transparent group-hover/code:scrollbar-thumb-zinc-800 transition-colors",
+            "font-mono text-[11px] leading-relaxed p-3 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words scrollbar-thin scrollbar-track-transparent scrollbar-thumb-transparent group-hover/code:scrollbar-thumb-border transition-colors",
             isExpanded ? "max-h-none" : "max-h-[300px]",
             isStreaming && "border-l-2 border-primary/30"
           )}
@@ -308,11 +330,11 @@ const CodeView: React.FC<CodeViewProps> = ({
           {isJson ? (
             <code dangerouslySetInnerHTML={{ __html: highlight(content) }} />
           ) : (
-            <code className="text-zinc-300">{content}</code>
+            <code className="text-text-secondary">{content}</code>
           )}
         </pre>
         {!isExpanded && isLongContent && (
-          <div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-[#0a0a0a] to-transparent pointer-events-none opacity-50" />
+          <div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-editor to-transparent pointer-events-none opacity-50" />
         )}
       </div>
     </div>
@@ -326,13 +348,11 @@ interface ToolItemProps {
 }
 
 const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
-  // Auto-expand for running tools OR file operations with content
+  // Auto-expand for running tools only
   const isFileModifyTool = ['file_create', 'file_write', 'file_patch'].includes(tool.name);
-  const hasFileContent = isFileModifyTool && !!(tool.args?.content || tool.args?.newContent);
   const [isOpen, setIsOpen] = useState(
     tool.status === 'executing' ||
-    tool.status === 'pending' ||
-    hasFileContent
+    tool.status === 'pending'
   );
   const prevStatusRef = useRef(tool.status);
 
@@ -341,17 +361,15 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
 
   useEffect(() => {
     if (prevStatusRef.current !== tool.status) {
-      // Don't collapse file operation cards that have content - keep content visible
-      const shouldKeepOpen = isFileModifyTool && !!(tool.args?.content || tool.args?.newContent);
-
-      if (['complete', 'failed', 'rejected'].includes(tool.status) && !shouldKeepOpen) {
+      // Close dropdown when tool completes (any tool, including file operations)
+      if (['complete', 'failed', 'rejected'].includes(tool.status)) {
         setIsOpen(false);
       } else if (['executing', 'pending'].includes(tool.status)) {
         setIsOpen(true);
       }
       prevStatusRef.current = tool.status;
     }
-  }, [tool.status, tool.name, tool.args?.content, isFileModifyTool]);
+  }, [tool.status]);
 
   const filePath = tool.args?.path as string;
   const fileName = filePath ? filePath.split(/[/\\]/).pop() || filePath : '';
@@ -374,6 +392,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
       'workspace_info', 'workspace_tree',
       'shell_execute', 'shell_spawn', 'shell_kill',
       'grep', 'multi_file_read',
+      'todo_write',
     ];
 
     let isFileChangePending = false;
@@ -471,11 +490,20 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
         else if (tool.name === 'file_exists' && parsed.success === true) {
           msg = parsed.exists ? 'File exists' : 'File does not exist';
         }
-        // 8. FALLBACK - Only show raw JSON for unknown tools
+        // 8. todo_write - show summary counts only
+        else if (tool.name === 'todo_write' && parsed.success === true && parsed.summary) {
+          const { total, pending, in_progress, completed } = parsed.summary;
+          const parts = [];
+          if (completed > 0) parts.push(`${completed} completed`);
+          if (in_progress > 0) parts.push(`${in_progress} in progress`);
+          if (pending > 0) parts.push(`${pending} pending`);
+          msg = `${total} task${total !== 1 ? 's' : ''}: ${parts.join(', ') || 'none'}`;
+        }
+        // 9. FALLBACK - Only show raw JSON for unknown tools
         else if (!simpleMessageTools.includes(tool.name)) {
           raw = parsed;
         }
-        // 9. For known tools without message, just show success
+        // 10. For known tools without message, just show success
         else if (parsed.success === true) {
           msg = 'Completed successfully';
         }
@@ -503,7 +531,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
         <div
           className={cn(
             "absolute top-0 bottom-0 w-px transition-colors duration-300",
-            isLast ? "bg-transparent h-4" : "bg-white/10 group-hover:bg-white/15"
+            isLast ? "bg-transparent h-4" : "bg-border/30 group-hover:bg-border/50"
           )}
         />
 
@@ -512,10 +540,10 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
           className={cn(
             "relative z-10 flex h-5 w-5 items-center justify-center rounded-full ring-2 shadow-sm mt-3 backdrop-blur-md transition-all duration-300",
             isRunning
-              ? "bg-[#111111] ring-blue-500/50 text-blue-400 scale-110"
+              ? "bg-sidebar ring-blue-500/50 text-blue-400 scale-110"
               : isError
-                ? "bg-[#111111] ring-red-500/50 text-red-400"
-                : "bg-[#111111] ring-white/10 text-emerald-400 group-hover:ring-emerald-500/30"
+                ? "bg-sidebar ring-red-500/50 text-red-400"
+                : "bg-sidebar ring-border text-success group-hover:ring-success/30"
           )}
         >
           {isRunning ? <Loader2 size={10} className="animate-spin" /> :
@@ -528,10 +556,10 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
       <div className="min-w-0 flex-1 pb-4 pt-1">
         <div
           className={cn(
-            "overflow-hidden rounded-lg border bg-[#151515]/50 backdrop-blur-sm transition-all duration-200",
+            "overflow-hidden rounded-lg border bg-input/50 backdrop-blur-sm transition-all duration-200",
             isOpen
-              ? "border-white/10 shadow-lg shadow-black/20 ring-1 ring-white/5"
-              : "border-white/5 hover:bg-white/[0.04] hover:border-white/10"
+              ? "border-border shadow-lg shadow-black/5 ring-1 ring-border"
+              : "border-transparent hover:bg-input hover:border-border/50"
           )}
         >
           {/* Header */}
@@ -544,7 +572,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                 {tool.name}
               </ShimmerText>
             ) : (
-              <span className="text-xs font-semibold tracking-tight text-zinc-300">
+              <span className="text-xs font-semibold tracking-tight text-text-secondary">
                 {tool.name}
               </span>
             )}
@@ -555,8 +583,8 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
               const isFolderOperation = ['folder_create', 'folder_delete', 'workspace_tree'].includes(tool.name);
 
               return (
-                <div className="flex min-w-0 items-center gap-1.5 overflow-hidden text-[11px] text-zinc-300">
-                  <ArrowRight size={10} className="text-zinc-600 flex-shrink-0" />
+                <div className="flex min-w-0 items-center gap-1.5 overflow-hidden text-[11px] text-text-primary">
+                  <ArrowRight size={10} className="text-text-disabled flex-shrink-0" />
                   {isFolderOperation ? (
                     <Folder size={16} className="text-blue-400/80 fill-blue-400/10 flex-shrink-0" />
                   ) : (
@@ -585,7 +613,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
               </span>
               <ChevronRight
                 size={14}
-                className={cn("text-zinc-600 transition-transform duration-200", isOpen && "rotate-90")}
+                className={cn("text-text-disabled transition-transform duration-200", isOpen && "rotate-90")}
               />
             </div>
           </button>
@@ -598,7 +626,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
             )}
           >
             <div className="overflow-hidden">
-              <div className="border-t border-white/5 bg-black/20 px-3 py-3 space-y-3">
+              <div className="border-t border-border bg-input/30 px-3 py-3 space-y-3">
 
                 {/* Arguments (Cleaned) - Hide raw/content/newContent for file operations */}
                 {Object.keys(tool.args || {}).filter(k =>
@@ -610,10 +638,10 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                         .map(([key, value]) => (
                           <div
                             key={key}
-                            className="flex items-center gap-1.5 rounded bg-white/5 px-2 py-1 text-[10px] border border-white/5 hover:border-white/10 transition-colors"
+                            className="flex items-center gap-1.5 rounded bg-input px-2 py-1 text-[10px] border border-border hover:border-border/80 transition-colors"
                           >
-                            <span className="text-zinc-500">{key}</span>
-                            <span className="text-zinc-300 font-mono">
+                            <span className="text-text-secondary">{key}</span>
+                            <span className="text-text-primary font-mono">
                               {String(value).length > 40 ? `${String(value).slice(0, 40)}…` : String(value)}
                             </span>
                           </div>

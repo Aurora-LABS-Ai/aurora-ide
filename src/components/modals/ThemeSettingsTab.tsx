@@ -1,0 +1,286 @@
+/**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
+ * 
+ * Use theme tokens via CSS variables:
+ *   - CSS: var(--aurora-{category}-{token})
+ *   - Tailwind: bg-[var(--aurora-editor-background)]
+ *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ * See: src/types/theme.ts for TypeScript interfaces
+ * See: src/services/theme-service.ts for theme utilities
+ */
+
+import React, { useRef } from 'react';
+import { useThemeStore } from '../../store/useThemeStore';
+import type { ThemeDefinition } from '../../types/theme';
+import { Check, Upload, Trash2 } from 'lucide-react';
+import { clsx } from 'clsx';
+import { open } from '@tauri-apps/plugin-dialog';
+import { readTextFile } from '@tauri-apps/plugin-fs';
+import { isTauri } from '../../lib/tauri';
+import { useThemeImportDrag } from '../../hooks/useThemeImportDrag';
+
+export const ThemeSettingsTab: React.FC = () => {
+    const {
+        themes,
+        activeThemeId,
+        setActiveTheme,
+        importTheme,
+        deleteTheme,
+        isLoading,
+        error
+    } = useThemeStore();
+
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const handleImportClick = async () => {
+        if (isTauri()) {
+            try {
+                const selected = await open({
+                    multiple: false,
+                    filters: [{
+                        name: 'Theme Definitions',
+                        extensions: ['json']
+                    }]
+                });
+
+                if (selected && typeof selected === 'string') {
+                    const content = await readTextFile(selected);
+                    await processThemeImport(content);
+                }
+            } catch (err) {
+                console.error('Failed to import theme:', err);
+            }
+        } else {
+            fileInputRef.current?.click();
+        }
+    };
+
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+            const content = event.target?.result as string;
+            if (content) {
+                await processThemeImport(content);
+            }
+        };
+        reader.readAsText(file);
+        // Reset value to allow same file selection again
+        e.target.value = '';
+    };
+
+    const processThemeImport = async (content: string) => {
+        try {
+            const json = JSON.parse(content);
+            await importTheme(json);
+        } catch (err) {
+            console.error('Invalid theme file:', err);
+            // Ideally show a toast or error message in UI
+        }
+    };
+
+    const { isDragging: isTauriDragging } = useThemeImportDrag();
+    const [isInternalDragging, setIsInternalDragging] = React.useState(false);
+
+    // Combine dragging states
+    const isDragging = isTauriDragging || isInternalDragging;
+
+    const handleDragOver = (e: React.DragEvent) => {
+        // Always prevent default behavior first
+        e.preventDefault();
+        e.stopPropagation();
+
+        // In Tauri, let the native hook handle it completely
+        if (isTauri()) return;
+
+        setIsInternalDragging(true);
+    };
+
+    const handleDragLeave = (e: React.DragEvent) => {
+        // Always prevent default behavior first
+        e.preventDefault();
+        e.stopPropagation();
+
+        // In Tauri, let the native hook handle it completely
+        if (isTauri()) return;
+
+        setIsInternalDragging(false);
+    };
+
+    const handleDrop = async (e: React.DragEvent) => {
+        // Always prevent default behavior first
+        e.preventDefault();
+        e.stopPropagation();
+
+        // In Tauri, let the native hook handle it completely
+        if (isTauri()) {
+            setIsInternalDragging(false);
+            return;
+        }
+
+        setIsInternalDragging(false);
+
+        const file = e.dataTransfer.files[0];
+        if (!file || !file.name.endsWith('.json')) {
+            console.error('Please drop a valid .json theme file');
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+            const content = event.target?.result as string;
+            if (content) {
+                await processThemeImport(content);
+            }
+        };
+        reader.readAsText(file);
+    };
+
+    if (isLoading && themes.length === 0) {
+        return <div className="p-4 text-xs text-text-secondary">Loading themes...</div>;
+    }
+
+    return (
+        <div
+            className="h-full flex flex-col relative overflow-hidden"
+            data-theme-drop-zone="true"
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+        >
+            {isDragging && (
+                <div className="absolute inset-0 z-50 bg-primary/10 border-2 border-dashed border-primary rounded-lg flex items-center justify-center backdrop-blur-sm transition-all pointer-events-none">
+                    <div className="flex flex-col items-center gap-2 text-primary font-medium animate-bounce">
+                        <Upload size={24} />
+                        <span>Drop JSON theme to import</span>
+                    </div>
+                </div>
+            )}
+
+            {/* Header Section - Fixed */}
+            <div className="flex-none space-y-4 pb-4">
+                <div className="flex items-center justify-between">
+                    <div className="text-xs text-text-secondary">
+                        Customize the IDE appearance. Select a theme or drag & drop a JSON file.
+                    </div>
+                    <div>
+                        <input
+                            type="file"
+                            ref={fileInputRef}
+                            onChange={handleFileChange}
+                            accept=".json"
+                            className="hidden"
+                        />
+                        <button
+                            onClick={handleImportClick}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors"
+                        >
+                            <Upload size={12} />
+                            Import Theme
+                        </button>
+                    </div>
+                </div>
+
+                {error && (
+                    <div className="p-3 rounded bg-danger/10 border border-danger/20 text-danger text-xs">
+                        {error}
+                    </div>
+                )}
+            </div>
+
+            {/* Scrollable Grid Section */}
+            <div className="flex-1 overflow-y-auto min-h-0 pr-2 -mr-2">
+                <div className="grid grid-cols-2 gap-3 pb-24">
+                    {themes.map((theme) => (
+                        <ThemeCard
+                            key={theme.id}
+                            theme={theme}
+                            isActive={theme.id === activeThemeId}
+                            onSelect={() => setActiveTheme(theme.id)}
+                            onDelete={theme.isBuiltIn ? undefined : () => deleteTheme(theme.id)}
+                        />
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+interface ThemeCardProps {
+    theme: ThemeDefinition;
+    isActive: boolean;
+    onSelect: () => void;
+    onDelete?: () => void;
+}
+
+const ThemeCard: React.FC<ThemeCardProps> = ({ theme, isActive, onSelect, onDelete }) => {
+    // Extract key colors for preview
+    const bg = theme.colors.editor.background;
+    const fg = theme.colors.editor.foreground;
+    const sidebar = theme.colors.sidebar.background;
+    const activity = theme.colors.sidebar.itemActive;
+
+    return (
+        <div
+            onClick={onSelect}
+            className={clsx(
+                "group relative p-3 rounded-lg border cursor-pointer transition-all",
+                isActive
+                    ? "bg-input/50 border-primary ring-1 ring-primary"
+                    : "bg-input/20 border-border hover:border-primary/50 hover:bg-input/40"
+            )}
+        >
+            <div className="flex justify-between items-start mb-2">
+                <div>
+                    <div className="text-sm font-medium text-text-primary flex items-center gap-1.5">
+                        {theme.name}
+                        {isActive && <Check size={12} className="text-primary" />}
+                    </div>
+                    <div className="text-[10px] text-text-secondary">by {theme.author}</div>
+                </div>
+                {onDelete && (
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onDelete();
+                        }}
+                        className="p-1.5 rounded opacity-0 group-hover:opacity-100 hover:bg-danger/10 text-text-disabled hover:text-danger transition-all"
+                        title="Delete theme"
+                    >
+                        <Trash2 size={12} />
+                    </button>
+                )}
+            </div>
+
+            {/* Preview */}
+            <div className="h-16 w-full rounded border border-border overflow-hidden flex shadow-sm">
+                {/* Sidebar strip */}
+                <div style={{ backgroundColor: sidebar }} className="w-8 flex flex-col items-center py-2 gap-1.5">
+                    <div className="w-4 h-4 rounded-sm" style={{ backgroundColor: activity }}></div>
+                    <div className="w-4 h-4 rounded-sm opacity-20 bg-white"></div>
+                </div>
+                {/* Editor area */}
+                <div style={{ backgroundColor: bg, color: fg }} className="flex-1 p-2 text-[8px] font-mono leading-tight">
+                    <div style={{ color: theme.colors.editor.lineNumbers }} className="mb-1">1  <span style={{ color: theme.colors.common.primary }}>import</span> React;</div>
+                    <div>2</div>
+                    <div>3  <span style={{ color: theme.colors.common.success }}>const</span> <span style={{ color: theme.colors.common.warning }}>App</span> = () =&gt; {'{'}</div>
+                    <div>4    <span style={{ color: theme.colors.common.primary }}>return</span> &lt;div/&gt;;</div>
+                    <div>5  {'}'}</div>
+                </div>
+            </div>
+        </div>
+    );
+};

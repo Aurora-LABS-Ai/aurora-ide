@@ -83,3 +83,6 @@ export interface AppSettings {
   fontSize: number;
   theme: 'dark' | 'light';
 }
+
+// Re-export theme types
+export * from './theme';

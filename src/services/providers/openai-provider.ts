@@ -179,8 +179,9 @@ export class OpenAIProvider extends BaseProvider {
       body.tools = request.tools;
       body.tool_choice = 'auto';
 
-      // Apply provider-specific tool params from preset
-      if (this.preset.defaultParams?.tool_stream) {
+      // GLM: tool_stream enables streaming for tool calls
+      // Supported by GLM-4.6+ (including GLM-4.7)
+      if (this.preset.id === 'glm') {
         body.tool_stream = true;
       }
     }
@@ -266,6 +267,9 @@ export class OpenAIProvider extends BaseProvider {
     let content = '';
     let reasoningContent = '';
     const toolCalls: Map<number, ToolCallRequest> = new Map();
+    
+    // Buffer for incomplete SSE lines that span multiple chunks
+    let sseBuffer = '';
 
     try {
       callbacks.onStart?.();
@@ -275,11 +279,26 @@ export class OpenAIProvider extends BaseProvider {
         const chunk = event.payload;
         if (chunk.done) return;
 
-        // Process SSE data
-        const lines = chunk.data.split('\n');
+        // Append to buffer and process complete lines
+        sseBuffer += chunk.data;
+        
+        // Split by newlines but keep track of incomplete last line
+        const lines = sseBuffer.split('\n');
+        
+        // Keep the last element in buffer if it doesn't end with newline
+        // (it might be an incomplete line)
+        if (!chunk.data.endsWith('\n')) {
+          sseBuffer = lines.pop() || '';
+        } else {
+          sseBuffer = '';
+        }
+        
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6).trim();
+          const trimmedLine = line.trim();
+          if (!trimmedLine) continue;
+          
+          if (trimmedLine.startsWith('data: ')) {
+            const data = trimmedLine.slice(6).trim();
             if (data === '[DONE]') return;
 
             try {
@@ -385,9 +404,19 @@ export class OpenAIProvider extends BaseProvider {
       return result;
 
     } catch (error) {
+      // Handle various cancellation error formats
       if (error instanceof Error && error.name === 'AbortError') {
         throw new Error('Request cancelled');
       }
+      
+      // Handle Tauri cancellation error: {type: 'cancelation', msg: 'operation is manually canceled'}
+      if (typeof error === 'object' && error !== null && 'type' in error) {
+        const tauriError = error as { type: string; msg?: string };
+        if (tauriError.type === 'cancelation') {
+          throw new Error('Request cancelled');
+        }
+      }
+      
       callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
       throw error;
     }

@@ -1,0 +1,380 @@
+# Aurora Agent - Observed Context Documentation
+
+## User Query
+```
+what is the project map u get with my this message what xml data u see please write aurora-agent-saw.md exact format u see with this my message all metada data including
+```
+
+---
+
+## User Info (OS/Environment)
+- **OS Version:** Windows
+- **Workspace Path:** `E:\VOID-EDITOR\Testing-Aurora-Agent\aurora-doc`
+
+---
+
+## Project Layout (Directory Tree)
+
+```
+E:\VOID-EDITOR\Testing-Aurora-Agent\aurora-doc/
+  - .next/
+    - build/
+      - chunks/
+        - [root-of-the-server]__51225daf._.js
+        - [root-of-the-server]__51225daf._.js.map
+        - [root-of-the-server]__974941ed._.js
+        - [root-of-the-server]__974941ed._.js.map
+        - [turbopack-node]_transforms_postcss_ts_6920245c._.js
+        - [turbopack-node]_transforms_postcss_ts_6920245c._.js.map
+        - [turbopack]_runtime.js
+        - [turbopack]_runtime.js.map
+        - node_modules__pnpm_56ec7204._.js
+        - node_modules__pnpm_56ec7204._.js.map
+      - package.json
+      - postcss.js
+      - postcss.js.map
+    - cache/
+      - swc/
+        - plugins/
+          - windows_x86_64_23.0.0/
+      - webpack/
+        - client-production/
+          - 0.pack
+          - 1.pack
+          - 2.pack
+          - 3.pack
+          - 4.pack
+          - index.pack
+          - index.pack.old
+        - edge-server-production/
+          - 0.pack
+          - index.pack
+          - index.pack.old
+        - server-production/
+          - 0.pack
+          - 1.pack
+          - 2.pack
+          - index.pack
+          - index.pack.old
+      - .previewinfo
+      - .rscinfo
+      - .tsbuildinfo
+    - diagnostics/
+      - build-diagnostics.json
+      - framework.json
+    - server/
+      - app/
+        - _global-error/
+          - page/
+            - app-paths-manifest.json
+            - build-manifest.json
+            - next-font-manifest.json
+            - react-loadable-manifest.json
+            - server-reference-manifest.json
+          - page_client-reference-manifest.js
+          - page.js
+          - page.js.map
+          - page.js.nft.json
+        - _not-found/
+          - page/
+            - app-paths-manifest.json
+            - build-manifest.json
+            - next-font-manifest.json
+            - react-loadable-manifest.json
+            - server-reference-manifest.json
+          - page_client-reference-manifest.js
+          - page.js
+          - page.js.map
+          - page.js.nft.json
+        - docs/
+          - ai-capabilities/
+            - page/
+            - page_client-reference-manifest.js
+            - page.js
+            - page.js.map
+            - page.js.nft.json
+          - configuration/
+            - page/
+            - page_client-reference-manifest.js
+            - page.js
+            - page.js.map
+            - page.js.nft.json
+          - extensions/
+            - page/
+            - page_client-reference-manifest.js
+            - page.js
+            - page.js.map
+            - page.js.nft.json
+          - features/
+            - page/
+            - page_client-reference-manifest.js
+            - page.js
+            - page.js.map
+            - page.js.nft.json
+          - getting-started/
+            - page/
+            - page_client-reference-manifest.js
+            - page.js
+            - page.js.map
+            - page.js.nft.json
+          - installation/
+            - page/
+            - page_client-reference-manifest.js
+            - page.js
+            - page.js.map
+            - page.js.nft.json
+          - shortcuts/
+            - page/
+            - page_client-reference-manifest.js
+            - page.js
+            - page.js.map
+            - page.js.nft.json
+          - themes/
+            - page/
+            - page_client-reference-manifest.js
+            - page.js
+            - page.js.map
+            - page.js.nft.json
+          - troubleshooting/
+            - page/
+            - page_client-reference-manifest.js
+            - page.js
+            - page.js.map
+            - page.js.nft.json
+        - favicon.ico/
+          - route/
+            - app-paths-manifest.json
+            - build-manifest.json
+          - route.js
+          - route.js.map
+          - route.js.nft.json
+        - page/
+          - app-paths-manifest.json
+          - build-manifest.json
+          - next-font-manifest.json
+          - react-loadable-manifest.json
+          - server-reference-manifest.json
+        - page_client-reference-manifest.js
+        - page.js
+        - page.js.map
+        - page.js.nft.json
+      - chunks/
+        - ssr/
+          - _04de1feb._.js
+          - _04de1feb._.js.map
+          - _11643dac._.js
+          - _11643dac._.js.map
+          - _3c6a53d3._.js
+          - _3c6a53d3._.js.map
+          - _73819c6e._.js
+          - _73819c6e._.js.map
+          - _8ce7a3a5._.js
+          - _8ce7a3a5._.js.map
+          - _924596dc._.js
+          - _924596dc._.js.map
+          - _9cf03d9c._.js
+          - _9cf03d9c._.js.map
+          - _a056fe54._.js
+          - _a056fe54._.js.map
+          - _aa3d85ee._.js
+          - _aa3d85ee._.js.map
+          - _ab53f5ac._.js
+          - _ab53f5ac._.js.map
+          - _b06aa193._.js
+          - _b06aa193._.js.map
+          - _d0c8b8c7._.js
+          - _d0c8b8c7._.js.map
+          - _next-internal_server_app__global-error_page_actions_75761787.js
+          - _next-internal_server_app__global-error_page_actions_75761787.js.map
+          - _next-internal_server_app__not-found_page_actions_554ec2bf.js
+          - _next-internal_server_app__not-found_page_actions_554ec2bf.js.map
+          - _next-internal_server_app_docs_ai-capabilities_page_actions_c847c8f1.js
+          - _next-internal_server_app_docs_ai-capabilities_page_actions_c847c8f1.js.map
+          - _next-internal_server_app_docs_configuration_page_actions_31cdee15.js
+          - _next-internal_server_app_docs_configuration_page_actions_31cdee15.js.map
+          - _next-internal_server_app_docs_extensions_page_actions_133bec14.js
+          - _next-internal_server_app_docs_extensions_page_actions_133bec14.js.map
+          - _next-internal_server_app_docs_features_page_actions_ec2341ae.js
+          - _next-internal_server_app_docs_features_page_actions_ec2341ae.js.map
+          - _next-internal_server_app_docs_getting-started_page_actions_df8b0649.js
+          - _next-internal_server_app_docs_getting-started_page_actions_df8b0649.js.map
+          - _next-internal_server_app_docs_installation_page_actions_a03676b8.js
+          - _next-internal_server_app_docs_installation_page_actions_a03676b8.js.map
+          - _next-internal_server_app_docs_shortcuts_page_actions_fe55dc07.js
+          - _next-internal_server_app_docs_shortcuts_page_actions_fe55dc07.js.map
+          - _next-internal_server_app_docs_themes_page_actions_78864367.js
+          - _next-internal_server_app_docs_themes_page_actions_78864367.js.map
+          - _next-internal_server_app_docs_troubleshooting_page_actions_095c5457.js
+          - _next-internal_server_app_docs_troubleshooting_page_actions_095c5457.js.map
+          - _next-internal_server_app_page_actions_39d4fc33.js
+          - _next-internal_server_app_page_actions_39d4fc33.js.map
+          - [root-of-the-server]__08dd2a46._.js
+          - [root-of-the-server]__08dd2a46._.js.map
+          - [root-of-the-server]__1a61c556._.js
+          - [root-of-the-server]__1a61c556._.js.map
+          - [root-of-the-server]__1aa723aa._.js
+          - [root-of-the-server]__1aa723aa._.js.map
+          - [root-of-the-server]__1cd4e29f._.js
+          - [root-of-the-server]__1cd4e29f._.js.map
+          - [root-of-the-server]__2130834e._.js
+          - [root-of-the-server]__2130834e._.js.map
+          - [root-of-the-server]__24c11722._.js
+          - [root-of-the-server]__24c11722._.js.map
+          - [root-of-the-server]__528b29a6._.js
+          - [root-of-the-server]__528b29a6._.js.map
+          - [root-of-the-server]__58920e0e._.js
+          - [root-of-the-server]__58920e0e._.js.map
+          - [root-of-the-server]__59b421eb._.js
+          - [root-of-the-server]__59b421eb._.js.map
+          - [root-of-the-server]__799e9679._.js
+          - [root-of-the-server]__799e9679._.js.map
+          - [root-of-the-server]__8023723c._.js
+          - [root-of-the-server]__8023723c._.js.map
+          - [root-of-the-server]__9087c883._.js
+          - [root-of-the-server]__9087c883._.js.map
+          - [root-of-the-server]__9f2efac3._.js
+          - [root-of-the-server]__9f2efac3._.js.map
+          - [root-of-the-server]__a58eb9ad._.js
+          - [root-of-the-server]__a58eb9ad._.js.map
+          - [root-of-the-server]__abada575._.js
+          - [root-of-the-server]__abada575._.js.map
+          - [root-of-the-server]__b12293ed._.js
+          - [root-of-the-server]__b12293ed._.js.map
+          - [root-of-the-server]__ca76ddf3._.js
+          - [root-of-the-server]__ca76ddf3._.js.map
+          - [root-of-the-server]__d3a3c627._.js
+          - [root-of-the-server]__d3a3c627._.js.map
+          - [root-of-the-server]__dc602146._.js
+          - [root-of-the-server]__dc602146._.js.map
+          - [root-of-the-server]__e885c5bf._.js
+          - [root-of-the-server]__e885c5bf._.js.map
+          - [root-of-the-server]__fcb54d77._.js
+          - [root-of-the-server]__fcb54d77._.js.map
+          - [turbopack]_runtime.js
+          - [turbopack]_runtime.js.map
+          - app_8875a060._.js
+          - app_8875a060._.js.map
+          - app_b9b1292a._.js
+          - app_b9b1292a._.js.map
+          - app_docs_troubleshooting_page_tsx_afd5ce48._.js
+          - app_docs_troubleshooting_page_tsx_afd5ce48._.js.map
+          - befc6_next_dist_368dfbe8._.js
+          - befc6_next_dist_368dfbe8._.js.map
+          - befc6_next_dist_8c6bf906._.js
+          - befc6_next_dist_8c6bf906._.js.map
+          - befc6_next_dist_client_components_5b2a9293._.js
+          - befc6_next_dist_client_components_5b2a9293._.js.map
+          - befc6_next_dist_client_components_builtin_forbidden_b20cc064.js
+          - befc6_next_dist_client_components_builtin_forbidden_b20cc064.js.map
+          - befc6_next_dist_client_components_builtin_global-error_605dae01.js
+          - befc6_next_dist_client_components_builtin_global-error_605dae01.js.map
+          - befc6_next_dist_client_components_builtin_unauthorized_fbc14180.js
+          - befc6_next_dist_client_components_builtin_unauthorized_fbc14180.js.map
+          - befc6_next_dist_efa64595._.js
+          - befc6_next_dist_efa64595._.js.map
+          - befc6_next_dist_esm_build_templates_app-page_728db6eb.js
+          - befc6_next_dist_esm_build_templates_app-page_728db6eb.js.map
+          - node_modules__pnpm_34fb181c._.js
+          - node_modules__pnpm_34fb181c._.js.map
+        - _next-internal_server_app_favicon_ico_route_actions_353150a5.js
+        - _next-internal_server_app_favicon_ico_route_actions_353150a5.js.map
+        - [externals]_next_dist_a6d89067._.js
+        - [externals]_next_dist_a6d89067._.js.map
+        - [root-of-the-server]__0a25682f._.js
+        - [root-of-the-server]__0a25682f._.js.map
+        - [turbopack]_runtime.js
+        - [turbopack]_runtime.js.map
+    - static/
+      - chunks/
+        - 0643d3236db19a80.js
+        - 41d36fb5b4c4261e.js
+        - 66ff6123d568c1da.js
+        - 69f627244b314df9.js
+        - 6dfe25c120b4d993.js
+        - 81e060414948b02f.js
+        - a6dad97d9634a72d.js
+        - a6dad97d9634a72d.js.map
+        - c5430419874bfa36.css
+        - f3c250d3bbdcaf74.js
+        - ff05a8402eeaeab6.js
+        - turbopack-7b45b9cece1b066b.js
+      - hn5eNMlf-wtMab-uwRyjy/
+      - media/
+        - 4fa387ec64143e14-s.c1fdd6c2.woff2
+        - 7178b3e590c64307-s.b97b3418.woff2
+        - 797e433ab948586e-s.p.dbea232f.woff2
+        - 8a480f0b521d4e75-s.8e0177b5.woff2
+        - bbc41e54d2fcbd21-s.799d8ef8.woff2
+        - caa3a2e1cccd8315-s.p.853070df.woff2
+        - favicon.0b3bf435.ico
+    - types/
+      - routes.d.ts
+      - validator.ts
+    - next-minimal-server.js.nft.json
+    - next-server.js.nft.json
+    - package.json
+    - trace
+    - trace-build
+    - turbopack
+  - app/
+    - components/
+      - Navbar.tsx
+      - Sidebar.tsx
+    - favicon.ico
+    - globals.css
+    - layout.tsx
+    - page.tsx
+  - public/
+    - file.svg
+    - globe.svg
+    - next.svg
+    - vercel.svg
+    - window.svg
+  - .gitignore
+  - eslint.config.mjs
+  - next-env.d.ts
+  - next.config.ts
+  - package.json
+  - pnpm-lock.yaml
+  - postcss.config.mjs
+  - README.md
+  - tsconfig.json
+```
+
+---
+
+## Project Type Analysis
+
+- **Framework:** Next.js (Turbopack enabled)
+- **Build Tool:** Turbopack
+- **Package Manager:** pnpm
+- **Language:** TypeScript
+- **Styling:** PostCSS (Tailwind CSS likely via globals.css)
+- **Platform:** Windows
+
+---
+
+## Documentation Pages Detected (Next.js App Router)
+
+- `/docs/ai-capabilities`
+- `/docs/configuration`
+- `/docs/extensions`
+- `/docs/features`
+- `/docs/getting-started`
+- `/docs/installation`
+- `/docs/shortcuts`
+- `/docs/themes`
+- `/docs/troubleshooting`
+
+---
+
+## Key Build Artifacts
+
+- **.next/cache/** - SWC compiler cache, Webpack cache
+- **.next/server/** - Server-side rendering chunks
+- **.next/static/** - Static assets (JS, CSS, fonts)
+- **app/** - Source code directory
+
+---
+
+*Generated by Aurora Agent - Documentation of observed context*

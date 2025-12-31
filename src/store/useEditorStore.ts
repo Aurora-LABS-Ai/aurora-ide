@@ -53,8 +53,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     };
 
     set({ tabs: [...tabs, newTab], activeTabId: fileId });
-    // Auto-save workspace state
-    get().saveWorkspace();
+    // NO saveWorkspace() here - save only on window close
   },
 
   closeTab: (tabId) => {
@@ -67,14 +66,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }
 
     set({ tabs: newTabs, activeTabId: newActiveId });
-    // Auto-save workspace state
-    get().saveWorkspace();
+    // NO saveWorkspace() here - save only on window close
   },
 
   setActiveTab: (tabId) => {
     set({ activeTabId: tabId });
-    // Auto-save workspace state
-    get().saveWorkspace();
+    // NO saveWorkspace() here - save only on window close
   },
 
   updateTabContent: (tabId, content) => set(state => ({
@@ -86,13 +83,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   })),
 
   // Reload content from external source (e.g., fs watcher) - doesn't mark dirty
-  reloadTabContent: (tabId, content) => set(state => ({
-    tabs: state.tabs.map(tab =>
-      tab.id === tabId
-        ? { ...tab, content, isDirty: false }
-        : tab
-    )
-  })),
+  reloadTabContent: (tabId, content) => {
+    return set(state => ({
+      tabs: state.tabs.map(tab =>
+        tab.id === tabId
+          ? { ...tab, content, isDirty: false }
+          : tab
+      )
+    }));
+  },
 
   setFontSize: (fontSize) => set({ fontSize }),
 
@@ -118,7 +117,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           t.id === tabId ? { ...t, isDirty: false } : t
         ),
       }));
-      get().saveWorkspace();
+      // NO saveWorkspace() here - save only on window close
     } catch (error) {
       console.error('Failed to save file:', error);
     }
@@ -126,15 +125,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setWorkspacePath: (path) => {
     currentWorkspacePath = path;
-    // Save workspace state immediately when path changes
-    get().saveWorkspace();
+    // NO saveWorkspace() here - save only on window close
   },
 
   setPanelSizes: (sizes) => {
     currentPanelSizes = sizes;
   },
 
-  // Restore workspace state from database
+  // Restore workspace state from database (called once on load)
   restoreWorkspace: async () => {
     try {
       const state = await databaseService.getWorkspaceState();
@@ -192,7 +190,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }
   },
 
-  // Save workspace state to database
+  // Save workspace state to database (called ONLY on window close)
   saveWorkspace: async () => {
     try {
       const { tabs, activeTabId } = get();

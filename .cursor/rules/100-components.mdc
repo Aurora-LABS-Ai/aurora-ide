@@ -1,85 +1,141 @@
 ***
-description: Rules for React+TS components, layouts, and hooks
+description: Rules for React+TS components, layouts, hooks, and UI patterns in Aurora
 globs: ["src/**/*.tsx", "src/**/*.ts"]
 ***
 
 # Components & Hooks
 
 ## Overview
-Applies to React components, hooks, and supporting TypeScript modules. Emphasizes separated files per concern, Tailwind styling, and documentation sync.
+Applies to React components, hooks, and supporting TypeScript modules. Emphasizes enterprise-grade patterns, provider system integration, and professional UI architecture with per-provider settings.
 
 ## Technology Stack
-- React 18, hooks-only components
-- Zustand for shared state
-- TailwindCSS utilities + custom palette
-- Monaco editor integrations, Lucide icons, react-resizable-panels
+- React 18.3.1, hooks-only components with TypeScript 5.9.3
+- Zustand 5.0.9 for shared state with SQLite persistence
+- Tailwind CSS 3.4.17 utilities + custom dark palette
+- Monaco Editor 4.7.0 integrations, Lucide React icons
+- react-resizable-panels for layout management
+- XTerm.js 6.0.0 for terminal integration
 
 ## Code Standards
 
 ### Pre-change Checklist
-1. Confirm whether a new file/module is warranted instead of stuffing logic into existing components.
-2. Identify which store/service owns the state; update that owner before touching the UI.
-3. Check related docs (`DOCS/01-ARCHITECTURE.md`, `DOCS/02-CODE-STYLE-PATTERNS.md`) for guidance and plan doc updates.
+1. **Provider Integration:** Confirm per-provider settings (no global overrides)
+2. **State Ownership:** Identify which store/service owns the state; update that owner before touching UI
+3. **Enterprise Features:** Consider context management, tool approvals, window sync
+4. **Documentation:** Update relevant DOCS files for architecture/workflow changes
 
 ### Naming Conventions
-- Components: `PascalCase` exported constants.
-- Hooks: `useThing.ts` + `export const useThing = () => {}`.
-- Props interfaces: `ComponentNameProps` defined at top of file.
-- Zustand selectors: `const value = useStore((s) => s.value)`.
+- **Components:** `PascalCase` exported constants
+- **Hooks:** `useThing.ts` + `export const useThing = () => {}`
+- **Props interfaces:** `ComponentNameProps` defined at top of file
+- **Zustand selectors:** `const value = useStore((s) => s.value)` for performance
+- **Event handlers:** `handleEventName` pattern
 
 ### Code Structure
-- Extract subcomponents when JSX blocks exceed ~100 lines.
-- Use domain folders (`components/chat`, `components/editor`) to colocate logic.
-- Keep hook files focused (one responsibility). If a hook touches multiple systems, split.
-- Styling via Tailwind classes; extend `tailwind.config.js` for new tokens.
+- **Extract subcomponents** when JSX blocks exceed ~100 lines
+- **Domain folders** (`components/chat`, `components/editor`) to colocate logic
+- **Hook files focused** on one responsibility; split if touching multiple systems
+- **Styling via Tailwind classes**; extend `tailwind.config.js` for new tokens
+- **Context builders** for AI assistance (Cursor-style IDE context gathering)
 
 ### Essential Patterns
 ```tsx
-const ChatPanel: React.FC = () => {
-  const { isLoading } = useChatStore();
-  useEffect(() => { initExecutors(); }, []);
+// Provider-aware component with per-provider settings
+const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
+  const { getLLMConfig } = useSettingsStore();
+  const config = getLLMConfig();
+
+  // Provider-specific features
+  const supportsThinking = config?.supportsThinking ?? false;
+  const contextWindow = config?.contextWindow ?? 128000;
+
+  useEffect(() => {
+    initExecutors(); // Tool system initialization
+  }, []);
+
   return (
-    <div className="flex flex-col bg-sidebar">
+    <div className="flex flex-col bg-sidebar h-full">
       <ChatHeader />
       <ChatHistory />
-      <ChatInput />
+      <ChatInput supportsThinking={supportsThinking} />
     </div>
   );
 };
 ```
 
+```tsx
+// Enterprise tool approval workflow
+const handleToolExecution = async (toolCall: ToolCall) => {
+  const approvalMode = getToolApproval(toolCall.name);
+
+  if (approvalMode === 'deny') {
+    // Auto-deny with explanation
+    return { role: 'tool', content: 'Tool execution denied by user settings' };
+  }
+
+  if (approvalMode === 'auto') {
+    // Auto-approve
+    return await executeTool(toolCall);
+  }
+
+  // Prompt user for approval
+  setPendingApproval(toolCall);
+};
+```
+
 ### Deprecated Patterns - DO NOT USE
 ```tsx
-// ❌ Inline CSS or complex style objects
-<div style={{ background: '#000' }}>...
+// ❌ Global settings overrides
+const { temperature } = useSettingsStore(); // Global temp
+const thinkingEnabled = globalThinking && providerSupports; // Wrong!
 
-// ✅ Tailwind tokens defined in tailwind.config
-<div className="bg-sidebar">...
+// ✅ Per-provider settings
+const config = getLLMConfig();
+const temperature = config?.temperature ?? provider.defaultTemperature;
+const thinkingEnabled = config?.thinkingEnabled ?? false;
+```
+
+```tsx
+// ❌ Browser fetch (CORS issues)
+const response = await fetch('/api/chat', { method: 'POST' });
+
+// ✅ Tauri HTTP (CORS-safe)
+const response = await invoke('llm_request', { config });
 ```
 
 ### Error Handling
-- Wrap async callbacks (`handleSend`) in try/catch; show user-friendly messages via chat timeline.
-- Never swallow errors in hooks—log with module prefix and rethrow or return fallback state.
+- **Wrap async callbacks** (`handleSend`, `handleToolCall`) in try/catch
+- **Show user-friendly messages** via chat timeline or UI banners
+- **Never swallow errors in hooks** - log with module prefix and rethrow or return fallback state
+- **Tauri operations** should handle invoke failures gracefully
 
 ### Performance Guidelines
-- Memoize heavy child components with `React.memo` when props are stable.
-- For streaming data (chat tokens), store mutable buffers in `useRef` and update Zustand minimally.
-- Avoid anonymous functions inside JSX lists; extract handlers or use `useCallback` with stable deps.
+- **Memoize heavy child components** with `React.memo` when props are stable
+- **Streaming data buffers** in `useRef` and update Zustand minimally
+- **Avoid anonymous functions** in JSX lists; extract handlers or use `useCallback` with stable deps
+- **Subscribe to Zustand slices** to avoid rerender storms: `useStore(s => s.value)`
 
 ### Testing Requirements
-- When tests exist, add RTL tests for new components and Vitest for hooks.
-- Until tests are in place, document manual verification steps (screens/flows) in PR description.
+- When tests exist, add RTL tests for new components and Vitest for hooks
+- Until tests are in place, document manual verification steps in PR description
+- Test provider-specific features across all supported providers
 
 ### Documentation Standards
-- For UI or workflow changes, update `DOCS/03-EXPANSION-GUIDE.md` to describe new interactions.
-- Reference example components via @filepath in docs when relevant.
+- For UI/workflow changes, update relevant DOCS files to describe new interactions
+- Reference example components via @filepath for context
+- Document provider-specific UI behaviors and settings
 
 ## File References
-- @src/components/chat/ChatPanel.tsx
-- @src/components/layout/MainLayout.tsx
-- @src/hooks/useWorkspaceBootstrap.ts
-- @DOCS/02-CODE-STYLE-PATTERNS.md
+- @/src/components/chat/ChatPanel.tsx - Main chat orchestration with provider integration
+- @/src/components/chat/ChatInput.tsx - Input with per-provider thinking controls
+- @/src/components/modals/SettingsPanel.tsx - Professional provider management UI
+- @/src/hooks/useWindowStateSync.ts - Cross-window state synchronization
+- @/DOCS/enterprisegrade-task.md - Enterprise features implementation
 
 ## Additional Context
-- Detached chat uses `useDetachedChatWindow` and `useWindowStateSync`; keep cross-window logic there instead of duplicating across components.
-- Terminal panel lives under `components/terminal`; keep shell/CLI logic out of chat modules.
+- **Detached chat** uses `useDetachedChatWindow` and `useWindowStateSync`; keep cross-window logic centralized
+- **Terminal panel** lives under `components/terminal`; keep shell/CLI logic out of chat modules
+- **Provider settings** are per-provider (not global); UI must reflect provider capabilities
+- **Tool approvals** are configurable per-tool (auto/deny/prompt); respect user preferences
+- **Context usage** tracking with visual indicators (cold/yellow/red thresholds)
+- **Thread persistence** includes full token/context usage in SQLite

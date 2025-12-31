@@ -1,3 +1,22 @@
+/**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ * 
+ * Use theme tokens via CSS variables:
+ *   - var(--aurora-{category}-{token})
+ *   - Example: var(--aurora-editor-background)
+ *   - Example: var(--aurora-common-primary)
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ */
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -85,6 +104,16 @@ body {
   to { 
     opacity: 1; 
     transform: scale(1);
+  }
+}
+
+/* Aurora text shimmer - shine moves left to right */
+@keyframes aurora-shine {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
   }
 }
 

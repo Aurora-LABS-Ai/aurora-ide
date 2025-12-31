@@ -1,3 +1,25 @@
+/**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
+ * 
+ * Use theme tokens via CSS variables:
+ *   - CSS: var(--aurora-{category}-{token})
+ *   - Tailwind: bg-[var(--aurora-editor-background)]
+ *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ * See: src/types/theme.ts for TypeScript interfaces
+ * See: src/services/theme-service.ts for theme utilities
+ */
+
 import React from 'react';
 import { Database, AlertTriangle } from 'lucide-react';
 import { useContextStore } from '../../store/useContextStore';
@@ -8,6 +30,14 @@ interface ContextUsageIndicatorProps {
     usedTokens?: number;
     totalTokens?: number;
 }
+
+// Universal colors that work with any theme
+const RING_COLORS = {
+    track: '#3f3f46',    // neutral grey for free/empty area
+    low: '#a3e635',      // bright lime green - works on dark/light
+    medium: '#fbbf24',   // bright amber/yellow
+    high: '#f87171',     // bright red
+};
 
 export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (props) => {
     // Get real values from context store
@@ -33,22 +63,14 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
     const circumference = radius * 2 * Math.PI;
     const offset = circumference - (percentage / 100) * circumference;
 
-    // Color based on usage level
-    // Cold (cyan) until 30%, slow yellow 30-80%, red after 80%
-    const getProgressColor = () => {
-        if (isOverLimit || percentage >= 80) return 'text-red-500';
-        if (percentage >= 30) return 'text-amber-400';
-        return 'text-cyan-400';
+    // Fill color based on usage level - bright colors that stand out against grey track
+    const getFillColor = () => {
+        if (isOverLimit || percentage >= 80) return RING_COLORS.high;
+        if (percentage >= 30) return RING_COLORS.medium;
+        return RING_COLORS.low;
     };
 
-    const getBarColor = () => {
-        if (isOverLimit || percentage >= 80) return 'bg-red-500';
-        if (percentage >= 30) return 'bg-amber-400';
-        return 'bg-cyan-400';
-    };
-
-    const progressColor = getProgressColor();
-    const barColor = getBarColor();
+    const fillColor = getFillColor();
 
     // Format large numbers
     const formatTokens = (n: number | undefined) => {
@@ -59,48 +81,59 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
     };
 
     return (
-        <div className="w-fit group relative flex items-center justify-start cursor-help animate-in fade-in zoom-in duration-300">
+        <div className="w-fit group relative flex items-center cursor-help animate-in fade-in zoom-in duration-300">
             {/* Circular Progress */}
-            <div className="relative w-[18px] h-[18px]">
-                {/* Background Ring */}
-                <svg className="w-full h-full -rotate-90" viewBox={`0 0 ${size} ${size}`}>
+            <div className="relative" style={{ width: size, height: size }}>
+                <svg 
+                    width={size} 
+                    height={size} 
+                    viewBox={`0 0 ${size} ${size}`}
+                    style={{ transform: 'rotate(-90deg)' }}
+                >
+                    {/* Background/Track Ring - grey for any theme */}
                     <circle
                         cx={size / 2}
                         cy={size / 2}
                         r={radius}
                         fill="none"
-                        stroke="currentColor"
+                        stroke={RING_COLORS.track}
                         strokeWidth={strokeWidth}
-                        className="text-white/10"
                     />
-                    {/* Progress Ring */}
+                    {/* Progress/Fill Ring - brighter color */}
                     <circle
                         cx={size / 2}
                         cy={size / 2}
                         r={radius}
                         fill="none"
-                        stroke="currentColor"
+                        stroke={fillColor}
                         strokeWidth={strokeWidth}
                         strokeDasharray={circumference}
                         strokeDashoffset={offset}
                         strokeLinecap="round"
-                        className={`${progressColor} transition-all duration-1000 ease-out`}
+                        style={{ 
+                            transition: 'stroke-dashoffset 1s ease-out, stroke 0.3s ease'
+                        }}
                     />
                 </svg>
             </div>
 
             {/* Tooltip */}
             <div className="absolute bottom-full left-0 mb-3 hidden group-hover:block z-50">
-                <div className="bg-[#18181b] border border-white/10 rounded-lg shadow-xl shadow-black/50 p-2.5 min-w-[180px] backdrop-blur-md">
-                    <div className="flex items-center gap-1.5 mb-1.5 text-zinc-400 text-[10px] uppercase tracking-wider font-semibold">
+                <div className="bg-sidebar border border-border rounded-lg shadow-xl shadow-black/50 p-2.5 min-w-[180px] backdrop-blur-md">
+                    <div className="flex items-center gap-1.5 mb-1.5 text-text-secondary text-[10px] uppercase tracking-wider font-semibold">
                         <Database size={10} />
                         Context Window
                     </div>
 
                     {/* Warning Banner - shows at 80%+ */}
                     {percentage >= 80 && (
-                        <div className={`flex items-center gap-1.5 px-2 py-1 mb-2 rounded text-[10px] ${isOverLimit ? 'bg-red-500/20 text-red-400' : 'bg-red-500/20 text-red-400'
-                            }`}>
+                        <div
+                            className="flex items-center gap-1.5 px-2 py-1 mb-2 rounded text-[10px]"
+                            style={{
+                                backgroundColor: `${RING_COLORS.high}33`,
+                                color: RING_COLORS.high,
+                            }}
+                        >
                             <AlertTriangle size={10} />
                             {isOverLimit ? 'Context limit exceeded!' : 'Context running low'}
                         </div>
@@ -108,18 +141,21 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
 
                     <div className="space-y-1">
                         <div className="flex justify-between items-center text-xs">
-                            <span className="text-zinc-400">Usage</span>
-                            <span className={`font-mono font-medium ${progressColor}`}>{percentage}%</span>
+                            <span className="text-text-secondary">Usage</span>
+                            <span className="font-mono font-medium" style={{ color: fillColor }}>{percentage}%</span>
                         </div>
 
-                        <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
+                        <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: RING_COLORS.track }}>
                             <div
-                                className={`h-full ${barColor} transition-all duration-500`}
-                                style={{ width: `${Math.min(100, percentage)}%` }}
+                                className="h-full transition-all duration-500"
+                                style={{
+                                    width: `${Math.min(100, percentage)}%`,
+                                    backgroundColor: fillColor,
+                                }}
                             />
                         </div>
 
-                        <div className="flex justify-between items-center text-[9px] text-zinc-500 font-mono mt-1">
+                        <div className="flex justify-between items-center text-[9px] text-text-disabled font-mono mt-1">
                             <span>{formatTokens(usedTokens)} / {formatTokens(totalTokens)} tokens</span>
                         </div>
                     </div>

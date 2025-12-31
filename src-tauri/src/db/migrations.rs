@@ -54,6 +54,22 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [3])?;
             Ok(())
         }
+        4 => {
+            // Migration from v3 to v4: Add custom_themes table
+            migration_v4(conn)?;
+            // Update schema version
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [4])?;
+            Ok(())
+        }
+        5 => {
+            // Migration from v4 to v5: Add unique constraint on themes and cleanup duplicates
+            migration_v5(conn)?;
+            // Update schema version
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [5])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -135,6 +151,62 @@ fn migration_v3(conn: &Connection) -> DbResult<()> {
     // Add context_usage column to threads table
     conn.execute(
         "ALTER TABLE threads ADD COLUMN context_usage TEXT",
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Migration v4: Add custom_themes table
+fn migration_v4(conn: &Connection) -> DbResult<()> {
+    // Create custom_themes table
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS custom_themes (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            author TEXT NOT NULL,
+            version TEXT NOT NULL,
+            type TEXT NOT NULL,     -- 'dark' or 'light'
+            colors TEXT NOT NULL,   -- JSON object
+            token_colors TEXT NOT NULL, -- JSON array
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    // Create index for sorting
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_custom_themes_updated_at
+         ON custom_themes (updated_at DESC)",
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Migration v5: Cleanup duplicate themes and add unique constraint
+fn migration_v5(conn: &Connection) -> DbResult<()> {
+    // Step 1: Delete all duplicate themes, keeping only the most recently updated one per name+author
+    conn.execute(
+        "DELETE FROM custom_themes 
+         WHERE id NOT IN (
+            SELECT id FROM (
+                SELECT id, ROW_NUMBER() OVER (
+                    PARTITION BY LOWER(TRIM(name)), LOWER(TRIM(author)) 
+                    ORDER BY updated_at DESC
+                ) as rn
+                FROM custom_themes
+            ) WHERE rn = 1
+         )",
+        [],
+    )?;
+
+    // Step 2: Create unique index on name+author (case insensitive)
+    // This will prevent future duplicates at the database level
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_themes_name_author
+         ON custom_themes (LOWER(TRIM(name)), LOWER(TRIM(author)))",
         [],
     )?;
 

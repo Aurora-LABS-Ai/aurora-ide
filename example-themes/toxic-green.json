@@ -1,0 +1,84 @@
+{
+    "name": "Toxic Green",
+    "author": "Antigravity Gemini 3 Pro",
+    "version": "1.0.0",
+    "type": "dark",
+    "colors": {
+        "editor": {
+            "background": "#050505",
+            "foreground": "#00ff41",
+            "lineNumbers": "#003b00",
+            "lineNumbersActive": "#00ff41",
+            "selection": "#008f1144",
+            "cursor": "#00ff41",
+            "cursorLine": "#0d0d0d"
+        },
+        "sidebar": {
+            "background": "#000000",
+            "foreground": "#008f11",
+            "border": "#003b00",
+            "itemHover": "#00ff4111",
+            "itemActive": "#00ff4133",
+            "itemSelected": "#00ff4133",
+            "sectionHeader": "#008f11"
+        },
+        "chat": {
+            "background": "#050505",
+            "inputBackground": "#0d0d0d",
+            "inputBorder": "#003b00",
+            "userMessage": "#003b00",
+            "assistantMessage": "#0d0d0d"
+        },
+        "terminal": {
+            "background": "#050505",
+            "foreground": "#00ff41"
+        },
+        "statusBar": {
+            "background": "#000000",
+            "foreground": "#008f11",
+            "border": "#003b00"
+        },
+        "titleBar": {
+            "background": "#000000",
+            "foreground": "#008f11",
+            "border": "#003b00"
+        },
+        "common": {
+            "primary": "#00ff41",
+            "secondary": "#0d0d0d",
+            "success": "#00ff41",
+            "warning": "#e0af68",
+            "error": "#ff0000",
+            "info": "#008f11",
+            "border": "#003b00"
+        }
+    },
+    "tokenColors": [
+        {
+            "scope": [
+                "comment"
+            ],
+            "settings": {
+                "foreground": "#005a00"
+            }
+        },
+        {
+            "scope": [
+                "string"
+            ],
+            "settings": {
+                "foreground": "#85ff9e"
+            }
+        },
+        {
+            "scope": [
+                "keyword",
+                "storage"
+            ],
+            "settings": {
+                "foreground": "#00ff41",
+                "fontStyle": "bold"
+            }
+        }
+    ]
+}

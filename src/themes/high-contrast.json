@@ -1,0 +1,144 @@
+{
+  "name": "Aurora High Contrast",
+  "author": "Aurora Team",
+  "version": "1.0.0",
+  "type": "dark",
+  "description": "High contrast theme for accessibility",
+  "colors": {
+    "editor": {
+      "background": "#000000",
+      "foreground": "#ffffff",
+      "lineNumbers": "#808080",
+      "lineNumbersActive": "#ffffff",
+      "selection": "#264f78",
+      "selectionHighlight": "#264f7866",
+      "cursor": "#ffffff",
+      "cursorLine": "#1a1a1a",
+      "whitespace": "#6e6e6e",
+      "indentGuide": "#404040",
+      "matchingBracket": "#ffd700",
+      "wordHighlight": "#264f78",
+      "findMatch": "#ffd70066",
+      "findMatchHighlight": "#ffd70044"
+    },
+    "sidebar": {
+      "background": "#000000",
+      "foreground": "#ffffff",
+      "border": "#6fc3df",
+      "itemHover": "#264f78",
+      "itemActive": "#264f78",
+      "itemSelected": "#264f78",
+      "sectionHeader": "#ffffff"
+    },
+    "chat": {
+      "background": "#000000",
+      "inputBackground": "#1a1a1a",
+      "inputBorder": "#6fc3df",
+      "userMessage": "#264f78",
+      "assistantMessage": "#1a1a1a",
+      "thinkingBackground": "#1a1a2e",
+      "thinkingBorder": "#6fc3df",
+      "toolCallBackground": "#1a2e1a",
+      "toolCallBorder": "#6fc3df",
+      "codeBlock": "#1a1a1a"
+    },
+    "terminal": {
+      "background": "#000000",
+      "foreground": "#ffffff",
+      "cursor": "#ffffff",
+      "selection": "#264f78",
+      "black": "#000000",
+      "red": "#ff6b6b",
+      "green": "#69ff94",
+      "yellow": "#ffffa5",
+      "blue": "#6fc3df",
+      "magenta": "#ff77ff",
+      "cyan": "#6fc3df",
+      "white": "#ffffff",
+      "brightBlack": "#808080",
+      "brightRed": "#ff8080",
+      "brightGreen": "#80ff80",
+      "brightYellow": "#ffff80",
+      "brightBlue": "#80c0ff",
+      "brightMagenta": "#ff80ff",
+      "brightCyan": "#80ffff",
+      "brightWhite": "#ffffff"
+    },
+    "statusBar": {
+      "background": "#000000",
+      "foreground": "#ffffff",
+      "border": "#6fc3df",
+      "itemHover": "#264f78"
+    },
+    "titleBar": {
+      "background": "#000000",
+      "foreground": "#ffffff",
+      "border": "#6fc3df",
+      "buttonHover": "#264f78"
+    },
+    "common": {
+      "primary": "#6fc3df",
+      "primaryHover": "#8fd3ef",
+      "primaryForeground": "#000000",
+      "secondary": "#404040",
+      "secondaryHover": "#505050",
+      "secondaryForeground": "#ffffff",
+      "success": "#69ff94",
+      "successForeground": "#000000",
+      "warning": "#ffffa5",
+      "warningForeground": "#000000",
+      "error": "#ff6b6b",
+      "errorForeground": "#000000",
+      "info": "#6fc3df",
+      "infoForeground": "#000000",
+      "border": "#6fc3df",
+      "borderHover": "#8fd3ef",
+      "shadow": "#00000099",
+      "overlay": "#000000cc",
+      "scrollbar": "#6fc3df",
+      "scrollbarHover": "#8fd3ef"
+    }
+  },
+  "tokenColors": [
+    {
+      "name": "Comments",
+      "scope": ["comment", "punctuation.definition.comment"],
+      "settings": { "foreground": "#7ca668", "fontStyle": "italic" }
+    },
+    {
+      "name": "Keywords",
+      "scope": ["keyword", "storage.type", "storage.modifier"],
+      "settings": { "foreground": "#ff77ff" }
+    },
+    {
+      "name": "Strings",
+      "scope": ["string", "string.quoted"],
+      "settings": { "foreground": "#69ff94" }
+    },
+    {
+      "name": "Functions",
+      "scope": ["entity.name.function", "support.function"],
+      "settings": { "foreground": "#6fc3df" }
+    },
+    {
+      "name": "Types",
+      "scope": ["entity.name.type", "support.type"],
+      "settings": { "foreground": "#ffffa5" }
+    },
+    {
+      "name": "Variables",
+      "scope": ["variable", "variable.other"],
+      "settings": { "foreground": "#ffffff" }
+    },
+    {
+      "name": "Constants",
+      "scope": ["constant", "constant.numeric"],
+      "settings": { "foreground": "#ff6b6b" }
+    },
+    {
+      "name": "Operators",
+      "scope": ["keyword.operator"],
+      "settings": { "foreground": "#ffffff" }
+    }
+  ]
+}

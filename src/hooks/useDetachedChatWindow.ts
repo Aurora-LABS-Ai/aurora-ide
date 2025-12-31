@@ -108,23 +108,24 @@ export function useDetachedChatWindow() {
         )) as unknown as () => void;
 
         // Listen for window move/resize to save position
+        // Note: These listeners are automatically cleaned up when the window is destroyed
         chatWindow.listen("tauri://move", async () => {
           try {
             const pos = await chatWindow.outerPosition();
             updateDetachedPosition({ x: pos.x, y: pos.y });
-          } catch (e) {
-            console.error("Failed to get window position:", e);
+          } catch {
+            // Window might be closing, ignore errors
           }
-        });
+        }).catch(() => {});
 
         chatWindow.listen("tauri://resize", async () => {
           try {
             const size = await chatWindow.outerSize();
             updateDetachedSize({ width: size.width, height: size.height });
-          } catch (e) {
-            console.error("Failed to get window size:", e);
+          } catch {
+            // Window might be closing, ignore errors
           }
-        });
+        }).catch(() => {});
 
         // Update store
         detachChat(CHAT_WINDOW_LABEL);
@@ -204,20 +205,27 @@ export function useDetachedChatWindow() {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (windowRef.current) {
-        closeDetachedWindow();
-      }
+      // Don't call closeDetachedWindow on unmount - it causes issues
+      // The window will be closed naturally when the app closes
+      
       // Safely cleanup main window close listener
-      if (mainWindowCloseListenerRef.current) {
-        try {
-          mainWindowCloseListenerRef.current();
-        } catch {
-          // Handler may already be destroyed
-        }
-        mainWindowCloseListenerRef.current = null;
+      const listener = mainWindowCloseListenerRef.current;
+      mainWindowCloseListenerRef.current = null;
+      
+      if (listener) {
+        // Use setTimeout to defer the unlisten call, avoiding race conditions
+        // where the handler might already be destroyed
+        setTimeout(() => {
+          try {
+            listener();
+          } catch (e) {
+            // Handler may already be destroyed - this is expected
+            console.debug('[useDetachedChatWindow] Cleanup listener already destroyed');
+          }
+        }, 0);
       }
     };
-  }, [closeDetachedWindow]);
+  }, []); // Remove closeDetachedWindow dependency to prevent re-running
 
   return {
     isDetached: detachedChat.isDetached,

@@ -1,0 +1,119 @@
+{
+    "name": "Midnight Slate",
+    "author": "grok",
+    "version": "1.0.0",
+    "type": "dark",
+    "colors": {
+        "editor": {
+            "background": "#0f1419",
+            "foreground": "#d1d5db",
+            "lineNumbers": "#374151",
+            "lineNumbersActive": "#6b7280",
+            "selection": "#64748b44",
+            "cursor": "#8b5cf6",
+            "cursorLine": "#1f2937"
+        },
+        "sidebar": {
+            "background": "#0a0f14",
+            "foreground": "#9ca3af",
+            "border": "#374151",
+            "itemHover": "#37415133",
+            "itemActive": "#64748b44",
+            "itemSelected": "#64748b44",
+            "sectionHeader": "#6b7280"
+        },
+        "chat": {
+            "background": "#0f1419",
+            "inputBackground": "#1f2937",
+            "inputBorder": "#374151",
+            "userMessage": "#64748b44",
+            "assistantMessage": "#1f2937"
+        },
+        "terminal": {
+            "background": "#0f1419",
+            "foreground": "#d1d5db"
+        },
+        "statusBar": {
+            "background": "#0a0f14",
+            "foreground": "#9ca3af",
+            "border": "#374151"
+        },
+        "titleBar": {
+            "background": "#0a0f14",
+            "foreground": "#9ca3af",
+            "border": "#374151"
+        },
+        "common": {
+            "primary": "#8b5cf6",
+            "secondary": "#374151",
+            "success": "#059669",
+            "warning": "#d97706",
+            "error": "#dc2626",
+            "info": "#2563eb",
+            "border": "#4b5563"
+        }
+    },
+    "tokenColors": [
+        {
+            "scope": [
+                "comment",
+                "punctuation.definition.comment"
+            ],
+            "settings": {
+                "foreground": "#6b7280",
+                "fontStyle": "italic"
+            }
+        },
+        {
+            "scope": [
+                "variable",
+                "string constant.other.placeholder"
+            ],
+            "settings": {
+                "foreground": "#d1d5db"
+            }
+        },
+        {
+            "scope": [
+                "keyword",
+                "storage.type",
+                "storage.modifier"
+            ],
+            "settings": {
+                "foreground": "#7c3aed"
+            }
+        },
+        {
+            "scope": [
+                "constant.numeric",
+                "constant.language",
+                "constant.character",
+                "constant.other"
+            ],
+            "settings": {
+                "foreground": "#f59e0b"
+            }
+        },
+        {
+            "scope": [
+                "string",
+                "string punctuation.section.embedded source"
+            ],
+            "settings": {
+                "foreground": "#059669"
+            }
+        },
+        {
+            "scope": "entity.name.function",
+            "settings": {
+                "foreground": "#8b5cf6"
+            }
+        },
+        {
+            "scope": "entity.name.tag",
+            "settings": {
+                "foreground": "#ef4444"
+            }
+        }
+    ]
+}

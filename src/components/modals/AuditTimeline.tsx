@@ -1,3 +1,25 @@
+/**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
+ * 
+ * Use theme tokens via CSS variables:
+ *   - CSS: var(--aurora-{category}-{token})
+ *   - Tailwind: bg-[var(--aurora-editor-background)]
+ *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ * See: src/types/theme.ts for TypeScript interfaces
+ * See: src/services/theme-service.ts for theme utilities
+ */
+
 import React from 'react';
 import { useUiStore } from '../../store/useUiStore';
 import { useAuditStore, type AuditEntry } from '../../store/useAuditStore';
@@ -47,12 +69,12 @@ const AuditEntryCard: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
     <div className="ml-5 relative animate-in slide-in-from-left-2 duration-200">
       {/* Timeline dot */}
       <div className={clsx(
-        "absolute -left-[23px] top-2 w-3 h-3 rounded-full border-2 border-[#18181b]",
+        "absolute -left-[23px] top-2 w-3 h-3 rounded-full border-2 border-border",
         entry.status === 'executed' ? "bg-emerald-500" :
-        entry.status === 'rejected' ? "bg-red-500" :
-        entry.status === 'failed' ? "bg-orange-500" :
-        entry.status === 'executing' ? "bg-amber-500" :
-        "bg-zinc-500"
+          entry.status === 'rejected' ? "bg-red-500" :
+            entry.status === 'failed' ? "bg-orange-500" :
+              entry.status === 'executing' ? "bg-amber-500" :
+                "bg-zinc-500"
       )} />
 
       <div className="bg-white/[0.02] border border-white/5 rounded-lg p-3 hover:bg-white/[0.03] transition-colors">
@@ -61,9 +83,9 @@ const AuditEntryCard: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
             <div className={clsx(
               "p-1.5 rounded-md mt-0.5",
               entry.status === 'executed' ? "bg-emerald-500/10 text-emerald-400" :
-              entry.status === 'failed' ? "bg-orange-500/10 text-orange-400" :
-              entry.status === 'rejected' ? "bg-red-500/10 text-red-400" :
-              "bg-zinc-500/10 text-zinc-400"
+                entry.status === 'failed' ? "bg-orange-500/10 text-orange-400" :
+                  entry.status === 'rejected' ? "bg-red-500/10 text-red-400" :
+                    "bg-zinc-500/10 text-zinc-400"
             )}>
               <Icon size={14} />
             </div>
@@ -97,10 +119,10 @@ const AuditEntryCard: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
             <div className={clsx(
               "flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded",
               entry.status === 'executed' ? "bg-emerald-500/20 text-emerald-400" :
-              entry.status === 'rejected' ? "bg-red-500/20 text-red-400" :
-              entry.status === 'failed' ? "bg-orange-500/20 text-orange-400" :
-              entry.status === 'executing' ? "bg-amber-500/20 text-amber-400" :
-              "bg-zinc-500/20 text-zinc-400"
+                entry.status === 'rejected' ? "bg-red-500/20 text-red-400" :
+                  entry.status === 'failed' ? "bg-orange-500/20 text-orange-400" :
+                    entry.status === 'executing' ? "bg-amber-500/20 text-amber-400" :
+                      "bg-zinc-500/20 text-zinc-400"
             )}>
               {entry.status === 'executed' && <CheckCircle size={10} />}
               {entry.status === 'rejected' && <XCircle size={10} />}
@@ -114,8 +136,8 @@ const AuditEntryCard: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
             <div className={clsx(
               "flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded",
               entry.riskLevel === 'high' ? "bg-red-500/10 text-red-400" :
-              entry.riskLevel === 'medium' ? "bg-amber-500/10 text-amber-400" :
-              "bg-zinc-500/10 text-zinc-500"
+                entry.riskLevel === 'medium' ? "bg-amber-500/10 text-amber-400" :
+                  "bg-zinc-500/10 text-zinc-500"
             )}>
               <AlertTriangle size={8} />
               {entry.riskLevel.toUpperCase()}
@@ -165,7 +187,7 @@ export const AuditTimeline: React.FC = () => {
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-150">
-      <div className="bg-[#18181b] border border-white/10 rounded-xl shadow-2xl shadow-black/50 w-[550px] h-[70vh] flex flex-col overflow-hidden">
+      <div className="bg-sidebar border border-border rounded-xl shadow-2xl shadow-black/50 w-[550px] h-[70vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="h-12 border-b border-white/5 flex items-center justify-between px-4 bg-white/[0.02]">
           <div className="flex items-center gap-3">

@@ -1,3 +1,25 @@
+/**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
+ * 
+ * Use theme tokens via CSS variables:
+ *   - CSS: var(--aurora-{category}-{token})
+ *   - Tailwind: bg-[var(--aurora-editor-background)]
+ *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ * See: src/types/theme.ts for TypeScript interfaces
+ * See: src/services/theme-service.ts for theme utilities
+ */
+
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Send, Square, Brain, ChevronDown, Settings, X, Paperclip, Sparkles } from 'lucide-react';
 import { useSettingsStore } from '../../store/useSettingsStore';
@@ -321,16 +343,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     return createPortal(
       <div
         id="mention-popup"
-        className="fixed z-[10000] w-64 bg-[#1e1e1e] ring-1 ring-white/10 rounded-lg shadow-2xl overflow-hidden flex flex-col"
+        className="fixed z-[10000] w-64 bg-sidebar ring-1 ring-border rounded-lg shadow-2xl overflow-hidden flex flex-col"
         style={popupStyle}
       >
-        <div className="px-2 py-1.5 bg-white/5 border-b border-white/5 text-[10px] items-center flex justify-between text-zinc-400">
+        <div className="px-2 py-1.5 bg-white/5 border-b border-white/5 text-[10px] items-center flex justify-between text-text-secondary">
           <span className="font-semibold uppercase tracking-wider">Suggested Files</span>
           <span className="text-[10px]">{filteredFiles.length} found</span>
         </div>
 
         {filteredFiles.length === 0 ? (
-          <div className="p-3 text-center text-zinc-500 text-[11px] italic">
+          <div className="p-3 text-center text-text-disabled text-[11px] italic">
             {allFiles.length === 0 ? "No files in workspace" : "No matching files found"}
           </div>
         ) : (
@@ -342,7 +364,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                 onMouseEnter={() => setSelectedFileIndex(idx)}
                 className={clsx(
                   "w-full text-left flex items-center gap-2 px-2 py-1.5 rounded text-[11px] transition-colors",
-                  idx === selectedFileIndex ? "bg-emerald-500/20 text-emerald-300" : "text-zinc-400 hover:bg-white/5"
+                  idx === selectedFileIndex ? "bg-primary/20 text-primary" : "text-text-secondary hover:bg-white/5"
                 )}
               >
                 <FileIcon name={file.name} path={file.path} className="w-4 h-4 min-w-4" />
@@ -363,15 +385,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     const dropdown = (
       <div
         id="model-dropdown-portal"
-        className="fixed w-60 bg-[#1e1e1e] ring-1 ring-white/10 rounded-xl shadow-xl shadow-black/80 overflow-hidden z-[9999]"
+        className="fixed w-60 bg-sidebar ring-1 ring-border rounded-xl shadow-xl shadow-black/80 overflow-hidden z-[9999]"
         style={{
           top: dropdownPosition.top,
           left: dropdownPosition.left,
           transform: 'translateY(-100%)',
         }}
       >
-        <div className="px-3 py-2 border-b border-white/5 bg-white/[0.02]">
-          <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">Select Model</span>
+        <div className="px-3 py-2 border-b border-border bg-white/[0.02]">
+          <span className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Select Model</span>
         </div>
 
         {availableModels.length === 0 ? (
@@ -400,8 +422,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                 )}
               >
                 <div className="flex flex-col">
-                  <span className={clsx("font-medium", selectedModel !== `${providerId}:${model}` && "text-zinc-300")}>{label}</span>
-                  <span className="text-[10px] text-zinc-500 group-hover:text-zinc-400 transition-colors">{providerName}</span>
+                  <span className={clsx("font-medium", selectedModel !== `${providerId}:${model}` && "text-text-primary")}>{label}</span>
+                  <span className="text-[10px] text-text-disabled group-hover:text-text-secondary transition-colors">{providerName}</span>
                 </div>
                 {selectedModel === `${providerId}:${model}` && <div className="w-1.5 h-1.5 rounded-full bg-primary" />}
               </button>
@@ -451,7 +473,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
 
   return (
     <div
-      className="p-4 bg-sidebar transition-colors relative"
+      className="p-4 transition-colors relative"
+      style={{ backgroundColor: 'var(--aurora-chat-background)' }}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -468,18 +491,30 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
       <div
         onClick={handleContainerClick}
         className={clsx(
-          "bg-[#1e1e1e] rounded-xl border transition-all duration-200 shadow-sm cursor-text",
-          isLoading ? "border-primary/20 shadow-primary/5" : "border-white/10 hover:border-white/20"
+          "rounded-xl transition-all duration-200 cursor-text",
+          isLoading ? "shadow-primary/10" : "hover:shadow-sm"
         )}
+        style={{
+          backgroundColor: 'var(--aurora-chat-surface)',
+          border: '1px solid var(--aurora-chat-surfaceBorder)',
+          boxShadow: isLoading
+            ? '0 0 0 1px color-mix(in srgb, var(--aurora-chat-usageLow) 20%, transparent)'
+            : '0 0 0 1px var(--aurora-chat-surfaceBorder)',
+        }}
       >
 
         {/* Top Control Bar */}
-        <div className="flex items-center justify-between px-3 pt-2.5 pb-1">
+        <div className="flex items-center justify-between px-3 pt-2.5 pb-1" style={{ backgroundColor: 'var(--aurora-chat-surfaceMuted)' }}>
           {/* Model Pill */}
           <button
             ref={buttonRef}
             onClick={() => setShowModelDropdown(!showModelDropdown)}
-            className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white/5 hover:bg-white/10 text-[10px] font-medium text-zinc-300 transition-colors border border-white/5 hover:border-white/10"
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium text-text-primary transition-colors"
+            style={{
+              backgroundColor: 'var(--aurora-chat-surface)',
+              border: '1px solid transparent',
+              boxShadow: '0 0 0 1px var(--aurora-chat-surfaceBorder)',
+            }}
           >
             <Sparkles size={10} className="text-primary" />
             <span className="truncate max-w-[120px]">{availableModels.length > 0 ? (currentModel || 'Select Model') : 'No Models'}</span>
@@ -495,13 +530,24 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
               : 'Current model does not support thinking mode'
             }
             className={clsx(
-              "flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all border",
+              "flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all",
               !providerSupportsThinking
-                ? "bg-transparent border-transparent text-zinc-600 cursor-not-allowed opacity-50"
+                ? "bg-transparent text-zinc-600 cursor-not-allowed opacity-50"
                 : thinkingEnabled
-                  ? "bg-primary/10 border-primary/20 text-primary shadow-[0_0_10px_rgba(var(--primary-rgb),0.1)]"
-                  : "bg-transparent border-transparent text-zinc-500 hover:text-zinc-300"
+                  ? "bg-primary/10 text-primary"
+                  : "bg-transparent text-zinc-500 hover:text-zinc-300"
             )}
+            style={{
+              border: providerSupportsThinking ? '1px solid transparent' : '1px solid transparent',
+              boxShadow: providerSupportsThinking
+                ? thinkingEnabled
+                  ? '0 0 0 1px color-mix(in srgb, var(--aurora-chat-surfaceBorder) 40%, transparent)'
+                  : '0 0 0 1px var(--aurora-chat-surfaceBorder)'
+                : 'none',
+              backgroundColor: providerSupportsThinking && thinkingEnabled
+                ? 'color-mix(in srgb, var(--aurora-chat-surface) 70%, var(--aurora-common-primary) 10%)'
+                : 'var(--aurora-chat-surface)',
+            }}
           >
             <Brain size={12} className={thinkingEnabled && providerSupportsThinking ? "animate-pulse" : ""} />
             <span>Thinking</span>
@@ -544,7 +590,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
             onKeyDown={handleKeyDown}
             disabled={disabled || isLoading}
             placeholder={attachedFiles.length > 0 ? "Ask a question about these files..." : "Message Aurora (Type @ to add files)..."}
-            className="w-full bg-transparent text-[13px] text-zinc-100 resize-none outline-none min-h-[40px] max-h-[200px] placeholder:text-zinc-600 font-light leading-relaxed"
+            className="w-full bg-transparent text-[13px] text-text-primary resize-none outline-none min-h-[40px] max-h-[200px] placeholder:text-text-disabled font-light leading-relaxed"
             rows={1}
           />
         </div>
@@ -563,7 +609,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                 ? "bg-red-500/10 text-red-400 hover:bg-red-500/20"
                 : (content.trim() || attachedFiles.length > 0)
                   ? "bg-primary text-white hover:opacity-90 shadow-md shadow-primary/20"
-                  : "bg-white/5 text-zinc-600 cursor-not-allowed"
+                  : "bg-white/5 text-text-disabled cursor-not-allowed"
             )}
             title={isLoading ? 'Stop generation' : 'Send message'}
           >

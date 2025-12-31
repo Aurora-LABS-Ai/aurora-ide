@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 3;
+pub const SCHEMA_VERSION: i32 = 5;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -18,6 +18,7 @@ pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
     create_app_settings_table(conn)?;
     create_llm_providers_table(conn)?;
     create_tool_settings_table(conn)?;
+    create_custom_themes_table(conn)?;
 
     Ok(())
 }
@@ -215,6 +216,41 @@ fn create_tool_settings_table(conn: &Connection) -> DbResult<()> {
             approval_mode TEXT NOT NULL DEFAULT 'always_ask', -- 'auto' | 'always_ask' | 'deny'
             updated_at TEXT NOT NULL
         )",
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Create custom_themes table
+fn create_custom_themes_table(conn: &Connection) -> DbResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS custom_themes (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            author TEXT NOT NULL,
+            version TEXT NOT NULL,
+            type TEXT NOT NULL,     -- 'dark' or 'light'
+            colors TEXT NOT NULL,   -- JSON object
+            token_colors TEXT NOT NULL, -- JSON array
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(name COLLATE NOCASE, author COLLATE NOCASE)
+        )",
+        [],
+    )?;
+
+    // Create index for sorting
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_custom_themes_updated_at
+         ON custom_themes (updated_at DESC)",
+        [],
+    )?;
+
+    // Create unique index for name+author (case insensitive)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_themes_name_author
+         ON custom_themes (name COLLATE NOCASE, author COLLATE NOCASE)",
         [],
     )?;
 

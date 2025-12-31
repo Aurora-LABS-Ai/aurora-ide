@@ -1,4 +1,26 @@
 /**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
+ * 
+ * Use theme tokens via CSS variables:
+ *   - CSS: var(--aurora-{category}-{token})
+ *   - Tailwind: bg-[var(--aurora-editor-background)]
+ *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ * See: src/types/theme.ts for TypeScript interfaces
+ * See: src/services/theme-service.ts for theme utilities
+ */
+
+/**
  * FileChangeCard Component
  * 
  * Shows pending file changes with Accept/Reject buttons.
@@ -63,11 +85,11 @@ export const FileChangeCard: React.FC<FileChangeCardProps> = ({ changeId, toolCa
 
     const getOperationIcon = () => {
         switch (change.operation) {
-            case 'create': return <FilePlus size={14} className="text-emerald-400" />;
-            case 'write': return <FileEdit size={14} className="text-blue-400" />;
-            case 'patch': return <FileCode size={14} className="text-amber-400" />;
-            case 'delete': return <FileMinus size={14} className="text-red-400" />;
-            default: return <FileCode size={14} className="text-zinc-400" />;
+            case 'create': return <FilePlus size={14} className="text-success" />;
+            case 'write': return <FileEdit size={14} className="text-info" />;
+            case 'patch': return <FileCode size={14} className="text-warning" />;
+            case 'delete': return <FileMinus size={14} className="text-danger" />;
+            default: return <FileCode size={14} className="text-text-disabled" />;
         }
     };
 
@@ -97,7 +119,7 @@ export const FileChangeCard: React.FC<FileChangeCardProps> = ({ changeId, toolCa
                 );
             default:
                 return (
-                    <span className="text-[10px] font-medium text-amber-400 animate-pulse">
+                    <span className="text-[10px] font-medium text-warning animate-pulse">
                         Pending Approval
                     </span>
                 );
@@ -116,26 +138,26 @@ export const FileChangeCard: React.FC<FileChangeCardProps> = ({ changeId, toolCa
         <div className={clsx(
             "mt-3 rounded-lg overflow-hidden border transition-all duration-200",
             change.status === 'pending'
-                ? "bg-amber-500/[0.03] border-amber-500/20"
+                ? "bg-sidebar border-warning/50"
                 : change.status === 'accepted'
-                    ? "bg-emerald-500/[0.03] border-emerald-500/20"
-                    : "bg-red-500/[0.03] border-red-500/20 opacity-60"
+                    ? "bg-sidebar border-success/50"
+                    : "bg-sidebar border-danger/50 opacity-60"
         )}>
             {/* Header */}
-            <div className="px-3 py-2.5 border-b border-white/5 flex items-center justify-between">
+            <div className="px-3 py-2.5 border-b border-border flex items-center justify-between">
                 <div className="flex items-center gap-2.5 min-w-0">
                     {getOperationIcon()}
                     <div className="flex flex-col min-w-0">
-                        <span className="font-mono text-[11px] font-semibold text-zinc-200 truncate">
+                        <span className="font-mono text-[11px] font-semibold text-text-primary truncate">
                             {change.fileName}
                         </span>
-                        <span className="font-mono text-[9px] text-zinc-500 truncate">
+                        <span className="font-mono text-[9px] text-text-disabled truncate">
                             {change.filePath}
                         </span>
                     </div>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
-                    <span className="text-[10px] text-zinc-500 font-mono">
+                    <span className="text-[10px] text-text-secondary font-mono">
                         {lineCount} lines
                     </span>
                     {getStatusBadge()}
@@ -144,17 +166,17 @@ export const FileChangeCard: React.FC<FileChangeCardProps> = ({ changeId, toolCa
 
             {/* Content Preview */}
             <div className="relative">
-                <div className="flex items-center justify-between border-b border-white/5 bg-white/[0.02] px-3 py-1.5">
+                <div className="flex items-center justify-between border-b border-border bg-panel-header px-3 py-1.5">
                     <div className="flex items-center gap-2">
-                        <Eye size={10} className="text-zinc-500" />
-                        <span className="font-mono text-[10px] font-medium text-zinc-400 uppercase tracking-wider">
+                        <Eye size={10} className="text-text-secondary" />
+                        <span className="font-mono text-[10px] font-medium text-text-secondary uppercase tracking-wider">
                             {getOperationLabel()}
                         </span>
                     </div>
                     <div className="flex items-center gap-2">
                         <button
                             onClick={handleCopy}
-                            className="flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+                            className="flex items-center gap-1 text-[10px] text-text-secondary hover:text-text-primary transition-colors"
                         >
                             <Copy size={10} />
                             {copied ? 'Copied!' : 'Copy'}
@@ -162,7 +184,7 @@ export const FileChangeCard: React.FC<FileChangeCardProps> = ({ changeId, toolCa
                         {hasMore && (
                             <button
                                 onClick={() => setIsExpanded(!isExpanded)}
-                                className="flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+                                className="flex items-center gap-1 text-[10px] text-text-secondary hover:text-text-primary transition-colors"
                             >
                                 {isExpanded ? (
                                     <>
@@ -181,27 +203,27 @@ export const FileChangeCard: React.FC<FileChangeCardProps> = ({ changeId, toolCa
                 </div>
 
                 <div className={clsx(
-                    "bg-[#0a0a0a] overflow-hidden transition-all duration-200",
+                    "bg-editor overflow-hidden transition-all duration-200",
                     !isExpanded && hasMore && "max-h-[300px]"
                 )}>
-                    <pre className="font-mono text-[11px] leading-relaxed p-3 overflow-x-auto text-zinc-300 scrollbar-thin scrollbar-thumb-zinc-800">
+                    <pre className="font-mono text-[11px] leading-relaxed p-3 overflow-x-auto text-text-primary scrollbar-thin scrollbar-thumb-border">
                         <code>{displayContent}</code>
                     </pre>
                     {!isExpanded && hasMore && (
-                        <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-[#0a0a0a] to-transparent pointer-events-none" />
+                        <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-editor to-transparent pointer-events-none" />
                     )}
                 </div>
             </div>
 
             {/* Action Buttons */}
             {change.status === 'pending' && (
-                <div className="px-3 py-2.5 border-t border-white/5 flex items-center gap-2">
+                <div className="px-3 py-2.5 border-t border-border flex items-center gap-2">
                     <button
                         onClick={handleAccept}
                         disabled={isAccepting}
                         className={clsx(
                             "flex-1 flex items-center justify-center gap-2 py-2 px-4 rounded-md text-[12px] font-semibold transition-all",
-                            "bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30",
+                            "bg-success/20 hover:bg-success/30 text-success border border-success/30",
                             isAccepting && "opacity-50 cursor-not-allowed"
                         )}
                     >
@@ -213,7 +235,7 @@ export const FileChangeCard: React.FC<FileChangeCardProps> = ({ changeId, toolCa
                         disabled={isAccepting}
                         className={clsx(
                             "px-4 py-2 rounded-md text-[12px] font-medium transition-all",
-                            "text-zinc-400 hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/20",
+                            "text-text-secondary hover:text-danger hover:bg-danger/10 border border-transparent hover:border-danger/20",
                             isAccepting && "opacity-50 cursor-not-allowed"
                         )}
                     >

@@ -1,43 +1,46 @@
-import React, { useMemo, useEffect } from 'react';
-import Editor, { loader } from '@monaco-editor/react';
+/**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
+ * 
+ * Use theme tokens via CSS variables:
+ *   - CSS: var(--aurora-{category}-{token})
+ *   - Tailwind: bg-[var(--aurora-editor-background)]
+ *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ * See: src/types/theme.ts for TypeScript interfaces
+ * See: src/services/theme-service.ts for theme utilities
+ */
+
+import React, { useMemo, useEffect, useRef } from 'react';
+import Editor, { useMonaco } from '@monaco-editor/react';
 import { useEditorStore } from '../../store/useEditorStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
+import { useThemeStore } from '../../store/useThemeStore';
+import { themeService, getMonacoThemeId } from '../../services/theme-service';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { isTauri } from '../../lib/tauri';
 import { usePendingChangesStore } from '../../store/usePendingChangesStore';
 import { Check, X, FileCode, ChevronLeft, ChevronRight } from 'lucide-react';
-import ReactDiffViewer from 'react-diff-viewer-continued';
-
-// Define custom theme before Monaco loads
-loader.init().then((monaco) => {
-  monaco.editor.defineTheme('aurora-dark', {
-    base: 'vs-dark',
-    inherit: true,
-    rules: [],
-    colors: {
-      'editor.background': '#1e1e1e',
-      'editor.foreground': '#d4d4d4',
-      'editorLineNumber.foreground': '#555555',
-      'editorLineNumber.activeForeground': '#d4d4d4',
-      'editor.selectionBackground': '#264f78',
-      'editor.lineHighlightBackground': '#262626',
-      'editorCursor.foreground': '#aeafad',
-      'editorWidget.background': '#1e1e1e',
-      'editorWidget.border': '#2b2b2b',
-      'editorGutter.background': '#1e1e1e',
-      'minimap.background': '#1e1e1e',
-      'scrollbarSlider.background': '#42424266',
-      'scrollbarSlider.hoverBackground': '#55555599',
-      'scrollbarSlider.activeBackground': '#666666aa',
-    }
-  });
-});
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
 
 export const CodeEditor: React.FC = () => {
-  const { tabs, activeTabId, updateTabContent, fontSize, openFile, setActiveTab } = useEditorStore();
+  const { tabs, activeTabId, updateTabContent, fontSize, setActiveTab } = useEditorStore();
   const { wrapMode } = useSettingsStore();
+  const { activeThemeId, themes } = useThemeStore();
+  const activeTheme = useMemo(() => themes.find(t => t.id === activeThemeId) || themes[0], [themes, activeThemeId]);
+  const monaco = useMonaco();
+  const diagnosticsConfigured = useRef(false);
+
   const {
     getPendingChanges,
     getSelectedChange,
@@ -46,6 +49,78 @@ export const CodeEditor: React.FC = () => {
     navigateChange,
     selectedChangeIndex
   } = usePendingChangesStore();
+
+  // Configure Monaco to disable semantic validation (we don't have project type definitions)
+  // This prevents false red squiggles for imports, types, etc.
+  useEffect(() => {
+    if (monaco && !diagnosticsConfigured.current) {
+      diagnosticsConfigured.current = true;
+      
+      try {
+        // Access the typescript language service (may be under languages.typescript or directly)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ts = (monaco.languages as any).typescript;
+        
+        if (ts && ts.typescriptDefaults) {
+          // Disable semantic validation for TypeScript (keeps syntax validation)
+          ts.typescriptDefaults.setDiagnosticsOptions({
+            noSemanticValidation: true,  // Disable type checking (no false import errors)
+            noSyntaxValidation: false,   // Keep syntax validation (catch real syntax errors)
+          });
+          
+          // Set compiler options to be more lenient
+          ts.typescriptDefaults.setCompilerOptions({
+            target: ts.ScriptTarget?.ESNext ?? 99,
+            allowNonTsExtensions: true,
+            moduleResolution: ts.ModuleResolutionKind?.NodeJs ?? 2,
+            module: ts.ModuleKind?.ESNext ?? 99,
+            noEmit: true,
+            esModuleInterop: true,
+            jsx: ts.JsxEmit?.React ?? 2,
+            allowJs: true,
+            checkJs: false,
+            strict: false,
+            skipLibCheck: true,
+            noImplicitAny: false,
+          });
+        }
+        
+        if (ts && ts.javascriptDefaults) {
+          // Same for JavaScript
+          ts.javascriptDefaults.setDiagnosticsOptions({
+            noSemanticValidation: true,
+            noSyntaxValidation: false,
+          });
+          
+          ts.javascriptDefaults.setCompilerOptions({
+            target: ts.ScriptTarget?.ESNext ?? 99,
+            allowNonTsExtensions: true,
+            moduleResolution: ts.ModuleResolutionKind?.NodeJs ?? 2,
+            module: ts.ModuleKind?.ESNext ?? 99,
+            noEmit: true,
+            esModuleInterop: true,
+            jsx: ts.JsxEmit?.React ?? 2,
+            allowJs: true,
+            checkJs: false,
+          });
+        }
+        
+        console.log('[CodeEditor] Monaco diagnostics configured - semantic validation disabled');
+      } catch (e) {
+        console.warn('[CodeEditor] Failed to configure Monaco diagnostics:', e);
+      }
+    }
+  }, [monaco]);
+
+  // Register and update theme when it changes
+  useEffect(() => {
+    if (monaco && activeTheme) {
+      const monacoTheme = themeService.getMonacoTheme(activeTheme);
+      const themeId = getMonacoThemeId(activeTheme);
+      monaco.editor.defineTheme(themeId, monacoTheme);
+      monaco.editor.setTheme(themeId);
+    }
+  }, [monaco, activeTheme]);
 
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId), [tabs, activeTabId]);
 
@@ -67,26 +142,15 @@ export const CodeEditor: React.FC = () => {
   const totalChanges = pendingChanges.length;
   const currentIndex = Math.min(selectedChangeIndex, totalChanges - 1);
 
-  // Auto-open the file for the selected change
+  // Auto-focus the tab for the selected change (but don't open new tabs)
   useEffect(() => {
     if (selectedChange && selectedChange.filePath) {
       const existingTab = tabs.find(t => t.path === selectedChange.filePath);
-      if (existingTab) {
-        // Just focus the existing tab
-        if (activeTabId !== existingTab.id) {
-          setActiveTab(existingTab.id);
-        }
-      } else {
-        // Open the file in a new tab
-        openFile(
-          selectedChange.filePath,
-          selectedChange.fileName,
-          selectedChange.originalContent || '',
-          undefined
-        );
+      if (existingTab && activeTabId !== existingTab.id) {
+        setActiveTab(existingTab.id);
       }
     }
-  }, [selectedChange?.id]); // Only re-run when selected change ID changes
+  }, [selectedChange?.id, tabs, activeTabId, setActiveTab]);
 
   if (!activeTab) {
     return (
@@ -122,12 +186,9 @@ export const CodeEditor: React.FC = () => {
     );
   }
 
-  // Check if the current file has a pending change to show
-  const showDiffForCurrentFile = selectedChange && selectedChange.filePath === activeTab.path;
-
   return (
     <div className="flex-1 bg-editor overflow-hidden relative flex flex-col">
-      {/* Approval Header Overlay - Matches IDE Theme */}
+      {/* Pending Changes Banner - Lightweight notification */}
       {selectedChange && (
         <div className="absolute top-0 left-0 right-0 z-50 flex items-center justify-between px-4 py-2 bg-panel-header border-b border-border backdrop-blur-md">
           <div className="flex items-center gap-3">
@@ -198,80 +259,39 @@ export const CodeEditor: React.FC = () => {
         </div>
       )}
 
+      {/* Monaco Editor - Always show the editor, no diff viewer */}
       <div className={`flex-1 relative overflow-hidden ${selectedChange ? 'pt-12' : ''}`}>
-        {showDiffForCurrentFile ? (
-          <div className="h-full w-full overflow-auto bg-[#0d0d0d] scrollbar-thin">
-            <ReactDiffViewer
-              oldValue={selectedChange.originalContent || ''}
-              newValue={selectedChange.content}
-              splitView={false}
-              useDarkTheme={true}
-              hideLineNumbers={false}
-              styles={{
-                variables: {
-                  dark: {
-                    // Muted, readable diff colors matching IDE theme
-                    diffViewerBackground: '#0d0d0d',
-                    diffViewerColor: '#d4d4d4',
-                    addedBackground: '#1e3a29',
-                    addedColor: '#89d185',
-                    removedBackground: '#3d2323',
-                    removedColor: '#ce9178',
-                    wordAddedBackground: '#2d4f3c',
-                    wordRemovedBackground: '#5c3333',
-                    addedGutterBackground: '#1a3324',
-                    removedGutterBackground: '#3a2020',
-                    gutterBackground: '#141414',
-                    gutterColor: '#555555',
-                    codeFoldBackground: '#1c1c1c',
-                    codeFoldGutterBackground: '#1c1c1c',
-                    emptyLineBackground: '#0d0d0d',
-                  }
-                },
-                contentText: {
-                  fontSize: '13px',
-                  lineHeight: '20px',
-                  fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace",
-                },
-                line: {
-                  padding: '1px 0',
-                }
-              }}
-            />
-          </div>
-        ) : (
-          <Editor
-            height="100%"
-            path={activeTab.path}
-            defaultLanguage={activeTab.language}
-            language={activeTab.language}
-            defaultValue={activeTab.content}
-            value={activeTab.content}
-            theme="aurora-dark"
-            onChange={(value) => {
-              if (value !== undefined) {
-                updateTabContent(activeTab.id, value);
-              }
-            }}
-            options={{
-              minimap: { enabled: true },
-              fontSize: fontSize,
-              scrollBeyondLastLine: false,
-              automaticLayout: true,
-              wordWrap: wrapMode ? 'on' : 'off',
-              wrappingIndent: 'same',
-              wrappingStrategy: 'advanced',
-              padding: { top: 16, bottom: 16 },
-              fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace",
-              fontLigatures: true,
-              lineNumbers: 'on',
-              renderWhitespace: 'selection',
-              tabSize: 2,
-              cursorBlinking: 'smooth',
-              smoothScrolling: true,
-            }}
-          />
-        )}
+        <Editor
+          height="100%"
+          path={activeTab.path}
+          defaultLanguage={activeTab.language}
+          language={activeTab.language}
+          defaultValue={activeTab.content}
+          value={activeTab.content}
+          theme={activeTheme ? getMonacoThemeId(activeTheme) : 'aurora-dark'}
+          onChange={(value) => {
+            if (value !== undefined) {
+              updateTabContent(activeTab.id, value);
+            }
+          }}
+          options={{
+            minimap: { enabled: true },
+            fontSize: fontSize,
+            scrollBeyondLastLine: false,
+            automaticLayout: true,
+            wordWrap: wrapMode ? 'on' : 'off',
+            wrappingIndent: 'same',
+            wrappingStrategy: 'advanced',
+            padding: { top: 16, bottom: 16 },
+            fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace",
+            fontLigatures: true,
+            lineNumbers: 'on',
+            renderWhitespace: 'selection',
+            tabSize: 2,
+            cursorBlinking: 'smooth',
+            smoothScrolling: true,
+          }}
+        />
       </div>
     </div>
   );

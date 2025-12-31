@@ -49,11 +49,10 @@ export interface ThreadSummary {
   createdAt: number;
   updatedAt: number;
   messageCount: number;
-  preview: string; // First few chars of last message
+  preview: string;
 }
 
 interface ThreadState {
-  // Current thread
   currentThreadId: string | null;
   threads: Record<string, Thread>;
   threadList: ThreadSummary[];
@@ -66,7 +65,7 @@ interface ThreadState {
   deleteThreadFile: (threadId: string) => Promise<boolean>;
   updateThreadTitle: (threadId: string, title: string) => void;
 
-  // Message actions (synced with thread)
+  // Message actions
   addMessageToThread: (message: Message) => void;
   updateMessageInThread: (messageId: string, updates: Partial<Message>) => void;
 
@@ -108,6 +107,21 @@ const isDevMode = (): boolean => {
   }
   return false;
 };
+
+// Track streaming state - NO saves during streaming
+let isCurrentlyStreaming = false;
+
+export const setStreamingState = (streaming: boolean) => {
+  const wasStreaming = isCurrentlyStreaming;
+  isCurrentlyStreaming = streaming;
+  
+  // When streaming ends, save the thread ONCE
+  if (wasStreaming && !streaming) {
+    useThreadStore.getState().saveCurrentThread();
+  }
+};
+
+export const getStreamingState = () => isCurrentlyStreaming;
 
 const toDbMessage = (message: Message): DbMessage => ({
   id: message.id,
@@ -220,7 +234,6 @@ export const useThreadStore = create<ThreadState>()(
         if (thread) {
           set({ currentThreadId: threadId });
         } else {
-          // Try to load from file
           get().loadThreadFromFile(threadId).then((loadedThread) => {
             if (loadedThread) {
               set((state) => ({
@@ -236,10 +249,8 @@ export const useThreadStore = create<ThreadState>()(
       },
 
       deleteThread: async (threadId) => {
-        // First delete persistence (db + optional dev JSON)
         await get().deleteThreadFile(threadId);
 
-        // Then remove from state
         set((state) => {
           const { [threadId]: _, ...remainingThreads } = state.threads;
           return {
@@ -252,7 +263,6 @@ export const useThreadStore = create<ThreadState>()(
 
       deleteThreadFile: async (threadId) => {
         if (!isTauri()) {
-          console.log('Thread deleted from localStorage:', threadId);
           return true;
         }
 
@@ -260,14 +270,12 @@ export const useThreadStore = create<ThreadState>()(
           await deleteThreadFromDb(threadId);
         } catch (error) {
           console.error('Failed to delete thread from DB:', error);
-          // continue to attempt JSON deletion
         }
 
         if (isDevMode()) {
           try {
             const filePath = getThreadFilePath(threadId);
             await deletePath(filePath);
-            console.log('Thread file deleted (dev):', filePath);
           } catch (error) {
             console.error('Failed to delete thread file (dev):', error);
           }
@@ -306,7 +314,6 @@ export const useThreadStore = create<ThreadState>()(
           updatedAt: Date.now(),
         };
 
-        // Update title from first user message
         if (message.sender === 'user' && thread.messages.length === 0) {
           updatedThread.title = message.content.slice(0, 50) + (message.content.length > 50 ? '...' : '');
         }
@@ -329,8 +336,10 @@ export const useThreadStore = create<ThreadState>()(
           ),
         }));
 
-        // Auto-save
-        get().saveCurrentThread();
+        // Save when user sends message (not during streaming)
+        if (message.sender === 'user') {
+          get().saveCurrentThread();
+        }
       },
 
       updateMessageInThread: (messageId, updates) => {
@@ -355,8 +364,7 @@ export const useThreadStore = create<ThreadState>()(
           },
         }));
 
-        // Auto-save (debounced would be better but keeping simple)
-        get().saveCurrentThread();
+        // NO save during streaming - save happens when streaming ends via setStreamingState
       },
 
       updateThreadUsage: (tokenUsage, contextUsage) => {
@@ -378,11 +386,15 @@ export const useThreadStore = create<ThreadState>()(
           },
         }));
 
-        // Auto-save usage
-        get().saveCurrentThread();
+        // NO save here - save happens when streaming ends
       },
 
       saveCurrentThread: async () => {
+        // Skip if currently streaming
+        if (isCurrentlyStreaming) {
+          return;
+        }
+        
         const { currentThreadId, threads } = get();
         if (!currentThreadId) return;
 
@@ -390,18 +402,16 @@ export const useThreadStore = create<ThreadState>()(
         if (!thread) return;
 
         if (!isTauri()) {
-          // In web mode, just use localStorage (handled by persist middleware)
-          console.log('Thread saved to localStorage:', currentThreadId);
           return;
         }
 
         try {
           await saveThreadToDb(toDbThread(thread));
+          
           if (isDevMode()) {
             const filePath = getThreadFilePath(currentThreadId);
             const content = JSON.stringify(thread, null, 2);
             await writeFileContent(filePath, content);
-            console.log('Thread saved to file (dev):', filePath);
           }
         } catch (error) {
           console.error('Failed to save thread:', error);
@@ -413,7 +423,6 @@ export const useThreadStore = create<ThreadState>()(
           return null;
         }
 
-        // Try DB first
         try {
           const dbThread = await getThreadFromDb(threadId);
           if (dbThread) {
@@ -423,7 +432,6 @@ export const useThreadStore = create<ThreadState>()(
           console.error('Failed to load thread from DB:', error);
         }
 
-        // Dev fallback: JSON file
         if (isDevMode()) {
           try {
             const filePath = getThreadFilePath(threadId);
@@ -440,7 +448,6 @@ export const useThreadStore = create<ThreadState>()(
 
       loadAllThreadsFromFiles: async () => {
         if (!isTauri()) {
-          console.log('Not in Tauri, using localStorage');
           return;
         }
 
@@ -450,7 +457,6 @@ export const useThreadStore = create<ThreadState>()(
           const loadedThreads: Record<string, Thread> = {};
           const loadedThreadList: ThreadSummary[] = [];
 
-          // Primary: DB
           const dbThreads = await listThreadsFromDb();
           for (const dbThread of dbThreads) {
             const thread = fromDbThread(dbThread);
@@ -466,7 +472,6 @@ export const useThreadStore = create<ThreadState>()(
             });
           }
 
-          // Optional dev merge from JSON files (keep if not already present)
           if (isDevMode()) {
             const threadsDir = getThreadsDir();
             const entries = await readDirectory(threadsDir);
@@ -494,17 +499,13 @@ export const useThreadStore = create<ThreadState>()(
             }
           }
 
-          // Sort by updatedAt (newest first)
           loadedThreadList.sort((a, b) => b.updatedAt - a.updatedAt);
 
-          // Merge with existing state (keep any threads not on disk)
           set((state) => ({
             threads: { ...state.threads, ...loadedThreads },
             threadList: loadedThreadList,
             isLoading: false,
           }));
-
-          console.log(`Loaded ${loadedThreadList.length} threads (db${isDevMode() ? '+dev files' : ''})`);
         } catch (error) {
           console.error('Failed to load threads:', error);
           set({ isLoading: false });

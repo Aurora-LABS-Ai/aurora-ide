@@ -1,6 +1,7 @@
 /**
  * Enhanced File Tool Executors with Operation Logging
  * Integrates operation logging for safety and context awareness
+ * Includes pre-save syntax validation to catch errors before writing
  */
 
 import { toolRegistry } from "../registry";
@@ -12,15 +13,12 @@ import {
   deletePath,
 } from "../../lib/tauri";
 import { resolvePath, getWorkspaceRootPath } from "../utils/path-resolver";
-import { useWorkspaceStore } from "../../store/useWorkspaceStore";
+import { useSettingsStore } from "../../store/useSettingsStore";
 import { operationLog, FsOperationType } from "../operation-log";
+import { validateSyntax, supportsValidation, formatValidationForAgent } from "../../services/syntax-validator";
 
-// Helper to trigger file tree refresh
-const triggerRefresh = () => {
-  setTimeout(() => {
-    useWorkspaceStore.getState().refreshDirectory();
-  }, 100);
-};
+// NO-OP: Rust file watcher handles refresh via fs-changed events
+const triggerRefresh = () => {};
 
 // Helper to convert escape sequences to actual characters
 const processEscapeSequences = (content: string): string => {
@@ -30,6 +28,29 @@ const processEscapeSequences = (content: string): string => {
     .replace(/\\t/g, '\t')
     .replace(/\\r/g, '\r')
     .replace(/\\\\/g, '\\');
+};
+
+// Helper to validate file content before writing
+// Returns null if valid, or error message if invalid
+const validateBeforeWrite = (content: string, filename: string): string | null => {
+  // Check if syntax validation is enabled in settings
+  const syntaxValidationEnabled = useSettingsStore.getState().syntaxValidationEnabled;
+  
+  if (!syntaxValidationEnabled) {
+    return null; // Validation disabled by user
+  }
+
+  // Check if this file type supports validation
+  if (!supportsValidation(filename)) {
+    return null; // No validation for this file type
+  }
+
+  const result = validateSyntax(content, filename);
+  if (!result.valid) {
+    return formatValidationForAgent(result, filename);
+  }
+
+  return null; // Valid
 };
 
 // ============================================
@@ -153,11 +174,53 @@ const fileCreateExecutor = async (
   try {
     const processedContent = args.content ? processEscapeSequences(args.content) : '';
 
+    // PRE-SAVE VALIDATION: Check syntax before writing
+    const validationError = validateBeforeWrite(processedContent, fileName);
+    if (validationError) {
+      console.warn("[file_create] Syntax validation failed:", fileName);
+      return JSON.stringify({
+        success: false,
+        error: validationError,
+        validation_failed: true,
+        path: args.path,
+        fullPath,
+      });
+    }
+
     // CURSOR-STYLE: Write to disk immediately
     await writeFileContent(fullPath, processedContent);
     triggerRefresh();
 
-    // Import pending changes store
+    // Check if auto-accept is enabled BEFORE adding to pending changes
+    const autoAccept = useSettingsStore.getState().autoAcceptChanges;
+    
+    if (autoAccept) {
+      // Auto-accept mode: File is already written, just update editor if open
+      import('../../store/useEditorStore').then(({ useEditorStore }) => {
+        const tab = useEditorStore.getState().tabs.find(t => t.path === fullPath);
+        if (tab) {
+          useEditorStore.getState().reloadTabContent(tab.id, processedContent);
+        }
+      }).catch(() => {});
+
+      operationLog.logOperation(FsOperationType.Create, args.path, {
+        fullPath,
+        pending: false,
+        autoAccepted: true,
+        bytes: processedContent.length,
+      });
+
+      return JSON.stringify({
+        success: true,
+        pending: false,
+        message: `File created: ${args.path}`,
+        path: args.path,
+        fullPath,
+        bytes: processedContent.length,
+      });
+    }
+
+    // Import pending changes store (only when NOT auto-accept)
     const { usePendingChangesStore } = await import('../../store/usePendingChangesStore');
 
     // Track the change for potential rollback (originalContent undefined = new file, delete on reject)
@@ -236,17 +299,60 @@ const fileWriteExecutor = async (
   console.log("[file_write] Writing file (Cursor-style):", fullPath);
 
   try {
-    // Import pending changes store
-    const { usePendingChangesStore, loadOriginalContent } = await import('../../store/usePendingChangesStore');
-
-    // Load original content for potential rollback
-    const originalContent = await loadOriginalContent(fullPath);
-
     const processedContent = processEscapeSequences(args.content);
+
+    // PRE-SAVE VALIDATION: Check syntax before writing
+    const validationError = validateBeforeWrite(processedContent, fileName);
+    if (validationError) {
+      console.warn("[file_write] Syntax validation failed:", fileName);
+      return JSON.stringify({
+        success: false,
+        error: validationError,
+        validation_failed: true,
+        path: args.path,
+        fullPath,
+      });
+    }
+
+    // Check if auto-accept is enabled BEFORE loading original content (saves time)
+    const autoAccept = useSettingsStore.getState().autoAcceptChanges;
 
     // CURSOR-STYLE: Write to disk immediately
     await writeFileContent(fullPath, processedContent);
     triggerRefresh();
+
+    if (autoAccept) {
+      // Auto-accept mode: File is already written, just update editor if open
+      import('../../store/useEditorStore').then(({ useEditorStore }) => {
+        const tab = useEditorStore.getState().tabs.find(t => t.path === fullPath);
+        if (tab) {
+          useEditorStore.getState().reloadTabContent(tab.id, processedContent);
+        }
+      }).catch(() => {});
+
+      operationLog.logOperation(FsOperationType.Write, args.path, {
+        fullPath,
+        pending: false,
+        autoAccepted: true,
+        bytes: processedContent.length,
+        lines: processedContent.split("\n").length,
+      });
+
+      return JSON.stringify({
+        success: true,
+        pending: false,
+        message: `File written: ${args.path}`,
+        path: args.path,
+        fullPath,
+        bytes: processedContent.length,
+      });
+    }
+
+    // Import pending changes store (only when NOT auto-accept)
+    const { usePendingChangesStore, loadOriginalContent } = await import('../../store/usePendingChangesStore');
+
+    // Load original content for potential rollback
+    const originalContent = await loadOriginalContent(fullPath);
 
     // Track the change for potential rollback
     const changeId = usePendingChangesStore.getState().addChange({
@@ -336,11 +442,57 @@ const filePatchExecutor = async (
 
     const patchedContent = patchedLines.join("\n");
 
+    // PRE-SAVE VALIDATION: Check syntax before writing
+    const validationError = validateBeforeWrite(patchedContent, fileName);
+    if (validationError) {
+      console.warn("[file_patch] Syntax validation failed:", fileName);
+      return JSON.stringify({
+        success: false,
+        error: validationError,
+        validation_failed: true,
+        path: args.path,
+        fullPath,
+      });
+    }
+
     // CURSOR-STYLE: Write to disk immediately
     await writeFileContent(fullPath, patchedContent);
     triggerRefresh();
 
-    // Import pending changes store
+    // Check if auto-accept is enabled
+    const autoAccept = useSettingsStore.getState().autoAcceptChanges;
+
+    if (autoAccept) {
+      // Auto-accept mode: File is already written, just update editor if open
+      import('../../store/useEditorStore').then(({ useEditorStore }) => {
+        const tab = useEditorStore.getState().tabs.find(t => t.path === fullPath);
+        if (tab) {
+          useEditorStore.getState().reloadTabContent(tab.id, patchedContent);
+        }
+      }).catch(() => {});
+
+      operationLog.logOperation(FsOperationType.Edit, args.path, {
+        fullPath,
+        pending: false,
+        autoAccepted: true,
+        linesReplaced: endIdx - startIdx,
+        linesInserted: newLines.length,
+        startLine: args.start_line,
+        endLine: args.end_line,
+      });
+
+      return JSON.stringify({
+        success: true,
+        pending: false,
+        message: `File patched: ${args.path}`,
+        path: args.path,
+        fullPath,
+        linesReplaced: endIdx - startIdx,
+        linesInserted: newLines.length,
+      });
+    }
+
+    // Import pending changes store (only when NOT auto-accept)
     const { usePendingChangesStore } = await import('../../store/usePendingChangesStore');
 
     // Track the change for potential rollback

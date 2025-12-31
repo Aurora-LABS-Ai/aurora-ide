@@ -8,48 +8,52 @@ export default {
   theme: {
     extend: {
       colors: {
-        // VS Code Modern Dark - Proper Hierarchy
+        // VS Code Modern Dark - Mapped to Aurora Theme System variables
+        // Editor
+        editor: 'var(--aurora-editor-background)',
+        foreground: 'var(--aurora-editor-foreground)',
 
-        // Editor - lightest area where you code
-        editor: '#1e1e1e',
+        // Tabs (mapped to sidebar/editor context)
+        tabs: 'var(--aurora-title-bar-background)',
+        'tabs-active': 'var(--aurora-editor-background)',
 
-        // Tab bar - deeper dark above editor  
-        tabs: '#141414',
-        'tabs-active': '#1e1e1e',  // Active tab matches editor
+        // Sidebar & Panels
+        sidebar: 'var(--aurora-sidebar-background)',
+        'sidebar-foreground': 'var(--aurora-sidebar-foreground)',
+        'panel-header': 'var(--aurora-title-bar-background)', // Fixed: was mapping to text color
 
-        // Sidebar & Chat - same color, darker than editor
-        sidebar: '#171717',
+        // Core UI
+        titlebar: 'var(--aurora-title-bar-background)',
+        statusbar: 'var(--aurora-status-bar-background)',
 
-        // Panel headers (chat header, explorer header)
-        'panel-header': '#1c1c1c',
+        // Inputs
+        input: 'var(--aurora-chat-input-background)',
+        'input-border': 'var(--aurora-chat-input-border)',
 
-        // Title bar & Status bar - darkest
-        titlebar: '#111111',
-        statusbar: '#111111',
+        // Chat
+        'chat-bg': 'var(--aurora-chat-background)',
+        'msg-user': 'var(--aurora-chat-user-message)',
+        'msg-ai': 'var(--aurora-chat-assistant-message)',
 
-        // Input fields - slightly lighter to stand out
-        input: '#2d2d2d',
-        'input-border': '#404040',
+        // Common
+        border: 'var(--aurora-common-border)',
+        'border-focus': 'var(--aurora-common-primary)',
 
-        // Message backgrounds
-        'msg-user': '#1a1a1a',
-        'msg-ai': '#202020',
+        // Semantic
+        primary: 'var(--aurora-common-primary)',
+        'primary-hover': 'var(--aurora-common-primary-hover)',
+        'primary-foreground': 'var(--aurora-common-primary-foreground)',
 
-        // Borders
-        border: '#2b2b2b',
-        'border-focus': '#007acc',
+        success: 'var(--aurora-common-success)',
+        warning: 'var(--aurora-common-warning)',
+        danger: 'var(--aurora-common-error)', // Mapping danger to error
+        info: 'var(--aurora-common-info)',
 
-        // Accent colors
-        primary: '#007acc',
-        success: '#89d185',
-        warning: '#cca700',
-        danger: '#f14c4c',
-
-        // Text colors
-        'text-primary': '#d4d4d4',
-        'text-secondary': '#808080',
-        'text-disabled': '#555555',
-        'text-bright': '#ffffff',
+        // Text
+        'text-primary': 'var(--aurora-editor-foreground)',
+        'text-secondary': 'var(--aurora-sidebar-foreground)',
+        'text-disabled': 'var(--aurora-common-secondary-foreground)', // Best approximation
+        'text-bright': 'var(--aurora-common-primary-foreground)',
       },
       keyframes: {
         shimmer: {

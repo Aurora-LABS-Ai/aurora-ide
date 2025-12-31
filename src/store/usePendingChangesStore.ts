@@ -7,6 +7,7 @@
 
 import { create } from 'zustand';
 import { writeFileContent, readFileContent, isTauri } from '../lib/tauri';
+import { useSettingsStore } from './useSettingsStore';
 
 // Types
 export type ChangeOperation = 'create' | 'write' | 'patch' | 'delete';
@@ -59,6 +60,24 @@ export const usePendingChangesStore = create<PendingChangesState>((set, get) => 
     selectedChangeIndex: 0,
 
     addChange: (change) => {
+        // Check if auto-accept is enabled
+        const autoAcceptChanges = useSettingsStore.getState().autoAcceptChanges;
+
+        if (autoAcceptChanges) {
+            // Auto-accept: don't add to pending, just log and return empty id
+            console.log(`[PendingChanges] Auto-accepted: ${change.operation} ${change.filePath}`);
+            
+            // Update editor tab if open (file is already written to disk)
+            import('./useEditorStore').then(({ useEditorStore }) => {
+                const tab = useEditorStore.getState().tabs.find(t => t.path === change.filePath);
+                if (tab && change.content) {
+                    useEditorStore.getState().reloadTabContent(tab.id, change.content);
+                }
+            }).catch(() => {});
+            
+            return `auto_${Date.now()}`;
+        }
+
         const id = generateId();
         const newChange: PendingChange = {
             ...change,

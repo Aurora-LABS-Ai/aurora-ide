@@ -1,0 +1,150 @@
+{
+  "name": "Aurora Dark",
+  "author": "Aurora Team",
+  "version": "1.0.0",
+  "type": "dark",
+  "description": "Default dark theme for Aurora IDE",
+  "colors": {
+    "editor": {
+      "background": "#0d0d0d",
+      "foreground": "#e4e4e7",
+      "lineNumbers": "#52525b",
+      "lineNumbersActive": "#a1a1aa",
+      "selection": "#10b98133",
+      "selectionHighlight": "#10b98122",
+      "cursor": "#10b981",
+      "cursorLine": "#18181b",
+      "whitespace": "#3f3f46",
+      "indentGuide": "#27272a",
+      "matchingBracket": "#10b98155",
+      "wordHighlight": "#10b98133",
+      "findMatch": "#fbbf2455",
+      "findMatchHighlight": "#fbbf2433"
+    },
+    "sidebar": {
+      "background": "#111111",
+      "foreground": "#a1a1aa",
+      "border": "#27272a",
+      "itemHover": "#ffffff0d",
+      "itemActive": "#10b98120",
+      "itemSelected": "#10b98130",
+      "sectionHeader": "#71717a"
+    },
+    "chat": {
+      "background": "#0d0d0d",
+      "inputBackground": "#18181b",
+      "inputBorder": "#27272a",
+      "surface": "#111111",
+      "surfaceBorder": "#1f1f1f",
+      "surfaceMuted": "#0f0f10",
+      "usageLow": "#22d3ee",
+      "usageMedium": "#facc15",
+      "usageHigh": "#ef4444",
+      "userMessage": "#1e3a5f",
+      "assistantMessage": "#18181b",
+      "thinkingBackground": "#1a1a2e",
+      "thinkingBorder": "#3730a3",
+      "toolCallBackground": "#1a2e1a",
+      "toolCallBorder": "#166534",
+      "codeBlock": "#1e1e1e"
+    },
+    "terminal": {
+      "background": "#0d0d0d",
+      "foreground": "#e4e4e7",
+      "cursor": "#10b981",
+      "selection": "#10b98133",
+      "black": "#000000",
+      "red": "#ef4444",
+      "green": "#22c55e",
+      "yellow": "#eab308",
+      "blue": "#3b82f6",
+      "magenta": "#a855f7",
+      "cyan": "#06b6d4",
+      "white": "#f4f4f5",
+      "brightBlack": "#52525b",
+      "brightRed": "#f87171",
+      "brightGreen": "#4ade80",
+      "brightYellow": "#facc15",
+      "brightBlue": "#60a5fa",
+      "brightMagenta": "#c084fc",
+      "brightCyan": "#22d3ee",
+      "brightWhite": "#ffffff"
+    },
+    "statusBar": {
+      "background": "#111111",
+      "foreground": "#a1a1aa",
+      "border": "#27272a",
+      "itemHover": "#ffffff0d"
+    },
+    "titleBar": {
+      "background": "#0d0d0d",
+      "foreground": "#a1a1aa",
+      "border": "#27272a",
+      "buttonHover": "#ffffff0d"
+    },
+    "common": {
+      "primary": "#10b981",
+      "primaryHover": "#059669",
+      "primaryForeground": "#ffffff",
+      "secondary": "#27272a",
+      "secondaryHover": "#3f3f46",
+      "secondaryForeground": "#e4e4e7",
+      "success": "#22c55e",
+      "successForeground": "#ffffff",
+      "warning": "#f59e0b",
+      "warningForeground": "#000000",
+      "error": "#ef4444",
+      "errorForeground": "#ffffff",
+      "info": "#3b82f6",
+      "infoForeground": "#ffffff",
+      "border": "#27272a",
+      "borderHover": "#3f3f46",
+      "shadow": "#00000066",
+      "overlay": "#00000080",
+      "scrollbar": "#3f3f46",
+      "scrollbarHover": "#52525b"
+    }
+  },
+  "tokenColors": [
+    {
+      "name": "Comments",
+      "scope": ["comment", "punctuation.definition.comment"],
+      "settings": { "foreground": "#6b7280", "fontStyle": "italic" }
+    },
+    {
+      "name": "Keywords",
+      "scope": ["keyword", "storage.type", "storage.modifier"],
+      "settings": { "foreground": "#c084fc" }
+    },
+    {
+      "name": "Strings",
+      "scope": ["string", "string.quoted"],
+      "settings": { "foreground": "#34d399" }
+    },
+    {
+      "name": "Functions",
+      "scope": ["entity.name.function", "support.function"],
+      "settings": { "foreground": "#60a5fa" }
+    },
+    {
+      "name": "Types",
+      "scope": ["entity.name.type", "support.type"],
+      "settings": { "foreground": "#fbbf24" }
+    },
+    {
+      "name": "Variables",
+      "scope": ["variable", "variable.other"],
+      "settings": { "foreground": "#e4e4e7" }
+    },
+    {
+      "name": "Constants",
+      "scope": ["constant", "constant.numeric"],
+      "settings": { "foreground": "#f472b6" }
+    },
+    {
+      "name": "Operators",
+      "scope": ["keyword.operator"],
+      "settings": { "foreground": "#94a3b8" }
+    }
+  ]
+}

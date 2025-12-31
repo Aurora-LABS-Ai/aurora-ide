@@ -243,3 +243,23 @@ impl Default for AppSettings {
         }
     }
 }
+
+// ============================================================
+// CUSTOM THEMES
+// ============================================================
+
+/// Custom theme definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomTheme {
+    pub id: String,
+    pub name: String,
+    pub author: String,
+    pub version: String,
+    #[serde(rename = "type")]
+    pub theme_type: String, // "light" or "dark" (mapped from 'type' in JSON)
+    pub colors: String,     // JSON string of colors object
+    pub token_colors: String, // JSON string of tokenColors array
+    pub created_at: String,
+    pub updated_at: String,
+}

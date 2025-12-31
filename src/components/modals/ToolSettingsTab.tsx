@@ -1,11 +1,33 @@
 /**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
+ * 
+ * Use theme tokens via CSS variables:
+ *   - CSS: var(--aurora-{category}-{token})
+ *   - Tailwind: bg-[var(--aurora-editor-background)]
+ *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ * See: src/types/theme.ts for TypeScript interfaces
+ * See: src/services/theme-service.ts for theme utilities
+ */
+
+/**
  * Tool Settings Tab Component
  * Manages tool approval settings and max tool calls
  */
 
 import React from 'react';
 import { useSettingsStore } from '../../store/useSettingsStore';
-import { Terminal, FileText, FolderOpen, Code, AlertTriangle } from 'lucide-react';
+import { Terminal, FileText, FolderOpen, Code, AlertTriangle, Shield, Map } from 'lucide-react';
 import clsx from 'clsx';
 
 // Group tools by category for better organization
@@ -106,6 +128,12 @@ export const ToolSettingsTab: React.FC = () => {
   const {
     autoApproveTools,
     setAutoApproveTools,
+    autoAcceptChanges,
+    setAutoAcceptChanges,
+    syntaxValidationEnabled,
+    setSyntaxValidationEnabled,
+    projectLayoutEnabled,
+    setProjectLayoutEnabled,
     maxToolCallsPerRequest,
     setMaxToolCallsPerRequest,
     toolApprovalSettings,
@@ -123,7 +151,7 @@ export const ToolSettingsTab: React.FC = () => {
       <div className="p-3 border border-border rounded-lg bg-titlebar">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-xs font-medium text-text-primary">Global Auto-approve</h3>
+            <h3 className="text-xs font-medium text-text-primary">Auto-approve Tools</h3>
             <p className="text-[10px] text-text-secondary">Execute all tools without asking</p>
           </div>
           <button
@@ -138,6 +166,101 @@ export const ToolSettingsTab: React.FC = () => {
               autoApproveTools ? "translate-x-4" : "translate-x-0.5"
             )} />
           </button>
+        </div>
+      </div>
+
+      {/* Auto-accept File Changes Toggle */}
+      <div className="p-3 border border-border rounded-lg bg-titlebar">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-xs font-medium text-text-primary">Auto-accept File Changes</h3>
+            <p className="text-[10px] text-text-secondary">Skip diff review, accept all file modifications immediately</p>
+          </div>
+          <button
+            onClick={() => setAutoAcceptChanges(!autoAcceptChanges)}
+            className={clsx(
+              "relative w-8 h-4 rounded-full transition-colors",
+              autoAcceptChanges ? "bg-primary" : "bg-input border border-border"
+            )}
+          >
+            <div className={clsx(
+              "absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform",
+              autoAcceptChanges ? "translate-x-4" : "translate-x-0.5"
+            )} />
+          </button>
+        </div>
+        {autoAcceptChanges && (
+          <p className="text-[10px] text-warning mt-2">
+            File changes will be applied directly without showing the diff viewer.
+          </p>
+        )}
+      </div>
+
+      {/* Agent Guardrails Section */}
+      <div className="space-y-2">
+        <h3 className="text-xs font-medium text-text-primary flex items-center gap-1.5">
+          <Shield className="w-3.5 h-3.5" />
+          Agent Guardrails
+        </h3>
+        <p className="text-[10px] text-text-secondary mb-2">
+          Help the agent avoid common mistakes
+        </p>
+
+        {/* Syntax Validation Toggle */}
+        <div className="p-3 border border-border rounded-lg bg-titlebar">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-xs font-medium text-text-primary">Pre-save Syntax Validation</h3>
+              <p className="text-[10px] text-text-secondary">Check syntax before writing files (JSON, JS, TS, JSX, TSX, CSS)</p>
+            </div>
+            <button
+              onClick={() => setSyntaxValidationEnabled(!syntaxValidationEnabled)}
+              className={clsx(
+                "relative w-8 h-4 rounded-full transition-colors",
+                syntaxValidationEnabled ? "bg-success" : "bg-input border border-border"
+              )}
+            >
+              <div className={clsx(
+                "absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform",
+                syntaxValidationEnabled ? "translate-x-4" : "translate-x-0.5"
+              )} />
+            </button>
+          </div>
+          {syntaxValidationEnabled && (
+            <p className="text-[10px] text-success mt-2">
+              Files with syntax errors will be rejected, forcing the agent to fix them.
+            </p>
+          )}
+        </div>
+
+        {/* Project Layout Toggle */}
+        <div className="p-3 border border-border rounded-lg bg-titlebar">
+          <div className="flex items-center justify-between">
+            <div className="flex items-start gap-2">
+              <Map className="w-3.5 h-3.5 text-text-secondary mt-0.5" />
+              <div>
+                <h3 className="text-xs font-medium text-text-primary">Project File Map</h3>
+                <p className="text-[10px] text-text-secondary">Include file tree in first message to help agent understand project structure</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setProjectLayoutEnabled(!projectLayoutEnabled)}
+              className={clsx(
+                "relative w-8 h-4 rounded-full transition-colors",
+                projectLayoutEnabled ? "bg-success" : "bg-input border border-border"
+              )}
+            >
+              <div className={clsx(
+                "absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform",
+                projectLayoutEnabled ? "translate-x-4" : "translate-x-0.5"
+              )} />
+            </button>
+          </div>
+          {projectLayoutEnabled && (
+            <p className="text-[10px] text-success mt-2">
+              Agent will receive a file tree snapshot at conversation start for better path awareness.
+            </p>
+          )}
         </div>
       </div>
 

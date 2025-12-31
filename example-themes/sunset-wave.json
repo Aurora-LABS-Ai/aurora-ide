@@ -1,0 +1,99 @@
+{
+    "name": "Sunset Wave",
+    "author": "Antigravity Gemini 3 Pro",
+    "version": "1.0.0",
+    "type": "dark",
+    "colors": {
+        "editor": {
+            "background": "#2d1b2e",
+            "foreground": "#ffd7cc",
+            "lineNumbers": "#5a3e5c",
+            "lineNumbersActive": "#ff9e64",
+            "selection": "#fc518533",
+            "cursor": "#ff2e63",
+            "cursorLine": "#39233b"
+        },
+        "sidebar": {
+            "background": "#221021",
+            "foreground": "#b3889b",
+            "border": "#39233b",
+            "itemHover": "#fc518511",
+            "itemActive": "#fc518533",
+            "itemSelected": "#fc518533",
+            "sectionHeader": "#b3889b"
+        },
+        "chat": {
+            "background": "#2d1b2e",
+            "inputBackground": "#39233b",
+            "inputBorder": "#5a3e5c",
+            "userMessage": "#fc518533",
+            "assistantMessage": "#39233b"
+        },
+        "terminal": {
+            "background": "#2d1b2e",
+            "foreground": "#ffd7cc"
+        },
+        "statusBar": {
+            "background": "#221021",
+            "foreground": "#b3889b",
+            "border": "#39233b"
+        },
+        "titleBar": {
+            "background": "#221021",
+            "foreground": "#b3889b",
+            "border": "#39233b"
+        },
+        "common": {
+            "primary": "#fc5185",
+            "secondary": "#39233b",
+            "success": "#43d8c9",
+            "warning": "#ff9e64",
+            "error": "#ff2e63",
+            "info": "#45f0df",
+            "border": "#39233b"
+        }
+    },
+    "tokenColors": [
+        {
+            "scope": [
+                "comment"
+            ],
+            "settings": {
+                "foreground": "#6272a4",
+                "fontStyle": "italic"
+            }
+        },
+        {
+            "scope": [
+                "keyword"
+            ],
+            "settings": {
+                "foreground": "#ff79c6"
+            }
+        },
+        {
+            "scope": [
+                "string"
+            ],
+            "settings": {
+                "foreground": "#f1fa8c"
+            }
+        },
+        {
+            "scope": [
+                "variable"
+            ],
+            "settings": {
+                "foreground": "#f8f8f2"
+            }
+        },
+        {
+            "scope": [
+                "entity.name.function"
+            ],
+            "settings": {
+                "foreground": "#50fa7b"
+            }
+        }
+    ]
+}

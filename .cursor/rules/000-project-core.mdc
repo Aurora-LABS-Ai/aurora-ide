@@ -1,78 +1,176 @@
 ***
+description: Core Aurora project patterns and enterprise-grade architecture fundamentals
 alwaysApply: true
 ***
 
-# Aurora Core Rules
+# Aurora Project Core
 
 ## Overview
-Follow these rules for every change in the Aurora agentic frontend. The project mimics a modular IDE with Tauri-native capabilities—maintain separation of concerns and keep documentation synchronized.
+Aurora is a Tauri-based AI-powered code editor with React frontend and Rust backend. This rule covers the fundamental patterns and architecture decisions that apply across the entire codebase, reflecting the completed enterprise-grade context builder system.
 
 ## Technology Stack
-- React 18 + TypeScript + Vite 7
-- Zustand for state management
-- TailwindCSS (custom dark palette) + limited global CSS
-- Tauri 2 backend (Rust) for filesystem/shell persistence
-- PNPM workspace
+- **Frontend:** React 18.3.1 + TypeScript 5.9.3, Vite 7.2.4, Tailwind CSS 3.4.17
+- **Backend:** Tauri 2.x, Rust with SQLite (rusqlite, schema v3)
+- **State Management:** Zustand 5.0.9 with multiple stores
+- **Editor:** Monaco Editor 4.7.0 for code editing
+- **Terminal:** XTerm.js 6.0.0 with PTY support
+- **HTTP:** Tauri HTTP (CORS bypass) for all LLM requests
+- **Build:** pnpm package manager
+
+## Architecture
+
+### Enterprise Provider System
+```typescript
+// Centralized provider presets eliminate scattered checks
+interface ProviderPreset {
+  id: string;
+  baseFormat: 'openai' | 'anthropic';
+  chatEndpoint: string;
+  authType: 'bearer' | 'x-api-key';
+  thinkingConfig?: ThinkingConfig;
+  defaultContextWindow: number;
+  defaultMaxOutput: number;
+}
+
+// Supported providers: Anthropic, OpenAI, DeepSeek, GLM, MiniMax, Custom
+const provider = createProvider(config);
+```
+
+### Context Management (Enterprise)
+```typescript
+// KiloCode-style context management with sliding window
+// Automatic truncation at 50% when over limit
+// 10% buffer zone, force reduction on overflow
+// Context windows: GLM (200k), Anthropic (200k), MiniMax (1M), DeepSeek (64k)
+```
+
+### Window Synchronization
+```typescript
+// Dual-window support: main window + detachable chat
+// State sync via useWindowStateSync hook
+// Shared thread UUID with full token/context usage persistence
+```
 
 ## Code Standards
 
-### Pre-change Checklist
-- Review `DOCS/01-ARCHITECTURE.md` and `DOCS/02-CODE-STYLE-PATTERNS.md` before touching code; align updates with the documented architecture.
-- Confirm the change belongs in its own dedicated module or file to keep concerns separated.
-- If the change alters flows, architecture, or conventions, update every relevant DOCS file in the same PR.
-
 ### Naming Conventions
-- Components: PascalCase (`MainLayout`, `ChatPanel`).
-- Hooks/stores: `use<Name>Store.ts`, `useThing.ts` (camelCase export).
-- Services/utilities: kebab-case filenames (`llm-provider.ts`).
-- Directories: kebab-case.
-- Types/interfaces: live in `src/types`, PascalCase names.
+- **Components:** PascalCase (ChatPanel, SettingsModal)
+- **Hooks:** camelCase with 'use' prefix (useChatStore, useWindowStateSync)
+- **Stores:** camelCase with 'use' + 'Store' suffix (useSettingsStore)
+- **Services:** kebab-case (agent-service, context-builder)
+- **Types:** PascalCase interfaces, camelCase type aliases
+- **Files:** kebab-case for services/utilities, PascalCase for components
 
-### Code Structure
-- Keep features split by domain folder (`components/chat`, `components/editor`, `services`, `store`, `tools`).
-- Prefer colocated files per concern instead of monoliths—create new files when logic grows.
-- Imports: external deps first, then absolute project paths, then relative siblings.
-- Avoid large anonymous functions inside components—extract helpers/hooks.
+### Import Organization
+```typescript
+// 1. React imports
+import React, { useState, useEffect } from 'react';
 
-### Essential Patterns
-```tsx
-// ✅ Compose panes with dedicated child components
-export const MainLayout = () => (
-  <PanelGroup>
-    <Panel id="explorer"><FileExplorer /></Panel>
-    <Panel id="editor"><EditorPanel /></Panel>
-    {showChat && <Panel id="chat"><ChatPanel /></Panel>}
-  </PanelGroup>
-)
+// 2. External libraries (alphabetical)
+import { invoke } from '@tauri-apps/api/core';
+import { Search } from 'lucide-react';
+
+// 3. Internal imports (grouped by layer)
+import { useChatStore } from '../../store/useChatStore';
+import { ChatInput } from './ChatInput';
+import { getAgentService } from '../../services';
 ```
 
-### Deprecated Patterns - DO NOT USE
-```ts
-// ❌ Dumping unrelated logic into one mega file
-// ✅ Split into services, hooks, stores as needed
+### State Management Pattern
+```typescript
+// Zustand stores with SQLite persistence
+interface SettingsState {
+  llmProviders: ProviderConfig[];
+  selectedModel: string;
+  // Actions with DB sync
+  addProvider: (config: ProviderConfig) => void;
+  setSelectedModel: (modelId: string) => void;
+}
+
+// Per-provider settings (no global overrides)
+const { temperature, maxTokens } = getProviderConfig();
 ```
 
 ### Error Handling
-- Wrap Tauri calls in try/catch; log via `console.error('[Module]', err)`.
-- Return safe fallbacks (empty arrays, null) instead of throwing inside UI.
+```typescript
+// Async operations with try-catch
+try {
+  const result = await agent.chat(message);
+  // Handle success
+} catch (error) {
+  console.error('Chat failed:', error);
+  // User-friendly error display
+}
 
-### Performance Guidelines
-- Subscribe to Zustand slices to avoid rerender storms.
-- Use refs for streaming data buffers (see `ChatPanel`).
-- Keep heavy Tauri/file ops async and gated by `isTauri()`.
+// Tauri invoke (CORS-safe)
+const response = await invoke('llm_request', { config })
+  .catch(error => {
+    throw new Error(`LLM request failed: ${error}`);
+  });
+```
 
-### Testing Requirements
-- (Future) Use Vitest + RTL. Until tests exist, at least describe manual testing in PR notes.
+### Database Persistence
+```typescript
+// SQLite with migrations (schema v3)
+// Tables: llm_providers, threads (with token_usage), app_settings, tool_settings
+// Location: %APPDATA%/com.aurora.agent/aurora.db (Windows)
+```
 
-### Documentation Standards
-- Whenever architecture, conventions, or workflows change, update the corresponding `DOCS/*.md` files in the same PR.
-- Reference files inline using @filepath where possible.
+## Essential Patterns
+
+### Provider Creation Flow
+```typescript
+// 1. Get provider config from settings
+const config = getLLMConfig();
+
+// 2. Create provider via factory
+const provider = createProvider(config);
+
+// 3. Set on agent service
+agent.setProvider(provider);
+
+// 4. Chat with enterprise context management
+await agent.chat(messages, {
+  onToken: handleToken,
+  onThinking: handleThinking,
+  onToolCall: handleToolCall
+});
+```
+
+### Tool Execution Loop (Max 25 iterations)
+```typescript
+// Enterprise tool execution with approval workflow
+for (let i = 0; i < maxToolCalls; i++) {
+  const response = await provider.streamChat(messages);
+  const toolCalls = extractToolCalls(response);
+  const results = await executeToolCalls(toolCalls);
+  messages.push(...results);
+}
+```
+
+### Context Building (Cursor-style)
+```typescript
+// IDE context gathering for AI assistance
+const context = await buildQueryContext({
+  query: userMessage,
+  attachedFiles: attachedFiles,
+  ideState: getIDEContext()
+});
+```
 
 ## File References
-- @src/components/layout/MainLayout.tsx
-- @src/services/agent-service.ts
-- @DOCS/01-ARCHITECTURE.md
+- @/package.json - Dependencies and scripts
+- @/CLAUDE.md - Project documentation
+- @/DOCS/enterprisegrade-task.md - Completed enterprise features
+- @/src/services/providers/provider-presets.ts - Centralized provider configs
+- @/src/store/useSettingsStore.ts - Global settings with provider management
+- @/src/services/agent-service.ts - AI conversation orchestration
+- @/src-tauri/src/db/schema.rs - Database schema v3
 
 ## Additional Context
-- Detached chat window relies on URL `/chat-detached`; keep route-specific logic only in `App.tsx` and chat components.
-- Keep Tailwind color tokens from `tailwind.config.js` authoritative; don’t hardcode colors elsewhere.
+- **CORS Bypass:** All LLM requests through Tauri/Rust HTTP, never browser fetch
+- **Thinking Mode:** Per-provider support (Anthropic native blocks, GLM/DeepSeek via params)
+- **Context Windows:** Dynamically read from DB, provider-specific defaults
+- **Window Sync:** useWindowStateSync keeps main/detached windows synchronized
+- **Thread Persistence:** Full token/context usage tracking in SQLite threads table
+- **Tool Approvals:** Per-tool configurable approval modes (auto/deny/prompt)

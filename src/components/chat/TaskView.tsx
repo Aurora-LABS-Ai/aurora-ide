@@ -1,3 +1,25 @@
+/**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
+ * 
+ * Use theme tokens via CSS variables:
+ *   - CSS: var(--aurora-{category}-{token})
+ *   - Tailwind: bg-[var(--aurora-editor-background)]
+ *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ * See: src/types/theme.ts for TypeScript interfaces
+ * See: src/services/theme-service.ts for theme utilities
+ */
+
 import React, { useState, useEffect } from 'react';
 import { Check, CheckCircle2, Clock, Loader2, XCircle } from 'lucide-react';
 import clsx from 'clsx';
@@ -48,8 +70,8 @@ export const CompactTaskList: React.FC<{ todos: Task[] }> = ({ todos }) => {
             {isAllDone ? (
                 // Completion state - show success message
                 <>
-                    <CheckCircle2 size={12} className="text-emerald-400" />
-                    <span className="text-emerald-400 font-medium">
+                    <CheckCircle2 size={12} className="text-success" />
+                    <span className="text-success font-medium">
                         All {todos.length} tasks completed
                     </span>
                 </>
@@ -60,25 +82,25 @@ export const CompactTaskList: React.FC<{ todos: Task[] }> = ({ todos }) => {
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                         {todos.map((task, i) => {
                             if (task.status === 'completed') {
-                                return <Check key={i} size={11} className="text-emerald-400" strokeWidth={3} />;
+                                return <Check key={i} size={11} className="text-success" strokeWidth={3} />;
                             }
                             if (task.status === 'in_progress') {
-                                return <Loader2 key={i} size={11} className="text-amber-400 animate-spin" strokeWidth={2.5} />;
+                                return <Loader2 key={i} size={11} className="text-warning animate-spin" strokeWidth={2.5} />;
                             }
                             if (task.status === 'cancelled') {
-                                return <XCircle key={i} size={11} className="text-red-400" />;
+                                return <XCircle key={i} size={11} className="text-danger" />;
                             }
-                            return <div key={i} className="w-1.5 h-1.5 rounded-full bg-zinc-700" />;
+                            return <div key={i} className="w-1.5 h-1.5 rounded-full bg-border" />;
                         })}
                     </div>
 
                     {/* Active Label */}
                     {inProgress ? (
-                        <ShimmerText className="truncate font-medium max-w-[400px] text-amber-400">
+                        <ShimmerText className="truncate font-medium max-w-[400px] text-warning">
                             {activeTask?.content || "Tasks initialized..."}
                         </ShimmerText>
                     ) : (
-                        <span className="truncate font-medium max-w-[400px] text-zinc-500">
+                        <span className="truncate font-medium max-w-[400px] text-text-disabled">
                             {activeTask?.content || "Tasks initialized..."}
                         </span>
                     )}
@@ -92,14 +114,14 @@ export const TaskList: React.FC<{ todos: Task[] }> = ({ todos }) => {
     if (todos.length === 0) return null;
 
     return (
-        <div className="mt-2 mb-2 w-full rounded-[14px] overflow-hidden border border-white/5 bg-[#121212]/80 shadow-lg shadow-black/20">
+        <div className="mt-2 mb-2 w-full rounded-[14px] overflow-hidden border border-border bg-sidebar shadow-lg shadow-black/20">
             {/* Header */}
-            <div className="bg-white/5 px-4 py-2 flex items-center justify-between border-b border-white/5">
-                <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-widest flex items-center gap-1.5">
+            <div className="bg-panel-header px-4 py-2 flex items-center justify-between border-b border-border">
+                <span className="text-[11px] font-semibold text-text-secondary uppercase tracking-widest flex items-center gap-1.5">
                     <Clock size={12} />
                     Task Progress
                 </span>
-                <span className="text-[10px] text-zinc-600 bg-black/20 px-1.5 py-0.5 rounded">
+                <span className="text-[10px] text-text-disabled bg-input px-1.5 py-0.5 rounded">
                     {todos.filter(t => t.status === 'completed').length}/{todos.length}
                 </span>
             </div>
@@ -139,9 +161,9 @@ export const TaskList: React.FC<{ todos: Task[] }> = ({ todos }) => {
                                 <span className={clsx(
                                     "text-[12px] leading-tight font-medium transition-colors",
                                     isCompleted ? "text-emerald-400/80 line-through decoration-emerald-500/30" :
-                                        isProgress ? "text-zinc-100" :
-                                            isCancelled ? "text-zinc-600 line-through" :
-                                                "text-zinc-500"
+                                        isProgress ? "text-text-primary" :
+                                            isCancelled ? "text-text-disabled line-through" :
+                                                "text-text-disabled"
                                 )}>
                                     {task.content}
                                 </span>

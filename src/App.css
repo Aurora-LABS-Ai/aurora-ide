@@ -1,3 +1,22 @@
+/**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ * 
+ * Use theme tokens via CSS variables:
+ *   - var(--aurora-{category}-{token})
+ *   - Example: var(--aurora-editor-background)
+ *   - Example: var(--aurora-common-primary)
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ */
+
 #root {
   max-width: 1280px;
   margin: 0 auto;

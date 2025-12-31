@@ -1,3 +1,25 @@
+/**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
+ * 
+ * Use theme tokens via CSS variables:
+ *   - CSS: var(--aurora-{category}-{token})
+ *   - Tailwind: bg-[var(--aurora-editor-background)]
+ *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ * See: src/types/theme.ts for TypeScript interfaces
+ * See: src/services/theme-service.ts for theme utilities
+ */
+
 import React, { useState, useEffect } from 'react';
 import { ChevronRight, Loader2, Sparkles } from 'lucide-react';
 import clsx from 'clsx';
@@ -30,17 +52,17 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ content, isGenerat
           "border border-transparent hover:bg-white/[0.03]",
           isGenerating
             ? "text-primary bg-primary/[0.05] border-primary/10"
-            : "text-zinc-500 hover:text-zinc-300"
+            : "text-text-disabled hover:text-text-secondary"
         )}
       >
         <div className={clsx(
           "flex items-center justify-center w-5 h-5 rounded-md transition-colors",
-          isGenerating ? "bg-primary/10" : "bg-white/5 group-hover:bg-white/10"
+          isGenerating ? "bg-primary/10" : "bg-input group-hover:bg-input/80"
         )}>
           {isGenerating ? (
             <Loader2 className="w-3 h-3 animate-spin text-primary" />
           ) : (
-            <Sparkles className="w-3 h-3 text-zinc-500 group-hover:text-zinc-300" />
+            <Sparkles className="w-3 h-3 text-text-disabled group-hover:text-text-secondary" />
           )}
         </div>
 
@@ -70,11 +92,11 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ content, isGenerat
           >
             <div className="mt-2 ml-2 pl-4 border-l-2 border-white/5 relative">
               {/* Decorative timeline dot */}
-              <div className="absolute -left-[5px] top-0 w-2 h-2 rounded-full bg-zinc-800 ring-4 ring-[#111111]" />
+              <div className="absolute -left-[5px] top-0 w-2 h-2 rounded-full bg-border ring-4 ring-sidebar" />
 
-              <div className="bg-[#0a0a0a] rounded-md border border-white/5 p-3 overflow-x-auto">
-                <p className="font-mono text-[11px] text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
-                  {content || <span className="text-zinc-600 italic">Thinking...</span>}
+              <div className="bg-editor rounded-md border border-border p-3 overflow-x-auto">
+                <p className="font-mono text-[11px] text-text-secondary leading-relaxed whitespace-pre-wrap break-words">
+                  {content || <span className="text-text-disabled italic">Thinking...</span>}
                 </p>
               </div>
             </div>

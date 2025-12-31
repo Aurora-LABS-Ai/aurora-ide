@@ -1,3 +1,25 @@
+/**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
+ * 
+ * Use theme tokens via CSS variables:
+ *   - CSS: var(--aurora-{category}-{token})
+ *   - Tailwind: bg-[var(--aurora-editor-background)]
+ *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ * See: src/types/theme.ts for TypeScript interfaces
+ * See: src/services/theme-service.ts for theme utilities
+ */
+
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   MoreVertical, FolderOpen, FilePlus, FolderPlus,
@@ -5,22 +27,27 @@ import {
   Folder, FolderClosed, ChevronsDownUp, Copy
 } from 'lucide-react';
 import { FileTree } from './FileTree';
+import { ContextMenu } from '../ui/ContextMenu';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useDragStore } from '../../store/useDragStore';
 import { isTauri, createFile, createFolder } from '../../lib/tauri';
 import { useExplorerKeyboard } from '../../hooks/useExplorerKeyboard';
 
-
 export const FileExplorer: React.FC = () => {
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [isCreating, setIsCreating] = useState<{ type: 'file' | 'folder'; parentId: string } | null>(null);
   const [createInputValue, setCreateInputValue] = useState('');
   const [renameTargetId, setRenameTargetId] = useState<string | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const { setRootPath, rootPath, files, refreshDirectory, selectFile, clearWorkspace } = useWorkspaceStore();
+  // FIX: Use shallow equality selector to prevent re-renders when unrelated store values change
+  const setRootPath = useWorkspaceStore(state => state.setRootPath);
+  const rootPath = useWorkspaceStore(state => state.rootPath);
+  const files = useWorkspaceStore(state => state.files);
+  const refreshDirectory = useWorkspaceStore(state => state.refreshDirectory);
+  const selectFile = useWorkspaceStore(state => state.selectFile);
+  const clearWorkspace = useWorkspaceStore(state => state.clearWorkspace);
   const { isDragging, dropTargetType } = useDragStore();
   const hasFolder = files.length > 0;
 
@@ -40,16 +67,7 @@ export const FileExplorer: React.FC = () => {
     },
   });
 
-  // Close menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+
 
   // Focus search input when shown
   useEffect(() => {
@@ -69,7 +87,7 @@ export const FileExplorer: React.FC = () => {
 
   // Handle new file at root
   const handleNewFileAtRoot = useCallback(() => {
-    setMenuOpen(false);
+    setMenuPosition(null);
     if (!rootPath) return;
     setIsCreating({ type: 'file', parentId: rootPath });
     setCreateInputValue('');
@@ -77,7 +95,7 @@ export const FileExplorer: React.FC = () => {
 
   // Handle new folder at root
   const handleNewFolderAtRoot = useCallback(() => {
-    setMenuOpen(false);
+    setMenuPosition(null);
     if (!rootPath) return;
     setIsCreating({ type: 'folder', parentId: rootPath });
     setCreateInputValue('');
@@ -85,7 +103,7 @@ export const FileExplorer: React.FC = () => {
 
   // Handle close folder
   const handleCloseFolder = useCallback(() => {
-    setMenuOpen(false);
+    setMenuPosition(null);
     clearWorkspace();
   }, [clearWorkspace]);
 
@@ -155,7 +173,7 @@ export const FileExplorer: React.FC = () => {
   const filteredFiles = filterFiles(files, searchQuery);
 
   const handleOpenFolder = async () => {
-    setMenuOpen(false);
+    setMenuPosition(null);
 
     if (isTauri()) {
       try {
@@ -182,94 +200,53 @@ export const FileExplorer: React.FC = () => {
 
   return (
     <div className="h-full flex flex-col bg-sidebar">
-      {/* Explorer Title Bar */}
-      <div className="h-[22px] px-3 flex items-center justify-between">
-        <span className="text-[11px] font-medium text-text-secondary uppercase tracking-wider">
+      {/* Explorer Title Bar - Premium Header */}
+      <div className="h-9 px-4 flex items-center justify-between border-b border-white/5 bg-sidebar/50 backdrop-blur-sm select-none">
+        <span className="text-[11px] font-bold text-text-secondary uppercase tracking-widest opacity-80">
           Explorer
         </span>
 
         {/* Menu Button */}
-        <div className="relative" ref={menuRef}>
-          <button
-            onClick={() => setMenuOpen(!menuOpen)}
-            className={`p-0.5 rounded transition-colors ${menuOpen
-              ? 'text-text-primary'
-              : 'text-text-disabled hover:text-text-secondary'
-              }`}
-            title="More Actions"
-          >
-            <MoreVertical className="w-4 h-4" />
-          </button>
+        <button
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            setMenuPosition({ x: rect.left, y: rect.bottom + 4 });
+          }}
+          className={`p-1 rounded-md transition-all duration-200 ${menuPosition
+            ? 'text-text-primary'
+            : 'text-text-disabled hover:text-text-secondary hover:bg-white/5'
+            }`}
+          style={{
+            backgroundColor: menuPosition ? 'var(--aurora-sidebar-itemSelected)' : undefined
+          }}
+          title="More Actions"
+        >
+          <MoreVertical className="w-4 h-4" />
+        </button>
 
-          {/* Dropdown Menu */}
-          {menuOpen && (
-            <div className="absolute right-0 top-full mt-1 w-48 bg-[#252526] border border-border/60 rounded-md shadow-xl shadow-black/40 z-50 py-1">
-              {/* File Actions */}
-              {hasFolder && (
-                <>
-                  <button
-                    onClick={() => { setMenuOpen(false); handleNewFileAtRoot(); }}
-                    className="w-full px-3 py-1.5 text-left text-[12px] text-text-primary hover:bg-white/10 flex items-center gap-2 transition-colors"
-                  >
-                    <FilePlus className="w-4 h-4 text-text-secondary" />
-                    New File
-                  </button>
-                  <button
-                    onClick={() => { setMenuOpen(false); handleNewFolderAtRoot(); }}
-                    className="w-full px-3 py-1.5 text-left text-[12px] text-text-primary hover:bg-white/10 flex items-center gap-2 transition-colors"
-                  >
-                    <FolderPlus className="w-4 h-4 text-text-secondary" />
-                    New Folder
-                  </button>
-                  <div className="h-px bg-border/40 my-1 mx-2" />
-                </>
-              )}
-
-              {/* Workspace Actions */}
-              <button
-                onClick={handleOpenFolder}
-                className="w-full px-3 py-1.5 text-left text-[12px] text-text-primary hover:bg-white/10 flex items-center gap-2 transition-colors"
-              >
-                <FolderOpen className="w-4 h-4 text-text-secondary" />
-                Open Folder...
-              </button>
-              {hasFolder && (
-                <>
-                  <button
-                    onClick={handleCloseFolder}
-                    className="w-full px-3 py-1.5 text-left text-[12px] text-text-primary hover:bg-white/10 flex items-center gap-2 transition-colors"
-                  >
-                    <FolderClosed className="w-4 h-4 text-text-secondary" />
-                    Close Folder
-                  </button>
-                  <div className="h-px bg-border/40 my-1 mx-2" />
-                  <button
-                    onClick={() => { setMenuOpen(false); refreshDirectory(); }}
-                    className="w-full px-3 py-1.5 text-left text-[12px] text-text-primary hover:bg-white/10 flex items-center gap-2 transition-colors"
-                  >
-                    <RefreshCw className="w-4 h-4 text-text-secondary" />
-                    Refresh
-                  </button>
-                  <button
-                    onClick={() => { setMenuOpen(false); handleCollapseAll(); }}
-                    className="w-full px-3 py-1.5 text-left text-[12px] text-text-primary hover:bg-white/10 flex items-center gap-2 transition-colors"
-                  >
-                    <ChevronsDownUp className="w-4 h-4 text-text-secondary" />
-                    Collapse All
-                  </button>
-                  <div className="h-px bg-border/40 my-1 mx-2" />
-                  <button
-                    onClick={() => { setMenuOpen(false); navigator.clipboard.writeText(rootPath || ''); }}
-                    className="w-full px-3 py-1.5 text-left text-[12px] text-text-primary hover:bg-white/10 flex items-center gap-2 transition-colors"
-                  >
-                    <Copy className="w-4 h-4 text-text-secondary" />
-                    Copy Path
-                  </button>
-                </>
-              )}
-            </div>
-          )}
-        </div>
+        {menuPosition && (
+          <ContextMenu
+            x={menuPosition.x}
+            y={menuPosition.y}
+            onClose={() => setMenuPosition(null)}
+            items={[
+              ...(hasFolder ? [
+                { label: 'New File', icon: <FilePlus className="w-4 h-4" />, onClick: handleNewFileAtRoot },
+                { label: 'New Folder', icon: <FolderPlus className="w-4 h-4" />, onClick: handleNewFolderAtRoot },
+                { divider: true, label: '', onClick: () => { } }
+              ] : []),
+              { label: 'Open Folder...', icon: <FolderOpen className="w-4 h-4" />, onClick: handleOpenFolder },
+              ...(hasFolder ? [
+                { label: 'Close Folder', icon: <FolderClosed className="w-4 h-4" />, onClick: handleCloseFolder },
+                { divider: true, label: '', onClick: () => { } },
+                { label: 'Refresh', icon: <RefreshCw className="w-4 h-4" />, onClick: () => { refreshDirectory(); setMenuPosition(null); } },
+                { label: 'Collapse All', icon: <ChevronsDownUp className="w-4 h-4" />, onClick: () => { handleCollapseAll(); setMenuPosition(null); } },
+                { divider: true, label: '', onClick: () => { } },
+                { label: 'Copy Path', icon: <Copy className="w-4 h-4" />, onClick: () => { navigator.clipboard.writeText(rootPath || ''); setMenuPosition(null); } }
+              ] : [])
+            ]}
+          />
+        )}
       </div>
 
       {/* Workspace Header - Folder name + Action Icons */}
@@ -313,23 +290,23 @@ export const FileExplorer: React.FC = () => {
 
       {/* Search bar */}
       {showSearch && hasFolder && (
-        <div className="px-2 py-2 border-b border-border/60 bg-sidebar/80">
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-disabled" />
+        <div className="px-3 py-2 border-b border-border/40 bg-sidebar/80 backdrop-blur-sm animate-in slide-in-from-top-2 duration-200">
+          <div className="relative group">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-disabled group-focus-within:text-primary transition-colors" />
             <input
               ref={searchInputRef}
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search files..."
-              className="w-full pl-8 pr-8 py-1.5 text-[12px] bg-[#1e1e1e] border border-border/80 rounded-md focus:border-primary/60 focus:outline-none focus:ring-1 focus:ring-primary/20 text-text-primary placeholder:text-text-disabled transition-all"
+              className="w-full pl-8 pr-8 py-1.5 text-[12px] bg-input/50 hover:bg-input border border-border/50 rounded-md focus:border-primary/60 focus:outline-none focus:ring-1 focus:ring-primary/20 text-text-primary placeholder:text-text-disabled transition-all shadow-sm"
             />
             {searchQuery && (
               <button
                 onClick={() => setSearchQuery('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-disabled hover:text-text-primary transition-colors"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-disabled hover:text-text-primary transition-colors hover:bg-white/10 rounded-full p-0.5"
               >
-                <X className="w-3.5 h-3.5" />
+                <X className="w-3 h-3" />
               </button>
             )}
           </div>
@@ -376,3 +353,6 @@ export const FileExplorer: React.FC = () => {
     </div>
   );
 };
+
+// FIX: Export memoized version to prevent re-renders from parent components
+export const MemoizedFileExplorer = React.memo(FileExplorer);

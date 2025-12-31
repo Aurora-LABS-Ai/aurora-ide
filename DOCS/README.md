@@ -1,10 +1,72 @@
-# Aurora Docs Index
+# Aurora Project Documentation
 
-This directory contains generated documentation describing the Aurora agentic frontend.
+This directory contains comprehensive documentation for the Aurora AI-powered code editor project.
 
-## Files
-1. **01-ARCHITECTURE.md** — High-level system overview, tech stack, folders, data flow, and integrations.
-2. **02-CODE-STYLE-PATTERNS.md** — Coding conventions, design patterns, and operational guidelines.
-3. **03-EXPANSION-GUIDE.md** — Onboarding, workflows, build/deploy steps, and contribution rules.
+## Documentation Files
 
-Use these documents together when extending the project: start with the architecture to understand context, consult style/patterns before coding, and follow the expansion guide for setup, workflows, and deployment.
+### [01-ARCHITECTURE.md](./01-ARCHITECTURE.md)
+High-level architecture overview covering:
+- Project overview and technology stack
+- **Comprehensive theming architecture** with strict rules against hardcoded components
+- Directory structure and core components
+- State management (Zustand stores)
+- Database persistence system (SQLite)
+- Tool system architecture
+- LLM provider system
+- Data flow patterns
+- Entry points and external dependencies
+
+### [02-CODE-STYLE-PATTERNS.md](./02-CODE-STYLE-PATTERNS.md)
+Code conventions and development standards:
+- Naming conventions (camelCase, PascalCase, SCREAMING_SNAKE_CASE)
+- Code organization patterns
+- Design patterns used throughout the codebase
+- Error handling and logging strategies
+- Testing patterns and framework configuration
+- **Theming and styling rules** - absolute prohibition of hardcoded styles
+- Formatting standards and tool configurations
+- Performance considerations
+
+### [03-EXPANSION-GUIDE.md](./03-EXPANSION-GUIDE.md)
+Development workflow and contribution guide:
+- Getting started and environment setup
+- Running the application (development/production)
+- Testing procedures and requirements
+- Adding new features, components, and modules
+- Common workflows (APIs, database, providers)
+- Debugging and troubleshooting
+- Build and deployment processes
+- Git workflow and performance tips
+
+## Additional Resources
+
+### [theme-dev.md](./theme-dev.md)
+Theme development guide for creating custom Aurora themes.
+
+### [../models-provider-docs/](../models-provider-docs/)
+Documentation for LLM provider integrations (GLM, DeepSeek, etc.).
+
+### [../README.md](../README.md)
+Original project README with development commands and architecture notes.
+
+## Key Architectural Principles
+
+1. **Theme Token Mandatory**: All components must use theme tokens. Hardcoded colors, styles, or Tailwind classes are strictly prohibited.
+
+2. **State Management via Zustand**: Six specialized stores manage different application domains with proper persistence.
+
+3. **Repository Pattern**: Database access through typed repositories with error handling.
+
+4. **Tool Approval System**: AI tools require user approval with granular per-tool settings.
+
+5. **Cross-Platform Compatibility**: Desktop application built with Tauri, supporting Windows, macOS, and Linux.
+
+## Development Workflow
+
+1. Read relevant documentation sections
+2. Follow code style patterns and theming rules
+3. Use expansion guide for adding new features
+4. Test with multiple themes and providers
+5. Follow Git workflow for contributions
+
+For questions or clarifications, refer to the specific documentation files or check existing code examples.

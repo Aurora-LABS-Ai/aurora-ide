@@ -10,11 +10,11 @@ pub use error::DbResult;
 pub use models::{
     EditorState, ExplorerState, WorkspaceState,
     LLMProvider, ToolSetting, AppSettings,
-    ThreadState,
+    ThreadState, CustomTheme,
 };
 pub use repositories::{
     EditorRepository, ExplorerRepository, WorkspaceRepository, SettingsRepository,
-    ThreadsRepository,
+    ThreadsRepository, ThemeRepository,
 };
 
 use tauri::AppHandle;
@@ -58,6 +58,11 @@ impl Database {
     /// Get a settings repository
     pub fn settings(&self) -> SettingsRepository<'_> {
         SettingsRepository::new(self._conn.connection())
+    }
+
+    /// Get a themes repository
+    pub fn themes(&self) -> ThemeRepository<'_> {
+        ThemeRepository::new(self._conn.connection())
     }
 
     /// Get the underlying connection (kept for potential future use)

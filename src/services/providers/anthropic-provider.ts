@@ -437,8 +437,17 @@ export class AnthropicProvider extends BaseProvider {
       return result;
 
     } catch (error) {
+      // Handle various cancellation error formats
       if (error instanceof Error && error.name === 'AbortError') {
         throw new Error('Request cancelled');
+      }
+      
+      // Handle Tauri cancellation error: {type: 'cancelation', msg: 'operation is manually canceled'}
+      if (typeof error === 'object' && error !== null && 'type' in error) {
+        const tauriError = error as { type: string; msg?: string };
+        if (tauriError.type === 'cancelation') {
+          throw new Error('Request cancelled');
+        }
       }
 
       // Enhanced error logging

@@ -1,27 +1,24 @@
 /**
  * Terminal Store
- * Manages terminal state including command history and output
- * Supports multiple shell profiles (PowerShell, Bash)
+ * Manages terminal state with native PTY support
+ * Terminal rendering is handled by xterm.js
  */
 
 import { create } from 'zustand';
 
 export type ShellProfile = 'powershell' | 'bash';
 
-export interface TerminalLine {
-  id: string;
-  type: 'input' | 'output' | 'error';
-  content: string;
-  timestamp: number;
-}
-
 export interface TerminalSession {
   id: string;
   name: string;
   cwd: string;
-  lines: TerminalLine[];
   isRunning: boolean;
   profile: ShellProfile;
+  // PTY-specific fields
+  isPty: boolean;
+  ptyConnected: boolean;
+  cols: number;
+  rows: number;
 }
 
 interface TerminalState {
@@ -38,10 +35,16 @@ interface TerminalState {
   createSession: (cwd?: string, profile?: ShellProfile) => string;
   closeSession: (sessionId: string) => void;
   setActiveSession: (sessionId: string) => void;
-  addLine: (sessionId: string, line: Omit<TerminalLine, 'id' | 'timestamp'>) => void;
-  clearSession: (sessionId: string) => void;
   setSessionRunning: (sessionId: string, isRunning: boolean) => void;
   updateSessionCwd: (sessionId: string, cwd: string) => void;
+  // PTY-specific actions
+  setPtyConnected: (sessionId: string, connected: boolean) => void;
+  setSessionSize: (sessionId: string, cols: number, rows: number) => void;
+  // Output handling for external tools
+  sessionHandlers: Map<string, (data: string) => void>;
+  registerSessionHandler: (sessionId: string, handler: (data: string) => void) => void;
+  unregisterSessionHandler: (sessionId: string) => void;
+  writeToActiveSession: (data: string) => void;
 }
 
 const generateId = () => Math.random().toString(36).substr(2, 9);
@@ -50,7 +53,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   sessions: [],
   activeSessionId: null,
   isOpen: false,
-  height: 250,
+  height: 300,
+  sessionHandlers: new Map(),
 
   openTerminal: () => {
     const state = get();
@@ -73,7 +77,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     }
   },
 
-  setHeight: (height) => set({ height: Math.max(100, Math.min(600, height)) }),
+  setHeight: (height) => set({ height: Math.max(150, Math.min(800, height)) }),
 
   createSession: (cwd, profile = 'powershell') => {
     const id = generateId();
@@ -88,14 +92,17 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       id,
       name: `${profileNames[profile]} ${sessionNumber}`,
       cwd: cwd || '',
-      lines: [], // Start with empty lines - no "session started" message
       isRunning: false,
       profile,
+      isPty: true,
+      ptyConnected: false,
+      cols: 80,
+      rows: 24,
     };
 
     set((state) => ({
       sessions: [...state.sessions, newSession],
-      activeSessionId: id, // Always switch to newly created session
+      activeSessionId: id,
     }));
 
     return id;
@@ -106,6 +113,9 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       const remaining = state.sessions.filter(s => s.id !== sessionId);
       let newActiveId = state.activeSessionId;
       
+      // Cleanup handler
+      state.sessionHandlers.delete(sessionId);
+      
       if (state.activeSessionId === sessionId) {
         newActiveId = remaining.length > 0 ? remaining[0].id : null;
       }
@@ -114,36 +124,12 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         sessions: remaining,
         activeSessionId: newActiveId,
         isOpen: remaining.length > 0 ? state.isOpen : false,
+        sessionHandlers: new Map(state.sessionHandlers),
       };
     });
   },
 
   setActiveSession: (sessionId) => set({ activeSessionId: sessionId }),
-
-  addLine: (sessionId, line) => {
-    const newLine: TerminalLine = {
-      ...line,
-      id: generateId(),
-      timestamp: Date.now(),
-    };
-
-    set((state) => ({
-      sessions: state.sessions.map(s =>
-        s.id === sessionId
-          ? { ...s, lines: [...s.lines, newLine] }
-          : s
-      ),
-    }));
-  },
-
-  clearSession: (sessionId) => {
-    // Just clear - no message
-    set((state) => ({
-      sessions: state.sessions.map(s =>
-        s.id === sessionId ? { ...s, lines: [] } : s
-      ),
-    }));
-  },
 
   setSessionRunning: (sessionId, isRunning) => {
     set((state) => ({
@@ -159,5 +145,47 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         s.id === sessionId ? { ...s, cwd } : s
       ),
     }));
+  },
+
+  // PTY-specific actions
+  setPtyConnected: (sessionId, connected) => {
+    set((state) => ({
+      sessions: state.sessions.map(s =>
+        s.id === sessionId ? { ...s, ptyConnected: connected } : s
+      ),
+    }));
+  },
+
+  setSessionSize: (sessionId, cols, rows) => {
+    set((state) => ({
+      sessions: state.sessions.map(s =>
+        s.id === sessionId ? { ...s, cols, rows } : s
+      ),
+    }));
+  },
+
+  // Output handling logic
+  registerSessionHandler: (sessionId, handler) => {
+    set(state => {
+      const newHandlers = new Map(state.sessionHandlers);
+      newHandlers.set(sessionId, handler);
+      return { sessionHandlers: newHandlers };
+    });
+  },
+
+  unregisterSessionHandler: (sessionId) => {
+    set(state => {
+      const newHandlers = new Map(state.sessionHandlers);
+      newHandlers.delete(sessionId);
+      return { sessionHandlers: newHandlers };
+    });
+  },
+
+  writeToActiveSession: (data) => {
+    const { activeSessionId, sessionHandlers } = get();
+    if (activeSessionId && sessionHandlers.has(activeSessionId)) {
+      const handler = sessionHandlers.get(activeSessionId);
+      handler?.(data);
+    }
   },
 }));

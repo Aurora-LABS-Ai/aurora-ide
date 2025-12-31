@@ -1,3 +1,25 @@
+/**
+ * THEME ARCHITECTURE NOTICE:
+ * 
+ * This project uses a centralized theme system. DO NOT use hardcoded colors.
+ * 
+ * Instead of:
+ *   - Hardcoded hex values: #ff0000, #1a1a1a
+ *   - Hardcoded RGB values: rgb(255, 0, 0)
+ *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
+ * 
+ * Use theme tokens via CSS variables:
+ *   - CSS: var(--aurora-{category}-{token})
+ *   - Tailwind: bg-[var(--aurora-editor-background)]
+ *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
+ * 
+ * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
+ * 
+ * See: DOCS/theme-dev.md for full token reference
+ * See: src/types/theme.ts for TypeScript interfaces
+ * See: src/services/theme-service.ts for theme utilities
+ */
+
 import React, { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -13,10 +35,10 @@ const components: Components = {
   code({ className, children, ...props }) {
     const match = /language-(\w+)/.exec(className || '');
     const isInline = !match && !className;
-    
+
     if (isInline) {
       return (
-        <code 
+        <code
           className="px-1 py-0.5 rounded bg-input text-primary font-mono text-[11px]"
           {...props}
         >
@@ -24,11 +46,11 @@ const components: Components = {
         </code>
       );
     }
-    
+
     return (
       <div className="my-2 rounded-lg overflow-hidden border border-border">
         {match && (
-          <div className="px-3 py-1 bg-titlebar text-[10px] text-text-secondary font-mono border-b border-border">
+          <div className="px-3 py-1 bg-panel-header text-[10px] text-text-secondary font-mono border-b border-border">
             {match[1]}
           </div>
         )}
@@ -40,7 +62,7 @@ const components: Components = {
       </div>
     );
   },
-  
+
   // Paragraphs
   p({ children }) {
     return (
@@ -49,7 +71,7 @@ const components: Components = {
       </p>
     );
   },
-  
+
   // Headers
   h1({ children }) {
     return <h1 className="text-lg font-bold text-text-primary mt-3 mb-2">{children}</h1>;
@@ -63,7 +85,7 @@ const components: Components = {
   h4({ children }) {
     return <h4 className="text-[13px] font-semibold text-text-primary mt-2 mb-1">{children}</h4>;
   },
-  
+
   // Lists
   ul({ children }) {
     return <ul className="list-disc list-inside my-1.5 space-y-0.5 text-[13px] text-text-primary">{children}</ul>;
@@ -74,13 +96,13 @@ const components: Components = {
   li({ children }) {
     return <li className="text-[13px] text-text-primary leading-relaxed">{children}</li>;
   },
-  
+
   // Links
   a({ href, children }) {
     return (
-      <a 
-        href={href} 
-        target="_blank" 
+      <a
+        href={href}
+        target="_blank"
         rel="noopener noreferrer"
         className="text-primary hover:underline"
       >
@@ -88,7 +110,7 @@ const components: Components = {
       </a>
     );
   },
-  
+
   // Blockquotes
   blockquote({ children }) {
     return (
@@ -97,22 +119,22 @@ const components: Components = {
       </blockquote>
     );
   },
-  
+
   // Horizontal rule
   hr() {
     return <hr className="my-3 border-border" />;
   },
-  
+
   // Strong/Bold
   strong({ children }) {
     return <strong className="font-semibold text-text-primary">{children}</strong>;
   },
-  
+
   // Emphasis/Italic
   em({ children }) {
     return <em className="italic text-text-primary">{children}</em>;
   },
-  
+
   // Tables
   table({ children }) {
     return (
@@ -124,7 +146,7 @@ const components: Components = {
     );
   },
   thead({ children }) {
-    return <thead className="bg-titlebar">{children}</thead>;
+    return <thead className="bg-panel-header">{children}</thead>;
   },
   tbody({ children }) {
     return <tbody className="divide-y divide-border">{children}</tbody>;
@@ -136,9 +158,9 @@ const components: Components = {
     return <th className="px-2 py-1.5 text-left font-semibold text-text-primary border-b border-border">{children}</th>;
   },
   td({ children }) {
-    return <td className="px-2 py-1.5 text-text-secondary">{children}</td>;
+    return <td className="px-2 py-1.5 text-text-secondary border-b border-border/50">{children}</td>;
   },
-  
+
   // Delete/Strikethrough
   del({ children }) {
     return <del className="line-through text-text-disabled">{children}</del>;
@@ -147,10 +169,10 @@ const components: Components = {
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ content }) => {
   if (!content) return null;
-  
+
   return (
     <div className="markdown-content overflow-hidden">
-      <ReactMarkdown 
+      <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={components}
       >

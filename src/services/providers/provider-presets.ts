@@ -66,7 +66,7 @@ export interface ProviderPreset {
 
 export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
   // ============================================
-  // GLM / Z.AI
+  // GLM / Z.AI (GLM-4.7, GLM-4.6, etc.)
   // ============================================
   glm: {
     id: 'glm',
@@ -76,12 +76,13 @@ export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
     authType: 'bearer',
     authHeader: 'Authorization',
     thinkingConfig: {
-      requestParam: { thinking: { type: 'enabled' } },
+      // GLM-4.7: thinking enabled by default, clear_thinking: false preserves reasoning across turns
+      // This enables "Preserved Thinking" for multi-turn conversations
+      requestParam: { thinking: { type: 'enabled', clear_thinking: false } },
       responseField: 'reasoning_content',
     },
-    defaultParams: {
-      tool_stream: true, // GLM-specific: stream tool calls
-    },
+    // tool_stream is handled in buildRequestBody for GLM models
+    defaultParams: {},
     includeStreamOptions: true,
     defaultContextWindow: 200000,
     defaultMaxOutput: 128000,

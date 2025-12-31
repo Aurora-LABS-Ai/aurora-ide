@@ -385,10 +385,59 @@ export class AgentService {
               }
             }
 
+            // Parse tool arguments with error handling (LLMs sometimes produce malformed JSON)
+            let parsedArgs: Record<string, unknown> = {};
+            try {
+              parsedArgs = JSON.parse(toolCall.function.arguments || '{}');
+            } catch (parseError) {
+              console.error(`[AgentService] Failed to parse tool arguments for ${toolName}:`, toolCall.function.arguments);
+              console.error('[AgentService] Parse error:', parseError);
+              
+              // Try to fix common JSON issues produced by LLMs
+              let fixedArgs = toolCall.function.arguments || '{}';
+              
+              // Fix 1: Missing comma between properties (e.g., "value""key" -> "value","key")
+              // This is a common GLM issue where it drops commas
+              fixedArgs = fixedArgs.replace(/"([^"]*)"(\s*)"(\w+)":/g, '"$1",$2"$3":');
+              
+              // Fix 2: Remove trailing commas before } or ]
+              fixedArgs = fixedArgs.replace(/,\s*([}\]])/g, '$1');
+              
+              // Fix 3: Add missing quotes around unquoted keys
+              fixedArgs = fixedArgs.replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3');
+              
+              // Fix 4: Handle escaped backslashes in paths (common in Windows paths)
+              // Sometimes LLMs produce \\\ instead of \\
+              fixedArgs = fixedArgs.replace(/\\\\\\\\/g, '\\\\');
+              
+              try {
+                parsedArgs = JSON.parse(fixedArgs);
+                console.log('[AgentService] Fixed JSON successfully');
+              } catch {
+                // If still can't parse, return error to LLM so it can retry
+                const errorResult: NonNullable<AgentResponse['toolCalls']>[0] = {
+                  id: toolCall.id,
+                  name: toolName,
+                  args: { raw: toolCall.function.arguments },
+                  result: `Error: Invalid JSON in tool arguments. The JSON could not be parsed. Please ensure your tool call arguments are valid JSON with proper commas between properties. Error: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
+                  status: 'failed',
+                };
+                
+                return {
+                  toolResult: errorResult,
+                  message: {
+                    role: 'tool' as const,
+                    tool_call_id: toolCall.id,
+                    content: errorResult.result,
+                  } as Message
+                };
+              }
+            }
+
             const toolResult: NonNullable<AgentResponse['toolCalls']>[0] = {
               id: toolCall.id,
               name: toolName,
-              args: JSON.parse(toolCall.function.arguments || '{}'),
+              args: parsedArgs,
               result: '',
               status: approved ? 'approved' : 'rejected',
             };
@@ -397,8 +446,16 @@ export class AgentService {
               callbacks.onToolExecutionStart?.(toolCall);
 
               try {
-                // Execute the tool
-                const result = await toolRegistry.executeToolCall(toolCall);
+                // Execute the tool with the PARSED args (not the potentially malformed original)
+                // Create a modified toolCall with properly stringified arguments
+                const fixedToolCall = {
+                  ...toolCall,
+                  function: {
+                    ...toolCall.function,
+                    arguments: JSON.stringify(parsedArgs),
+                  },
+                };
+                const result = await toolRegistry.executeToolCall(fixedToolCall);
                 toolResult.result = result.content;
                 toolResult.status = 'executed';
 

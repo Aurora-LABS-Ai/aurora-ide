@@ -98,13 +98,35 @@ export const TreeNode: React.FC<TreeNodeProps> = ({
   // HANDLERS
   // ============================================
 
-  const handleClick = useCallback(async () => {
+  const handleClick = useCallback(() => {
     if (isFolder) {
       toggleFolder(node.id);
     } else {
+      // OPTIMISTIC FILE OPENING: Show tab immediately, load content in background
+      // This eliminates perceived lag - the tab appears instantly
       selectFile(node.id);
-      const content = node.content || await loadFileContent(nodePath);
-      openFile(node.id, node.name, content, node.language);
+
+      // If content is already cached (from previous opens), use it directly
+      if (node.content) {
+        openFile(node.id, node.name, node.content, node.language);
+        return;
+      }
+
+      // Open with empty content immediately (shows loading state)
+      openFile(node.id, node.name, '// Loading...', node.language);
+
+      // Load actual content in background and update
+      loadFileContent(nodePath).then(content => {
+        // Update the tab with real content
+        const { tabs } = useEditorStore.getState();
+        const tab = tabs.find(t => t.id === node.id);
+        if (tab) {
+          useEditorStore.getState().reloadTabContent(node.id, content);
+        }
+      }).catch(err => {
+        console.error('Failed to load file:', err);
+        useEditorStore.getState().reloadTabContent(node.id, `// Failed to load file: ${err}`);
+      });
     }
   }, [isFolder, node, nodePath, toggleFolder, selectFile, openFile]);
 

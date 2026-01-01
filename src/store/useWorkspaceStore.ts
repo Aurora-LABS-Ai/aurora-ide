@@ -19,6 +19,7 @@ interface WorkspaceState {
   toggleFolder: (folderId: string) => Promise<void>;
   expandFolder: (folderId: string) => Promise<void>;
   selectFile: (fileId: string) => void;
+  revealFile: (filePath: string) => void;
   setFiles: (files: FileNode[]) => void;
   clearWorkspace: () => void;
 
@@ -332,6 +333,41 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   selectFile: (fileId) => {
     set({ selectedFileId: fileId });
     // NO saveExplorer() here - save only on window close
+  },
+
+  // Reveal a file in the explorer: expand parent folders and select it
+  revealFile: (filePath) => {
+    const { rootPath, expandedFolders } = get();
+    if (!filePath || !rootPath) return;
+
+    // Normalize path separators
+    const normalizedPath = filePath.replace(/\\/g, '/');
+    const normalizedRoot = rootPath.replace(/\\/g, '/');
+
+    // Check if the file is within the workspace
+    if (!normalizedPath.startsWith(normalizedRoot)) return;
+
+    // Get the relative path and extract parent folders
+    const relativePath = normalizedPath.slice(normalizedRoot.length);
+    const parts = relativePath.split('/').filter(Boolean);
+    
+    // Build list of parent folder paths to expand
+    const newExpanded = new Set(expandedFolders);
+    let currentPath = rootPath;
+    
+    // Expand each parent folder (excluding the file itself)
+    for (let i = 0; i < parts.length - 1; i++) {
+      currentPath = currentPath + (currentPath.endsWith('/') || currentPath.endsWith('\\') ? '' : '/') + parts[i];
+      // Normalize to match how paths are stored
+      const normalizedCurrentPath = currentPath.replace(/\//g, '\\');
+      newExpanded.add(normalizedCurrentPath);
+      newExpanded.add(currentPath); // Add both variants
+    }
+
+    set({ 
+      expandedFolders: newExpanded,
+      selectedFileId: filePath 
+    });
   },
 
   setFiles: (files) => set({ files }),

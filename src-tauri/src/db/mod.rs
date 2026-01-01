@@ -11,10 +11,12 @@ pub use models::{
     EditorState, ExplorerState, WorkspaceState,
     LLMProvider, ToolSetting, AppSettings,
     ThreadState, CustomTheme,
+    SemanticIndex, SemanticIndexStatus, SemanticSettings, SearchMode,
+    IndexProgress, SemanticSearchResult,
 };
 pub use repositories::{
     EditorRepository, ExplorerRepository, WorkspaceRepository, SettingsRepository,
-    ThreadsRepository, ThemeRepository,
+    ThreadsRepository, ThemeRepository, SemanticRepository,
 };
 
 use tauri::AppHandle;
@@ -63,6 +65,11 @@ impl Database {
     /// Get a themes repository
     pub fn themes(&self) -> ThemeRepository<'_> {
         ThemeRepository::new(self._conn.connection())
+    }
+
+    /// Get a semantic repository
+    pub fn semantic(&self) -> SemanticRepository<'_> {
+        SemanticRepository::new(self._conn.connection())
     }
 
     /// Get the underlying connection (kept for potential future use)

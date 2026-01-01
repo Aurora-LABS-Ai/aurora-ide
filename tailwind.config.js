@@ -64,9 +64,24 @@ export default {
             'background-position': 'calc(100% + var(--shimmer-width)) 0',
           },
         },
+        pulseGlow: {
+          '0%, 100%': { opacity: '0.8' },
+          '50%': { opacity: '1' },
+        },
+        breathe: {
+          '0%, 100%': { opacity: '0.5' },
+          '50%': { opacity: '0.9' },
+        },
+        orbitSlow: {
+          from: { transform: 'rotate(0deg)' },
+          to: { transform: 'rotate(360deg)' },
+        },
       },
       animation: {
         shimmer: 'shimmer 8s infinite',
+        'pulse-glow': 'pulseGlow 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite',
+        breathe: 'breathe 3s ease-in-out infinite',
+        'orbit-slow': 'orbitSlow 4s linear infinite',
       },
     },
   },

@@ -21,6 +21,7 @@ pub mod threads;
 pub mod llm;
 pub mod chat;
 pub mod themes;
+pub mod semantic;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileEntry {
@@ -129,21 +130,11 @@ pub async fn read_directory(path: String, include_hidden: Option<bool>) -> Resul
     Ok(entries)
 }
 
-/// Read file content
+/// Read file content (cached for performance)
 #[tauri::command]
 pub async fn read_file_content(path: String) -> Result<String, String> {
-    let file_path = Path::new(&path);
-
-    if !file_path.exists() {
-        return Err(format!("File does not exist: {}", path));
-    }
-
-    if !file_path.is_file() {
-        return Err(format!("Path is not a file: {}", path));
-    }
-
-    fs::read_to_string(file_path)
-        .map_err(|e| format!("Failed to read file: {}", e))
+    // Use the cached file reader for performance
+    crate::file_cache::read_file_cached(&path)
 }
 
 /// Write file content
@@ -159,8 +150,13 @@ pub async fn write_file_content(path: String, content: String) -> Result<(), Str
         }
     }
 
-    fs::write(file_path, content)
-        .map_err(|e| format!("Failed to write file: {}", e))
+    let result = fs::write(file_path, &content)
+        .map_err(|e| format!("Failed to write file: {}", e));
+    
+    // Invalidate cache after write (file content changed)
+    crate::file_cache::get_file_cache().invalidate(&path);
+    
+    result
 }
 
 /// Execute a shell command with optional shell profile
@@ -439,13 +435,19 @@ pub async fn delete_path(path: String) -> Result<(), String> {
         return Err(format!("Path does not exist: {}", path));
     }
 
-    if target_path.is_dir() {
+    let result = if target_path.is_dir() {
+        // Invalidate all cached files under this directory
+        crate::file_cache::get_file_cache().invalidate_prefix(&path);
         fs::remove_dir_all(target_path)
             .map_err(|e| format!("Failed to delete folder: {}", e))
     } else {
+        // Invalidate the specific file
+        crate::file_cache::get_file_cache().invalidate(&path);
         fs::remove_file(target_path)
             .map_err(|e| format!("Failed to delete file: {}", e))
-    }
+    };
+    
+    result
 }
 
 /// Rename a file or folder
@@ -460,6 +462,14 @@ pub async fn rename_path(old_path: String, new_path: String) -> Result<(), Strin
 
     if new.exists() {
         return Err(format!("Destination already exists: {}", new_path));
+    }
+
+    // Invalidate old path from cache (it's being renamed)
+    let cache = crate::file_cache::get_file_cache();
+    if old.is_dir() {
+        cache.invalidate_prefix(&old_path);
+    } else {
+        cache.invalidate(&old_path);
     }
 
     fs::rename(old, new)
@@ -752,4 +762,36 @@ pub async fn open_in_terminal(path: String) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+// =============================================================================
+// BATCH FILE OPERATIONS (Performance Optimized)
+// =============================================================================
+
+use std::collections::HashMap;
+
+/// Read multiple files in a single IPC call (reduces overhead dramatically)
+/// Returns a map of path -> content (or error message)
+#[tauri::command]
+pub async fn read_files_batch(paths: Vec<String>) -> HashMap<String, Result<String, String>> {
+    crate::file_cache::read_files_batch_cached(paths)
+}
+
+/// Invalidate a specific file or directory prefix from the cache
+/// Call this after external file modifications
+#[tauri::command]
+pub async fn invalidate_file_cache(path: String, is_prefix: bool) -> Result<(), String> {
+    let cache = crate::file_cache::get_file_cache();
+    if is_prefix {
+        cache.invalidate_prefix(&path);
+    } else {
+        cache.invalidate(&path);
+    }
+    Ok(())
+}
+
+/// Get cache statistics for debugging
+#[tauri::command]
+pub async fn get_cache_stats() -> (usize, usize) {
+    crate::file_cache::get_file_cache().stats()
 }

@@ -3,6 +3,7 @@ use tauri::Manager;
 
 mod commands;
 mod db;
+mod file_cache;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -31,6 +32,10 @@ pub fn run() {
             commands::stop_fs_watcher,
             commands::reveal_in_explorer,
             commands::open_in_terminal,
+            // Batch file operations (performance optimized)
+            commands::read_files_batch,
+            commands::invalidate_file_cache,
+            commands::get_cache_stats,
             // State persistence commands
             commands::state::save_workspace_state,
             commands::state::get_workspace_state,
@@ -74,6 +79,27 @@ pub fn run() {
             commands::themes::delete_custom_theme,
             commands::themes::set_active_theme_id,
             commands::themes::get_active_theme_id,
+            // Semantic search commands
+            commands::semantic::get_all_semantic_indexes,
+            commands::semantic::get_semantic_index,
+            commands::semantic::get_semantic_index_by_path,
+            commands::semantic::save_semantic_index,
+            commands::semantic::delete_semantic_index,
+            commands::semantic::update_semantic_index_status,
+            commands::semantic::update_workspace_exclusions,
+            commands::semantic::get_semantic_settings,
+            commands::semantic::save_semantic_settings,
+            commands::semantic::set_semantic_model_path,
+            commands::semantic::validate_semantic_model_path,
+            commands::semantic::get_semantic_model_info,
+            commands::semantic::get_execution_provider_info,
+            commands::semantic::get_available_gpu_features,
+            commands::semantic::start_semantic_indexing,
+            commands::semantic::semantic_search,
+            commands::semantic::cancel_semantic_indexing,
+            commands::semantic::is_semantic_indexing,
+            commands::semantic::get_semantic_data_directory,
+            commands::semantic::get_semantic_index_path,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

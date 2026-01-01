@@ -95,60 +95,6 @@ const fileReadExecutor = async (args: Record<string, any>): Promise<string> => {
 };
 
 // ============================================
-// FILE READ LINES EXECUTOR (Enhanced)
-// ============================================
-const fileReadLinesExecutor = async (
-  args: Record<string, any>,
-): Promise<string> => {
-  if (!isTauri()) {
-    return JSON.stringify({
-      success: false,
-      error: "File operations require desktop app",
-    });
-  }
-
-  const fullPath = resolvePath(args.path);
-
-  try {
-    const content = await readFileContent(fullPath);
-    const lines = content.split("\n");
-    const startIdx = Math.max(0, (args.start_line || 1) - 1);
-    const endIdx = args.end_line
-      ? Math.min(lines.length, args.end_line)
-      : lines.length;
-
-    const selectedLines = lines.slice(startIdx, endIdx);
-    const numberedLines = selectedLines.map((line, i) => ({
-      lineNumber: startIdx + i + 1,
-      content: line,
-    }));
-
-    // Log the read operation
-    operationLog.logOperation(FsOperationType.Read, args.path, {
-      fullPath,
-      totalLines: lines.length,
-      readLines: selectedLines.length,
-      range: `${args.start_line || 1}-${endIdx}`,
-    });
-
-    return JSON.stringify({
-      success: true,
-      path: args.path,
-      fullPath,
-      startLine: args.start_line,
-      endLine: endIdx,
-      totalLines: lines.length,
-      lines: numberedLines,
-    });
-  } catch (error) {
-    return JSON.stringify({
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-};
-
-// ============================================
 // FILE CREATE EXECUTOR (Cursor-style: Write immediately, revert on reject)
 // ============================================
 const fileCreateExecutor = async (
@@ -599,103 +545,6 @@ const fileDeleteExecutor = async (
 };
 
 // ============================================
-// FILE EXISTS EXECUTOR
-// ============================================
-const fileExistsExecutor = async (
-  args: Record<string, any>,
-): Promise<string> => {
-  if (!isTauri()) {
-    return JSON.stringify({
-      success: false,
-      error: "File operations require desktop app",
-    });
-  }
-
-  const fullPath = resolvePath(args.path);
-
-  try {
-    await readFileContent(fullPath);
-    return JSON.stringify({
-      success: true,
-      exists: true,
-      path: args.path,
-      fullPath,
-    });
-  } catch {
-    return JSON.stringify({
-      success: true,
-      exists: false,
-      path: args.path,
-      fullPath,
-    });
-  }
-};
-
-// ============================================
-// FILE SEARCH EXECUTOR (Enhanced with Read Logging)
-// ============================================
-const fileSearchExecutor = async (
-  args: Record<string, any>,
-): Promise<string> => {
-  if (!isTauri()) {
-    return JSON.stringify({
-      success: false,
-      error: "File operations require desktop app",
-    });
-  }
-
-  const fullPath = resolvePath(args.path);
-
-  try {
-    const content = await readFileContent(fullPath);
-    const lines = content.split("\n");
-
-    // Log the read operation (search is a form of reading)
-    operationLog.logOperation(FsOperationType.Read, args.path, {
-      fullPath,
-      operation: 'search',
-      pattern: args.pattern,
-    });
-
-    const pattern = args.pattern || "";
-    const regex = args.is_regex
-      ? new RegExp(pattern, "gi")
-      : new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
-
-    const matches: Array<{
-      lineNumber: number;
-      content: string;
-      matches: string[];
-    }> = [];
-
-    lines.forEach((line, index) => {
-      const lineMatches = line.match(regex);
-      if (lineMatches) {
-        matches.push({
-          lineNumber: index + 1,
-          content: line,
-          matches: lineMatches,
-        });
-      }
-    });
-
-    return JSON.stringify({
-      success: true,
-      path: args.path,
-      fullPath,
-      pattern: args.pattern,
-      totalMatches: matches.length,
-      matches,
-    });
-  } catch (error) {
-    return JSON.stringify({
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-};
-
-// ============================================
 // GREP EXECUTOR (Ripgrep-style search with logging)
 // ============================================
 interface GrepMatch {
@@ -1037,12 +886,9 @@ export const registerEnhancedFileExecutors = (): void => {
 
   toolRegistry.registerExecutor("file_create", fileCreateExecutor);
   toolRegistry.registerExecutor("file_read", fileReadExecutor);
-  toolRegistry.registerExecutor("file_read_lines", fileReadLinesExecutor);
   toolRegistry.registerExecutor("file_write", fileWriteExecutor);
   toolRegistry.registerExecutor("file_patch", filePatchExecutor);
   toolRegistry.registerExecutor("file_delete", fileDeleteExecutor);
-  toolRegistry.registerExecutor("file_exists", fileExistsExecutor);
-  toolRegistry.registerExecutor("file_search", fileSearchExecutor);
   toolRegistry.registerExecutor("grep", grepExecutor);
   toolRegistry.registerExecutor("multi_file_read", multiFileReadExecutor);
 };

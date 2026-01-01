@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 5;
+pub const SCHEMA_VERSION: i32 = 8;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -19,6 +19,8 @@ pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
     create_llm_providers_table(conn)?;
     create_tool_settings_table(conn)?;
     create_custom_themes_table(conn)?;
+    create_semantic_indexes_table(conn)?;
+    create_semantic_settings_table(conn)?;
 
     Ok(())
 }
@@ -252,6 +254,72 @@ fn create_custom_themes_table(conn: &Connection) -> DbResult<()> {
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_themes_name_author
          ON custom_themes (name COLLATE NOCASE, author COLLATE NOCASE)",
         [],
+    )?;
+
+    Ok(())
+}
+
+/// Create semantic_indexes table (tracks indexed workspaces)
+fn create_semantic_indexes_table(conn: &Connection) -> DbResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS semantic_indexes (
+            id TEXT PRIMARY KEY,
+            workspace_path TEXT NOT NULL UNIQUE,
+            workspace_name TEXT NOT NULL,
+            document_count INTEGER NOT NULL DEFAULT 0,
+            chunk_count INTEGER NOT NULL DEFAULT 0,
+            total_bytes INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'indexing' | 'ready' | 'error'
+            error_message TEXT,
+            last_indexed_at TEXT,
+            excluded_files TEXT DEFAULT '[]',       -- JSON array of specific file paths to exclude (workspace-specific)
+            excluded_directories TEXT DEFAULT '[]', -- JSON array of specific directory paths to exclude (workspace-specific)
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    // Create index for workspace path lookup
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_semantic_indexes_workspace_path
+         ON semantic_indexes (workspace_path)",
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Create semantic_settings table (global semantic search settings)
+fn create_semantic_settings_table(conn: &Connection) -> DbResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS semantic_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1), -- Single row table
+            model_path TEXT,                       -- Path to ONNX model directory
+            enabled INTEGER NOT NULL DEFAULT 1,
+            auto_index INTEGER NOT NULL DEFAULT 0, -- Auto-index on workspace open
+            auto_reindex_interval INTEGER,         -- Auto-reindex interval in minutes (null = disabled)
+            ignored_patterns TEXT,                 -- JSON array of glob patterns
+            ignored_directories TEXT,              -- JSON array of directory names (matched anywhere)
+            excluded_files TEXT,                   -- JSON array of specific file paths to exclude
+            excluded_directories TEXT,             -- JSON array of specific directory paths to exclude
+            max_file_size INTEGER NOT NULL DEFAULT 1048576, -- Max file size in bytes (1MB default)
+            search_mode TEXT NOT NULL DEFAULT 'hybrid', -- 'lexical' | 'semantic' | 'hybrid'
+            lexical_weight REAL NOT NULL DEFAULT 0.4,
+            semantic_weight REAL NOT NULL DEFAULT 0.6,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    // Insert default settings row if not exists - with proper ignore lists
+    let default_patterns = r#"["*.min.js","*.min.css","*.map","*.lock","package-lock.json","pnpm-lock.yaml","yarn.lock","Cargo.lock","*.exe","*.dll","*.so","*.dylib","*.wasm","*.png","*.jpg","*.jpeg","*.gif","*.ico","*.svg","*.webp","*.mp3","*.mp4","*.avi","*.mov","*.woff","*.woff2","*.ttf","*.eot","*.otf","*.zip","*.tar","*.gz","*.rar","*.7z","*.pdf","*.db","*.sqlite","*.sqlite3"]"#;
+    let default_dirs = r#"["node_modules",".npm",".pnpm",".yarn",".git",".svn",".hg","dist","build","out","output",".output","target","__pycache__",".venv","venv",".env",".pytest_cache",".mypy_cache",".tox",".gradle",".m2","bin","obj","packages",".next",".nuxt",".svelte-kit",".vercel",".netlify",".idea",".vscode",".vs",".cursor",".cache",".parcel-cache",".turbo","coverage",".nyc_output","logs","vendor",".aurora"]"#;
+    
+    conn.execute(
+        "INSERT OR IGNORE INTO semantic_settings (id, ignored_patterns, ignored_directories, excluded_files, excluded_directories, updated_at) 
+         VALUES (1, ?1, ?2, '[]', '[]', datetime('now'))",
+        [default_patterns, default_dirs],
     )?;
 
     Ok(())

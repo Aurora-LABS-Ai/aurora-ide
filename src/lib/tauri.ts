@@ -100,8 +100,8 @@ export const readDirectory = async (path: string, options?: ReadDirectoryOptions
     console.warn('readDirectory: Not running in Tauri');
     return [];
   }
-  return invoke<FileEntry[]>('read_directory', { 
-    path, 
+  return invoke<FileEntry[]>('read_directory', {
+    path,
     includeHidden: options?.includeHidden ?? true  // Default to showing hidden files
   });
 };
@@ -111,7 +111,9 @@ export const readFileContent = async (path: string): Promise<string> => {
     console.warn('readFileContent: Not running in Tauri');
     return '';
   }
-  return invoke<string>('read_file_content', { path });
+  // Use cached file reader for better performance
+  const { readFileCached } = await import('./file-cache');
+  return readFileCached(path);
 };
 
 export const writeFileContent = async (path: string, content: string): Promise<void> => {
@@ -119,6 +121,9 @@ export const writeFileContent = async (path: string, content: string): Promise<v
     console.warn('writeFileContent: Not running in Tauri');
     return;
   }
+  // Invalidate frontend cache before write (Rust backend handles its own cache)
+  const { invalidateFileCache } = await import('./file-cache');
+  invalidateFileCache(path);
   return invoke<void>('write_file_content', { path, content });
 };
 
@@ -150,7 +155,7 @@ export const openFileDialog = async (options?: {
     console.warn('openFileDialog: Not running in Tauri');
     return null;
   }
-  
+
   const { open } = await import('@tauri-apps/plugin-dialog');
   return open(options);
 };
@@ -163,7 +168,7 @@ export const saveFileDialog = async (options?: {
     console.warn('saveFileDialog: Not running in Tauri');
     return null;
   }
-  
+
   const { save } = await import('@tauri-apps/plugin-dialog');
   return save(options);
 };
@@ -175,7 +180,7 @@ export const copyToClipboard = async (text: string): Promise<void> => {
     await navigator.clipboard.writeText(text);
     return;
   }
-  
+
   const { writeText } = await import('@tauri-apps/plugin-clipboard-manager');
   await writeText(text);
 };
@@ -185,7 +190,7 @@ export const readFromClipboard = async (): Promise<string> => {
     // Fallback to browser API
     return navigator.clipboard.readText();
   }
-  
+
   const { readText } = await import('@tauri-apps/plugin-clipboard-manager');
   return readText();
 };
@@ -302,3 +307,6 @@ export const openInTerminal = async (path: string): Promise<void> => {
 
 // PTY operations are now handled by tauri-plugin-pty
 // Import from 'tauri-pty' package instead
+
+// Re-export batch file operations for performance-critical code
+export { readFilesBatch, preloadFiles, getCacheStats } from './file-cache';

@@ -32,10 +32,11 @@ import {
   ArrowRight,
   Folder,
   File,
-  LayoutGrid
+  LayoutGrid,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { motion } from 'framer-motion';
 import type { ToolCall } from '../../types';
 import { getIconName, getIconUrl } from '../../lib/material-icon-theme';
 import { ShimmerText } from '../ui/ShimmerText';
@@ -216,12 +217,217 @@ const MultiFileResultsView: React.FC<MultiFileResultsProps> = ({ files }) => {
   );
 };
 
+// --- 1.6. Aurora Search Results Component ---
+interface AuroraSearchResultsProps {
+  results: Array<{
+    filePath: string;
+    relativePath: string;
+    fileName: string;
+    startLine: number;
+    endLine: number;
+    chunkType: string;
+    symbolName: string | null;
+    content: string;
+    score: number;
+    matchType: string;
+  }>;
+}
+
+const AuroraSearchResultsView: React.FC<AuroraSearchResultsProps> = ({ results }) => {
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const handleResultClick = async (result: AuroraSearchResultsProps['results'][0]) => {
+    try {
+      const { useEditorStore } = await import('../../store/useEditorStore');
+      const { resolvePath } = await import('../../tools/utils/path-resolver');
+      const { readFileContent } = await import('../../lib/tauri');
+
+      // Resolve full path
+      const fullPath = resolvePath(result.filePath);
+
+      // Read file content
+      const content = await readFileContent(fullPath);
+
+      // Detect language from extension
+      const ext = result.fileName.split('.').pop()?.toLowerCase() || '';
+      const langMap: Record<string, string> = {
+        'ts': 'typescript', 'tsx': 'typescript',
+        'js': 'javascript', 'jsx': 'javascript',
+        'json': 'json', 'css': 'css', 'scss': 'scss',
+        'html': 'html', 'md': 'markdown',
+        'rs': 'rust', 'toml': 'toml',
+        'yaml': 'yaml', 'yml': 'yaml',
+        'py': 'python', 'go': 'go',
+      };
+      const language = langMap[ext] || 'plaintext';
+
+      // Open in editor
+      useEditorStore.getState().openFile(fullPath, result.fileName, content, language);
+    } catch (error) {
+      console.error('Failed to open file:', error);
+    }
+  };
+
+  // Format chunk type for display
+  const formatChunkType = (type: string) => {
+    const typeMap: Record<string, { label: string; color: string }> = {
+      'function': { label: 'fn', color: 'text-purple-400' },
+      'class': { label: 'class', color: 'text-yellow-400' },
+      'struct': { label: 'struct', color: 'text-orange-400' },
+      'interface': { label: 'iface', color: 'text-cyan-400' },
+      'enum': { label: 'enum', color: 'text-green-400' },
+      'implementation': { label: 'impl', color: 'text-blue-400' },
+      'module': { label: 'mod', color: 'text-pink-400' },
+      'imports': { label: 'import', color: 'text-gray-400' },
+      'constant': { label: 'const', color: 'text-amber-400' },
+      'type_def': { label: 'type', color: 'text-teal-400' },
+      'block': { label: 'block', color: 'text-zinc-400' },
+      'comment': { label: 'doc', color: 'text-emerald-400' },
+    };
+    return typeMap[type.toLowerCase()] || { label: type, color: 'text-zinc-400' };
+  };
+
+  const isLongContent = results.length > 3;
+
+  return (
+    <div className="relative mt-2 overflow-hidden">
+      {/* Scrollable results container - matches CodeView styling */}
+      <div 
+        className={cn(
+          "overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-track-transparent scrollbar-thumb-transparent hover:scrollbar-thumb-border transition-colors",
+          isExpanded ? "max-h-none" : "max-h-[150px]"
+        )}
+      >
+        {results.map((result, idx) => {
+          const chunkInfo = formatChunkType(result.chunkType);
+          const isResultExpanded = expandedIndex === idx;
+          const scorePercent = Math.round(result.score * 100);
+          
+          return (
+            <div key={idx} className="group border-b border-border/30 last:border-b-0">
+              {/* Result Row - Using div instead of button to avoid nesting issues */}
+              <div
+                onClick={() => handleResultClick(result)}
+                onKeyDown={(e) => e.key === 'Enter' && handleResultClick(result)}
+                role="button"
+                tabIndex={0}
+                className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-input/30 transition-colors cursor-pointer"
+              >
+                {/* File Icon */}
+                <img
+                  src={getIconUrl(getIconName(result.fileName, false))}
+                  alt=""
+                  className="w-3.5 h-3.5 flex-shrink-0"
+                />
+                
+                {/* File Info - Compact */}
+                <div className="flex-1 min-w-0 flex items-center gap-2">
+                  <span className="text-[10px] font-medium text-text-primary truncate">
+                    {result.fileName}
+                  </span>
+                  <span className="text-[9px] text-text-disabled font-mono flex-shrink-0">
+                    :{result.startLine}
+                  </span>
+                </div>
+
+                {/* Chunk Type Badge - Smaller */}
+                <span className={cn(
+                  "text-[7px] font-bold uppercase tracking-wider px-1 py-0.5 rounded bg-input/50",
+                  chunkInfo.color
+                )}>
+                  {chunkInfo.label}
+                </span>
+
+                {/* Score Bar - Smaller */}
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <div className="w-6 h-0.5 bg-input rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-primary/70 rounded-full"
+                      style={{ width: `${scorePercent}%` }}
+                    />
+                  </div>
+                  <span className="text-[8px] text-text-disabled font-mono w-5 text-right">
+                    {scorePercent}%
+                  </span>
+                </div>
+
+                {/* Expand Toggle - Using span with role instead of nested button */}
+                <span
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setExpandedIndex(isResultExpanded ? null : idx);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.stopPropagation();
+                      setExpandedIndex(isResultExpanded ? null : idx);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  className="p-0.5 rounded hover:bg-input transition-colors cursor-pointer"
+                >
+                  <ChevronRight 
+                    size={10} 
+                    className={cn(
+                      "text-text-disabled transition-transform",
+                      isResultExpanded && "rotate-90"
+                    )} 
+                  />
+                </span>
+              </div>
+
+              {/* Expanded Content Preview */}
+              {isResultExpanded && (
+                <div className="px-2 pb-1.5">
+                  <pre className="text-[9px] font-mono text-text-secondary bg-input/30 rounded p-1.5 overflow-x-auto max-h-[100px] overflow-y-auto whitespace-pre-wrap break-words scrollbar-thin scrollbar-track-transparent scrollbar-thumb-border">
+                    {result.content}
+                  </pre>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      
+      {/* Gradient fade for long content */}
+      {!isExpanded && isLongContent && (
+        <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-editor to-transparent pointer-events-none opacity-50" />
+      )}
+      
+      {/* Expand/Collapse button - matches CodeView */}
+      {isLongContent && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsExpanded(!isExpanded);
+          }}
+          className="absolute bottom-1 right-1 flex items-center gap-1 rounded px-1.5 py-0.5 text-[8px] font-medium bg-sidebar/90 backdrop-blur-sm border border-border text-text-secondary hover:text-text-primary transition-colors"
+        >
+          {isExpanded ? (
+            <>
+              <Minimize2 size={8} />
+              <span>Less</span>
+            </>
+          ) : (
+            <>
+              <Maximize2 size={8} />
+              <span>More</span>
+            </>
+          )}
+        </button>
+      )}
+    </div>
+  );
+};
+
 // --- 2. Code Block with Diff View ---
 interface CodeViewProps {
   data?: any;
   error?: string;
-  title?: string;
   isStreaming?: boolean;
+  fileName?: string; // For syntax highlighting
   originalContent?: string;
   pendingChangeId?: string;
   onAccept?: () => void;
@@ -231,8 +437,8 @@ interface CodeViewProps {
 const CodeView: React.FC<CodeViewProps> = ({
   data,
   error,
-  title,
-  isStreaming
+  isStreaming,
+  fileName
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const contentRef = useRef<HTMLPreElement>(null);
@@ -256,6 +462,39 @@ const CodeView: React.FC<CodeViewProps> = ({
 
   if (!data && data !== 0 && data !== false) return null;
 
+  // Basic syntax highlighting for code
+  const highlightCode = (code: string, ext: string) => {
+    // Keywords for common languages
+    const keywords: Record<string, string[]> = {
+      ts: ['const', 'let', 'var', 'function', 'async', 'await', 'import', 'export', 'default', 'from', 'interface', 'type', 'class', 'extends', 'implements', 'return', 'if', 'else', 'for', 'while'],
+      tsx: ['const', 'let', 'var', 'function', 'async', 'await', 'import', 'export', 'default', 'from', 'interface', 'type', 'class', 'extends', 'implements', 'return', 'if', 'else', 'for', 'while', 'React'],
+      js: ['const', 'let', 'var', 'function', 'async', 'await', 'import', 'export', 'default', 'from', 'return', 'if', 'else', 'for', 'while'],
+      jsx: ['const', 'let', 'var', 'function', 'async', 'await', 'import', 'export', 'default', 'from', 'return', 'if', 'else', 'for', 'while', 'React'],
+      py: ['def', 'class', 'import', 'from', 'return', 'if', 'else', 'elif', 'for', 'while', 'async', 'await'],
+      rs: ['fn', 'let', 'mut', 'const', 'use', 'pub', 'impl', 'trait', 'struct', 'enum', 'return', 'if', 'else', 'match'],
+    };
+
+    const kw = keywords[ext] || [];
+    let highlighted = code;
+
+    // Highlight strings
+    highlighted = highlighted.replace(/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/g, '<span class="text-emerald-300">$1</span>');
+
+    // Highlight comments
+    highlighted = highlighted.replace(/(\/{2,}.*$)/gm, '<span class="text-zinc-500 italic">$1</span>');
+    highlighted = highlighted.replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="text-zinc-500 italic">$1</span>');
+
+    // Highlight keywords
+    if (kw.length > 0) {
+      const kwRegex = new RegExp(`\\b(${kw.join('|')})\\b`, 'g');
+      highlighted = highlighted.replace(kwRegex, '<span class="text-purple-400">$1</span>');
+    }
+
+    // DON'T highlight numbers - causes false positives in class names
+
+    return highlighted;
+  };
+
   const highlight = (json: string) =>
     json.replace(
       /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
@@ -277,66 +516,50 @@ const CodeView: React.FC<CodeViewProps> = ({
   const isLongContent = content.split('\n').length > 8 || content.length > 300;
 
   return (
-    <div className="group/code mt-3 overflow-hidden rounded-md border border-border bg-sidebar">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border bg-sidebar px-3 py-1.5">
-        <div className="flex items-center gap-2">
-          <FileCode size={12} className="text-text-disabled" />
-          <span className="font-mono text-[10px] font-medium text-text-secondary uppercase tracking-wider">
-            {title || (isJson ? 'JSON' : 'OUTPUT')}
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {isLongContent && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsExpanded(!isExpanded);
-              }}
-              className="flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-medium text-text-secondary hover:bg-input hover:text-text-primary transition-colors"
-            >
-              {isExpanded ? (
-                <>
-                  <Minimize2 size={10} />
-                  <span>Collapse</span>
-                </>
-              ) : (
-                <>
-                  <Maximize2 size={10} />
-                  <span>Expand</span>
-                </>
-              )}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Content */}
-      <div
+    <div className="relative mt-2 overflow-hidden">
+      {/* Content directly - no nested box */}
+      <pre
+        ref={contentRef}
         className={cn(
-          "relative w-full overflow-hidden bg-editor",
-          isExpanded ? "max-h-none" : "max-h-[300px]"
+          "font-mono text-[11px] leading-relaxed p-3 rounded-md bg-transparent overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words scrollbar-thin scrollbar-track-transparent scrollbar-thumb-transparent hover:scrollbar-thumb-border transition-colors",
+          isExpanded ? "max-h-none" : "max-h-[150px]"
+          // No border when streaming
         )}
       >
-        <pre
-          ref={contentRef}
-          className={cn(
-            "font-mono text-[11px] leading-relaxed p-3 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words scrollbar-thin scrollbar-track-transparent scrollbar-thumb-transparent group-hover/code:scrollbar-thumb-border transition-colors",
-            isExpanded ? "max-h-none" : "max-h-[300px]",
-            isStreaming && "border-l-2 border-primary/30"
-          )}
-        >
-          {isJson ? (
-            <code dangerouslySetInnerHTML={{ __html: highlight(content) }} />
-          ) : (
-            <code className="text-text-secondary">{content}</code>
-          )}
-        </pre>
-        {!isExpanded && isLongContent && (
-          <div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-editor to-transparent pointer-events-none opacity-50" />
+        {isJson ? (
+          <code dangerouslySetInnerHTML={{ __html: highlight(content) }} />
+        ) : fileName ? (
+          // Apply syntax highlighting for code files
+          <code dangerouslySetInnerHTML={{ __html: highlightCode(content, fileName.split('.').pop()?.toLowerCase() || '') }} />
+        ) : (
+          <code className="text-text-secondary">{content}</code>
         )}
-      </div>
+      </pre>
+      {!isExpanded && isLongContent && (
+        <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-editor to-transparent pointer-events-none opacity-50 rounded-b-md" />
+      )}
+      {/* Expand button at bottom right */}
+      {isLongContent && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsExpanded(!isExpanded);
+          }}
+          className="absolute bottom-2 right-2 flex items-center gap-1 rounded px-2 py-1 text-[9px] font-medium bg-sidebar/90 backdrop-blur-sm border border-border text-text-secondary hover:text-text-primary transition-colors"
+        >
+          {isExpanded ? (
+            <>
+              <Minimize2 size={9} />
+              <span>Less</span>
+            </>
+          ) : (
+            <>
+              <Maximize2 size={9} />
+              <span>More</span>
+            </>
+          )}
+        </button>
+      )}
     </div>
   );
 };
@@ -345,9 +568,10 @@ const CodeView: React.FC<CodeViewProps> = ({
 interface ToolItemProps {
   tool: ToolCall;
   isLast: boolean;
+  index: number; // For staggered entrance animation
 }
 
-const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
+const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast, index }) => {
   // Auto-expand for running tools only
   const isFileModifyTool = ['file_create', 'file_write', 'file_patch'].includes(tool.name);
   const [isOpen, setIsOpen] = useState(
@@ -375,24 +599,37 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
   const fileName = filePath ? filePath.split(/[/\\]/).pop() || filePath : '';
 
   // --- RESULT PARSING & CLEANUP ---
-  const { displayData, simpleMessage, isFileList, fileList, isMultiFileResult, multiFileResults, isPendingFileChange } = useMemo(() => {
+  const { displayData, simpleMessage, isFileList, fileList, isMultiFileResult, multiFileResults, isPendingFileChange, isAuroraSearchResult, auroraSearchResults } = useMemo(() => {
     let raw = null;
     let msg = null;
     let isList = false;
     let listData = [];
     let isMultiFile = false;
     let multiFileData: Array<{ path: string; success: boolean; lines?: number; error?: string; content?: string }> = [];
+    let isAuroraSearch = false;
+    let auroraResults: Array<{
+      filePath: string;
+      relativePath: string;
+      fileName: string;
+      startLine: number;
+      endLine: number;
+      chunkType: string;
+      symbolName: string | null;
+      content: string;
+      score: number;
+      matchType: string;
+    }> = [];
 
     // Tools that should show simple success messages (not raw JSON)
     const simpleMessageTools = [
-      'editor_open_file', 'editor_close_tab', 'editor_insert_text',
-      'editor_get_active_file', 'editor_get_open_tabs', 'editor_get_selection',
-      'file_create', 'file_delete', 'file_write', 'file_patch', 'file_exists',
+      'editor_open_file',
+      'file_create', 'file_delete', 'file_write', 'file_patch',
       'folder_create', 'folder_delete',
-      'workspace_info', 'workspace_tree',
+      'workspace_tree',
       'shell_execute', 'shell_spawn', 'shell_kill',
       'grep', 'multi_file_read',
       'todo_write',
+      'aurora_search',
     ];
 
     let isFileChangePending = false;
@@ -429,7 +666,29 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
           isFileChangePending = true;
           msg = parsed.message || 'Pending approval';
         }
-        // 1. GREP RESULTS - Show summary only
+        // 1. SHELL EXECUTE - Show command output
+        else if (tool.name === 'shell_execute') {
+          const cmd = parsed.command || tool.args?.command || 'command';
+          if (parsed.success === true) {
+            msg = `Executed: ${cmd}`;
+            // Show stdout/stderr in code view
+            const output = [];
+            if (parsed.stdout) output.push(parsed.stdout);
+            if (parsed.stderr) output.push(`[stderr] ${parsed.stderr}`);
+            if (output.length > 0) {
+              raw = output.join('\n');
+            }
+            if (parsed.exitCode !== 0) {
+              msg += ` (exit code: ${parsed.exitCode})`;
+            }
+          } else {
+            msg = `Failed: ${cmd}`;
+            if (parsed.error) {
+              raw = parsed.error;
+            }
+          }
+        }
+        // 2. GREP RESULTS - Show summary only
         else if (tool.name === 'grep' && parsed.success === true) {
           const matchCount = parsed.totalMatches || 0;
           const fileCount = parsed.totalFiles || 0;
@@ -445,7 +704,27 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
             }
           }
         }
-        // 2. MULTI FILE READ - Show summary with file list
+        // 2.5. AURORA SEARCH - Semantic search results
+        else if (tool.name === 'aurora_search') {
+          const query = parsed.query || tool.args?.query || 'query';
+          const totalResults = parsed.totalResults || 0;
+          const searchMode = parsed.searchMode || 'hybrid';
+          
+          if (!parsed.success) {
+            // Show error/message for failed searches
+            msg = parsed.message || parsed.error || 'Search failed';
+          } else if (totalResults === 0) {
+            msg = `No results found for "${query}"`;
+          } else {
+            msg = `Found ${totalResults} result${totalResults !== 1 ? 's' : ''} (${searchMode} search)`;
+            // Show results in custom component
+            if (parsed.results && Array.isArray(parsed.results)) {
+              isAuroraSearch = true;
+              auroraResults = parsed.results;
+            }
+          }
+        }
+        // 3. MULTI FILE READ - Show summary with file list
         else if (tool.name === 'multi_file_read' && parsed.success === true) {
           const filesRead = parsed.filesRead || 0;
           const filesError = parsed.filesError || 0;
@@ -463,34 +742,34 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
             multiFileData = parsed.files;
           }
         }
-        // 3. FILE LIST (workspace_tree with tree)
+        // 4. FILE LIST (workspace_tree with tree)
         else if (parsed.tree && Array.isArray(parsed.tree)) {
           msg = `${parsed.tree.length} items in ${parsed.rootPath?.split(/[/\\]/).pop() || 'workspace'}`;
         }
-        // 3. FILE LIST (workspace_list_files)
+        // 5. FILE LIST (workspace_list_files)
         else if (parsed.files && Array.isArray(parsed.files)) {
           isList = true;
           listData = parsed.files;
         }
-        // 4. FILE READ (Extract 'content' only)
+        // 6. FILE READ (Extract 'content' only)
         else if (parsed.content && typeof parsed.content === 'string') {
           raw = parsed.content;
         }
-        // 5. Tools that should show simple message
+        // 7. Tools that should show simple message
         else if (parsed.success === true && parsed.message && simpleMessageTools.includes(tool.name)) {
           msg = parsed.message;
         }
-        // 6. workspace_info - show name and counts
+        // 8. workspace_info - show name and counts
         else if (tool.name === 'workspace_info' && parsed.success === true) {
           msg = parsed.hasWorkspace
             ? `${parsed.name}: ${parsed.totalFiles} files, ${parsed.totalFolders} folders`
             : 'No workspace open';
         }
-        // 7. file_exists - show exists status
+        // 9. file_exists - show exists status
         else if (tool.name === 'file_exists' && parsed.success === true) {
           msg = parsed.exists ? 'File exists' : 'File does not exist';
         }
-        // 8. todo_write - show summary counts only
+        // 10. todo_write - show summary counts only
         else if (tool.name === 'todo_write' && parsed.success === true && parsed.summary) {
           const { total, pending, in_progress, completed } = parsed.summary;
           const parts = [];
@@ -499,11 +778,11 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
           if (pending > 0) parts.push(`${pending} pending`);
           msg = `${total} task${total !== 1 ? 's' : ''}: ${parts.join(', ') || 'none'}`;
         }
-        // 9. FALLBACK - Only show raw JSON for unknown tools
+        // 11. FALLBACK - Only show raw JSON for unknown tools
         else if (!simpleMessageTools.includes(tool.name)) {
           raw = parsed;
         }
-        // 10. For known tools without message, just show success
+        // 12. For known tools without message, just show success
         else if (parsed.success === true) {
           msg = 'Completed successfully';
         }
@@ -519,12 +798,23 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
       isMultiFileResult: isMultiFile,
       multiFileResults: multiFileData,
       isPendingFileChange: isFileChangePending,
+      isAuroraSearchResult: isAuroraSearch,
+      auroraSearchResults: auroraResults,
     };
   }, [tool.name, tool.args, tool.result, tool.rawArgs, isFileModifyTool]);
 
 
   return (
-    <div className="group relative flex gap-3">
+    <motion.div
+      initial={{ opacity: 0, x: 8 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{
+        duration: 0.25,
+        delay: index * 0.04, // 40ms stagger per card
+        ease: [0.16, 1, 0.3, 1] // Premium spring ease
+      }}
+      className="group relative flex gap-3"
+    >
       {/* Left Timeline Track */}
       <div className="flex flex-col items-center w-5 flex-shrink-0 relative">
         {/* Connection Line */}
@@ -556,16 +846,18 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
       <div className="min-w-0 flex-1 pb-4 pt-1">
         <div
           className={cn(
-            "overflow-hidden rounded-lg border bg-input/50 backdrop-blur-sm transition-all duration-200",
+            "overflow-hidden rounded-xl border transition-all duration-300",
+            "bg-[var(--aurora-chat-surface)] shadow-premium glass-light",
             isOpen
-              ? "border-border shadow-lg shadow-black/5 ring-1 ring-border"
-              : "border-transparent hover:bg-input hover:border-border/50"
+              ? "border-[var(--aurora-common-border)] ring-1 ring-white/5 shadow-premium-lg glass-medium"
+              : "border-transparent hover:border-[var(--aurora-common-border)]/50"
+            // NO glow effect for running tools - user doesn't want background colors
           )}
         >
           {/* Header */}
           <button
             onClick={() => setIsOpen(!isOpen)}
-            className="flex w-full items-center gap-3 px-3 py-2.5 text-left"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
           >
             {isRunning ? (
               <ShimmerText className="text-xs font-semibold tracking-tight text-blue-300">
@@ -583,19 +875,63 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
               const isFolderOperation = ['folder_create', 'folder_delete', 'workspace_tree'].includes(tool.name);
 
               return (
-                <div className="flex min-w-0 items-center gap-1.5 overflow-hidden text-[11px] text-text-primary">
+                <span
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    // Open file in editor when clicked (same pattern as MultiFileResultsView)
+                    if (!isFolderOperation && filePath) {
+                      try {
+                        const { useEditorStore } = await import('../../store/useEditorStore');
+                        const { resolvePath } = await import('../../tools/utils/path-resolver');
+                        const { readFileContent } = await import('../../lib/tauri');
+
+                        // Resolve full path
+                        const fullPath = resolvePath(filePath);
+
+                        // Read file content
+                        const content = await readFileContent(fullPath);
+
+                        // Detect language from extension
+                        const ext = fileName.split('.').pop()?.toLowerCase() || '';
+                        const langMap: Record<string, string> = {
+                          'ts': 'typescript', 'tsx': 'typescript',
+                          'js': 'javascript', 'jsx': 'javascript',
+                          'json': 'json', 'css': 'css', 'scss': 'scss',
+                          'html': 'html', 'md': 'markdown',
+                          'rs': 'rust', 'toml': 'toml',
+                          'yaml': 'yaml', 'yml': 'yaml',
+                          'py': 'python', 'go': 'go',
+                        };
+                        const language = langMap[ext] || 'plaintext';
+
+                        // Open in editor
+                        useEditorStore.getState().openFile(fullPath, fileName, content, language);
+                      } catch (error) {
+                        console.error('Failed to open file:', error);
+                      }
+                    }
+                  }}
+                  role={isFolderOperation ? undefined : "button"}
+                  tabIndex={isFolderOperation ? undefined : 0}
+                  className={cn(
+                    "flex min-w-0 items-center gap-1.5 overflow-hidden text-[11px] rounded-md px-2 py-0.5 transition-colors",
+                    isFolderOperation
+                      ? "text-text-primary cursor-default"
+                      : "text-text-primary hover:bg-input/50 cursor-pointer"
+                  )}
+                >
                   <ArrowRight size={10} className="text-text-disabled flex-shrink-0" />
                   {isFolderOperation ? (
-                    <Folder size={16} className="text-blue-400/80 fill-blue-400/10 flex-shrink-0" />
+                    <Folder size={14} className="text-blue-400/80 fill-blue-400/10 flex-shrink-0" />
                   ) : (
                     <img
                       src={getIconUrl(getIconName(fileName, false))}
                       alt=""
-                      className="w-4 h-4 flex-shrink-0"
+                      className="w-3.5 h-3.5 flex-shrink-0"
                     />
                   )}
                   <span className="truncate font-medium">{fileName}</span>
-                </div>
+                </span>
               );
             })()}
 
@@ -659,8 +995,13 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                   <MultiFileResultsView files={multiFileResults} />
                 )}
 
+                {/* 2.5. Aurora Search Results */}
+                {isAuroraSearchResult && auroraSearchResults.length > 0 && (
+                  <AuroraSearchResultsView results={auroraSearchResults} />
+                )}
+
                 {/* 3. Simple Success Banner */}
-                {simpleMessage && !tool.error && !isFileList && !isMultiFileResult && !isPendingFileChange && (
+                {simpleMessage && !tool.error && !isFileList && !isMultiFileResult && !isAuroraSearchResult && !isPendingFileChange && (
                   <div className="flex items-center gap-2 rounded border border-emerald-500/20 bg-emerald-500/5 px-3 py-2">
                     <Check size={12} className="text-emerald-400" />
                     <span className="font-mono text-[11px] text-emerald-100/80">
@@ -674,8 +1015,8 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                   <CodeView
                     data={displayData}
                     error={tool.error}
-                    title={isFileModifyTool ? 'FILE CHANGES' : tool.name.includes('file') ? 'FILE CONTENT' : undefined}
                     isStreaming={isFileModifyTool && isRunning}
+                    fileName={fileName}
                   />
                 )}
               </div>
@@ -683,7 +1024,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
           </div>
         </div>
       </div>
-    </div>
+    </motion.div>
   );
 }, (prev, next) => {
   return (
@@ -692,7 +1033,8 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
     prev.tool.result === next.tool.result &&
     prev.tool.rawArgs === next.tool.rawArgs &&
     prev.tool.args?.content === next.tool.args?.content &&
-    prev.isLast === next.isLast
+    prev.isLast === next.isLast &&
+    prev.index === next.index // Compare index too
   );
 });
 
@@ -701,7 +1043,7 @@ export const ToolTimeline: React.FC<{ tools: ToolCall[] }> = ({ tools }) => {
   return (
     <div className="space-y-0 relative w-full pl-1">
       {tools.map((tool, idx) => (
-        <ToolItem key={tool.id} tool={tool} isLast={idx === tools.length - 1} />
+        <ToolItem key={tool.id} tool={tool} isLast={idx === tools.length - 1} index={idx} />
       ))}
     </div>
   );

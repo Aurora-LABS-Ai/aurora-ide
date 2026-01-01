@@ -25,7 +25,7 @@ pnpm lint
 
 ## Project Overview
 
-Aurora is an AI-powered agentic code editor built with Tauri (Rust backend + React frontend). It provides a VS Code-like interface with an AI assistant that can execute tools to manipulate files, run commands, and navigate workspaces.
+Aurora is an AI-powered agentic code editor built with Tauri (Rust backend + React frontend). It provides a VS Code-like interface with an AI assistant that can execute tools to manipulate files, run commands, navigate workspaces, and perform semantic code search.
 
 ### Technology Stack
 
@@ -42,8 +42,10 @@ Aurora is an AI-powered agentic code editor built with Tauri (Rust backend + Rea
 - tauri-plugin-fs (file operations)
 - tauri-plugin-shell (command execution)
 - tauri-plugin-dialog (file dialogs)
+- tauri-plugin-pty (integrated terminal)
 - tauri-plugin-process, tauri-plugin-os, tauri-plugin-clipboard-manager
 - rusqlite (SQLite database for state persistence)
+- aurora-semantic v1.2.1 (semantic code search with ONNX embeddings)
 - Tokio (async runtime)
 
 ## Architecture
@@ -80,8 +82,8 @@ interface ProviderPreset {
 
 | Provider | Base Format | Auth | Thinking | Special Params |
 |----------|-------------|------|----------|----------------|
-| `glm` | openai | Bearer | `{ thinking: { type: 'enabled' } }` → `reasoning_content` | `tool_stream: true` |
-| `deepseek` | openai | Bearer | `{ thinking: { type: 'enabled' } }` → `reasoning_content` | Skip temp for reasoner |
+| `glm` | openai | Bearer | `{ thinking: { type: 'enabled' } }` -> `reasoning_content` | `tool_stream: true` |
+| `deepseek` | openai | Bearer | `{ thinking: { type: 'enabled' } }` -> `reasoning_content` | Skip temp for reasoner |
 | `openai` | openai | Bearer | N/A | `stream_options` |
 | `anthropic` | anthropic | x-api-key | Native thinking blocks | `anthropic-version` header |
 | `minimax` | anthropic | x-api-key | Native thinking blocks | `anthropic-version` header |
@@ -106,31 +108,22 @@ function createProvider(config: ProviderConfig): IProvider {
 
 Located in `src/store/`:
 
-1. **useSettingsStore** - Global app settings, LLM providers, model selection
-   - Persists to SQLite database
-   - Model selection format: `"providerId:model"` (e.g., `"glm:glm-4.7"`)
-   - Provider config includes: `baseUrl`, `apiKey`, `model`, `contextWindow`, `maxOutputTokens`, `supportsThinking`, `customHeaders`, `customParams`, `providerType`
-
-2. **useChatStore** - Chat messages, loading state, tool approval workflow
-
-3. **useThreadStore** - Conversation thread management
-   - Persists threads to `.aurora/threads/{threadId}.json`
-
-4. **useEditorStore** - Monaco editor tabs, active tab, file content caching
-
-5. **useWorkspaceStore** - File explorer, root path, file tree, filesystem watcher
-
-6. **useUiStore** - Theme, modal states, chat panel visibility
-
-7. **useDragStore** - Drag-drop state for file operations
-
-8. **useTaskStore** - Task management (UI only)
-
-9. **useTerminalStore** - Integrated terminal sessions
-
-10. **useContextStore** - Context window usage tracking
-
-11. **useAuditStore** - Tool execution audit log
+| Store | Purpose |
+|-------|---------|
+| `useSettingsStore` | Global app settings, LLM providers, model selection. Persists to SQLite. Model format: `"providerId:model"` |
+| `useChatStore` | Chat messages, loading state, tool approval workflow |
+| `useThreadStore` | Conversation thread management, persists to `.aurora/threads/` |
+| `useEditorStore` | Monaco editor tabs, active tab, file content caching |
+| `useWorkspaceStore` | File explorer, root path, file tree, filesystem watcher |
+| `useUiStore` | Theme, modal states, chat panel visibility |
+| `useDragStore` | Drag-drop state for file operations |
+| `useTaskStore` | Task/todo list management (UI display) |
+| `useTerminalStore` | Integrated terminal sessions |
+| `useContextStore` | Context window usage tracking |
+| `useAuditStore` | Tool execution audit log |
+| `useSemanticStore` | Semantic search settings, indexes, search state |
+| `useThemeStore` | Custom theme management |
+| `usePendingChangesStore` | Pending file changes before approval |
 
 ### Database Persistence (SQLite)
 
@@ -139,14 +132,16 @@ Located in `src/store/`:
 - macOS: `~/Library/Application Support/com.aurora.agent/aurora.db`
 - Linux: `~/.config/com.aurora.agent/aurora.db`
 
+**Schema Version:** 8
+
 **Architecture:** `src-tauri/src/db/`
 
 ```
 db/
   mod.rs          - Database manager, exposes repositories
   connection.rs   - SQLite connection with WAL mode
-  schema.rs       - Table definitions (version 3)
-  migrations.rs   - Version-based migration system
+  schema.rs       - Table definitions (version 8)
+  migrations.rs   - Version-based migration system (v1-v8)
   models.rs       - Rust structs
   repositories/
     settings.rs   - LLM providers, app settings, tool settings
@@ -154,6 +149,8 @@ db/
     editor.rs     - Editor state per file
     explorer.rs   - File explorer state
     threads.rs    - Chat threads with token/context usage
+    themes.rs     - Custom themes
+    semantic.rs   - Semantic search indexes and settings
 ```
 
 **Key Tables:**
@@ -162,20 +159,23 @@ db/
 - `tool_settings` - Per-tool approval modes
 - `workspace_state`, `editor_state`, `explorer_state`
 - `threads` - Chat history with token usage
+- `custom_themes` - User-imported themes
+- `semantic_indexes` - Per-workspace semantic search indexes with exclusions
+- `semantic_settings` - Global semantic search settings (model path, enabled, etc.)
 
 ### Agent Service
 
 Located in `src/services/agent-service.ts`:
 
 - Orchestrates AI conversation with tool execution
-- Conversation loop: LLM → Tool Calls → Execution → Response
+- Conversation loop: LLM -> Tool Calls -> Execution -> Response
 - Max 25 tool iterations per request
 - Streaming callbacks: `onToken`, `onThinking`, `onToolCall`, `onToolExecution`, `onUsage`, `onComplete`
 
 **Flow:**
 ```
-User Input → ChatPanel → context-builder.ts → agent.setProvider(config)
-→ agent.chat() → Provider.streamChat() → Tool Execution → Response
+User Input -> ChatPanel -> context-builder.ts -> agent.setProvider(config)
+-> agent.chat() -> Provider.streamChat() -> Tool Execution -> Response
 ```
 
 ### Tool System
@@ -189,19 +189,73 @@ tools/
     shell-tools.ts     - Shell command execution
     workspace-tools.ts - Workspace navigation
     editor-tools.ts    - Editor operations
+    search-tools.ts    - Semantic search (aurora_search)
+    todo-tools.ts      - Task management
+    risk-levels-enhanced.ts - Tool risk categorization
   executors/
     file-executors-enhanced.ts
     shell-executors.ts
     workspace-executors.ts
     editor-executors.ts
+    search-executors.ts
+    todo-executors.ts
   registry.ts          - Central tool registration
+  operation-log.ts     - Tool execution logging
 ```
 
 **Available Tools:**
-- **File:** `file_read`, `file_write`, `file_patch`, `file_create`, `file_delete`, `file_exists`, `file_search`, `grep`, `multi_file_read`
-- **Workspace:** `workspace_tree`, `folder_create`, `folder_delete`, `workspace_info`
-- **Shell:** `shell_execute`, `shell_spawn`, `shell_kill`, `shell_list_processes`
-- **Editor:** `editor_open_file`, `editor_get_active_file`, `editor_get_selection`, `editor_insert_text`, `editor_get_open_tabs`, `editor_close_tab`
+
+| Category | Tools |
+|----------|-------|
+| **File** | `file_read`, `file_write`, `file_patch`, `file_create`, `file_delete`, `file_exists`, `file_search`, `grep`, `multi_file_read` |
+| **Workspace** | `workspace_tree`, `folder_create`, `folder_delete`, `workspace_info` |
+| **Shell** | `shell_execute`, `shell_spawn`, `shell_kill`, `shell_list_processes` |
+| **Editor** | `editor_open_file`, `editor_get_active_file`, `editor_get_selection`, `editor_insert_text`, `editor_get_open_tabs`, `editor_close_tab` |
+| **Search** | `aurora_search` (semantic code search with filters) |
+| **Tasks** | `todo_write` (task list management) |
+
+### Semantic Search System
+
+Aurora includes a powerful semantic code search engine powered by `aurora-semantic` v1.2.1.
+
+**Features:**
+- AI-powered semantic search using ONNX embeddings (Jina Code 1.5B recommended)
+- Hybrid search mode: combines lexical (keywords) + semantic (meaning)
+- GPU acceleration support (CUDA, DirectML, CoreML)
+- Per-workspace indexing with workspace-specific exclusions
+- Filtering by language, chunk type, path patterns, symbol names, directories
+
+**Architecture:**
+
+```
+Frontend (TypeScript)                    Backend (Rust)
+-----------------------                  ---------------
+useSemanticStore                    ->   semantic.rs commands
+  - settings                             - get_semantic_settings
+  - currentIndex                         - save_semantic_settings
+  - allIndexes                           - start_semantic_indexing
+  - indexProgress                        - semantic_search
+  - search()                             - update_workspace_exclusions
+
+semanticService                     ->   aurora-semantic crate
+  - getSettings()                        - Engine (singleton, cached)
+  - startIndexing()                      - WorkspaceConfig
+  - search()                             - SearchQuery + SearchFilter
+  - updateWorkspaceExclusions()
+```
+
+**Storage Locations:**
+- Settings: SQLite database (`semantic_settings` table)
+- Index metadata: SQLite database (`semantic_indexes` table with per-workspace exclusions)
+- Index files: User app data directory (`%APPDATA%/aurora_agent/semantic/` on Windows)
+
+**Settings Tab:** `src/components/modals/SemanticSettingsTab.tsx`
+- Model path configuration (with explicit save button - no auto-save on keystroke)
+- Enable/disable toggle
+- Search mode selection (hybrid/lexical/semantic)
+- Weight sliders (debounced save after 500ms)
+- Global ignored patterns and directories
+- Workspace-specific exclusions (stored per-workspace in `semantic_indexes`)
 
 ### Component Architecture
 
@@ -211,11 +265,18 @@ tools/
 - Detachable chat window
 
 **Key Components:**
-- `ChatPanel` - Chat interface with message history, thread sidebar
-- `ChatInput` - Input with model selector, thinking toggle, file mentions
-- `EditorPanel` - Monaco editor with tabs
-- `FileExplorer` - File tree with context menu, drag-drop
-- `Terminal` - Integrated terminal with multiple sessions
+
+| Component | Purpose |
+|-----------|---------|
+| `ChatPanel` | Chat interface with message history, thread sidebar |
+| `ChatInput` | Input with model selector, thinking toggle, file mentions |
+| `ChatHistory` | Message display with markdown rendering |
+| `EditorPanel` | Monaco editor with tabs |
+| `FileExplorer` | File tree with context menu, drag-drop |
+| `Terminal` | Integrated terminal with multiple sessions (PTY-based) |
+| `SettingsPanel` | Settings modal with tabs (Providers, Semantic Search, Appearance, Tools, General) |
+| `SemanticSettingsTab` | Semantic search configuration |
+| `TaskList` | Todo/task display panel |
 
 ### Thinking Mode Integration
 
@@ -240,9 +301,13 @@ const thinkingEnabled = userThinkingEnabled && (llmConfig?.supportsThinking ?? f
 |------|---------|
 | `agent-service.ts` | AI conversation orchestration |
 | `context-builder.ts` | Cursor-style IDE context gathering |
-| `thread-converter.ts` | UI → API message format conversion |
+| `thread-converter.ts` | UI -> API message format conversion |
 | `token-estimator.ts` | Character-based token estimation |
 | `database.ts` | Frontend database API |
+| `semantic.ts` | Semantic search service (frontend) |
+| `theme-service.ts` | Custom theme loading and management |
+| `syntax-validator.ts` | Code syntax validation |
+| `multi-file-service.ts` | Multi-file read operations |
 
 ### Providers (`src/services/providers/`)
 
@@ -265,7 +330,9 @@ const thinkingEnabled = userThinkingEnabled && (llmConfig?.supportsThinking ?? f
 | `components/chat/ChatInput.tsx` | Input with model/thinking controls |
 | `components/chat/ChatHistory.tsx` | Message display |
 | `components/modals/SettingsPanel.tsx` | Settings modal |
+| `components/modals/SemanticSettingsTab.tsx` | Semantic search settings |
 | `components/terminal/Terminal.tsx` | Integrated terminal |
+| `components/tasks/TaskList.tsx` | Todo list display |
 
 ## Important Patterns
 
@@ -291,12 +358,12 @@ newprovider: {
 
 ### Custom Headers/Params Flow
 
-1. User configures in Settings → stored in `llm_providers` table as JSON
+1. User configures in Settings -> stored in `llm_providers` table as JSON
 2. `getLLMConfig()` returns config with `customHeaders` and `customParams`
 3. Provider's `buildHeaders()` merges: `preset headers + customHeaders`
 4. Provider's `buildRequestBody()` applies: `preset params, then customParams override`
 
-### Provider-Specific Behaviors (Now Centralized)
+### Provider-Specific Behaviors (Centralized in Presets)
 
 All provider quirks are defined in presets:
 - **GLM**: `tool_stream: true`, thinking via `{ thinking: { type: 'enabled' } }`
@@ -322,6 +389,40 @@ const contextState = {
 // Automatic truncation at 50% when over limit
 ```
 
+### Semantic Search Usage
+
+```typescript
+// From tool executor (search-executors.ts)
+const results = await semanticService.search(workspacePath, query, {
+  limit: 10,
+  mode: 'hybrid',
+  languages: ['typescript'],
+  chunkTypes: ['function', 'class'],
+  directories: ['src/'],
+  excludeDirectories: ['node_modules'],
+});
+
+// Results include: filePath, content, score, language, chunkType, symbolName, startLine, endLine
+```
+
+### Workspace-Specific Exclusions
+
+Exclusions (excluded files/directories) are stored per-workspace in `semantic_indexes` table, not in global settings:
+
+```typescript
+// SemanticIndex includes:
+interface SemanticIndex {
+  id: string;
+  workspacePath: string;
+  excludedFiles: string[];      // Per-workspace
+  excludedDirectories: string[]; // Per-workspace
+  // ...
+}
+
+// Update via:
+await semanticService.updateWorkspaceExclusions(workspacePath, excludedFiles, excludedDirectories);
+```
+
 ## Rust Backend Commands
 
 **File Operations:** `src-tauri/src/commands/mod.rs`
@@ -339,10 +440,45 @@ const contextState = {
 - `llm_request` - Non-streaming HTTP request
 - `llm_stream_request` - Streaming with Tauri events
 
+**Semantic Search:** `src-tauri/src/commands/semantic.rs`
+- `get_semantic_settings`, `save_semantic_settings`, `set_semantic_model_path`
+- `validate_semantic_model_path`, `get_semantic_model_info`
+- `get_all_semantic_indexes`, `get_semantic_index`, `get_semantic_index_by_path`
+- `save_semantic_index`, `delete_semantic_index`, `update_semantic_index_status`
+- `update_workspace_exclusions` - Per-workspace exclusion management
+- `start_semantic_indexing`, `cancel_semantic_indexing`, `is_semantic_indexing`
+- `semantic_search` - Execute search with filters
+- `get_semantic_data_directory`, `get_semantic_index_path`
+- `get_execution_provider_info`, `get_available_gpu_features`
+
+**Themes:** `src-tauri/src/commands/themes.rs`
+- `get_all_themes`, `save_theme`, `delete_theme`
+- `set_active_theme_id`, `get_active_theme_id`
+
 ## VS Code-Inspired Design
 
-- Color hierarchy: titlebar (darkest) → tabs → sidebar → editor (lightest)
-- Integrated terminal with PowerShell/Bash profiles
-- File explorer with expand/collapse, context menu
+- Color hierarchy: titlebar (darkest) -> tabs -> sidebar -> editor (lightest)
+- Integrated terminal with PowerShell/Bash profiles (PTY-based)
+- File explorer with expand/collapse, context menu, drag-drop
 - Monaco editor with syntax highlighting
 - Detachable chat window
+- Custom theme support (import VS Code themes)
+
+## Performance Considerations
+
+### Settings Dialog Optimization
+
+The semantic settings tab uses several optimizations to prevent UI freezing:
+
+1. **Model path**: Explicit save button (no auto-save on keystroke)
+2. **Weight sliders**: Debounced save (500ms after user stops dragging)
+3. **Text inputs**: Debounced save (1s idle) or save on blur
+4. **Model validation**: Lightweight filesystem check only (no ONNX model loading)
+5. **ONNX model loading**: Only happens when indexing starts, not during settings configuration
+
+### Semantic Search Engine
+
+- Engine is cached as singleton (not recreated per search)
+- Index files stored in user app data (not workspace)
+- Workspace-specific exclusions stored in database
+- GPU acceleration when available (CUDA, DirectML, CoreML)

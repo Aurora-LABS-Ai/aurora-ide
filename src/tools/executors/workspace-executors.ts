@@ -171,61 +171,10 @@ const folderDeleteExecutor = async (
 };
 
 // ============================================
-// WORKSPACE INFO EXECUTOR
-// ============================================
-const workspaceInfoExecutor = async (
-  _args: Record<string, any>,
-): Promise<string> => {
-  const { rootPath, files } = useWorkspaceStore.getState();
-
-  if (!rootPath) {
-    return JSON.stringify({
-      success: true,
-      hasWorkspace: false,
-      message: "No workspace open",
-    });
-  }
-
-  const countFiles = (nodes: any[]): { files: number; folders: number } => {
-    let fileCount = 0;
-    let folderCount = 0;
-
-    for (const node of nodes) {
-      if (node.type === "folder") {
-        folderCount++;
-        if (node.children) {
-          const childCounts = countFiles(node.children);
-          fileCount += childCounts.files;
-          folderCount += childCounts.folders;
-        }
-      } else {
-        fileCount++;
-      }
-    }
-
-    return { files: fileCount, folders: folderCount };
-  };
-
-  const counts = countFiles(files);
-  const folderName = rootPath.split(/[/\\]/).pop() || "workspace";
-
-  return JSON.stringify({
-    success: true,
-    hasWorkspace: true,
-    rootPath,
-    name: folderName,
-    totalFiles: counts.files,
-    totalFolders: counts.folders,
-  });
-};
-
-// ============================================
 // REGISTER ALL WORKSPACE EXECUTORS
-// SIMPLIFIED: Removed workspace_list_files, workspace_find_files, workspace_grep
 // ============================================
 export const registerWorkspaceExecutors = (): void => {
   toolRegistry.registerExecutor("workspace_tree", workspaceTreeExecutor);
   toolRegistry.registerExecutor("folder_create", folderCreateExecutor);
   toolRegistry.registerExecutor("folder_delete", folderDeleteExecutor);
-  toolRegistry.registerExecutor("workspace_info", workspaceInfoExecutor);
 };

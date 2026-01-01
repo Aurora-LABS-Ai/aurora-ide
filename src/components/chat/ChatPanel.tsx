@@ -22,7 +22,7 @@
 
 import React, { useRef, useCallback, useState, useEffect } from "react";
 import { Search, Bug, Sparkles, TestTube } from 'lucide-react';
-import { ChatHistory } from "./ChatHistory";
+import { ChatMessages } from "./ChatMessages";
 import { ChatInput, type AttachedFile } from "./ChatInput";
 import { ChatHeader } from "./ChatHeader";
 import { ThreadHistory } from "./ThreadHistory";
@@ -161,7 +161,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
   // This batches rapid token updates into periodic UI refreshes
   const pendingTimelineUpdate = useRef<ReturnType<typeof setTimeout> | null>(null);
   const TIMELINE_UPDATE_DEBOUNCE_MS = 250; // Update UI at most every 250ms during streaming
-  
+
   // Flush pending timeline updates immediately (for important state changes)
   const flushTimelineUpdate = useCallback(() => {
     if (pendingTimelineUpdate.current) {
@@ -174,7 +174,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       });
     }
   }, [updateMessageInThread]);
-  
+
   // Helper to update timeline event
   // @param immediate - if true, bypasses debounce for important updates (tool status changes)
   const updateTimelineEvent = useCallback(
@@ -194,7 +194,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       if (pendingTimelineUpdate.current) {
         clearTimeout(pendingTimelineUpdate.current);
       }
-      
+
       pendingTimelineUpdate.current = setTimeout(() => {
         if (currentMessageIdRef.current) {
           updateMessageInThread(currentMessageIdRef.current, {
@@ -232,13 +232,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       const projectLayoutEnabled = useSettingsStore.getState().projectLayoutEnabled;
       const shouldIncludeLayout = isFirstMessage && projectLayoutEnabled;
       const ideContext = shouldIncludeLayout ? getIDEContext(true) : getIDEContextLight();
-      
+
       const { formattedContext, filesWithContent, filesAsPathsOnly } = await buildQueryContext(
         content,
         attachedFiles,
         ideContext
       );
-      
+
       // Log when project layout is included
       if (shouldIncludeLayout && ideContext.projectLayout) {
         console.log('[ChatPanel] Including project layout in first message (persistent file map)');
@@ -407,14 +407,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
         await agent.chat(formattedContext, {
           onToken: (token) => {
-            // #region agent log
-            tokenCallbackCount++;
-            // Only log every 100 tokens to avoid log spam
-            if (tokenCallbackCount % 100 === 0) {
-              debugLog('ChatPanel.tsx:390', 'onToken batch', { tokenCount: tokenCallbackCount, tokenLength: token.length }, 'F');
-            }
-            // #endregion
-            
+
             // Close current thinking block when content starts
             if (currentThinkingEventId) {
               updateTimelineEvent(currentThinkingEventId, {
@@ -944,7 +937,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           </div>
         </div>
       ) : (
-        <ChatHistory messages={messages} />
+        <ChatMessages messages={messages} />
       )}
 
       {/* Tool Approval Banner */}

@@ -275,63 +275,6 @@ const shellListProcessesExecutor = async (): Promise<string> => {
 };
 
 // ============================================
-// TERMINAL CLOSE EXECUTOR
-// ============================================
-const terminalCloseExecutor = async (args: Record<string, unknown>): Promise<string> => {
-  const sessionId = args.sessionId as string | undefined;
-  const closeAll = args.closeAll as boolean | undefined;
-  
-  const terminal = useTerminalStore.getState();
-  
-  if (!terminal.isOpen && terminal.sessions.length === 0) {
-    return JSON.stringify({
-      success: true,
-      message: 'Terminal is already closed',
-    });
-  }
-
-  if (closeAll) {
-    // Close all sessions
-    const sessionIds = terminal.sessions.map(s => s.id);
-    for (const id of sessionIds) {
-      terminal.closeSession(id);
-    }
-    terminal.closeTerminal();
-    return JSON.stringify({
-      success: true,
-      message: `Closed all ${sessionIds.length} terminal session(s)`,
-      closedSessions: sessionIds,
-    });
-  }
-
-  if (sessionId) {
-    // Close specific session
-    const session = terminal.sessions.find(s => s.id === sessionId);
-    if (!session) {
-      return JSON.stringify({
-        success: false,
-        error: `Session not found: ${sessionId}`,
-        availableSessions: terminal.sessions.map(s => ({ id: s.id, name: s.name })),
-      });
-    }
-    terminal.closeSession(sessionId);
-    return JSON.stringify({
-      success: true,
-      message: `Closed terminal session: ${session.name}`,
-      sessionId,
-    });
-  }
-
-  // Close the terminal panel (hides it, sessions remain)
-  terminal.closeTerminal();
-  return JSON.stringify({
-    success: true,
-    message: 'Terminal panel closed',
-    remainingSessions: terminal.sessions.length,
-  });
-};
-
-// ============================================
 // REGISTER ALL SHELL EXECUTORS
 // ============================================
 export const registerShellExecutors = (): void => {
@@ -339,5 +282,4 @@ export const registerShellExecutors = (): void => {
   toolRegistry.registerExecutor('shell_spawn', shellSpawnExecutor);
   toolRegistry.registerExecutor('shell_kill', shellKillExecutor);
   toolRegistry.registerExecutor('shell_list_processes', shellListProcessesExecutor);
-  toolRegistry.registerExecutor('terminal_close', terminalCloseExecutor);
 };

@@ -1,6 +1,6 @@
 /**
  * Workspace Tools - Definitions
- * Simplified: only essential workspace operations
+ * Essential workspace operations only
  */
 
 import type { ToolDefinition } from '../types';
@@ -78,27 +78,9 @@ export const folderDeleteTool: ToolDefinition = {
   },
 };
 
-// ============================================
-// WORKSPACE INFO TOOL
-// ============================================
-export const workspaceInfoTool: ToolDefinition = {
-  type: 'function',
-  function: {
-    name: 'workspace_info',
-    description: 'Get information about the current workspace including root path, total files, and project type detection.',
-    parameters: {
-      type: 'object',
-      properties: {},
-      required: [],
-    },
-  },
-};
-
 // Export all workspace tools as an array
-// SIMPLIFIED: Removed workspace_list_files, workspace_find_files, workspace_grep (use grep tool instead)
 export const workspaceTools: ToolDefinition[] = [
   workspaceTreeTool,
   folderCreateTool,
   folderDeleteTool,
-  workspaceInfoTool,
 ];

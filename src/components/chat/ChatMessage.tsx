@@ -91,17 +91,6 @@ const TimelineEventItem: React.FC<{ event: TimelineEvent }> = ({ event }) => {
   }
 };
 
-// Subtle streaming indicator - shows when AI is generating
-const StreamingIndicator: React.FC = () => (
-  <div className="flex items-center gap-1.5 py-1">
-    <div className="flex gap-0.5">
-      <span className="w-1.5 h-1.5 rounded-full bg-text-disabled/60 animate-pulse" style={{ animationDelay: '0ms' }} />
-      <span className="w-1.5 h-1.5 rounded-full bg-text-disabled/60 animate-pulse" style={{ animationDelay: '150ms' }} />
-      <span className="w-1.5 h-1.5 rounded-full bg-text-disabled/60 animate-pulse" style={{ animationDelay: '300ms' }} />
-    </div>
-  </div>
-);
-
 interface ChatMessageProps {
   message: Message;
   isStreaming?: boolean; // Whether this message is currently being streamed
@@ -150,25 +139,6 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
 
   const copyableText = getCopyableText();
 
-  // Determine if we should show streaming indicator
-  // Show when: streaming, last message, assistant, and either no content or tools just completed
-  const hasContent = hasTimeline 
-    ? message.timeline!.some(e => e.type === 'content' && e.content)
-    : !!message.content;
-  
-  const hasActiveThinking = message.isThinking;
-  const hasRunningTools = message.tools?.some(t => t.status === 'pending' || t.status === 'executing');
-  const allToolsComplete = message.tools && message.tools.length > 0 && 
-    message.tools.every(t => t.status === 'complete' || t.status === 'failed' || t.status === 'rejected');
-  
-  // Show indicator when streaming and waiting for content (not during thinking or tool execution)
-  const showStreamingIndicator = isStreaming && isLastMessage && !hasActiveThinking && !hasRunningTools && (
-    // No content yet
-    !hasContent ||
-    // Or all tools completed but might have more content coming
-    (allToolsComplete && !message.content?.endsWith('\n\n'))
-  );
-
   return (
     <div className="px-4 py-4 group relative">
       {/* Avatar column */}
@@ -181,7 +151,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
         {/* Name header */}
         <div className="flex items-center gap-2 mb-2">
           {isStreaming && isLastMessage ? (
-            <span 
+            <span
               className="text-[11px] font-bold tracking-wide aurora-shimmer"
               style={{
                 background: 'linear-gradient(90deg, var(--aurora-common-primary) 0%, var(--aurora-common-primary) 40%, #ffffff 50%, var(--aurora-common-primary) 60%, var(--aurora-common-primary) 100%)',
@@ -222,9 +192,6 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
               )}
             </>
           )}
-
-          {/* Streaming indicator - shows when waiting for content */}
-          {showStreamingIndicator && <StreamingIndicator />}
 
           {message.toolProposal && (
             <div className="mt-4">

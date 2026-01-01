@@ -70,6 +70,30 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [5])?;
             Ok(())
         }
+        6 => {
+            // Migration from v5 to v6: Add semantic search tables
+            migration_v6(conn)?;
+            // Update schema version
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [6])?;
+            Ok(())
+        }
+        7 => {
+            // Migration from v6 to v7: Add excluded_files and excluded_directories columns to semantic_settings
+            migration_v7(conn)?;
+            // Update schema version
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [7])?;
+            Ok(())
+        }
+        8 => {
+            // Migration from v7 to v8: Add workspace-specific exclusions to semantic_indexes
+            migration_v8(conn)?;
+            // Update schema version
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [8])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -207,6 +231,95 @@ fn migration_v5(conn: &Connection) -> DbResult<()> {
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_themes_name_author
          ON custom_themes (LOWER(TRIM(name)), LOWER(TRIM(author)))",
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Migration v6: Add semantic search tables
+fn migration_v6(conn: &Connection) -> DbResult<()> {
+    // Create semantic_indexes table
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS semantic_indexes (
+            id TEXT PRIMARY KEY,
+            workspace_path TEXT NOT NULL UNIQUE,
+            workspace_name TEXT NOT NULL,
+            document_count INTEGER NOT NULL DEFAULT 0,
+            chunk_count INTEGER NOT NULL DEFAULT 0,
+            total_bytes INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            error_message TEXT,
+            last_indexed_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    // Create index for workspace path lookup
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_semantic_indexes_workspace_path
+         ON semantic_indexes (workspace_path)",
+        [],
+    )?;
+
+    // Create semantic_settings table (single row)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS semantic_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            model_path TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            auto_index INTEGER NOT NULL DEFAULT 0,
+            auto_reindex_interval INTEGER,
+            ignored_patterns TEXT,
+            ignored_directories TEXT,
+            max_file_size INTEGER NOT NULL DEFAULT 1048576,
+            search_mode TEXT NOT NULL DEFAULT 'hybrid',
+            lexical_weight REAL NOT NULL DEFAULT 0.4,
+            semantic_weight REAL NOT NULL DEFAULT 0.6,
+            updated_at TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    // Insert default settings row
+    conn.execute(
+        "INSERT OR IGNORE INTO semantic_settings (id, updated_at) VALUES (1, datetime('now'))",
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Migration v7: Add excluded_files and excluded_directories columns to semantic_settings
+fn migration_v7(conn: &Connection) -> DbResult<()> {
+    // Add excluded_files column (specific file paths to exclude)
+    conn.execute(
+        "ALTER TABLE semantic_settings ADD COLUMN excluded_files TEXT DEFAULT '[]'",
+        [],
+    )?;
+
+    // Add excluded_directories column (specific directory paths to exclude)
+    conn.execute(
+        "ALTER TABLE semantic_settings ADD COLUMN excluded_directories TEXT DEFAULT '[]'",
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Migration v8: Add workspace-specific exclusions to semantic_indexes table
+fn migration_v8(conn: &Connection) -> DbResult<()> {
+    // Add excluded_files column to semantic_indexes (workspace-specific)
+    conn.execute(
+        "ALTER TABLE semantic_indexes ADD COLUMN excluded_files TEXT DEFAULT '[]'",
+        [],
+    )?;
+
+    // Add excluded_directories column to semantic_indexes (workspace-specific)
+    conn.execute(
+        "ALTER TABLE semantic_indexes ADD COLUMN excluded_directories TEXT DEFAULT '[]'",
         [],
     )?;
 

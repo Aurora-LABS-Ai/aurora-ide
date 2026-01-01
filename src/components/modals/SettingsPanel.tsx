@@ -23,10 +23,11 @@
 import React, { useState } from 'react';
 import { useUiStore } from '../../store/useUiStore';
 import { useSettingsStore, type LLMProvider } from '../../store/useSettingsStore';
-import { X, Server, Layout, Shield, Eye, EyeOff, Plus, Trash2, ChevronDown, Palette } from 'lucide-react';
+import { X, Server, Layout, Shield, Eye, EyeOff, Plus, Trash2, ChevronDown, Palette, Database } from 'lucide-react';
 import clsx from 'clsx';
 import { ToolSettingsTab } from './ToolSettingsTab';
 import { ThemeSettingsTab } from './ThemeSettingsTab';
+import { SemanticSettingsTab } from './SemanticSettingsTab';
 
 // ============================================
 // ADD PROVIDER FORM
@@ -440,7 +441,7 @@ export const SettingsPanel: React.FC = () => {
 
   // Each provider has its own supportsThinking, defaultTemperature, and defaultMaxTokens
 
-  const [activeTab, setActiveTab] = useState<'providers' | 'tools' | 'general' | 'themes'>('providers');
+  const [activeTab, setActiveTab] = useState<'providers' | 'tools' | 'general' | 'themes' | 'semantic'>('providers');
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [isAddingProvider, setIsAddingProvider] = useState(false);
@@ -458,13 +459,14 @@ export const SettingsPanel: React.FC = () => {
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-      <div className="bg-editor border border-border rounded-xl shadow-2xl w-[700px] h-[500px] flex overflow-hidden">
+      <div className="bg-editor border border-border rounded-xl shadow-2xl w-[910px] h-[650px] flex overflow-hidden">
         {/* Sidebar */}
         <div className="w-40 border-r border-border bg-sidebar p-2 flex flex-col gap-0.5">
           <div className="px-2 py-1.5 text-[10px] font-semibold text-text-disabled uppercase tracking-wider">Settings</div>
 
           {[
             { id: 'providers', label: 'Providers', icon: Server },
+            { id: 'semantic', label: 'Semantic Search', icon: Database },
             { id: 'themes', label: 'Appearance', icon: Palette },
             { id: 'tools', label: 'Tools', icon: Shield },
             { id: 'general', label: 'General', icon: Layout },
@@ -488,9 +490,10 @@ export const SettingsPanel: React.FC = () => {
           <div className="h-10 border-b border-border flex items-center justify-between px-4 bg-sidebar">
             <h2 className="text-xs font-medium text-text-primary">
               {activeTab === 'providers' ? 'LLM Providers' :
-                activeTab === 'themes' ? 'Appearance & Theme' :
-                  activeTab === 'tools' ? 'Tool Settings' :
-                    'General Settings'}
+                activeTab === 'semantic' ? 'Semantic Search' :
+                  activeTab === 'themes' ? 'Appearance & Theme' :
+                    activeTab === 'tools' ? 'Tool Settings' :
+                      'General Settings'}
             </h2>
             <button
               onClick={() => setSettingsOpen(false)}
@@ -540,6 +543,9 @@ export const SettingsPanel: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {/* SEMANTIC SEARCH TAB */}
+            {activeTab === 'semantic' && <SemanticSettingsTab />}
 
             {/* TOOLS TAB */}
             {activeTab === 'tools' && <ToolSettingsTab />}

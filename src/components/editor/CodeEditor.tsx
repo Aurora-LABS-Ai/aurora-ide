@@ -25,11 +25,12 @@ import Editor, { useMonaco } from '@monaco-editor/react';
 import { useEditorStore } from '../../store/useEditorStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useThemeStore } from '../../store/useThemeStore';
+import { useUiStore } from '../../store/useUiStore';
 import { themeService, getMonacoThemeId } from '../../services/theme-service';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { isTauri } from '../../lib/tauri';
 import { usePendingChangesStore } from '../../store/usePendingChangesStore';
-import { Check, X, FileCode, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Check, X, FileCode, ChevronLeft, ChevronRight, Search, Settings } from 'lucide-react';
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
 
@@ -153,16 +154,45 @@ export const CodeEditor: React.FC = () => {
   }, [selectedChange?.id, tabs, activeTabId, setActiveTab]);
 
   if (!activeTab) {
+    const openSettings = () => useUiStore.getState().setSettingsOpen(true);
+    const openQuickOpen = () => {
+      const event = new KeyboardEvent('keydown', { key: 'p', ctrlKey: true });
+      window.dispatchEvent(event);
+    };
+
     return (
       <div className="flex-1 flex items-center justify-center text-text-secondary bg-editor">
-        <div className="text-center">
-          <img
-            src="/app-icon.svg"
-            alt="Aurora"
-            className="w-16 h-16 mx-auto mb-4 opacity-20"
-          />
-          <p className="text-sm pb-1.5">Select a file to start editing</p>
-          <p className="text-xs text-text-disabled">Ctrl+P to search files</p>
+        <div className="text-center max-w-xs">
+          {/* Icon with glow effect - matching chat panel style */}
+          <div className="w-16 h-16 mx-auto mb-5 relative group">
+            <div className="absolute inset-0 bg-primary/15 rounded-2xl blur-xl" />
+            <img
+              src="/app-icon.svg"
+              alt="Aurora"
+              className="relative z-10 w-full h-full drop-shadow-lg"
+            />
+          </div>
+          <p className="text-sm text-text-primary mb-1">Select a file to start editing</p>
+          <p className="text-xs text-text-disabled mb-5">Open a file from the explorer or use shortcuts below</p>
+          
+          {/* Shortcut buttons */}
+          <div className="flex flex-wrap justify-center gap-2">
+            <button
+              onClick={openQuickOpen}
+              className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-text-secondary hover:text-text-primary bg-sidebar hover:bg-input border border-border rounded-md transition-colors"
+            >
+              <Search size={12} />
+              <span>Search Files</span>
+              <kbd className="ml-1 px-1.5 py-0.5 text-[9px] bg-editor border border-border rounded">Ctrl+P</kbd>
+            </button>
+            <button
+              onClick={openSettings}
+              className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-text-secondary hover:text-text-primary bg-sidebar hover:bg-input border border-border rounded-md transition-colors"
+            >
+              <Settings size={12} />
+              <span>Settings</span>
+            </button>
+          </div>
         </div>
       </div>
     );

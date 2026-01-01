@@ -25,11 +25,11 @@ import { ChatMessage } from './ChatMessage';
 import { useChatStore } from '../../store/useChatStore';
 import type { Message } from '../../types';
 
-interface ChatHistoryProps {
+interface ChatMessagesProps {
   messages: Message[];
 }
 
-export const ChatHistory: React.FC<ChatHistoryProps> = ({ messages }) => {
+export const ChatMessages: React.FC<ChatMessagesProps> = ({ messages }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const { isLoading } = useChatStore();
@@ -92,9 +92,9 @@ export const ChatHistory: React.FC<ChatHistoryProps> = ({ messages }) => {
     >
       <div className="py-2">
         {messages.map((msg, index) => (
-          <ChatMessage 
-            key={msg.id} 
-            message={msg} 
+          <ChatMessage
+            key={msg.id}
+            message={msg}
             isStreaming={isLoading}
             isLastMessage={index === messages.length - 1}
           />

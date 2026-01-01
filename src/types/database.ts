@@ -107,3 +107,82 @@ export interface ToolSetting {
   approvalMode: 'auto' | 'always_ask' | 'deny';
   updatedAt: string;
 }
+
+// ============================================================
+// SEMANTIC SEARCH
+// ============================================================
+
+export type SemanticIndexStatus = 'pending' | 'indexing' | 'ready' | 'error';
+
+export interface SemanticIndex {
+  id: string;
+  workspacePath: string;
+  workspaceName: string;
+  documentCount: number;
+  chunkCount: number;
+  totalBytes: number;
+  status: SemanticIndexStatus;
+  errorMessage: string | null;
+  lastIndexedAt: string | null;
+  /** Workspace-specific file exclusions (relative paths) */
+  excludedFiles: string[];
+  /** Workspace-specific directory exclusions (relative paths) */
+  excludedDirectories: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type SearchMode = 'lexical' | 'semantic' | 'hybrid';
+
+export interface SemanticSettings {
+  modelPath: string | null;
+  enabled: boolean;
+  autoIndex: boolean;
+  autoReindexInterval: number | null; // Minutes, null = disabled
+  ignoredPatterns: string[];
+  ignoredDirectories: string[];
+  /** Specific file paths to exclude (relative to workspace root) */
+  excludedFiles: string[];
+  /** Specific directory paths to exclude (relative to workspace root) */
+  excludedDirectories: string[];
+  maxFileSize: number; // Bytes
+  searchMode: SearchMode;
+  lexicalWeight: number;
+  semanticWeight: number;
+  updatedAt: string;
+}
+
+export interface IndexProgress {
+  workspaceId: string;
+  phase: string;
+  processed: number;
+  total: number;
+  currentFile: string | null;
+  percentage: number;
+}
+
+export interface SemanticSearchResult {
+  filePath: string;
+  relativePath: string;
+  startLine: number;
+  endLine: number;
+  chunkType: string;
+  symbolName: string | null;
+  content: string;
+  score: number;
+  matchType: string;
+}
+
+export interface ExecutionProviderDetails {
+  name: string;
+  isGpu: boolean;
+  deviceId: number | null;
+  description: string;
+}
+
+export interface GpuFeatures {
+  cuda: boolean;
+  tensorrt: boolean;
+  directml: boolean;
+  coreml: boolean;
+}

@@ -41,8 +41,39 @@ chrono = { version = "0.4", features = ["serde"] }
 # Diff library for comparing file changes
 similar = "2"
 
+# Semantic search engine for code indexing
+# Path is relative to src-tauri directory, pointing to the external aurora-semantic crate
+aurora-semantic = { version = "1.2.1", features = ["cuda"] }
+
+# Lazy static for singleton patterns
+lazy_static = "1.4"
+
+# Cross-platform directories (for user-level semantic data storage)
+dirs = "5.0"
+
+# Performance optimizations
+lru = "0.13"            # LRU cache for file contents
+parking_lot = "0.12"    # Faster mutexes than std::sync
+dashmap = "6"           # Concurrent hashmap for caching
+
 # PTY support for native terminal
 tauri-plugin-pty = "0.1"
+
+[features]
+# Default: Enable CUDA for NVIDIA GPUs (most common GPU acceleration)
+# For Windows without CUDA: use --features directml instead
+# For macOS: use --features coreml instead
+default = ["cuda"]
+
+# GPU acceleration features (pass through to aurora-semantic)
+# Priority: CUDA > DirectML > CoreML > CPU
+cuda = ["aurora-semantic/cuda"]
+tensorrt = ["aurora-semantic/tensorrt"]
+directml = ["aurora-semantic/directml"]
+coreml = ["aurora-semantic/coreml"]
+
+# CPU-only build (no GPU acceleration)
+cpu-only = []
 
 # Dev profile: enable some optimizations for better dev mode performance
 [profile.dev]

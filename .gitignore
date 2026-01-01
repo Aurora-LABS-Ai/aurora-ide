@@ -29,11 +29,12 @@ src-tauri/gen/
 *.db-wal
 *.sqlite
 *.sqlite3
+build
 
 # App data directories
 .aurora/
 *.aurora
-
+target
 # AI/ML tool directories
 .claude/
 .cursor/

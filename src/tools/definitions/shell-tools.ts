@@ -105,38 +105,10 @@ export const shellListProcessesTool: ToolDefinition = {
   },
 };
 
-// ============================================
-// TERMINAL CLOSE TOOL
-// ============================================
-export const terminalCloseTool: ToolDefinition = {
-  type: 'function',
-  function: {
-    name: 'terminal_close',
-    description: 'Close the terminal panel or a specific terminal session. Use this to clean up after running commands.',
-    parameters: {
-      type: 'object',
-      properties: {
-        sessionId: {
-          type: 'string',
-          description: 'Optional. The specific session ID to close. If not provided, closes the entire terminal panel.',
-        },
-        closeAll: {
-          type: 'boolean',
-          description: 'If true, closes all terminal sessions. Defaults to false.',
-          default: false,
-        },
-      },
-      required: [],
-    },
-  },
-};
-
 // Export all shell tools as an array
 export const shellTools: ToolDefinition[] = [
   shellExecuteTool,
   shellSpawnTool,
   shellKillTool,
   shellListProcessesTool,
-  terminalCloseTool,
 ];
-

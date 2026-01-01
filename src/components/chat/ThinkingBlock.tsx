@@ -48,21 +48,23 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ content, isGenerat
       <button
         onClick={() => setIsExpanded(!isExpanded)}
         className={clsx(
-          "flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 group w-full",
-          "border border-transparent hover:bg-white/[0.03]",
+          "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium w-full",
+          "transition-all duration-300 group glass-light border",
           isGenerating
-            ? "text-primary bg-primary/[0.05] border-primary/10"
-            : "text-text-disabled hover:text-text-secondary"
+            ? "border-transparent bg-[var(--aurora-common-primary)]/[0.05]"
+            : "border-transparent hover:border-[var(--aurora-common-border)]/50 hover:glass-medium"
         )}
       >
         <div className={clsx(
-          "flex items-center justify-center w-5 h-5 rounded-md transition-colors",
-          isGenerating ? "bg-primary/10" : "bg-input group-hover:bg-input/80"
+          "flex items-center justify-center w-5 h-5 rounded transition-all",
+          isGenerating
+            ? "bg-[var(--aurora-common-primary)]/15"
+            : "bg-[var(--aurora-chat-surface)] group-hover:bg-[var(--aurora-chat-surface)]/80"
         )}>
           {isGenerating ? (
-            <Loader2 className="w-3 h-3 animate-spin text-primary" />
+            <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: 'var(--aurora-common-primary)' }} />
           ) : (
-            <Sparkles className="w-3 h-3 text-text-disabled group-hover:text-text-secondary" />
+            <Sparkles className="w-3.5 h-3.5 text-[var(--aurora-sidebar-foreground)]" />
           )}
         </div>
 

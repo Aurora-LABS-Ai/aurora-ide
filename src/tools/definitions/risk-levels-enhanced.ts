@@ -58,6 +58,11 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   // TODO TOOLS - AUTO-APPROVED
   // ============================================
   todo_write: 'low',               // UI operation - updates task list
+
+  // ============================================
+  // SEARCH TOOLS - AUTO-APPROVED
+  // ============================================
+  aurora_search: 'low',            // Semantic search - read only operation
 };
 
 /**

@@ -53,6 +53,41 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     };
 
     set({ tabs: [...tabs, newTab], activeTabId: fileId });
+
+    // PERFORMANCE: Preload sibling files in background for faster subsequent opens
+    // This makes clicking between files in the same folder instant
+    queueMicrotask(async () => {
+      try {
+        const { preloadFiles } = await import('../lib/file-cache');
+        const { useWorkspaceStore } = await import('./useWorkspaceStore');
+        const { files } = useWorkspaceStore.getState();
+
+        // Find the parent folder and preload siblings
+        const dir = fileId.substring(0, fileId.lastIndexOf(fileId.includes('\\') ? '\\' : '/'));
+        const findSiblings = (nodes: typeof files): string[] => {
+          for (const node of nodes) {
+            if (node.path === dir && node.children) {
+              return node.children
+                .filter(c => c.type === 'file' && c.path !== fileId && c.path)
+                .slice(0, 5) // Preload up to 5 siblings
+                .map(c => c.path!);
+            }
+            if (node.children) {
+              const found = findSiblings(node.children);
+              if (found.length) return found;
+            }
+          }
+          return [];
+        };
+
+        const siblings = findSiblings(files);
+        if (siblings.length > 0) {
+          preloadFiles(siblings);
+        }
+      } catch {
+        // Ignore preload errors - this is just an optimization
+      }
+    });
     // NO saveWorkspace() here - save only on window close
   },
 
@@ -156,29 +191,24 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           return langMap[ext] || 'plaintext';
         };
 
-        // Import readFileContent dynamically to avoid circular imports
-        const { readFileContent } = await import('../lib/tauri');
+        // PERFORMANCE: Use batch file reading - single IPC call for all files
+        const { readFilesBatch } = await import('../lib/file-cache');
+        const paths = state.open_tabs.map(tab => tab.path);
+        const contentMap = await readFilesBatch(paths);
 
-        // Load file content for each tab
-        const tabs: Tab[] = await Promise.all(
-          state.open_tabs.map(async (tab) => {
-            const filename = tab.path.split(/[/\\]/).pop() || tab.path;
-            let content = '';
-            try {
-              content = await readFileContent(tab.path);
-            } catch (err) {
-              console.warn('Failed to load file content:', tab.path, err);
-            }
-            return {
-              id: tab.path,
-              path: tab.path,
-              filename,
-              content,
-              isDirty: tab.is_dirty,
-              language: detectLanguage(filename),
-            };
-          })
-        );
+        // Build tabs with batch-loaded content
+        const tabs: Tab[] = state.open_tabs.map((tab) => {
+          const filename = tab.path.split(/[/\\]/).pop() || tab.path;
+          const content = contentMap.get(tab.path) || '';
+          return {
+            id: tab.path,
+            path: tab.path,
+            filename,
+            content,
+            isDirty: tab.is_dirty,
+            language: detectLanguage(filename),
+          };
+        });
 
         const activeTab = state.open_tabs.find(t => t.is_active);
         const activeTabId = activeTab?.path || (tabs.length > 0 ? tabs[0].id : null);
@@ -215,3 +245,20 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }
   },
 }));
+
+// Subscribe to activeTabId changes and reveal the file in explorer
+let previousActiveTabId: string | null = null;
+useEditorStore.subscribe((state) => {
+  const { activeTabId, tabs } = state;
+  if (activeTabId && activeTabId !== previousActiveTabId) {
+    previousActiveTabId = activeTabId;
+    // Find the tab to get its path
+    const tab = tabs.find(t => t.id === activeTabId);
+    if (tab?.path) {
+      // Dynamically import to avoid circular dependency
+      import('./useWorkspaceStore').then(({ useWorkspaceStore }) => {
+        useWorkspaceStore.getState().revealFile(tab.path);
+      });
+    }
+  }
+});

@@ -53,35 +53,6 @@ export const fileReadTool: ToolDefinition = {
 };
 
 // ============================================
-// FILE READ LINES TOOL
-// ============================================
-export const fileReadLinesTool: ToolDefinition = {
-  type: 'function',
-  function: {
-    name: 'file_read_lines',
-    description: 'Read specific lines from a file. Useful for reading portions of large files. Line numbers are 1-indexed.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: 'The full path of the file to read',
-        },
-        start_line: {
-          type: 'number',
-          description: 'The starting line number (1-indexed, inclusive)',
-        },
-        end_line: {
-          type: 'number',
-          description: 'The ending line number (1-indexed, inclusive). If not provided, reads to end of file.',
-        },
-      },
-      required: ['path', 'start_line'],
-    },
-  },
-};
-
-// ============================================
 // FILE WRITE TOOL
 // ============================================
 export const fileWriteTool: ToolDefinition = {
@@ -156,57 +127,6 @@ export const fileDeleteTool: ToolDefinition = {
         },
       },
       required: ['path'],
-    },
-  },
-};
-
-// ============================================
-// FILE EXISTS TOOL
-// ============================================
-export const fileExistsTool: ToolDefinition = {
-  type: 'function',
-  function: {
-    name: 'file_exists',
-    description: 'Check if a file or directory exists at the specified path.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: 'The path to check for existence',
-        },
-      },
-      required: ['path'],
-    },
-  },
-};
-
-// ============================================
-// FILE SEARCH TOOL
-// ============================================
-export const fileSearchTool: ToolDefinition = {
-  type: 'function',
-  function: {
-    name: 'file_search',
-    description: 'Search for a pattern (regex or plain text) within a file. Returns matching lines with line numbers.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: 'The full path of the file to search',
-        },
-        pattern: {
-          type: 'string',
-          description: 'The search pattern (supports regex)',
-        },
-        is_regex: {
-          type: 'boolean',
-          description: 'Whether the pattern is a regex. Defaults to false (plain text search).',
-          default: false,
-        },
-      },
-      required: ['path', 'pattern'],
     },
   },
 };
@@ -314,13 +234,9 @@ Returns: JSON with file contents, errors, and performance metrics.`,
 export const fileTools: ToolDefinition[] = [
   fileCreateTool,
   fileReadTool,
-  fileReadLinesTool,
   fileWriteTool,
   filePatchTool,
   fileDeleteTool,
-  fileExistsTool,
-  fileSearchTool,
   grepTool,
   multiFileReadTool,
 ];
-

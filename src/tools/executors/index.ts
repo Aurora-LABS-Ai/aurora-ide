@@ -7,6 +7,7 @@ import { registerEnhancedFileExecutors } from './file-executors-enhanced';
 import { registerWorkspaceExecutors } from './workspace-executors';
 import { registerShellExecutors } from './shell-executors';
 import { registerEditorExecutors } from './editor-executors';
+import { registerSearchExecutors } from './search-executors';
 import { registerTodoExecutors } from './todo-executors';
 
 // Track if executors have been registered
@@ -34,6 +35,9 @@ export const registerAllExecutors = (): void => {
   // Register editor tool executors
   registerEditorExecutors();
 
+  // Register search tool executors (aurora_search)
+  registerSearchExecutors();
+
   // Register todo tool executors
   registerTodoExecutors();
 
@@ -53,5 +57,5 @@ export { registerFileExecutors } from './file-executors';
 export { registerWorkspaceExecutors } from './workspace-executors';
 export { registerShellExecutors } from './shell-executors';
 export { registerEditorExecutors } from './editor-executors';
+export { registerSearchExecutors } from './search-executors';
 export { registerTodoExecutors } from './todo-executors';
-

@@ -20,10 +20,11 @@
  * See: src/services/theme-service.ts for theme utilities
  */
 
-import React, { useState, useMemo, useEffect } from 'react';
-import { X, MessageSquare, Trash2, Search, Plus, Loader2 } from 'lucide-react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { MessageSquare, Trash2, Search, Plus, Loader2, CornerDownLeft } from 'lucide-react';
 import { useThreadStore, type ThreadSummary } from '../../store/useThreadStore';
 import { DeleteConfirmDialog } from './DeleteConfirmDialog';
+import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
 
 interface ThreadHistoryProps {
@@ -59,66 +60,45 @@ const formatDate = (timestamp: number): string => {
 
 const ThreadItem: React.FC<{ 
   thread: ThreadSummary; 
+  isSelected: boolean;
   isActive: boolean;
   onSelect: () => void;
   onDelete: (e: React.MouseEvent) => void;
-}> = ({ thread, isActive, onSelect, onDelete }) => {
+  onMouseEnter: () => void;
+}> = ({ thread, isSelected, isActive, onSelect, onDelete, onMouseEnter }) => {
   return (
     <div
       className={clsx(
-        "group flex items-center gap-3 px-4 py-3 rounded-xl cursor-pointer transition-all",
-        isActive 
-          ? "bg-primary/15 border border-primary/30" 
-          : "bg-input/50 hover:bg-input border border-transparent hover:border-border"
+        "group px-3 py-2 flex items-center gap-3 cursor-pointer text-sm",
+        isSelected ? "bg-primary/20 text-zinc-100" : "text-zinc-400 hover:bg-white/[0.03]"
       )}
       onClick={onSelect}
+      onMouseEnter={onMouseEnter}
     >
-      {/* Icon */}
-      <div className={clsx(
-        "w-9 h-9 rounded-lg flex items-center justify-center shrink-0",
-        isActive ? "bg-primary/20" : "bg-sidebar"
-      )}>
-        <MessageSquare className={clsx(
-          "w-4 h-4",
-          isActive ? "text-primary" : "text-text-secondary"
-        )} />
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center justify-between gap-3">
-          <h3 className={clsx(
-            "text-[13px] font-medium truncate",
-            isActive ? "text-primary" : "text-text-primary"
-          )}>
-            {thread.title || 'Untitled'}
-          </h3>
-          <span className="text-[11px] text-text-disabled shrink-0 font-mono">
-            {formatDate(thread.updatedAt)}
-          </span>
+      <MessageSquare size={14} className={isSelected ? "text-primary" : "opacity-50"} />
+      
+      <div className="flex-1 truncate flex items-center justify-between">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="truncate">{thread.title || 'Untitled'}</span>
+          {isActive && (
+            <span className="text-[9px] bg-primary/30 text-primary px-1.5 py-0.5 rounded shrink-0">current</span>
+          )}
         </div>
-        
-        {thread.preview && (
-          <p className="text-[12px] text-text-secondary truncate mt-1">
-            {thread.preview}
-          </p>
-        )}
-        
-        <div className="flex items-center gap-2 mt-1.5">
-          <span className="text-[10px] text-text-disabled bg-sidebar px-2 py-0.5 rounded-full">
-            {thread.messageCount} messages
-          </span>
+        <div className="flex items-center gap-2 shrink-0 ml-2">
+          <span className="text-[10px] opacity-50">{thread.messageCount} msgs</span>
+          <span className="text-[10px] opacity-50">{formatDate(thread.updatedAt)}</span>
         </div>
       </div>
-
-      {/* Delete Button */}
+      
       <button
         onClick={onDelete}
-        className="p-2 rounded-lg opacity-0 group-hover:opacity-100 text-text-disabled hover:text-danger hover:bg-danger/10 transition-all shrink-0"
+        className="p-1 rounded opacity-0 group-hover:opacity-100 text-text-disabled hover:text-danger hover:bg-danger/10 transition-all shrink-0"
         title="Delete"
       >
-        <Trash2 className="w-4 h-4" />
+        <Trash2 size={12} />
       </button>
+      
+      {isSelected && <CornerDownLeft size={12} className="opacity-50" />}
     </div>
   );
 };
@@ -135,12 +115,18 @@ export const ThreadHistory: React.FC<ThreadHistoryProps> = ({ isOpen, onClose })
   } = useThreadStore();
   
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedIndex, setSelectedIndex] = useState(0);
   const [deleteTarget, setDeleteTarget] = useState<ThreadSummary | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   // Load threads from files when modal opens
   useEffect(() => {
     if (isOpen) {
       loadAllThreadsFromFiles();
+      setSearchQuery('');
+      setSelectedIndex(0);
+      setTimeout(() => inputRef.current?.focus(), 50);
     }
   }, [isOpen, loadAllThreadsFromFiles]);
 
@@ -159,17 +145,29 @@ export const ThreadHistory: React.FC<ThreadHistoryProps> = ({ isOpen, onClose })
     return filteredThreads.filter(t => t.messageCount > 0);
   }, [filteredThreads]);
 
-  // Keyboard shortcut: Escape to close
+  // Reset selected index when search changes
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isOpen && !deleteTarget) {
-        onClose();
+    setSelectedIndex(0);
+  }, [searchQuery]);
+
+  // Keyboard navigation
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSelectedIndex(i => Math.min(i + 1, threadsWithMessages.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSelectedIndex(i => Math.max(i - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (threadsWithMessages[selectedIndex]) {
+        handleSelectThread(threadsWithMessages[selectedIndex].id);
       }
-    };
-    
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose, deleteTarget]);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      if (!deleteTarget) onClose();
+    }
+  };
 
   const handleNewChat = () => {
     createThread();
@@ -201,90 +199,75 @@ export const ThreadHistory: React.FC<ThreadHistoryProps> = ({ isOpen, onClose })
 
   return (
     <>
-      <div 
-        className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 backdrop-blur-sm"
-        onClick={onClose}
-      >
+      <AnimatePresence>
         <div 
-          className="bg-sidebar border border-border rounded-2xl shadow-2xl w-[600px] h-[700px] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200"
-          onClick={(e) => e.stopPropagation()}
+          className="fixed inset-0 z-[100] flex items-start justify-center pt-[15vh]"
+          onMouseDown={onClose}
         >
-          {/* Header - Search Bar Only */}
-          <div className="p-4 border-b border-border bg-titlebar flex items-center gap-3">
-            {/* Search Bar */}
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-disabled" />
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.1 }}
+            className="w-[600px] max-w-full bg-sidebar border border-border rounded-xl shadow-2xl shadow-black/50 flex flex-col overflow-hidden"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            {/* Header - Search Bar */}
+            <div className="flex items-center px-3 py-3 border-b border-white/5 bg-white/[0.02]">
+              <Search size={16} className="text-text-secondary mr-2" />
               <input
+                ref={inputRef}
                 type="text"
+                className="flex-1 bg-transparent border-none outline-none text-sm text-text-primary placeholder:text-text-disabled"
                 placeholder="Search conversations..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-input border border-border rounded-xl pl-10 pr-4 py-2.5 text-[13px] text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary/50 transition-colors"
-                autoFocus
+                onKeyDown={handleKeyDown}
               />
+              <button
+                onClick={handleNewChat}
+                className="p-1.5 rounded-md bg-primary/80 hover:bg-primary text-white transition-colors mr-2"
+                title="New Chat"
+              >
+                <Plus size={14} />
+              </button>
+              <div className="text-[10px] text-zinc-500 bg-white/5 px-2 py-0.5 rounded">ESC to close</div>
             </div>
-            
-            {/* New Chat Button */}
-            <button
-              onClick={handleNewChat}
-              className="p-2.5 rounded-xl bg-primary hover:bg-primary/80 text-white transition-colors shrink-0"
-              title="New Chat"
-            >
-              <Plus className="w-5 h-5" />
-            </button>
-            
-            {/* Close Button */}
-            <button 
-              onClick={onClose}
-              className="p-2.5 rounded-xl text-text-secondary hover:bg-input hover:text-text-primary transition-colors shrink-0"
-              title="Close (Esc)"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
 
-          {/* Thread List */}
-          <div className="flex-1 overflow-y-auto p-4 scrollbar-thin">
-            {isLoading ? (
-              <div className="flex flex-col items-center justify-center h-full text-text-disabled">
-                <Loader2 className="w-8 h-8 animate-spin text-primary mb-4" />
-                <p className="text-[13px] text-text-secondary">Loading conversations...</p>
-              </div>
-            ) : threadsWithMessages.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-text-disabled">
-                <div className="w-16 h-16 rounded-2xl bg-input flex items-center justify-center mb-4">
-                  <MessageSquare className="w-8 h-8 opacity-40" />
+            {/* Thread List */}
+            <div className="max-h-[350px] overflow-y-auto py-1 custom-scrollbar" ref={listRef}>
+              {isLoading ? (
+                <div className="px-4 py-8 text-center">
+                  <Loader2 className="w-5 h-5 animate-spin text-primary mx-auto mb-2" />
+                  <span className="text-xs text-text-disabled">Loading conversations...</span>
                 </div>
-                <p className="text-[14px] font-medium text-text-secondary mb-1">
-                  {searchQuery ? 'No matching conversations' : 'No conversations yet'}
-                </p>
-                <p className="text-[12px] text-text-disabled">
-                  {searchQuery ? 'Try a different search term' : 'Start a new chat to begin'}
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {threadsWithMessages.map((thread) => (
+              ) : threadsWithMessages.length === 0 ? (
+                <div className="px-4 py-8 text-center text-xs text-text-disabled">
+                  {searchQuery ? 'No matching conversations' : 'No conversations yet. Start a new chat!'}
+                </div>
+              ) : (
+                threadsWithMessages.map((thread, index) => (
                   <ThreadItem
                     key={thread.id}
                     thread={thread}
+                    isSelected={index === selectedIndex}
                     isActive={thread.id === currentThreadId}
                     onSelect={() => handleSelectThread(thread.id)}
                     onDelete={(e) => handleDeleteClick(e, thread)}
+                    onMouseEnter={() => setSelectedIndex(index)}
                   />
-                ))}
-              </div>
-            )}
-          </div>
+                ))
+              )}
+            </div>
 
-          {/* Footer - Shortcut Hint */}
-          <div className="px-4 py-2.5 border-t border-border bg-titlebar flex items-center justify-center">
-            <span className="text-[11px] text-text-disabled">
-              Press <span className="font-mono bg-input px-1.5 py-0.5 rounded mx-1">Ctrl+H</span> to open history
-            </span>
-          </div>
+            {/* Footer */}
+            <div className="px-3 py-1.5 bg-white/[0.02] border-t border-white/5 text-[10px] text-zinc-400 flex justify-between">
+              <span>Thread History</span>
+              <span>{threadsWithMessages.length} conversations</span>
+            </div>
+          </motion.div>
         </div>
-      </div>
+      </AnimatePresence>
 
       {/* Delete Confirmation Dialog */}
       <DeleteConfirmDialog

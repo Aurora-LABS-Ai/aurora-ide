@@ -21,7 +21,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Send, Square, Brain, ChevronDown, Settings, X, Paperclip, Sparkles } from 'lucide-react';
+import { Square, Brain, ChevronDown, Settings, X, Paperclip, Sparkles, ArrowUp } from 'lucide-react';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useUiStore } from '../../store/useUiStore';
 import { useChatStore } from '../../store/useChatStore';
@@ -604,16 +604,31 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
             onClick={handleStopOrSend}
             disabled={!isLoading && ((!content.trim() && attachedFiles.length === 0) || disabled || availableModels.length === 0)}
             className={clsx(
-              "p-2 rounded-lg transition-all duration-200 flex items-center justify-center",
+              "p-1 rounded-full transition-all duration-200 flex items-center justify-center tap-highlight-transparent outline-none focus:outline-none",
               isLoading
                 ? "bg-red-500/10 text-red-400 hover:bg-red-500/20"
-                : (content.trim() || attachedFiles.length > 0)
-                  ? "bg-primary text-white hover:opacity-90 shadow-md shadow-primary/20"
-                  : "bg-white/5 text-text-disabled cursor-not-allowed"
+                : "hover:bg-transparent" // Reset default hover
             )}
             title={isLoading ? 'Stop generation' : 'Send message'}
           >
-            {isLoading ? <Square size={14} fill="currentColor" /> : <Send size={14} className={content.trim() || attachedFiles.length > 0 ? "translate-x-0.5" : ""} />}
+            {isLoading ? (
+              <Square size={14} fill="currentColor" />
+            ) : (
+              <div className={clsx(
+                "w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300",
+                (content.trim() || attachedFiles.length > 0)
+                  ? "bg-gradient-to-br from-primary to-primary/80 shadow-lg shadow-primary/25 hover:scale-105 hover:shadow-primary/40 active:scale-95"
+                  : "bg-zinc-100/10 text-zinc-500"
+              )}>
+                <ArrowUp
+                  size={16}
+                  className={clsx(
+                    "transition-all duration-300",
+                    (content.trim() || attachedFiles.length > 0) ? "text-white stroke-[2.5px]" : "opacity-50"
+                  )}
+                />
+              </div>
+            )}
           </button>
         </div>
       </div>

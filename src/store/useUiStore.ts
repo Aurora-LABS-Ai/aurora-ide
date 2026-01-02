@@ -13,6 +13,7 @@ interface UiState {
   isSettingsOpen: boolean;
   isAuditOpen: boolean;
   isChatOpen: boolean;
+  isSidebarOpen: boolean;
   toolApprovalState: {
     isOpen: boolean;
     proposal: ToolProposal | null;
@@ -25,6 +26,8 @@ interface UiState {
   setAuditOpen: (isOpen: boolean) => void;
   toggleChat: () => void;
   setChatOpen: (isOpen: boolean) => void;
+  toggleSidebar: () => void;
+  setSidebarOpen: (isOpen: boolean) => void;
   openToolApproval: (proposal: ToolProposal) => void;
   closeToolApproval: () => void;
   detachChat: (windowLabel: string) => void;
@@ -64,6 +67,11 @@ export const useUiStore = create<UiState>((set) => ({
   setAuditOpen: (isOpen) => set({ isAuditOpen: isOpen }),
   toggleChat: () => set((state) => ({ isChatOpen: !state.isChatOpen })),
   setChatOpen: (isOpen) => set({ isChatOpen: isOpen }),
+
+  // Sidebar
+  isSidebarOpen: true,
+  toggleSidebar: () => set((state) => ({ isSidebarOpen: !state.isSidebarOpen })),
+  setSidebarOpen: (isOpen) => set({ isSidebarOpen: isOpen }),
 
   openToolApproval: (proposal) =>
     set({ toolApprovalState: { isOpen: true, proposal } }),

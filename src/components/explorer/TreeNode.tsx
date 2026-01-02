@@ -40,6 +40,10 @@ import {
   TreeNodeCreateInput,
   useTreeNodeContextMenu,
 } from './tree-node';
+import { DeleteConfirmDialog } from '../chat/DeleteConfirmDialog';
+
+// Track the latest file load request to prevent stale async updates
+let latestLoadRequestId = 0;
 
 // ============================================
 // TYPES
@@ -83,6 +87,7 @@ export const TreeNode: React.FC<TreeNodeProps> = ({
   const [localIsCreating, setLocalIsCreating] = useState<'file' | 'folder' | null>(null);
   const [localInputValue, setLocalInputValue] = useState('');
   const [renameValue, setRenameValue] = useState(node.name);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
   // Derived state
   const isRenaming = renameTargetId === node.id;
@@ -106,29 +111,43 @@ export const TreeNode: React.FC<TreeNodeProps> = ({
       // This eliminates perceived lag - the tab appears instantly
       selectFile(node.id);
 
-      // If content is already cached (from previous opens), use it directly
-      if (node.content) {
-        openFile(node.id, node.name, node.content, node.language);
-        return;
-      }
-
-      // Open with empty content immediately (shows loading state)
+      // Open with placeholder content immediately (shows loading state)
       openFile(node.id, node.name, '// Loading...', node.language);
+
+      // Track this request to prevent stale async updates
+      const requestId = ++latestLoadRequestId;
+      const fileId = node.id;
 
       // Load actual content in background and update
       loadFileContent(nodePath).then(content => {
-        // Update the tab with real content
+        // Ignore stale responses (user clicked another file)
+        if (requestId !== latestLoadRequestId) {
+          return;
+        }
+
+        // Update the tab with real content (only if tab still exists)
         const { tabs } = useEditorStore.getState();
-        const tab = tabs.find(t => t.id === node.id);
+        const tab = tabs.find(t => t.id === fileId);
         if (tab) {
-          useEditorStore.getState().reloadTabContent(node.id, content);
+          useEditorStore.getState().reloadTabContent(fileId, content);
         }
       }).catch(err => {
+        // Ignore stale error responses
+        if (requestId !== latestLoadRequestId) {
+          return;
+        }
+
         console.error('Failed to load file:', err);
-        useEditorStore.getState().reloadTabContent(node.id, `// Failed to load file: ${err}`);
+
+        // Only update tab if it still exists
+        const { tabs } = useEditorStore.getState();
+        const tab = tabs.find(t => t.id === fileId);
+        if (tab) {
+          useEditorStore.getState().reloadTabContent(fileId, `// Failed to load file: ${err}`);
+        }
       });
     }
-  }, [isFolder, node, nodePath, toggleFolder, selectFile, openFile]);
+  }, [isFolder, node.id, node.name, node.language, nodePath, toggleFolder, selectFile, openFile]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -229,22 +248,13 @@ export const TreeNode: React.FC<TreeNodeProps> = ({
   }, [renameValue, node.name, nodePath, refreshDirectory, onRenameComplete]);
 
   // --- DELETE HANDLER ---
-  const handleDelete = useCallback(async () => {
+  const handleDelete = useCallback(() => {
     if (!isTauri()) return;
+    setShowDeleteDialog(true);
+  }, []);
 
-    const confirmed = await (async () => {
-      try {
-        const dialog = await import('@tauri-apps/plugin-dialog');
-        return await dialog.confirm(`Are you sure you want to delete "${node.name}"?`, {
-          title: 'Confirm Delete',
-        });
-      } catch {
-        return window.confirm(`Are you sure you want to delete "${node.name}"?`);
-      }
-    })();
-
-    if (!confirmed) return;
-
+  const handleConfirmDelete = useCallback(async () => {
+    setShowDeleteDialog(false);
     try {
       await deletePath(nodePath);
       await refreshDirectory();
@@ -252,7 +262,11 @@ export const TreeNode: React.FC<TreeNodeProps> = ({
       console.error('Failed to delete:', err);
       alert(`Failed to delete: ${err}`);
     }
-  }, [node.name, nodePath, refreshDirectory]);
+  }, [nodePath, refreshDirectory]);
+
+  const handleCancelDelete = useCallback(() => {
+    setShowDeleteDialog(false);
+  }, []);
 
   // --- CLIPBOARD HANDLERS ---
   const handleCopyPath = useCallback(async () => {
@@ -395,6 +409,15 @@ export const TreeNode: React.FC<TreeNodeProps> = ({
           onClose={() => setContextMenu(null)}
         />
       )}
+
+      {/* Delete Confirmation Dialog */}
+      <DeleteConfirmDialog
+        isOpen={showDeleteDialog}
+        itemName={node.name}
+        itemType={isFolder ? 'folder' : 'file'}
+        onConfirm={handleConfirmDelete}
+        onCancel={handleCancelDelete}
+      />
     </div>
   );
 };

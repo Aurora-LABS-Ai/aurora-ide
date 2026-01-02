@@ -184,6 +184,36 @@ const fromDbThread = (dbThread: DbThread): Thread => ({
 });
 
 // ============================================
+// CLEANUP OLD LOCALSTORAGE DATA
+// ============================================
+// Threads are now stored in SQLite, not localStorage
+// Clear old localStorage data to free up space
+try {
+  const oldData = localStorage.getItem('aurora-threads');
+  if (oldData) {
+    const parsed = JSON.parse(oldData);
+    // If old data has threads/threadList, it's the old format - clear it
+    if (parsed.state?.threads || parsed.state?.threadList) {
+      // Keep only currentThreadId
+      const currentThreadId = parsed.state?.currentThreadId || null;
+      localStorage.setItem('aurora-threads', JSON.stringify({
+        state: { currentThreadId },
+        version: parsed.version || 0,
+      }));
+      console.log('[ThreadStore] Cleaned up old localStorage data - threads now stored in database');
+    }
+  }
+} catch (e) {
+  // If localStorage is corrupted, just clear it
+  try {
+    localStorage.removeItem('aurora-threads');
+    console.log('[ThreadStore] Cleared corrupted localStorage data');
+  } catch {
+    // Ignore - localStorage might be completely full
+  }
+}
+
+// ============================================
 // THREAD STORE
 // ============================================
 
@@ -522,9 +552,9 @@ export const useThreadStore = create<ThreadState>()(
     }),
     {
       name: 'aurora-threads',
+      // Only persist currentThreadId - threads are stored in SQLite database
+      // This prevents localStorage quota exceeded errors
       partialize: (state) => ({
-        threads: state.threads,
-        threadList: state.threadList,
         currentThreadId: state.currentThreadId,
       }),
     }

@@ -670,6 +670,53 @@ export function convertToMonacoTheme(theme: ThemeDefinition): MonacoThemeData {
     'minimap.background': theme.colors.editor.background,
     'minimapSlider.background': theme.colors.common.scrollbar,
     'minimapSlider.hoverBackground': theme.colors.common.scrollbarHover,
+    // Editor Widget (autocomplete, command palette, context menu, etc.)
+    'editorWidget.background': theme.colors.sidebar.background,
+    'editorWidget.foreground': theme.colors.editor.foreground,
+    'editorWidget.border': theme.colors.common.border,
+    'editorSuggestWidget.background': theme.colors.sidebar.background,
+    'editorSuggestWidget.foreground': theme.colors.editor.foreground,
+    'editorSuggestWidget.border': theme.colors.common.border,
+    'editorSuggestWidget.selectedBackground': theme.colors.common.primary,
+    'editorSuggestWidget.selectedForeground': theme.colors.common.primaryForeground,
+    'editorSuggestWidget.highlightForeground': theme.colors.common.primary,
+    'editorSuggestWidget.focusHighlightForeground': theme.colors.common.primaryForeground,
+    // Quick Input (Command Palette)
+    'quickInput.background': theme.colors.sidebar.background,
+    'quickInput.foreground': theme.colors.editor.foreground,
+    'quickInputTitle.background': theme.colors.titleBar.background,
+    'quickInputList.focusBackground': theme.colors.common.primary,
+    'quickInputList.focusForeground': theme.colors.common.primaryForeground,
+    'pickerGroup.foreground': theme.colors.common.primary,
+    'pickerGroup.border': theme.colors.common.border,
+    // Input fields
+    'input.background': theme.colors.chat.inputBackground,
+    'input.foreground': theme.colors.editor.foreground,
+    'input.border': theme.colors.chat.inputBorder,
+    'input.placeholderForeground': theme.colors.sidebar.foreground + '80',
+    'inputOption.activeBackground': theme.colors.common.primary + '40',
+    'inputOption.activeBorder': theme.colors.common.primary,
+    'inputOption.activeForeground': theme.colors.common.primaryForeground,
+    // List/Tree (dropdown menus, context menus)
+    'list.activeSelectionBackground': theme.colors.common.primary,
+    'list.activeSelectionForeground': theme.colors.common.primaryForeground,
+    'list.hoverBackground': theme.colors.sidebar.itemHover,
+    'list.hoverForeground': theme.colors.editor.foreground,
+    'list.focusBackground': theme.colors.sidebar.itemActive,
+    'list.focusForeground': theme.colors.editor.foreground,
+    'list.highlightForeground': theme.colors.common.primary,
+    // Menu (context menu)
+    'menu.background': theme.colors.sidebar.background,
+    'menu.foreground': theme.colors.editor.foreground,
+    'menu.selectionBackground': theme.colors.common.primary,
+    'menu.selectionForeground': theme.colors.common.primaryForeground,
+    'menu.separatorBackground': theme.colors.common.border,
+    'menu.border': theme.colors.common.border,
+    // Keybinding label
+    'keybindingLabel.background': theme.colors.sidebar.itemHover,
+    'keybindingLabel.foreground': theme.colors.editor.foreground,
+    'keybindingLabel.border': theme.colors.common.border,
+    'keybindingLabel.bottomBorder': theme.colors.common.border,
   };
 
   return {

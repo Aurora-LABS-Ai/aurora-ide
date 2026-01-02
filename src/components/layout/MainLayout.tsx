@@ -20,30 +20,60 @@
  * See: src/services/theme-service.ts for theme utilities
  */
 
-import React from "react";
+import React, { useState, useCallback } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { TitleBar } from "./TitleBar";
 import { StatusBar } from "./StatusBar";
+import { ActivityBar, type SidebarPanel } from "./ActivityBar";
 import { MemoizedFileExplorer as FileExplorer } from "../explorer/FileExplorer";
+import { GitPanel } from "../git/GitPanel";
+import { SearchPanel } from "../search/SearchPanel";
 import { EditorPanel } from "../editor/EditorPanel";
 import { ChatPanel } from "../chat/ChatPanel";
 import { SettingsPanel } from "../modals/SettingsPanel";
 import { ToolApprovalModal } from "../modals/ToolApprovalModal";
 import { AuditTimeline } from "../modals/AuditTimeline";
 import { TerminalPanel } from "../terminal/Terminal";
+import { ThemePanel } from "../theme/ThemePanel";
 import { useUiStore } from "../../store/useUiStore";
 import { useRustChatSync } from "../../hooks/useRustChatSync";
 import { useTerminalStore } from "../../store/useTerminalStore";
+import { useGitStore } from "../../store/useGitStore";
 
 export const MainLayout: React.FC = () => {
-  const { isChatOpen, detachedChat } = useUiStore();
+  const { isChatOpen, detachedChat, setSettingsOpen, isSidebarOpen, toggleSidebar } = useUiStore();
   const { isOpen: isTerminalOpen } = useTerminalStore();
+  const { status } = useGitStore();
+
+  // Sidebar panel state
+  const [activePanel, setActivePanel] = useState<SidebarPanel>('explorer');
 
   // Initialize Rust-based cross-window state sync (bulletproof)
   useRustChatSync();
 
+  // Global Shortcut for Sidebar Toggle
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        toggleSidebar();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [toggleSidebar]);
+
   // Show chat panel only if it's open AND not detached
   const showChatPanel = isChatOpen && !detachedChat.isDetached;
+
+  // Calculate git badge count (staged + unstaged + untracked)
+  const gitBadgeCount = status
+    ? status.staged.length + status.unstaged.length + status.untracked.length
+    : undefined;
+
+  const handleSettingsClick = useCallback(() => {
+    setSettingsOpen(true);
+  }, [setSettingsOpen]);
 
   return (
     <div className="h-screen flex flex-col bg-editor text-text-primary overflow-hidden">
@@ -51,20 +81,35 @@ export const MainLayout: React.FC = () => {
 
       {/* Main horizontal layout */}
       <div className="flex-1 flex min-h-0">
-        <PanelGroup direction="horizontal" id="main-panel-group">
-          {/* Sidebar / Explorer */}
-          <Panel
-            id="explorer-panel"
-            order={1}
-            defaultSize={18}
-            minSize={12}
-            maxSize={25}
-            className="bg-sidebar"
-          >
-            <FileExplorer />
-          </Panel>
+        {/* Activity Bar (VS Code-style icon strip) */}
+        <ActivityBar
+          activePanel={activePanel}
+          onPanelChange={setActivePanel}
+          onSettingsClick={handleSettingsClick}
+          gitBadgeCount={gitBadgeCount}
+        />
 
-          <PanelResizeHandle className="w-[1px] bg-border hover:bg-primary transition-colors" />
+        <PanelGroup direction="horizontal" id="main-panel-group">
+          {/* Sidebar Content (Explorer / Git / Search) */}
+          {isSidebarOpen && (
+            <>
+              <Panel
+                id="explorer-panel"
+                order={1}
+                defaultSize={18}
+                minSize={12}
+                maxSize={25}
+                className="bg-sidebar"
+              >
+                {activePanel === 'explorer' && <FileExplorer />}
+                {activePanel === 'git' && <GitPanel />}
+                {activePanel === 'search' && <SearchPanel />}
+                {activePanel === 'theme' && <ThemePanel />}
+              </Panel>
+
+              <PanelResizeHandle className="w-[1px] bg-border hover:bg-primary transition-colors" />
+            </>
+          )}
 
           {/* Center area: Editor + Terminal stacked vertically */}
           <Panel
@@ -78,7 +123,7 @@ export const MainLayout: React.FC = () => {
               <div className="flex-1 min-h-0 overflow-hidden">
                 <EditorPanel />
               </div>
-              
+
               {/* Terminal at bottom of center area */}
               {isTerminalOpen && <TerminalPanel />}
             </div>

@@ -100,6 +100,23 @@ pub fn run() {
             commands::semantic::is_semantic_indexing,
             commands::semantic::get_semantic_data_directory,
             commands::semantic::get_semantic_index_path,
+            // Git commands
+            commands::git::git_is_repository,
+            commands::git::git_get_status,
+            commands::git::git_get_branches,
+            commands::git::git_get_commits,
+            commands::git::git_current_branch,
+            commands::git::git_stage_file,
+            commands::git::git_unstage_file,
+            commands::git::git_stage_all,
+            commands::git::git_unstage_all,
+            commands::git::git_discard_changes,
+            commands::git::git_commit,
+            commands::git::git_checkout,
+            commands::git::git_create_branch,
+            commands::git::git_pull,
+            commands::git::git_push,
+            commands::git::git_get_diff,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

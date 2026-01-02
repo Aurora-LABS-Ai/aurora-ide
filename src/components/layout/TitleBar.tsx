@@ -29,10 +29,10 @@ import {
   History,
   MessageSquare,
   ExternalLink,
+  PanelLeft,
 } from "lucide-react";
 import { useUiStore } from "../../store/useUiStore";
 import { useDetachedChatWindow } from "../../hooks/useDetachedChatWindow";
-import { ThemeDropdown } from "./ThemeDropdown";
 
 export const TitleBar: React.FC = () => {
   const {
@@ -40,6 +40,8 @@ export const TitleBar: React.FC = () => {
     setAuditOpen,
     isChatOpen,
     toggleChat,
+    isSidebarOpen,
+    toggleSidebar,
   } = useUiStore();
   const { isDetached, createDetachedWindow, focusDetachedWindow } =
     useDetachedChatWindow();
@@ -115,10 +117,20 @@ export const TitleBar: React.FC = () => {
     >
       {/* Left side - App branding */}
       <div data-tauri-drag-region className="flex items-center h-full flex-1">
-        <div
-          data-tauri-drag-region
-          className="flex items-center gap-2 px-3 h-full"
-        >
+        <div data-tauri-drag-region className="flex items-center gap-2 px-3 h-full">
+          <button
+            onClick={toggleSidebar}
+            className={`p-1 rounded transition-colors ${isSidebarOpen
+              ? "text-primary bg-primary/10"
+              : "text-text-secondary hover:text-text-primary hover:bg-input/50"
+              }`}
+            title={isSidebarOpen ? "Hide Sidebar (Ctrl+B)" : "Show Sidebar (Ctrl+B)"}
+          >
+            <PanelLeft className="w-4 h-4" />
+          </button>
+
+          <div className="h-4 w-[1px] bg-border mx-1" />
+
           <img
             src="/app-icon.svg"
             alt="Aurora"
@@ -144,7 +156,6 @@ export const TitleBar: React.FC = () => {
           >
             <History className="w-3.5 h-3.5" />
           </button>
-          <ThemeDropdown />
           <button
             onClick={() => setSettingsOpen(true)}
             className="p-1.5 text-text-secondary hover:text-text-primary hover:bg-input/50 rounded transition-colors"

@@ -25,7 +25,12 @@ import { AlertTriangle, X } from 'lucide-react';
 
 interface DeleteConfirmDialogProps {
   isOpen: boolean;
-  threadTitle: string;
+  /** @deprecated Use itemName instead */
+  threadTitle?: string;
+  /** Name of the item to delete */
+  itemName?: string;
+  /** Type of item being deleted (for display text) */
+  itemType?: 'conversation' | 'file' | 'folder';
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -33,14 +38,27 @@ interface DeleteConfirmDialogProps {
 export const DeleteConfirmDialog: React.FC<DeleteConfirmDialogProps> = ({
   isOpen,
   threadTitle,
+  itemName,
+  itemType = 'conversation',
   onConfirm,
   onCancel,
 }) => {
+  // Support both old threadTitle and new itemName props
+  const displayName = itemName ?? threadTitle ?? '';
+
+  const typeLabels = {
+    conversation: { title: 'Delete Conversation', label: 'Conversation to delete:', fallback: 'Untitled conversation' },
+    file: { title: 'Delete File', label: 'File to delete:', fallback: 'Untitled file' },
+    folder: { title: 'Delete Folder', label: 'Folder to delete:', fallback: 'Untitled folder' },
+  };
+
+  const labels = typeLabels[itemType];
+
   if (!isOpen) return null;
 
   return (
     <div 
-      className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60] backdrop-blur-sm"
+      className="fixed inset-0 bg-black/70 flex items-center justify-center z-[150] backdrop-blur-sm"
       onClick={onCancel}
     >
       <div 
@@ -55,10 +73,10 @@ export const DeleteConfirmDialog: React.FC<DeleteConfirmDialogProps> = ({
           
           <div className="flex-1 min-w-0">
             <h3 className="text-[15px] font-semibold text-text-primary mb-1">
-              Delete Conversation
+              {labels.title}
             </h3>
             <p className="text-[13px] text-text-secondary leading-relaxed">
-              Are you sure you want to delete this conversation? This action cannot be undone.
+              Are you sure you want to delete this {itemType}? This action cannot be undone.
             </p>
           </div>
 
@@ -70,11 +88,11 @@ export const DeleteConfirmDialog: React.FC<DeleteConfirmDialogProps> = ({
           </button>
         </div>
 
-        {/* Thread Info */}
+        {/* Item Info */}
         <div className="mx-4 mb-4 p-3 bg-input/50 rounded-xl border border-border">
-          <p className="text-[12px] text-text-disabled mb-1">Thread to delete:</p>
+          <p className="text-[12px] text-text-disabled mb-1">{labels.label}</p>
           <p className="text-[13px] text-text-primary font-medium truncate">
-            {threadTitle || 'Untitled conversation'}
+            {displayName || labels.fallback}
           </p>
         </div>
 

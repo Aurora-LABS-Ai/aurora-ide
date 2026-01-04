@@ -2,8 +2,7 @@
  * Search Tools - Definitions
  * Advanced search tools including semantic search powered by Aurora Semantic Engine v1.2.1
  */
-
-import type { ToolDefinition } from '../types';
+import type { ToolDefinition } from "../types";
 
 // ============================================
 // AURORA SEARCH TOOL (Semantic Search)
@@ -109,4 +108,3 @@ This tool uses AI embeddings to understand code semantically. It finds related c
 export const searchTools: ToolDefinition[] = [
   auroraSearchTool,
 ];
-

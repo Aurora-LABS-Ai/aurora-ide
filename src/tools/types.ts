@@ -4,70 +4,29 @@
  */
 
 // Property definition for function parameters
-export interface PropertyDefinition {
-  type: string;
-  description?: string;
-  enum?: string[];
-  items?: PropertyDefinition | { type: string; properties?: Record<string, PropertyDefinition>; required?: string[] };
-  properties?: Record<string, PropertyDefinition>;
-  required?: string[];
-  default?: unknown;
+// OpenAI-compatible function definition
+export interface FunctionDefinition {
+  description: string;
+  name: string;
+  parameters: FunctionParameters;
 }
 
 // OpenAI-compatible function parameter schema
 export interface FunctionParameters {
-  type: 'object';
   properties: Record<string, PropertyDefinition>;
   required: string[];
+  type: 'object';
 }
 
-// OpenAI-compatible function definition
-export interface FunctionDefinition {
-  name: string;
-  description: string;
-  parameters: FunctionParameters;
+export interface PropertyDefinition {
+  default?: unknown;
+  description?: string;
+  enum?: string[];
+  items?: PropertyDefinition | { type: string; properties?: Record<string, PropertyDefinition>; required?: string[] };
+ properties?: Record<string, PropertyDefinition>;
+  required?: string[];
+  type: string;
 }
-
-// OpenAI-compatible tool schema
-export interface ToolDefinition {
-  type: 'function';
-  function: FunctionDefinition;
-}
-
-// Tool call from the model
-export interface ToolCallRequest {
-  id: string;
-  type: 'function';
-  function: {
-    name: string;
-    arguments: string; // JSON string
-  };
-}
-
-// Tool execution result
-export interface ToolCallResult {
-  tool_call_id: string;
-  role: 'tool';
-  content: string; // JSON string or plain text result
-}
-
-// Tool execution status
-export type ToolStatus = 'pending' | 'executing' | 'complete' | 'failed';
-
-// Internal tool call tracking
-export interface TrackedToolCall {
-  id: string;
-  name: string;
-  args: Record<string, any>;
-  status: ToolStatus;
-  result?: string;
-  error?: string;
-  startTime: number;
-  endTime?: number;
-}
-
-// Tool executor function type
-export type ToolExecutor<T = Record<string, any>> = (args: T, toolCallId?: string) => Promise<string>;
 
 // Tool registry entry
 export interface RegisteredTool {
@@ -77,3 +36,43 @@ export interface RegisteredTool {
   riskLevel: 'low' | 'medium' | 'high';
 }
 
+// Tool call from the model
+export interface ToolCallRequest {
+  function: {
+    name: string;
+    arguments: string; // JSON string
+  };
+  id: string;
+  type: 'function';
+}
+
+// Tool execution result
+export interface ToolCallResult {
+  content: string; // JSON string or plain text result
+  role: 'tool';
+  tool_call_id: string;
+}
+
+// OpenAI-compatible tool schema
+export interface ToolDefinition {
+  function: FunctionDefinition;
+  type: 'function';
+}
+
+// Internal tool call tracking
+export interface TrackedToolCall {
+  args: Record<string, any>;
+  endTime?: number;
+  error?: string;
+  id: string;
+  name: string;
+  result?: string;
+  startTime: number;
+  status: ToolStatus;
+}
+
+// Tool executor function type
+export type ToolExecutor<T = Record<string, any>> = (args: T, toolCallId?: string) => Promise<string>;
+
+// Tool execution status
+export type ToolStatus = 'pending' | 'executing' | 'complete' | 'failed';

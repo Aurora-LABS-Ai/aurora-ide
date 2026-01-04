@@ -1,34 +1,38 @@
-import { create } from 'zustand';
-import type { Tab } from '../types';
-import { databaseService } from '../services/database';
-import type { WorkspaceState as DbWorkspaceState, TabState, PanelSizes } from '../types/database';
-import { writeFileContent, isTauri } from '../lib/tauri';
+import { create } from "zustand";
+
+import { isTauri, writeFileContent } from "../lib/tauri";
+import { databaseService } from "../services/database";
+import type { Tab } from "../types";
+import type { WorkspaceState as DbWorkspaceState, PanelSizes, TabState } from "../types/database";
 
 interface EditorState {
-  tabs: Tab[];
   activeTabId: string | null;
+  closeTab: (tabId: string) => void;
   fontSize: number;
+
+  // Browser tab actions
+  openBrowserTab: (url?: string) => void;
 
   // Actions
   openFile: (fileId: string, filename: string, content: string, language?: string) => void;
-  closeTab: (tabId: string) => void;
-  setActiveTab: (tabId: string) => void;
-  updateTabContent: (tabId: string, content: string) => void;
   reloadTabContent: (tabId: string, content: string) => void;
-  setFontSize: (size: number) => void;
-  saveTabToDisk: (tabId: string) => Promise<void>;
 
   // Database actions
   restoreWorkspace: () => Promise<void>;
+  saveTabToDisk: (tabId: string) => Promise<void>;
   saveWorkspace: () => Promise<void>;
-  setWorkspacePath: (path: string | null) => void;
+  setActiveTab: (tabId: string) => void;
+  setFontSize: (size: number) => void;
   setPanelSizes: (sizes: PanelSizes) => void;
+  setWorkspacePath: (path: string | null) => void;
+  tabs: Tab[];
+  updateBrowserTab: (tabId: string, updates: Partial<Pick<Tab, 'url' | 'filename' | 'favicon' | 'canGoBack' | 'canGoForward'>>) => void;
+  updateTabContent: (tabId: string, content: string) => void;
 }
 
 // Workspace path tracking
 let currentWorkspacePath: string | null = null;
 let currentPanelSizes: PanelSizes | null = null;
-
 export const useEditorStore = create<EditorState>((set, get) => ({
   tabs: [],
   activeTabId: null,
@@ -129,6 +133,50 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   setFontSize: (fontSize) => set({ fontSize }),
+
+  // Browser tab actions
+  openBrowserTab: (url = 'about:blank') => {
+    const tabId = `browser-${Date.now()}`;
+    const filename = url === 'about:blank' ? 'New Browser' : (() => {
+      try {
+        const parsed = new URL(url);
+        if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+          return `localhost:${parsed.port || '80'}`;
+        }
+        return parsed.hostname;
+      } catch {
+        return 'Browser';
+      }
+    })();
+
+    const newTab: Tab = {
+      id: tabId,
+      path: tabId,
+      filename,
+      content: '',
+      isDirty: false,
+      language: 'browser',
+      type: 'browser',
+      url,
+      canGoBack: false,
+      canGoForward: false,
+    };
+
+    set(state => ({
+      tabs: [...state.tabs, newTab],
+      activeTabId: tabId,
+    }));
+  },
+
+  updateBrowserTab: (tabId, updates) => {
+    set(state => ({
+      tabs: state.tabs.map(tab =>
+        tab.id === tabId
+          ? { ...tab, ...updates }
+          : tab
+      ),
+    }));
+  },
 
   saveTabToDisk: async (tabId) => {
     const state = get();
@@ -248,6 +296,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
 // Subscribe to activeTabId changes and reveal the file in explorer
 let previousActiveTabId: string | null = null;
+
 useEditorStore.subscribe((state) => {
   const { activeTabId, tabs } = state;
   if (activeTabId && activeTabId !== previousActiveTabId) {

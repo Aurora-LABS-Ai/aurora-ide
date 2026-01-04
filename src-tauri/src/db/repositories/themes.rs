@@ -129,6 +129,7 @@ impl<'a> ThemeRepository<'a> {
     }
 
     /// Get a specific custom theme by ID
+    #[allow(dead_code)]
     pub fn get(&self, id: &str) -> DbResult<Option<CustomTheme>> {
         self.conn.query_row(
             "SELECT id, name, author, version, type, colors, token_colors, created_at, updated_at
@@ -154,6 +155,7 @@ impl<'a> ThemeRepository<'a> {
     }
 
     /// Find theme by name and author (case insensitive)
+    #[allow(dead_code)]
     pub fn find_by_name_author(&self, name: &str, author: &str) -> DbResult<Option<CustomTheme>> {
         self.conn.query_row(
             "SELECT id, name, author, version, type, colors, token_colors, created_at, updated_at

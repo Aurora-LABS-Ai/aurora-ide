@@ -59,6 +59,9 @@ dashmap = "6"           # Concurrent hashmap for caching
 # PTY support for native terminal
 tauri-plugin-pty = "0.1"
 
+# MCP (Model Context Protocol) client support
+rmcp = { version = "0.1", features = ["client", "transport-child-process", "transport-sse"] }
+
 [features]
 # Default: Enable CUDA for NVIDIA GPUs (most common GPU acceleration)
 # For Windows without CUDA: use --features directml instead

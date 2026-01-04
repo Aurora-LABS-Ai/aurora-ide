@@ -23,6 +23,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { MessageSquare, Trash2, Search, Plus, Loader2, CornerDownLeft } from 'lucide-react';
 import { useThreadStore, type ThreadSummary } from '../../store/useThreadStore';
+import { useTaskStore } from '../../store/useTaskStore';
 import { DeleteConfirmDialog } from './DeleteConfirmDialog';
 import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
@@ -170,11 +171,15 @@ export const ThreadHistory: React.FC<ThreadHistoryProps> = ({ isOpen, onClose })
   };
 
   const handleNewChat = () => {
+    // Clear tasks when creating a new thread - tasks are per-thread
+    useTaskStore.getState().clearTasks();
     createThread();
     onClose();
   };
 
   const handleSelectThread = (threadId: string) => {
+    // Clear tasks when switching threads - tasks are per-thread
+    useTaskStore.getState().clearTasks();
     loadThread(threadId);
     onClose();
   };

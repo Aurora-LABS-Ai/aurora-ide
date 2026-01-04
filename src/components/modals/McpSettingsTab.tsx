@@ -1,0 +1,801 @@
+/**
+ * MCP Settings Tab
+ * Configure MCP (Model Context Protocol) servers
+ */
+
+import React, { useState, useEffect } from 'react';
+import {
+  useMcpStore,
+  type McpServerConfig,
+  type McpServerState,
+  type McpTransportType,
+} from '../../store/useMcpStore';
+import {
+  Plus,
+  Trash2,
+  ChevronDown,
+  Play,
+  Square,
+  RefreshCw,
+  Server,
+  Terminal,
+  Globe,
+  AlertCircle,
+  CheckCircle,
+  Loader2,
+  Copy,
+  Eye,
+  EyeOff,
+  Check,
+} from 'lucide-react';
+import clsx from 'clsx';
+import { DeleteConfirmDialog } from '../chat/DeleteConfirmDialog';
+
+// ============================================
+// ADD SERVER FORM
+// ============================================
+
+type AddMode = 'form' | 'json';
+
+interface AddServerFormProps {
+  onSave: (config: Omit<McpServerConfig, 'id'>) => void;
+  onCancel: () => void;
+}
+
+const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
+  const [mode, setMode] = useState<AddMode>('form');
+  
+  // Form mode state
+  const [name, setName] = useState('');
+  const [transport, setTransport] = useState<McpTransportType>('stdio');
+  const [command, setCommand] = useState('');
+  const [args, setArgs] = useState('');
+  const [url, setUrl] = useState('');
+  const [envVars, setEnvVars] = useState('');
+  const [autoStart, setAutoStart] = useState(false);
+  const [autoApprove, setAutoApprove] = useState(true); // Default to auto-approve for convenience
+
+  // JSON mode state
+  const [jsonInput, setJsonInput] = useState('');
+  const [jsonError, setJsonError] = useState<string | null>(null);
+
+  // Example JSON for reference (supports both formats)
+  const exampleJson = `{
+  "mcpServers": {
+    "my-server": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-git"],
+      "env": {}
+    }
+  }
+}`;
+
+  const handleFormSubmit = () => {
+    if (!name.trim()) return;
+    if (transport === 'stdio' && !command.trim()) return;
+    if (transport === 'sse' && !url.trim()) return;
+
+    // Parse args (space-separated)
+    const argsArray = args.trim() ? args.trim().split(/\s+/) : [];
+
+    // Parse env vars (KEY=VALUE format, one per line)
+    const envObj: Record<string, string> = {};
+    if (envVars.trim()) {
+      envVars.split('\n').forEach((line) => {
+        const [key, ...valueParts] = line.split('=');
+        if (key && valueParts.length > 0) {
+          envObj[key.trim()] = valueParts.join('=').trim();
+        }
+      });
+    }
+
+    onSave({
+      name: name.trim(),
+      transport,
+      command: transport === 'stdio' ? command.trim() : undefined,
+      args: argsArray,
+      env: envObj,
+      url: transport === 'sse' ? url.trim() : undefined,
+      enabled: true,
+      autoStart,
+      autoApprove,
+    });
+  };
+
+  const handleJsonSubmit = () => {
+    setJsonError(null);
+    
+    try {
+      const parsed = JSON.parse(jsonInput);
+      
+      // Check if it's the full mcpServers format (Claude/Cursor style)
+      if (parsed.mcpServers && typeof parsed.mcpServers === 'object') {
+        // Extract the first server from mcpServers object
+        const serverEntries = Object.entries(parsed.mcpServers);
+        if (serverEntries.length === 0) {
+          setJsonError('No servers found in mcpServers object');
+          return;
+        }
+        
+        // Process each server entry
+        for (const [serverName, serverConfig] of serverEntries) {
+          const cfg = serverConfig as Record<string, unknown>;
+          const transportType: McpTransportType = cfg.url ? 'sse' : 'stdio';
+          
+          const config: Omit<McpServerConfig, 'id'> = {
+            name: serverName,
+            transport: transportType,
+            command: cfg.command as string | undefined,
+            args: Array.isArray(cfg.args) ? cfg.args : [],
+            env: typeof cfg.env === 'object' && cfg.env !== null ? cfg.env as Record<string, string> : {},
+            url: cfg.url as string | undefined,
+            enabled: cfg.enabled !== false,
+            autoStart: cfg.autoStart === true,
+            autoApprove: cfg.autoApprove !== false, // Default to true
+          };
+          
+          onSave(config);
+        }
+        return;
+      }
+      
+      // Single server format (simple JSON)
+      // Validate required fields
+      if (!parsed.name && !parsed.command && !parsed.url) {
+        setJsonError('JSON must have "mcpServers" object OR at least "name" and either "command" or "url"');
+        return;
+      }
+
+      // Determine transport type
+      const transportType: McpTransportType = parsed.url ? 'sse' : 'stdio';
+
+      // Build config
+      const config: Omit<McpServerConfig, 'id'> = {
+        name: parsed.name || 'Unnamed Server',
+        transport: transportType,
+        command: parsed.command,
+        args: Array.isArray(parsed.args) ? parsed.args : [],
+        env: typeof parsed.env === 'object' ? parsed.env : {},
+        url: parsed.url,
+        enabled: parsed.enabled !== false,
+        autoStart: parsed.autoStart === true,
+        autoApprove: parsed.autoApprove !== false, // Default to true
+      };
+
+      onSave(config);
+    } catch (e) {
+      setJsonError(`Invalid JSON: ${e instanceof Error ? e.message : 'Parse error'}`);
+    }
+  };
+
+  return (
+    <div className="p-3 border border-primary/30 rounded-lg bg-primary/5 space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-medium text-text-primary">Add MCP Server</h3>
+        {/* Mode toggle */}
+        <div className="flex items-center gap-1 bg-input rounded-md p-0.5">
+          <button
+            onClick={() => setMode('form')}
+            className={clsx(
+              'px-2 py-0.5 text-[10px] rounded transition-colors',
+              mode === 'form'
+                ? 'bg-primary text-white'
+                : 'text-text-secondary hover:text-text-primary'
+            )}
+          >
+            Form
+          </button>
+          <button
+            onClick={() => setMode('json')}
+            className={clsx(
+              'px-2 py-0.5 text-[10px] rounded transition-colors',
+              mode === 'json'
+                ? 'bg-primary text-white'
+                : 'text-text-secondary hover:text-text-primary'
+            )}
+          >
+            Raw JSON
+          </button>
+        </div>
+      </div>
+
+      {mode === 'form' ? (
+        <>
+          {/* Form Mode */}
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[10px] text-text-secondary block mb-0.5">Name *</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="My MCP Server"
+                className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-text-secondary block mb-0.5">Transport *</label>
+              <select
+                value={transport}
+                onChange={(e) => setTransport(e.target.value as McpTransportType)}
+                className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-primary"
+              >
+                <option value="stdio">Stdio (Local Process)</option>
+                <option value="sse">SSE (HTTP Server)</option>
+              </select>
+            </div>
+          </div>
+
+          {transport === 'stdio' ? (
+            <>
+              <div>
+                <label className="text-[10px] text-text-secondary block mb-0.5">Command *</label>
+                <input
+                  type="text"
+                  value={command}
+                  onChange={(e) => setCommand(e.target.value)}
+                  placeholder="npx, uvx, node, python..."
+                  className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary font-mono"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-text-secondary block mb-0.5">Arguments (space-separated)</label>
+                <input
+                  type="text"
+                  value={args}
+                  onChange={(e) => setArgs(e.target.value)}
+                  placeholder="-y @modelcontextprotocol/server-git"
+                  className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary font-mono"
+                />
+              </div>
+            </>
+          ) : (
+            <div>
+              <label className="text-[10px] text-text-secondary block mb-0.5">URL *</label>
+              <input
+                type="text"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="http://localhost:3000/sse"
+                className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary font-mono"
+              />
+            </div>
+          )}
+
+          <div>
+            <label className="text-[10px] text-text-secondary block mb-0.5">
+              Environment Variables (KEY=VALUE, one per line)
+            </label>
+            <textarea
+              value={envVars}
+              onChange={(e) => setEnvVars(e.target.value)}
+              placeholder="API_KEY=your-key&#10;DEBUG=true"
+              rows={2}
+              className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary font-mono resize-none"
+            />
+          </div>
+
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="autoStart"
+                checked={autoStart}
+                onChange={(e) => setAutoStart(e.target.checked)}
+                className="w-3 h-3 rounded border-border bg-input accent-primary"
+              />
+              <label htmlFor="autoStart" className="text-[10px] text-text-secondary">
+                Auto-start
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="autoApprove"
+                checked={autoApprove}
+                onChange={(e) => setAutoApprove(e.target.checked)}
+                className="w-3 h-3 rounded border-border bg-input accent-primary"
+              />
+              <label htmlFor="autoApprove" className="text-[10px] text-text-secondary">
+                Auto-approve tools
+              </label>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-1">
+            <button onClick={onCancel} className="px-3 py-1 text-xs text-text-secondary hover:text-text-primary">
+              Cancel
+            </button>
+            <button
+              onClick={handleFormSubmit}
+              disabled={!name.trim() || (transport === 'stdio' ? !command.trim() : !url.trim())}
+              className="px-3 py-1 text-xs font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors disabled:opacity-50"
+            >
+              Add Server
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          {/* JSON Mode */}
+          <div>
+            <label className="text-[10px] text-text-secondary block mb-0.5">
+              Paste MCP Server JSON Configuration
+            </label>
+            <textarea
+              value={jsonInput}
+              onChange={(e) => {
+                setJsonInput(e.target.value);
+                setJsonError(null);
+              }}
+              placeholder={exampleJson}
+              rows={8}
+              className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary font-mono resize-none"
+              spellCheck={false}
+            />
+          </div>
+
+          {jsonError && (
+            <div className="p-2 rounded bg-danger/10 border border-danger/20 text-[10px] text-danger flex items-center gap-2">
+              <AlertCircle className="w-3 h-3 flex-shrink-0" />
+              {jsonError}
+            </div>
+          )}
+
+          <div className="text-[10px] text-text-disabled">
+            <p className="font-medium mb-1">Example JSON format:</p>
+            <pre className="bg-input rounded p-2 overflow-x-auto border border-border text-[9px]">
+              {exampleJson}
+            </pre>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-1">
+            <button onClick={onCancel} className="px-3 py-1 text-xs text-text-secondary hover:text-text-primary">
+              Cancel
+            </button>
+            <button
+              onClick={handleJsonSubmit}
+              disabled={!jsonInput.trim()}
+              className="px-3 py-1 text-xs font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors disabled:opacity-50"
+            >
+              Add Server
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+// ============================================
+// SERVER CARD
+// ============================================
+
+interface ServerCardProps {
+  server: McpServerState;
+  isExpanded: boolean;
+  onToggleExpand: () => void;
+}
+
+const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExpand }) => {
+  const { toggleServer, connectServer, disconnectServer, removeServer, updateServer } = useMcpStore();
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [showEnv, setShowEnv] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+
+  const handleConnect = async () => {
+    setIsConnecting(true);
+    await connectServer(server.config.id);
+    setIsConnecting(false);
+  };
+
+  const handleDisconnect = async () => {
+    await disconnectServer(server.config.id);
+  };
+
+  const handleToggle = async () => {
+    await toggleServer(server.config.id, !server.config.enabled);
+  };
+
+  const handleRemove = () => {
+    setShowDeleteDialog(true);
+  };
+
+  const confirmRemove = async () => {
+    await removeServer(server.config.id);
+    setShowDeleteDialog(false);
+  };
+
+  const getStatusIcon = () => {
+    switch (server.status) {
+      case 'connected':
+        return <CheckCircle className="w-3 h-3 text-success" />;
+      case 'connecting':
+        return <Loader2 className="w-3 h-3 text-primary animate-spin" />;
+      case 'error':
+        return <AlertCircle className="w-3 h-3 text-danger" />;
+      default:
+        return <Server className="w-3 h-3 text-text-disabled" />;
+    }
+  };
+
+  const getStatusText = () => {
+    switch (server.status) {
+      case 'connected':
+        return 'Connected';
+      case 'connecting':
+        return 'Connecting...';
+      case 'error':
+        return 'Error';
+      default:
+        return 'Disconnected';
+    }
+  };
+
+  return (
+    <div className="border border-border rounded-lg bg-titlebar overflow-hidden">
+      {/* Header */}
+      <div
+        className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-input/30"
+        onClick={onToggleExpand}
+      >
+        <div className="flex items-center gap-2">
+          <ChevronDown
+            className={clsx('w-3.5 h-3.5 text-text-disabled transition-transform', isExpanded && 'rotate-180')}
+          />
+          {server.config.transport === 'stdio' ? (
+            <Terminal className="w-3.5 h-3.5 text-text-secondary" />
+          ) : (
+            <Globe className="w-3.5 h-3.5 text-text-secondary" />
+          )}
+          <span className="text-xs font-medium text-text-primary">{server.config.name}</span>
+          <span
+            className={clsx(
+              'text-[9px] px-1.5 py-0.5 rounded flex items-center gap-1',
+              server.status === 'connected' && 'bg-success/20 text-success',
+              server.status === 'connecting' && 'bg-primary/20 text-primary',
+              server.status === 'error' && 'bg-danger/20 text-danger',
+              server.status === 'disconnected' && 'bg-input text-text-disabled'
+            )}
+          >
+            {getStatusIcon()}
+            {getStatusText()}
+          </span>
+          {server.tools.length > 0 && (
+            <span className="text-[9px] px-1 py-0.5 rounded bg-primary/10 text-primary">
+              {server.tools.length} tools
+            </span>
+          )}
+          {server.config.autoApprove && (
+            <span className="text-[9px] px-1 py-0.5 rounded bg-success/10 text-success flex items-center gap-0.5" title="Tools auto-approved">
+              <Check className="w-2.5 h-2.5" />
+              Auto
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+          {/* Connect/Disconnect button */}
+          {server.config.enabled && (
+            <>
+              {server.status === 'connected' ? (
+                <button
+                  onClick={handleDisconnect}
+                  className="p-1 rounded text-text-secondary hover:text-danger hover:bg-danger/10"
+                  title="Disconnect"
+                >
+                  <Square className="w-3.5 h-3.5" />
+                </button>
+              ) : (
+                <button
+                  onClick={handleConnect}
+                  disabled={isConnecting || server.status === 'connecting'}
+                  className="p-1 rounded text-text-secondary hover:text-success hover:bg-success/10 disabled:opacity-50"
+                  title="Connect"
+                >
+                  {isConnecting || server.status === 'connecting' ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Play className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              )}
+            </>
+          )}
+          {/* Delete button */}
+          <button
+            onClick={handleRemove}
+            className="p-1 rounded text-text-disabled hover:text-danger hover:bg-danger/10"
+            title="Remove"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+          {/* Enable/Disable toggle */}
+          <button
+            onClick={handleToggle}
+            className={clsx(
+              'relative w-8 h-4 rounded-full transition-colors',
+              server.config.enabled ? 'bg-primary' : 'bg-input border border-border'
+            )}
+          >
+            <div
+              className={clsx(
+                'absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform',
+                server.config.enabled ? 'translate-x-4' : 'translate-x-0.5'
+              )}
+            />
+          </button>
+        </div>
+      </div>
+
+      {/* Expanded Content */}
+      {isExpanded && (
+        <div className="px-3 pb-3 pt-1 border-t border-border space-y-2">
+          {/* Error message */}
+          {server.error && (
+            <div className="p-2 rounded bg-danger/10 border border-danger/20 text-[10px] text-danger">
+              {server.error}
+            </div>
+          )}
+
+          {/* Server Info */}
+          {server.serverInfo && (
+            <div className="text-[10px] text-text-secondary">
+              Server: {server.serverInfo.name}
+              {server.serverInfo.version && ` v${server.serverInfo.version}`}
+            </div>
+          )}
+
+          {/* Auto-approve toggle */}
+          <div className="flex items-center justify-between py-1">
+            <div className="flex items-center gap-2">
+              <Check className="w-3.5 h-3.5 text-success" />
+              <span className="text-[10px] text-text-secondary">Auto-approve all tools</span>
+            </div>
+            <button
+              onClick={async () => {
+                const updatedConfig = { ...server.config, autoApprove: !server.config.autoApprove };
+                await updateServer(updatedConfig);
+              }}
+              className={clsx(
+                'relative w-8 h-4 rounded-full transition-colors',
+                server.config.autoApprove ? 'bg-success' : 'bg-input border border-border'
+              )}
+            >
+              <div
+                className={clsx(
+                  'absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform',
+                  server.config.autoApprove ? 'translate-x-4' : 'translate-x-0.5'
+                )}
+              />
+            </button>
+          </div>
+
+          {/* Transport info */}
+          <div>
+            <label className="text-[10px] text-text-disabled block mb-0.5">
+              {server.config.transport === 'stdio' ? 'Command' : 'URL'}
+            </label>
+            <div className="text-[10px] text-text-secondary font-mono bg-input rounded px-2 py-1 border border-border">
+              {server.config.transport === 'stdio' ? (
+                <>
+                  {server.config.command} {server.config.args.join(' ')}
+                </>
+              ) : (
+                server.config.url
+              )}
+            </div>
+          </div>
+
+          {/* Environment variables */}
+          {Object.keys(server.config.env).length > 0 && (
+            <div>
+              <div className="flex items-center justify-between mb-0.5">
+                <label className="text-[10px] text-text-disabled">Environment Variables</label>
+                <button
+                  onClick={() => setShowEnv(!showEnv)}
+                  className="p-0.5 rounded text-text-disabled hover:text-text-secondary"
+                >
+                  {showEnv ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                </button>
+              </div>
+              {showEnv && (
+                <div className="text-[10px] text-text-secondary font-mono bg-input rounded px-2 py-1 border border-border space-y-0.5">
+                  {Object.entries(server.config.env).map(([key, value]) => (
+                    <div key={key}>
+                      {key}={value}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Tools list with tooltips */}
+          {server.tools.length > 0 && (
+            <div>
+              <label className="text-[10px] text-text-disabled block mb-1">
+                Available Tools ({server.tools.length})
+              </label>
+              <div className="flex flex-wrap gap-1">
+                {server.tools.map((tool) => (
+                  <div key={tool.name} className="group relative">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-mono border border-primary/20 cursor-help">
+                      {tool.name}
+                    </span>
+                    {/* Tooltip - matches context menu styling */}
+                    <div className="absolute bottom-full left-0 mb-1 hidden group-hover:block z-50 w-64 max-w-xs pointer-events-none">
+                      <div className="bg-sidebar border border-border rounded shadow-lg p-2">
+                        <p className="text-[10px] font-medium text-text-primary mb-1">{tool.name}</p>
+                        {tool.description && (
+                          <p className="text-[9px] text-text-secondary leading-relaxed">{tool.description}</p>
+                        )}
+                        {!tool.description && (
+                          <p className="text-[9px] text-text-disabled italic">No description available</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Resources list */}
+          {server.resources.length > 0 && (
+            <div>
+              <label className="text-[10px] text-text-disabled block mb-1">Available Resources</label>
+              <div className="flex flex-wrap gap-1">
+                {server.resources.map((resource) => (
+                  <span
+                    key={resource.uri}
+                    className="text-[10px] px-1.5 py-0.5 rounded bg-input text-text-secondary font-mono border border-border"
+                    title={resource.description || resource.uri}
+                  >
+                    {resource.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Delete Confirmation Dialog */}
+      <DeleteConfirmDialog
+        isOpen={showDeleteDialog}
+        itemName={server.config.name}
+        itemType="server"
+        onConfirm={confirmRemove}
+        onCancel={() => setShowDeleteDialog(false)}
+      />
+    </div>
+  );
+};
+
+// ============================================
+// MAIN COMPONENT
+// ============================================
+
+export const McpSettingsTab: React.FC = () => {
+  const { servers, isLoading, configPath, error, loadServers, refreshServers, getConfigPath, addServer } = useMcpStore();
+  const [isAddingServer, setIsAddingServer] = useState(false);
+  const [expandedServer, setExpandedServer] = useState<string | null>(null);
+
+  // Load servers on mount (only once, preserves connection state)
+  useEffect(() => {
+    loadServers(); // Will skip if already initialized
+    getConfigPath();
+  }, []);
+
+  const handleAddServer = async (config: Omit<McpServerConfig, 'id'>) => {
+    await addServer(config);
+    setIsAddingServer(false);
+  };
+
+  const handleRefresh = () => {
+    refreshServers(); // Force refresh from backend
+  };
+
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyPath = async () => {
+    if (configPath) {
+      try {
+        await navigator.clipboard.writeText(configPath);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch (error) {
+        console.error('Failed to copy path:', error);
+      }
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-medium text-text-primary">MCP Servers</h3>
+          <p className="text-[10px] text-text-secondary mt-0.5">
+            Connect to Model Context Protocol servers to extend Aurora's capabilities
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleRefresh}
+            disabled={isLoading}
+            className="p-1.5 rounded text-text-secondary hover:text-text-primary hover:bg-input disabled:opacity-50"
+            title="Refresh"
+          >
+            <RefreshCw className={clsx('w-3.5 h-3.5', isLoading && 'animate-spin')} />
+          </button>
+          <button
+            onClick={() => setIsAddingServer(true)}
+            className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors"
+          >
+            <Plus className="w-3 h-3" />
+            Add Server
+          </button>
+        </div>
+      </div>
+
+      {/* Config file path - click to copy */}
+      {configPath && (
+        <button
+          onClick={handleCopyPath}
+          className="flex items-center gap-2 text-[10px] text-text-disabled hover:text-text-secondary transition-colors group"
+          title="Click to copy path"
+        >
+          {copied ? (
+            <Check className="w-3 h-3 text-success" />
+          ) : (
+            <Copy className="w-3 h-3 group-hover:text-primary" />
+          )}
+          <span className="font-mono">{configPath}</span>
+          {copied && <span className="text-success text-[9px]">Copied!</span>}
+        </button>
+      )}
+
+      {/* Error message */}
+      {error && (
+        <div className="p-2 rounded bg-danger/10 border border-danger/20 text-xs text-danger flex items-center gap-2">
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+          {error}
+        </div>
+      )}
+
+      {/* Add server form */}
+      {isAddingServer && <AddServerForm onSave={handleAddServer} onCancel={() => setIsAddingServer(false)} />}
+
+      {/* Server list */}
+      {isLoading ? (
+        <div className="flex items-center justify-center py-8 text-text-secondary">
+          <Loader2 className="w-5 h-5 animate-spin" />
+        </div>
+      ) : servers.length === 0 ? (
+        <div className="text-center py-8">
+          <Server className="w-8 h-8 text-text-disabled mx-auto mb-2" />
+          <p className="text-xs text-text-secondary">No MCP servers configured</p>
+          <p className="text-[10px] text-text-disabled mt-1">
+            Add a server to extend Aurora with external tools
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {servers.map((server) => (
+            <ServerCard
+              key={server.config.id}
+              server={server}
+              isExpanded={expandedServer === server.config.id}
+              onToggleExpand={() =>
+                setExpandedServer(expandedServer === server.config.id ? null : server.config.id)
+              }
+            />
+          ))}
+        </div>
+      )}
+
+    </div>
+  );
+};
+

@@ -17,6 +17,39 @@
  */
 
 // Export types
+import { allTools, getToolByName, getToolRiskLevel, toolCategories } from "./definitions";
+// Re-export commonly used items
+import { toolRegistry } from "./registry";
+import type { ToolCallRequest, ToolCallResult, ToolDefinition } from "./types";
+
+/**
+ * Execute a tool call from the AI model
+ */
+export const executeToolCall = async (toolCall: ToolCallRequest): Promise<ToolCallResult> => {
+  return toolRegistry.executeToolCall(toolCall);
+};
+
+/**
+ * Format tools for OpenAI API request
+ */
+export const formatToolsForRequest = (tools?: ToolDefinition[]): ToolDefinition[] => {
+  return tools || allTools;
+};
+
+/**
+ * Get all tool definitions for sending to the AI model
+ */
+export const getToolsForModel = (): ToolDefinition[] => {
+  return toolRegistry.getToolDefinitions();
+};
+
+/**
+ * Check if a tool requires user approval before execution
+ */
+export const toolRequiresApproval = (toolName: string): boolean => {
+  return toolRegistry.requiresApproval(toolName);
+};
+
 export * from './types';
 
 // Export definitions
@@ -30,40 +63,8 @@ export { registerAllExecutors, areExecutorsRegistered } from './executors';
 
 // Export operation log
 export { operationLog, FsOperationType } from './operation-log';
+
 export type { FsOperation, OperationSummary } from './operation-log';
-
-// Re-export commonly used items
-import { toolRegistry } from './registry';
-import { allTools, getToolByName, getToolRiskLevel, toolCategories } from './definitions';
-import type { ToolDefinition, ToolCallRequest, ToolCallResult } from './types';
-
-/**
- * Get all tool definitions for sending to the AI model
- */
-export const getToolsForModel = (): ToolDefinition[] => {
-  return toolRegistry.getToolDefinitions();
-};
-
-/**
- * Execute a tool call from the AI model
- */
-export const executeToolCall = async (toolCall: ToolCallRequest): Promise<ToolCallResult> => {
-  return toolRegistry.executeToolCall(toolCall);
-};
-
-/**
- * Check if a tool requires user approval before execution
- */
-export const toolRequiresApproval = (toolName: string): boolean => {
-  return toolRegistry.requiresApproval(toolName);
-};
-
-/**
- * Format tools for OpenAI API request
- */
-export const formatToolsForRequest = (tools?: ToolDefinition[]): ToolDefinition[] => {
-  return tools || allTools;
-};
 
 // Default export for convenience
 export default {
@@ -76,4 +77,3 @@ export default {
   executeToolCall,
   toolRequiresApproval,
 };
-

@@ -1,15 +1,4 @@
-import { generateManifest, type ManifestConfig } from 'material-icon-theme';
-
-// 1. Generate the manifest once with your preferred configuration
-const config: ManifestConfig = {
-  activeIconPack: 'react', // 'react', 'angular', 'vue', 'nest', etc.
-  hidesExplorerArrows: true,
-  folders: {
-    theme: 'specific', // 'specific' enables folder icons like 'src', 'components', etc.
-  },
-};
-
-const manifest = generateManifest(config);
+import { type ManifestConfig, generateManifest } from "material-icon-theme";
 
 /**
  * Resolves the icon name for a given file or folder.
@@ -112,3 +101,13 @@ export const getIconUrl = (iconName: string): string => {
   // Alternatively, you can use a CDN like jsdelivr for instant gratification without build config:
   return `https://cdn.jsdelivr.net/npm/material-icon-theme@latest/icons/${iconName}.svg`;
 };
+
+// 1. Generate the manifest once with your preferred configuration
+const config: ManifestConfig = {
+  activeIconPack: 'react', // 'react', 'angular', 'vue', 'nest', etc.
+  hidesExplorerArrows: true,
+  folders: {
+    theme: 'specific', // 'specific' enables folder icons like 'src', 'components', etc.
+  },
+};
+const manifest = generateManifest(config);

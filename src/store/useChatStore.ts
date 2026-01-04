@@ -1,27 +1,35 @@
-import { create } from 'zustand';
-import type { Message, ToolProposal, ToolCall } from '../types';
-import { getAgentService } from '../services/agent-service';
+import { create } from "zustand";
+
+import { getAgentService } from "../services/agent-service";
+import type { Message, ToolCall, ToolProposal } from "../types";
 
 interface ChatState {
-  messages: Message[];
-  isLoading: boolean;
-  pendingApproval: ToolProposal | null;
-
   // Actions
   addMessage: (message: Omit<Message, 'timestamp'> & { id?: string }) => void;
-  updateMessage: (id: string, updates: Partial<Message>) => void;
-  setLoading: (loading: boolean) => void;
-  updateToolStatus: (messageId: string, status: ToolProposal['status']) => void;
-  updateToolCall: (messageId: string, toolId: string, updates: Partial<ToolCall>) => void;
-  setPendingApproval: (proposal: ToolProposal | null) => void;
+
+  // Append content to chat input (used by browser element inspector)
+  appendToInput: (content: string) => void;
   clearMessages: () => void;
+  consumePendingInput: () => string | null;
+  isLoading: boolean;
+  messages: Message[];
+  pendingApproval: ToolProposal | null;
+
+  // For external components to append content to the chat input
+  pendingInputContent: string | null;
+  setLoading: (loading: boolean) => void;
+  setPendingApproval: (proposal: ToolProposal | null) => void;
   stopGeneration: () => void;
+  updateMessage: (id: string, updates: Partial<Message>) => void;
+  updateToolCall: (messageId: string, toolId: string, updates: Partial<ToolCall>) => void;
+  updateToolStatus: (messageId: string, status: ToolProposal['status']) => void;
 }
 
-export const useChatStore = create<ChatState>((set) => ({
+export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   isLoading: false,
   pendingApproval: null,
+  pendingInputContent: null,
 
   addMessage: (message) => set((state) => ({
     messages: [
@@ -88,5 +96,16 @@ export const useChatStore = create<ChatState>((set) => ({
     const agent = getAgentService();
     agent.stop();
     set({ isLoading: false });
+  },
+
+  appendToInput: (content: string) => {
+    const current = get().pendingInputContent;
+    set({ pendingInputContent: current ? `${current}\n${content}` : content });
+  },
+
+  consumePendingInput: () => {
+    const content = get().pendingInputContent;
+    set({ pendingInputContent: null });
+    return content;
   },
 }));

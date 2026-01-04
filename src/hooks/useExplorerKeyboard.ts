@@ -1,12 +1,13 @@
-import { useEffect, useCallback } from 'react';
-import { useWorkspaceStore } from '../store/useWorkspaceStore';
-import { useEditorStore } from '../store/useEditorStore';
-import { deletePath, isTauri, copyToClipboard } from '../lib/tauri';
+import { useCallback, useEffect } from "react";
+
+import { copyToClipboard, deletePath, isTauri } from "../lib/tauri";
+import { useEditorStore } from "../store/useEditorStore";
+import { useWorkspaceStore } from "../store/useWorkspaceStore";
 
 interface UseExplorerKeyboardProps {
-  onRename: (nodeId: string) => void;
   onNewFile: (parentId: string) => void;
   onNewFolder: (parentId: string) => void;
+  onRename: (nodeId: string) => void;
 }
 
 /**

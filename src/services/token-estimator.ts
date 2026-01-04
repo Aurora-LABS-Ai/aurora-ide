@@ -1,44 +1,51 @@
 /**
  * Token Estimation Service
- *
+ * 
  * Provides approximate token counts for text content.
  * Uses character-based estimation as a reasonable approximation.
- *
+ * 
  * Average ratios (empirically derived):
  * - English text: ~4 characters per token
  * - Code: ~3.5 characters per token (more symbols)
  * - JSON: ~3 characters per token (lots of punctuation)
  * - Mixed content: ~3.7 characters per token
  */
-
-import type { ChatMessage } from './llm-types';
-import type { ToolDefinition } from '../tools/types';
-
-// Estimation constants
-const CHARS_PER_TOKEN_TEXT = 4;
-const CHARS_PER_TOKEN_CODE = 3.5;
-const CHARS_PER_TOKEN_JSON = 3;
-const CHARS_PER_TOKEN_MIXED = 3.7;
-
-// Fixed overhead estimates
-const MESSAGE_OVERHEAD_TOKENS = 4; // Role, formatting per message
-const TOOL_DEFINITION_OVERHEAD = 10; // Per tool definition overhead
-const SYSTEM_PROMPT_OVERHEAD = 50; // System message formatting
+import type { ToolDefinition } from "../tools/types";
+import type { ChatMessage } from "./llm-types";
 
 /**
- * Estimate tokens for a string
+ * Calculate available tokens for response
  */
-export function estimateTokens(text: string, type: 'text' | 'code' | 'json' | 'mixed' = 'mixed'): number {
-  if (!text) return 0;
+export function calculateAvailableTokens(
+  contextWindow: number,
+  usedTokens: number,
+  maxOutputTokens: number
+): number {
+  const remaining = contextWindow - usedTokens;
+  return Math.min(remaining, maxOutputTokens);
+}
 
-  const charsPerToken = {
-    text: CHARS_PER_TOKEN_TEXT,
-    code: CHARS_PER_TOKEN_CODE,
-    json: CHARS_PER_TOKEN_JSON,
-    mixed: CHARS_PER_TOKEN_MIXED,
-  }[type];
+/**
+ * Check if we're approaching context limit
+ */
+export function checkContextLimit(
+  usedTokens: number,
+  contextWindow: number
+): {
+  percentage: number;
+  isNearLimit: boolean;
+  isOverLimit: boolean;
+  remainingTokens: number;
+} {
+  const percentage = Math.round((usedTokens / contextWindow) * 100);
+  const remainingTokens = Math.max(0, contextWindow - usedTokens);
 
-  return Math.ceil(text.length / charsPerToken);
+  return {
+    percentage: Math.min(100, percentage),
+    isNearLimit: percentage >= 80,
+    isOverLimit: percentage >= 100,
+    remainingTokens,
+  };
 }
 
 /**
@@ -82,28 +89,6 @@ export function estimateMessagesTokens(messages: ChatMessage[]): number {
 }
 
 /**
- * Estimate tokens for tool definitions
- */
-export function estimateToolsTokens(tools: ToolDefinition[]): number {
-  if (!tools || tools.length === 0) return 0;
-
-  let tokens = 0;
-  for (const tool of tools) {
-    tokens += TOOL_DEFINITION_OVERHEAD;
-    tokens += estimateTokens(tool.function.name, 'text');
-    tokens += estimateTokens(tool.function.description || '', 'text');
-
-    // Parameters schema
-    if (tool.function.parameters) {
-      const paramsJson = JSON.stringify(tool.function.parameters);
-      tokens += estimateTokens(paramsJson, 'json');
-    }
-  }
-
-  return tokens;
-}
-
-/**
  * Estimate total tokens for a request
  */
 export function estimateRequestTokens(
@@ -130,39 +115,53 @@ export function estimateRequestTokens(
 }
 
 /**
- * Calculate available tokens for response
+ * Estimate tokens for a string
  */
-export function calculateAvailableTokens(
-  contextWindow: number,
-  usedTokens: number,
-  maxOutputTokens: number
-): number {
-  const remaining = contextWindow - usedTokens;
-  return Math.min(remaining, maxOutputTokens);
+export function estimateTokens(text: string, type: 'text' | 'code' | 'json' | 'mixed' = 'mixed'): number {
+  if (!text) return 0;
+
+  const charsPerToken = {
+    text: CHARS_PER_TOKEN_TEXT,
+    code: CHARS_PER_TOKEN_CODE,
+    json: CHARS_PER_TOKEN_JSON,
+    mixed: CHARS_PER_TOKEN_MIXED,
+  }[type];
+
+  return Math.ceil(text.length / charsPerToken);
 }
 
 /**
- * Check if we're approaching context limit
+ * Estimate tokens for tool definitions
  */
-export function checkContextLimit(
-  usedTokens: number,
-  contextWindow: number
-): {
-  percentage: number;
-  isNearLimit: boolean;
-  isOverLimit: boolean;
-  remainingTokens: number;
-} {
-  const percentage = Math.round((usedTokens / contextWindow) * 100);
-  const remainingTokens = Math.max(0, contextWindow - usedTokens);
+export function estimateToolsTokens(tools: ToolDefinition[]): number {
+  if (!tools || tools.length === 0) return 0;
 
-  return {
-    percentage: Math.min(100, percentage),
-    isNearLimit: percentage >= 80,
-    isOverLimit: percentage >= 100,
-    remainingTokens,
-  };
+  let tokens = 0;
+  for (const tool of tools) {
+    tokens += TOOL_DEFINITION_OVERHEAD;
+    tokens += estimateTokens(tool.function.name, 'text');
+    tokens += estimateTokens(tool.function.description || '', 'text');
+
+    // Parameters schema
+    if (tool.function.parameters) {
+      const paramsJson = JSON.stringify(tool.function.parameters);
+      tokens += estimateTokens(paramsJson, 'json');
+    }
+  }
+
+  return tokens;
 }
+
+// Estimation constants
+const CHARS_PER_TOKEN_TEXT = 4;
+const CHARS_PER_TOKEN_CODE = 3.5;
+const CHARS_PER_TOKEN_JSON = 3;
+const CHARS_PER_TOKEN_MIXED = 3.7;
+
+// Fixed overhead estimates
+const MESSAGE_OVERHEAD_TOKENS = 4; // Role, formatting per message
+const TOOL_DEFINITION_OVERHEAD = 10; // Per tool definition overhead
+const SYSTEM_PROMPT_OVERHEAD = 50; // System message formatting
 
 export default {
   estimateTokens,

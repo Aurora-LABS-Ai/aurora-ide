@@ -6,11 +6,11 @@
  * 2. Theme Store state management (import, select, delete)
  * 3. Monaco Theme conversion
  */
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { useThemeStore } from '../store/useThemeStore';
-import { themeService } from './theme-service';
-import type { ThemeFile } from '../types/theme';
+import { useThemeStore } from "../store/useThemeStore";
+import type { ThemeFile } from "../types/theme";
+import { themeService } from "./theme-service";
 
 // Mock window.matchMedia
 Object.defineProperty(window, 'matchMedia', {
@@ -29,7 +29,9 @@ Object.defineProperty(window, 'matchMedia', {
 
 // Mock document functions
 document.documentElement.setAttribute = vi.fn();
+
 document.documentElement.classList.add = vi.fn();
+
 document.documentElement.classList.remove = vi.fn();
 
 const SAMPLE_THEME_FILE: ThemeFile = {
@@ -55,7 +57,6 @@ const SAMPLE_THEME_FILE: ThemeFile = {
 };
 
 describe('Theme System Integration', () => {
-
     beforeEach(async () => {
         // Reset store state
         useThemeStore.setState({

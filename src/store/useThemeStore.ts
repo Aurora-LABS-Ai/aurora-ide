@@ -1,10 +1,9 @@
-import { create } from 'zustand';
-import { invoke } from '@tauri-apps/api/core';
-import { themeService } from '../services/theme-service';
-import type { ThemeStore, ThemeDefinition, ThemeFile } from '../types/theme';
+import { invoke } from "@tauri-apps/api/core";
 
-// Built-in themes - these cannot be overwritten
-const BUILT_IN_THEME_NAMES = ['aurora dark', 'aurora light'];
+import { create } from "zustand";
+
+import { themeService } from "../services/theme-service";
+import type { ThemeDefinition, ThemeFile, ThemeStore } from "../types/theme";
 
 /**
  * Generate a stable theme ID from name and author
@@ -21,6 +20,9 @@ function generateThemeId(name: string, author: string): string {
 function isBuiltInThemeName(name: string): boolean {
     return BUILT_IN_THEME_NAMES.includes(name.toLowerCase().trim());
 }
+
+// Built-in themes - these cannot be overwritten
+const BUILT_IN_THEME_NAMES = ['aurora dark', 'aurora light'];
 
 export const useThemeStore = create<ThemeStore>((set, get) => ({
     activeThemeId: 'dark',

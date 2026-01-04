@@ -30,7 +30,7 @@ interface DeleteConfirmDialogProps {
   /** Name of the item to delete */
   itemName?: string;
   /** Type of item being deleted (for display text) */
-  itemType?: 'conversation' | 'file' | 'folder';
+  itemType?: 'conversation' | 'file' | 'folder' | 'server';
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -50,6 +50,7 @@ export const DeleteConfirmDialog: React.FC<DeleteConfirmDialogProps> = ({
     conversation: { title: 'Delete Conversation', label: 'Conversation to delete:', fallback: 'Untitled conversation' },
     file: { title: 'Delete File', label: 'File to delete:', fallback: 'Untitled file' },
     folder: { title: 'Delete Folder', label: 'Folder to delete:', fallback: 'Untitled folder' },
+    server: { title: 'Remove MCP Server', label: 'Server to remove:', fallback: 'Unnamed server' },
   };
 
   const labels = typeLabels[itemType];

@@ -13,22 +13,81 @@
 // ============================================================================
 // Symbol Types (for Breadcrumb Navigation - included for completeness)
 // ============================================================================
+/**
+ * Chat panel color tokens (Requirement 10.4)
+ * Covers: background, userMessage, assistantMessage, thinking, toolCall states
+ */
+export interface ChatTokens {
+  assistantMessage: string;
+  background: string;
+  codeBlock: string;
+  inputBackground: string;
+  inputBorder: string;
+  surface: string;
+  surfaceBorder: string;
+  surfaceMuted: string;
+  thinkingBackground: string;
+  thinkingBorder: string;
+  toolCallBackground: string;
+  toolCallBorder: string;
+  usageHigh: string;
+  usageLow: string;
+  usageMedium: string;
+  userMessage: string;
+}
 
-export type SymbolKind = 
-  | 'function' 
-  | 'class' 
-  | 'interface' 
-  | 'variable' 
-  | 'method' 
-  | 'property' 
-  | 'enum' 
-  | 'type';
+/**
+ * Color value validation result
+ */
+export interface ColorValidationResult {
+  error?: string;
+  normalizedValue?: string;
+  valid: boolean;
+}
 
-export interface SymbolInfo {
+/**
+ * Common/shared color tokens (Requirement 10.6)
+ * Covers: primary, secondary, success, warning, error, border colors
+ */
+export interface CommonTokens {
+  border: string;
+  borderHover: string;
+  error: string;
+  errorForeground: string;
+  info: string;
+  infoForeground: string;
+  overlay: string;
+  primary: string;
+  primaryForeground: string;
+  primaryHover: string;
+  scrollbar: string;
+  scrollbarHover: string;
+  secondary: string;
+  secondaryForeground: string;
+  secondaryHover: string;
+  shadow: string;
+  success: string;
+  successForeground: string;
+  warning: string;
+  warningForeground: string;
+}
+
+// ============================================================================
+// Database Types
+// ============================================================================
+
+/**
+ * Database representation of a custom theme
+ */
+export interface DbTheme {
+  author: string;
+  created_at: string;
+  id: string;
   name: string;
-  kind: SymbolKind;
-  range: { startLine: number; endLine: number };
-  children?: SymbolInfo[];
+  theme_json: string; // Serialized ThemeFile
+  type: 'dark' | 'light';
+  updated_at: string;
+  version: string;
 }
 
 // ============================================================================
@@ -41,19 +100,44 @@ export interface SymbolInfo {
  */
 export interface EditorTokens {
   background: string;
-  foreground: string;
-  lineNumbers: string;
-  lineNumbersActive: string;
-  selection: string;
-  selectionHighlight: string;
   cursor: string;
   cursorLine: string;
-  whitespace: string;
-  indentGuide: string;
-  matchingBracket: string;
-  wordHighlight: string;
   findMatch: string;
   findMatchHighlight: string;
+  foreground: string;
+  indentGuide: string;
+  lineNumbers: string;
+  lineNumbersActive: string;
+  matchingBracket: string;
+  selection: string;
+  selectionHighlight: string;
+  whitespace: string;
+  wordHighlight: string;
+}
+
+// ============================================================================
+// Monaco Theme Types
+// ============================================================================
+
+/**
+ * Monaco editor theme data structure
+ * Compatible with monaco.editor.IStandaloneThemeData
+ */
+export interface MonacoThemeData {
+  base: 'vs' | 'vs-dark' | 'hc-black';
+  colors: Record<string, string>;
+  inherit: boolean;
+  rules: MonacoTokenRule[];
+}
+
+/**
+ * Monaco token rule for syntax highlighting
+ */
+export interface MonacoTokenRule {
+    background?: string;
+  fontStyle?: string;
+    foreground?: string;
+  token: string;
 }
 
 /**
@@ -62,64 +146,12 @@ export interface EditorTokens {
  */
 export interface SidebarTokens {
   background: string;
-  foreground: string;
   border: string;
-  itemHover: string;
+  foreground: string;
   itemActive: string;
+  itemHover: string;
   itemSelected: string;
   sectionHeader: string;
-}
-
-/**
- * Chat panel color tokens (Requirement 10.4)
- * Covers: background, userMessage, assistantMessage, thinking, toolCall states
- */
-export interface ChatTokens {
-  background: string;
-  inputBackground: string;
-  inputBorder: string;
-  surface: string;
-  surfaceBorder: string;
-  surfaceMuted: string;
-  usageLow: string;
-  usageMedium: string;
-  usageHigh: string;
-  userMessage: string;
-  assistantMessage: string;
-  thinkingBackground: string;
-  thinkingBorder: string;
-  toolCallBackground: string;
-  toolCallBorder: string;
-  codeBlock: string;
-}
-
-
-/**
- * Terminal color tokens (Requirement 10.5)
- * Covers: background, foreground, cursor, ANSI color mappings
- */
-export interface TerminalTokens {
-  background: string;
-  foreground: string;
-  cursor: string;
-  selection: string;
-  // ANSI colors (standard 16-color palette)
-  black: string;
-  red: string;
-  green: string;
-  yellow: string;
-  blue: string;
-  magenta: string;
-  cyan: string;
-  white: string;
-  brightBlack: string;
-  brightRed: string;
-  brightGreen: string;
-  brightYellow: string;
-  brightBlue: string;
-  brightMagenta: string;
-  brightCyan: string;
-  brightWhite: string;
 }
 
 /**
@@ -128,49 +160,155 @@ export interface TerminalTokens {
  */
 export interface StatusBarTokens {
   background: string;
-  foreground: string;
   border: string;
+  foreground: string;
   itemHover: string;
 }
 
+export interface SymbolInfo {
+  children?: SymbolInfo[];
+  kind: SymbolKind;
+  name: string;
+  range: { startLine: number; endLine: number };
+}
+
 /**
- * Title bar color tokens
- * Covers: background, foreground, border, button hover
+ * Terminal color tokens (Requirement 10.5)
+ * Covers: background, foreground, cursor, ANSI color mappings
  */
-export interface TitleBarTokens {
+export interface TerminalTokens {
   background: string;
+
+  // ANSI colors (standard 16-color palette)
+  black: string;
+  blue: string;
+  brightBlack: string;
+  brightBlue: string;
+  brightCyan: string;
+  brightGreen: string;
+  brightMagenta: string;
+  brightRed: string;
+  brightWhite: string;
+  brightYellow: string;
+  cursor: string;
+  cyan: string;
   foreground: string;
-  border: string;
-  buttonHover: string;
+  green: string;
+  magenta: string;
+  red: string;
+  selection: string;
+  white: string;
+  yellow: string;
 }
 
 /**
- * Common/shared color tokens (Requirement 10.6)
- * Covers: primary, secondary, success, warning, error, border colors
+ * Theme store actions
  */
-export interface CommonTokens {
-  primary: string;
-  primaryHover: string;
-  primaryForeground: string;
-  secondary: string;
-  secondaryHover: string;
-  secondaryForeground: string;
-  success: string;
-  successForeground: string;
-  warning: string;
-  warningForeground: string;
-  error: string;
-  errorForeground: string;
-  info: string;
-  infoForeground: string;
-  border: string;
-  borderHover: string;
-  shadow: string;
-  overlay: string;
-  scrollbar: string;
-  scrollbarHover: string;
+export interface ThemeActions {
+  /** Delete a custom theme (built-in themes cannot be deleted) */
+  deleteTheme: (themeId: string) => Promise<void>;
+
+  /** Get the currently active theme */
+  getActiveTheme: () => ThemeDefinition;
+
+  /** Get a theme by ID */
+  getTheme: (themeId: string) => ThemeDefinition | undefined;
+
+  /** Import a theme from a ThemeFile */
+  importTheme: (themeFile: ThemeFile) => Promise<ThemeDefinition>;
+
+  /** Initialize themes from database */
+  initializeFromDatabase: () => Promise<void>;
+
+  /** Set the active theme by ID */
+  setActiveTheme: (themeId: string) => Promise<void>;
 }
 
+// ============================================================================
+// Runtime Theme Definition
+// ============================================================================
+
+/**
+ * Complete runtime theme definition with resolved tokens
+ * Used internally after theme file is loaded and merged with base
+ */
+export interface ThemeDefinition {
+  /** Theme author */
+  author: string;
+
+  /** Fully resolved color tokens (no undefined values) */
+  colors: ThemeTokens;
+
+  /** Unique identifier */
+  id: string;
+
+  /** Whether this is a built-in theme (cannot be deleted) */
+  isBuiltIn: boolean;
+
+  /** Display name */
+  name: string;
+
+  /** Syntax highlighting rules */
+  tokenColors: TokenColorRule[];
+
+  /** Theme type (dark/light) */
+  type: 'dark' | 'light';
+
+  /** Version string */
+  version: string;
+}
+
+// ============================================================================
+// Theme File Schema (Requirements 8.1, 8.2, 8.3)
+// ============================================================================
+
+/**
+ * Theme file JSON schema
+ * Supports partial definitions where undefined tokens fall back to base theme
+ */
+export interface ThemeFile {
+  /** Theme author/creator */
+  author: string;
+
+  /** Color tokens (partial allowed - falls back to base theme) */
+  colors: DeepPartial<ThemeTokens>;
+
+  /** Optional description */
+  description?: string;
+
+  /** Theme display name */
+  name: string;
+
+  /** TextMate-style syntax highlighting rules */
+  tokenColors: TokenColorRule[];
+
+  /** Theme type determines base fallback colors */
+  type: 'dark' | 'light';
+
+  /** Semantic version string */
+  version: string;
+}
+
+// ============================================================================
+// Theme Store Types
+// ============================================================================
+
+/**
+ * Theme state for Zustand store
+ */
+export interface ThemeState {
+  /** Currently active theme ID */
+  activeThemeId: string;
+
+  /** Error state */
+  error: string | null;
+
+  /** Loading state */
+  isLoading: boolean;
+
+  /** All available themes (built-in + custom) */
+  themes: ThemeDefinition[];
+}
 
 // ============================================================================
 // Complete Theme Tokens (Requirement 7.1, 7.2 - 50+ tokens across 7 categories)
@@ -181,13 +319,42 @@ export interface CommonTokens {
  * Organized into 7 categories: Editor, Sidebar, Chat, Terminal, StatusBar, TitleBar, Common
  */
 export interface ThemeTokens {
+  chat: ChatTokens;
+  common: CommonTokens;
   editor: EditorTokens;
   sidebar: SidebarTokens;
-  chat: ChatTokens;
-  terminal: TerminalTokens;
   statusBar: StatusBarTokens;
+  terminal: TerminalTokens;
   titleBar: TitleBarTokens;
-  common: CommonTokens;
+}
+
+// ============================================================================
+// Validation Types
+// ============================================================================
+
+/**
+ * Result of theme file validation
+ */
+export interface ThemeValidationResult {
+  /** List of validation errors (empty if valid) */
+  errors: string[];
+
+  /** Whether the theme file is valid */
+  valid: boolean;
+
+  /** Warnings that don't prevent loading but should be noted */
+  warnings: string[];
+}
+
+/**
+ * Title bar color tokens
+ * Covers: background, foreground, border, button hover
+ */
+export interface TitleBarTokens {
+  background: string;
+  border: string;
+  buttonHover: string;
+  foreground: string;
 }
 
 // ============================================================================
@@ -201,8 +368,10 @@ export interface ThemeTokens {
 export interface TokenColorRule {
   /** Optional descriptive name for the rule */
   name?: string;
+
   /** TextMate scope(s) this rule applies to */
   scope: string | string[];
+
   /** Color and style settings */
   settings: {
     foreground?: string;
@@ -211,131 +380,10 @@ export interface TokenColorRule {
   };
 }
 
-// ============================================================================
-// Theme File Schema (Requirements 8.1, 8.2, 8.3)
-// ============================================================================
-
 /**
- * Theme file JSON schema
- * Supports partial definitions where undefined tokens fall back to base theme
+ * Map of CSS variable names to their values
  */
-export interface ThemeFile {
-  /** Theme display name */
-  name: string;
-  /** Theme author/creator */
-  author: string;
-  /** Semantic version string */
-  version: string;
-  /** Theme type determines base fallback colors */
-  type: 'dark' | 'light';
-  /** Optional description */
-  description?: string;
-  /** Color tokens (partial allowed - falls back to base theme) */
-  colors: DeepPartial<ThemeTokens>;
-  /** TextMate-style syntax highlighting rules */
-  tokenColors: TokenColorRule[];
-}
-
-/**
- * Deep partial utility type for nested optional properties
- */
-export type DeepPartial<T> = {
-  [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P];
-};
-
-
-// ============================================================================
-// Runtime Theme Definition
-// ============================================================================
-
-/**
- * Complete runtime theme definition with resolved tokens
- * Used internally after theme file is loaded and merged with base
- */
-export interface ThemeDefinition {
-  /** Unique identifier */
-  id: string;
-  /** Display name */
-  name: string;
-  /** Theme author */
-  author: string;
-  /** Version string */
-  version: string;
-  /** Theme type (dark/light) */
-  type: 'dark' | 'light';
-  /** Whether this is a built-in theme (cannot be deleted) */
-  isBuiltIn: boolean;
-  /** Fully resolved color tokens (no undefined values) */
-  colors: ThemeTokens;
-  /** Syntax highlighting rules */
-  tokenColors: TokenColorRule[];
-}
-
-// ============================================================================
-// Validation Types
-// ============================================================================
-
-/**
- * Result of theme file validation
- */
-export interface ThemeValidationResult {
-  /** Whether the theme file is valid */
-  valid: boolean;
-  /** List of validation errors (empty if valid) */
-  errors: string[];
-  /** Warnings that don't prevent loading but should be noted */
-  warnings: string[];
-}
-
-/**
- * Color value validation result
- */
-export interface ColorValidationResult {
-  valid: boolean;
-  normalizedValue?: string;
-  error?: string;
-}
-
-// ============================================================================
-// Theme Store Types
-// ============================================================================
-
-/**
- * Theme state for Zustand store
- */
-export interface ThemeState {
-  /** Currently active theme ID */
-  activeThemeId: string;
-  /** All available themes (built-in + custom) */
-  themes: ThemeDefinition[];
-  /** Loading state */
-  isLoading: boolean;
-  /** Error state */
-  error: string | null;
-}
-
-/**
- * Theme store actions
- */
-export interface ThemeActions {
-  /** Set the active theme by ID */
-  setActiveTheme: (themeId: string) => Promise<void>;
-  /** Import a theme from a ThemeFile */
-  importTheme: (themeFile: ThemeFile) => Promise<ThemeDefinition>;
-  /** Delete a custom theme (built-in themes cannot be deleted) */
-  deleteTheme: (themeId: string) => Promise<void>;
-  /** Get a theme by ID */
-  getTheme: (themeId: string) => ThemeDefinition | undefined;
-  /** Get the currently active theme */
-  getActiveTheme: () => ThemeDefinition;
-  /** Initialize themes from database */
-  initializeFromDatabase: () => Promise<void>;
-}
-
-/**
- * Complete theme store interface
- */
-export type ThemeStore = ThemeState & ThemeActions;
+export type CSSVariableMap = Record<CSSVariableName, string>;
 
 // ============================================================================
 // CSS Variable Types
@@ -347,49 +395,23 @@ export type ThemeStore = ThemeState & ThemeActions;
 export type CSSVariableName = `--aurora-${string}-${string}`;
 
 /**
- * Map of CSS variable names to their values
+ * Deep partial utility type for nested optional properties
  */
-export type CSSVariableMap = Record<CSSVariableName, string>;
+export type DeepPartial<T> = {
+  [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P];
+};
 
-// ============================================================================
-// Monaco Theme Types
-// ============================================================================
+export type SymbolKind = 
+  | 'function' 
+  | 'class' 
+  | 'interface' 
+  | 'variable' 
+  | 'method' 
+  | 'property' 
+  | 'enum' 
+  | 'type';
 
 /**
- * Monaco editor theme data structure
- * Compatible with monaco.editor.IStandaloneThemeData
+ * Complete theme store interface
  */
-export interface MonacoThemeData {
-  base: 'vs' | 'vs-dark' | 'hc-black';
-  inherit: boolean;
-  rules: MonacoTokenRule[];
-  colors: Record<string, string>;
-}
-
-/**
- * Monaco token rule for syntax highlighting
- */
-export interface MonacoTokenRule {
-  token: string;
-  foreground?: string;
-  background?: string;
-  fontStyle?: string;
-}
-
-// ============================================================================
-// Database Types
-// ============================================================================
-
-/**
- * Database representation of a custom theme
- */
-export interface DbTheme {
-  id: string;
-  name: string;
-  author: string;
-  version: string;
-  type: 'dark' | 'light';
-  theme_json: string; // Serialized ThemeFile
-  created_at: string;
-  updated_at: string;
-}
+export type ThemeStore = ThemeState & ThemeActions;

@@ -1,39 +1,189 @@
-import { create } from "zustand";
 import { v4 as uuidv4 } from "uuid";
-import type { LLMProviderConfig } from "../services/llm-types";
+import { create } from "zustand";
+
 import { databaseService } from "../services/database";
-import type { DbLLMProvider, AppSettings as DbAppSettings } from "../types/database";
+import type { LLMProviderConfig } from "../services/llm-types";
+import type { AppSettings as DbAppSettings, DbLLMProvider } from "../types/database";
+
+// ============================================
+// SETTINGS STATE TYPES
+// ============================================
+interface SettingsState {
+  addCustomProvider: (provider: Omit<LLMProvider, "id" | "isCustom">) => string;
+
+  // File Changes Approval
+  autoAcceptChanges: boolean;
+
+  // Tool Approval
+  autoApproveTools: boolean;
+
+  // Autosave Settings
+  autoSave: 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange';
+  autoSaveDelay: number; // in milliseconds
+  deleteProvider: (id: string) => void;
+
+  // Editor Settings
+  fontSize: number;
+  getAvailableModels: () => Array<{
+    providerId: string;
+    providerName: string;
+    model: string;
+    label: string;
+  }>;
+  getLLMConfig: () => LLMProviderConfig | null;
+  getSelectedProvider: () => LLMProvider | undefined;
+  getToolApproval: (toolName: string) => 'auto' | 'always_ask' | 'deny';
+
+  // Onboarding
+  hasSeenOnboarding: boolean;
+
+  // Database operations
+  initializeFromDatabase: () => Promise<void>;
+
+  // Initialization state
+  isInitialized: boolean;
+  isLoading: boolean;
+
+  // Max Tokens
+  maxTokens: number;
+
+  // Tool Settings
+  maxToolCallsPerRequest: number;
+  projectLayoutEnabled: boolean; // Include file tree in first message
+
+  // Providers
+  providers: LLMProvider[];
+  saveToDatabase: () => Promise<void>;
+  selectedModel: string; // Format: "providerId:model"
+  setAutoAcceptChanges: (value: boolean) => void;
+  setAutoApproveTools: (value: boolean) => void;
+  setAutoSave: (mode: 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange') => void;
+  setAutoSaveDelay: (delay: number) => void;
+  setFontSize: (size: number) => void;
+  setHasSeenOnboarding: (seen: boolean) => void;
+  setMaxTokens: (tokens: number) => void;
+  setMaxToolCallsPerRequest: (max: number) => void;
+  setProjectLayoutEnabled: (value: boolean) => void;
+  setSelectedModel: (model: string) => void;
+  setSyntaxValidationEnabled: (value: boolean) => void;
+  setTemperature: (temp: number) => void;
+  setTheme: (theme: "dark" | "light") => void;
+  setThinkingEnabled: (enabled: boolean) => void;
+  setToolApproval: (toolName: string, setting: 'auto' | 'always_ask' | 'deny') => void;
+  setWrapMode: (enabled: boolean) => void;
+
+  // Agent Guardrails
+  syntaxValidationEnabled: boolean; // Pre-save syntax validation
+
+  // Temperature
+  temperature: number;
+
+  // Theme
+  theme: "dark" | "light";
+
+  // Thinking Settings
+  thinkingEnabled: boolean;
+  toolApprovalSettings: Record<string, 'auto' | 'always_ask' | 'deny'>;
+
+  // Provider actions
+  updateProvider: (id: string, updates: Partial<LLMProvider>) => void;
+  wrapMode: boolean;
+}
 
 // ============================================
 // PROVIDER TYPES
 // ============================================
-
 export interface LLMProvider {
-  id: string;
-  name: string;
-  baseUrl: string;
   apiKey: string;
-  model: string;
+  baseUrl: string;
   contextWindow: number;
-  maxOutputTokens: number;
-  supportsThinking: boolean;
-  supportsToolStream?: boolean;
-  enabled: boolean;
-  isCustom?: boolean; // User-added provider
-  customModels?: string[];
+
   // Advanced configuration
   customHeaders?: Record<string, string>; // Extra headers to send
+  customModels?: string[];
   customParams?: Record<string, unknown>; // Extra params in request body
-  providerType?: "openai" | "deepseek" | "glm" | "anthropic" | "minimax" | "custom"; // Explicit provider type
-  defaultTemperature?: number; // Provider-specific default temperature
   defaultMaxTokens?: number; // Provider-specific default max token request
+  defaultTemperature?: number; // Provider-specific default temperature
+  enabled: boolean;
+  id: string;
+  isCustom?: boolean; // User-added provider
+  maxOutputTokens: number;
+  model: string;
+  name: string;
+  providerType?: "openai" | "deepseek" | "glm" | "anthropic" | "minimax" | "custom"; // Explicit provider type
   requiresApiKey?: boolean; // Whether API key is required (false for local)
+  supportsThinking: boolean;
+  supportsToolStream?: boolean;
+}
+
+// ============================================
+// DEFAULT VALUES
+// ============================================
+const createDefaultProviders = (): LLMProvider[] => {
+  return PRESET_PROVIDERS.map((preset) => ({
+    ...preset,
+    apiKey: "",
+    enabled: true,
+    isCustom: false,
+  }));
+};
+
+function dbToProvider(db: DbLLMProvider): LLMProvider {
+  return {
+    id: db.id,
+    name: db.name,
+    baseUrl: db.baseUrl,
+    apiKey: db.apiKey,
+    model: db.model,
+    contextWindow: db.contextWindow,
+    maxOutputTokens: db.maxOutputTokens,
+    supportsThinking: db.supportsThinking,
+    supportsToolStream: db.supportsToolStream,
+    enabled: db.enabled,
+    isCustom: db.isCustom,
+    customModels: db.customModels || undefined,
+    customHeaders: db.customHeaders || undefined,
+    customParams: db.customParams || undefined,
+    providerType: db.providerType as LLMProvider['providerType'],
+    defaultTemperature: db.defaultTemperature || undefined,
+    defaultMaxTokens: db.defaultMaxTokens || undefined,
+    requiresApiKey: db.requiresApiKey,
+  };
+}
+
+// ============================================
+// HELPER: Convert between store and DB formats
+// ============================================
+function providerToDb(provider: LLMProvider, sortOrder: number): DbLLMProvider {
+  const now = new Date().toISOString();
+  return {
+    id: provider.id,
+    name: provider.name,
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    model: provider.model,
+    contextWindow: provider.contextWindow,
+    maxOutputTokens: provider.maxOutputTokens,
+    supportsThinking: provider.supportsThinking,
+    supportsToolStream: provider.supportsToolStream || false,
+    enabled: provider.enabled,
+    isCustom: provider.isCustom || false,
+    customModels: provider.customModels || null,
+    customHeaders: provider.customHeaders || null,
+    customParams: provider.customParams || null,
+    providerType: provider.providerType || null,
+    defaultTemperature: provider.defaultTemperature || null,
+    defaultMaxTokens: provider.defaultMaxTokens || null,
+    requiresApiKey: provider.requiresApiKey ?? true,
+    sortOrder,
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 // ============================================
 // PRESET PROVIDERS (built-in, can't be deleted)
 // ============================================
-
 export const PRESET_PROVIDERS: Omit<LLMProvider, "apiKey" | "enabled">[] = [
   {
     id: "glm",
@@ -102,105 +252,6 @@ export const PRESET_PROVIDERS: Omit<LLMProvider, "apiKey" | "enabled">[] = [
     requiresApiKey: true,
   },
 ];
-
-// ============================================
-// SETTINGS STATE TYPES
-// ============================================
-
-interface SettingsState {
-  // Initialization state
-  isInitialized: boolean;
-  isLoading: boolean;
-
-  // Providers
-  providers: LLMProvider[];
-  selectedModel: string; // Format: "providerId:model"
-
-  // Provider actions
-  updateProvider: (id: string, updates: Partial<LLMProvider>) => void;
-  addCustomProvider: (provider: Omit<LLMProvider, "id" | "isCustom">) => string;
-  deleteProvider: (id: string) => void;
-  setSelectedModel: (model: string) => void;
-  getAvailableModels: () => Array<{
-    providerId: string;
-    providerName: string;
-    model: string;
-    label: string;
-  }>;
-  getSelectedProvider: () => LLMProvider | undefined;
-  getLLMConfig: () => LLMProviderConfig | null;
-
-  // Tool Approval
-  autoApproveTools: boolean;
-  setAutoApproveTools: (value: boolean) => void;
-
-  // File Changes Approval
-  autoAcceptChanges: boolean;
-  setAutoAcceptChanges: (value: boolean) => void;
-
-  // Agent Guardrails
-  syntaxValidationEnabled: boolean; // Pre-save syntax validation
-  setSyntaxValidationEnabled: (value: boolean) => void;
-  projectLayoutEnabled: boolean; // Include file tree in first message
-  setProjectLayoutEnabled: (value: boolean) => void;
-
-  // Editor Settings
-  fontSize: number;
-  setFontSize: (size: number) => void;
-  wrapMode: boolean;
-  setWrapMode: (enabled: boolean) => void;
-
-  // Theme
-  theme: "dark" | "light";
-  setTheme: (theme: "dark" | "light") => void;
-
-  // Thinking Settings
-  thinkingEnabled: boolean;
-  setThinkingEnabled: (enabled: boolean) => void;
-
-  // Max Tokens
-  maxTokens: number;
-  setMaxTokens: (tokens: number) => void;
-
-  // Temperature
-  temperature: number;
-  setTemperature: (temp: number) => void;
-
-  // Autosave Settings
-  autoSave: 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange';
-  autoSaveDelay: number; // in milliseconds
-  setAutoSave: (mode: 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange') => void;
-  setAutoSaveDelay: (delay: number) => void;
-
-  // Tool Settings
-  maxToolCallsPerRequest: number;
-  setMaxToolCallsPerRequest: (max: number) => void;
-  toolApprovalSettings: Record<string, 'auto' | 'always_ask' | 'deny'>;
-  setToolApproval: (toolName: string, setting: 'auto' | 'always_ask' | 'deny') => void;
-  getToolApproval: (toolName: string) => 'auto' | 'always_ask' | 'deny';
-
-  // Database operations
-  initializeFromDatabase: () => Promise<void>;
-  saveToDatabase: () => Promise<void>;
-
-  // Onboarding
-  hasSeenOnboarding: boolean;
-  setHasSeenOnboarding: (seen: boolean) => void;
-}
-
-// ============================================
-// DEFAULT VALUES
-// ============================================
-
-const createDefaultProviders = (): LLMProvider[] => {
-  return PRESET_PROVIDERS.map((preset) => ({
-    ...preset,
-    apiKey: "",
-    enabled: true,
-    isCustom: false,
-  }));
-};
-
 const DEFAULT_TOOL_APPROVAL_SETTINGS: Record<string, 'auto' | 'always_ask' | 'deny'> = {
   // Shell commands require approval
   shell_execute: 'always_ask',
@@ -232,63 +283,8 @@ const DEFAULT_TOOL_APPROVAL_SETTINGS: Record<string, 'auto' | 'always_ask' | 'de
 };
 
 // ============================================
-// HELPER: Convert between store and DB formats
-// ============================================
-
-function providerToDb(provider: LLMProvider, sortOrder: number): DbLLMProvider {
-  const now = new Date().toISOString();
-  return {
-    id: provider.id,
-    name: provider.name,
-    baseUrl: provider.baseUrl,
-    apiKey: provider.apiKey,
-    model: provider.model,
-    contextWindow: provider.contextWindow,
-    maxOutputTokens: provider.maxOutputTokens,
-    supportsThinking: provider.supportsThinking,
-    supportsToolStream: provider.supportsToolStream || false,
-    enabled: provider.enabled,
-    isCustom: provider.isCustom || false,
-    customModels: provider.customModels || null,
-    customHeaders: provider.customHeaders || null,
-    customParams: provider.customParams || null,
-    providerType: provider.providerType || null,
-    defaultTemperature: provider.defaultTemperature || null,
-    defaultMaxTokens: provider.defaultMaxTokens || null,
-    requiresApiKey: provider.requiresApiKey ?? true,
-    sortOrder,
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
-function dbToProvider(db: DbLLMProvider): LLMProvider {
-  return {
-    id: db.id,
-    name: db.name,
-    baseUrl: db.baseUrl,
-    apiKey: db.apiKey,
-    model: db.model,
-    contextWindow: db.contextWindow,
-    maxOutputTokens: db.maxOutputTokens,
-    supportsThinking: db.supportsThinking,
-    supportsToolStream: db.supportsToolStream,
-    enabled: db.enabled,
-    isCustom: db.isCustom,
-    customModels: db.customModels || undefined,
-    customHeaders: db.customHeaders || undefined,
-    customParams: db.customParams || undefined,
-    providerType: db.providerType as LLMProvider['providerType'],
-    defaultTemperature: db.defaultTemperature || undefined,
-    defaultMaxTokens: db.defaultMaxTokens || undefined,
-    requiresApiKey: db.requiresApiKey,
-  };
-}
-
-// ============================================
 // SETTINGS STORE
 // ============================================
-
 export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // Initialization state
   isInitialized: false,
@@ -698,8 +694,6 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     return null;
   },
 }));
-
-
 
 // Initialize settings from database when the module loads (for Tauri)
 if (typeof window !== 'undefined') {

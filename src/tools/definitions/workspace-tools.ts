@@ -2,39 +2,7 @@
  * Workspace Tools - Definitions
  * Essential workspace operations only
  */
-
-import type { ToolDefinition } from '../types';
-
-// ============================================
-// WORKSPACE TREE TOOL
-// ============================================
-export const workspaceTreeTool: ToolDefinition = {
-  type: 'function',
-  function: {
-    name: 'workspace_tree',
-    description: 'Get the directory tree structure of the workspace or a specific directory. Returns a hierarchical view of files and folders.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: 'The directory path to get the tree for. If not provided, uses the workspace root.',
-        },
-        depth: {
-          type: 'number',
-          description: 'Maximum depth to traverse. Defaults to 3. Use -1 for unlimited depth.',
-          default: 3,
-        },
-        include_hidden: {
-          type: 'boolean',
-          description: 'Whether to include hidden files (starting with dot). Defaults to false.',
-          default: false,
-        },
-      },
-      required: [],
-    },
-  },
-};
+import type { ToolDefinition } from "../types";
 
 // ============================================
 // FOLDER CREATE TOOL
@@ -74,6 +42,37 @@ export const folderDeleteTool: ToolDefinition = {
         },
       },
       required: ['path'],
+    },
+  },
+};
+
+// ============================================
+// WORKSPACE TREE TOOL
+// ============================================
+export const workspaceTreeTool: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'workspace_tree',
+    description: 'Get the directory tree structure of the workspace or a specific directory. Returns a hierarchical view of files and folders.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'The directory path to get the tree for. If not provided, uses the workspace root.',
+        },
+        depth: {
+          type: 'number',
+          description: 'Maximum depth to traverse. Defaults to 3. Use -1 for unlimited depth.',
+          default: 3,
+        },
+        include_hidden: {
+          type: 'boolean',
+          description: 'Whether to include hidden files (starting with dot). Defaults to false.',
+          default: false,
+        },
+      },
+      required: [],
     },
   },
 };

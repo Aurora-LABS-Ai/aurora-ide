@@ -2,8 +2,7 @@
  * Todo Tool Definitions
  * Tools for managing task lists during AI conversations
  */
-
-import type { ToolDefinition } from '../types';
+import type { ToolDefinition } from "../types";
 
 export const todoTools: ToolDefinition[] = [
   {

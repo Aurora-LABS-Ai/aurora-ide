@@ -6,6 +6,19 @@
 /**
  * Get language identifier from file extension for Monaco editor
  */
+/**
+ * Get file path from drag data transfer
+ */
+export const getDragFilePath = (e: React.DragEvent): string | null => {
+    return e.dataTransfer.getData(DND_FILE_PATH_KEY) || e.dataTransfer.getData('text/plain') || null;
+};
+
+/**
+ * Get filename from a full path
+ */
+export const getFilename = (path: string): string => {
+    return path.split(/[/\\]/).pop() || path;
+};
 export const getLanguageFromExtension = (filename: string): string => {
     const ext = filename.split('.').pop()?.toLowerCase();
     const langMap: Record<string, string> = {
@@ -74,26 +87,11 @@ export const getPathSeparator = (path: string): string => {
 };
 
 /**
- * Get filename from a full path
- */
-export const getFilename = (path: string): string => {
-    return path.split(/[/\\]/).pop() || path;
-};
-
-/**
  * Get parent directory from a full path
  */
 export const getParentPath = (path: string): string => {
     const sep = getPathSeparator(path);
     return path.substring(0, path.lastIndexOf(sep));
-};
-
-/**
- * Join path segments
- */
-export const joinPath = (basePath: string, ...segments: string[]): string => {
-    const sep = getPathSeparator(basePath);
-    return [basePath, ...segments].join(sep);
 };
 
 /**
@@ -106,9 +104,12 @@ export const isChildPath = (parentPath: string, childPath: string): boolean => {
 };
 
 /**
- * Drag-drop data transfer key for file paths
+ * Join path segments
  */
-export const DND_FILE_PATH_KEY = 'application/x-aurora-file-path';
+export const joinPath = (basePath: string, ...segments: string[]): string => {
+    const sep = getPathSeparator(basePath);
+    return [basePath, ...segments].join(sep);
+};
 
 /**
  * Set file path in drag data transfer
@@ -120,8 +121,6 @@ export const setDragFilePath = (e: React.DragEvent, path: string): void => {
 };
 
 /**
- * Get file path from drag data transfer
+ * Drag-drop data transfer key for file paths
  */
-export const getDragFilePath = (e: React.DragEvent): string | null => {
-    return e.dataTransfer.getData(DND_FILE_PATH_KEY) || e.dataTransfer.getData('text/plain') || null;
-};
+export const DND_FILE_PATH_KEY = 'application/x-aurora-file-path';

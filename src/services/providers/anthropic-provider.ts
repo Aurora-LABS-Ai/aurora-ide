@@ -1,8 +1,8 @@
 /**
  * Anthropic Provider - Native Claude API support
- *
+ * 
  * Uses the Provider Presets system for centralized configuration.
- *
+ * 
  * Supports:
  * - Anthropic Claude models (Opus, Sonnet, Haiku)
  * - Extended thinking blocks
@@ -11,79 +11,37 @@
  * - Tauri HTTP for CORS bypass
  * - MiniMax M2.1 via Anthropic-compatible API
  */
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import { BaseProvider } from './base-provider';
-import {
-  getProviderPreset,
-  buildRequestHeaders,
-  getChatUrl,
-  type ProviderPreset,
-} from './provider-presets';
-import type {
-  ProviderConfig,
-  ChatRequest,
-  ChatResponse,
-  StreamCallbacks,
-  AssistantMessage,
-  Message,
-  ContentBlock,
-  ToolCallRequest,
-  TokenUsage,
-  ToolDefinition,
-} from './types';
-
-// Tauri command types
-interface LlmRequest {
-  url: string;
-  method: string;
-  headers: Record<string, string>;
-  body?: string;
-  stream: boolean;
-}
-
-interface StreamChunk {
-  data: string;
-  done: boolean;
-}
-
-// Anthropic-specific types
-interface AnthropicMessage {
-  role: 'user' | 'assistant';
-  content: string | AnthropicContentBlock[];
-}
+import { BaseProvider } from "./base-provider";
+import { type ProviderPreset, buildRequestHeaders, getChatUrl, getProviderPreset } from "./provider-presets";
+import type { AssistantMessage, ChatRequest, ChatResponse, ContentBlock, Message, ProviderConfig, StreamCallbacks, TokenUsage, ToolCallRequest, ToolDefinition } from "./types";
 
 interface AnthropicContentBlock {
-  type: 'text' | 'image' | 'thinking' | 'tool_use' | 'tool_result';
-  text?: string;
-  thinking?: string;
-  signature?: string;
-  id?: string;
-  name?: string;
-  input?: Record<string, unknown>;
-  tool_use_id?: string;
   content?: string;
+  id?: string;
+  input?: Record<string, unknown>;
+  name?: string;
+  signature?: string;
   source?: {
     type: 'base64';
     media_type: string;
     data: string;
   };
+  text?: string;
+  thinking?: string;
+  tool_use_id?: string;
+  type: 'text' | 'image' | 'thinking' | 'tool_use' | 'tool_result';
 }
 
-interface AnthropicTool {
-  name: string;
-  description: string;
-  input_schema: {
-    type: 'object';
-    properties: Record<string, unknown>;
-    required?: string[];
-  };
+// Anthropic-specific types
+interface AnthropicMessage {
+  content: string | AnthropicContentBlock[];
+  role: 'user' | 'assistant';
 }
 
 interface AnthropicStreamEvent {
-  type: string;
-  index?: number;
   content_block?: AnthropicContentBlock;
   delta?: {
     type: string;
@@ -91,6 +49,7 @@ interface AnthropicStreamEvent {
     thinking?: string;
     partial_json?: string;
   };
+  index?: number;
   message?: {
     usage?: {
       input_tokens: number;
@@ -99,6 +58,7 @@ interface AnthropicStreamEvent {
       cache_creation_input_tokens?: number;
     };
   };
+type: string;
   usage?: {
     input_tokens: number;
     output_tokens: number;
@@ -107,15 +67,38 @@ interface AnthropicStreamEvent {
   };
 }
 
-export class AnthropicProvider extends BaseProvider {
-  private preset: ProviderPreset;
+interface AnthropicTool {
+  description: string;
+  input_schema: {
+    type: 'object';
+    properties: Record<string, unknown>;
+    required?: string[];
+  };
+  name: string;
+}
 
+// Tauri command types
+interface LlmRequest {
+  body?: string;
+  headers: Record<string, string>;
+  method: string;
+  stream: boolean;
+  url: string;
+}
+
+interface StreamChunk {
+  data: string;
+  done: boolean;
+}
+
+export class AnthropicProvider extends BaseProvider {
   // Stream accumulators
   private accumulatedContent = '';
   private accumulatedThinking = '';
   private accumulatedToolCalls: Map<number, ToolCallRequest> = new Map();
   private currentBlockIndex = -1;
   private currentBlockType = '';
+  private preset: ProviderPreset;
 
   constructor(config: ProviderConfig) {
     super(config);
@@ -124,201 +107,9 @@ export class AnthropicProvider extends BaseProvider {
   }
 
   /**
-   * Build headers using the preset system
-   */
-  protected buildHeaders(): Record<string, string> {
-    return buildRequestHeaders(
-      this.preset,
-      this._config.apiKey,
-      this._config.customHeaders
-    );
-  }
-
-  /**
-   * Convert internal messages to Anthropic format
-   */
-  private convertMessages(messages: Message[]): {
-    system?: string;
-    messages: AnthropicMessage[];
-  } {
-    let systemPrompt: string | undefined;
-    const anthropicMessages: AnthropicMessage[] = [];
-
-    for (const msg of messages) {
-      if (msg.role === 'system') {
-        // Extract system prompt
-        systemPrompt = typeof msg.content === 'string'
-          ? msg.content
-          : msg.content.map(b => b.type === 'text' ? b.text : '').join('');
-        continue;
-      }
-
-      if (msg.role === 'tool') {
-        // Tool results go to the user role in Anthropic format
-        // Ensure content is always a string for better compatibility (especially with MiniMax)
-        let resultContent: string;
-        if (typeof msg.content === 'string') {
-          resultContent = msg.content;
-        } else if (Array.isArray(msg.content)) {
-          resultContent = JSON.stringify(msg.content);
-        } else {
-          resultContent = JSON.stringify(msg.content);
-        }
-
-        anthropicMessages.push({
-          role: 'user',
-          content: [{
-            type: 'tool_result',
-            tool_use_id: (msg as { tool_call_id?: string }).tool_call_id,
-            content: resultContent,
-          }],
-        });
-        continue;
-      }
-
-      // Convert content blocks
-      let content = this.convertContent(msg.content);
-
-      // For assistant messages with tool_calls, we need to include tool_use blocks
-      // Anthropic format requires tool_use to be in the content array
-      if (msg.role === 'assistant' && (msg as AssistantMessage).tool_calls?.length) {
-        const toolCalls = (msg as AssistantMessage).tool_calls!;
-
-        // Ensure content is an array
-        let contentBlocks: AnthropicContentBlock[] = [];
-
-        // Add existing content
-        if (typeof content === 'string' && content.trim()) {
-          contentBlocks.push({ type: 'text', text: content });
-        } else if (Array.isArray(content)) {
-          contentBlocks = [...content];
-        }
-
-        // Add tool_use blocks from tool_calls
-        for (const tc of toolCalls) {
-          contentBlocks.push({
-            type: 'tool_use',
-            id: tc.id,
-            name: tc.function.name,
-            input: JSON.parse(tc.function.arguments || '{}'),
-          });
-        }
-
-        content = contentBlocks;
-      }
-
-      anthropicMessages.push({
-        role: msg.role as 'user' | 'assistant',
-        content,
-      });
-    }
-
-    return { system: systemPrompt, messages: anthropicMessages };
-  }
-
-  /**
-   * Convert content to Anthropic format
-   */
-  private convertContent(content: string | ContentBlock[]): string | AnthropicContentBlock[] {
-    if (typeof content === 'string') {
-      return content;
-    }
-
-    return content.map(block => {
-      switch (block.type) {
-        case 'text':
-          return { type: 'text' as const, text: block.text };
-        case 'thinking':
-          return { type: 'thinking' as const, thinking: block.thinking, signature: block.signature };
-        case 'image':
-          return {
-            type: 'image' as const,
-            source: block.source,
-          };
-        case 'tool_use':
-          return {
-            type: 'tool_use' as const,
-            id: block.id,
-            name: block.name,
-            input: block.input,
-          };
-        case 'tool_result':
-          return {
-            type: 'tool_result' as const,
-            tool_use_id: block.tool_use_id,
-            content: block.content,
-          };
-        default:
-          return { type: 'text' as const, text: '' };
-      }
-    }) as AnthropicContentBlock[];
-  }
-
-  /**
-   * Convert tools to Anthropic format
-   */
-  private convertTools(tools: ToolDefinition[]): AnthropicTool[] {
-    return tools.map(tool => ({
-      name: tool.function.name,
-      description: tool.function.description,
-      input_schema: {
-        type: 'object',
-        properties: tool.function.parameters.properties,
-        required: tool.function.parameters.required,
-      },
-    }));
-  }
-
-  /**
-   * Build request body using preset-driven configuration
-   */
-  private buildRequestBody(request: ChatRequest): Record<string, unknown> {
-    const { system, messages } = this.convertMessages(request.messages);
-
-    const body: Record<string, unknown> = {
-      model: this._config.model,
-      messages,
-      max_tokens: this.getMaxTokens(request.maxTokens),
-      stream: request.stream ?? false,
-    };
-
-    if (system) {
-      body.system = system;
-    }
-
-    // Temperature
-    body.temperature = this.getTemperature(request.temperature);
-
-    // Tools
-    if (request.tools?.length) {
-      body.tools = this.convertTools(request.tools);
-    }
-
-    // Thinking mode (Anthropic extended thinking)
-    // Anthropic returns thinking blocks natively when available
-    // No special request param needed - it's model-dependent
-
-    // Apply preset's default params
-    if (this.preset.defaultParams) {
-      for (const [key, value] of Object.entries(this.preset.defaultParams)) {
-        if (!(key in body)) {
-          body[key] = value;
-        }
-      }
-    }
-
-    // Custom params (highest priority - user overrides everything)
-    if (this._config.customParams) {
-      Object.assign(body, this._config.customParams);
-    }
-
-    return body;
-  }
-
-  /**
    * Non-streaming chat
    */
-  async chat(request: ChatRequest): Promise<ChatResponse> {
+  public async chat(request: ChatRequest): Promise<ChatResponse> {
     const body = this.buildRequestBody({ ...request, stream: false });
     const url = getChatUrl(this._config.baseUrl, this.preset);
 
@@ -339,7 +130,7 @@ export class AnthropicProvider extends BaseProvider {
   /**
    * Streaming chat
    */
-  async streamChat(
+  public async streamChat(
     request: ChatRequest,
     callbacks: StreamCallbacks
   ): Promise<AssistantMessage> {
@@ -466,56 +257,195 @@ export class AnthropicProvider extends BaseProvider {
   }
 
   /**
-   * Process a single Anthropic stream event
+   * Build headers using the preset system
    */
-  private async processStreamEvent(event: AnthropicStreamEvent, callbacks: StreamCallbacks): Promise<void> {
-    switch (event.type) {
-      case 'message_start':
-        if (event.message?.usage) {
-          callbacks.onUsage?.(this.parseUsage(event.message.usage)!);
+  protected buildHeaders(): Record<string, string> {
+    return buildRequestHeaders(
+      this.preset,
+      this._config.apiKey,
+      this._config.customHeaders
+    );
+  }
+
+  /**
+   * Build request body using preset-driven configuration
+   */
+  private buildRequestBody(request: ChatRequest): Record<string, unknown> {
+    const { system, messages } = this.convertMessages(request.messages);
+
+    const body: Record<string, unknown> = {
+      model: this._config.model,
+      messages,
+      max_tokens: this.getMaxTokens(request.maxTokens),
+      stream: request.stream ?? false,
+    };
+
+    if (system) {
+      body.system = system;
+    }
+
+    // Temperature
+    body.temperature = this.getTemperature(request.temperature);
+
+    // Tools
+    if (request.tools?.length) {
+      body.tools = this.convertTools(request.tools);
+    }
+
+    // Thinking mode (Anthropic extended thinking)
+    // Anthropic returns thinking blocks natively when available
+    // No special request param needed - it's model-dependent
+
+    // Apply preset's default params
+    if (this.preset.defaultParams) {
+      for (const [key, value] of Object.entries(this.preset.defaultParams)) {
+        if (!(key in body)) {
+          body[key] = value;
         }
-        break;
+      }
+    }
 
-      case 'content_block_start':
-        this.currentBlockIndex = event.index ?? -1;
-        this.currentBlockType = event.content_block?.type || '';
+    // Custom params (highest priority - user overrides everything)
+    if (this._config.customParams) {
+      Object.assign(body, this._config.customParams);
+    }
 
-        if (this.currentBlockType === 'tool_use' && event.content_block) {
-          this.accumulatedToolCalls.set(this.currentBlockIndex, {
-            id: event.content_block.id || `tool_${this.currentBlockIndex}`,
-            type: 'function',
-            function: {
-              name: event.content_block.name || '',
-              arguments: '',
-            },
+    return body;
+  }
+
+  /**
+   * Convert content to Anthropic format
+   */
+  private convertContent(content: string | ContentBlock[]): string | AnthropicContentBlock[] {
+    if (typeof content === 'string') {
+      return content;
+    }
+
+    return content.map(block => {
+      switch (block.type) {
+        case 'text':
+          return { type: 'text' as const, text: block.text };
+        case 'thinking':
+          return { type: 'thinking' as const, thinking: block.thinking, signature: block.signature };
+        case 'image':
+          return {
+            type: 'image' as const,
+            source: block.source,
+          };
+        case 'tool_use':
+          return {
+            type: 'tool_use' as const,
+            id: block.id,
+            name: block.name,
+            input: block.input,
+          };
+        case 'tool_result':
+          return {
+            type: 'tool_result' as const,
+            tool_use_id: block.tool_use_id,
+            content: block.content,
+          };
+        default:
+          return { type: 'text' as const, text: '' };
+      }
+    }) as AnthropicContentBlock[];
+  }
+
+  /**
+   * Convert internal messages to Anthropic format
+   */
+  private convertMessages(messages: Message[]): {
+    system?: string;
+    messages: AnthropicMessage[];
+  } {
+    let systemPrompt: string | undefined;
+    const anthropicMessages: AnthropicMessage[] = [];
+
+    for (const msg of messages) {
+      if (msg.role === 'system') {
+        // Extract system prompt
+        systemPrompt = typeof msg.content === 'string'
+          ? msg.content
+          : msg.content.map(b => b.type === 'text' ? b.text : '').join('');
+        continue;
+      }
+
+      if (msg.role === 'tool') {
+        // Tool results go to the user role in Anthropic format
+        // Ensure content is always a string for better compatibility (especially with MiniMax)
+        let resultContent: string;
+        if (typeof msg.content === 'string') {
+          resultContent = msg.content;
+        } else if (Array.isArray(msg.content)) {
+          resultContent = JSON.stringify(msg.content);
+        } else {
+          resultContent = JSON.stringify(msg.content);
+        }
+
+        anthropicMessages.push({
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: (msg as { tool_call_id?: string }).tool_call_id,
+            content: resultContent,
+          }],
+        });
+        continue;
+      }
+
+      // Convert content blocks
+      let content = this.convertContent(msg.content);
+
+      // For assistant messages with tool_calls, we need to include tool_use blocks
+      // Anthropic format requires tool_use to be in the content array
+      if (msg.role === 'assistant' && (msg as AssistantMessage).tool_calls?.length) {
+        const toolCalls = (msg as AssistantMessage).tool_calls!;
+
+        // Ensure content is an array
+        let contentBlocks: AnthropicContentBlock[] = [];
+
+        // Add existing content
+        if (typeof content === 'string' && content.trim()) {
+          contentBlocks.push({ type: 'text', text: content });
+        } else if (Array.isArray(content)) {
+          contentBlocks = [...content];
+        }
+
+        // Add tool_use blocks from tool_calls
+        for (const tc of toolCalls) {
+          contentBlocks.push({
+            type: 'tool_use',
+            id: tc.id,
+            name: tc.function.name,
+            input: JSON.parse(tc.function.arguments || '{}'),
           });
         }
-        break;
 
-      case 'content_block_delta':
-        if (event.delta) {
-          if (event.delta.type === 'text_delta' && event.delta.text) {
-            this.accumulatedContent += event.delta.text;
-            callbacks.onToken?.(event.delta.text);
-          } else if (event.delta.type === 'thinking_delta' && event.delta.thinking) {
-            this.accumulatedThinking += event.delta.thinking;
-            callbacks.onThinking?.(event.delta.thinking);
-          } else if (event.delta.type === 'input_json_delta' && event.delta.partial_json) {
-            const tc = this.accumulatedToolCalls.get(this.currentBlockIndex);
-            if (tc) {
-              tc.function.arguments += event.delta.partial_json;
-              callbacks.onToolCall?.(tc);
-            }
-          }
-        }
-        break;
+        content = contentBlocks;
+      }
 
-      case 'message_delta':
-        if (event.usage) {
-          callbacks.onUsage?.(this.parseUsage(event.usage)!);
-        }
-        break;
+      anthropicMessages.push({
+        role: msg.role as 'user' | 'assistant',
+        content,
+      });
     }
+
+    return { system: systemPrompt, messages: anthropicMessages };
+  }
+
+  /**
+   * Convert tools to Anthropic format
+   */
+  private convertTools(tools: ToolDefinition[]): AnthropicTool[] {
+    return tools.map(tool => ({
+      name: tool.function.name,
+      description: tool.function.description,
+      input_schema: {
+        type: 'object',
+        properties: tool.function.parameters.properties,
+        required: tool.function.parameters.required,
+      },
+    }));
   }
 
   /**
@@ -573,5 +503,58 @@ export class AnthropicProvider extends BaseProvider {
       cacheReadTokens: usage.cache_read_input_tokens,
       cacheWriteTokens: usage.cache_creation_input_tokens,
     };
+  }
+
+  /**
+   * Process a single Anthropic stream event
+   */
+  private async processStreamEvent(event: AnthropicStreamEvent, callbacks: StreamCallbacks): Promise<void> {
+    switch (event.type) {
+      case 'message_start':
+        if (event.message?.usage) {
+          callbacks.onUsage?.(this.parseUsage(event.message.usage)!);
+        }
+        break;
+
+      case 'content_block_start':
+        this.currentBlockIndex = event.index ?? -1;
+        this.currentBlockType = event.content_block?.type || '';
+
+        if (this.currentBlockType === 'tool_use' && event.content_block) {
+          this.accumulatedToolCalls.set(this.currentBlockIndex, {
+            id: event.content_block.id || `tool_${this.currentBlockIndex}`,
+            type: 'function',
+            function: {
+              name: event.content_block.name || '',
+              arguments: '',
+            },
+          });
+        }
+        break;
+
+      case 'content_block_delta':
+        if (event.delta) {
+          if (event.delta.type === 'text_delta' && event.delta.text) {
+            this.accumulatedContent += event.delta.text;
+            callbacks.onToken?.(event.delta.text);
+          } else if (event.delta.type === 'thinking_delta' && event.delta.thinking) {
+            this.accumulatedThinking += event.delta.thinking;
+            callbacks.onThinking?.(event.delta.thinking);
+          } else if (event.delta.type === 'input_json_delta' && event.delta.partial_json) {
+            const tc = this.accumulatedToolCalls.get(this.currentBlockIndex);
+            if (tc) {
+              tc.function.arguments += event.delta.partial_json;
+              callbacks.onToolCall?.(tc);
+            }
+          }
+        }
+        break;
+
+      case 'message_delta':
+        if (event.usage) {
+          callbacks.onUsage?.(this.parseUsage(event.usage)!);
+        }
+        break;
+    }
   }
 }

@@ -2,21 +2,13 @@
  * Tool Registry
  * Central registry for managing tool definitions and executors
  */
-
-import type {
-  ToolDefinition,
-  ToolExecutor,
-  RegisteredTool,
-  ToolCallRequest,
-  ToolCallResult,
-  TrackedToolCall
-} from './types';
-import { allTools } from './definitions';
-import { getEnhancedToolRiskLevel } from './definitions/risk-levels-enhanced';
+import { allTools } from "./definitions";
+import { getEnhancedToolRiskLevel } from "./definitions/risk-levels-enhanced";
+import type { RegisteredTool, ToolCallRequest, ToolCallResult, ToolDefinition, ToolExecutor, TrackedToolCall } from "./types";
 
 class ToolRegistry {
-  private tools: Map<string, RegisteredTool> = new Map();
   private activeToolCalls: Map<string, TrackedToolCall> = new Map();
+  private tools: Map<string, RegisteredTool> = new Map();
 
   constructor() {
     // Register all tool definitions (executors will be added later)
@@ -24,83 +16,20 @@ class ToolRegistry {
   }
 
   /**
-   * Register all tool definitions from the definitions module
+   * Clear completed tool calls from tracking
    */
-  private registerAllDefinitions(): void {
-    for (const tool of allTools) {
-      this.registerDefinition(tool);
+  public clearCompletedToolCalls(): void {
+    for (const [id, call] of this.activeToolCalls) {
+      if (call.status === 'complete' || call.status === 'failed') {
+        this.activeToolCalls.delete(id);
+      }
     }
-  }
-
-  /**
-   * Register a tool definition without an executor
-   */
-  registerDefinition(definition: ToolDefinition): void {
-    const name = definition.function.name;
-    const riskLevel = getEnhancedToolRiskLevel(name);
-
-    this.tools.set(name, {
-      definition,
-      executor: async () => {
-        throw new Error(`Executor not implemented for tool: ${name}`);
-      },
-      requiresApproval: riskLevel === 'high', // Only HIGH risk requires approval
-      riskLevel,
-    });
-  }
-
-  /**
-   * Register an executor for a tool
-   */
-  registerExecutor(name: string, executor: ToolExecutor): void {
-    const tool = this.tools.get(name);
-    if (!tool) {
-      throw new Error(`Tool not found: ${name}`);
-    }
-    tool.executor = executor;
-  }
-
-  /**
-   * Get a tool by name
-   */
-  getTool(name: string): RegisteredTool | undefined {
-    return this.tools.get(name);
-  }
-
-  /**
-   * Get all registered tools
-   */
-  getAllTools(): RegisteredTool[] {
-    return Array.from(this.tools.values());
-  }
-
-  /**
-   * Get all tool definitions (for sending to the AI model)
-   */
-  getToolDefinitions(): ToolDefinition[] {
-    return Array.from(this.tools.values()).map(t => t.definition);
-  }
-
-  /**
-   * Check if a tool requires approval
-   */
-  requiresApproval(name: string): boolean {
-    const tool = this.tools.get(name);
-    return tool?.requiresApproval ?? true;
-  }
-
-  /**
-   * Get the risk level of a tool
-   */
-  getRiskLevel(name: string): 'low' | 'medium' | 'high' {
-    const tool = this.tools.get(name);
-    return tool?.riskLevel ?? 'medium';
   }
 
   /**
    * Execute a tool call
    */
-  async executeToolCall(toolCall: ToolCallRequest): Promise<ToolCallResult> {
+  public async executeToolCall(toolCall: ToolCallRequest): Promise<ToolCallResult> {
     const tool = this.tools.get(toolCall.function.name);
 
     if (!tool) {
@@ -164,27 +93,90 @@ class ToolRegistry {
   }
 
   /**
-   * Get a tracked tool call by ID
-   */
-  getTrackedToolCall(id: string): TrackedToolCall | undefined {
-    return this.activeToolCalls.get(id);
-  }
-
-  /**
    * Get all active tool calls
    */
-  getActiveToolCalls(): TrackedToolCall[] {
+  public getActiveToolCalls(): TrackedToolCall[] {
     return Array.from(this.activeToolCalls.values());
   }
 
   /**
-   * Clear completed tool calls from tracking
+   * Get all registered tools
    */
-  clearCompletedToolCalls(): void {
-    for (const [id, call] of this.activeToolCalls) {
-      if (call.status === 'complete' || call.status === 'failed') {
-        this.activeToolCalls.delete(id);
-      }
+  public getAllTools(): RegisteredTool[] {
+    return Array.from(this.tools.values());
+  }
+
+  /**
+   * Get the risk level of a tool
+   */
+  public getRiskLevel(name: string): 'low' | 'medium' | 'high' {
+    const tool = this.tools.get(name);
+    return tool?.riskLevel ?? 'medium';
+  }
+
+  /**
+   * Get a tool by name
+   */
+  public getTool(name: string): RegisteredTool | undefined {
+    return this.tools.get(name);
+  }
+
+  /**
+   * Get all tool definitions (for sending to the AI model)
+   */
+  public getToolDefinitions(): ToolDefinition[] {
+    return Array.from(this.tools.values()).map(t => t.definition);
+  }
+
+  /**
+   * Get a tracked tool call by ID
+   */
+  public getTrackedToolCall(id: string): TrackedToolCall | undefined {
+    return this.activeToolCalls.get(id);
+  }
+
+  /**
+   * Register a tool definition without an executor
+   */
+  public registerDefinition(definition: ToolDefinition): void {
+    const name = definition.function.name;
+    const riskLevel = getEnhancedToolRiskLevel(name);
+
+    this.tools.set(name, {
+      definition,
+      executor: async () => {
+        throw new Error(`Executor not implemented for tool: ${name}`);
+      },
+      requiresApproval: riskLevel === 'high', // Only HIGH risk requires approval
+      riskLevel,
+    });
+  }
+
+  /**
+   * Register an executor for a tool
+   */
+  public registerExecutor(name: string, executor: ToolExecutor): void {
+    const tool = this.tools.get(name);
+    if (!tool) {
+      throw new Error(`Tool not found: ${name}`);
+    }
+    tool.executor = executor;
+  }
+
+  /**
+   * Check if a tool requires approval
+   */
+  public requiresApproval(name: string): boolean {
+    const tool = this.tools.get(name);
+    return tool?.requiresApproval ?? true;
+  }
+
+  /**
+   * Register all tool definitions from the definitions module
+   */
+  private registerAllDefinitions(): void {
+    for (const tool of allTools) {
+      this.registerDefinition(tool);
     }
   }
 }
@@ -194,4 +186,3 @@ export const toolRegistry = new ToolRegistry();
 
 // Export for testing
 export { ToolRegistry };
-

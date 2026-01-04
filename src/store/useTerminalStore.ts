@@ -3,49 +3,51 @@
  * Manages terminal state with native PTY support
  * Terminal rendering is handled by xterm.js
  */
-
-import { create } from 'zustand';
-
-export type ShellProfile = 'powershell' | 'bash';
-
-export interface TerminalSession {
-  id: string;
-  name: string;
-  cwd: string;
-  isRunning: boolean;
-  profile: ShellProfile;
-  // PTY-specific fields
-  isPty: boolean;
-  ptyConnected: boolean;
-  cols: number;
-  rows: number;
-}
+import { create } from "zustand";
 
 interface TerminalState {
-  sessions: TerminalSession[];
   activeSessionId: string | null;
-  isOpen: boolean;
+  closeSession: (sessionId: string) => void;
+  closeTerminal: () => void;
+  createSession: (cwd?: string, profile?: ShellProfile) => string;
   height: number;
+  isOpen: boolean;
 
   // Actions
   openTerminal: () => void;
-  closeTerminal: () => void;
-  toggleTerminal: () => void;
-  setHeight: (height: number) => void;
-  createSession: (cwd?: string, profile?: ShellProfile) => string;
-  closeSession: (sessionId: string) => void;
-  setActiveSession: (sessionId: string) => void;
-  setSessionRunning: (sessionId: string, isRunning: boolean) => void;
-  updateSessionCwd: (sessionId: string, cwd: string) => void;
-  // PTY-specific actions
-  setPtyConnected: (sessionId: string, connected: boolean) => void;
-  setSessionSize: (sessionId: string, cols: number, rows: number) => void;
+  registerSessionHandler: (sessionId: string, handler: (data: string) => void) => void;
+
   // Output handling for external tools
   sessionHandlers: Map<string, (data: string) => void>;
-  registerSessionHandler: (sessionId: string, handler: (data: string) => void) => void;
+  sessions: TerminalSession[];
+  setActiveSession: (sessionId: string) => void;
+  setHeight: (height: number) => void;
+
+  // PTY-specific actions
+  setPtyConnected: (sessionId: string, connected: boolean) => void;
+  setSessionRunning: (sessionId: string, isRunning: boolean) => void;
+  setSessionSize: (sessionId: string, cols: number, rows: number) => void;
+  toggleTerminal: () => void;
   unregisterSessionHandler: (sessionId: string) => void;
+  updateSessionCwd: (sessionId: string, cwd: string) => void;
   writeToActiveSession: (data: string) => void;
 }
+
+export interface TerminalSession {
+  cols: number;
+  cwd: string;
+  id: string;
+
+  // PTY-specific fields
+  isPty: boolean;
+  isRunning: boolean;
+  name: string;
+  profile: ShellProfile;
+  ptyConnected: boolean;
+  rows: number;
+}
+
+export type ShellProfile = 'powershell' | 'bash';
 
 const generateId = () => Math.random().toString(36).substr(2, 9);
 

@@ -67,7 +67,7 @@ const extractTimelineText = (timeline: TimelineEvent[]): string => {
 };
 
 // Render a single timeline event
-const TimelineEventItem: React.FC<{ event: TimelineEvent }> = ({ event }) => {
+const TimelineEventItem: React.FC<{ event: TimelineEvent; isStreaming?: boolean }> = ({ event, isStreaming = false }) => {
   switch (event.type) {
     case 'thinking':
       return event.thinking ? (
@@ -76,13 +76,13 @@ const TimelineEventItem: React.FC<{ event: TimelineEvent }> = ({ event }) => {
 
     case 'tool':
       return event.tool ? (
-        <ToolTimeline tools={[event.tool]} />
+        <ToolTimeline tools={[event.tool]} isStreaming={isStreaming} />
       ) : null;
 
     case 'content':
       return event.content ? (
         <div className="py-1">
-          <MarkdownRenderer content={event.content} />
+          <MarkdownRenderer content={event.content} isStreaming={isStreaming} />
         </div>
       ) : null;
 
@@ -103,14 +103,14 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
   if (isUser) {
     return (
       <div className="flex justify-end px-4 py-4 group">
-        <div className="max-w-[85%] flex flex-col items-end">
-          <div className="flex gap-3 flex-row-reverse">
+        <div className="max-w-[85%] flex flex-col items-end min-w-0">
+          <div className="flex gap-3 flex-row-reverse min-w-0 w-full">
             <div className="w-8 h-8 rounded-lg bg-input flex items-center justify-center shrink-0">
               <User className="w-4 h-4 text-text-secondary" />
             </div>
 
-            <div className="bg-input text-text-primary rounded-2xl rounded-tr-sm px-4 py-2.5 border border-border shadow-sm">
-              <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed opacity-90 font-light select-text cursor-text">
+            <div className="bg-input text-text-primary rounded-2xl rounded-tr-sm px-4 py-2.5 border border-border shadow-sm min-w-0 max-w-full overflow-hidden">
+              <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed opacity-90 font-light select-text cursor-text overflow-wrap-anywhere" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                 {message.content}
               </p>
             </div>
@@ -174,8 +174,12 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
 
         <div className="space-y-1 select-text cursor-text">
           {hasTimeline ? (
-            message.timeline!.map((event) => (
-              <TimelineEventItem key={event.id} event={event} />
+            message.timeline!.map((event, idx) => (
+              <TimelineEventItem
+                key={event.id}
+                event={event}
+                isStreaming={isStreaming && isLastMessage && idx === message.timeline!.length - 1}
+              />
             ))
           ) : (
             <>
@@ -187,7 +191,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
               )}
               {message.content && (
                 <div className="py-1">
-                  <MarkdownRenderer content={message.content} />
+                  <MarkdownRenderer content={message.content} isStreaming={isStreaming && isLastMessage} />
                 </div>
               )}
             </>

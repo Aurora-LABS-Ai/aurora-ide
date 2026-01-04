@@ -1,27 +1,13 @@
 /**
  * Hook for synchronizing state between main window and detached chat window
  */
+import { useCallback, useEffect, useRef } from "react";
 
-import { useEffect, useCallback, useRef } from 'react';
-import { useThreadStore } from '../store/useThreadStore';
-import type { Thread, ThreadSummary } from '../store/useThreadStore';
-import { useChatStore } from '../store/useChatStore';
-import { useTaskStore } from '../store/useTaskStore';
-import type { Task } from '../store/useTaskStore';
-import {
-  emitSyncEvent,
-  listenForSyncEvent,
-  SYNC_EVENTS,
-  isMainWindow,
-  isDetachedChatWindow,
-} from '../lib/windowSync';
-import { isTauri } from '../lib/tauri';
-
-interface ThreadSyncData {
-  currentThreadId: string | null;
-  threads: Record<string, Thread>;
-  threadList: ThreadSummary[];
-}
+import { isTauri } from "../lib/tauri";
+import { SYNC_EVENTS, emitSyncEvent, isDetachedChatWindow, isMainWindow, listenForSyncEvent } from "../lib/windowSync";
+import { useChatStore } from "../store/useChatStore";
+import { type Task, useTaskStore } from "../store/useTaskStore";
+import { type Thread, type ThreadSummary, useThreadStore } from "../store/useThreadStore";
 
 interface ChatSyncData {
   isLoading: boolean;
@@ -29,8 +15,14 @@ interface ChatSyncData {
 }
 
 interface TaskSyncData {
-  tasks: Task[];
   isVisible: boolean;
+  tasks: Task[];
+}
+
+interface ThreadSyncData {
+  currentThreadId: string | null;
+  threadList: ThreadSummary[];
+  threads: Record<string, Thread>;
 }
 
 // Settings sync data interface (for future use)
@@ -41,7 +33,6 @@ interface TaskSyncData {
 //   temperature: number;
 //   maxTokens: number;
 // }
-
 export function useWindowStateSync() {
   const threadStore = useThreadStore();
   const chatStore = useChatStore();
@@ -214,7 +205,6 @@ export function useWindowStateSync() {
     if (!isTauri()) return;
     emitTaskState();
   }, [taskStore.tasks, taskStore.isVisible, emitTaskState]);
-
 
   return {
     emitThreadState,

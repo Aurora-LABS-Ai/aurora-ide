@@ -2,24 +2,27 @@
  * File Tool Executors
  * Implementations for file system tools using Tauri commands
  */
-
-import { toolRegistry } from "../registry";
-import {
-  isTauri,
-  readFileContent,
-  writeFileContent,
-  deletePath,
-} from "../../lib/tauri";
-import { resolvePath, getWorkspaceRootPath } from "../utils/path-resolver";
+import { deletePath, isTauri, readFileContent, writeFileContent } from "../../lib/tauri";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
+import { toolRegistry } from "../registry";
+import { getWorkspaceRootPath, resolvePath } from "../utils/path-resolver";
 
-// Helper to trigger file tree refresh
-const triggerRefresh = () => {
-  // Small delay to ensure file system operation completes
-  setTimeout(() => {
-    useWorkspaceStore.getState().refreshDirectory();
-  }, 100);
-};
+interface GrepFileResult {
+  count: number;
+  file: string;
+  matches: GrepMatch[];
+}
+
+// ============================================
+// GREP EXECUTOR (Ripgrep-style search)
+// ============================================
+interface GrepMatch {
+  afterContext?: string[];
+  beforeContext?: string[];
+      content: string;
+  file: string;
+      lineNumber: number;
+}
 
 // Helper to convert escape sequences to actual characters
 const processEscapeSequences = (content: string): string => {
@@ -80,6 +83,130 @@ const fileCreateExecutor = async (
     });
   } catch (error) {
     console.error("[file_create] Error:", error);
+    return JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+// Helper to trigger file tree refresh
+const triggerRefresh = () => {
+  // Small delay to ensure file system operation completes
+  setTimeout(() => {
+    useWorkspaceStore.getState().refreshDirectory();
+  }, 100);
+};
+
+// ============================================
+// FILE DELETE EXECUTOR
+// ============================================
+const fileDeleteExecutor = async (
+  args: Record<string, any>,
+): Promise<string> => {
+  if (!isTauri()) {
+    return JSON.stringify({
+      success: false,
+      error: "File operations require desktop app",
+    });
+  }
+
+  const fullPath = resolvePath(args.path);
+  console.log("[file_delete] Deleting file:", fullPath);
+
+  try {
+    await deletePath(fullPath);
+    triggerRefresh(); // Auto-refresh file tree
+    return JSON.stringify({
+      success: true,
+      message: `File deleted: ${args.path}`,
+      path: args.path,
+      fullPath,
+    });
+  } catch (error) {
+    console.error("[file_delete] Error:", error);
+    return JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+// ============================================
+// FILE EXISTS EXECUTOR
+// ============================================
+const fileExistsExecutor = async (
+  args: Record<string, any>,
+): Promise<string> => {
+  if (!isTauri()) {
+    return JSON.stringify({
+      success: false,
+      error: "File operations require desktop app",
+    });
+  }
+
+  const fullPath = resolvePath(args.path);
+
+  try {
+    await readFileContent(fullPath);
+    return JSON.stringify({
+      success: true,
+      exists: true,
+      path: args.path,
+      fullPath,
+    });
+  } catch {
+    return JSON.stringify({
+      success: true,
+      exists: false,
+      path: args.path,
+      fullPath,
+    });
+  }
+};
+
+// ============================================
+// FILE PATCH EXECUTOR
+// ============================================
+const filePatchExecutor = async (
+  args: Record<string, any>,
+): Promise<string> => {
+  if (!isTauri()) {
+    return JSON.stringify({
+      success: false,
+      error: "File operations require desktop app",
+    });
+  }
+
+  const fullPath = resolvePath(args.path);
+
+  try {
+    const existingContent = await readFileContent(fullPath);
+    const lines = existingContent.split("\n");
+
+    const startIdx = Math.max(0, (args.start_line || 1) - 1);
+    const endIdx = Math.min(lines.length, args.end_line || args.start_line);
+
+    const newLines = (args.content || "").split("\n");
+    const patchedLines = [
+      ...lines.slice(0, startIdx),
+      ...newLines,
+      ...lines.slice(endIdx),
+    ];
+
+    const patchedContent = patchedLines.join("\n");
+    await writeFileContent(fullPath, patchedContent);
+    triggerRefresh(); // Auto-refresh file tree
+
+    return JSON.stringify({
+      success: true,
+      message: `File patched: ${args.path}`,
+      path: args.path,
+      fullPath,
+      linesReplaced: endIdx - startIdx,
+      linesInserted: newLines.length,
+    });
+  } catch (error) {
     return JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : String(error),
@@ -166,6 +293,63 @@ const fileReadLinesExecutor = async (
 };
 
 // ============================================
+// FILE SEARCH EXECUTOR
+// ============================================
+const fileSearchExecutor = async (
+  args: Record<string, any>,
+): Promise<string> => {
+  if (!isTauri()) {
+    return JSON.stringify({
+      success: false,
+      error: "File operations require desktop app",
+    });
+  }
+
+  const fullPath = resolvePath(args.path);
+
+  try {
+    const content = await readFileContent(fullPath);
+    const lines = content.split("\n");
+
+    const pattern = args.pattern || "";
+    const regex = args.is_regex
+      ? new RegExp(pattern, "gi")
+      : new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+
+    const matches: Array<{
+      lineNumber: number;
+      content: string;
+      matches: string[];
+    }> = [];
+
+    lines.forEach((line, index) => {
+      const lineMatches = line.match(regex);
+      if (lineMatches) {
+        matches.push({
+          lineNumber: index + 1,
+          content: line,
+          matches: lineMatches,
+        });
+      }
+    });
+
+    return JSON.stringify({
+      success: true,
+      path: args.path,
+      fullPath,
+      pattern: args.pattern,
+      totalMatches: matches.length,
+      matches,
+    });
+  } catch (error) {
+    return JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+// ============================================
 // FILE WRITE EXECUTOR
 // ============================================
 const fileWriteExecutor = async (
@@ -225,197 +409,6 @@ const fileWriteExecutor = async (
     });
   }
 };
-
-// ============================================
-// FILE PATCH EXECUTOR
-// ============================================
-const filePatchExecutor = async (
-  args: Record<string, any>,
-): Promise<string> => {
-  if (!isTauri()) {
-    return JSON.stringify({
-      success: false,
-      error: "File operations require desktop app",
-    });
-  }
-
-  const fullPath = resolvePath(args.path);
-
-  try {
-    const existingContent = await readFileContent(fullPath);
-    const lines = existingContent.split("\n");
-
-    const startIdx = Math.max(0, (args.start_line || 1) - 1);
-    const endIdx = Math.min(lines.length, args.end_line || args.start_line);
-
-    const newLines = (args.content || "").split("\n");
-    const patchedLines = [
-      ...lines.slice(0, startIdx),
-      ...newLines,
-      ...lines.slice(endIdx),
-    ];
-
-    const patchedContent = patchedLines.join("\n");
-    await writeFileContent(fullPath, patchedContent);
-    triggerRefresh(); // Auto-refresh file tree
-
-    return JSON.stringify({
-      success: true,
-      message: `File patched: ${args.path}`,
-      path: args.path,
-      fullPath,
-      linesReplaced: endIdx - startIdx,
-      linesInserted: newLines.length,
-    });
-  } catch (error) {
-    return JSON.stringify({
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-};
-
-// ============================================
-// FILE DELETE EXECUTOR
-// ============================================
-const fileDeleteExecutor = async (
-  args: Record<string, any>,
-): Promise<string> => {
-  if (!isTauri()) {
-    return JSON.stringify({
-      success: false,
-      error: "File operations require desktop app",
-    });
-  }
-
-  const fullPath = resolvePath(args.path);
-  console.log("[file_delete] Deleting file:", fullPath);
-
-  try {
-    await deletePath(fullPath);
-    triggerRefresh(); // Auto-refresh file tree
-    return JSON.stringify({
-      success: true,
-      message: `File deleted: ${args.path}`,
-      path: args.path,
-      fullPath,
-    });
-  } catch (error) {
-    console.error("[file_delete] Error:", error);
-    return JSON.stringify({
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-};
-
-// ============================================
-// FILE EXISTS EXECUTOR
-// ============================================
-const fileExistsExecutor = async (
-  args: Record<string, any>,
-): Promise<string> => {
-  if (!isTauri()) {
-    return JSON.stringify({
-      success: false,
-      error: "File operations require desktop app",
-    });
-  }
-
-  const fullPath = resolvePath(args.path);
-
-  try {
-    await readFileContent(fullPath);
-    return JSON.stringify({
-      success: true,
-      exists: true,
-      path: args.path,
-      fullPath,
-    });
-  } catch {
-    return JSON.stringify({
-      success: true,
-      exists: false,
-      path: args.path,
-      fullPath,
-    });
-  }
-};
-
-// ============================================
-// FILE SEARCH EXECUTOR
-// ============================================
-const fileSearchExecutor = async (
-  args: Record<string, any>,
-): Promise<string> => {
-  if (!isTauri()) {
-    return JSON.stringify({
-      success: false,
-      error: "File operations require desktop app",
-    });
-  }
-
-  const fullPath = resolvePath(args.path);
-
-  try {
-    const content = await readFileContent(fullPath);
-    const lines = content.split("\n");
-
-    const pattern = args.pattern || "";
-    const regex = args.is_regex
-      ? new RegExp(pattern, "gi")
-      : new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
-
-    const matches: Array<{
-      lineNumber: number;
-      content: string;
-      matches: string[];
-    }> = [];
-
-    lines.forEach((line, index) => {
-      const lineMatches = line.match(regex);
-      if (lineMatches) {
-        matches.push({
-          lineNumber: index + 1,
-          content: line,
-          matches: lineMatches,
-        });
-      }
-    });
-
-    return JSON.stringify({
-      success: true,
-      path: args.path,
-      fullPath,
-      pattern: args.pattern,
-      totalMatches: matches.length,
-      matches,
-    });
-  } catch (error) {
-    return JSON.stringify({
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-};
-
-// ============================================
-// GREP EXECUTOR (Ripgrep-style search)
-// ============================================
-interface GrepMatch {
-  file: string;
-  lineNumber: number;
-  content: string;
-  beforeContext?: string[];
-  afterContext?: string[];
-}
-
-interface GrepFileResult {
-  file: string;
-  matches: GrepMatch[];
-  count: number;
-}
-
 const grepExecutor = async (args: Record<string, any>): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({

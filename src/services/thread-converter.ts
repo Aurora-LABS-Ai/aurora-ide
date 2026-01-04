@@ -3,65 +3,18 @@
  * Enables conversation continuity when resuming threads
  * 
  * UI Message Format (from types/index.ts):
- *   - id, sender ('user'|'assistant'), content, timestamp, timeline[]
- *   - timeline contains: thinking events, tool events, content events
+ * - id, sender ('user'|'assistant'), content, timestamp, timeline[]
+ * - timeline contains: thinking events, tool events, content events
  * 
  * API Message Format (from providers/types.ts):
- *   - role ('user'|'assistant'|'tool'), content, tool_calls?, reasoning_content?
+ * - role ('user'|'assistant'|'tool'), content, tool_calls?, reasoning_content?
  */
+import type { TimelineEvent, Message as UIMessage } from "../types";
+import type { Message as ApiMessage, AssistantMessage, ToolCallRequest, ToolMessage } from "./providers/types";
 
-import type { Message as UIMessage, TimelineEvent } from '../types';
-import type { Message as ApiMessage, ToolCallRequest, ToolMessage, AssistantMessage } from './providers/types';
-
-/**
- * Convert UI thread messages to API conversation history format
- * This enables the agent to have context when resuming a thread
- */
-export function convertThreadToApiHistory(uiMessages: UIMessage[]): ApiMessage[] {
-    const apiMessages: ApiMessage[] = [];
-
-    for (const msg of uiMessages) {
-        if (msg.sender === 'user') {
-            // User messages are straightforward
-            apiMessages.push({
-                role: 'user',
-                content: msg.content,
-            });
-        } else if (msg.sender === 'assistant') {
-            // Assistant messages need to be reconstructed from timeline events
-            const { content, reasoning, toolCalls, toolResults } = extractFromTimeline(msg.timeline || []);
-
-            // Only add if there's actual content or tool calls
-            if (content || toolCalls.length > 0 || reasoning) {
-                const assistantMsg: AssistantMessage = {
-                    role: 'assistant',
-                    content: content || '',
-                };
-
-                if (reasoning) {
-                    assistantMsg.reasoning_content = reasoning;
-                }
-
-                if (toolCalls.length > 0) {
-                    assistantMsg.tool_calls = toolCalls;
-                }
-
-                apiMessages.push(assistantMsg);
-
-                // Add tool results as separate tool messages
-                for (const result of toolResults) {
-                    const toolMsg: ToolMessage = {
-                        role: 'tool',
-                        tool_call_id: result.id,
-                        content: result.result,
-                    };
-                    apiMessages.push(toolMsg);
-                }
-            }
-        }
-    }
-
-    return apiMessages;
+interface ToolResult {
+    id: string;
+    result: string;
 }
 
 /**
@@ -129,9 +82,55 @@ function extractFromTimeline(timeline: TimelineEvent[]): {
     return { content, reasoning, toolCalls, toolResults };
 }
 
-interface ToolResult {
-    id: string;
-    result: string;
+/**
+ * Convert UI thread messages to API conversation history format
+ * This enables the agent to have context when resuming a thread
+ */
+export function convertThreadToApiHistory(uiMessages: UIMessage[]): ApiMessage[] {
+    const apiMessages: ApiMessage[] = [];
+
+    for (const msg of uiMessages) {
+        if (msg.sender === 'user') {
+            // User messages are straightforward
+            apiMessages.push({
+                role: 'user',
+                content: msg.content,
+            });
+        } else if (msg.sender === 'assistant') {
+            // Assistant messages need to be reconstructed from timeline events
+            const { content, reasoning, toolCalls, toolResults } = extractFromTimeline(msg.timeline || []);
+
+            // Only add if there's actual content or tool calls
+            if (content || toolCalls.length > 0 || reasoning) {
+                const assistantMsg: AssistantMessage = {
+                    role: 'assistant',
+                    content: content || '',
+                };
+
+                if (reasoning) {
+                    assistantMsg.reasoning_content = reasoning;
+                }
+
+                if (toolCalls.length > 0) {
+                    assistantMsg.tool_calls = toolCalls;
+                }
+
+                apiMessages.push(assistantMsg);
+
+                // Add tool results as separate tool messages
+                for (const result of toolResults) {
+                    const toolMsg: ToolMessage = {
+                        role: 'tool',
+                        tool_call_id: result.id,
+                        content: result.result,
+                    };
+                    apiMessages.push(toolMsg);
+                }
+            }
+        }
+    }
+
+    return apiMessages;
 }
 
 /**

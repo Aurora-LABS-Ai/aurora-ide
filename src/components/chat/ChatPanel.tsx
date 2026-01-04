@@ -40,6 +40,8 @@ import { registerAllExecutors } from "../../tools";
 import { buildQueryContext, getIDEContext, getIDEContextLight } from "../../services/context-builder";
 import { convertThreadToApiHistory } from "../../services/thread-converter";
 import { chatSyncBroadcast } from "../../hooks/useRustChatSync";
+import { useTaskStore } from "../../store/useTaskStore";
+import { useMcpStore } from "../../store/useMcpStore";
 import type {
   ToolProposal,
   ToolCall,
@@ -47,11 +49,13 @@ import type {
   TimelineEvent,
 } from "../../types";
 
-// Initialize executors on module load
+// Initialize executors and MCP servers on module load
 let executorsInitialized = false;
 const initExecutors = () => {
   if (!executorsInitialized) {
     registerAllExecutors();
+    // Also load MCP servers (will auto-connect servers with autoStart enabled)
+    useMcpStore.getState().loadServers();
     executorsInitialized = true;
   }
 };
@@ -221,14 +225,33 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
       // Ensure we have a thread
       let threadId = currentThreadId;
+      let isNewThread = false;
       if (!threadId) {
+        // Clear tasks when creating a new thread - tasks are per-thread
+        useTaskStore.getState().clearTasks();
         threadId = createThread();
+        isNewThread = true;
       }
+
+      // IMPORTANT: Add user message IMMEDIATELY before any async operations
+      // This ensures the message appears in the UI right away, not after context building
+      const displayContent = attachedFiles && attachedFiles.length > 0
+        ? `[${attachedFiles.map(f => f.name).join(', ')}]\n\n${content}`
+        : content;
+
+      const userMessage: Message = {
+        id: generateId(),
+        sender: "user",
+        content: displayContent,
+        timestamp: Date.now(),
+      };
+      addMessageToThread(userMessage);
 
       // Build Cursor-style context with IDE state and attached files
       // Include project layout (file tree) only for first message in thread (if enabled)
       // This gives the agent a persistent mental map of the project structure
-      const isFirstMessage = !currentThread?.messages || currentThread.messages.length === 0;
+      // Note: Use isNewThread flag instead of checking currentThread which may be stale
+      const isFirstMessage = isNewThread || !currentThread?.messages || currentThread.messages.length === 0;
       const projectLayoutEnabled = useSettingsStore.getState().projectLayoutEnabled;
       const shouldIncludeLayout = isFirstMessage && projectLayoutEnabled;
       const ideContext = shouldIncludeLayout ? getIDEContext(true) : getIDEContextLight();
@@ -248,19 +271,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       if (attachedFiles && attachedFiles.length > 0) {
         console.log(`[Context] ${filesWithContent.length} files with content, ${filesAsPathsOnly.length} as paths only`);
       }
-
-      // Add user message (show original content to user, but send full context to AI)
-      const displayContent = attachedFiles && attachedFiles.length > 0
-        ? `[${attachedFiles.map(f => f.name).join(', ')}]\n\n${content}`
-        : content;
-
-      const userMessage: Message = {
-        id: generateId(),
-        sender: "user",
-        content: displayContent,
-        timestamp: Date.now(),
-      };
-      addMessageToThread(userMessage);
 
       setLoading(true);
       chatSyncBroadcast.setLoading(true);

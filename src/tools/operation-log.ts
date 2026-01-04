@@ -3,44 +3,108 @@
  * Tracks all file system operations and enforces safety rules
  * Inspired by Shai CLI's operation logging
  */
-
-export const FsOperationType = {
-  Read: 'read',
-  Write: 'write',
-  Edit: 'edit',
-  Delete: 'delete',
-  Create: 'create',
-} as const;
-
-export type FsOperationType = typeof FsOperationType[keyof typeof FsOperationType];
-
 export interface FsOperation {
-  type: FsOperationType;
+  metadata?: Record<string, any>;
   path: string;
   timestamp: number;
-  metadata?: Record<string, any>;
+  type: FsOperationType;
 }
 
 export interface OperationSummary {
-  totalOperations: number;
-  readCount: number;
-  writeCount: number;
-  editCount: number;
   createCount: number;
   deleteCount: number;
-  uniqueFilesRead: number;
+  editCount: number;
+  readCount: number;
+  totalOperations: number;
   uniqueFilesModified: number;
+  uniqueFilesRead: number;
+  writeCount: number;
 }
 
 export class FsOperationLog {
+  private modifiedFiles: Set<string> = new Set();
   private operations: FsOperation[] = [];
   private readFiles: Set<string> = new Set();
-  private modifiedFiles: Set<string> = new Set();
+
+  /**
+   * Clear the log (useful for starting fresh conversation)
+   */
+  public clear(): void {
+    this.operations = [];
+    this.readFiles.clear();
+    this.modifiedFiles.clear();
+    console.log('[OperationLog] Cleared all operations');
+  }
+
+  /**
+   * Export log for debugging
+   */
+  public exportLog(): string {
+    return JSON.stringify(
+      {
+        summary: this.getSummary(),
+        operations: this.operations,
+      },
+      null,
+      2
+    );
+  }
+
+  /**
+   * Get all operations
+   */
+  public getAllOperations(): FsOperation[] {
+    return [...this.operations];
+  }
+
+  /**
+   * Get all operations for a specific file
+   */
+  public getFileOperations(path: string): FsOperation[] {
+    return this.operations.filter((op) => op.path === path);
+  }
+
+  /**
+   * Get modified files count
+   */
+  public getModifiedFilesCount(): number {
+    return this.modifiedFiles.size;
+  }
+
+  /**
+   * Get read files count
+   */
+  public getReadFilesCount(): number {
+    return this.readFiles.size;
+  }
+
+  /**
+   * Get summary statistics
+   */
+  public getSummary(): OperationSummary {
+    return {
+      totalOperations: this.operations.length,
+      readCount: this.operations.filter((op) => op.type === FsOperationType.Read).length,
+      writeCount: this.operations.filter((op) => op.type === FsOperationType.Write).length,
+      editCount: this.operations.filter((op) => op.type === FsOperationType.Edit).length,
+      createCount: this.operations.filter((op) => op.type === FsOperationType.Create).length,
+      deleteCount: this.operations.filter((op) => op.type === FsOperationType.Delete).length,
+      uniqueFilesRead: this.readFiles.size,
+      uniqueFilesModified: this.modifiedFiles.size,
+    };
+  }
+
+  /**
+   * Check if a file has been read
+   */
+  public hasBeenRead(path: string): boolean {
+    return this.readFiles.has(path);
+  }
 
   /**
    * Log a file operation
    */
-  logOperation(
+  public logOperation(
     type: FsOperationType,
     path: string,
     metadata?: Record<string, any>
@@ -72,91 +136,26 @@ export class FsOperationLog {
   }
 
   /**
-   * Check if a file has been read
-   */
-  hasBeenRead(path: string): boolean {
-    return this.readFiles.has(path);
-  }
-
-  /**
    * Validate that a file can be edited (must have been read first)
    */
-  validateEditPermission(path: string): void {
+  public validateEditPermission(path: string): void {
     if (!this.hasBeenRead(path)) {
       throw new Error(
         `Cannot edit file '${path}': The file must be read first using the read tool before it can be edited. This is a safety measure to prevent accidental overwrites.`
       );
     }
   }
-
-  /**
-   * Get all operations for a specific file
-   */
-  getFileOperations(path: string): FsOperation[] {
-    return this.operations.filter((op) => op.path === path);
-  }
-
-  /**
-   * Get all operations
-   */
-  getAllOperations(): FsOperation[] {
-    return [...this.operations];
-  }
-
-  /**
-   * Get summary statistics
-   */
-  getSummary(): OperationSummary {
-    return {
-      totalOperations: this.operations.length,
-      readCount: this.operations.filter((op) => op.type === FsOperationType.Read).length,
-      writeCount: this.operations.filter((op) => op.type === FsOperationType.Write).length,
-      editCount: this.operations.filter((op) => op.type === FsOperationType.Edit).length,
-      createCount: this.operations.filter((op) => op.type === FsOperationType.Create).length,
-      deleteCount: this.operations.filter((op) => op.type === FsOperationType.Delete).length,
-      uniqueFilesRead: this.readFiles.size,
-      uniqueFilesModified: this.modifiedFiles.size,
-    };
-  }
-
-  /**
-   * Clear the log (useful for starting fresh conversation)
-   */
-  clear(): void {
-    this.operations = [];
-    this.readFiles.clear();
-    this.modifiedFiles.clear();
-    console.log('[OperationLog] Cleared all operations');
-  }
-
-  /**
-   * Get read files count
-   */
-  getReadFilesCount(): number {
-    return this.readFiles.size;
-  }
-
-  /**
-   * Get modified files count
-   */
-  getModifiedFilesCount(): number {
-    return this.modifiedFiles.size;
-  }
-
-  /**
-   * Export log for debugging
-   */
-  exportLog(): string {
-    return JSON.stringify(
-      {
-        summary: this.getSummary(),
-        operations: this.operations,
-      },
-      null,
-      2
-    );
-  }
 }
+
+export type FsOperationType = typeof FsOperationType[keyof typeof FsOperationType];
+
+export const FsOperationType = {
+  Read: 'read',
+  Write: 'write',
+  Edit: 'edit',
+  Delete: 'delete',
+  Create: 'create',
+} as const;
 
 // Singleton instance
 export const operationLog = new FsOperationLog();

@@ -1,24 +1,91 @@
 /**
  * Provider Registry - Central management for all LLM providers
- *
+ * 
  * Features:
  * - Provider registration and lookup
  * - Auto-detection of provider type using presets
  * - Context window management from DB
  * - Singleton pattern for global access
  */
+import { AnthropicProvider } from "./anthropic-provider";
+import { OpenAIProvider } from "./openai-provider";
+import { PROVIDER_PRESETS, detectProviderType, getProviderPreset } from "./provider-presets";
+import type { IProvider, ProviderConfig, ProviderType } from "./types";
 
-import type { ProviderConfig, ProviderType, IProvider } from './types';
-import { OpenAIProvider } from './openai-provider';
-import { AnthropicProvider } from './anthropic-provider';
-import { detectProviderType, getProviderPreset, PROVIDER_PRESETS } from './provider-presets';
+// ============================================================
+// PROVIDER REGISTRY
+// ============================================================
+class ProviderRegistry {
+  private currentProviderId: string | null = null;
+  private providers: Map<string, IProvider> = new Map();
 
-// Re-export types and utilities
-export * from './types';
-export * from './provider-presets';
-export { TokenCounter, tokenCounter } from './token-counter';
-export { OpenAIProvider } from './openai-provider';
-export { AnthropicProvider } from './anthropic-provider';
+  /**
+   * Clear all providers
+   */
+  public clear(): void {
+    this.providers.clear();
+    this.currentProviderId = null;
+  }
+
+  /**
+   * Get provider by ID
+   */
+  public get(id: string): IProvider | undefined {
+    return this.providers.get(id);
+  }
+
+  /**
+   * Get current active provider
+   */
+  public getCurrent(): IProvider | null {
+    if (!this.currentProviderId) return null;
+    return this.providers.get(this.currentProviderId) || null;
+  }
+
+  /**
+   * Get all registered provider IDs
+   */
+  public getIds(): string[] {
+    return Array.from(this.providers.keys());
+  }
+
+  /**
+   * Check if provider exists
+   */
+  public has(id: string): boolean {
+    return this.providers.has(id);
+  }
+
+  /**
+   * Register a provider
+   */
+  public register(config: ProviderConfig): IProvider {
+    const provider = createProvider(config);
+    this.providers.set(config.id, provider);
+    return provider;
+  }
+
+  /**
+   * Remove provider
+   */
+  public remove(id: string): boolean {
+    if (this.currentProviderId === id) {
+      this.currentProviderId = null;
+    }
+    return this.providers.delete(id);
+  }
+
+  /**
+   * Set current provider
+   */
+  public setCurrent(id: string): boolean {
+    if (this.providers.has(id)) {
+      this.currentProviderId = id;
+      return true;
+    }
+    return false;
+  }
+}
 
 // ============================================================
 // PROVIDER FACTORY
@@ -44,99 +111,39 @@ export function createProvider(config: ProviderConfig): IProvider {
   return new OpenAIProvider({ ...config, providerType: type as ProviderType });
 }
 
-// ============================================================
-// PROVIDER REGISTRY
-// ============================================================
-
-class ProviderRegistry {
-  private providers: Map<string, IProvider> = new Map();
-  private currentProviderId: string | null = null;
-
-  /**
-   * Register a provider
-   */
-  register(config: ProviderConfig): IProvider {
-    const provider = createProvider(config);
-    this.providers.set(config.id, provider);
-    return provider;
+/**
+ * Get default context window for a model
+ */
+export function getDefaultContextWindow(model: string): number {
+  // Check exact match
+  if (DEFAULT_CONTEXT_WINDOWS[model]) {
+    return DEFAULT_CONTEXT_WINDOWS[model];
   }
 
-  /**
-   * Get provider by ID
-   */
-  get(id: string): IProvider | undefined {
-    return this.providers.get(id);
-  }
-
-  /**
-   * Get current active provider
-   */
-  getCurrent(): IProvider | null {
-    if (!this.currentProviderId) return null;
-    return this.providers.get(this.currentProviderId) || null;
-  }
-
-  /**
-   * Set current provider
-   */
-  setCurrent(id: string): boolean {
-    if (this.providers.has(id)) {
-      this.currentProviderId = id;
-      return true;
+  // Check partial match
+  for (const [key, value] of Object.entries(DEFAULT_CONTEXT_WINDOWS)) {
+    if (model.toLowerCase().includes(key.toLowerCase())) {
+      return value;
     }
-    return false;
   }
 
-  /**
-   * Remove provider
-   */
-  remove(id: string): boolean {
-    if (this.currentProviderId === id) {
-      this.currentProviderId = null;
-    }
-    return this.providers.delete(id);
-  }
-
-  /**
-   * Clear all providers
-   */
-  clear(): void {
-    this.providers.clear();
-    this.currentProviderId = null;
-  }
-
-  /**
-   * Get all registered provider IDs
-   */
-  getIds(): string[] {
-    return Array.from(this.providers.keys());
-  }
-
-  /**
-   * Check if provider exists
-   */
-  has(id: string): boolean {
-    return this.providers.has(id);
-  }
+  return DEFAULT_CONTEXT_WINDOWS['default'];
 }
 
-// Singleton instance
-export const providerRegistry = new ProviderRegistry();
-
-// ============================================================
-// CONVENIENCE FUNCTIONS
-// ============================================================
-
-let activeProvider: IProvider | null = null;
+/**
+ * Get context window from preset
+ */
+export function getPresetContextWindow(providerType: string): number {
+  const preset = PROVIDER_PRESETS[providerType];
+  return preset?.defaultContextWindow || DEFAULT_CONTEXT_WINDOWS['default'];
+}
 
 /**
- * Initialize provider from config (convenience function)
+ * Get max output tokens from preset
  */
-export function initProvider(config: ProviderConfig): IProvider {
-  activeProvider = createProvider(config);
-  providerRegistry.register(config);
-  providerRegistry.setCurrent(config.id);
-  return activeProvider;
+export function getPresetMaxOutput(providerType: string): number {
+  const preset = PROVIDER_PRESETS[providerType];
+  return preset?.defaultMaxOutput || 8192;
 }
 
 /**
@@ -146,6 +153,16 @@ export function getProvider(): IProvider {
   if (!activeProvider) {
     throw new Error('Provider not initialized. Call initProvider first.');
   }
+  return activeProvider;
+}
+
+/**
+ * Initialize provider from config (convenience function)
+ */
+export function initProvider(config: ProviderConfig): IProvider {
+  activeProvider = createProvider(config);
+  providerRegistry.register(config);
+  providerRegistry.setCurrent(config.id);
   return activeProvider;
 }
 
@@ -164,6 +181,25 @@ export function updateProvider(config: Partial<ProviderConfig>): void {
     activeProvider.updateConfig(config);
   }
 }
+
+// Re-export types and utilities
+export * from './types';
+
+export * from './provider-presets';
+
+export { TokenCounter, tokenCounter } from './token-counter';
+
+export { OpenAIProvider } from './openai-provider';
+
+export { AnthropicProvider } from './anthropic-provider';
+
+// Singleton instance
+export const providerRegistry = new ProviderRegistry();
+
+// ============================================================
+// CONVENIENCE FUNCTIONS
+// ============================================================
+let activeProvider: IProvider | null = null;
 
 // ============================================================
 // DEFAULT CONTEXT WINDOWS
@@ -210,38 +246,3 @@ export const DEFAULT_CONTEXT_WINDOWS: Record<string, number> = {
   // Default
   'default': 200000,
 };
-
-/**
- * Get default context window for a model
- */
-export function getDefaultContextWindow(model: string): number {
-  // Check exact match
-  if (DEFAULT_CONTEXT_WINDOWS[model]) {
-    return DEFAULT_CONTEXT_WINDOWS[model];
-  }
-
-  // Check partial match
-  for (const [key, value] of Object.entries(DEFAULT_CONTEXT_WINDOWS)) {
-    if (model.toLowerCase().includes(key.toLowerCase())) {
-      return value;
-    }
-  }
-
-  return DEFAULT_CONTEXT_WINDOWS['default'];
-}
-
-/**
- * Get context window from preset
- */
-export function getPresetContextWindow(providerType: string): number {
-  const preset = PROVIDER_PRESETS[providerType];
-  return preset?.defaultContextWindow || DEFAULT_CONTEXT_WINDOWS['default'];
-}
-
-/**
- * Get max output tokens from preset
- */
-export function getPresetMaxOutput(providerType: string): number {
-  const preset = PROVIDER_PRESETS[providerType];
-  return preset?.defaultMaxOutput || 8192;
-}

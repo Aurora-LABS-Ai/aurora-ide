@@ -1,48 +1,50 @@
-import { create } from 'zustand';
-import { gitService, type GitStatus, type GitBranch, type GitCommit } from '../services/git';
+import { create } from "zustand";
+
+import { type GitBranch, type GitCommit, type GitStatus, gitService } from "../services/git";
 
 interface GitState {
-  // Loading states
-  isLoading: boolean;
-  isInitialized: boolean;
-  isGitRepo: boolean;
-
-  // Git data
-  status: GitStatus | null;
   branches: GitBranch[];
-  currentBranch: string;
+  checkout: (branch: string) => Promise<void>;
+  clearSelection: () => void;
+  commit: (message: string) => Promise<void>;
+  commitMessage: string;
   commits: GitCommit[];
+  createBranch: (name: string) => Promise<void>;
+  currentBranch: string;
+  discardChanges: (filePath: string) => Promise<void>;
 
   // UI state
   expandedSections: Set<string>;
-  selectedFiles: Set<string>;
-  commitMessage: string;
 
   // Actions
   initialize: (workspacePath: string) => Promise<void>;
-  refresh: () => Promise<void>;
-  loadStatus: () => Promise<void>;
+  isGitRepo: boolean;
+  isInitialized: boolean;
+
+  // Loading states
+  isLoading: boolean;
   loadBranches: () => Promise<void>;
   loadCommits: (limit?: number) => Promise<void>;
+  loadStatus: () => Promise<void>;
+  pull: () => Promise<void>;
+  push: () => Promise<void>;
+  refresh: () => Promise<void>;
+  reset: () => void;
+  selectFile: (filePath: string) => void;
+  selectedFiles: Set<string>;
+  setCommitMessage: (message: string) => void;
+  stageAll: () => Promise<void>;
 
   // Git operations
   stageFile: (filePath: string) => Promise<void>;
-  unstageFile: (filePath: string) => Promise<void>;
-  stageAll: () => Promise<void>;
-  unstageAll: () => Promise<void>;
-  discardChanges: (filePath: string) => Promise<void>;
-  commit: (message: string) => Promise<void>;
-  checkout: (branch: string) => Promise<void>;
-  createBranch: (name: string) => Promise<void>;
-  pull: () => Promise<void>;
-  push: () => Promise<void>;
+
+  // Git data
+  status: GitStatus | null;
 
   // UI actions
   toggleSection: (section: string) => void;
-  setCommitMessage: (message: string) => void;
-  selectFile: (filePath: string) => void;
-  clearSelection: () => void;
-  reset: () => void;
+  unstageAll: () => Promise<void>;
+  unstageFile: (filePath: string) => Promise<void>;
 }
 
 let currentWorkspacePath: string | null = null;

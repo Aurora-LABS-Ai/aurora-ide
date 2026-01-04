@@ -21,13 +21,13 @@
  */
 
 import React from 'react';
-import { X } from 'lucide-react';
+import { X, Globe, Plus } from 'lucide-react';
 import { useEditorStore } from '../../store/useEditorStore';
 import clsx from 'clsx';
 import { FileIcon } from '../explorer/FileIcons';
 
 export const TabBar: React.FC = () => {
-  const { tabs, activeTabId, setActiveTab, closeTab } = useEditorStore();
+  const { tabs, activeTabId, setActiveTab, closeTab, openBrowserTab } = useEditorStore();
 
   if (tabs.length === 0) return null;
 
@@ -44,7 +44,11 @@ export const TabBar: React.FC = () => {
           )}
           onClick={() => setActiveTab(tab.id)}
         >
-          <FileIcon name={tab.filename} className="w-3 h-3" />
+          {tab.type === 'browser' ? (
+            <Globe className="w-3 h-3 text-blue-400" />
+          ) : (
+            <FileIcon name={tab.filename} className="w-3 h-3" />
+          )}
           <span className="text-[12px] truncate max-w-[120px]">
             {tab.filename}
           </span>
@@ -63,6 +67,15 @@ export const TabBar: React.FC = () => {
           </button>
         </div>
       ))}
+      
+      {/* New Browser Tab Button */}
+      <button
+        onClick={() => openBrowserTab()}
+        className="flex items-center justify-center w-7 h-full hover:bg-tabs-active transition-colors shrink-0"
+        title="Open Browser Tab (Preview localhost)"
+      >
+        <Plus className="w-3.5 h-3.5 text-text-secondary hover:text-text-primary" />
+      </button>
     </div>
   );
 };

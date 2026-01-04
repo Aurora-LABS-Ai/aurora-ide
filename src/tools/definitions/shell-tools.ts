@@ -2,8 +2,7 @@
  * Shell Tools - Definitions
  * Tools for executing shell commands and terminal operations
  */
-
-import type { ToolDefinition } from '../types';
+import type { ToolDefinition } from "../types";
 
 // ============================================
 // SHELL EXECUTE TOOL
@@ -28,35 +27,6 @@ export const shellExecuteTool: ToolDefinition = {
           type: 'number',
           description: 'Timeout in milliseconds. Defaults to 30000 (30 seconds).',
           default: 30000,
-        },
-      },
-      required: ['command'],
-    },
-  },
-};
-
-// ============================================
-// SHELL SPAWN TOOL (Background process)
-// ============================================
-export const shellSpawnTool: ToolDefinition = {
-  type: 'function',
-  function: {
-    name: 'shell_spawn',
-    description: 'Spawn a long-running background process (e.g., dev server, watch process). Returns a process ID for later management.',
-    parameters: {
-      type: 'object',
-      properties: {
-        command: {
-          type: 'string',
-          description: 'The shell command to spawn',
-        },
-        cwd: {
-          type: 'string',
-          description: 'Working directory for the command. Defaults to workspace root.',
-        },
-        name: {
-          type: 'string',
-          description: 'A friendly name for this process for later reference',
         },
       },
       required: ['command'],
@@ -101,6 +71,35 @@ export const shellListProcessesTool: ToolDefinition = {
       type: 'object',
       properties: {},
       required: [],
+    },
+  },
+};
+
+// ============================================
+// SHELL SPAWN TOOL (Background process)
+// ============================================
+export const shellSpawnTool: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'shell_spawn',
+    description: 'Spawn a long-running background process (e.g., dev server, watch process). Returns a process ID for later management.',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: {
+          type: 'string',
+          description: 'The shell command to spawn',
+        },
+        cwd: {
+          type: 'string',
+          description: 'Working directory for the command. Defaults to workspace root.',
+        },
+        name: {
+          type: 'string',
+          description: 'A friendly name for this process for later reference',
+        },
+      },
+      required: ['command'],
     },
   },
 };

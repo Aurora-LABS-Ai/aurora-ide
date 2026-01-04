@@ -2,8 +2,7 @@
  * File System Tools - Definitions
  * Tools for file operations: create, read, write, delete
  */
-
-import type { ToolDefinition } from '../types';
+import type { ToolDefinition } from "../types";
 
 // ============================================
 // FILE CREATE TOOL
@@ -12,18 +11,49 @@ export const fileCreateTool: ToolDefinition = {
   type: 'function',
   function: {
     name: 'file_create',
-    description: 'Create a new file at the specified path with optional initial content. Creates parent directories if they do not exist.',
+    description: `Create a NEW file that does not exist yet. Creates parent directories automatically if needed.
+
+WHEN TO USE file_create:
+- Creating a brand new file that doesn't exist
+- Setting up new components, modules, or config files
+
+WHEN NOT TO USE:
+- If the file already exists (use file_write or file_patch instead)
+- For editing existing files
+
+NOTE: This tool will FAIL if the file already exists. Use file_write to overwrite existing files.`,
     parameters: {
       type: 'object',
       properties: {
         path: {
           type: 'string',
-          description: 'The full path where the file should be created (e.g., "src/components/Button.tsx")',
+          description: 'The full path where the NEW file should be created (e.g., "src/components/Button.tsx")',
         },
         content: {
           type: 'string',
-          description: 'Initial content to write to the file. Defaults to empty string if not provided.',
+          description: 'The initial content for the new file. Defaults to empty string if not provided.',
           default: '',
+        },
+      },
+      required: ['path'],
+    },
+  },
+};
+
+// ============================================
+// FILE DELETE TOOL
+// ============================================
+export const fileDeleteTool: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'file_delete',
+    description: 'Delete a file at the specified path. This action is irreversible.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'The full path of the file to delete',
         },
       },
       required: ['path'],
@@ -59,7 +89,21 @@ export const fileWriteTool: ToolDefinition = {
   type: 'function',
   function: {
     name: 'file_write',
-    description: 'Write content to a file, completely replacing its existing content. Use file_patch for partial modifications.',
+    description: `COMPLETELY REPLACE the entire content of a file. This tool OVERWRITES the whole file.
+
+WHEN TO USE file_write:
+- Creating a new file with content
+- Rewriting an entire file from scratch
+- When changes are so extensive that replacing the whole file is cleaner
+- When you need to restructure the entire file
+
+WHEN NOT TO USE (use file_patch instead):
+- Making small edits to specific lines
+- Changing a few lines in a large file
+- Fixing a bug in one function
+- Adding/removing a single import
+
+WARNING: This replaces ALL content. The entire file content must be provided.`,
     parameters: {
       type: 'object',
       properties: {
@@ -69,64 +113,10 @@ export const fileWriteTool: ToolDefinition = {
         },
         content: {
           type: 'string',
-          description: 'The complete content to write to the file',
+          description: 'The COMPLETE new content for the file. This will REPLACE everything in the file.',
         },
       },
       required: ['path', 'content'],
-    },
-  },
-};
-
-// ============================================
-// FILE PATCH TOOL (Line-specific write)
-// ============================================
-export const filePatchTool: ToolDefinition = {
-  type: 'function',
-  function: {
-    name: 'file_patch',
-    description: 'Apply a patch to a file by replacing specific lines or inserting content at a specific position. Line numbers are 1-indexed.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: 'The full path of the file to patch',
-        },
-        start_line: {
-          type: 'number',
-          description: 'The starting line number where the patch begins (1-indexed)',
-        },
-        end_line: {
-          type: 'number',
-          description: 'The ending line number where the patch ends (1-indexed, inclusive). Use same as start_line to insert without replacing.',
-        },
-        content: {
-          type: 'string',
-          description: 'The new content to insert/replace at the specified lines',
-        },
-      },
-      required: ['path', 'start_line', 'end_line', 'content'],
-    },
-  },
-};
-
-// ============================================
-// FILE DELETE TOOL
-// ============================================
-export const fileDeleteTool: ToolDefinition = {
-  type: 'function',
-  function: {
-    name: 'file_delete',
-    description: 'Delete a file at the specified path. This action is irreversible.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: 'The full path of the file to delete',
-        },
-      },
-      required: ['path'],
     },
   },
 };
@@ -230,12 +220,82 @@ Returns: JSON with file contents, errors, and performance metrics.`,
   },
 };
 
+// ============================================
+// SEARCH REPLACE TOOL (Cursor-style exact string replacement)
+// ============================================
+export const searchReplaceTool: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'search_replace',
+    description: `Find and replace exact text in a file. This is the PREFERRED tool for making targeted edits.
+
+HOW IT WORKS:
+1. Provide the EXACT text you want to find (old_string)
+2. Provide the text you want to replace it with (new_string)
+3. The tool finds the old_string and replaces it with new_string
+
+IMPORTANT RULES:
+- old_string MUST match EXACTLY (including whitespace, indentation, newlines)
+- old_string must be UNIQUE in the file (appears only once)
+- Include enough context (3-5 lines before/after) to make old_string unique
+- new_string replaces old_string completely
+
+WHEN TO USE search_replace:
+- Editing specific functions or code blocks
+- Fixing bugs in specific locations
+- Adding/modifying/removing imports
+- Changing variable names or values
+- Any targeted edit
+
+WHEN NOT TO USE (use file_write instead):
+- Creating a new file
+- Rewriting the entire file from scratch
+- When the text to find appears multiple times (use replace_all=true or be more specific)
+
+EXAMPLE:
+To change a function, provide the EXACT current function as old_string:
+
+old_string:
+"function hello() {
+  return 'Hello';
+}"
+
+new_string:
+"function hello() {
+  return 'Hello World';
+}"`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'The path of the file to modify',
+        },
+        old_string: {
+          type: 'string',
+          description: 'The EXACT text to find and replace. Must match perfectly including whitespace and newlines. Must be unique in the file.',
+        },
+        new_string: {
+          type: 'string',
+          description: 'The text to replace old_string with. Can be empty string to delete the old_string.',
+        },
+        replace_all: {
+          type: 'boolean',
+          description: 'If true, replace ALL occurrences of old_string. Default is false (replace only first/unique occurrence).',
+          default: false,
+        },
+      },
+      required: ['path', 'old_string', 'new_string'],
+    },
+  },
+};
+
 // Export all file tools as an array
 export const fileTools: ToolDefinition[] = [
   fileCreateTool,
   fileReadTool,
   fileWriteTool,
-  filePatchTool,
+  searchReplaceTool,
   fileDeleteTool,
   grepTool,
   multiFileReadTool,

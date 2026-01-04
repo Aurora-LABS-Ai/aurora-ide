@@ -1,14 +1,48 @@
 /**
  * Enhanced Risk Levels Configuration
  * Cursor-style: Auto-approve file operations, require approval only for shell commands
- *
+ * 
  * PHILOSOPHY:
  * - File operations (read/write/create/edit): LOW risk - Auto-approved for speed
  * - Delete operations: HIGH risk - Require approval (destructive)
  * - Shell commands: HIGH risk - Always require approval (system access)
- *
+ * 
  * This gives us Cursor-level speed while maintaining safety for dangerous operations
  */
+/**
+ * Get list of tools that are auto-approved
+ */
+export const getAutoApprovedTools = (): string[] => {
+  return Object.entries(enhancedToolRiskLevels)
+    .filter(([_, level]) => level === 'low')
+    .map(([name, _]) => name);
+};
+
+/**
+ * Get enhanced risk level for a tool
+ * This function should replace getToolRiskLevel in production
+ */
+export const getEnhancedToolRiskLevel = (toolName: string): 'low' | 'medium' | 'high' => {
+  return enhancedToolRiskLevels[toolName] || 'medium';
+};
+
+/**
+ * Get list of tools that require approval
+ */
+export const getToolsRequiringApproval = (): string[] => {
+  return Object.entries(enhancedToolRiskLevels)
+    .filter(([_, level]) => level === 'high')
+    .map(([name, _]) => name);
+};
+
+/**
+ * Check if a tool requires approval
+ * Only HIGH risk tools require approval
+ */
+export const requiresApproval = (toolName: string): boolean => {
+  const riskLevel = getEnhancedToolRiskLevel(toolName);
+  return riskLevel === 'high';
+};
 
 export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> = {
   // ============================================
@@ -18,7 +52,7 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   file_read: 'low',          // Already low - read is safe
   file_read_lines: 'low',    // Already low - read is safe
   file_write: 'low',         // Changed from 'high' - auto-approve writes for speed
-  file_patch: 'low',         // Changed from 'high' - auto-approve edits for speed
+  search_replace: 'low',     // Changed from 'high' - auto-approve edits for speed
   file_delete: 'high',       // KEEP HIGH - deletion is destructive
   file_exists: 'low',        // Already low - check is safe
   file_search: 'low',        // Already low - search is safe
@@ -50,6 +84,7 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   editor_open_file: 'low',         // UI operation
   editor_get_active_file: 'low',   // Read operation
   editor_get_selection: 'low',     // Read operation
+  read_lints: 'low',               // Read operation - get diagnostics
   editor_insert_text: 'low',       // Changed from 'medium' - auto-approve
   editor_get_open_tabs: 'low',     // Read operation
   editor_close_tab: 'low',         // UI operation
@@ -63,41 +98,9 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   // SEARCH TOOLS - AUTO-APPROVED
   // ============================================
   aurora_search: 'low',            // Semantic search - read only operation
-};
 
-/**
- * Get enhanced risk level for a tool
- * This function should replace getToolRiskLevel in production
- */
-export const getEnhancedToolRiskLevel = (toolName: string): 'low' | 'medium' | 'high' => {
-  return enhancedToolRiskLevels[toolName] || 'medium';
-};
-
-/**
- * Check if a tool requires approval
- * Only HIGH risk tools require approval
- */
-export const requiresApproval = (toolName: string): boolean => {
-  const riskLevel = getEnhancedToolRiskLevel(toolName);
-  return riskLevel === 'high';
-};
-
-/**
- * Get list of tools that require approval
- */
-export const getToolsRequiringApproval = (): string[] => {
-  return Object.entries(enhancedToolRiskLevels)
-    .filter(([_, level]) => level === 'high')
-    .map(([name, _]) => name);
-};
-
-/**
- * Get list of tools that are auto-approved
- */
-export const getAutoApprovedTools = (): string[] => {
-  return Object.entries(enhancedToolRiskLevels)
-    .filter(([_, level]) => level === 'low')
-    .map(([name, _]) => name);
+  // Note: MCP tools are handled separately via mcp-tools.ts
+  // Their approval is determined by the server's autoApprove setting
 };
 
 /**
@@ -107,7 +110,7 @@ export const RISK_LEVEL_CHANGES = {
   autoApprovedNow: [
     'file_create',      // medium → low
     'file_write',       // high → low
-    'file_patch',       // high → low
+    'search_replace',   // high → low
     'folder_create',    // medium → low
     'editor_insert_text', // medium → low
   ],

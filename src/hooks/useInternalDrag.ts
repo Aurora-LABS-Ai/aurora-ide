@@ -2,13 +2,13 @@
  * Hook to handle internal drag-drop using mouse events
  * Works alongside Tauri's native drag-drop for external files
  */
+import { useEffect } from "react";
 
-import { useEffect } from 'react';
-import { useDragStore } from '../store/useDragStore';
-import { useWorkspaceStore } from '../store/useWorkspaceStore';
-import { useEditorStore } from '../store/useEditorStore';
-import { renamePath, readFileContent, isTauri } from '../lib/tauri';
-import { getFilename, joinPath, isChildPath, getLanguageFromExtension } from '../lib/file-utils';
+import { getFilename, getLanguageFromExtension, isChildPath, joinPath } from "../lib/file-utils";
+import { isTauri, readFileContent, renamePath } from "../lib/tauri";
+import { useDragStore } from "../store/useDragStore";
+import { useEditorStore } from "../store/useEditorStore";
+import { useWorkspaceStore } from "../store/useWorkspaceStore";
 
 export const useInternalDrag = () => {
   const { rootPath, refreshDirectory, expandFolder } = useWorkspaceStore();

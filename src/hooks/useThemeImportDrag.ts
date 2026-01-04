@@ -1,10 +1,10 @@
 /**
  * Hook to handle Tauri's native drag-drop events for theme import
  */
+import { useEffect, useRef, useState } from "react";
 
-import { useEffect, useRef, useState } from 'react';
-import { isTauri, readFileContent } from '../lib/tauri';
-import { useThemeStore } from '../store/useThemeStore';
+import { isTauri, readFileContent } from "../lib/tauri";
+import { useThemeStore } from "../store/useThemeStore";
 
 export const useThemeImportDrag = () => {
     const { importTheme } = useThemeStore();

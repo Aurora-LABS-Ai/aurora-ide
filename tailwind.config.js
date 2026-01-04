@@ -57,11 +57,11 @@ export default {
       },
       keyframes: {
         shimmer: {
-          '0%, 90%, 100%': {
-            'background-position': 'calc(-100% - var(--shimmer-width)) 0',
+          '0%': {
+            'background-position': '-200% 0',
           },
-          '30%, 60%': {
-            'background-position': 'calc(100% + var(--shimmer-width)) 0',
+          '100%': {
+            'background-position': '200% 0',
           },
         },
         pulseGlow: {
@@ -78,7 +78,7 @@ export default {
         },
       },
       animation: {
-        shimmer: 'shimmer 8s infinite',
+        shimmer: 'shimmer 2s linear infinite',
         'pulse-glow': 'pulseGlow 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite',
         breathe: 'breathe 3s ease-in-out infinite',
         'orbit-slow': 'orbitSlow 4s linear infinite',

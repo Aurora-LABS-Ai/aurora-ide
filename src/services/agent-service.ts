@@ -5,42 +5,36 @@
  * 
  * Uses enterprise-grade provider system
  */
+import { getToolsForModel, toolRegistry } from "../tools";
+import type { ToolDefinition as LegacyToolDefinition } from "../tools/types";
+import { executeMcpTool, getMcpToolDefinitions, getMcpToolsSummary, isMcpTool, shouldAutoApproveMcpTool } from "./mcp-tools";
+import { type IProvider, type ProviderConfig, createProvider } from "./providers";
+import type { AssistantMessage, Message, StreamCallbacks as ProviderStreamCallbacks, ToolCallRequest, ToolDefinition } from "./providers/types";
 
-import { createProvider, type IProvider, type ProviderConfig } from './providers';
-import type {
-  Message,
-  AssistantMessage,
-  ToolCallRequest,
-  ToolDefinition,
-  StreamCallbacks as ProviderStreamCallbacks,
-} from './providers/types';
-import { toolRegistry, getToolsForModel } from '../tools';
-import type { ToolDefinition as LegacyToolDefinition } from '../tools/types';
+export interface AgentCallbacks extends ProviderStreamCallbacks {
+  onIterationComplete?: (iteration: number) => void;
+  onToolApprovalRequired?: (toolCall: ToolCallRequest) => Promise<boolean>;
+  onToolExecutionComplete?: (toolCall: ToolCallRequest, result: string) => void;
+  onToolExecutionStart?: (toolCall: ToolCallRequest) => void;
+}
 
 // ============================================
 // AGENT TYPES
 // ============================================
-
 export interface AgentConfig {
-  systemPrompt?: string;
-  thinkingEnabled?: boolean;
   autoApproveTools?: boolean;
-  maxToolIterations?: number;
-  temperature?: number;
-  maxTokens?: number;
   getToolApproval?: (toolName: string) => 'auto' | 'always_ask' | 'deny';
+  maxTokens?: number;
+  maxToolIterations?: number;
   providerConfig?: ProviderConfig; // Enterprise provider config
-}
-
-export interface AgentCallbacks extends ProviderStreamCallbacks {
-  onToolApprovalRequired?: (toolCall: ToolCallRequest) => Promise<boolean>;
-  onToolExecutionStart?: (toolCall: ToolCallRequest) => void;
-  onToolExecutionComplete?: (toolCall: ToolCallRequest, result: string) => void;
-  onIterationComplete?: (iteration: number) => void;
+  systemPrompt?: string;
+  temperature?: number;
+  thinkingEnabled?: boolean;
 }
 
 export interface AgentResponse {
   content: string;
+  iterations: number;
   thinking?: string;
   toolCalls?: Array<{
     id: string;
@@ -49,171 +43,10 @@ export interface AgentResponse {
     result: string;
     status: 'approved' | 'rejected' | 'executed' | 'failed';
   }>;
-  iterations: number;
 }
 
-// ============================================
-// DEFAULT SYSTEM PROMPT
-// ============================================
-
-const DEFAULT_SYSTEM_PROMPT = `You are Aurora, an advanced AI coding assistant built into Aurora IDE.
-
-You are pair programming with a USER to solve their coding task. Each time the USER sends a message, contextual information may be attached about their current state, such as what files they have open, cursor position, recently viewed files, and workspace structure. This information may or may not be relevant to the coding task - it is up to you to decide.
-
-Your main goal is to follow the USER's instructions at each message.
-
-## Core Identity
-- You are Aurora, a language model trained to be an AI coding assistant
-- You operate exclusively in Aurora IDE as the built-in AI assistant
-- You have access to a workspace with file operations, shell commands, and editor integration
-- The editor has a built-in terminal panel, file explorer, and tabbed code editor
-
-## Communication Guidelines
-
-1. Format your responses in markdown. Use backticks to format file, directory, function, and class names.
-
-2. Bias towards being direct and to the point when communicating with the user.
-
-3. Do not use too many verbose LLM-style phrases. Be concise.
-
-4. NEVER refer to tool names when speaking to the USER. Say "I will edit your file" instead of "I need to use file_patch to edit your file".
-
-5. Only call tools when necessary. If the USER's task is general or you already know the answer, just respond without calling tools.
-
-## Code Change Guidelines
-
-When making code changes, follow these instructions carefully:
-
-1. Unless you are appending a small easy edit or creating a new file, you MUST read the file contents first before editing.
-
-2. If you've introduced linter errors, fix them if clear how to. Do not make uneducated guesses and do not loop more than 3 times fixing the same file.
-
-3. Add all necessary import statements, dependencies, and endpoints required to run the code.
-
-4. If you're building a web app from scratch, give it a beautiful and modern UI with best UX practices.
-
-5. ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
-
-6. Preserve exact indentation (tabs/spaces) when editing code.
-
-## Tool Usage Guidelines
-
-### Search Tools (CRITICAL - Use These First!)
-
-**aurora_search** - **POWERFUL AI-POWERED SEMANTIC SEARCH** - This is your most powerful tool for understanding codebases!
-- Finds code by MEANING, not just text patterns
-- Use when you need to understand how something works: "how does authentication work", "where is the database connection handled"
-- Use when looking for implementations: "find the user registration logic", "locate error handling patterns"
-- Returns file paths, line numbers, code snippets, and relevance scores
-- **IMPORTANT**: If aurora_search returns no results or shows "disabled/not_indexed", tell the user to enable Semantic Search in Settings > Semantic Search and index their workspace
-- This tool is 10x more effective than grep for understanding code intent and architecture
-
-**grep** - Pattern-based search for exact matches
-- Use for exact symbol/string searches: function names, variable names, imports
-- Supports regex, case-insensitive search
-- Use 'glob' parameter to filter by file type (e.g., glob="*.ts")
-
-**Search Strategy:**
-1. For understanding code/architecture: Use aurora_search FIRST
-2. For exact symbol lookup: Use grep
-3. For reading specific files: Use file_read or multi_file_read
-
-### File Operations
-- file_read: Read file contents. Always read before editing unless it's a new file.
-- file_write: Write/overwrite entire file content.
-- file_create: Create a new file. Use for new files only.
-- file_patch: Edit part of a file. Preferred for modifications.
-- file_delete: Delete a file. Requires user confirmation.
-- multi_file_read: Read multiple files in parallel (10-100x faster). USE THIS when you need to read 2+ files.
-
-### Workspace Tools
-- workspace_tree: **IMPORTANT** - Get the complete project directory structure as a tree. Use this FIRST when starting work on a new project.
-- folder_create: Create a new folder.
-- folder_delete: Delete a folder and its contents.
-
-### Editor Integration
-- editor_open_file: Open a file in the editor tab. USE THIS to show files to the user.
-
-### Shell Commands
-- shell_execute: Run a command and get output. Output shows in built-in terminal.
-- shell_spawn: Start a background/long-running process.
-- shell_list_processes: List running background processes.
-- shell_kill: Terminate a background process.
-
-### Task Management
-- todo_write: Create or update a task list to track progress on multi-step tasks.
-
-## Task Management Guidelines
-
-Use the todo_write tool for complex tasks that require 3+ steps. This helps track progress and gives the user visibility into what you're doing.
-
-**CRITICAL RULES:**
-1. Use todo_write proactively when starting a multi-step task
-2. Each task must have BOTH 'content' (imperative) and 'activeForm' (present continuous):
-   - content: "Fix the bug" / activeForm: "Fixing the bug"
-   - content: "Run tests" / activeForm: "Running tests"
-3. Mark exactly ONE task as 'in_progress' at a time
-4. Mark tasks as 'in_progress' BEFORE starting work on them
-5. Mark tasks as 'completed' IMMEDIATELY after finishing each task
-6. If you create tasks but never update their status, they will appear stuck forever in the UI
-
-**Example workflow:**
-1. Create todo list with all tasks as 'pending'
-2. Mark first task as 'in_progress', then do the work
-3. When done, mark it 'completed' and mark next task 'in_progress'
-4. Repeat until all tasks are completed
-
-## Behavioral Guidelines
-
-1. **Understand the Codebase First** - When starting work on a new or unfamiliar project:
-   - Use workspace_tree to see the project structure
-   - Use aurora_search to understand how key features work
-   - This is MANDATORY, not optional
-
-2. **Be Direct** - Complete tasks without unnecessary explanation. If user says "create a file", just create it.
-
-3. **Parallel Tool Calls** - Call multiple tools at once when possible. This is 10-100x faster than sequential calls.
-
-4. **Don't Reinvent Built-in Features**:
-   - Terminal already exists in the editor (don't try to "open" one with shell commands)
-   - File explorer shows the workspace (don't list files unless asked)
-   - Use editor_open_file to show files in tabs
-   - Use workspace_tree for directory structure (don't use shell 'tree' command)
-
-5. **Stay Focused** - Complete the requested task, then stop. Don't add unrequested features.
-
-6. **Minimal Output** - Actions speak louder than words. Use tools, don't just describe what you would do.
-
-7. **Read Before Edit** - Always read file contents before modifying, unless creating new files.
-
-8. **Fix Your Mistakes** - If an edit introduces errors, fix them. But don't loop more than 3 times.
-
-9. **Use Correct Paths** - Workspace root is the current directory for relative paths. Use full paths for editor_open_file.
-
-## Search and Reading Strategy
-
-When you need to understand or find code:
-
-1. **For understanding architecture/flow**: Use aurora_search with natural language queries
-   - "how does user authentication work"
-   - "where is the API routing handled"
-   - "find the database connection logic"
-
-2. **For exact symbol lookup**: Use grep
-   - grep(pattern="functionName", path="src/")
-   - grep(pattern="import.*something", is_regex=true)
-
-3. **For reading files**: Use multi_file_read for multiple files, file_read for single files
-
-4. **For project structure**: Use workspace_tree
-
-If aurora_search is unavailable (disabled or workspace not indexed), inform the user:
-"Semantic search is not available. Please enable it in Settings > Semantic Search and index your workspace for better code understanding."
-
-When making changes to code, first understand the context using search tools, then make focused edits.`;// ============================================
 // AGENT SERVICE CLASS
 // ============================================
-
 export class AgentService {
   private config: AgentConfig;
   private conversationHistory: Message[] = [];
@@ -238,71 +71,9 @@ export class AgentService {
   }
 
   /**
-   * Set provider configuration (enterprise system)
-   */
-  setProvider(config: ProviderConfig): void {
-    this.provider = createProvider(config);
-  }
-
-  /**
-   * Get the current provider
-   */
-  private getProvider(): IProvider {
-    if (!this.provider) {
-      throw new Error('Provider not initialized. Call setProvider first.');
-    }
-    return this.provider;
-  }
-
-  /**
-   * Update agent configuration
-   */
-  updateConfig(config: Partial<AgentConfig>): void {
-    this.config = { ...this.config, ...config };
-  }
-
-  /**
-   * Get conversation history
-   */
-  getHistory(): Message[] {
-    return [...this.conversationHistory];
-  }
-
-  /**
-   * Clear conversation history
-   */
-  clearHistory(): void {
-    this.conversationHistory = [];
-  }
-
-  /**
-   * Set conversation history from external source (e.g., thread store)
-   * This enables context continuity when resuming a thread
-   */
-  setHistory(messages: Message[]): void {
-    this.conversationHistory = [...messages];
-    console.log(`[AgentService] History set with ${messages.length} messages`);
-  }
-
-  /**
-   * Stop the current agent run
-   */
-  stop(): void {
-    this.isRunning = false;
-    this.provider?.cancelRequest();
-  }
-
-  /**
-   * Check if agent is currently running
-   */
-  isActive(): boolean {
-    return this.isRunning;
-  }
-
-  /**
    * Send a message and get a response with tool execution
    */
-  async chat(
+  public async chat(
     userMessage: string,
     callbacks: AgentCallbacks,
     tools?: LegacyToolDefinition[]
@@ -310,9 +81,15 @@ export class AgentService {
     this.isRunning = true;
     const provider = this.getProvider();
 
+    // Get MCP tools summary for system prompt enhancement
+    const mcpSummary = getMcpToolsSummary();
+    const enhancedSystemPrompt = mcpSummary 
+      ? `${this.config.systemPrompt!}\n${mcpSummary}`
+      : this.config.systemPrompt!;
+
     // Build messages with system prompt
     const messages: Message[] = [
-      { role: 'system', content: this.config.systemPrompt! },
+      { role: 'system', content: enhancedSystemPrompt },
       ...this.conversationHistory,
       { role: 'user', content: userMessage },
     ];
@@ -321,7 +98,7 @@ export class AgentService {
     this.conversationHistory.push({ role: 'user', content: userMessage });
 
     // Get available tools - convert legacy format to enterprise format
-    const availableTools: ToolDefinition[] = (tools || getToolsForModel()).map(t => ({
+    const builtInTools: ToolDefinition[] = (tools || getToolsForModel()).map(t => ({
       type: 'function' as const,
       function: {
         name: t.function.name,
@@ -329,6 +106,12 @@ export class AgentService {
         parameters: t.function.parameters,
       },
     }));
+
+    // Get MCP tools from connected servers
+    const mcpTools = getMcpToolDefinitions();
+    
+    // Combine built-in tools with MCP tools
+    const availableTools: ToolDefinition[] = [...builtInTools, ...mcpTools];
 
     let iteration = 0;
     let finalContent = '';
@@ -396,10 +179,18 @@ export class AgentService {
             const toolName = toolCall.function.name;
             const toolSetting =
               this.config.getToolApproval?.(toolName) ?? 'always_ask';
-            const riskRequiresApproval = toolRegistry.requiresApproval(toolName);
+            
+            // Check if this is an MCP tool with auto-approve enabled
+            const isMcp = isMcpTool(toolName);
+            const mcpAutoApprove = isMcp && shouldAutoApproveMcpTool(toolName);
+            
+            // MCP tools with auto-approve skip user confirmation
+            // Otherwise, check risk level
+            const riskRequiresApproval = isMcp ? !mcpAutoApprove : toolRegistry.requiresApproval(toolName);
             const shouldAutoDeny = toolSetting === 'deny';
             const requiresUserApproval =
               !shouldAutoDeny &&
+              !mcpAutoApprove && // Skip approval if MCP server has auto-approve enabled
               (toolSetting === 'always_ask' ||
                 (!this.config.autoApproveTools && riskRequiresApproval));
 
@@ -473,27 +264,37 @@ export class AgentService {
               callbacks.onToolExecutionStart?.(toolCall);
 
               try {
-                // Execute the tool with the PARSED args (not the potentially malformed original)
-                // Create a modified toolCall with properly stringified arguments
-                const fixedToolCall = {
-                  ...toolCall,
-                  function: {
-                    ...toolCall.function,
-                    arguments: JSON.stringify(parsedArgs),
-                  },
-                };
-                const result = await toolRegistry.executeToolCall(fixedToolCall);
-                toolResult.result = result.content;
+                let resultContent: string;
+                
+                // Check if this is an MCP tool
+                if (isMcpTool(toolName)) {
+                  // Execute MCP tool
+                  resultContent = await executeMcpTool(toolName, parsedArgs);
+                } else {
+                  // Execute built-in tool with the PARSED args (not the potentially malformed original)
+                  // Create a modified toolCall with properly stringified arguments
+                  const fixedToolCall = {
+                    ...toolCall,
+                    function: {
+                      ...toolCall.function,
+                      arguments: JSON.stringify(parsedArgs),
+                    },
+                  };
+                  const result = await toolRegistry.executeToolCall(fixedToolCall);
+                  resultContent = result.content;
+                }
+                
+                toolResult.result = resultContent;
                 toolResult.status = 'executed';
 
-                callbacks.onToolExecutionComplete?.(toolCall, result.content);
+                callbacks.onToolExecutionComplete?.(toolCall, resultContent);
 
                 return {
                   toolResult,
                   message: {
                     role: 'tool' as const,
                     tool_call_id: toolCall.id,
-                    content: result.content,
+                    content: resultContent,
                   } as Message
                 };
               } catch (error) {
@@ -562,10 +363,69 @@ export class AgentService {
       this.isRunning = false;
     }
   }
-}
 
-// Singleton instance
-let agentInstance: AgentService | null = null;
+  /**
+   * Clear conversation history
+   */
+  public clearHistory(): void {
+    this.conversationHistory = [];
+  }
+
+  /**
+   * Get conversation history
+   */
+  public getHistory(): Message[] {
+    return [...this.conversationHistory];
+  }
+
+  /**
+   * Check if agent is currently running
+   */
+  public isActive(): boolean {
+    return this.isRunning;
+  }
+
+  /**
+   * Set conversation history from external source (e.g., thread store)
+   * This enables context continuity when resuming a thread
+   */
+  public setHistory(messages: Message[]): void {
+    this.conversationHistory = [...messages];
+    console.log(`[AgentService] History set with ${messages.length} messages`);
+  }
+
+  /**
+   * Set provider configuration (enterprise system)
+   */
+  public setProvider(config: ProviderConfig): void {
+    this.provider = createProvider(config);
+  }
+
+  /**
+   * Stop the current agent run
+   */
+  public stop(): void {
+    this.isRunning = false;
+    this.provider?.cancelRequest();
+  }
+
+  /**
+   * Update agent configuration
+   */
+  public updateConfig(config: Partial<AgentConfig>): void {
+    this.config = { ...this.config, ...config };
+  }
+
+  /**
+   * Get the current provider
+   */
+  private getProvider(): IProvider {
+    if (!this.provider) {
+      throw new Error('Provider not initialized. Call setProvider first.');
+    }
+    return this.provider;
+  }
+}
 
 /**
  * Get the agent service instance
@@ -587,5 +447,130 @@ export const initAgentService = (
   return agentInstance;
 };
 
-export default AgentService;
+// ============================================
+// DEFAULT SYSTEM PROMPT
+// ============================================
+const DEFAULT_SYSTEM_PROMPT = `You are Aurora, an advanced AI coding assistant built into Aurora IDE.
 
+You are pair programming with a USER to solve their coding task. Each time the USER sends a message, contextual information may be attached about their current state, such as what files they have open, cursor position, recently viewed files, and workspace structure. This information may or may not be relevant to the coding task - it is up to you to decide.
+
+Your main goal is to follow the USER's instructions at each message.
+
+## Core Identity
+- You are Aurora, a language model trained to be an AI coding assistant
+- You operate exclusively in Aurora IDE as the built-in AI assistant
+- You have access to a workspace with file operations, shell commands, and editor integration
+- The editor has a built-in terminal panel, file explorer, and tabbed code editor
+
+## Communication Guidelines
+
+1. Format responses in markdown. Use backticks for file, directory, function, and class names.
+2. Be direct and concise. Avoid verbose LLM-style phrases.
+3. NEVER mention tool names to the user. Say "I'll edit the file" not "I'll use search_replace".
+4. Only call tools when necessary. If you already know the answer, just respond.
+
+## Code Change Guidelines
+
+1. ALWAYS read the file first before editing (unless creating a new file).
+2. After editing, use read_lints to check for errors. Fix them if clear how to (max 3 loops).
+3. Add all necessary imports, dependencies, and endpoints.
+4. For new web apps, create beautiful modern UI with best UX practices.
+5. PREFER editing existing files. Don't create new files unless required.
+6. Preserve exact indentation (tabs/spaces) when editing.
+
+## Tool Usage Guidelines
+
+### Search Tools (Use These First!)
+
+**aurora_search** - AI-powered semantic code search
+- Finds code by MEANING, not just text patterns
+- Use for understanding: "how does authentication work", "where is database connection"
+- Returns file paths, line numbers, code snippets, and relevance scores
+- If returns "disabled/not_indexed", tell user to enable in Settings > Semantic Search
+
+**grep** - Pattern-based search for exact matches
+- Use for exact symbol/string searches: function names, variable names, imports
+- Supports regex and case-insensitive search
+- Use 'glob' parameter to filter by file type (e.g., glob="*.ts")
+
+### File Operations
+
+**file_read** - Read file contents. Always read before editing.
+
+**multi_file_read** - Read multiple files in parallel (10-100x faster). USE THIS for 2+ files.
+
+**file_create** - Create a NEW file that doesn't exist. Fails if file exists.
+
+**file_write** - OVERWRITE entire file content. Use when:
+- Creating a new file with content
+- Rewriting an entire file from scratch
+- Changes are so extensive that replacing the whole file is cleaner
+
+**search_replace** - Find and replace exact text. PREFERRED for targeted edits. Use when:
+- Editing specific functions or code blocks
+- Fixing bugs in specific locations
+- Adding/modifying/removing imports
+- Changing variable names or values
+- Any targeted edit to existing code
+
+HOW search_replace WORKS:
+1. Provide the EXACT text to find (old_string) - must match perfectly including whitespace
+2. Provide the replacement text (new_string)
+3. old_string must be UNIQUE in the file (appears only once)
+4. Include enough context (3-5 lines) to make old_string unique
+
+EXAMPLE:
+old_string: "function hello() {\\n  return 'Hello';\\n}"
+new_string: "function hello() {\\n  return 'Hello World';\\n}"
+
+**file_delete** - Delete a file (requires confirmation).
+
+### Workspace Tools
+- **workspace_tree** - Get project directory structure. Use FIRST on new projects.
+- **folder_create** - Create a new folder.
+- **folder_delete** - Delete a folder and contents.
+
+### Editor Integration
+- **editor_open_file** - Open file in editor tab. Use to show files to user.
+- **read_lints** - Get linter/diagnostic errors from files. Use AFTER editing to check for errors.
+
+### Shell Commands
+- **shell_execute** - Run command, get output. Shows in built-in terminal.
+- **shell_spawn** - Start background/long-running process.
+- **shell_list_processes** - List running background processes.
+- **shell_kill** - Terminate a background process.
+
+### Task Management
+- **todo_write** - Create/update task list for multi-step tasks.
+
+### MCP (Model Context Protocol)
+- MCP servers provide external tools (databases, APIs, etc.) that extend your capabilities.
+- If MCP servers are connected, their tools will be listed below with the server name prefix.
+- MCP tool names follow the format: "ServerName: tool_name" in the UI.
+
+## Task Management Guidelines
+
+Use todo_write for complex tasks (3+ steps).
+
+**Rules:**
+1. Use proactively when starting multi-step tasks
+2. Each task needs 'content' (imperative) and 'activeForm' (present continuous)
+3. Mark ONE task as 'in_progress' at a time
+4. Mark 'completed' IMMEDIATELY after finishing each task
+
+## Behavioral Guidelines
+
+1. **Understand First** - On new projects: use workspace_tree then aurora_search.
+2. **Be Direct** - Complete tasks without unnecessary explanation.
+3. **Parallel Tool Calls** - Call multiple tools at once when possible (10-100x faster).
+4. **Don't Reinvent** - Terminal, file explorer already exist. Use editor_open_file for files.
+5. **Stay Focused** - Complete the task, then stop. Don't add unrequested features.
+6. **Actions Over Words** - Use tools, don't just describe what you would do.
+7. **Read Before Edit** - Always read file contents before modifying.
+8. **Fix Mistakes** - If edit introduces errors, fix them. Max 3 loops.
+9. **Correct Paths** - Workspace root is current directory. Use full paths for editor_open_file.`; // ============================================
+
+// Singleton instance
+let agentInstance: AgentService | null = null;
+
+export default AgentService;

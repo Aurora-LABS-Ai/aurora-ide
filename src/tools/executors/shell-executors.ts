@@ -3,24 +3,20 @@
  * Implementations for shell command tools using Tauri commands
  * Uses standard executeCommand for agent tool calls (simpler, no PTY needed)
  */
-
-import { toolRegistry } from '../registry';
-import { isTauri, executeCommand } from '../../lib/tauri';
-import { useWorkspaceStore } from '../../store/useWorkspaceStore';
-import { useTerminalStore } from '../../store/useTerminalStore';
+import { executeCommand, isTauri } from "../../lib/tauri";
+import { useTerminalStore } from "../../store/useTerminalStore";
+import { useWorkspaceStore } from "../../store/useWorkspaceStore";
+import { toolRegistry } from "../registry";
 
 // Track background processes
 interface BackgroundProcess {
-  id: string;
   command: string;
   cwd: string;
+  id: string;
+  output: string[];
   startedAt: number;
   status: 'running' | 'completed' | 'failed';
-  output: string[];
 }
-
-const backgroundProcesses: Map<string, BackgroundProcess> = new Map();
-let processIdCounter = 0;
 
 // ============================================
 // SHELL EXECUTE EXECUTOR
@@ -129,73 +125,6 @@ const shellExecuteExecutor = async (args: Record<string, unknown>): Promise<stri
 };
 
 // ============================================
-// SHELL SPAWN EXECUTOR (Background Process)
-// ============================================
-const shellSpawnExecutor = async (args: Record<string, unknown>): Promise<string> => {
-  if (!isTauri()) {
-    return JSON.stringify({ success: false, error: 'Shell operations require desktop app' });
-  }
-
-  const command = args.command as string;
-  const argCwd = args.cwd as string | undefined;
-  const rootPath = useWorkspaceStore.getState().rootPath;
-  const cwd = argCwd || rootPath || '';
-
-  if (!command) {
-    return JSON.stringify({ success: false, error: 'Command is required' });
-  }
-
-  try {
-    // Generate unique process ID
-    const processId = `bg-${++processIdCounter}-${Date.now()}`;
-
-    // Create process record
-    const process: BackgroundProcess = {
-      id: processId,
-      command,
-      cwd,
-      startedAt: Date.now(),
-      status: 'running',
-      output: [],
-    };
-
-    backgroundProcesses.set(processId, process);
-
-    // Execute in background
-    executeCommand(command, cwd).then(result => {
-      const proc = backgroundProcesses.get(processId);
-      if (proc) {
-        proc.status = result.success ? 'completed' : 'failed';
-        proc.output.push(result.stdout || '');
-        if (result.stderr) {
-          proc.output.push(`[stderr] ${result.stderr}`);
-        }
-      }
-    }).catch(error => {
-      const proc = backgroundProcesses.get(processId);
-      if (proc) {
-        proc.status = 'failed';
-        proc.output.push(`[error] ${error.message || String(error)}`);
-      }
-    });
-
-    return JSON.stringify({
-      success: true,
-      processId,
-      command,
-      cwd,
-      message: `Background process started with ID: ${processId}`,
-    });
-  } catch (error) {
-    console.error('[shell_spawn] Error:', error);
-    return JSON.stringify({
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-};
-
-// ============================================
 // SHELL KILL EXECUTOR
 // ============================================
 const shellKillExecutor = async (args: Record<string, unknown>): Promise<string> => {
@@ -275,6 +204,73 @@ const shellListProcessesExecutor = async (): Promise<string> => {
 };
 
 // ============================================
+// SHELL SPAWN EXECUTOR (Background Process)
+// ============================================
+const shellSpawnExecutor = async (args: Record<string, unknown>): Promise<string> => {
+  if (!isTauri()) {
+    return JSON.stringify({ success: false, error: 'Shell operations require desktop app' });
+  }
+
+  const command = args.command as string;
+  const argCwd = args.cwd as string | undefined;
+  const rootPath = useWorkspaceStore.getState().rootPath;
+  const cwd = argCwd || rootPath || '';
+
+  if (!command) {
+    return JSON.stringify({ success: false, error: 'Command is required' });
+  }
+
+  try {
+    // Generate unique process ID
+    const processId = `bg-${++processIdCounter}-${Date.now()}`;
+
+    // Create process record
+    const process: BackgroundProcess = {
+      id: processId,
+      command,
+      cwd,
+      startedAt: Date.now(),
+      status: 'running',
+      output: [],
+    };
+
+    backgroundProcesses.set(processId, process);
+
+    // Execute in background
+    executeCommand(command, cwd).then(result => {
+      const proc = backgroundProcesses.get(processId);
+      if (proc) {
+        proc.status = result.success ? 'completed' : 'failed';
+        proc.output.push(result.stdout || '');
+        if (result.stderr) {
+          proc.output.push(`[stderr] ${result.stderr}`);
+        }
+      }
+    }).catch(error => {
+      const proc = backgroundProcesses.get(processId);
+      if (proc) {
+        proc.status = 'failed';
+        proc.output.push(`[error] ${error.message || String(error)}`);
+      }
+    });
+
+    return JSON.stringify({
+      success: true,
+      processId,
+      command,
+      cwd,
+      message: `Background process started with ID: ${processId}`,
+    });
+  } catch (error) {
+    console.error('[shell_spawn] Error:', error);
+    return JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+// ============================================
 // REGISTER ALL SHELL EXECUTORS
 // ============================================
 export const registerShellExecutors = (): void => {
@@ -283,3 +279,7 @@ export const registerShellExecutors = (): void => {
   toolRegistry.registerExecutor('shell_kill', shellKillExecutor);
   toolRegistry.registerExecutor('shell_list_processes', shellListProcessesExecutor);
 };
+
+const backgroundProcesses: Map<string, BackgroundProcess> = new Map();
+
+let processIdCounter = 0;

@@ -2,32 +2,56 @@
  * Multi-File Service
  * Enables Cursor-style parallel file reading with full context awareness
  */
-
-import { toolRegistry } from '../tools/registry';
-import type { ToolCallResult } from '../tools/types';
+import { toolRegistry } from "../tools/registry";
+import type { ToolCallResult } from "../tools/types";
 
 export interface FileReadResult {
-  path: string;
-  success: boolean;
   content?: string;
   error?: string;
   lines?: number;
+  path: string;
   size?: number;
+  success: boolean;
 }
 
 export interface MultiFileReadResult {
+  errorCount: number;
   files: Map<string, FileReadResult>;
   successCount: number;
-  errorCount: number;
   totalTime: number;
 }
 
 export class MultiFileService {
   /**
+   * Get file context for multiple files
+   * Returns a formatted string with all file contents
+   */
+  public async getFilesContext(paths: string[]): Promise<string> {
+    const result = await this.readFiles(paths);
+    const contextParts: string[] = [];
+
+    for (const [path, fileResult] of result.files) {
+      if (fileResult.success && fileResult.content) {
+        contextParts.push(`
+=== File: ${path} (${fileResult.lines || 0} lines) ===
+${fileResult.content}
+`);
+      } else {
+        contextParts.push(`
+=== File: ${path} (ERROR) ===
+Error: ${fileResult.error || 'Unknown error'}
+`);
+      }
+    }
+
+    return contextParts.join('\n');
+  }
+
+  /**
    * Read multiple files in parallel (Cursor-style)
    * This is the key feature for 10x speed boost
    */
-  async readFiles(paths: string[]): Promise<MultiFileReadResult> {
+  public async readFiles(paths: string[]): Promise<MultiFileReadResult> {
     const startTime = Date.now();
     const results = new Map<string, FileReadResult>();
 
@@ -90,25 +114,9 @@ export class MultiFileService {
   }
 
   /**
-   * Read files and return as a simple map of path -> content
-   */
-  async readFilesSimple(paths: string[]): Promise<Map<string, string>> {
-    const result = await this.readFiles(paths);
-    const contentMap = new Map<string, string>();
-
-    for (const [path, fileResult] of result.files) {
-      if (fileResult.success && fileResult.content) {
-        contentMap.set(path, fileResult.content);
-      }
-    }
-
-    return contentMap;
-  }
-
-  /**
    * Read all files in a directory with a pattern
    */
-  async readFilesInDirectory(
+  public async readFilesInDirectory(
     directory: string,
     pattern?: string
   ): Promise<MultiFileReadResult> {
@@ -140,6 +148,35 @@ export class MultiFileService {
   }
 
   /**
+   * Read files and return as a simple map of path -> content
+   */
+  public async readFilesSimple(paths: string[]): Promise<Map<string, string>> {
+    const result = await this.readFiles(paths);
+    const contentMap = new Map<string, string>();
+
+    for (const [path, fileResult] of result.files) {
+      if (fileResult.success && fileResult.content) {
+        contentMap.set(path, fileResult.content);
+      }
+    }
+
+    return contentMap;
+  }
+
+  /**
+   * Read related files based on import statements
+   * Useful for understanding component dependencies
+   */
+  public async readRelatedFiles(
+    mainFilePath: string,
+    _maxDepth: number = 1
+  ): Promise<MultiFileReadResult> {
+    // TODO: Implement import parsing and recursive reading
+    // For now, just read the main file
+    return this.readFiles([mainFilePath]);
+  }
+
+  /**
    * Parse tool result (handles both JSON string and plain string)
    */
   private parseToolResult(content: string): any {
@@ -149,44 +186,6 @@ export class MultiFileService {
       // If not JSON, return as-is
       return { success: true, content };
     }
-  }
-
-  /**
-   * Get file context for multiple files
-   * Returns a formatted string with all file contents
-   */
-  async getFilesContext(paths: string[]): Promise<string> {
-    const result = await this.readFiles(paths);
-    const contextParts: string[] = [];
-
-    for (const [path, fileResult] of result.files) {
-      if (fileResult.success && fileResult.content) {
-        contextParts.push(`
-=== File: ${path} (${fileResult.lines || 0} lines) ===
-${fileResult.content}
-`);
-      } else {
-        contextParts.push(`
-=== File: ${path} (ERROR) ===
-Error: ${fileResult.error || 'Unknown error'}
-`);
-      }
-    }
-
-    return contextParts.join('\n');
-  }
-
-  /**
-   * Read related files based on import statements
-   * Useful for understanding component dependencies
-   */
-  async readRelatedFiles(
-    mainFilePath: string,
-    _maxDepth: number = 1
-  ): Promise<MultiFileReadResult> {
-    // TODO: Implement import parsing and recursive reading
-    // For now, just read the main file
-    return this.readFiles([mainFilePath]);
   }
 }
 

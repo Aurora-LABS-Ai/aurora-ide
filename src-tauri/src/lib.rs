@@ -4,6 +4,7 @@ use tauri::Manager;
 mod commands;
 mod db;
 mod file_cache;
+mod mcp;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -117,6 +118,30 @@ pub fn run() {
             commands::git::git_pull,
             commands::git::git_push,
             commands::git::git_get_diff,
+            // Browser WebView commands
+            commands::browser::create_browser_webview,
+            commands::browser::get_inspector_script,
+            commands::browser::browser_navigate,
+            commands::browser::browser_activate_inspector,
+            commands::browser::browser_deactivate_inspector,
+            commands::browser::browser_clear_selection,
+            commands::browser::browser_eval,
+            commands::browser::close_browser_webview,
+            commands::browser::browser_refresh,
+            commands::browser::browser_get_url,
+            // MCP (Model Context Protocol) commands
+            mcp::commands::mcp_load_servers,
+            mcp::commands::mcp_get_servers,
+            mcp::commands::mcp_get_server,
+            mcp::commands::mcp_add_server,
+            mcp::commands::mcp_remove_server,
+            mcp::commands::mcp_update_server,
+            mcp::commands::mcp_toggle_server,
+            mcp::commands::mcp_connect_server,
+            mcp::commands::mcp_disconnect_server,
+            mcp::commands::mcp_call_tool,
+            mcp::commands::mcp_get_all_tools,
+            mcp::commands::mcp_get_config_path,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

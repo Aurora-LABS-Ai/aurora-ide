@@ -358,9 +358,29 @@ pub async fn git_commit(workspace_path: String, message: String) -> Result<Strin
 }
 
 /// Checkout a branch
+/// If the branch doesn't exist locally but exists remotely, creates a tracking branch
 #[tauri::command]
 pub async fn git_checkout(workspace_path: String, branch: String) -> Result<(), String> {
-    run_git_command(&workspace_path, &["checkout", &branch])?;
+    // First, try normal checkout
+    let result = run_git_command(&workspace_path, &["checkout", &branch]);
+    
+    if result.is_ok() {
+        return Ok(());
+    }
+    
+    // If normal checkout failed, try to create a tracking branch from remote
+    // This handles the case where we're checking out a remote branch for the first time
+    let track_result = run_git_command(
+        &workspace_path, 
+        &["checkout", "-b", &branch, &format!("origin/{}", branch)]
+    );
+    
+    if track_result.is_ok() {
+        return Ok(());
+    }
+    
+    // Return the original error if both attempts failed
+    result?;
     Ok(())
 }
 

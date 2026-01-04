@@ -7,37 +7,40 @@
  * - Optimistic cache updates
  * - Automatic invalidation on file changes
  */
+import { invoke } from "@tauri-apps/api/core";
 
-import { invoke } from '@tauri-apps/api/core';
-import { isTauri } from './tauri';
+import { isTauri } from "./tauri";
 
 // Cache entry with content and timestamp
 interface CacheEntry {
   content: string;
-  timestamp: number;
   size: number;
+  timestamp: number;
 }
-
-// Maximum cache size in bytes (50MB)
-const MAX_CACHE_SIZE = 50 * 1024 * 1024;
-
-// Maximum age for cached entries (5 minutes) - after this, we'll check with Rust cache
-const MAX_CACHE_AGE_MS = 5 * 60 * 1000;
 
 /**
  * Frontend LRU file cache
  * Works in conjunction with the Rust backend cache for maximum performance
  */
 class FileCache {
+  private accessOrder: string[] = []; // Most recently accessed at end
   private cache: Map<string, CacheEntry> = new Map();
   private totalSize: number = 0;
-  private accessOrder: string[] = []; // Most recently accessed at end
+
+  /**
+   * Clear the entire cache
+   */
+  public clear(): void {
+    this.cache.clear();
+    this.accessOrder = [];
+    this.totalSize = 0;
+  }
 
   /**
    * Get file content from cache
    * Returns null if not cached or expired
    */
-  get(path: string): string | null {
+  public get(path: string): string | null {
     const entry = this.cache.get(path);
     if (!entry) return null;
 
@@ -54,9 +57,40 @@ class FileCache {
   }
 
   /**
+   * Invalidate a specific path
+   */
+  public invalidate(path: string): void {
+    const entry = this.cache.get(path);
+    if (entry) {
+      this.totalSize -= entry.size;
+      this.cache.delete(path);
+      this.removeFromAccessOrder(path);
+    }
+  }
+
+  /**
+   * Invalidate all paths under a directory prefix
+   */
+  public invalidatePrefix(prefix: string): void {
+    const normalizedPrefix = prefix.replace(/\\/g, '/');
+    const toRemove: string[] = [];
+
+    for (const path of this.cache.keys()) {
+      const normalizedPath = path.replace(/\\/g, '/');
+      if (normalizedPath.startsWith(normalizedPrefix)) {
+        toRemove.push(path);
+      }
+    }
+
+    for (const path of toRemove) {
+      this.invalidate(path);
+    }
+  }
+
+  /**
    * Cache file content
    */
-  set(path: string, content: string): void {
+  public set(path: string, content: string): void {
     const size = content.length * 2; // Approximate UTF-16 size
 
     // Remove old entry for this path
@@ -87,53 +121,20 @@ class FileCache {
   }
 
   /**
-   * Invalidate a specific path
-   */
-  invalidate(path: string): void {
-    const entry = this.cache.get(path);
-    if (entry) {
-      this.totalSize -= entry.size;
-      this.cache.delete(path);
-      this.removeFromAccessOrder(path);
-    }
-  }
-
-  /**
-   * Invalidate all paths under a directory prefix
-   */
-  invalidatePrefix(prefix: string): void {
-    const normalizedPrefix = prefix.replace(/\\/g, '/');
-    const toRemove: string[] = [];
-
-    for (const path of this.cache.keys()) {
-      const normalizedPath = path.replace(/\\/g, '/');
-      if (normalizedPath.startsWith(normalizedPrefix)) {
-        toRemove.push(path);
-      }
-    }
-
-    for (const path of toRemove) {
-      this.invalidate(path);
-    }
-  }
-
-  /**
-   * Clear the entire cache
-   */
-  clear(): void {
-    this.cache.clear();
-    this.accessOrder = [];
-    this.totalSize = 0;
-  }
-
-  /**
    * Get cache statistics
    */
-  stats(): { entries: number; size: number } {
+  public stats(): { entries: number; size: number } {
     return {
       entries: this.cache.size,
       size: this.totalSize,
     };
+  }
+
+  private removeFromAccessOrder(path: string): void {
+    const idx = this.accessOrder.indexOf(path);
+    if (idx !== -1) {
+      this.accessOrder.splice(idx, 1);
+    }
   }
 
   private touchAccessOrder(path: string): void {
@@ -143,17 +144,49 @@ class FileCache {
       this.accessOrder.push(path);
     }
   }
+}
 
-  private removeFromAccessOrder(path: string): void {
-    const idx = this.accessOrder.indexOf(path);
-    if (idx !== -1) {
-      this.accessOrder.splice(idx, 1);
-    }
+/**
+ * Debug: Get cache statistics
+ */
+export function getCacheStats(): { entries: number; size: number } {
+  return fileCache.stats();
+}
+
+/**
+ * Invalidate cache for a path (after file modification)
+ */
+export function invalidateFileCache(path: string, isPrefix: boolean = false): void {
+  if (isPrefix) {
+    fileCache.invalidatePrefix(path);
+  } else {
+    fileCache.invalidate(path);
+  }
+
+  // Also notify Rust backend to invalidate its cache
+  if (isTauri()) {
+    invoke('invalidate_file_cache', { path, isPrefix }).catch(err => {
+      console.warn('Failed to invalidate Rust cache:', err);
+    });
   }
 }
 
-// Global cache instance
-export const fileCache = new FileCache();
+/**
+ * Preload files into cache in the background
+ * Useful for preloading files the user is likely to open next
+ */
+export function preloadFiles(paths: string[]): void {
+  if (!isTauri() || paths.length === 0) return;
+
+  // Filter out already cached paths
+  const toPreload = paths.filter(p => fileCache.get(p) === null);
+  if (toPreload.length === 0) return;
+
+  // Preload in background (don't await)
+  readFilesBatch(toPreload).catch(err => {
+    console.warn('Background preload failed:', err);
+  });
+}
 
 /**
  * Read file content with frontend caching
@@ -230,44 +263,11 @@ export async function readFilesBatch(paths: string[]): Promise<Map<string, strin
   return results;
 }
 
-/**
- * Preload files into cache in the background
- * Useful for preloading files the user is likely to open next
- */
-export function preloadFiles(paths: string[]): void {
-  if (!isTauri() || paths.length === 0) return;
+// Maximum age for cached entries (5 minutes) - after this, we'll check with Rust cache
+const MAX_CACHE_AGE_MS = 5 * 60 * 1000;
 
-  // Filter out already cached paths
-  const toPreload = paths.filter(p => fileCache.get(p) === null);
-  if (toPreload.length === 0) return;
+// Maximum cache size in bytes (50MB)
+const MAX_CACHE_SIZE = 50 * 1024 * 1024;
 
-  // Preload in background (don't await)
-  readFilesBatch(toPreload).catch(err => {
-    console.warn('Background preload failed:', err);
-  });
-}
-
-/**
- * Invalidate cache for a path (after file modification)
- */
-export function invalidateFileCache(path: string, isPrefix: boolean = false): void {
-  if (isPrefix) {
-    fileCache.invalidatePrefix(path);
-  } else {
-    fileCache.invalidate(path);
-  }
-
-  // Also notify Rust backend to invalidate its cache
-  if (isTauri()) {
-    invoke('invalidate_file_cache', { path, isPrefix }).catch(err => {
-      console.warn('Failed to invalidate Rust cache:', err);
-    });
-  }
-}
-
-/**
- * Debug: Get cache statistics
- */
-export function getCacheStats(): { entries: number; size: number } {
-  return fileCache.stats();
-}
+// Global cache instance
+export const fileCache = new FileCache();

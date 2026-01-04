@@ -12,6 +12,7 @@ export {
   getAgentService,
   initAgentService
 } from './agent-service';
+
 export type {
   AgentConfig,
   AgentCallbacks,
@@ -20,9 +21,8 @@ export type {
 
 // Multi-File Service
 export { multiFileService, MultiFileService } from './multi-file-service';
+
 export type { FileReadResult, MultiFileReadResult } from './multi-file-service';
 
 // Token Estimation
 export * from './token-estimator';
-
-

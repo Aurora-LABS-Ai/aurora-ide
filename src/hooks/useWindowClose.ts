@@ -1,8 +1,9 @@
-import { useEffect } from 'react';
-import { useWorkspaceStore } from '../store/useWorkspaceStore';
-import { useEditorStore } from '../store/useEditorStore';
-import { useThreadStore } from '../store/useThreadStore';
-import { isTauri } from '../lib/tauri';
+import { useEffect } from "react";
+
+import { isTauri } from "../lib/tauri";
+import { useEditorStore } from "../store/useEditorStore";
+import { useThreadStore } from "../store/useThreadStore";
+import { useWorkspaceStore } from "../store/useWorkspaceStore";
 
 /**
  * Hook to save all state when window closes.
@@ -72,4 +73,3 @@ export const useWindowClose = () => {
     };
   }, []);
 };
-

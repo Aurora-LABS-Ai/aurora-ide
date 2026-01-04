@@ -1,6 +1,6 @@
 /**
  * Context Manager - Enterprise-grade context window management
- *
+ * 
  * Based on KiloCode's approach:
  * - Summarization-based condensation
  * - Sliding window truncation as fallback
@@ -8,75 +8,104 @@
  * - Rewind capability
  * - 10% buffer zone
  */
+import type { ApiMessage, IProvider } from "./types";
 
-import type {
-  ApiMessage,
-  IProvider,
-} from './types';
+export interface CondenseResult {
+  condenseId: string;
+  cost: number;
+  error?: string;
+  messages: ApiMessage[];
+  newContextTokens: number;
+  prevContextTokens: number;
+  summary: string;
+}
 
-// ============================================================
-// CONSTANTS
-// ============================================================
+export interface ContextManagementOptions {
+  autoCondenseContext?: boolean;
+  autoCondenseContextPercent?: number;
+  contextWindow: number;
+  customCondensingPrompt?: string;
+  maxTokens?: number;
+  messages: ApiMessage[];
+  provider?: IProvider;
+  systemPrompt?: string;
+  totalTokens: number;
+}
 
-const TOKEN_BUFFER_PERCENTAGE = 0.1; // 10% buffer
-const DEFAULT_MAX_OUTPUT_TOKENS = 8192;
-// const MESSAGES_TO_KEEP = 3; // Keep last N messages during condensation (unused for now)
-const TRUNCATION_FRACTION = 0.5; // Remove 50% of messages during truncation
-const FORCED_REDUCTION_PERCENT = 75; // 75% reduction on context overflow error
+export interface ContextManagementResult {
+  condenseId?: string;
+  cost?: number;
+  error?: string;
+  messages: ApiMessage[];
+  messagesRemoved?: number;
+  newContextTokens?: number;
+  prevContextTokens: number;
+  summary?: string;
+  truncationId?: string;
+}
 
 // ============================================================
 // TYPES
 // ============================================================
-
 export interface ContextState {
-  usedTokens: number;
+  allowedTokens: number;
   contextWindow: number;
-  maxOutputTokens: number;
-  percentage: number;
   isNearLimit: boolean;
   isOverLimit: boolean;
-  allowedTokens: number;
+  maxOutputTokens: number;
+  percentage: number;
   remainingTokens: number;
-}
-
-export interface CondenseResult {
-  messages: ApiMessage[];
-  summary: string;
-  cost: number;
-  newContextTokens: number;
-  prevContextTokens: number;
-  condenseId: string;
-  error?: string;
+  usedTokens: number;
 }
 
 export interface TruncationResult {
   messages: ApiMessage[];
-  truncationId: string;
   messagesRemoved: number;
+  truncationId: string;
 }
 
-export interface ContextManagementResult {
-  messages: ApiMessage[];
-  summary?: string;
-  cost?: number;
-  prevContextTokens: number;
-  newContextTokens?: number;
-  condenseId?: string;
-  truncationId?: string;
-  messagesRemoved?: number;
-  error?: string;
-}
+// ============================================================
+// SINGLETON CONTEXT MANAGER
+// ============================================================
+class ContextManagerService {
+  private currentState: ContextState | null = null;
 
-export interface ContextManagementOptions {
-  messages: ApiMessage[];
-  totalTokens: number;
-  contextWindow: number;
-  maxTokens?: number;
-  provider?: IProvider;
-  autoCondenseContext?: boolean;
-  autoCondenseContextPercent?: number;
-  systemPrompt?: string;
-  customCondensingPrompt?: string;
+  /**
+   * Get current context state
+   */
+  public getState(): ContextState | null {
+    return this.currentState;
+  }
+
+  /**
+   * Check if context management is needed
+   */
+  public needsManagement(threshold: number = 100): boolean {
+    if (!this.currentState) return false;
+    return (
+      this.currentState.percentage >= threshold ||
+      this.currentState.isOverLimit
+    );
+  }
+
+  /**
+   * Reset state
+   */
+  public reset(): void {
+    this.currentState = null;
+  }
+
+  /**
+   * Update context state
+   */
+  public updateState(
+    usedTokens: number,
+    contextWindow: number,
+    maxOutputTokens: number
+  ): ContextState {
+    this.currentState = calculateContextState(usedTokens, contextWindow, maxOutputTokens);
+    return this.currentState;
+  }
 }
 
 // ============================================================
@@ -127,6 +156,51 @@ export function calculateContextState(
     allowedTokens,
     remainingTokens: Math.max(0, allowedTokens - usedTokens),
   };
+}
+
+// ============================================================
+// REWIND OPERATIONS
+// ============================================================
+
+/**
+ * Clean up orphaned messages after truncation/condensation is undone
+ */
+export function cleanupAfterRewind(messages: ApiMessage[]): ApiMessage[] {
+  // Get IDs of existing summaries and markers
+  const existingSummaryIds = new Set<string>();
+  const existingTruncationIds = new Set<string>();
+
+  for (const msg of messages) {
+    if (msg.isSummary && msg.condenseId) {
+      existingSummaryIds.add(msg.condenseId);
+    }
+    if (msg.isTruncationMarker && msg.truncationId) {
+      existingTruncationIds.add(msg.truncationId);
+    }
+  }
+
+  // Clear parent references that point to non-existent summaries/markers
+  return messages.map((msg) => {
+    const cleaned = { ...msg };
+
+    if (msg.condenseParent && !existingSummaryIds.has(msg.condenseParent)) {
+      delete cleaned.condenseParent;
+    }
+    if (msg.truncationParent && !existingTruncationIds.has(msg.truncationParent)) {
+      delete cleaned.truncationParent;
+    }
+
+    return cleaned;
+  });
+}
+
+/**
+ * Force context reduction (75%) - used on context overflow errors
+ */
+export async function forceContextReduction(
+  messages: ApiMessage[]
+): Promise<TruncationResult> {
+  return truncateConversation(messages, FORCED_REDUCTION_PERCENT / 100);
 }
 
 // ============================================================
@@ -200,6 +274,88 @@ export function getMessagesSinceLastSummary(messages: ApiMessage[]): ApiMessage[
 }
 
 // ============================================================
+// CONTEXT MANAGEMENT (Main entry point)
+// ============================================================
+
+/**
+ * Manage context - condense or truncate as needed
+ */
+export async function manageContext(
+  options: ContextManagementOptions
+): Promise<ContextManagementResult> {
+  const {
+    messages,
+    totalTokens,
+    contextWindow,
+    maxTokens = DEFAULT_MAX_OUTPUT_TOKENS,
+    // autoCondenseContext is reserved for future summarization feature
+    autoCondenseContextPercent = 100,
+  } = options;
+
+  const allowedTokens = calculateAllowedTokens(contextWindow, maxTokens);
+  const prevContextTokens = totalTokens;
+
+  // Calculate effective threshold
+  const contextPercent = (100 * prevContextTokens) / contextWindow;
+
+  // Check if we need to condense/truncate
+  const needsCondensation =
+    contextPercent >= autoCondenseContextPercent || prevContextTokens > allowedTokens;
+
+  if (!needsCondensation) {
+    return {
+      messages,
+      prevContextTokens,
+    };
+  }
+
+  // For now, use truncation (summarization would require LLM call)
+  // In full implementation, try summarization first, then fallback to truncation
+  if (prevContextTokens > allowedTokens) {
+    const truncationResult = truncateConversation(messages, TRUNCATION_FRACTION);
+    return {
+      messages: truncationResult.messages,
+      prevContextTokens,
+      truncationId: truncationResult.truncationId,
+      messagesRemoved: truncationResult.messagesRemoved,
+    };
+  }
+
+  return {
+    messages,
+    prevContextTokens,
+  };
+}
+
+/**
+ * Rewind to a specific message index
+ */
+export function rewindToIndex(
+  messages: ApiMessage[],
+  index: number
+): ApiMessage[] {
+  // Keep messages up to index
+  const filtered = messages.slice(0, index + 1);
+
+  // Clean up orphaned references
+  return cleanupAfterRewind(filtered);
+}
+
+/**
+ * Rewind to a specific timestamp
+ */
+export function rewindToTimestamp(
+  messages: ApiMessage[],
+  timestamp: number
+): ApiMessage[] {
+  // Remove messages after timestamp
+  const filtered = messages.filter((msg) => msg.ts <= timestamp);
+
+  // Clean up orphaned references
+  return cleanupAfterRewind(filtered);
+}
+
+// ============================================================
 // SLIDING WINDOW TRUNCATION
 // ============================================================
 
@@ -269,176 +425,15 @@ export function truncateConversation(
   };
 }
 
-// ============================================================
-// CONTEXT MANAGEMENT (Main entry point)
-// ============================================================
-
-/**
- * Manage context - condense or truncate as needed
- */
-export async function manageContext(
-  options: ContextManagementOptions
-): Promise<ContextManagementResult> {
-  const {
-    messages,
-    totalTokens,
-    contextWindow,
-    maxTokens = DEFAULT_MAX_OUTPUT_TOKENS,
-    // autoCondenseContext is reserved for future summarization feature
-    autoCondenseContextPercent = 100,
-  } = options;
-
-  const allowedTokens = calculateAllowedTokens(contextWindow, maxTokens);
-  const prevContextTokens = totalTokens;
-
-  // Calculate effective threshold
-  const contextPercent = (100 * prevContextTokens) / contextWindow;
-
-  // Check if we need to condense/truncate
-  const needsCondensation =
-    contextPercent >= autoCondenseContextPercent || prevContextTokens > allowedTokens;
-
-  if (!needsCondensation) {
-    return {
-      messages,
-      prevContextTokens,
-    };
-  }
-
-  // For now, use truncation (summarization would require LLM call)
-  // In full implementation, try summarization first, then fallback to truncation
-  if (prevContextTokens > allowedTokens) {
-    const truncationResult = truncateConversation(messages, TRUNCATION_FRACTION);
-    return {
-      messages: truncationResult.messages,
-      prevContextTokens,
-      truncationId: truncationResult.truncationId,
-      messagesRemoved: truncationResult.messagesRemoved,
-    };
-  }
-
-  return {
-    messages,
-    prevContextTokens,
-  };
-}
-
-/**
- * Force context reduction (75%) - used on context overflow errors
- */
-export async function forceContextReduction(
-  messages: ApiMessage[]
-): Promise<TruncationResult> {
-  return truncateConversation(messages, FORCED_REDUCTION_PERCENT / 100);
-}
+const DEFAULT_MAX_OUTPUT_TOKENS = 8192;
+const FORCED_REDUCTION_PERCENT = 75; // 75% reduction on context overflow error
 
 // ============================================================
-// REWIND OPERATIONS
+// CONSTANTS
 // ============================================================
+const TOKEN_BUFFER_PERCENTAGE = 0.1; // 10% buffer
 
-/**
- * Clean up orphaned messages after truncation/condensation is undone
- */
-export function cleanupAfterRewind(messages: ApiMessage[]): ApiMessage[] {
-  // Get IDs of existing summaries and markers
-  const existingSummaryIds = new Set<string>();
-  const existingTruncationIds = new Set<string>();
-
-  for (const msg of messages) {
-    if (msg.isSummary && msg.condenseId) {
-      existingSummaryIds.add(msg.condenseId);
-    }
-    if (msg.isTruncationMarker && msg.truncationId) {
-      existingTruncationIds.add(msg.truncationId);
-    }
-  }
-
-  // Clear parent references that point to non-existent summaries/markers
-  return messages.map((msg) => {
-    const cleaned = { ...msg };
-
-    if (msg.condenseParent && !existingSummaryIds.has(msg.condenseParent)) {
-      delete cleaned.condenseParent;
-    }
-    if (msg.truncationParent && !existingTruncationIds.has(msg.truncationParent)) {
-      delete cleaned.truncationParent;
-    }
-
-    return cleaned;
-  });
-}
-
-/**
- * Rewind to a specific timestamp
- */
-export function rewindToTimestamp(
-  messages: ApiMessage[],
-  timestamp: number
-): ApiMessage[] {
-  // Remove messages after timestamp
-  const filtered = messages.filter((msg) => msg.ts <= timestamp);
-
-  // Clean up orphaned references
-  return cleanupAfterRewind(filtered);
-}
-
-/**
- * Rewind to a specific message index
- */
-export function rewindToIndex(
-  messages: ApiMessage[],
-  index: number
-): ApiMessage[] {
-  // Keep messages up to index
-  const filtered = messages.slice(0, index + 1);
-
-  // Clean up orphaned references
-  return cleanupAfterRewind(filtered);
-}
-
-// ============================================================
-// SINGLETON CONTEXT MANAGER
-// ============================================================
-
-class ContextManagerService {
-  private currentState: ContextState | null = null;
-
-  /**
-   * Update context state
-   */
-  updateState(
-    usedTokens: number,
-    contextWindow: number,
-    maxOutputTokens: number
-  ): ContextState {
-    this.currentState = calculateContextState(usedTokens, contextWindow, maxOutputTokens);
-    return this.currentState;
-  }
-
-  /**
-   * Get current context state
-   */
-  getState(): ContextState | null {
-    return this.currentState;
-  }
-
-  /**
-   * Check if context management is needed
-   */
-  needsManagement(threshold: number = 100): boolean {
-    if (!this.currentState) return false;
-    return (
-      this.currentState.percentage >= threshold ||
-      this.currentState.isOverLimit
-    );
-  }
-
-  /**
-   * Reset state
-   */
-  reset(): void {
-    this.currentState = null;
-  }
-}
+// const MESSAGES_TO_KEEP = 3; // Keep last N messages during condensation (unused for now)
+const TRUNCATION_FRACTION = 0.5; // Remove 50% of messages during truncation
 
 export const contextManager = new ContextManagerService();

@@ -4,63 +4,31 @@
  * Uses @babel/parser for production-ready JavaScript/TypeScript/JSX/TSX parsing.
  * This provides accurate syntax validation before the agent writes code to disk.
  */
-
-import { parse, type ParserOptions } from '@babel/parser';
-
-export interface ValidationResult {
-  valid: boolean;
-  errors: ValidationError[];
-  warnings: ValidationWarning[];
-}
+import { type ParserOptions, parse } from "@babel/parser";
 
 export interface ValidationError {
-  line?: number;
   column?: number;
+  line?: number;
   message: string;
   severity: 'error';
 }
 
+export interface ValidationResult {
+  errors: ValidationError[];
+  valid: boolean;
+  warnings: ValidationWarning[];
+}
+
 export interface ValidationWarning {
-  line?: number;
   column?: number;
+  line?: number;
   message: string;
   severity: 'warning';
-}
-
-// File extensions that support validation
-const SUPPORTED_EXTENSIONS = ['json', 'js', 'jsx', 'ts', 'tsx', 'mjs', 'mts', 'cjs', 'cts'];
-
-/**
- * Validate file content based on file extension
- */
-export function validateSyntax(content: string, filename: string): ValidationResult {
-  const ext = filename.split('.').pop()?.toLowerCase() || '';
-  
-  if (!SUPPORTED_EXTENSIONS.includes(ext)) {
-    // No validator for this file type - pass through
-    return { valid: true, errors: [], warnings: [] };
-  }
-  
-  if (ext === 'json') {
-    return validateJSON(content);
-  }
-  
-  // Use Babel parser for JS/TS/JSX/TSX
-  return validateWithBabel(content, ext);
-}
-
-/**
- * Check if a file type supports validation
- */
-export function supportsValidation(filename: string): boolean {
-  const ext = filename.split('.').pop()?.toLowerCase() || '';
-  return SUPPORTED_EXTENSIONS.includes(ext);
 }
 
 // ============================================
 // JSON VALIDATOR
 // ============================================
-
 function validateJSON(content: string): ValidationResult {
   const errors: ValidationError[] = [];
   
@@ -94,7 +62,6 @@ function validateJSON(content: string): ValidationResult {
 // ============================================
 // BABEL PARSER VALIDATOR
 // ============================================
-
 function validateWithBabel(content: string, ext: string): ValidationResult {
   const errors: ValidationError[] = [];
   
@@ -196,6 +163,36 @@ export function formatValidationForAgent(result: ValidationResult, filename: str
   
   return lines.join('\n');
 }
+
+/**
+ * Check if a file type supports validation
+ */
+export function supportsValidation(filename: string): boolean {
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  return SUPPORTED_EXTENSIONS.includes(ext);
+}
+
+/**
+ * Validate file content based on file extension
+ */
+export function validateSyntax(content: string, filename: string): ValidationResult {
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  
+  if (!SUPPORTED_EXTENSIONS.includes(ext)) {
+    // No validator for this file type - pass through
+    return { valid: true, errors: [], warnings: [] };
+  }
+  
+  if (ext === 'json') {
+    return validateJSON(content);
+  }
+  
+  // Use Babel parser for JS/TS/JSX/TSX
+  return validateWithBabel(content, ext);
+}
+
+// File extensions that support validation
+const SUPPORTED_EXTENSIONS = ['json', 'js', 'jsx', 'ts', 'tsx', 'mjs', 'mts', 'cjs', 'cts'];
 
 export default {
   validateSyntax,

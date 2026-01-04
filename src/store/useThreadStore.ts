@@ -1,159 +1,73 @@
-import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
-import type { Message } from '../types';
-import {
-  isTauri,
-  writeFileContent,
-  readFileContent,
-  deletePath,
-  readDirectory,
-  saveThreadToDb,
-  getThreadFromDb,
-  listThreadsFromDb,
-  deleteThreadFromDb,
-  type DbThread,
-  type DbMessage,
-} from '../lib/tauri';
+import { create } from "zustand";
+
+import { type DbMessage, type DbThread, deletePath, deleteThreadFromDb, getThreadFromDb, isTauri, listThreadsFromDb, readDirectory, readFileContent, saveThreadToDb, writeFileContent } from "../lib/tauri";
+import type { Message } from "../types";
+import { persist } from "zustand/middleware";
+
+interface ThreadState {
+  // Message actions
+  addMessageToThread: (message: Message) => void;
+  clearCurrentThread: () => void;
+
+  // Actions
+  createThread: () => string;
+  currentThreadId: string | null;
+  deleteThread: (threadId: string) => Promise<void>;
+  deleteThreadFile: (threadId: string) => Promise<boolean>;
+
+  // History
+  getThreadList: () => ThreadSummary[];
+  isLoading: boolean;
+  loadAllThreadsFromFiles: () => Promise<void>;
+  loadThread: (threadId: string) => void;
+  loadThreadFromFile: (threadId: string) => Promise<Thread | null>;
+
+  // Persistence
+  saveCurrentThread: () => Promise<void>;
+  threadList: ThreadSummary[];
+  threads: Record<string, Thread>;
+  updateMessageInThread: (messageId: string, updates: Partial<Message>) => void;
+  updateThreadTitle: (threadId: string, title: string) => void;
+
+  // Token/Context usage tracking
+  updateThreadUsage: (tokenUsage: TokenUsage, contextUsage: ContextUsage) => void;
+}
+
+export interface ContextUsage {
+  contextWindow: number;
+  percentage: number;
+  usedTokens: number;
+}
+
+export interface Thread {
+  contextUsage?: ContextUsage;
+  createdAt: number;
+  id: string;
+  messages: Message[];
+  title: string;
+  tokenUsage?: TokenUsage;
+  updatedAt: number;
+}
+
+export interface ThreadSummary {
+  createdAt: number;
+  id: string;
+  messageCount: number;
+  preview: string;
+  title: string;
+  updatedAt: number;
+}
 
 // ============================================
 // THREAD TYPES
 // ============================================
-
 export interface TokenUsage {
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  completionTokens: number;
+  promptTokens: number;
+  totalTokens: number;
 }
-
-export interface ContextUsage {
-  usedTokens: number;
-  contextWindow: number;
-  percentage: number;
-}
-
-export interface Thread {
-  id: string;
-  title: string;
-  createdAt: number;
-  updatedAt: number;
-  messages: Message[];
-  tokenUsage?: TokenUsage;
-  contextUsage?: ContextUsage;
-}
-
-export interface ThreadSummary {
-  id: string;
-  title: string;
-  createdAt: number;
-  updatedAt: number;
-  messageCount: number;
-  preview: string;
-}
-
-interface ThreadState {
-  currentThreadId: string | null;
-  threads: Record<string, Thread>;
-  threadList: ThreadSummary[];
-  isLoading: boolean;
-
-  // Actions
-  createThread: () => string;
-  loadThread: (threadId: string) => void;
-  deleteThread: (threadId: string) => Promise<void>;
-  deleteThreadFile: (threadId: string) => Promise<boolean>;
-  updateThreadTitle: (threadId: string, title: string) => void;
-
-  // Message actions
-  addMessageToThread: (message: Message) => void;
-  updateMessageInThread: (messageId: string, updates: Partial<Message>) => void;
-
-  // Token/Context usage tracking
-  updateThreadUsage: (tokenUsage: TokenUsage, contextUsage: ContextUsage) => void;
-
-  // Persistence
-  saveCurrentThread: () => Promise<void>;
-  loadThreadFromFile: (threadId: string) => Promise<Thread | null>;
-  loadAllThreadsFromFiles: () => Promise<void>;
-
-  // History
-  getThreadList: () => ThreadSummary[];
-  clearCurrentThread: () => void;
-}
-
-// Generate UUID
-const generateUUID = (): string => {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = Math.random() * 16 | 0;
-    const v = c === 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
-};
-
-// Get threads directory path
-const getThreadsDir = (): string => {
-  return '.aurora/threads';
-};
-
-// Get thread file path
-const getThreadFilePath = (threadId: string): string => {
-  return `${getThreadsDir()}/${threadId}.json`;
-};
-
-const isDevMode = (): boolean => {
-  if (typeof import.meta !== 'undefined' && (import.meta as any).env?.MODE) {
-    return (import.meta as any).env.MODE === 'development';
-  }
-  return false;
-};
-
-// Track streaming state - NO saves during streaming
-let isCurrentlyStreaming = false;
-
-export const setStreamingState = (streaming: boolean) => {
-  const wasStreaming = isCurrentlyStreaming;
-  isCurrentlyStreaming = streaming;
-  
-  // When streaming ends, save the thread ONCE
-  if (wasStreaming && !streaming) {
-    useThreadStore.getState().saveCurrentThread();
-  }
-};
-
-export const getStreamingState = () => isCurrentlyStreaming;
-
-const toDbMessage = (message: Message): DbMessage => ({
-  id: message.id,
-  role: (message as any).role || (message as any).sender || 'assistant',
-  content: message.content,
-  timestamp: new Date(message.timestamp).toISOString(),
-  tool_calls: (message as any).tool_calls,
-  thinking: message.thinking,
-  isThinking: (message as any).isThinking,
-  tools: (message as any).tools,
-  timeline: (message as any).timeline,
-  toolProposal: (message as any).toolProposal,
-});
-
-const toDbThread = (thread: Thread): DbThread => ({
-  id: thread.id,
-  title: thread.title,
-  summary: null,
-  messages: thread.messages.map(toDbMessage),
-  token_usage: thread.tokenUsage ? {
-    promptTokens: thread.tokenUsage.promptTokens,
-    completionTokens: thread.tokenUsage.completionTokens,
-    totalTokens: thread.tokenUsage.totalTokens,
-  } : null,
-  context_usage: thread.contextUsage ? {
-    usedTokens: thread.contextUsage.usedTokens,
-    contextWindow: thread.contextUsage.contextWindow,
-    percentage: thread.contextUsage.percentage,
-  } : null,
-  created_at: new Date(thread.createdAt).toISOString(),
-  updated_at: new Date(thread.updatedAt).toISOString(),
-});
 
 const fromDbThread = (dbThread: DbThread): Thread => ({
   id: dbThread.id,
@@ -182,6 +96,88 @@ const fromDbThread = (dbThread: DbThread): Thread => ({
     percentage: dbThread.context_usage.percentage,
   } : undefined,
 });
+
+// Generate UUID
+const generateUUID = (): string => {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+};
+
+// Get thread file path
+const getThreadFilePath = (threadId: string): string => {
+  return `${getThreadsDir()}/${threadId}.json`;
+};
+
+// Get threads directory path
+const getThreadsDir = (): string => {
+  return '.aurora/threads';
+};
+const isDevMode = (): boolean => {
+  if (typeof import.meta !== 'undefined' && (import.meta as any).env?.MODE) {
+    return (import.meta as any).env.MODE === 'development';
+  }
+  return false;
+};
+const toDbMessage = (message: Message): DbMessage => ({
+  id: message.id,
+  role: (message as any).role || (message as any).sender || 'assistant',
+  content: message.content,
+  timestamp: new Date(message.timestamp).toISOString(),
+  tool_calls: (message as any).tool_calls,
+  thinking: message.thinking,
+  isThinking: (message as any).isThinking,
+  tools: (message as any).tools,
+  timeline: (message as any).timeline,
+  toolProposal: (message as any).toolProposal,
+});
+const toDbThread = (thread: Thread): DbThread => ({
+  id: thread.id,
+  title: thread.title,
+  summary: null,
+  messages: thread.messages.map(toDbMessage),
+  token_usage: thread.tokenUsage ? {
+    promptTokens: thread.tokenUsage.promptTokens,
+    completionTokens: thread.tokenUsage.completionTokens,
+    totalTokens: thread.tokenUsage.totalTokens,
+  } : null,
+  context_usage: thread.contextUsage ? {
+    usedTokens: thread.contextUsage.usedTokens,
+    contextWindow: thread.contextUsage.contextWindow,
+    percentage: thread.contextUsage.percentage,
+  } : null,
+  created_at: new Date(thread.createdAt).toISOString(),
+  updated_at: new Date(thread.updatedAt).toISOString(),
+});
+
+export const getStreamingState = () => isCurrentlyStreaming;
+export const setStreamingState = (streaming: boolean) => {
+  const wasStreaming = isCurrentlyStreaming;
+  isCurrentlyStreaming = streaming;
+  
+  // When streaming ends, save the thread ONCE
+  if (wasStreaming && !streaming) {
+    useThreadStore.getState().saveCurrentThread();
+  }
+};
+
+// Helper to get current thread messages
+export const useCurrentMessages = () => {
+  const thread = useCurrentThread();
+  return thread?.messages || [];
+};
+
+// Helper to get current thread messages
+export const useCurrentThread = () => {
+  const { currentThreadId, threads } = useThreadStore();
+  if (!currentThreadId) return null;
+  return threads[currentThreadId] || null;
+};
+
+// Track streaming state - NO saves during streaming
+let isCurrentlyStreaming = false;
 
 // ============================================
 // CLEANUP OLD LOCALSTORAGE DATA
@@ -216,7 +212,6 @@ try {
 // ============================================
 // THREAD STORE
 // ============================================
-
 export const useThreadStore = create<ThreadState>()(
   persist(
     (set, get) => ({
@@ -560,16 +555,3 @@ export const useThreadStore = create<ThreadState>()(
     }
   )
 );
-
-// Helper to get current thread messages
-export const useCurrentThread = () => {
-  const { currentThreadId, threads } = useThreadStore();
-  if (!currentThreadId) return null;
-  return threads[currentThreadId] || null;
-};
-
-// Helper to get current thread messages
-export const useCurrentMessages = () => {
-  const thread = useCurrentThread();
-  return thread?.messages || [];
-};

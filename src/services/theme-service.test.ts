@@ -8,19 +8,12 @@
  * SHALL produce an equivalent theme. Invalid theme files SHALL be rejected
  * with appropriate error messages.
  */
+import * as fc from "fast-check";
 
-import { describe, it, expect } from 'vitest';
-import * as fc from 'fast-check';
-import {
-  validateThemeFile,
-  validateColor,
-  mergeWithBaseTheme,
-  themeFileToDefinition,
-  themeDefinitionToFile,
-  DEFAULT_DARK_TOKENS,
-  DEFAULT_LIGHT_TOKENS,
-} from './theme-service';
-import type { ThemeFile, ThemeTokens, DeepPartial } from '../types/theme';
+import { describe, expect, it } from "vitest";
+
+import type { DeepPartial, ThemeFile, ThemeTokens } from "../types/theme";
+import { DEFAULT_DARK_TOKENS, DEFAULT_LIGHT_TOKENS, mergeWithBaseTheme, themeDefinitionToFile, themeFileToDefinition, validateColor, validateThemeFile } from "./theme-service";
 
 // ============================================================================
 // Arbitrary Generators for Property-Based Testing
@@ -108,9 +101,9 @@ const _themeMetadataArb = fc.record({
   version: versionArb,
   type: themeTypeArb,
 });
+
 // Suppress unused warning - kept for documentation
 void _themeMetadataArb;
-
 
 /**
  * Generate partial editor tokens with valid colors
@@ -170,7 +163,6 @@ const validThemeFileArb: fc.Arbitrary<ThemeFile> = fc.record({
 // ============================================================================
 // Property Tests
 // ============================================================================
-
 describe('Theme Service - Property 5: Theme File Validation Round-Trip', () => {
   /**
    * Feature: editor-enhancements, Property 5: Theme File Validation Round-Trip
@@ -220,7 +212,6 @@ describe('Theme Service - Property 5: Theme File Validation Round-Trip', () => {
       );
     });
   });
-
 
   describe('Theme File Validation', () => {
     it('should validate all valid theme files', () => {
@@ -309,7 +300,6 @@ describe('Theme Service - Property 5: Theme File Validation Round-Trip', () => {
       );
     });
   });
-
 
   describe('Round-Trip Conversion', () => {
     it('should preserve theme data through file-to-definition-to-file conversion', () => {

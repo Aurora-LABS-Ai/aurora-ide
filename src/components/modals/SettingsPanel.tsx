@@ -23,11 +23,12 @@
 import React, { useState } from 'react';
 import { useUiStore } from '../../store/useUiStore';
 import { useSettingsStore, type LLMProvider } from '../../store/useSettingsStore';
-import { X, Server, Layout, Shield, Eye, EyeOff, Plus, Trash2, ChevronDown, Palette, Database } from 'lucide-react';
+import { X, Server, Layout, Shield, Eye, EyeOff, Plus, Trash2, ChevronDown, Palette, Database, Plug } from 'lucide-react';
 import clsx from 'clsx';
 import { ToolSettingsTab } from './ToolSettingsTab';
 import { ThemeSettingsTab } from './ThemeSettingsTab';
 import { SemanticSettingsTab } from './SemanticSettingsTab';
+import { McpSettingsTab } from './McpSettingsTab';
 
 // ============================================
 // ADD PROVIDER FORM
@@ -441,7 +442,7 @@ export const SettingsPanel: React.FC = () => {
 
   // Each provider has its own supportsThinking, defaultTemperature, and defaultMaxTokens
 
-  const [activeTab, setActiveTab] = useState<'providers' | 'tools' | 'general' | 'themes' | 'semantic'>('providers');
+  const [activeTab, setActiveTab] = useState<'providers' | 'tools' | 'general' | 'themes' | 'semantic' | 'mcp'>('providers');
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [isAddingProvider, setIsAddingProvider] = useState(false);
@@ -466,6 +467,7 @@ export const SettingsPanel: React.FC = () => {
 
           {[
             { id: 'providers', label: 'Providers', icon: Server },
+            { id: 'mcp', label: 'MCP Servers', icon: Plug },
             { id: 'semantic', label: 'Semantic Search', icon: Database },
             { id: 'themes', label: 'Appearance', icon: Palette },
             { id: 'tools', label: 'Tools', icon: Shield },
@@ -490,10 +492,11 @@ export const SettingsPanel: React.FC = () => {
           <div className="h-10 border-b border-border flex items-center justify-between px-4 bg-sidebar">
             <h2 className="text-xs font-medium text-text-primary">
               {activeTab === 'providers' ? 'LLM Providers' :
-                activeTab === 'semantic' ? 'Semantic Search' :
-                  activeTab === 'themes' ? 'Appearance & Theme' :
-                    activeTab === 'tools' ? 'Tool Settings' :
-                      'General Settings'}
+                activeTab === 'mcp' ? 'MCP Servers' :
+                  activeTab === 'semantic' ? 'Semantic Search' :
+                    activeTab === 'themes' ? 'Appearance & Theme' :
+                      activeTab === 'tools' ? 'Tool Settings' :
+                        'General Settings'}
             </h2>
             <button
               onClick={() => setSettingsOpen(false)}
@@ -543,6 +546,9 @@ export const SettingsPanel: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {/* MCP SERVERS TAB */}
+            {activeTab === 'mcp' && <McpSettingsTab />}
 
             {/* SEMANTIC SEARCH TAB */}
             {activeTab === 'semantic' && <SemanticSettingsTab />}

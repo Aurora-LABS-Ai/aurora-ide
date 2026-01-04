@@ -21,166 +21,268 @@
  */
 
 import React, { memo } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import type { Components } from 'react-markdown';
+import { Streamdown } from 'streamdown';
 
 interface MarkdownRendererProps {
   content: string;
+  isStreaming?: boolean;
 }
 
-// Custom components for markdown rendering
-const components: Components = {
-  // Code blocks
-  code({ className, children, ...props }) {
-    const match = /language-(\w+)/.exec(className || '');
-    const isInline = !match && !className;
-
-    if (isInline) {
-      return (
-        <code
-          className="px-1 py-0.5 rounded bg-input text-primary font-mono text-[11px]"
-          {...props}
-        >
-          {children}
-        </code>
-      );
+// Custom components for Streamdown rendering - matching our theme system
+const components = {
+  // Code blocks - inline
+  code: ({ children, className, ...props }: React.HTMLAttributes<HTMLElement>) => {
+    // Check if it's a code block (has language class) or inline code
+    const isCodeBlock = className?.includes('language-');
+    
+    if (isCodeBlock) {
+      // Let Streamdown handle code blocks with its built-in syntax highlighting
+      return <code className={className} {...props}>{children}</code>;
     }
 
+    // Inline code
     return (
-      <div className="my-2 rounded-lg overflow-hidden border border-border">
-        {match && (
-          <div className="px-3 py-1 bg-panel-header text-[10px] text-text-secondary font-mono border-b border-border">
-            {match[1]}
-          </div>
-        )}
-        <pre className="p-3 bg-editor overflow-x-auto scrollbar-thin">
-          <code className="text-[11px] font-mono text-text-primary leading-relaxed" {...props}>
-            {children}
-          </code>
-        </pre>
-      </div>
+      <code
+        className="px-1 py-0.5 rounded text-[var(--aurora-common-primary)] font-mono text-[11px]"
+        style={{ background: 'var(--aurora-editor-background)' }}
+        {...props}
+      >
+        {children}
+      </code>
     );
   },
 
   // Paragraphs
-  p({ children }) {
-    return (
-      <p className="text-[13px] leading-relaxed text-text-primary my-1.5">
-        {children}
-      </p>
-    );
-  },
+  p: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
+    <p 
+      className="text-[13px] leading-relaxed my-1.5"
+      style={{ color: 'var(--aurora-chat-foreground)' }}
+      {...props}
+    >
+      {children}
+    </p>
+  ),
 
   // Headers
-  h1({ children }) {
-    return <h1 className="text-lg font-bold text-text-primary mt-3 mb-2">{children}</h1>;
-  },
-  h2({ children }) {
-    return <h2 className="text-base font-bold text-text-primary mt-3 mb-1.5">{children}</h2>;
-  },
-  h3({ children }) {
-    return <h3 className="text-sm font-semibold text-text-primary mt-2 mb-1">{children}</h3>;
-  },
-  h4({ children }) {
-    return <h4 className="text-[13px] font-semibold text-text-primary mt-2 mb-1">{children}</h4>;
-  },
+  h1: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
+    <h1 
+      className="text-lg font-bold mt-3 mb-2"
+      style={{ color: 'var(--aurora-chat-foreground)' }}
+      {...props}
+    >
+      {children}
+    </h1>
+  ),
+  h2: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
+    <h2 
+      className="text-base font-bold mt-3 mb-1.5"
+      style={{ color: 'var(--aurora-chat-foreground)' }}
+      {...props}
+    >
+      {children}
+    </h2>
+  ),
+  h3: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
+    <h3 
+      className="text-sm font-semibold mt-2 mb-1"
+      style={{ color: 'var(--aurora-chat-foreground)' }}
+      {...props}
+    >
+      {children}
+    </h3>
+  ),
+  h4: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
+    <h4 
+      className="text-[13px] font-semibold mt-2 mb-1"
+      style={{ color: 'var(--aurora-chat-foreground)' }}
+      {...props}
+    >
+      {children}
+    </h4>
+  ),
 
   // Lists
-  ul({ children }) {
-    return <ul className="list-disc list-inside my-1.5 space-y-0.5 text-[13px] text-text-primary">{children}</ul>;
-  },
-  ol({ children }) {
-    return <ol className="list-decimal list-inside my-1.5 space-y-0.5 text-[13px] text-text-primary">{children}</ol>;
-  },
-  li({ children }) {
-    return <li className="text-[13px] text-text-primary leading-relaxed">{children}</li>;
-  },
+  ul: ({ children, ...props }: React.HTMLAttributes<HTMLUListElement>) => (
+    <ul 
+      className="list-disc list-inside my-1.5 space-y-0.5 text-[13px]"
+      style={{ color: 'var(--aurora-chat-foreground)' }}
+      {...props}
+    >
+      {children}
+    </ul>
+  ),
+  ol: ({ children, ...props }: React.HTMLAttributes<HTMLOListElement>) => (
+    <ol 
+      className="list-decimal list-inside my-1.5 space-y-0.5 text-[13px]"
+      style={{ color: 'var(--aurora-chat-foreground)' }}
+      {...props}
+    >
+      {children}
+    </ol>
+  ),
+  li: ({ children, ...props }: React.HTMLAttributes<HTMLLIElement>) => (
+    <li 
+      className="text-[13px] leading-relaxed"
+      style={{ color: 'var(--aurora-chat-foreground)' }}
+      {...props}
+    >
+      {children}
+    </li>
+  ),
 
   // Links
-  a({ href, children }) {
-    return (
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-primary hover:underline"
-      >
-        {children}
-      </a>
-    );
-  },
+  a: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="hover:underline"
+      style={{ color: 'var(--aurora-common-primary)' }}
+      {...props}
+    >
+      {children}
+    </a>
+  ),
 
   // Blockquotes
-  blockquote({ children }) {
-    return (
-      <blockquote className="border-l-2 border-primary/50 pl-3 my-2 text-text-secondary italic">
-        {children}
-      </blockquote>
-    );
-  },
+  blockquote: ({ children, ...props }: React.HTMLAttributes<HTMLQuoteElement>) => (
+    <blockquote 
+      className="border-l-2 pl-3 my-2 italic"
+      style={{ 
+        borderColor: 'var(--aurora-common-primary)',
+        color: 'var(--aurora-chat-foreground)',
+        opacity: 0.8
+      }}
+      {...props}
+    >
+      {children}
+    </blockquote>
+  ),
 
   // Horizontal rule
-  hr() {
-    return <hr className="my-3 border-border" />;
-  },
+  hr: (props: React.HTMLAttributes<HTMLHRElement>) => (
+    <hr 
+      className="my-3"
+      style={{ borderColor: 'var(--aurora-common-border)' }}
+      {...props}
+    />
+  ),
 
   // Strong/Bold
-  strong({ children }) {
-    return <strong className="font-semibold text-text-primary">{children}</strong>;
-  },
+  strong: ({ children, ...props }: React.HTMLAttributes<HTMLElement>) => (
+    <strong 
+      className="font-semibold"
+      style={{ color: 'var(--aurora-chat-foreground)' }}
+      {...props}
+    >
+      {children}
+    </strong>
+  ),
 
   // Emphasis/Italic
-  em({ children }) {
-    return <em className="italic text-text-primary">{children}</em>;
-  },
+  em: ({ children, ...props }: React.HTMLAttributes<HTMLElement>) => (
+    <em 
+      className="italic"
+      style={{ color: 'var(--aurora-chat-foreground)' }}
+      {...props}
+    >
+      {children}
+    </em>
+  ),
 
   // Tables
-  table({ children }) {
-    return (
-      <div className="my-2 overflow-x-auto scrollbar-thin">
-        <table className="min-w-full text-[12px] border border-border rounded">
-          {children}
-        </table>
-      </div>
-    );
-  },
-  thead({ children }) {
-    return <thead className="bg-panel-header">{children}</thead>;
-  },
-  tbody({ children }) {
-    return <tbody className="divide-y divide-border">{children}</tbody>;
-  },
-  tr({ children }) {
-    return <tr className="hover:bg-input/30">{children}</tr>;
-  },
-  th({ children }) {
-    return <th className="px-2 py-1.5 text-left font-semibold text-text-primary border-b border-border">{children}</th>;
-  },
-  td({ children }) {
-    return <td className="px-2 py-1.5 text-text-secondary border-b border-border/50">{children}</td>;
-  },
+  table: ({ children, ...props }: React.HTMLAttributes<HTMLTableElement>) => (
+    <div className="my-2 overflow-x-auto scrollbar-thin">
+      <table 
+        className="min-w-full text-[12px] rounded"
+        style={{ border: '1px solid var(--aurora-common-border)' }}
+        {...props}
+      >
+        {children}
+      </table>
+    </div>
+  ),
+  thead: ({ children, ...props }: React.HTMLAttributes<HTMLTableSectionElement>) => (
+    <thead 
+      style={{ background: 'var(--aurora-sidebar-background)' }}
+      {...props}
+    >
+      {children}
+    </thead>
+  ),
+  tbody: ({ children, ...props }: React.HTMLAttributes<HTMLTableSectionElement>) => (
+    <tbody 
+      className="divide-y"
+      style={{ borderColor: 'var(--aurora-common-border)' }}
+      {...props}
+    >
+      {children}
+    </tbody>
+  ),
+  tr: ({ children, ...props }: React.HTMLAttributes<HTMLTableRowElement>) => (
+    <tr 
+      className="hover:bg-white/5"
+      {...props}
+    >
+      {children}
+    </tr>
+  ),
+  th: ({ children, ...props }: React.HTMLAttributes<HTMLTableCellElement>) => (
+    <th 
+      className="px-2 py-1.5 text-left font-semibold"
+      style={{ 
+        color: 'var(--aurora-chat-foreground)',
+        borderBottom: '1px solid var(--aurora-common-border)'
+      }}
+      {...props}
+    >
+      {children}
+    </th>
+  ),
+  td: ({ children, ...props }: React.HTMLAttributes<HTMLTableCellElement>) => (
+    <td 
+      className="px-2 py-1.5"
+      style={{ 
+        color: 'var(--aurora-chat-foreground)',
+        opacity: 0.8,
+        borderBottom: '1px solid var(--aurora-common-border)'
+      }}
+      {...props}
+    >
+      {children}
+    </td>
+  ),
 
   // Delete/Strikethrough
-  del({ children }) {
-    return <del className="line-through text-text-disabled">{children}</del>;
-  },
+  del: ({ children, ...props }: React.HTMLAttributes<HTMLElement>) => (
+    <del 
+      className="line-through"
+      style={{ color: 'var(--aurora-chat-foreground)', opacity: 0.5 }}
+      {...props}
+    >
+      {children}
+    </del>
+  ),
 };
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ content }) => {
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ content, isStreaming = false }) => {
   if (!content) return null;
 
   return (
     <div className="markdown-content overflow-hidden">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+      <Streamdown
+        isAnimating={isStreaming}
         components={components}
+        shikiTheme={['github-dark', 'github-dark']}
+        controls={{
+          code: true,
+          table: true,
+        }}
       >
         {content}
-      </ReactMarkdown>
+      </Streamdown>
     </div>
   );
 });
 
 MarkdownRenderer.displayName = 'MarkdownRenderer';
-

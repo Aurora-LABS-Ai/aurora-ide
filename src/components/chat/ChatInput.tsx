@@ -112,6 +112,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const [hasInteracted, setHasInteracted] = useState(false);
 
+  // Focus state for theming
+  const [isFocused, setIsFocused] = useState(false);
+
   // Mention Logic State
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIndex, setMentionIndex] = useState<number>(-1);
@@ -123,7 +126,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   const { setSettingsOpen } = useUiStore();
-  const { isLoading, stopGeneration } = useChatStore();
+  const { isLoading, stopGeneration, consumePendingInput, pendingInputContent } = useChatStore();
   const { files: workspaceFiles } = useWorkspaceStore();
   const { openFile } = useEditorStore();
   const { tasks, isVisible } = useTaskStore();
@@ -146,6 +149,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
 
   // Flatten files for searching
   const allFiles = useMemo(() => flattenFiles(workspaceFiles), [workspaceFiles]);
+
+  // Consume pending input from external sources (e.g., browser element inspector)
+  useEffect(() => {
+    if (pendingInputContent) {
+      const pending = consumePendingInput();
+      if (pending) {
+        setContent(prev => prev ? `${prev}\n\n${pending}` : pending);
+        // Focus the textarea
+        textareaRef.current?.focus();
+      }
+    }
+  }, [pendingInputContent, consumePendingInput]);
 
   // Handle Input Change for Mentions
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -492,19 +507,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
         onClick={handleContainerClick}
         className={clsx(
           "rounded-xl transition-all duration-200 cursor-text",
-          isLoading ? "shadow-primary/10" : "hover:shadow-sm"
+          isLoading ? "shadow-primary/10" : ""
         )}
         style={{
-          backgroundColor: 'var(--aurora-chat-surface)',
-          border: '1px solid var(--aurora-chat-surfaceBorder)',
+          backgroundColor: 'var(--aurora-chat-input-background)',
+          border: isFocused
+            ? '1px solid var(--aurora-common-primary)'
+            : '1px solid var(--aurora-chat-input-border)',
           boxShadow: isLoading
-            ? '0 0 0 1px color-mix(in srgb, var(--aurora-chat-usageLow) 20%, transparent)'
-            : '0 0 0 1px var(--aurora-chat-surfaceBorder)',
+            ? '0 0 0 1px color-mix(in srgb, var(--aurora-chat-usage-low) 20%, transparent)'
+            : 'none',
         }}
       >
 
         {/* Top Control Bar */}
-        <div className="flex items-center justify-between px-3 pt-2.5 pb-1" style={{ backgroundColor: 'var(--aurora-chat-surfaceMuted)' }}>
+        <div className="flex items-center justify-between px-3 pt-2.5 pb-1" style={{ backgroundColor: 'transparent' }}>
           {/* Model Pill */}
           <button
             ref={buttonRef}
@@ -586,6 +603,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
           <textarea
             ref={textareaRef}
             value={content}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
             disabled={disabled || isLoading}

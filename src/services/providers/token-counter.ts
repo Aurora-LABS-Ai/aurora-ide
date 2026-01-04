@@ -1,33 +1,12 @@
 /**
  * Token Counter - Enterprise-grade token estimation
- *
+ * 
  * Based on KiloCode's approach:
  * - Character-based estimation with type-specific ratios
  * - 1.5x fudge factor for accuracy
  * - Handles text, code, JSON, and images
  */
-
-import type { Message, ContentBlock, ToolDefinition } from './types';
-
-// Token estimation ratios (characters per token)
-const CHARS_PER_TOKEN = {
-  text: 4,
-  code: 3.5,
-  json: 3,
-  mixed: 3.7,
-};
-
-// Fudge factor for estimation accuracy (KiloCode uses 1.5x)
-const TOKEN_FUDGE_FACTOR = 1.5;
-
-// Message overhead tokens
-const MESSAGE_OVERHEAD_TOKENS = 4;
-
-// Tool definition overhead
-const TOOL_OVERHEAD_TOKENS = 10;
-
-// Image token estimation (conservative)
-const IMAGE_BASE_TOKENS = 300;
+import type { ContentBlock, Message, ToolDefinition } from "./types";
 
 export class TokenCounter {
   private fudgeFactor: number;
@@ -39,7 +18,7 @@ export class TokenCounter {
   /**
    * Count tokens for content (string or content blocks)
    */
-  countTokens(content: string | ContentBlock[]): number {
+  public countTokens(content: string | ContentBlock[]): number {
     if (typeof content === 'string') {
       return this.estimateTextTokens(content);
     }
@@ -50,6 +29,85 @@ export class TokenCounter {
     }
 
     return Math.ceil(total * this.fudgeFactor);
+  }
+
+  /**
+   * Estimate tokens for a message array (for history)
+   */
+  public estimateHistory(messages: Message[]): number {
+    return this.estimateRequest(messages);
+  }
+
+  /**
+   * Estimate total tokens for a complete request
+   */
+  public estimateRequest(
+    messages: Message[],
+    tools?: ToolDefinition[]
+  ): number {
+    let total = 0;
+
+    // Count message tokens
+    for (const msg of messages) {
+      total += MESSAGE_OVERHEAD_TOKENS;
+      total += this.countTokens(msg.content);
+    }
+
+    // Count tool definition tokens
+    if (tools?.length) {
+      for (const tool of tools) {
+        total += TOOL_OVERHEAD_TOKENS;
+        total += this.estimateTextTokens(tool.function.name, false);
+        total += this.estimateTextTokens(tool.function.description, false);
+        total += this.estimateTextTokens(
+          JSON.stringify(tool.function.parameters),
+          false
+        );
+      }
+    }
+
+    return Math.ceil(total * this.fudgeFactor);
+  }
+
+  /**
+   * Calculate remaining tokens in context window
+   */
+  public getRemainingTokens(
+    usedTokens: number,
+    contextWindow: number,
+    reservedForOutput: number
+  ): number {
+    const bufferPercent = 0.1; // 10% buffer (KiloCode)
+    const allowedTokens = contextWindow * (1 - bufferPercent) - reservedForOutput;
+    return Math.max(0, allowedTokens - usedTokens);
+  }
+
+  /**
+   * Calculate usage percentage
+   */
+  public getUsagePercentage(usedTokens: number, contextWindow: number): number {
+    if (contextWindow <= 0) return 0;
+    return Math.min(100, Math.round((usedTokens / contextWindow) * 100));
+  }
+
+  /**
+   * Check if context is near limit (>80%)
+   */
+  public isNearLimit(usedTokens: number, contextWindow: number): boolean {
+    return (usedTokens / contextWindow) >= 0.8;
+  }
+
+  /**
+   * Check if context is over limit
+   */
+  public isOverLimit(
+    usedTokens: number,
+    contextWindow: number,
+    reservedForOutput: number
+  ): boolean {
+    const bufferPercent = 0.1;
+    const allowedTokens = contextWindow * (1 - bufferPercent) - reservedForOutput;
+    return usedTokens > allowedTokens;
   }
 
   /**
@@ -80,19 +138,6 @@ export class TokenCounter {
       default:
         return 0;
     }
-  }
-
-  /**
-   * Estimate tokens for text content
-   */
-  private estimateTextTokens(text: string, applyFudge: boolean = true): number {
-    if (!text) return 0;
-
-    // Detect content type
-    const ratio = this.detectContentRatio(text);
-    const tokens = Math.ceil(text.length / ratio);
-
-    return applyFudge ? Math.ceil(tokens * this.fudgeFactor) : tokens;
   }
 
   /**
@@ -141,84 +186,38 @@ export class TokenCounter {
   }
 
   /**
-   * Estimate total tokens for a complete request
+   * Estimate tokens for text content
    */
-  estimateRequest(
-    messages: Message[],
-    tools?: ToolDefinition[]
-  ): number {
-    let total = 0;
+  private estimateTextTokens(text: string, applyFudge: boolean = true): number {
+    if (!text) return 0;
 
-    // Count message tokens
-    for (const msg of messages) {
-      total += MESSAGE_OVERHEAD_TOKENS;
-      total += this.countTokens(msg.content);
-    }
+    // Detect content type
+    const ratio = this.detectContentRatio(text);
+    const tokens = Math.ceil(text.length / ratio);
 
-    // Count tool definition tokens
-    if (tools?.length) {
-      for (const tool of tools) {
-        total += TOOL_OVERHEAD_TOKENS;
-        total += this.estimateTextTokens(tool.function.name, false);
-        total += this.estimateTextTokens(tool.function.description, false);
-        total += this.estimateTextTokens(
-          JSON.stringify(tool.function.parameters),
-          false
-        );
-      }
-    }
-
-    return Math.ceil(total * this.fudgeFactor);
-  }
-
-  /**
-   * Estimate tokens for a message array (for history)
-   */
-  estimateHistory(messages: Message[]): number {
-    return this.estimateRequest(messages);
-  }
-
-  /**
-   * Calculate remaining tokens in context window
-   */
-  getRemainingTokens(
-    usedTokens: number,
-    contextWindow: number,
-    reservedForOutput: number
-  ): number {
-    const bufferPercent = 0.1; // 10% buffer (KiloCode)
-    const allowedTokens = contextWindow * (1 - bufferPercent) - reservedForOutput;
-    return Math.max(0, allowedTokens - usedTokens);
-  }
-
-  /**
-   * Check if context is near limit (>80%)
-   */
-  isNearLimit(usedTokens: number, contextWindow: number): boolean {
-    return (usedTokens / contextWindow) >= 0.8;
-  }
-
-  /**
-   * Check if context is over limit
-   */
-  isOverLimit(
-    usedTokens: number,
-    contextWindow: number,
-    reservedForOutput: number
-  ): boolean {
-    const bufferPercent = 0.1;
-    const allowedTokens = contextWindow * (1 - bufferPercent) - reservedForOutput;
-    return usedTokens > allowedTokens;
-  }
-
-  /**
-   * Calculate usage percentage
-   */
-  getUsagePercentage(usedTokens: number, contextWindow: number): number {
-    if (contextWindow <= 0) return 0;
-    return Math.min(100, Math.round((usedTokens / contextWindow) * 100));
+    return applyFudge ? Math.ceil(tokens * this.fudgeFactor) : tokens;
   }
 }
+
+// Token estimation ratios (characters per token)
+const CHARS_PER_TOKEN = {
+  text: 4,
+  code: 3.5,
+  json: 3,
+  mixed: 3.7,
+};
+
+// Image token estimation (conservative)
+const IMAGE_BASE_TOKENS = 300;
+
+// Message overhead tokens
+const MESSAGE_OVERHEAD_TOKENS = 4;
+
+// Fudge factor for estimation accuracy (KiloCode uses 1.5x)
+const TOKEN_FUDGE_FACTOR = 1.5;
+
+// Tool definition overhead
+const TOOL_OVERHEAD_TOKENS = 10;
 
 // Singleton instance
 export const tokenCounter = new TokenCounter();

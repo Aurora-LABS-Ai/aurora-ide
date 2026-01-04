@@ -1,8 +1,8 @@
 /**
  * OpenAI Provider - Handles OpenAI and Compatible APIs
- *
+ * 
  * Uses the Provider Presets system for centralized configuration.
- *
+ * 
  * Supports:
  * - OpenAI GPT models
  * - DeepSeek (with reasoning support)
@@ -10,44 +10,23 @@
  * - Any OpenAI-compatible API
  * - Tauri HTTP for CORS bypass
  */
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import { BaseProvider } from './base-provider';
-import {
-  getProviderPreset,
-  buildRequestHeaders,
-  buildThinkingParams,
-  shouldSkipTemperature,
-  getChatUrl,
-  type ProviderPreset,
-} from './provider-presets';
-import type {
-  ProviderConfig,
-  ChatRequest,
-  ChatResponse,
-  StreamCallbacks,
-  AssistantMessage,
-  ToolCallRequest,
-  TokenUsage,
-} from './types';
+import { BaseProvider } from "./base-provider";
+import { type ProviderPreset, buildRequestHeaders, buildThinkingParams, getChatUrl, getProviderPreset, shouldSkipTemperature } from "./provider-presets";
+import type { AssistantMessage, ChatRequest, ChatResponse, ProviderConfig, StreamCallbacks, TokenUsage, ToolCallRequest } from "./types";
 
 // Tauri command types
 interface LlmRequest {
-  url: string;
-  method: string;
-  headers: Record<string, string>;
   body?: string;
+  headers: Record<string, string>;
+  method: string;
   stream: boolean;
-}
-
-interface TauriStreamChunk {
-  data: string;
-  done: boolean;
+  url: string;
 }
 
 interface OpenAIStreamChunk {
-  id: string;
   choices: Array<{
     index: number;
     delta: {
@@ -66,11 +45,17 @@ interface OpenAIStreamChunk {
     };
     finish_reason?: string;
   }>;
+  id: string;
   usage?: {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
   };
+}
+
+interface TauriStreamChunk {
+  data: string;
+  done: boolean;
 }
 
 export class OpenAIProvider extends BaseProvider {
@@ -83,136 +68,9 @@ export class OpenAIProvider extends BaseProvider {
   }
 
   /**
-   * Build headers using the preset system
-   */
-  protected buildHeaders(): Record<string, string> {
-    return buildRequestHeaders(
-      this.preset,
-      this._config.apiKey,
-      this._config.customHeaders
-    );
-  }
-
-  /**
-   * Build request body using preset-driven configuration
-   */
-  private buildRequestBody(request: ChatRequest): Record<string, unknown> {
-    const model = this._config.model;
-
-    // Convert messages to OpenAI format (preserving necessary fields)
-    const messages = request.messages.map(msg => {
-      const apiMsg: Record<string, unknown> = {
-        role: msg.role,
-      };
-
-      // Handle content - only include if not empty
-      // Some APIs (like GLM) have issues with empty string content in assistant messages with tool_calls
-      if (msg.content !== undefined && msg.content !== null && msg.content !== '') {
-        apiMsg.content = msg.content;
-      }
-
-      // Preserve tool_calls for assistant messages (Critical for tool use chains)
-      if (msg.role === 'assistant') {
-        const assistantMsg = msg as AssistantMessage;
-        if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
-          // Transform internal tool use format to OpenAI API format
-          apiMsg.tool_calls = assistantMsg.tool_calls.map(tc => ({
-            id: tc.id,
-            type: 'function',
-            function: {
-              name: tc.function.name,
-              arguments: typeof tc.function.arguments === 'string'
-                ? tc.function.arguments
-                : JSON.stringify(tc.function.arguments),
-            }
-          }));
-
-          // For assistant messages with tool_calls, content can be null/omitted
-          // GLM and some OpenAI-compatible APIs prefer this
-          if (!apiMsg.content) {
-            apiMsg.content = null;
-          }
-        }
-
-        // Preserve reasoning_content for providers that support it (DeepSeek, GLM)
-        if (assistantMsg.reasoning_content && this.preset.thinkingConfig?.responseField === 'reasoning_content') {
-          apiMsg.reasoning_content = assistantMsg.reasoning_content;
-        }
-      }
-
-      // Preserve tool_call_id for tool results
-      if (msg.role === 'tool') {
-        const toolMsg = msg as { tool_call_id?: string; content?: unknown };
-        if (toolMsg.tool_call_id) {
-          apiMsg.tool_call_id = toolMsg.tool_call_id;
-        }
-        // Ensure content is always a string for tool messages
-        if (typeof apiMsg.content !== 'string') {
-          apiMsg.content = JSON.stringify(apiMsg.content || '');
-        }
-      }
-
-      return apiMsg;
-    });
-
-    const body: Record<string, unknown> = {
-      model,
-      messages,
-      stream: request.stream ?? false,
-      max_tokens: this.getMaxTokens(request.maxTokens),
-    };
-
-    // Temperature handling - use preset to check if should skip
-    if (!shouldSkipTemperature(this.preset, model)) {
-      body.temperature = this.getTemperature(request.temperature);
-    }
-
-    // Thinking mode - use preset configuration
-    // Only enable if: provider supports it AND user has it enabled AND provider preset has config
-    if (this._config.supportsThinking && request.thinkingEnabled !== false) {
-      const thinkingParams = buildThinkingParams(this.preset, true);
-      Object.assign(body, thinkingParams);
-    }
-
-    // Tools
-    if (request.tools?.length) {
-      body.tools = request.tools;
-      body.tool_choice = 'auto';
-
-      // GLM: tool_stream enables streaming for tool calls
-      // Supported by GLM-4.6+ (including GLM-4.7)
-      if (this.preset.id === 'glm') {
-        body.tool_stream = true;
-      }
-    }
-
-    // Stream options for usage tracking - use preset to determine support
-    if (request.stream && this.preset.includeStreamOptions) {
-      body.stream_options = { include_usage: true };
-    }
-
-    // Apply preset's default params first
-    if (this.preset.defaultParams) {
-      // Don't override already-set params
-      for (const [key, value] of Object.entries(this.preset.defaultParams)) {
-        if (!(key in body)) {
-          body[key] = value;
-        }
-      }
-    }
-
-    // Merge custom params (highest priority - user overrides everything)
-    if (this._config.customParams) {
-      Object.assign(body, this._config.customParams);
-    }
-
-    return body;
-  }
-
-  /**
    * Non-streaming chat completion
    */
-  async chat(request: ChatRequest): Promise<ChatResponse> {
+  public async chat(request: ChatRequest): Promise<ChatResponse> {
     const body = this.buildRequestBody({ ...request, stream: false });
     const url = getChatUrl(this._config.baseUrl, this.preset);
 
@@ -253,7 +111,7 @@ export class OpenAIProvider extends BaseProvider {
   /**
    * Streaming chat completion (uses Tauri for CORS bypass)
    */
-  async streamChat(
+  public async streamChat(
     request: ChatRequest,
     callbacks: StreamCallbacks
   ): Promise<AssistantMessage> {
@@ -420,5 +278,132 @@ export class OpenAIProvider extends BaseProvider {
       callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
+  }
+
+  /**
+   * Build headers using the preset system
+   */
+  protected buildHeaders(): Record<string, string> {
+    return buildRequestHeaders(
+      this.preset,
+      this._config.apiKey,
+      this._config.customHeaders
+    );
+  }
+
+  /**
+   * Build request body using preset-driven configuration
+   */
+  private buildRequestBody(request: ChatRequest): Record<string, unknown> {
+    const model = this._config.model;
+
+    // Convert messages to OpenAI format (preserving necessary fields)
+    const messages = request.messages.map(msg => {
+      const apiMsg: Record<string, unknown> = {
+        role: msg.role,
+      };
+
+      // Handle content - only include if not empty
+      // Some APIs (like GLM) have issues with empty string content in assistant messages with tool_calls
+      if (msg.content !== undefined && msg.content !== null && msg.content !== '') {
+        apiMsg.content = msg.content;
+      }
+
+      // Preserve tool_calls for assistant messages (Critical for tool use chains)
+      if (msg.role === 'assistant') {
+        const assistantMsg = msg as AssistantMessage;
+        if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
+          // Transform internal tool use format to OpenAI API format
+          apiMsg.tool_calls = assistantMsg.tool_calls.map(tc => ({
+            id: tc.id,
+            type: 'function',
+            function: {
+              name: tc.function.name,
+              arguments: typeof tc.function.arguments === 'string'
+                ? tc.function.arguments
+                : JSON.stringify(tc.function.arguments),
+            }
+          }));
+
+          // For assistant messages with tool_calls, content can be null/omitted
+          // GLM and some OpenAI-compatible APIs prefer this
+          if (!apiMsg.content) {
+            apiMsg.content = null;
+          }
+        }
+
+        // Preserve reasoning_content for providers that support it (DeepSeek, GLM)
+        if (assistantMsg.reasoning_content && this.preset.thinkingConfig?.responseField === 'reasoning_content') {
+          apiMsg.reasoning_content = assistantMsg.reasoning_content;
+        }
+      }
+
+      // Preserve tool_call_id for tool results
+      if (msg.role === 'tool') {
+        const toolMsg = msg as { tool_call_id?: string; content?: unknown };
+        if (toolMsg.tool_call_id) {
+          apiMsg.tool_call_id = toolMsg.tool_call_id;
+        }
+        // Ensure content is always a string for tool messages
+        if (typeof apiMsg.content !== 'string') {
+          apiMsg.content = JSON.stringify(apiMsg.content || '');
+        }
+      }
+
+      return apiMsg;
+    });
+
+    const body: Record<string, unknown> = {
+      model,
+      messages,
+      stream: request.stream ?? false,
+      max_tokens: this.getMaxTokens(request.maxTokens),
+    };
+
+    // Temperature handling - use preset to check if should skip
+    if (!shouldSkipTemperature(this.preset, model)) {
+      body.temperature = this.getTemperature(request.temperature);
+    }
+
+    // Thinking mode - use preset configuration
+    // Only enable if: provider supports it AND user has it enabled AND provider preset has config
+    if (this._config.supportsThinking && request.thinkingEnabled !== false) {
+      const thinkingParams = buildThinkingParams(this.preset, true);
+      Object.assign(body, thinkingParams);
+    }
+
+    // Tools
+    if (request.tools?.length) {
+      body.tools = request.tools;
+      body.tool_choice = 'auto';
+
+      // GLM: tool_stream enables streaming for tool calls
+      // Supported by GLM-4.6+ (including GLM-4.7)
+      if (this.preset.id === 'glm') {
+        body.tool_stream = true;
+      }
+    }
+
+    // Stream options for usage tracking - use preset to determine support
+    if (request.stream && this.preset.includeStreamOptions) {
+      body.stream_options = { include_usage: true };
+    }
+
+    // Apply preset's default params first
+    if (this.preset.defaultParams) {
+      // Don't override already-set params
+      for (const [key, value] of Object.entries(this.preset.defaultParams)) {
+        if (!(key in body)) {
+          body[key] = value;
+        }
+      }
+    }
+
+    // Merge custom params (highest priority - user overrides everything)
+    if (this._config.customParams) {
+      Object.assign(body, this._config.customParams);
+    }
+
+    return body;
   }
 }

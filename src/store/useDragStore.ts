@@ -2,36 +2,36 @@
  * Drag-Drop State Store
  * Handles internal file/folder drag operations
  */
-
-import { create } from 'zustand';
+import { create } from "zustand";
 
 interface DragState {
-  // Pending drag (before threshold is met)
-  pendingPath: string | null;
-  pendingName: string | null;
-  startX: number;
-  startY: number;
+  cancelDrag: () => void;
+  draggedName: string | null;
 
   // Active drag (after threshold is met)
   draggedPath: string | null;
-  draggedName: string | null;
-  isDragging: boolean;
 
   // Drop target
   dropTargetPath: string | null;
   dropTargetType: 'folder' | 'root' | 'editor' | null;
+  endDrag: () => void;
+  isDragging: boolean;
 
   // Mouse position for drag preview
   mouseX: number;
   mouseY: number;
+  pendingName: string | null;
+
+  // Pending drag (before threshold is met)
+  pendingPath: string | null;
 
   // Actions
   prepareDrag: (path: string, name: string, x: number, y: number) => void;
-  startDrag: () => void;
-  updateMouse: (x: number, y: number) => void;
   setDropTarget: (path: string | null, type: 'folder' | 'root' | 'editor' | null) => void;
-  endDrag: () => void;
-  cancelDrag: () => void;
+  startDrag: () => void;
+  startX: number;
+  startY: number;
+  updateMouse: (x: number, y: number) => void;
 }
 
 const DRAG_THRESHOLD = 5; // pixels

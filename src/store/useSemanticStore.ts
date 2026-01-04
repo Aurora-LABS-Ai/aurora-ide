@@ -1,58 +1,50 @@
-import { create } from 'zustand';
-import { semanticService, setSemanticEventHandlers } from '../services/semantic';
-import type {
-  SemanticIndex,
-  SemanticSettings,
-  SemanticSearchResult,
-  IndexProgress,
-  SearchMode,
-} from '../types/database';
-import type { ModelInfo } from '../services/semantic';
+import { create } from "zustand";
+
+import { type ModelInfo, semanticService, setSemanticEventHandlers } from "../services/semantic";
+import type { IndexProgress, SearchMode, SemanticIndex, SemanticSearchResult, SemanticSettings } from "../types/database";
 
 interface SemanticState {
-  // Settings
-  settings: SemanticSettings | null;
-  settingsLoading: boolean;
+  allIndexes: SemanticIndex[];
+  cancelIndexing: (indexId: string) => Promise<void>;
+  clearSearchResults: () => void;
 
   // Current workspace index
   currentIndex: SemanticIndex | null;
-  allIndexes: SemanticIndex[];
+  deleteIndex: (id: string, workspacePath: string) => Promise<void>;
+  indexProgress: IndexProgress | null;
   indexesLoading: boolean;
 
   // Indexing state
   isIndexing: boolean;
-  indexProgress: IndexProgress | null;
+  loadCurrentIndex: (workspacePath: string) => Promise<void>;
+  loadIndexes: () => Promise<void>;
 
-  // Search state
-  searchQuery: string;
-  searchResults: SemanticSearchResult[];
-  searchLoading: boolean;
-  searchMode: SearchMode;
+  // Actions
+  loadSettings: () => Promise<void>;
+  markIndexComplete: (indexId: string, stats: { documentCount: number; chunkCount: number; totalBytes: number }) => void;
+  markIndexError: (indexId: string, error: string) => void;
 
   // Model info
   modelInfo: ModelInfo | null;
   modelValid: boolean;
-
-  // Actions
-  loadSettings: () => Promise<void>;
   saveSettings: (settings: Partial<SemanticSettings>) => Promise<void>;
-  setModelPath: (path: string | null) => Promise<void>;
-  validateModelPath: (path: string) => Promise<boolean>;
-
-  loadIndexes: () => Promise<void>;
-  loadCurrentIndex: (workspacePath: string) => Promise<void>;
-  startIndexing: (workspacePath: string, workspaceName: string) => Promise<string | null>;
-  cancelIndexing: (indexId: string) => Promise<void>;
-  deleteIndex: (id: string, workspacePath: string) => Promise<void>;
-
   search: (workspacePath: string, query: string) => Promise<void>;
-  setSearchQuery: (query: string) => void;
-  setSearchMode: (mode: SearchMode) => void;
-  clearSearchResults: () => void;
+  searchLoading: boolean;
+  searchMode: SearchMode;
 
+  // Search state
+  searchQuery: string;
+  searchResults: SemanticSearchResult[];
+  setModelPath: (path: string | null) => Promise<void>;
+  setSearchMode: (mode: SearchMode) => void;
+  setSearchQuery: (query: string) => void;
+
+  // Settings
+  settings: SemanticSettings | null;
+  settingsLoading: boolean;
+  startIndexing: (workspacePath: string, workspaceName: string) => Promise<string | null>;
   updateIndexProgress: (progress: IndexProgress) => void;
-  markIndexComplete: (indexId: string, stats: { documentCount: number; chunkCount: number; totalBytes: number }) => void;
-  markIndexError: (indexId: string, error: string) => void;
+  validateModelPath: (path: string) => Promise<boolean>;
 }
 
 export const useSemanticStore = create<SemanticState>((set, get) => ({
@@ -352,4 +344,3 @@ semanticService.init().then(() => {
     }
   );
 });
-

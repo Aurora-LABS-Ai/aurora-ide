@@ -4,171 +4,117 @@
  * Provides theme validation, CSS variable injection, and Monaco theme conversion.
  * Implements Requirements 8.1-8.5 for theme file validation and management.
  */
-
-import type {
-  ThemeFile,
-  ThemeTokens,
-  ThemeDefinition,
-  ThemeValidationResult,
-  ColorValidationResult,
-  MonacoThemeData,
-  MonacoTokenRule,
-  CSSVariableMap,
-  DeepPartial,
-} from '../types/theme';
+import type { CSSVariableMap, ColorValidationResult, DeepPartial, MonacoThemeData, MonacoTokenRule, ThemeDefinition, ThemeFile, ThemeTokens, ThemeValidationResult } from "../types/theme";
 
 // ============================================================================
-// Color Validation
+// Theme Service Class
 // ============================================================================
 
 /**
- * Regex patterns for valid color formats
+ * Theme service singleton for managing theme operations
  */
-const COLOR_PATTERNS = {
-  hex3: /^#[0-9A-Fa-f]{3}$/,
-  hex4: /^#[0-9A-Fa-f]{4}$/,
-  hex6: /^#[0-9A-Fa-f]{6}$/,
-  hex8: /^#[0-9A-Fa-f]{8}$/,
-  rgb: /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/,
-  rgba: /^rgba\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(0|1|0?\.\d+)\s*\)$/,
-};
+class ThemeService {
+  private currentTheme: ThemeDefinition | null = null;
 
-/**
- * Validate a color value (hex, rgb, rgba)
- * Requirement 8.4: Validate color values
- */
-export function validateColor(value: string): ColorValidationResult {
-  if (!value || typeof value !== 'string') {
-    return { valid: false, error: 'Color value must be a non-empty string' };
-  }
+  /**
+   * Apply a theme to the application
+   */
+  public applyTheme(theme: ThemeDefinition): void {
+    // Inject CSS variables
+    injectCSSVariables(theme.colors);
 
-  const trimmed = value.trim();
+    // Store current theme
+    this.currentTheme = theme;
 
-  // Check hex formats
-  if (COLOR_PATTERNS.hex6.test(trimmed)) {
-    return { valid: true, normalizedValue: trimmed.toLowerCase() };
-  }
-  if (COLOR_PATTERNS.hex8.test(trimmed)) {
-    return { valid: true, normalizedValue: trimmed.toLowerCase() };
-  }
-  if (COLOR_PATTERNS.hex3.test(trimmed)) {
-    // Expand #RGB to #RRGGBB
-    const expanded = `#${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}${trimmed[3]}${trimmed[3]}`;
-    return { valid: true, normalizedValue: expanded.toLowerCase() };
-  }
-  if (COLOR_PATTERNS.hex4.test(trimmed)) {
-    // Expand #RGBA to #RRGGBBAA
-    const expanded = `#${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}${trimmed[3]}${trimmed[3]}${trimmed[4]}${trimmed[4]}`;
-    return { valid: true, normalizedValue: expanded.toLowerCase() };
-  }
+    // Set data attribute for CSS selectors
+    document.documentElement.setAttribute('data-theme', theme.type);
+    document.documentElement.setAttribute('data-theme-id', theme.id);
 
-  // Check rgb format
-  const rgbMatch = trimmed.match(COLOR_PATTERNS.rgb);
-  if (rgbMatch) {
-    const [, r, g, b] = rgbMatch;
-    if (Number(r) <= 255 && Number(g) <= 255 && Number(b) <= 255) {
-      return { valid: true, normalizedValue: trimmed };
+    // Toggle dark class for Tailwind compatibility
+    if (theme.type === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
     }
-    return { valid: false, error: 'RGB values must be between 0 and 255' };
   }
 
-  // Check rgba format
-  const rgbaMatch = trimmed.match(COLOR_PATTERNS.rgba);
-  if (rgbaMatch) {
-    const [, r, g, b, a] = rgbaMatch;
-    if (Number(r) <= 255 && Number(g) <= 255 && Number(b) <= 255 && Number(a) <= 1) {
-      return { valid: true, normalizedValue: trimmed };
-    }
-    return { valid: false, error: 'RGBA values must be valid (RGB: 0-255, A: 0-1)' };
+  /**
+   * Convert theme file to definition
+   */
+  public createThemeDefinition(
+    themeFile: ThemeFile,
+    id: string,
+    isBuiltIn: boolean
+  ): ThemeDefinition {
+    return themeFileToDefinition(themeFile, id, isBuiltIn);
   }
 
-  return { valid: false, error: `Invalid color format: ${value}` };
+  /**
+   * Get base theme tokens
+   */
+  public getBaseTokens(type: 'dark' | 'light'): ThemeTokens {
+    return type === 'dark' ? DEFAULT_DARK_TOKENS : DEFAULT_LIGHT_TOKENS;
+  }
+
+  /**
+   * Get the currently applied theme
+   */
+  public getCurrentTheme(): ThemeDefinition | null {
+    return this.currentTheme;
+  }
+
+  /**
+   * Get Monaco theme data for a theme
+   */
+  public getMonacoTheme(theme: ThemeDefinition): MonacoThemeData {
+    return convertToMonacoTheme(theme);
+  }
+
+  /**
+   * Validate a theme file
+   */
+  public validateThemeFile(json: unknown): ThemeValidationResult {
+    return validateThemeFile(json);
+  }
 }
 
-
-// ============================================================================
-// Theme File Validation (Requirements 8.1-8.5)
-// ============================================================================
-
 /**
- * Required metadata fields for a theme file
+ * Deep merge utility for nested objects
  */
-const REQUIRED_METADATA = ['name', 'author', 'version', 'type'] as const;
-
-/**
- * Valid theme types
- */
-const VALID_THEME_TYPES = ['dark', 'light'] as const;
-
-/**
- * Validate theme file structure and content
- * Requirements 8.1, 8.2, 8.4, 8.5
- */
-export function validateThemeFile(json: unknown): ThemeValidationResult {
-  const errors: string[] = [];
-  const warnings: string[] = [];
-
-  // Check if input is an object
-  if (!json || typeof json !== 'object' || Array.isArray(json)) {
-    return {
-      valid: false,
-      errors: ['Theme file must be a JSON object'],
-      warnings: [],
-    };
+function deepMerge<T>(
+  target: T,
+  source: DeepPartial<T>
+): T {
+  if (typeof target !== 'object' || target === null) {
+    return target;
   }
 
-  const theme = json as Record<string, unknown>;
+  const result = { ...target } as T;
 
-  // Validate required metadata (Requirement 8.2)
-  for (const field of REQUIRED_METADATA) {
-    if (!(field in theme)) {
-      errors.push(`Missing required field: ${field}`);
-    } else if (typeof theme[field] !== 'string') {
-      errors.push(`Field '${field}' must be a string`);
+  for (const key in source) {
+    const sourceValue = source[key as keyof typeof source];
+    const targetValue = target[key as keyof T];
+
+    if (
+      sourceValue !== undefined &&
+      typeof sourceValue === 'object' &&
+      sourceValue !== null &&
+      !Array.isArray(sourceValue) &&
+      typeof targetValue === 'object' &&
+      targetValue !== null
+    ) {
+      // Recursively merge nested objects
+      (result as Record<string, unknown>)[key] = deepMerge(
+        targetValue as Record<string, unknown>,
+        sourceValue as DeepPartial<Record<string, unknown>>
+      );
+    } else if (sourceValue !== undefined) {
+      // Override with source value
+      (result as Record<string, unknown>)[key] = sourceValue;
     }
   }
 
-  // Validate theme type
-  if (theme.type && !VALID_THEME_TYPES.includes(theme.type as 'dark' | 'light')) {
-    errors.push(`Invalid theme type: ${theme.type}. Must be 'dark' or 'light'`);
-  }
-
-  // Validate version format (semver-like)
-  if (theme.version && typeof theme.version === 'string') {
-    if (!/^\d+\.\d+\.\d+/.test(theme.version)) {
-      warnings.push(`Version '${theme.version}' does not follow semantic versioning (x.y.z)`);
-    }
-  }
-
-  // Validate colors object (Requirement 8.3 - partial definitions allowed)
-  if ('colors' in theme) {
-    if (typeof theme.colors !== 'object' || theme.colors === null) {
-      errors.push("'colors' must be an object");
-    } else {
-      const colorErrors = validateColorTokens(theme.colors as Record<string, unknown>);
-      errors.push(...colorErrors);
-    }
-  } else {
-    warnings.push("No 'colors' defined - will use base theme defaults");
-  }
-
-  // Validate tokenColors array
-  if ('tokenColors' in theme) {
-    if (!Array.isArray(theme.tokenColors)) {
-      errors.push("'tokenColors' must be an array");
-    } else {
-      const tokenErrors = validateTokenColorRules(theme.tokenColors);
-      errors.push(...tokenErrors);
-    }
-  } else {
-    warnings.push("No 'tokenColors' defined - syntax highlighting will use defaults");
-  }
-
-  return {
-    valid: errors.length === 0,
-    errors,
-    warnings,
-  };
+  return result;
 }
 
 /**
@@ -248,6 +194,386 @@ function validateTokenColorRules(rules: unknown[]): string[] {
   return errors;
 }
 
+// ============================================================================
+// Monaco Theme Conversion (Requirement 11.2, 11.3, 11.5)
+// ============================================================================
+
+/**
+ * Convert Aurora theme to Monaco editor theme format
+ * Requirements 11.2, 11.3, 11.5
+ */
+export function convertToMonacoTheme(theme: ThemeDefinition): MonacoThemeData {
+  const base = theme.type === 'dark' ? 'vs-dark' : 'vs';
+
+  // Convert token color rules to Monaco format
+  const rules: MonacoTokenRule[] = theme.tokenColors.flatMap((rule) => {
+    const scopes = Array.isArray(rule.scope) ? rule.scope : [rule.scope];
+
+    return scopes.map((scope) => ({
+      token: scope,
+      foreground: rule.settings.foreground?.replace('#', ''),
+      background: rule.settings.background?.replace('#', ''),
+      fontStyle: rule.settings.fontStyle,
+    }));
+  });
+
+  // Map Aurora editor tokens to Monaco color keys
+  const colors: Record<string, string> = {
+    'editor.background': theme.colors.editor.background,
+    'editor.foreground': theme.colors.editor.foreground,
+    'editor.lineHighlightBackground': theme.colors.editor.cursorLine,
+    'editor.selectionBackground': theme.colors.editor.selection,
+    'editor.selectionHighlightBackground': theme.colors.editor.selectionHighlight,
+    'editorCursor.foreground': theme.colors.editor.cursor,
+    'editorLineNumber.foreground': theme.colors.editor.lineNumbers,
+    'editorLineNumber.activeForeground': theme.colors.editor.lineNumbersActive,
+    'editorWhitespace.foreground': theme.colors.editor.whitespace,
+    'editorIndentGuide.background': theme.colors.editor.indentGuide,
+    'editorBracketMatch.background': theme.colors.editor.matchingBracket,
+    'editor.wordHighlightBackground': theme.colors.editor.wordHighlight,
+    'editor.findMatchBackground': theme.colors.editor.findMatch,
+    'editor.findMatchHighlightBackground': theme.colors.editor.findMatchHighlight,
+    // Scrollbar
+    'scrollbarSlider.background': theme.colors.common.scrollbar,
+    'scrollbarSlider.hoverBackground': theme.colors.common.scrollbarHover,
+    // Minimap
+    'minimap.background': theme.colors.editor.background,
+    'minimapSlider.background': theme.colors.common.scrollbar,
+    'minimapSlider.hoverBackground': theme.colors.common.scrollbarHover,
+    // Editor Widget (autocomplete, command palette, context menu, etc.)
+    'editorWidget.background': theme.colors.sidebar.background,
+    'editorWidget.foreground': theme.colors.editor.foreground,
+    'editorWidget.border': theme.colors.common.border,
+    'editorSuggestWidget.background': theme.colors.sidebar.background,
+    'editorSuggestWidget.foreground': theme.colors.editor.foreground,
+    'editorSuggestWidget.border': theme.colors.common.border,
+    'editorSuggestWidget.selectedBackground': theme.colors.common.primary,
+    'editorSuggestWidget.selectedForeground': theme.colors.common.primaryForeground,
+    'editorSuggestWidget.highlightForeground': theme.colors.common.primary,
+    'editorSuggestWidget.focusHighlightForeground': theme.colors.common.primaryForeground,
+    // Quick Input (Command Palette)
+    'quickInput.background': theme.colors.sidebar.background,
+    'quickInput.foreground': theme.colors.editor.foreground,
+    'quickInputTitle.background': theme.colors.titleBar.background,
+    'quickInputList.focusBackground': theme.colors.common.primary,
+    'quickInputList.focusForeground': theme.colors.common.primaryForeground,
+    'pickerGroup.foreground': theme.colors.common.primary,
+    'pickerGroup.border': theme.colors.common.border,
+    // Input fields
+    'input.background': theme.colors.chat.inputBackground,
+    'input.foreground': theme.colors.editor.foreground,
+    'input.border': theme.colors.chat.inputBorder,
+    'input.placeholderForeground': theme.colors.sidebar.foreground + '80',
+    'inputOption.activeBackground': theme.colors.common.primary + '40',
+    'inputOption.activeBorder': theme.colors.common.primary,
+    'inputOption.activeForeground': theme.colors.common.primaryForeground,
+    // List/Tree (dropdown menus, context menus)
+    'list.activeSelectionBackground': theme.colors.common.primary,
+    'list.activeSelectionForeground': theme.colors.common.primaryForeground,
+    'list.hoverBackground': theme.colors.sidebar.itemHover,
+    'list.hoverForeground': theme.colors.editor.foreground,
+    'list.focusBackground': theme.colors.sidebar.itemActive,
+    'list.focusForeground': theme.colors.editor.foreground,
+    'list.highlightForeground': theme.colors.common.primary,
+    // Menu (context menu)
+    'menu.background': theme.colors.sidebar.background,
+    'menu.foreground': theme.colors.editor.foreground,
+    'menu.selectionBackground': theme.colors.common.primary,
+    'menu.selectionForeground': theme.colors.common.primaryForeground,
+    'menu.separatorBackground': theme.colors.common.border,
+    'menu.border': theme.colors.common.border,
+    // Keybinding label
+    'keybindingLabel.background': theme.colors.sidebar.itemHover,
+    'keybindingLabel.foreground': theme.colors.editor.foreground,
+    'keybindingLabel.border': theme.colors.common.border,
+    'keybindingLabel.bottomBorder': theme.colors.common.border,
+  };
+
+  return {
+    base,
+    inherit: true,
+    rules,
+    colors,
+  };
+}
+
+/**
+ * Generate all CSS variables from theme tokens
+ */
+export function generateCSSVariables(tokens: ThemeTokens): CSSVariableMap {
+  const variables: CSSVariableMap = {} as CSSVariableMap;
+
+  // Process each category
+  for (const [category, categoryTokens] of Object.entries(tokens)) {
+    for (const [token, value] of Object.entries(categoryTokens as Record<string, string>)) {
+      const varName = getCSSVariableName(category, token) as `--aurora-${string}-${string}`;
+      variables[varName] = value;
+    }
+  }
+
+  return variables;
+}
+
+// ============================================================================
+// CSS Variable Injection (Requirement 12.1, 12.4)
+// ============================================================================
+
+/**
+ * Generate CSS variable name following pattern: --aurora-{category}-{token}
+ * Requirement 12.4
+ */
+export function getCSSVariableName(category: string, token: string): string {
+  // Convert camelCase to kebab-case
+  const kebabToken = token.replace(/([A-Z])/g, '-$1').toLowerCase();
+  return `--aurora-${category}-${kebabToken}`;
+}
+
+/**
+ * Generate a unique Monaco theme ID from theme definition
+ */
+export function getMonacoThemeId(theme: ThemeDefinition): string {
+  return `aurora-${theme.id}`;
+}
+
+/**
+ * Inject CSS variables into document root
+ * Requirement 12.1
+ */
+export function injectCSSVariables(tokens: ThemeTokens): void {
+  const variables = generateCSSVariables(tokens);
+  const root = document.documentElement;
+
+  for (const [name, value] of Object.entries(variables)) {
+    root.style.setProperty(name, value);
+  }
+}
+
+// ============================================================================
+// Theme Merging (Requirement 8.3)
+// ============================================================================
+
+/**
+ * Deep merge partial theme tokens with base theme
+ * Requirement 8.3: Support partial definitions with fallback to base theme
+ */
+export function mergeWithBaseTheme(
+  partial: DeepPartial<ThemeTokens>,
+  baseType: 'dark' | 'light'
+): ThemeTokens {
+  const base = baseType === 'dark' ? DEFAULT_DARK_TOKENS : DEFAULT_LIGHT_TOKENS;
+  return deepMerge(base, partial) as ThemeTokens;
+}
+
+/**
+ * Remove all Aurora CSS variables from document root
+ */
+export function removeCSSVariables(): void {
+  const root = document.documentElement;
+  const style = root.style;
+
+  // Remove all --aurora-* variables
+  for (let i = style.length - 1; i >= 0; i--) {
+    const name = style[i];
+    if (name.startsWith('--aurora-')) {
+      root.style.removeProperty(name);
+    }
+  }
+}
+
+/**
+ * Convert a ThemeDefinition back to a ThemeFile
+ * Used for serialization/export
+ */
+export function themeDefinitionToFile(theme: ThemeDefinition): ThemeFile {
+  return {
+    name: theme.name,
+    author: theme.author,
+    version: theme.version,
+    type: theme.type,
+    colors: theme.colors,
+    tokenColors: theme.tokenColors,
+  };
+}
+
+// ============================================================================
+// Theme Conversion
+// ============================================================================
+
+/**
+ * Convert a ThemeFile to a ThemeDefinition
+ * Validates and merges with base theme
+ */
+export function themeFileToDefinition(
+  themeFile: ThemeFile,
+  id: string,
+  isBuiltIn: boolean
+): ThemeDefinition {
+  const mergedColors = mergeWithBaseTheme(themeFile.colors, themeFile.type);
+
+  return {
+    id,
+    name: themeFile.name,
+    author: themeFile.author,
+    version: themeFile.version,
+    type: themeFile.type,
+    isBuiltIn,
+    colors: mergedColors,
+    tokenColors: themeFile.tokenColors || [],
+  };
+}
+
+/**
+ * Validate a color value (hex, rgb, rgba)
+ * Requirement 8.4: Validate color values
+ */
+export function validateColor(value: string): ColorValidationResult {
+  if (!value || typeof value !== 'string') {
+    return { valid: false, error: 'Color value must be a non-empty string' };
+  }
+
+  const trimmed = value.trim();
+
+  // Check hex formats
+  if (COLOR_PATTERNS.hex6.test(trimmed)) {
+    return { valid: true, normalizedValue: trimmed.toLowerCase() };
+  }
+  if (COLOR_PATTERNS.hex8.test(trimmed)) {
+    return { valid: true, normalizedValue: trimmed.toLowerCase() };
+  }
+  if (COLOR_PATTERNS.hex3.test(trimmed)) {
+    // Expand #RGB to #RRGGBB
+    const expanded = `#${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}${trimmed[3]}${trimmed[3]}`;
+    return { valid: true, normalizedValue: expanded.toLowerCase() };
+  }
+  if (COLOR_PATTERNS.hex4.test(trimmed)) {
+    // Expand #RGBA to #RRGGBBAA
+    const expanded = `#${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}${trimmed[3]}${trimmed[3]}${trimmed[4]}${trimmed[4]}`;
+    return { valid: true, normalizedValue: expanded.toLowerCase() };
+  }
+
+  // Check rgb format
+  const rgbMatch = trimmed.match(COLOR_PATTERNS.rgb);
+  if (rgbMatch) {
+    const [, r, g, b] = rgbMatch;
+    if (Number(r) <= 255 && Number(g) <= 255 && Number(b) <= 255) {
+      return { valid: true, normalizedValue: trimmed };
+    }
+    return { valid: false, error: 'RGB values must be between 0 and 255' };
+  }
+
+  // Check rgba format
+  const rgbaMatch = trimmed.match(COLOR_PATTERNS.rgba);
+  if (rgbaMatch) {
+    const [, r, g, b, a] = rgbaMatch;
+    if (Number(r) <= 255 && Number(g) <= 255 && Number(b) <= 255 && Number(a) <= 1) {
+      return { valid: true, normalizedValue: trimmed };
+    }
+    return { valid: false, error: 'RGBA values must be valid (RGB: 0-255, A: 0-1)' };
+  }
+
+  return { valid: false, error: `Invalid color format: ${value}` };
+}
+
+/**
+ * Validate theme file structure and content
+ * Requirements 8.1, 8.2, 8.4, 8.5
+ */
+export function validateThemeFile(json: unknown): ThemeValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  // Check if input is an object
+  if (!json || typeof json !== 'object' || Array.isArray(json)) {
+    return {
+      valid: false,
+      errors: ['Theme file must be a JSON object'],
+      warnings: [],
+    };
+  }
+
+  const theme = json as Record<string, unknown>;
+
+  // Validate required metadata (Requirement 8.2)
+  for (const field of REQUIRED_METADATA) {
+    if (!(field in theme)) {
+      errors.push(`Missing required field: ${field}`);
+    } else if (typeof theme[field] !== 'string') {
+      errors.push(`Field '${field}' must be a string`);
+    }
+  }
+
+  // Validate theme type
+  if (theme.type && !VALID_THEME_TYPES.includes(theme.type as 'dark' | 'light')) {
+    errors.push(`Invalid theme type: ${theme.type}. Must be 'dark' or 'light'`);
+  }
+
+  // Validate version format (semver-like)
+  if (theme.version && typeof theme.version === 'string') {
+    if (!/^\d+\.\d+\.\d+/.test(theme.version)) {
+      warnings.push(`Version '${theme.version}' does not follow semantic versioning (x.y.z)`);
+    }
+  }
+
+  // Validate colors object (Requirement 8.3 - partial definitions allowed)
+  if ('colors' in theme) {
+    if (typeof theme.colors !== 'object' || theme.colors === null) {
+      errors.push("'colors' must be an object");
+    } else {
+      const colorErrors = validateColorTokens(theme.colors as Record<string, unknown>);
+      errors.push(...colorErrors);
+    }
+  } else {
+    warnings.push("No 'colors' defined - will use base theme defaults");
+  }
+
+  // Validate tokenColors array
+  if ('tokenColors' in theme) {
+    if (!Array.isArray(theme.tokenColors)) {
+      errors.push("'tokenColors' must be an array");
+    } else {
+      const tokenErrors = validateTokenColorRules(theme.tokenColors);
+      errors.push(...tokenErrors);
+    }
+  } else {
+    warnings.push("No 'tokenColors' defined - syntax highlighting will use defaults");
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+  };
+}
+
+// ============================================================================
+// Color Validation
+// ============================================================================
+
+/**
+ * Regex patterns for valid color formats
+ */
+const COLOR_PATTERNS = {
+  hex3: /^#[0-9A-Fa-f]{3}$/,
+  hex4: /^#[0-9A-Fa-f]{4}$/,
+  hex6: /^#[0-9A-Fa-f]{6}$/,
+  hex8: /^#[0-9A-Fa-f]{8}$/,
+  rgb: /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/,
+  rgba: /^rgba\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(0|1|0?\.\d+)\s*\)$/,
+};
+
+// ============================================================================
+// Theme File Validation (Requirements 8.1-8.5)
+// ============================================================================
+
+/**
+ * Required metadata fields for a theme file
+ */
+const REQUIRED_METADATA = ['name', 'author', 'version', 'type'] as const;
+
+/**
+ * Valid theme types
+ */
+const VALID_THEME_TYPES = ['dark', 'light'] as const;
 
 // ============================================================================
 // Base Theme Defaults
@@ -358,7 +684,6 @@ export const DEFAULT_DARK_TOKENS: ThemeTokens = {
   },
 };
 
-
 /**
  * Default light theme tokens (base fallback)
  */
@@ -463,348 +788,6 @@ export const DEFAULT_LIGHT_TOKENS: ThemeTokens = {
     scrollbarHover: '#9ca3af',
   },
 };
-
-
-// ============================================================================
-// Theme Merging (Requirement 8.3)
-// ============================================================================
-
-/**
- * Deep merge partial theme tokens with base theme
- * Requirement 8.3: Support partial definitions with fallback to base theme
- */
-export function mergeWithBaseTheme(
-  partial: DeepPartial<ThemeTokens>,
-  baseType: 'dark' | 'light'
-): ThemeTokens {
-  const base = baseType === 'dark' ? DEFAULT_DARK_TOKENS : DEFAULT_LIGHT_TOKENS;
-  return deepMerge(base, partial) as ThemeTokens;
-}
-
-/**
- * Deep merge utility for nested objects
- */
-function deepMerge<T>(
-  target: T,
-  source: DeepPartial<T>
-): T {
-  if (typeof target !== 'object' || target === null) {
-    return target;
-  }
-
-  const result = { ...target } as T;
-
-  for (const key in source) {
-    const sourceValue = source[key as keyof typeof source];
-    const targetValue = target[key as keyof T];
-
-    if (
-      sourceValue !== undefined &&
-      typeof sourceValue === 'object' &&
-      sourceValue !== null &&
-      !Array.isArray(sourceValue) &&
-      typeof targetValue === 'object' &&
-      targetValue !== null
-    ) {
-      // Recursively merge nested objects
-      (result as Record<string, unknown>)[key] = deepMerge(
-        targetValue as Record<string, unknown>,
-        sourceValue as DeepPartial<Record<string, unknown>>
-      );
-    } else if (sourceValue !== undefined) {
-      // Override with source value
-      (result as Record<string, unknown>)[key] = sourceValue;
-    }
-  }
-
-  return result;
-}
-
-// ============================================================================
-// Theme Conversion
-// ============================================================================
-
-/**
- * Convert a ThemeFile to a ThemeDefinition
- * Validates and merges with base theme
- */
-export function themeFileToDefinition(
-  themeFile: ThemeFile,
-  id: string,
-  isBuiltIn: boolean
-): ThemeDefinition {
-  const mergedColors = mergeWithBaseTheme(themeFile.colors, themeFile.type);
-
-  return {
-    id,
-    name: themeFile.name,
-    author: themeFile.author,
-    version: themeFile.version,
-    type: themeFile.type,
-    isBuiltIn,
-    colors: mergedColors,
-    tokenColors: themeFile.tokenColors || [],
-  };
-}
-
-/**
- * Convert a ThemeDefinition back to a ThemeFile
- * Used for serialization/export
- */
-export function themeDefinitionToFile(theme: ThemeDefinition): ThemeFile {
-  return {
-    name: theme.name,
-    author: theme.author,
-    version: theme.version,
-    type: theme.type,
-    colors: theme.colors,
-    tokenColors: theme.tokenColors,
-  };
-}
-
-
-// ============================================================================
-// CSS Variable Injection (Requirement 12.1, 12.4)
-// ============================================================================
-
-/**
- * Generate CSS variable name following pattern: --aurora-{category}-{token}
- * Requirement 12.4
- */
-export function getCSSVariableName(category: string, token: string): string {
-  // Convert camelCase to kebab-case
-  const kebabToken = token.replace(/([A-Z])/g, '-$1').toLowerCase();
-  return `--aurora-${category}-${kebabToken}`;
-}
-
-/**
- * Generate all CSS variables from theme tokens
- */
-export function generateCSSVariables(tokens: ThemeTokens): CSSVariableMap {
-  const variables: CSSVariableMap = {} as CSSVariableMap;
-
-  // Process each category
-  for (const [category, categoryTokens] of Object.entries(tokens)) {
-    for (const [token, value] of Object.entries(categoryTokens as Record<string, string>)) {
-      const varName = getCSSVariableName(category, token) as `--aurora-${string}-${string}`;
-      variables[varName] = value;
-    }
-  }
-
-  return variables;
-}
-
-/**
- * Inject CSS variables into document root
- * Requirement 12.1
- */
-export function injectCSSVariables(tokens: ThemeTokens): void {
-  const variables = generateCSSVariables(tokens);
-  const root = document.documentElement;
-
-  for (const [name, value] of Object.entries(variables)) {
-    root.style.setProperty(name, value);
-  }
-}
-
-/**
- * Remove all Aurora CSS variables from document root
- */
-export function removeCSSVariables(): void {
-  const root = document.documentElement;
-  const style = root.style;
-
-  // Remove all --aurora-* variables
-  for (let i = style.length - 1; i >= 0; i--) {
-    const name = style[i];
-    if (name.startsWith('--aurora-')) {
-      root.style.removeProperty(name);
-    }
-  }
-}
-
-
-// ============================================================================
-// Monaco Theme Conversion (Requirement 11.2, 11.3, 11.5)
-// ============================================================================
-
-/**
- * Convert Aurora theme to Monaco editor theme format
- * Requirements 11.2, 11.3, 11.5
- */
-export function convertToMonacoTheme(theme: ThemeDefinition): MonacoThemeData {
-  const base = theme.type === 'dark' ? 'vs-dark' : 'vs';
-
-  // Convert token color rules to Monaco format
-  const rules: MonacoTokenRule[] = theme.tokenColors.flatMap((rule) => {
-    const scopes = Array.isArray(rule.scope) ? rule.scope : [rule.scope];
-
-    return scopes.map((scope) => ({
-      token: scope,
-      foreground: rule.settings.foreground?.replace('#', ''),
-      background: rule.settings.background?.replace('#', ''),
-      fontStyle: rule.settings.fontStyle,
-    }));
-  });
-
-  // Map Aurora editor tokens to Monaco color keys
-  const colors: Record<string, string> = {
-    'editor.background': theme.colors.editor.background,
-    'editor.foreground': theme.colors.editor.foreground,
-    'editor.lineHighlightBackground': theme.colors.editor.cursorLine,
-    'editor.selectionBackground': theme.colors.editor.selection,
-    'editor.selectionHighlightBackground': theme.colors.editor.selectionHighlight,
-    'editorCursor.foreground': theme.colors.editor.cursor,
-    'editorLineNumber.foreground': theme.colors.editor.lineNumbers,
-    'editorLineNumber.activeForeground': theme.colors.editor.lineNumbersActive,
-    'editorWhitespace.foreground': theme.colors.editor.whitespace,
-    'editorIndentGuide.background': theme.colors.editor.indentGuide,
-    'editorBracketMatch.background': theme.colors.editor.matchingBracket,
-    'editor.wordHighlightBackground': theme.colors.editor.wordHighlight,
-    'editor.findMatchBackground': theme.colors.editor.findMatch,
-    'editor.findMatchHighlightBackground': theme.colors.editor.findMatchHighlight,
-    // Scrollbar
-    'scrollbarSlider.background': theme.colors.common.scrollbar,
-    'scrollbarSlider.hoverBackground': theme.colors.common.scrollbarHover,
-    // Minimap
-    'minimap.background': theme.colors.editor.background,
-    'minimapSlider.background': theme.colors.common.scrollbar,
-    'minimapSlider.hoverBackground': theme.colors.common.scrollbarHover,
-    // Editor Widget (autocomplete, command palette, context menu, etc.)
-    'editorWidget.background': theme.colors.sidebar.background,
-    'editorWidget.foreground': theme.colors.editor.foreground,
-    'editorWidget.border': theme.colors.common.border,
-    'editorSuggestWidget.background': theme.colors.sidebar.background,
-    'editorSuggestWidget.foreground': theme.colors.editor.foreground,
-    'editorSuggestWidget.border': theme.colors.common.border,
-    'editorSuggestWidget.selectedBackground': theme.colors.common.primary,
-    'editorSuggestWidget.selectedForeground': theme.colors.common.primaryForeground,
-    'editorSuggestWidget.highlightForeground': theme.colors.common.primary,
-    'editorSuggestWidget.focusHighlightForeground': theme.colors.common.primaryForeground,
-    // Quick Input (Command Palette)
-    'quickInput.background': theme.colors.sidebar.background,
-    'quickInput.foreground': theme.colors.editor.foreground,
-    'quickInputTitle.background': theme.colors.titleBar.background,
-    'quickInputList.focusBackground': theme.colors.common.primary,
-    'quickInputList.focusForeground': theme.colors.common.primaryForeground,
-    'pickerGroup.foreground': theme.colors.common.primary,
-    'pickerGroup.border': theme.colors.common.border,
-    // Input fields
-    'input.background': theme.colors.chat.inputBackground,
-    'input.foreground': theme.colors.editor.foreground,
-    'input.border': theme.colors.chat.inputBorder,
-    'input.placeholderForeground': theme.colors.sidebar.foreground + '80',
-    'inputOption.activeBackground': theme.colors.common.primary + '40',
-    'inputOption.activeBorder': theme.colors.common.primary,
-    'inputOption.activeForeground': theme.colors.common.primaryForeground,
-    // List/Tree (dropdown menus, context menus)
-    'list.activeSelectionBackground': theme.colors.common.primary,
-    'list.activeSelectionForeground': theme.colors.common.primaryForeground,
-    'list.hoverBackground': theme.colors.sidebar.itemHover,
-    'list.hoverForeground': theme.colors.editor.foreground,
-    'list.focusBackground': theme.colors.sidebar.itemActive,
-    'list.focusForeground': theme.colors.editor.foreground,
-    'list.highlightForeground': theme.colors.common.primary,
-    // Menu (context menu)
-    'menu.background': theme.colors.sidebar.background,
-    'menu.foreground': theme.colors.editor.foreground,
-    'menu.selectionBackground': theme.colors.common.primary,
-    'menu.selectionForeground': theme.colors.common.primaryForeground,
-    'menu.separatorBackground': theme.colors.common.border,
-    'menu.border': theme.colors.common.border,
-    // Keybinding label
-    'keybindingLabel.background': theme.colors.sidebar.itemHover,
-    'keybindingLabel.foreground': theme.colors.editor.foreground,
-    'keybindingLabel.border': theme.colors.common.border,
-    'keybindingLabel.bottomBorder': theme.colors.common.border,
-  };
-
-  return {
-    base,
-    inherit: true,
-    rules,
-    colors,
-  };
-}
-
-/**
- * Generate a unique Monaco theme ID from theme definition
- */
-export function getMonacoThemeId(theme: ThemeDefinition): string {
-  return `aurora-${theme.id}`;
-}
-
-// ============================================================================
-// Theme Service Class
-// ============================================================================
-
-/**
- * Theme service singleton for managing theme operations
- */
-class ThemeService {
-  private currentTheme: ThemeDefinition | null = null;
-
-  /**
-   * Apply a theme to the application
-   */
-  applyTheme(theme: ThemeDefinition): void {
-    // Inject CSS variables
-    injectCSSVariables(theme.colors);
-
-    // Store current theme
-    this.currentTheme = theme;
-
-    // Set data attribute for CSS selectors
-    document.documentElement.setAttribute('data-theme', theme.type);
-    document.documentElement.setAttribute('data-theme-id', theme.id);
-
-    // Toggle dark class for Tailwind compatibility
-    if (theme.type === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  }
-
-  /**
-   * Get the currently applied theme
-   */
-  getCurrentTheme(): ThemeDefinition | null {
-    return this.currentTheme;
-  }
-
-  /**
-   * Validate a theme file
-   */
-  validateThemeFile(json: unknown): ThemeValidationResult {
-    return validateThemeFile(json);
-  }
-
-  /**
-   * Convert theme file to definition
-   */
-  createThemeDefinition(
-    themeFile: ThemeFile,
-    id: string,
-    isBuiltIn: boolean
-  ): ThemeDefinition {
-    return themeFileToDefinition(themeFile, id, isBuiltIn);
-  }
-
-  /**
-   * Get Monaco theme data for a theme
-   */
-  getMonacoTheme(theme: ThemeDefinition): MonacoThemeData {
-    return convertToMonacoTheme(theme);
-  }
-
-  /**
-   * Get base theme tokens
-   */
-  getBaseTokens(type: 'dark' | 'light'): ThemeTokens {
-    return type === 'dark' ? DEFAULT_DARK_TOKENS : DEFAULT_LIGHT_TOKENS;
-  }
-}
 
 // Export singleton instance
 export const themeService = new ThemeService();

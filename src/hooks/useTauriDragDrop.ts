@@ -1,12 +1,12 @@
 /**
  * Hook to handle Tauri's native drag-drop events for external files
  */
+import { useEffect, useRef } from "react";
 
-import { useEffect, useRef } from 'react';
-import { useWorkspaceStore } from '../store/useWorkspaceStore';
-import { useEditorStore } from '../store/useEditorStore';
-import { isTauri, copyPath, readFileContent } from '../lib/tauri';
-import { getFilename, joinPath, getLanguageFromExtension } from '../lib/file-utils';
+import { getFilename, getLanguageFromExtension, joinPath } from "../lib/file-utils";
+import { copyPath, isTauri, readFileContent } from "../lib/tauri";
+import { useEditorStore } from "../store/useEditorStore";
+import { useWorkspaceStore } from "../store/useWorkspaceStore";
 
 export const useTauriDragDrop = () => {
   const { rootPath, refreshDirectory, expandFolder } = useWorkspaceStore();

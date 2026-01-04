@@ -5,13 +5,14 @@
  * and updates the local Zustand stores. This provides bulletproof
  * multi-window sync because Rust is the single source of truth.
  */
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
-import { useEffect, useCallback } from 'react';
-import { listen } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
-import { useChatStore } from '../store/useChatStore';
-import { useThreadStore } from '../store/useThreadStore';
-import { isTauri } from '../lib/tauri';
+import { useCallback, useEffect } from "react";
+
+import { isTauri } from "../lib/tauri";
+import { useChatStore } from "../store/useChatStore";
+import { useThreadStore } from "../store/useThreadStore";
 
 // Types matching Rust structs
 interface ChatState {
@@ -21,8 +22,8 @@ interface ChatState {
 }
 
 interface ChatStateEvent {
-    state: ChatState;
     source: string;
+    state: ChatState;
 }
 
 // Window identifier for this window

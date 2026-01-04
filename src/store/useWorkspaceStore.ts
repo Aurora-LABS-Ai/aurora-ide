@@ -1,31 +1,33 @@
-import { create } from 'zustand';
-import type { FileNode } from '../types';
-import { isTauri, readDirectory, readFileContent, startFsWatcher, stopFsWatcher } from '../lib/tauri';
-import { databaseService } from '../services/database';
-import { useEditorStore } from './useEditorStore';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from "@tauri-apps/api/event";
+
+import { create } from "zustand";
+
+import { isTauri, readDirectory, readFileContent, startFsWatcher, stopFsWatcher } from "../lib/tauri";
+import { databaseService } from "../services/database";
+import type { FileNode } from "../types";
+import { useEditorStore } from "./useEditorStore";
 
 interface WorkspaceState {
-  rootPath: string;
-  files: FileNode[];
+  clearWorkspace: () => void;
+  expandFolder: (folderId: string) => Promise<void>;
   expandedFolders: Set<string>;
-  selectedFileId: string | null;
+  files: FileNode[];
   isLoading: boolean;
-
-  // Actions
-  setRootPath: (path: string) => void;
   loadDirectory: (path: string) => Promise<void>;
   refreshDirectory: () => Promise<void>;
-  toggleFolder: (folderId: string) => Promise<void>;
-  expandFolder: (folderId: string) => Promise<void>;
-  selectFile: (fileId: string) => void;
-  revealFile: (filePath: string) => void;
-  setFiles: (files: FileNode[]) => void;
-  clearWorkspace: () => void;
 
   // Database actions
   restoreExplorer: () => Promise<void>;
+  revealFile: (filePath: string) => void;
+  rootPath: string;
   saveExplorer: () => Promise<void>;
+  selectFile: (fileId: string) => void;
+  selectedFileId: string | null;
+  setFiles: (files: FileNode[]) => void;
+
+  // Actions
+  setRootPath: (path: string) => void;
+  toggleFolder: (folderId: string) => Promise<void>;
 }
 
 const getLanguageFromExtension = (filename: string): string => {
@@ -49,6 +51,30 @@ const getLanguageFromExtension = (filename: string): string => {
   };
   return langMap[ext || ''] || 'plaintext';
 };
+
+// Helper to load file content
+export const loadFileContent = async (path: string): Promise<string> => {
+  if (!isTauri()) {
+    return '// File content (desktop app only)';
+  }
+
+  try {
+    return await readFileContent(path);
+  } catch (err) {
+    console.error('Failed to load file:', err);
+    return '// Failed to load file';
+  }
+};
+
+// Global watcher cleanup
+let fsUnlisten: (() => void) | null = null;
+
+// Guard to prevent multiple simultaneous loadDirectory calls
+let isLoadingDirectory = false;
+
+// Track last set root path to prevent duplicate setRootPath calls
+let lastSetRootPath: string | null = null;
+let pendingLoadPath: string | null = null;
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   rootPath: '',
@@ -429,27 +455,3 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
   },
 }));
-
-// Helper to load file content
-export const loadFileContent = async (path: string): Promise<string> => {
-  if (!isTauri()) {
-    return '// File content (desktop app only)';
-  }
-
-  try {
-    return await readFileContent(path);
-  } catch (err) {
-    console.error('Failed to load file:', err);
-    return '// Failed to load file';
-  }
-};
-
-// Global watcher cleanup
-let fsUnlisten: (() => void) | null = null;
-
-// Guard to prevent multiple simultaneous loadDirectory calls
-let isLoadingDirectory = false;
-let pendingLoadPath: string | null = null;
-
-// Track last set root path to prevent duplicate setRootPath calls
-let lastSetRootPath: string | null = null;

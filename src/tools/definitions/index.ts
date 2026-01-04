@@ -2,31 +2,46 @@
  * Tool Definitions Index
  * Central export for all tool definitions
  * 
- * TOOL COUNT: 16 tools total
- * - File: 7 (create, read, write, patch, delete, grep, multi_file_read)
+ * TOOL COUNT: 17 tools total
+ * - File: 7 (create, read, write, search_replace, delete, grep, multi_file_read)
  * - Workspace: 3 (tree, folder_create, folder_delete)
  * - Shell: 4 (execute, spawn, kill, list_processes)
- * - Editor: 1 (open_file)
+ * - Editor: 2 (open_file, read_lints)
  * - Search: 1 (aurora_search)
  * - Todo: 1 (todo_write)
+ * - MCP: Tools are dynamically loaded from connected servers
  */
+import type { ToolDefinition } from "../types";
+import { editorTools } from "./editor-tools";
+import { fileTools } from "./file-tools";
+import { searchTools } from "./search-tools";
+import { shellTools } from "./shell-tools";
+import { todoTools } from "./todo-tools";
+import { workspaceTools } from "./workspace-tools";
+
+// Get tool definition by name
+export const getToolByName = (name: string): ToolDefinition | undefined => {
+  return allTools.find(tool => tool.function.name === name);
+};
+
+// Get risk level for a tool
+export const getToolRiskLevel = (toolName: string): 'low' | 'medium' | 'high' => {
+  return toolRiskLevels[toolName] || 'medium';
+};
 
 export * from './file-tools';
+
 export * from './workspace-tools';
+
 export * from './shell-tools';
+
 export * from './editor-tools';
+
 export * from './search-tools';
+
 export * from './todo-tools';
 
-import { fileTools } from './file-tools';
-import { workspaceTools } from './workspace-tools';
-import { shellTools } from './shell-tools';
-import { editorTools } from './editor-tools';
-import { searchTools } from './search-tools';
-import { todoTools } from './todo-tools';
-import type { ToolDefinition } from '../types';
-
-// All available tools
+// All available tools (MCP tools are added dynamically from connected servers)
 export const allTools: ToolDefinition[] = [
   ...fileTools,
   ...workspaceTools,
@@ -76,7 +91,7 @@ export const toolRiskLevels: Record<string, 'low' | 'medium' | 'high'> = {
   file_create: 'medium',
   file_read: 'low',
   file_write: 'high',
-  file_patch: 'high',
+  search_replace: 'high',
   file_delete: 'high',
   grep: 'low',
   multi_file_read: 'low',
@@ -94,20 +109,14 @@ export const toolRiskLevels: Record<string, 'low' | 'medium' | 'high'> = {
   
   // Editor tools
   editor_open_file: 'low',
+  read_lints: 'low',
 
   // Search tools
   aurora_search: 'low', // Read-only semantic search
 
   // Todo tools
   todo_write: 'low', // Auto-approve - just updates UI task list
-};
 
-// Get risk level for a tool
-export const getToolRiskLevel = (toolName: string): 'low' | 'medium' | 'high' => {
-  return toolRiskLevels[toolName] || 'medium';
-};
-
-// Get tool definition by name
-export const getToolByName = (name: string): ToolDefinition | undefined => {
-  return allTools.find(tool => tool.function.name === name);
+  // Note: MCP tools are handled separately via mcp-tools.ts
+  // Their approval is determined by the server's autoApprove setting
 };

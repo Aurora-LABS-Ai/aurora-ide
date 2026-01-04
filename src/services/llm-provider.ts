@@ -3,37 +3,28 @@
  * Handles communication with OpenAI-compatible APIs
  * Supports streaming with SSE for real-time responses
  * Uses Tauri HTTP commands to bypass CORS restrictions
- *
+ * 
  * NOTE: This class has NO hardcoded defaults. All config must come from settings.
  */
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import type {
-  ChatMessage,
-  ChatCompletionResponse,
-  ChatCompletionChunk,
-  LLMProviderConfig,
-  StreamCallbacks,
-  AssistantMessage,
-  ThinkingConfig,
-  ProviderType,
-} from './llm-types';
-import type { ToolDefinition, ToolCallRequest } from '../tools/types';
+import type { ToolCallRequest, ToolDefinition } from "../tools/types";
+import type { AssistantMessage, ChatCompletionChunk, ChatCompletionResponse, ChatMessage, LLMProviderConfig, ProviderType, StreamCallbacks, ThinkingConfig } from "./llm-types";
 
 // Tauri command types
 interface LlmRequest {
-  url: string;
-  method: string;
-  headers: Record<string, string>;
   body?: string;
+  headers: Record<string, string>;
+  method: string;
   stream: boolean;
+  url: string;
 }
 
 interface LlmResponse {
-  status: number;
   body: string;
   headers: Record<string, string>;
+  status: number;
 }
 
 interface StreamChunk {
@@ -42,8 +33,8 @@ interface StreamChunk {
 }
 
 export class LLMProvider {
-  private config: LLMProviderConfig;
   private abortController: AbortController | null = null;
+  private config: LLMProviderConfig;
 
   constructor(config: LLMProviderConfig) {
     this.config = config;
@@ -55,28 +46,9 @@ export class LLMProvider {
   }
 
   /**
-   * Update provider configuration (replaces entire config)
-   */
-  updateConfig(config: LLMProviderConfig): void {
-    this.config = config;
-    console.log('[LLMProvider] Config updated:', {
-      baseUrl: config.baseUrl,
-      model: config.model,
-      hasApiKey: !!config.apiKey,
-    });
-  }
-
-  /**
-   * Get current configuration
-   */
-  getConfig(): LLMProviderConfig {
-    return { ...this.config };
-  }
-
-  /**
    * Cancel ongoing request
    */
-  cancelRequest(): void {
+  public cancelRequest(): void {
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
@@ -84,144 +56,9 @@ export class LLMProvider {
   }
 
   /**
-   * Check if this is a DeepSeek provider
-   */
-  private matchesProviderType(type: ProviderType): boolean {
-    return this.config.providerType === type;
-  }
-
-  private isDeepSeek(): boolean {
-    if (this.config.providerType) {
-      return this.matchesProviderType('deepseek');
-    }
-    return (
-      this.config.baseUrl.includes('deepseek.com') ||
-      this.config.model.includes('deepseek')
-    );
-  }
-
-  /**
-   * Check if this is a GLM/Z.AI provider
-   */
-  private isGLM(): boolean {
-    if (this.config.providerType) {
-      return this.matchesProviderType('glm');
-    }
-    return (
-      this.config.baseUrl.includes('z.ai') ||
-      this.config.model.includes('glm')
-    );
-  }
-
-  /**
-   * Build headers for requests, merging custom headers
-   */
-  private buildHeaders(): Record<string, string> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'Accept-Language': 'en-US,en',
-      ...this.config.customHeaders,
-    };
-
-    if (this.config.apiKey && !headers.Authorization) {
-      headers.Authorization = `Bearer ${this.config.apiKey}`;
-    }
-
-    return headers;
-  }
-
-  /**
-   * Build request body based on provider type
-   */
-  private buildRequestBody(
-    messages: ChatMessage[],
-    stream: boolean,
-    options?: {
-      tools?: ToolDefinition[];
-      thinking?: ThinkingConfig;
-      temperature?: number;
-      maxTokens?: number;
-    }
-  ): Record<string, unknown> {
-    const isDeepSeek = this.isDeepSeek();
-    const isReasonerModel = this.config.model.includes('reasoner');
-
-    // Base request
-    const request: Record<string, unknown> = {
-      model: this.config.model,
-      messages,
-      stream,
-    };
-
-    // Add max_tokens - use provider's maxOutputTokens limit if set
-    const defaultMaxTokens =
-      this.config.defaultMaxTokens ??
-      this.config.maxOutputTokens ??
-      4096;
-    let maxTokens = options?.maxTokens ?? defaultMaxTokens;
-
-    // Cap at provider's max output tokens limit if configured
-    if (this.config.maxOutputTokens && maxTokens > this.config.maxOutputTokens) {
-      maxTokens = this.config.maxOutputTokens;
-    }
-
-    request.max_tokens = maxTokens;
-
-    // Handle thinking mode based on provider
-    // Only add thinking param if provider supports it
-    const supportsThinking = this.config.supportsThinking === true;
-
-    if (isDeepSeek) {
-      // DeepSeek: Don't send temperature/top_p for reasoner model
-      // Thinking is enabled by using "deepseek-reasoner" model
-      // Or by setting thinking parameter (but NOT temperature)
-      if (supportsThinking && !isReasonerModel && options?.thinking?.type === 'enabled') {
-        // For deepseek-chat with thinking enabled
-        request.thinking = { type: 'enabled' };
-      }
-      // DeepSeek reasoner doesn't support temperature
-      if (!isReasonerModel) {
-        request.temperature = options?.temperature ?? this.config.defaultTemperature ?? 1.0;
-      }
-    } else if (this.isGLM()) {
-      // GLM/Z.AI: Full thinking support (only if enabled)
-      request.temperature = options?.temperature ?? this.config.defaultTemperature ?? 1.0;
-      if (supportsThinking && options?.thinking?.type !== 'disabled') {
-        request.thinking = options?.thinking ?? { type: 'enabled' };
-      }
-    } else {
-      // Generic OpenAI-compatible: Standard params, NO thinking param
-      request.temperature = options?.temperature ?? this.config.defaultTemperature ?? 1.0;
-      // Don't add thinking for generic providers - they don't support it
-    }
-
-    // Add tools if provided
-    if (options?.tools?.length) {
-      request.tools = options.tools;
-      request.tool_choice = 'auto';
-
-      if (this.config.supportsToolStream) {
-        request.tool_stream = true;
-      }
-    }
-
-    // Request usage in streaming responses (OpenAI-compatible)
-    if (stream) {
-      request.stream_options = { include_usage: true };
-    }
-
-    // Merge in any custom params
-    if (this.config.customParams) {
-      Object.assign(request, this.config.customParams);
-    }
-
-    return request;
-  }
-
-  /**
    * Non-streaming chat completion (uses Tauri HTTP to bypass CORS)
    */
-  async chatCompletion(
+  public async chatCompletion(
     messages: ChatMessage[],
     options?: {
       tools?: ToolDefinition[];
@@ -261,9 +98,16 @@ export class LLMProvider {
   }
 
   /**
+   * Get current configuration
+   */
+  public getConfig(): LLMProviderConfig {
+    return { ...this.config };
+  }
+
+  /**
    * Streaming chat completion with SSE (uses Tauri HTTP to bypass CORS)
    */
-  async streamChatCompletion(
+  public async streamChatCompletion(
     messages: ChatMessage[],
     callbacks: StreamCallbacks,
     options?: {
@@ -436,10 +280,160 @@ export class LLMProvider {
     }
   }
 
+  /**
+   * Update provider configuration (replaces entire config)
+   */
+  public updateConfig(config: LLMProviderConfig): void {
+    this.config = config;
+    console.log('[LLMProvider] Config updated:', {
+      baseUrl: config.baseUrl,
+      model: config.model,
+      hasApiKey: !!config.apiKey,
+    });
+  }
+
+  /**
+   * Build headers for requests, merging custom headers
+   */
+  private buildHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Accept-Language': 'en-US,en',
+      ...this.config.customHeaders,
+    };
+
+    if (this.config.apiKey && !headers.Authorization) {
+      headers.Authorization = `Bearer ${this.config.apiKey}`;
+    }
+
+    return headers;
+  }
+
+  /**
+   * Build request body based on provider type
+   */
+  private buildRequestBody(
+    messages: ChatMessage[],
+    stream: boolean,
+    options?: {
+      tools?: ToolDefinition[];
+      thinking?: ThinkingConfig;
+      temperature?: number;
+      maxTokens?: number;
+    }
+  ): Record<string, unknown> {
+    const isDeepSeek = this.isDeepSeek();
+    const isReasonerModel = this.config.model.includes('reasoner');
+
+    // Base request
+    const request: Record<string, unknown> = {
+      model: this.config.model,
+      messages,
+      stream,
+    };
+
+    // Add max_tokens - use provider's maxOutputTokens limit if set
+    const defaultMaxTokens =
+      this.config.defaultMaxTokens ??
+      this.config.maxOutputTokens ??
+      4096;
+    let maxTokens = options?.maxTokens ?? defaultMaxTokens;
+
+    // Cap at provider's max output tokens limit if configured
+    if (this.config.maxOutputTokens && maxTokens > this.config.maxOutputTokens) {
+      maxTokens = this.config.maxOutputTokens;
+    }
+
+    request.max_tokens = maxTokens;
+
+    // Handle thinking mode based on provider
+    // Only add thinking param if provider supports it
+    const supportsThinking = this.config.supportsThinking === true;
+
+    if (isDeepSeek) {
+      // DeepSeek: Don't send temperature/top_p for reasoner model
+      // Thinking is enabled by using "deepseek-reasoner" model
+      // Or by setting thinking parameter (but NOT temperature)
+      if (supportsThinking && !isReasonerModel && options?.thinking?.type === 'enabled') {
+        // For deepseek-chat with thinking enabled
+        request.thinking = { type: 'enabled' };
+      }
+      // DeepSeek reasoner doesn't support temperature
+      if (!isReasonerModel) {
+        request.temperature = options?.temperature ?? this.config.defaultTemperature ?? 1.0;
+      }
+    } else if (this.isGLM()) {
+      // GLM/Z.AI: Full thinking support (only if enabled)
+      request.temperature = options?.temperature ?? this.config.defaultTemperature ?? 1.0;
+      if (supportsThinking && options?.thinking?.type !== 'disabled') {
+        request.thinking = options?.thinking ?? { type: 'enabled' };
+      }
+    } else {
+      // Generic OpenAI-compatible: Standard params, NO thinking param
+      request.temperature = options?.temperature ?? this.config.defaultTemperature ?? 1.0;
+      // Don't add thinking for generic providers - they don't support it
+    }
+
+    // Add tools if provided
+    if (options?.tools?.length) {
+      request.tools = options.tools;
+      request.tool_choice = 'auto';
+
+      if (this.config.supportsToolStream) {
+        request.tool_stream = true;
+      }
+    }
+
+    // Request usage in streaming responses (OpenAI-compatible)
+    if (stream) {
+      request.stream_options = { include_usage: true };
+    }
+
+    // Merge in any custom params
+    if (this.config.customParams) {
+      Object.assign(request, this.config.customParams);
+    }
+
+    return request;
+  }
+
+  private isDeepSeek(): boolean {
+    if (this.config.providerType) {
+      return this.matchesProviderType('deepseek');
+    }
+    return (
+      this.config.baseUrl.includes('deepseek.com') ||
+      this.config.model.includes('deepseek')
+    );
+  }
+
+  /**
+   * Check if this is a GLM/Z.AI provider
+   */
+  private isGLM(): boolean {
+    if (this.config.providerType) {
+      return this.matchesProviderType('glm');
+    }
+    return (
+      this.config.baseUrl.includes('z.ai') ||
+      this.config.model.includes('glm')
+    );
+  }
+
+  /**
+   * Check if this is a DeepSeek provider
+   */
+  private matchesProviderType(type: ProviderType): boolean {
+    return this.config.providerType === type;
+  }
 }
 
-// Singleton instance - starts as null, MUST be initialized before use
-let providerInstance: LLMProvider | null = null;
+/**
+ * Initialize LLM provider with config from settings
+ * This MUST be called before using getLLMProvider
+ */
+type InitProviderConfig = Partial<Omit<LLMProviderConfig, 'baseUrl' | 'apiKey' | 'model'>> &
+  Pick<LLMProviderConfig, 'baseUrl' | 'apiKey' | 'model'>;
 
 /**
  * Get the LLM provider instance
@@ -451,21 +445,6 @@ export const getLLMProvider = (): LLMProvider => {
   }
   return providerInstance;
 };
-
-/**
- * Check if provider is initialized
- */
-export const isProviderInitialized = (): boolean => {
-  return providerInstance !== null;
-};
-
-/**
- * Initialize LLM provider with config from settings
- * This MUST be called before using getLLMProvider
- */
-type InitProviderConfig = Partial<Omit<LLMProviderConfig, 'baseUrl' | 'apiKey' | 'model'>> &
-  Pick<LLMProviderConfig, 'baseUrl' | 'apiKey' | 'model'>;
-
 export const initLLMProvider = (config: InitProviderConfig): LLMProvider => {
   const fullConfig: LLMProviderConfig = {
     id: config.id ?? 'current',
@@ -494,5 +473,15 @@ export const initLLMProvider = (config: InitProviderConfig): LLMProvider => {
 
   return providerInstance;
 };
+
+/**
+ * Check if provider is initialized
+ */
+export const isProviderInitialized = (): boolean => {
+  return providerInstance !== null;
+};
+
+// Singleton instance - starts as null, MUST be initialized before use
+let providerInstance: LLMProvider | null = null;
 
 export default LLMProvider;

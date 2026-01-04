@@ -200,6 +200,7 @@ export const GitPanel: React.FC = () => {
                 onClick={handleUnstageAll}
                 className="p-1 rounded hover:bg-white/10 transition-colors"
                 title="Unstage All"
+                style={{ color: 'var(--aurora-sidebar-foreground)' }}
               >
                 <Minus className="w-3.5 h-3.5" />
               </button>
@@ -232,6 +233,7 @@ export const GitPanel: React.FC = () => {
                 onClick={handleStageAll}
                 className="p-1 rounded hover:bg-white/10 transition-colors"
                 title="Stage All"
+                style={{ color: 'var(--aurora-sidebar-foreground)' }}
               >
                 <Plus className="w-3.5 h-3.5" />
               </button>

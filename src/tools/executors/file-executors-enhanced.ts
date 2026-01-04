@@ -3,22 +3,30 @@
  * Integrates operation logging for safety and context awareness
  * Includes pre-save syntax validation to catch errors before writing
  */
-
-import { toolRegistry } from "../registry";
-import {
-  isTauri,
-  readFileContent,
-  writeFileContent,
-  readDirectory,
-  deletePath,
-} from "../../lib/tauri";
-import { resolvePath, getWorkspaceRootPath } from "../utils/path-resolver";
+import { deletePath, isTauri, readDirectory, readFileContent, writeFileContent } from "../../lib/tauri";
+import { formatValidationForAgent, supportsValidation, validateSyntax } from "../../services/syntax-validator";
 import { useSettingsStore } from "../../store/useSettingsStore";
-import { operationLog, FsOperationType } from "../operation-log";
-import { validateSyntax, supportsValidation, formatValidationForAgent } from "../../services/syntax-validator";
+import { FsOperationType, operationLog } from "../operation-log";
+import { toolRegistry } from "../registry";
+import { isPathExcluded } from "../utils/excluded-paths";
+import { getWorkspaceRootPath, resolvePath } from "../utils/path-resolver";
 
-// NO-OP: Rust file watcher handles refresh via fs-changed events
-const triggerRefresh = () => {};
+interface GrepFileResult {
+  count: number;
+  file: string;
+  matches: GrepMatch[];
+}
+
+// ============================================
+// GREP EXECUTOR (Ripgrep-style search with logging)
+// ============================================
+interface GrepMatch {
+  afterContext?: string[];
+  beforeContext?: string[];
+  content: string;
+  file: string;
+  lineNumber: number;
+}
 
 // Helper to convert escape sequences to actual characters
 const processEscapeSequences = (content: string): string => {
@@ -30,12 +38,15 @@ const processEscapeSequences = (content: string): string => {
     .replace(/\\\\/g, '\\');
 };
 
+// NO-OP: Rust file watcher handles refresh via fs-changed events
+const triggerRefresh = () => { };
+
 // Helper to validate file content before writing
 // Returns null if valid, or error message if invalid
 const validateBeforeWrite = (content: string, filename: string): string | null => {
   // Check if syntax validation is enabled in settings
   const syntaxValidationEnabled = useSettingsStore.getState().syntaxValidationEnabled;
-  
+
   if (!syntaxValidationEnabled) {
     return null; // Validation disabled by user
   }
@@ -51,47 +62,6 @@ const validateBeforeWrite = (content: string, filename: string): string | null =
   }
 
   return null; // Valid
-};
-
-// ============================================
-// FILE READ EXECUTOR (Enhanced with Logging)
-// ============================================
-const fileReadExecutor = async (args: Record<string, any>): Promise<string> => {
-  if (!isTauri()) {
-    return JSON.stringify({
-      success: false,
-      error: "File operations require desktop app",
-    });
-  }
-
-  const fullPath = resolvePath(args.path);
-  console.log("[file_read] Reading file:", fullPath);
-
-  try {
-    const content = await readFileContent(fullPath);
-    const lines = content.split("\n").length;
-
-    // Log the read operation
-    operationLog.logOperation(FsOperationType.Read, args.path, {
-      fullPath,
-      lines,
-      size: content.length,
-    });
-
-    return JSON.stringify({
-      success: true,
-      path: args.path,
-      fullPath,
-      content,
-      lines,
-    });
-  } catch (error) {
-    console.error("[file_read] Error:", error);
-    return JSON.stringify({
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
 };
 
 // ============================================
@@ -139,7 +109,7 @@ const fileCreateExecutor = async (
 
     // Check if auto-accept is enabled BEFORE adding to pending changes
     const autoAccept = useSettingsStore.getState().autoAcceptChanges;
-    
+
     if (autoAccept) {
       // Auto-accept mode: File is already written, just update editor if open
       import('../../store/useEditorStore').then(({ useEditorStore }) => {
@@ -147,7 +117,7 @@ const fileCreateExecutor = async (
         if (tab) {
           useEditorStore.getState().reloadTabContent(tab.id, processedContent);
         }
-      }).catch(() => {});
+      }).catch(() => { });
 
       operationLog.logOperation(FsOperationType.Create, args.path, {
         fullPath,
@@ -221,6 +191,125 @@ const fileCreateExecutor = async (
     });
   }
 };
+
+// ============================================
+// FILE DELETE EXECUTOR (Enhanced with Logging)
+// ============================================
+const fileDeleteExecutor = async (
+  args: Record<string, any>,
+): Promise<string> => {
+  if (!isTauri()) {
+    return JSON.stringify({
+      success: false,
+      error: "File operations require desktop app",
+    });
+  }
+
+  const fullPath = resolvePath(args.path);
+  console.log("[file_delete] Deleting file:", fullPath);
+
+  try {
+    await deletePath(fullPath);
+
+    // Log the delete operation
+    operationLog.logOperation(FsOperationType.Delete, args.path, {
+      fullPath,
+    });
+
+    triggerRefresh();
+
+    return JSON.stringify({
+      success: true,
+      message: `File deleted: ${args.path}`,
+      path: args.path,
+      fullPath,
+    });
+  } catch (error) {
+    console.error("[file_delete] Error:", error);
+    return JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+// ============================================
+// FILE READ EXECUTOR (Enhanced with Logging + Safety)
+// ============================================
+const fileReadExecutor = async (args: Record<string, any>): Promise<string> => {
+  if (!isTauri()) {
+    return JSON.stringify({
+      success: false,
+      error: "File operations require desktop app",
+    });
+  }
+
+  const fullPath = resolvePath(args.path);
+  console.log("[file_read] Reading file:", fullPath);
+
+  // Safety check: Block reading from excluded directories/files
+  const exclusionCheck = isPathExcluded(args.path);
+  if (exclusionCheck.excluded) {
+    console.warn("[file_read] Excluded:", exclusionCheck.reason);
+    return JSON.stringify({
+      success: false,
+      error: exclusionCheck.reason,
+      excluded: true,
+    });
+  }
+
+  // Also check the full resolved path
+  const fullPathCheck = isPathExcluded(fullPath);
+  if (fullPathCheck.excluded) {
+    console.warn("[file_read] Excluded (full path):", fullPathCheck.reason);
+    return JSON.stringify({
+      success: false,
+      error: fullPathCheck.reason,
+      excluded: true,
+    });
+  }
+
+  try {
+    const content = await readFileContent(fullPath);
+    const totalLines = content.split("\n").length;
+
+    // Safety check: Warn if file is very large
+    if (content.length > MAX_FILE_SIZE) {
+      console.warn(`[file_read] Large file warning: ${content.length} bytes`);
+      return JSON.stringify({
+        success: true,
+        path: args.path,
+        fullPath,
+        content: content.substring(0, MAX_FILE_SIZE),
+        totalLines,
+        truncated: true,
+        warning: `File truncated to ${MAX_FILE_SIZE} bytes to prevent context overflow. Original size: ${content.length} bytes.`,
+      });
+    }
+
+    // Log the read operation
+    operationLog.logOperation(FsOperationType.Read, args.path, {
+      fullPath,
+      lines: totalLines,
+      size: content.length,
+    });
+
+    return JSON.stringify({
+      success: true,
+      path: args.path,
+      fullPath,
+      content,
+      totalLines,
+    });
+  } catch (error) {
+    console.error("[file_read] Error:", error);
+    return JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
 // ============================================
 // FILE WRITE EXECUTOR (Cursor-style: Write immediately, revert on reject)
 // ============================================
@@ -274,7 +363,7 @@ const fileWriteExecutor = async (
         if (tab) {
           useEditorStore.getState().reloadTabContent(tab.id, processedContent);
         }
-      }).catch(() => {});
+      }).catch(() => { });
 
       operationLog.logOperation(FsOperationType.Write, args.path, {
         fullPath,
@@ -353,214 +442,6 @@ const fileWriteExecutor = async (
     });
   }
 };
-
-// ============================================
-// FILE PATCH EXECUTOR (Cursor-style: Write immediately, revert on reject)
-// ============================================
-const filePatchExecutor = async (
-  args: Record<string, any>,
-  toolCallId?: string,
-): Promise<string> => {
-  if (!isTauri()) {
-    return JSON.stringify({
-      success: false,
-      error: "File operations require desktop app",
-    });
-  }
-
-  const fullPath = resolvePath(args.path);
-  const fileName = fullPath.split(/[/\\]/).pop() || args.path;
-  console.log("[file_patch] Writing patched file (Cursor-style):", fullPath);
-
-  try {
-    const existingContent = await readFileContent(fullPath);
-    const lines = existingContent.split("\n");
-
-    const startIdx = Math.max(0, (args.start_line || 1) - 1);
-    const endIdx = Math.min(lines.length, args.end_line || args.start_line);
-
-    const newLines = (args.content || "").split("\n");
-    const patchedLines = [
-      ...lines.slice(0, startIdx),
-      ...newLines,
-      ...lines.slice(endIdx),
-    ];
-
-    const patchedContent = patchedLines.join("\n");
-
-    // PRE-SAVE VALIDATION: Check syntax before writing
-    const validationError = validateBeforeWrite(patchedContent, fileName);
-    if (validationError) {
-      console.warn("[file_patch] Syntax validation failed:", fileName);
-      return JSON.stringify({
-        success: false,
-        error: validationError,
-        validation_failed: true,
-        path: args.path,
-        fullPath,
-      });
-    }
-
-    // CURSOR-STYLE: Write to disk immediately
-    await writeFileContent(fullPath, patchedContent);
-    triggerRefresh();
-
-    // Check if auto-accept is enabled
-    const autoAccept = useSettingsStore.getState().autoAcceptChanges;
-
-    if (autoAccept) {
-      // Auto-accept mode: File is already written, just update editor if open
-      import('../../store/useEditorStore').then(({ useEditorStore }) => {
-        const tab = useEditorStore.getState().tabs.find(t => t.path === fullPath);
-        if (tab) {
-          useEditorStore.getState().reloadTabContent(tab.id, patchedContent);
-        }
-      }).catch(() => {});
-
-      operationLog.logOperation(FsOperationType.Edit, args.path, {
-        fullPath,
-        pending: false,
-        autoAccepted: true,
-        linesReplaced: endIdx - startIdx,
-        linesInserted: newLines.length,
-        startLine: args.start_line,
-        endLine: args.end_line,
-      });
-
-      return JSON.stringify({
-        success: true,
-        pending: false,
-        message: `File patched: ${args.path}`,
-        path: args.path,
-        fullPath,
-        linesReplaced: endIdx - startIdx,
-        linesInserted: newLines.length,
-      });
-    }
-
-    // Import pending changes store (only when NOT auto-accept)
-    const { usePendingChangesStore } = await import('../../store/usePendingChangesStore');
-
-    // Track the change for potential rollback
-    const changeId = usePendingChangesStore.getState().addChange({
-      filePath: fullPath,
-      fileName,
-      content: patchedContent,
-      originalContent: existingContent, // Store original for revert on reject
-      operation: 'patch',
-      toolCallId: toolCallId || '',
-      patchInfo: {
-        startLine: args.start_line || 1,
-        endLine: endIdx,
-        linesReplaced: endIdx - startIdx,
-        linesInserted: newLines.length,
-      },
-    });
-
-    // Automatically open the file in the editor so the user sees the diff
-    import('../../store/useEditorStore').then(({ useEditorStore }) => {
-      const ext = fileName.split('.').pop()?.toLowerCase() || '';
-      const langMap: Record<string, string> = {
-        'ts': 'typescript', 'tsx': 'typescript',
-        'js': 'javascript', 'jsx': 'javascript',
-        'json': 'json', 'css': 'css', 'scss': 'scss',
-        'html': 'html', 'md': 'markdown',
-        'rs': 'rust', 'toml': 'toml',
-        'yaml': 'yaml', 'yml': 'yaml',
-        'py': 'python', 'go': 'go',
-      };
-      const language = langMap[ext] || 'plaintext';
-      useEditorStore.getState().openFile(fullPath, fileName, patchedContent, language);
-    });
-
-    // Log the patch operation
-    operationLog.logOperation(FsOperationType.Edit, args.path, {
-      fullPath,
-      pending: true,
-      changeId,
-      linesReplaced: endIdx - startIdx,
-      linesInserted: newLines.length,
-      startLine: args.start_line,
-      endLine: args.end_line,
-    });
-
-    return JSON.stringify({
-      success: true,
-      pending: true,
-      changeId,
-      message: `File patched (pending approval): ${args.path}`,
-      path: args.path,
-      fullPath,
-      linesReplaced: endIdx - startIdx,
-      linesInserted: newLines.length,
-    });
-  } catch (error) {
-    console.error("[file_patch] Error:", error);
-    return JSON.stringify({
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-};
-
-// ============================================
-// FILE DELETE EXECUTOR (Enhanced with Logging)
-// ============================================
-const fileDeleteExecutor = async (
-  args: Record<string, any>,
-): Promise<string> => {
-  if (!isTauri()) {
-    return JSON.stringify({
-      success: false,
-      error: "File operations require desktop app",
-    });
-  }
-
-  const fullPath = resolvePath(args.path);
-  console.log("[file_delete] Deleting file:", fullPath);
-
-  try {
-    await deletePath(fullPath);
-
-    // Log the delete operation
-    operationLog.logOperation(FsOperationType.Delete, args.path, {
-      fullPath,
-    });
-
-    triggerRefresh();
-
-    return JSON.stringify({
-      success: true,
-      message: `File deleted: ${args.path}`,
-      path: args.path,
-      fullPath,
-    });
-  } catch (error) {
-    console.error("[file_delete] Error:", error);
-    return JSON.stringify({
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-};
-
-// ============================================
-// GREP EXECUTOR (Ripgrep-style search with logging)
-// ============================================
-interface GrepMatch {
-  file: string;
-  lineNumber: number;
-  content: string;
-  beforeContext?: string[];
-  afterContext?: string[];
-}
-
-interface GrepFileResult {
-  file: string;
-  matches: GrepMatch[];
-  count: number;
-}
-
 const grepExecutor = async (args: Record<string, any>): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({
@@ -800,7 +681,7 @@ const grepExecutor = async (args: Record<string, any>): Promise<string> => {
 };
 
 // ============================================
-// MULTI FILE READ EXECUTOR (Cursor-style parallel reading)
+// MULTI FILE READ EXECUTOR (Cursor-style parallel reading + Safety)
 // ============================================
 const multiFileReadExecutor = async (
   args: Record<string, any>,
@@ -821,6 +702,15 @@ const multiFileReadExecutor = async (
     });
   }
 
+  // Safety: Limit number of files that can be read at once
+  const MAX_FILES = 20;
+  if (paths.length > MAX_FILES) {
+    return JSON.stringify({
+      success: false,
+      error: `Too many files requested (${paths.length}). Maximum is ${MAX_FILES} files per request to prevent context overflow.`,
+    });
+  }
+
   const startTime = Date.now();
   const results: Array<{
     path: string;
@@ -828,19 +718,49 @@ const multiFileReadExecutor = async (
     content?: string;
     lines?: number;
     error?: string;
+    blocked?: boolean;
+    truncated?: boolean;
+    excluded?: boolean;
   }> = [];
+
+  let totalContentSize = 0;
+  let contentLimitReached = false;
 
   // Read all files in parallel
   const promises = paths.map(async (path) => {
+    // Safety check: Block reading from excluded directories/files
+    const exclusionCheck = isPathExcluded(path);
+    if (exclusionCheck.excluded) {
+      console.warn("[multi_file_read] Excluded:", path, exclusionCheck.reason);
+      return {
+        path,
+        success: false,
+        error: exclusionCheck.reason,
+        excluded: true,
+      };
+    }
+
     const fullPath = resolvePath(path);
+
+    // Also check the full resolved path
+    const fullPathCheck = isPathExcluded(fullPath);
+    if (fullPathCheck.excluded) {
+      console.warn("[multi_file_read] Excluded (full path):", fullPath, fullPathCheck.reason);
+      return {
+        path,
+        success: false,
+        error: fullPathCheck.reason,
+        excluded: true,
+      };
+    }
     try {
       const content = await readFileContent(fullPath);
-      const lines = content.split("\n").length;
+      const totalLines = content.split("\n").length;
 
       // Log the read operation
       operationLog.logOperation(FsOperationType.Read, path, {
         fullPath,
-        lines,
+        lines: totalLines,
         size: content.length,
         multiFile: true,
       });
@@ -849,7 +769,8 @@ const multiFileReadExecutor = async (
         path,
         success: true,
         content,
-        lines,
+        lines: totalLines,
+        size: content.length,
       };
     } catch (error) {
       return {
@@ -861,21 +782,262 @@ const multiFileReadExecutor = async (
   });
 
   const fileResults = await Promise.all(promises);
-  results.push(...fileResults);
+
+  // Process results with content size limit
+  for (const result of fileResults) {
+    if (result.success && 'content' in result && result.content) {
+      const contentSize = result.content.length;
+
+      // Check if adding this file would exceed the limit
+      if (totalContentSize + contentSize > MAX_MULTI_FILE_TOTAL_SIZE) {
+        if (!contentLimitReached) {
+          contentLimitReached = true;
+          // Truncate this file to fit remaining space
+          const remainingSpace = MAX_MULTI_FILE_TOTAL_SIZE - totalContentSize;
+          if (remainingSpace > 1000) {
+            results.push({
+              path: result.path,
+              success: true,
+              content: result.content.substring(0, remainingSpace),
+              lines: result.lines,
+              truncated: true,
+            });
+            totalContentSize += remainingSpace;
+          } else {
+            results.push({
+              path: result.path,
+              success: false,
+              error: 'Content limit reached. File skipped to prevent context overflow.',
+            });
+          }
+        } else {
+          // Skip remaining files
+          results.push({
+            path: result.path,
+            success: false,
+            error: 'Content limit reached. File skipped to prevent context overflow.',
+          });
+        }
+      } else {
+        // File fits, add it
+        totalContentSize += contentSize;
+        results.push({
+          path: result.path,
+          success: true,
+          content: result.content,
+          lines: result.lines,
+        });
+      }
+    } else {
+      // Error or excluded file
+      results.push({
+        path: result.path,
+        success: result.success,
+        error: result.error,
+        excluded: result.excluded,
+      });
+    }
+  }
 
   const totalTime = Date.now() - startTime;
   const successCount = results.filter(r => r.success).length;
   const errorCount = results.filter(r => !r.success).length;
+  const excludedCount = results.filter(r => r.excluded).length;
 
   return JSON.stringify({
     success: true,
     filesRead: successCount,
     filesError: errorCount,
+    filesExcluded: excludedCount,
     totalFiles: paths.length,
+    totalContentSize,
+    contentLimitReached,
     totalTime,
     averageTimePerFile: Math.round(totalTime / paths.length),
     files: results,
+    ...(contentLimitReached && {
+      warning: `Content limit (${MAX_MULTI_FILE_TOTAL_SIZE / 1024 / 1024}MB) reached. Some files were truncated or skipped.`
+    }),
   });
+};
+
+// ============================================
+// SEARCH REPLACE EXECUTOR (Cursor-style: Find exact text and replace)
+// ============================================
+const searchReplaceExecutor = async (
+  args: Record<string, any>,
+  toolCallId?: string,
+): Promise<string> => {
+  if (!isTauri()) {
+    return JSON.stringify({
+      success: false,
+      error: "File operations require desktop app",
+    });
+  }
+
+  const fullPath = resolvePath(args.path);
+  const fileName = fullPath.split(/[/\\]/).pop() || args.path;
+  const oldString = args.old_string;
+  const newString = args.new_string ?? '';
+  const replaceAll = args.replace_all === true;
+
+  console.log("[search_replace] Editing file (Cursor-style):", fullPath);
+
+  if (!oldString) {
+    return JSON.stringify({
+      success: false,
+      error: "old_string is required - provide the exact text to find and replace",
+    });
+  }
+
+  try {
+    const existingContent = await readFileContent(fullPath);
+
+    // Check if old_string exists in the file
+    const occurrences = existingContent.split(oldString).length - 1;
+
+    if (occurrences === 0) {
+      return JSON.stringify({
+        success: false,
+        error: `Could not find the specified text in ${args.path}. Make sure old_string matches EXACTLY (including whitespace, indentation, and newlines).`,
+        path: args.path,
+        fullPath,
+        hint: "The text to find must match exactly. Check for differences in whitespace, indentation, or line endings.",
+      });
+    }
+
+    if (occurrences > 1 && !replaceAll) {
+      return JSON.stringify({
+        success: false,
+        error: `Found ${occurrences} occurrences of the text. The old_string must be unique. Either include more context to make it unique, or set replace_all=true to replace all occurrences.`,
+        path: args.path,
+        fullPath,
+        occurrences,
+        hint: "Add more surrounding code to old_string to make it unique in the file.",
+      });
+    }
+
+    // Calculate lines added/removed
+    const oldLines = oldString.split('\n').length;
+    const newLines = newString.split('\n').length;
+    const linesRemoved = oldLines * (replaceAll ? occurrences : 1);
+    const linesAdded = newLines * (replaceAll ? occurrences : 1);
+
+    // Perform the replacement
+    let newContent: string;
+    if (replaceAll) {
+      newContent = existingContent.split(oldString).join(newString);
+    } else {
+      newContent = existingContent.replace(oldString, newString);
+    }
+
+    // PRE-SAVE VALIDATION: Check syntax before writing
+    const validationError = validateBeforeWrite(newContent, fileName);
+    if (validationError) {
+      console.warn("[search_replace] Syntax validation failed:", fileName);
+      return JSON.stringify({
+        success: false,
+        error: validationError,
+        validation_failed: true,
+        path: args.path,
+        fullPath,
+      });
+    }
+
+    // CURSOR-STYLE: Write to disk immediately
+    await writeFileContent(fullPath, newContent);
+    triggerRefresh();
+
+    // Check if auto-accept is enabled
+    const autoAccept = useSettingsStore.getState().autoAcceptChanges;
+
+    if (autoAccept) {
+      // Auto-accept mode: File is already written, just update editor if open
+      import('../../store/useEditorStore').then(({ useEditorStore }) => {
+        const tab = useEditorStore.getState().tabs.find(t => t.path === fullPath);
+        if (tab) {
+          useEditorStore.getState().reloadTabContent(tab.id, newContent);
+        }
+      }).catch(() => { });
+
+      operationLog.logOperation(FsOperationType.Edit, args.path, {
+        fullPath,
+        pending: false,
+        autoAccepted: true,
+        replacements: replaceAll ? occurrences : 1,
+        linesAdded,
+        linesRemoved,
+      });
+
+      return JSON.stringify({
+        success: true,
+        pending: false,
+        message: `Replaced ${replaceAll ? occurrences : 1} occurrence(s) in ${args.path}`,
+        path: args.path,
+        fullPath,
+        replacements: replaceAll ? occurrences : 1,
+        linesAdded,
+        linesRemoved,
+      });
+    }
+
+    // Import pending changes store (only when NOT auto-accept)
+    const { usePendingChangesStore } = await import('../../store/usePendingChangesStore');
+
+    // Track the change for potential rollback
+    const changeId = usePendingChangesStore.getState().addChange({
+      filePath: fullPath,
+      fileName,
+      content: newContent,
+      originalContent: existingContent, // Store original for revert on reject
+      operation: 'patch',
+      toolCallId: toolCallId || '',
+    });
+
+    // Automatically open the file in the editor so the user sees the change
+    import('../../store/useEditorStore').then(({ useEditorStore }) => {
+      const ext = fileName.split('.').pop()?.toLowerCase() || '';
+      const langMap: Record<string, string> = {
+        'ts': 'typescript', 'tsx': 'typescript',
+        'js': 'javascript', 'jsx': 'javascript',
+        'json': 'json', 'css': 'css', 'scss': 'scss',
+        'html': 'html', 'md': 'markdown',
+        'rs': 'rust', 'toml': 'toml',
+        'yaml': 'yaml', 'yml': 'yaml',
+        'py': 'python', 'go': 'go',
+      };
+      const language = langMap[ext] || 'plaintext';
+      useEditorStore.getState().openFile(fullPath, fileName, newContent, language);
+    });
+
+    // Log the edit operation
+    operationLog.logOperation(FsOperationType.Edit, args.path, {
+      fullPath,
+      pending: true,
+      changeId,
+      replacements: replaceAll ? occurrences : 1,
+      linesAdded,
+      linesRemoved,
+    });
+
+    return JSON.stringify({
+      success: true,
+      pending: true,
+      changeId,
+      message: `Replaced ${replaceAll ? occurrences : 1} occurrence(s) in ${args.path} (pending approval)`,
+      path: args.path,
+      fullPath,
+      replacements: replaceAll ? occurrences : 1,
+      linesAdded,
+      linesRemoved,
+    });
+  } catch (error) {
+    console.error("[search_replace] Error:", error);
+    return JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 };
 
 // ============================================
@@ -887,8 +1049,14 @@ export const registerEnhancedFileExecutors = (): void => {
   toolRegistry.registerExecutor("file_create", fileCreateExecutor);
   toolRegistry.registerExecutor("file_read", fileReadExecutor);
   toolRegistry.registerExecutor("file_write", fileWriteExecutor);
-  toolRegistry.registerExecutor("file_patch", filePatchExecutor);
+  toolRegistry.registerExecutor("search_replace", searchReplaceExecutor);
   toolRegistry.registerExecutor("file_delete", fileDeleteExecutor);
   toolRegistry.registerExecutor("grep", grepExecutor);
   toolRegistry.registerExecutor("multi_file_read", multiFileReadExecutor);
 };
+
+// Maximum content size for a single file read (500KB)
+const MAX_FILE_SIZE = 500 * 1024;
+
+// Maximum total content size for multi_file_read (2MB)
+const MAX_MULTI_FILE_TOTAL_SIZE = 2 * 1024 * 1024;

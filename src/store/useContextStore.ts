@@ -1,4 +1,39 @@
-import { create } from 'zustand';
+import { create } from "zustand";
+
+interface ContextState extends ContextUsage {
+  reset: () => void;
+  setContextWindow: (contextWindow: number, maxOutputTokens: number) => void;
+  setEstimatedContext: (tokens: number) => void;
+
+  // Actions
+  updateUsage: (usage: TokenUsage) => void;
+}
+
+export interface ContextUsage {
+  // Total completion tokens generated
+  completionTokens: number;
+
+  // Provider's context window limit
+  contextWindow: number;
+
+  // Whether we're approaching the limit (>80%)
+  isNearLimit: boolean;
+
+  // Whether we've exceeded the limit
+  isOverLimit: boolean;
+
+  // Current usage from last response
+  lastUsage: TokenUsage | null;
+
+  // Provider's max output tokens
+  maxOutputTokens: number;
+
+  // Calculated percentage used
+  usagePercentage: number;
+
+  // Total tokens used in context (from API's prompt_tokens)
+  usedContextTokens: number;
+}
 
 /**
  * Context Usage Store
@@ -10,57 +45,22 @@ import { create } from 'zustand';
  * - We track prompt_tokens as the "used" context
  * - completion_tokens are added to show total but don't count against context limit
  */
-
 export interface TokenUsage {
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
   // Cache tokens (MiniMax/Anthropic)
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
-}
-
-export interface ContextUsage {
-  // Current usage from last response
-  lastUsage: TokenUsage | null;
-
-  // Total tokens used in context (from API's prompt_tokens)
-  usedContextTokens: number;
-
-  // Total completion tokens generated
   completionTokens: number;
-
-  // Provider's context window limit
-  contextWindow: number;
-
-  // Provider's max output tokens
-  maxOutputTokens: number;
-
-  // Calculated percentage used
-  usagePercentage: number;
-
-  // Whether we're approaching the limit (>80%)
-  isNearLimit: boolean;
-
-  // Whether we've exceeded the limit
-  isOverLimit: boolean;
+  promptTokens: number;
+  totalTokens: number;
 }
-
-interface ContextState extends ContextUsage {
-  // Actions
-  updateUsage: (usage: TokenUsage) => void;
-  setContextWindow: (contextWindow: number, maxOutputTokens: number) => void;
-  setEstimatedContext: (tokens: number) => void;
-  reset: () => void;
-}
-
-const DEFAULT_CONTEXT_WINDOW = 128000;
-const DEFAULT_MAX_OUTPUT = 8192;
 
 const calculatePercentage = (used: number, total: number): number => {
   if (total <= 0) return 0;
   return Math.min(100, Math.round((used / total) * 100));
 };
+
+const DEFAULT_CONTEXT_WINDOW = 128000;
+const DEFAULT_MAX_OUTPUT = 8192;
 
 export const useContextStore = create<ContextState>((set, get) => ({
   // Initial state

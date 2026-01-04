@@ -45,9 +45,19 @@ export const GitBranchSelector: React.FC = () => {
     setIsCreating(false);
   }, [isOpen, loadBranches]);
 
-  const handleCheckout = useCallback(async (branch: string) => {
+  const handleCheckout = useCallback(async (branchName: string, isRemote: boolean) => {
     try {
-      await checkout(branch);
+      // For remote branches, extract the branch name without origin/ prefix
+      // This will create a local tracking branch or switch to existing one
+      let targetBranch = branchName;
+      if (isRemote) {
+        // Remove remote prefix (e.g., "origin/feature" -> "feature")
+        const parts = branchName.split('/');
+        if (parts.length > 1) {
+          targetBranch = parts.slice(1).join('/');
+        }
+      }
+      await checkout(targetBranch);
       setIsOpen(false);
     } catch (error) {
       console.error('Failed to checkout branch:', error);
@@ -162,7 +172,7 @@ export const GitBranchSelector: React.FC = () => {
               {localBranches.map((branch) => (
                 <button
                   key={branch.name}
-                  onClick={() => handleCheckout(branch.name)}
+                  onClick={() => handleCheckout(branch.name, false)}
                   className="w-full px-3 py-1.5 flex items-center gap-2 hover:bg-white/5 transition-colors"
                 >
                   {branch.isCurrent ? (
@@ -201,7 +211,7 @@ export const GitBranchSelector: React.FC = () => {
               {remoteBranches.map((branch) => (
                 <button
                   key={branch.name}
-                  onClick={() => handleCheckout(branch.name)}
+                  onClick={() => handleCheckout(branch.name, true)}
                   className="w-full px-3 py-1.5 flex items-center gap-2 hover:bg-white/5 transition-colors"
                 >
                   <div className="w-4" />

@@ -4,25 +4,39 @@
  * Enterprise-grade state management for file modification approvals.
  * Follows the same pattern as tool approvals but for file operations.
  */
+import { create } from "zustand";
 
-import { create } from 'zustand';
-import { writeFileContent, readFileContent, isTauri } from '../lib/tauri';
-import { useSettingsStore } from './useSettingsStore';
+import { isTauri, readFileContent, writeFileContent } from "../lib/tauri";
+import { useSettingsStore } from "./useSettingsStore";
 
-// Types
-export type ChangeOperation = 'create' | 'write' | 'patch' | 'delete';
-export type ChangeStatus = 'pending' | 'accepted' | 'rejected';
+interface PendingChangesState {
+    acceptAll: () => Promise<{ accepted: number; failed: number }>;
+    acceptChange: (id: string) => Promise<{ success: boolean; error?: string }>;
+
+    // Actions
+    addChange: (change: Omit<PendingChange, 'id' | 'timestamp' | 'status'>) => string;
+    changes: Map<string, PendingChange>;
+    clearAccepted: () => void;
+    getChange: (id: string) => PendingChange | undefined;
+    getChangeByToolId: (toolCallId: string) => PendingChange | undefined;
+    getPendingChanges: () => PendingChange[];
+    getSelectedChange: () => PendingChange | undefined;
+    navigateChange: (direction: 'prev' | 'next') => void;
+    rejectAll: () => Promise<void>;
+    rejectChange: (id: string) => Promise<void>;
+    reset: () => void;
+    selectedChangeIndex: number;
+    setSelectedChangeIndex: (index: number) => void;
+}
 
 export interface PendingChange {
-    id: string;
-    filePath: string;
-    fileName: string;
     content: string;
-    originalContent?: string;
+    fileName: string;
+    filePath: string;
+    id: string;
     operation: ChangeOperation;
-    status: ChangeStatus;
-    timestamp: number;
-    toolCallId: string;
+    originalContent?: string;
+
     // For patch operations
     patchInfo?: {
         startLine: number;
@@ -30,30 +44,30 @@ export interface PendingChange {
         linesReplaced: number;
         linesInserted: number;
     };
+    status: ChangeStatus;
+    timestamp: number;
+    toolCallId: string;
 }
 
-interface PendingChangesState {
-    changes: Map<string, PendingChange>;
-    selectedChangeIndex: number;
+// Types
+export type ChangeOperation = 'create' | 'write' | 'patch' | 'delete';
 
-    // Actions
-    addChange: (change: Omit<PendingChange, 'id' | 'timestamp' | 'status'>) => string;
-    acceptChange: (id: string) => Promise<{ success: boolean; error?: string }>;
-    rejectChange: (id: string) => Promise<void>;
-    acceptAll: () => Promise<{ accepted: number; failed: number }>;
-    rejectAll: () => Promise<void>;
-    getChange: (id: string) => PendingChange | undefined;
-    getPendingChanges: () => PendingChange[];
-    getChangeByToolId: (toolCallId: string) => PendingChange | undefined;
-    getSelectedChange: () => PendingChange | undefined;
-    setSelectedChangeIndex: (index: number) => void;
-    navigateChange: (direction: 'prev' | 'next') => void;
-    clearAccepted: () => void;
-    reset: () => void;
-}
+export type ChangeStatus = 'pending' | 'accepted' | 'rejected';
 
 // Generate unique ID
 const generateId = () => `change_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+// Helper to load original content for diff
+export async function loadOriginalContent(filePath: string): Promise<string | undefined> {
+    if (!isTauri()) return undefined;
+
+    try {
+        return await readFileContent(filePath);
+    } catch {
+        // File doesn't exist (create operation)
+        return undefined;
+    }
+}
 
 export const usePendingChangesStore = create<PendingChangesState>((set, get) => ({
     changes: new Map(),
@@ -258,15 +272,3 @@ export const usePendingChangesStore = create<PendingChangesState>((set, get) => 
 
     reset: () => set({ changes: new Map(), selectedChangeIndex: 0 })
 }));
-
-// Helper to load original content for diff
-export async function loadOriginalContent(filePath: string): Promise<string | undefined> {
-    if (!isTauri()) return undefined;
-
-    try {
-        return await readFileContent(filePath);
-    } catch {
-        // File doesn't exist (create operation)
-        return undefined;
-    }
-}

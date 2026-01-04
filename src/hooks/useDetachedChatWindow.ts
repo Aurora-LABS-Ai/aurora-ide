@@ -1,15 +1,13 @@
 import { useCallback, useEffect, useRef } from "react";
+
 import { useUiStore } from "../store/useUiStore";
 
-const CHAT_WINDOW_LABEL = "chat-detached";
-const CHAT_WINDOW_URL = "/chat-detached";
-
 interface DetachedWindowConfig {
-  width?: number;
+  alwaysOnTop?: boolean;
   height?: number;
+  width?: number;
   x?: number;
   y?: number;
-  alwaysOnTop?: boolean;
 }
 
 export function useDetachedChatWindow() {
@@ -238,3 +236,6 @@ export function useDetachedChatWindow() {
     toggleAlwaysOnTop,
   };
 }
+
+const CHAT_WINDOW_LABEL = "chat-detached";
+const CHAT_WINDOW_URL = "/chat-detached";

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useCallback } from 'react';
-import { useSettingsStore } from '../store/useSettingsStore';
-import { useEditorStore } from '../store/useEditorStore';
+import { useCallback, useEffect, useRef } from "react";
+
+import { useEditorStore } from "../store/useEditorStore";
+import { useSettingsStore } from "../store/useSettingsStore";
 
 /**
  * Hook that handles auto-saving files based on the auto-save setting.

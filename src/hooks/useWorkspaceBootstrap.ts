@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
+
 import { isTauri } from "../lib/tauri";
-import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import { databaseService } from "../services/database";
+import { useWorkspaceStore } from "../store/useWorkspaceStore";
 
 /**
  * Automatically initializes the workspace store with the saved workspace

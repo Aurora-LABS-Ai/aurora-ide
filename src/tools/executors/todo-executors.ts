@@ -2,13 +2,12 @@
  * Todo Tool Executors
  * Handles task list management during AI conversations
  */
-
-import { toolRegistry } from '../registry';
-import { useTaskStore } from '../../store/useTaskStore';
+import { useTaskStore } from "../../store/useTaskStore";
+import { toolRegistry } from "../registry";
 
 interface TodoItem {
-  content: string;
   activeForm: string;
+  content: string;
   status: 'pending' | 'in_progress' | 'completed';
 }
 

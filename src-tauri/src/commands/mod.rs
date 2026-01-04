@@ -23,6 +23,7 @@ pub mod chat;
 pub mod themes;
 pub mod semantic;
 pub mod git;
+pub mod browser;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileEntry {

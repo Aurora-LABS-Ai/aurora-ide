@@ -1,28 +1,27 @@
-import { create } from 'zustand';
-
-export interface Task {
-    id: string;
-    content: string;        // Display text (uses activeForm when available)
-    status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
-    activeForm?: string;    // Present continuous form for display during progress
-    originalContent?: string; // Original imperative form
-}
+import { create } from "zustand";
 
 interface TaskState {
-    tasks: Task[];
-    isVisible: boolean;
+    clearTasks: () => void;
     isAllComplete: boolean; // Track if all tasks just completed (for fade-out animation)
+    isVisible: boolean;
+    setIsVisible: (visible: boolean) => void;
 
     // Actions
     setTasks: (tasks: Task[]) => void;
+    tasks: Task[];
     updateTask: (id: string, status: Task['status']) => void;
-    setIsVisible: (visible: boolean) => void;
-    clearTasks: () => void;
+}
+
+export interface Task {
+    activeForm?: string; // Present continuous form for display during progress
+    content: string; // Display text (uses activeForm when available)
+    id: string;
+    originalContent?: string; // Original imperative form
+    status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
 }
 
 // Timer for auto-hide
 let autoHideTimer: ReturnType<typeof setTimeout> | null = null;
-
 export const useTaskStore = create<TaskState>((set, _get) => ({
     tasks: [],
     isVisible: false,

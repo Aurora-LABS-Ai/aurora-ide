@@ -1,37 +1,38 @@
 import { create } from "zustand";
+
 import type { ToolProposal } from "../types";
 
 interface DetachedWindowState {
   isDetached: boolean;
-  windowLabel: string | null;
   position: { x: number; y: number } | null;
   size: { width: number; height: number } | null;
+  windowLabel: string | null;
 }
 
 interface UiState {
-  theme: "dark" | "light";
-  isSettingsOpen: boolean;
+  closeToolApproval: () => void;
+  detachChat: (windowLabel: string) => void;
+  detachedChat: DetachedWindowState;
   isAuditOpen: boolean;
   isChatOpen: boolean;
+  isSettingsOpen: boolean;
   isSidebarOpen: boolean;
+  openToolApproval: (proposal: ToolProposal) => void;
+  reattachChat: () => void;
+  setAuditOpen: (isOpen: boolean) => void;
+  setChatOpen: (isOpen: boolean) => void;
+  setSettingsOpen: (isOpen: boolean) => void;
+  setSidebarOpen: (isOpen: boolean) => void;
+  theme: "dark" | "light";
+  toggleChat: () => void;
+  toggleSidebar: () => void;
+
+  // Actions
+  toggleTheme: () => void;
   toolApprovalState: {
     isOpen: boolean;
     proposal: ToolProposal | null;
   };
-  detachedChat: DetachedWindowState;
-
-  // Actions
-  toggleTheme: () => void;
-  setSettingsOpen: (isOpen: boolean) => void;
-  setAuditOpen: (isOpen: boolean) => void;
-  toggleChat: () => void;
-  setChatOpen: (isOpen: boolean) => void;
-  toggleSidebar: () => void;
-  setSidebarOpen: (isOpen: boolean) => void;
-  openToolApproval: (proposal: ToolProposal) => void;
-  closeToolApproval: () => void;
-  detachChat: (windowLabel: string) => void;
-  reattachChat: () => void;
   updateDetachedPosition: (position: { x: number; y: number }) => void;
   updateDetachedSize: (size: { width: number; height: number }) => void;
 }

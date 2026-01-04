@@ -1,9 +1,9 @@
 /**
  * Provider Presets - Centralized Configuration for All LLM Providers
- *
+ * 
  * This file contains all provider-specific configurations in one place,
  * eliminating scattered provider-specific checks throughout the codebase.
- *
+ * 
  * Each preset defines:
  * - API format (OpenAI vs Anthropic)
  * - Authentication method
@@ -15,36 +15,27 @@
 // ============================================================
 // TYPES
 // ============================================================
-
-export type BaseFormat = 'openai' | 'anthropic';
-export type AuthType = 'bearer' | 'x-api-key';
-
-export interface ThinkingConfig {
-  /** Parameter to add to request body to enable thinking */
-  requestParam?: Record<string, unknown>;
-  /** Field name in response where thinking content appears */
-  responseField?: 'reasoning_content' | 'thinking';
-  /** Whether thinking is returned as content blocks (Anthropic style) */
-  usesContentBlocks?: boolean;
-}
-
 export interface ProviderPreset {
-  id: string;
-  name: string;
+  authHeader: string;
+
+  // Authentication
+  authType: AuthType;
 
   // API Format
   baseFormat: BaseFormat;
   chatEndpoint: string;
 
-  // Authentication
-  authType: AuthType;
-  authHeader: string;
-
-  // Thinking Mode
-  thinkingConfig?: ThinkingConfig;
+  // Context defaults
+  defaultContextWindow: number;
+  defaultMaxOutput: number;
 
   // Default request parameters for this provider
   defaultParams?: Record<string, unknown>;
+  id: string;
+
+  /** Whether to include stream_options in request */
+  includeStreamOptions?: boolean;
+  name: string;
 
   // Required headers (besides auth)
   requiredHeaders?: Record<string, string>;
@@ -52,18 +43,141 @@ export interface ProviderPreset {
   // Parameter restrictions
   /** Skip temperature for certain models (e.g., DeepSeek reasoner) */
   skipTemperature?: (model: string) => boolean;
-  /** Whether to include stream_options in request */
-  includeStreamOptions?: boolean;
 
-  // Context defaults
-  defaultContextWindow: number;
-  defaultMaxOutput: number;
+  // Thinking Mode
+  thinkingConfig?: ThinkingConfig;
+}
+
+export interface ThinkingConfig {
+  /** Parameter to add to request body to enable thinking */
+  requestParam?: Record<string, unknown>;
+
+  /** Field name in response where thinking content appears */
+  responseField?: 'reasoning_content' | 'thinking';
+
+  /** Whether thinking is returned as content blocks (Anthropic style) */
+  usesContentBlocks?: boolean;
+}
+
+export type AuthType = 'bearer' | 'x-api-key';
+
+export type BaseFormat = 'openai' | 'anthropic';
+
+/**
+ * Build authentication header based on preset
+ */
+export function buildAuthHeader(
+  preset: ProviderPreset,
+  apiKey: string
+): Record<string, string> {
+  if (!apiKey) return {};
+
+  if (preset.authType === 'bearer') {
+    return { [preset.authHeader]: `Bearer ${apiKey}` };
+  } else {
+    return { [preset.authHeader]: apiKey };
+  }
+}
+
+/**
+ * Build all headers for a request
+ */
+export function buildRequestHeaders(
+  preset: ProviderPreset,
+  apiKey: string,
+  customHeaders?: Record<string, string>
+): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    ...buildAuthHeader(preset, apiKey),
+    ...(preset.requiredHeaders || {}),
+    ...(customHeaders || {}),
+  };
+}
+
+/**
+ * Build thinking parameters for request body
+ */
+export function buildThinkingParams(
+  preset: ProviderPreset,
+  thinkingEnabled: boolean
+): Record<string, unknown> {
+  if (!thinkingEnabled || !preset.thinkingConfig?.requestParam) {
+    return {};
+  }
+  return preset.thinkingConfig.requestParam;
+}
+
+/**
+ * Detect provider type from base URL and model
+ */
+export function detectProviderType(baseUrl: string, model: string): string {
+  const url = baseUrl.toLowerCase();
+  const modelLower = model.toLowerCase();
+
+  // Anthropic
+  if (url.includes('anthropic.com') || modelLower.includes('claude')) {
+    return 'anthropic';
+  }
+
+  // MiniMax (check before OpenAI since it can use both formats)
+  if (url.includes('minimax') || modelLower.includes('minimax')) {
+    // If using /anthropic endpoint, use anthropic format
+    if (url.includes('/anthropic')) {
+      return 'minimax';
+    }
+    // Otherwise fall through to openai
+  }
+
+  // DeepSeek
+  if (url.includes('deepseek.com') || modelLower.includes('deepseek')) {
+    return 'deepseek';
+  }
+
+  // GLM / Z.AI
+  if (url.includes('z.ai') || url.includes('zhipuai') || modelLower.includes('glm')) {
+    return 'glm';
+  }
+
+  // OpenAI
+  if (url.includes('openai.com') || modelLower.includes('gpt') || modelLower.includes('o1')) {
+    return 'openai';
+  }
+
+  // Default to custom
+  return 'custom';
+}
+
+/**
+ * Get the full API URL for chat completions
+ */
+export function getChatUrl(baseUrl: string, preset: ProviderPreset): string {
+  // Remove trailing slash from base URL
+  const base = baseUrl.replace(/\/+$/, '');
+  return `${base}${preset.chatEndpoint}`;
+}
+
+// ============================================================
+// HELPER FUNCTIONS
+// ============================================================
+
+/**
+ * Get preset for a provider type
+ */
+export function getProviderPreset(providerType: string): ProviderPreset {
+  return PROVIDER_PRESETS[providerType] || PROVIDER_PRESETS.custom;
+}
+
+/**
+ * Check if temperature should be skipped for this model
+ */
+export function shouldSkipTemperature(preset: ProviderPreset, model: string): boolean {
+  return preset.skipTemperature?.(model) ?? false;
 }
 
 // ============================================================
 // PROVIDER PRESETS
 // ============================================================
-
 export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
   // ============================================
   // GLM / Z.AI (GLM-4.7, GLM-4.6, etc.)
@@ -187,115 +301,3 @@ export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
     defaultMaxOutput: 8192,
   },
 };
-
-// ============================================================
-// HELPER FUNCTIONS
-// ============================================================
-
-/**
- * Get preset for a provider type
- */
-export function getProviderPreset(providerType: string): ProviderPreset {
-  return PROVIDER_PRESETS[providerType] || PROVIDER_PRESETS.custom;
-}
-
-/**
- * Detect provider type from base URL and model
- */
-export function detectProviderType(baseUrl: string, model: string): string {
-  const url = baseUrl.toLowerCase();
-  const modelLower = model.toLowerCase();
-
-  // Anthropic
-  if (url.includes('anthropic.com') || modelLower.includes('claude')) {
-    return 'anthropic';
-  }
-
-  // MiniMax (check before OpenAI since it can use both formats)
-  if (url.includes('minimax') || modelLower.includes('minimax')) {
-    // If using /anthropic endpoint, use anthropic format
-    if (url.includes('/anthropic')) {
-      return 'minimax';
-    }
-    // Otherwise fall through to openai
-  }
-
-  // DeepSeek
-  if (url.includes('deepseek.com') || modelLower.includes('deepseek')) {
-    return 'deepseek';
-  }
-
-  // GLM / Z.AI
-  if (url.includes('z.ai') || url.includes('zhipuai') || modelLower.includes('glm')) {
-    return 'glm';
-  }
-
-  // OpenAI
-  if (url.includes('openai.com') || modelLower.includes('gpt') || modelLower.includes('o1')) {
-    return 'openai';
-  }
-
-  // Default to custom
-  return 'custom';
-}
-
-/**
- * Build authentication header based on preset
- */
-export function buildAuthHeader(
-  preset: ProviderPreset,
-  apiKey: string
-): Record<string, string> {
-  if (!apiKey) return {};
-
-  if (preset.authType === 'bearer') {
-    return { [preset.authHeader]: `Bearer ${apiKey}` };
-  } else {
-    return { [preset.authHeader]: apiKey };
-  }
-}
-
-/**
- * Build all headers for a request
- */
-export function buildRequestHeaders(
-  preset: ProviderPreset,
-  apiKey: string,
-  customHeaders?: Record<string, string>
-): Record<string, string> {
-  return {
-    'Content-Type': 'application/json',
-    ...buildAuthHeader(preset, apiKey),
-    ...(preset.requiredHeaders || {}),
-    ...(customHeaders || {}),
-  };
-}
-
-/**
- * Build thinking parameters for request body
- */
-export function buildThinkingParams(
-  preset: ProviderPreset,
-  thinkingEnabled: boolean
-): Record<string, unknown> {
-  if (!thinkingEnabled || !preset.thinkingConfig?.requestParam) {
-    return {};
-  }
-  return preset.thinkingConfig.requestParam;
-}
-
-/**
- * Check if temperature should be skipped for this model
- */
-export function shouldSkipTemperature(preset: ProviderPreset, model: string): boolean {
-  return preset.skipTemperature?.(model) ?? false;
-}
-
-/**
- * Get the full API URL for chat completions
- */
-export function getChatUrl(baseUrl: string, preset: ProviderPreset): string {
-  // Remove trailing slash from base URL
-  const base = baseUrl.replace(/\/+$/, '');
-  return `${base}${preset.chatEndpoint}`;
-}

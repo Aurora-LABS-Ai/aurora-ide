@@ -21,7 +21,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { ChevronRight, Loader2, Sparkles } from 'lucide-react';
+import { ChevronRight, Loader2, BrainCircuit } from 'lucide-react';
 import clsx from 'clsx';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -38,48 +38,33 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ content, isGenerat
     if (isGenerating) {
       setIsExpanded(true);
     } else {
-      // Auto-collapse when thinking is done
       setIsExpanded(false);
     }
   }, [isGenerating]);
 
   return (
-    <div className="my-2">
+    <div className="py-2 pl-3 group">
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className={clsx(
-          "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium w-full",
-          "transition-all duration-300 group glass-light border",
-          isGenerating
-            ? "border-transparent bg-[var(--aurora-common-primary)]/[0.05]"
-            : "border-transparent hover:border-[var(--aurora-common-border)]/50 hover:glass-medium"
-        )}
+        className="flex items-center gap-2 text-xs font-medium w-full outline-none text-left"
       >
         <div className={clsx(
-          "flex items-center justify-center w-5 h-5 rounded transition-all",
-          isGenerating
-            ? "bg-[var(--aurora-common-primary)]/15"
-            : "bg-[var(--aurora-chat-surface)] group-hover:bg-[var(--aurora-chat-surface)]/80"
+          "flex items-center justify-center w-4 h-4 rounded-full transition-colors",
+          isGenerating ? "text-[var(--aurora-common-primary)]" : "text-text-disabled group-hover:text-text-secondary"
         )}>
-          {isGenerating ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: 'var(--aurora-common-primary)' }} />
-          ) : (
-            <Sparkles className="w-3.5 h-3.5 text-[var(--aurora-sidebar-foreground)]" />
-          )}
+          {isGenerating ? <Loader2 size={12} className="animate-spin" /> : <BrainCircuit size={12} />}
         </div>
 
-        <div className="flex flex-col items-start flex-1">
-          <span className={clsx(
-            "leading-none",
-            isGenerating && "animate-pulse"
-          )}>
-            {isGenerating ? 'Analyzing request...' : 'Thought Process'}
-          </span>
-        </div>
+        <span className={clsx(
+          "text-[11px] transition-colors",
+          isGenerating ? "text-[var(--aurora-common-primary)] animate-pulse" : "text-text-disabled group-hover:text-text-secondary"
+        )}>
+          {isGenerating ? 'Thinking...' : 'Process Log'}
+        </span>
 
-        <ChevronRight className={clsx(
-          "w-3.5 h-3.5 transition-transform duration-200 opacity-50 group-hover:opacity-100",
-          isExpanded && "rotate-90"
+        <ChevronRight size={10} className={clsx(
+          "text-text-disabled transition-transform opacity-0 group-hover:opacity-100",
+          isExpanded && "rotate-90 opacity-100"
         )} />
       </button>
 
@@ -89,18 +74,12 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ content, isGenerat
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <div className="mt-2 ml-2 pl-4 border-l-2 border-white/5 relative">
-              {/* Decorative timeline dot */}
-              <div className="absolute -left-[5px] top-0 w-2 h-2 rounded-full bg-border ring-4 ring-sidebar" />
-
-              <div className="bg-editor rounded-md border border-border p-3 overflow-x-auto">
-                <p className="font-mono text-[11px] text-text-secondary leading-relaxed whitespace-pre-wrap break-words">
-                  {content || <span className="text-text-disabled italic">Thinking...</span>}
-                </p>
-              </div>
+            <div className="mt-1 ml-2 pl-3 border-l border-white/10">
+              <p className="font-mono text-[10px] text-text-secondary leading-relaxed whitespace-pre-wrap break-words py-1 opacity-80">
+                {content || <span className="italic opacity-50">Initializing...</span>}
+              </p>
             </div>
           </motion.div>
         )}

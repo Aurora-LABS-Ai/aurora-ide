@@ -1,61 +1,73 @@
-import { invoke } from '@tauri-apps/api/core';
-import type {
-  EditorState,
-  ExplorerState,
-  WorkspaceState,
-  AppSettings,
-  DbLLMProvider,
-  ToolSetting,
-} from '../types/database';
+import { invoke } from "@tauri-apps/api/core";
+
+import type { AppSettings, DbLLMProvider, EditorState, ExplorerState, ToolSetting, WorkspaceState } from "../types/database";
 
 /**
  * Database service for persisting application state
  */
 class DatabaseService {
-  // ============================================================
-  // WORKSPACE STATE
-  // ============================================================
-
   /**
-   * Save workspace state (open tabs, panel layout, etc.)
+   * Delete a provider
    */
-  async saveWorkspaceState(state: WorkspaceState): Promise<void> {
-    await invoke('save_workspace_state', { state });
+  public async deleteProvider(id: string): Promise<void> {
+    await invoke('delete_provider', { id });
   }
 
+  // ============================================================
+  // LLM PROVIDERS
+  // ============================================================
+
   /**
-   * Get workspace state for a specific workspace
-   * If no path provided, returns the most recently opened workspace
+   * Get all LLM providers
    */
-  async getWorkspaceState(
-    workspacePath?: string
-  ): Promise<WorkspaceState | null> {
+  public async getAllProviders(): Promise<DbLLMProvider[]> {
     try {
-      const result = await invoke<WorkspaceState | null>('get_workspace_state', {
-        workspacePath: workspacePath ?? null,
-      });
+      const result = await invoke<DbLLMProvider[]>('get_all_providers');
       return result;
     } catch (error) {
-      console.error('Failed to get workspace state:', error);
-      return null;
+      console.error('Failed to get providers:', error);
+      return [];
     }
   }
 
   // ============================================================
-  // EDITOR STATE
+  // TOOL SETTINGS
   // ============================================================
 
   /**
-   * Save editor state for a file (cursor position, scroll offset, folds)
+   * Get all tool settings
    */
-  async saveEditorState(state: EditorState): Promise<void> {
-    await invoke('save_editor_state', { state });
+  public async getAllToolSettings(): Promise<ToolSetting[]> {
+    try {
+      const result = await invoke<ToolSetting[]>('get_all_tool_settings');
+      return result;
+    } catch (error) {
+      console.error('Failed to get tool settings:', error);
+      return [];
+    }
+  }
+
+  // ============================================================
+  // APP SETTINGS
+  // ============================================================
+
+  /**
+   * Get all app settings
+   */
+  public async getAppSettings(): Promise<AppSettings | null> {
+    try {
+      const result = await invoke<AppSettings>('get_app_settings');
+      return result;
+    } catch (error) {
+      console.error('Failed to get app settings:', error);
+      return null;
+    }
   }
 
   /**
    * Get editor state for a file
    */
-  async getEditorState(filePath: string): Promise<EditorState | null> {
+  public async getEditorState(filePath: string): Promise<EditorState | null> {
     try {
       const result = await invoke<EditorState | null>('get_editor_state', {
         filePath,
@@ -67,21 +79,10 @@ class DatabaseService {
     }
   }
 
-  // ============================================================
-  // EXPLORER STATE
-  // ============================================================
-
-  /**
-   * Save explorer state (expanded folders, selected file)
-   */
-  async saveExplorerState(state: ExplorerState): Promise<void> {
-    await invoke('save_explorer_state', { state });
-  }
-
   /**
    * Get explorer state for a workspace
    */
-  async getExplorerState(
+  public async getExplorerState(
     workspacePath: string
   ): Promise<ExplorerState | null> {
     try {
@@ -95,71 +96,10 @@ class DatabaseService {
     }
   }
 
-  // ============================================================
-  // APP SETTINGS
-  // ============================================================
-
-  /**
-   * Get all app settings
-   */
-  async getAppSettings(): Promise<AppSettings | null> {
-    try {
-      const result = await invoke<AppSettings>('get_app_settings');
-      return result;
-    } catch (error) {
-      console.error('Failed to get app settings:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Save all app settings
-   */
-  async saveAppSettings(settings: AppSettings): Promise<void> {
-    await invoke('save_app_settings', { settings });
-  }
-
-  /**
-   * Get a single setting by key
-   */
-  async getSetting(key: string): Promise<string | null> {
-    try {
-      const result = await invoke<string | null>('get_setting', { key });
-      return result;
-    } catch (error) {
-      console.error(`Failed to get setting ${key}:`, error);
-      return null;
-    }
-  }
-
-  /**
-   * Set a single setting
-   */
-  async setSetting(key: string, value: string): Promise<void> {
-    await invoke('set_setting', { key, value });
-  }
-
-  // ============================================================
-  // LLM PROVIDERS
-  // ============================================================
-
-  /**
-   * Get all LLM providers
-   */
-  async getAllProviders(): Promise<DbLLMProvider[]> {
-    try {
-      const result = await invoke<DbLLMProvider[]>('get_all_providers');
-      return result;
-    } catch (error) {
-      console.error('Failed to get providers:', error);
-      return [];
-    }
-  }
-
   /**
    * Get a single provider by ID
    */
-  async getProvider(id: string): Promise<DbLLMProvider | null> {
+  public async getProvider(id: string): Promise<DbLLMProvider | null> {
     try {
       const result = await invoke<DbLLMProvider | null>('get_provider', { id });
       return result;
@@ -170,23 +110,40 @@ class DatabaseService {
   }
 
   /**
-   * Save or update a provider
+   * Get a single setting by key
    */
-  async saveProvider(provider: DbLLMProvider): Promise<void> {
-    await invoke('save_provider', { provider });
+  public async getSetting(key: string): Promise<string | null> {
+    try {
+      const result = await invoke<string | null>('get_setting', { key });
+      return result;
+    } catch (error) {
+      console.error(`Failed to get setting ${key}:`, error);
+      return null;
+    }
   }
 
   /**
-   * Delete a provider
+   * Get workspace state for a specific workspace
+   * If no path provided, returns the most recently opened workspace
    */
-  async deleteProvider(id: string): Promise<void> {
-    await invoke('delete_provider', { id });
+  public async getWorkspaceState(
+    workspacePath?: string
+  ): Promise<WorkspaceState | null> {
+    try {
+      const result = await invoke<WorkspaceState | null>('get_workspace_state', {
+        workspacePath: workspacePath ?? null,
+      });
+      return result;
+    } catch (error) {
+      console.error('Failed to get workspace state:', error);
+      return null;
+    }
   }
 
   /**
    * Check if any providers exist in the database
    */
-  async hasProviders(): Promise<boolean> {
+  public async hasProviders(): Promise<boolean> {
     try {
       const result = await invoke<boolean>('has_providers');
       return result;
@@ -199,39 +156,76 @@ class DatabaseService {
   /**
    * Save multiple providers at once
    */
-  async saveAllProviders(providers: DbLLMProvider[]): Promise<void> {
+  public async saveAllProviders(providers: DbLLMProvider[]): Promise<void> {
     await invoke('save_all_providers', { providers });
-  }
-
-  // ============================================================
-  // TOOL SETTINGS
-  // ============================================================
-
-  /**
-   * Get all tool settings
-   */
-  async getAllToolSettings(): Promise<ToolSetting[]> {
-    try {
-      const result = await invoke<ToolSetting[]>('get_all_tool_settings');
-      return result;
-    } catch (error) {
-      console.error('Failed to get tool settings:', error);
-      return [];
-    }
-  }
-
-  /**
-   * Set tool approval mode
-   */
-  async setToolApproval(toolName: string, approvalMode: string): Promise<void> {
-    await invoke('set_tool_approval', { toolName, approvalMode });
   }
 
   /**
    * Save all tool settings at once
    */
-  async saveAllToolSettings(settings: [string, string][]): Promise<void> {
+  public async saveAllToolSettings(settings: [string, string][]): Promise<void> {
     await invoke('save_all_tool_settings', { settings });
+  }
+
+  /**
+   * Save all app settings
+   */
+  public async saveAppSettings(settings: AppSettings): Promise<void> {
+    await invoke('save_app_settings', { settings });
+  }
+
+  // ============================================================
+  // EDITOR STATE
+  // ============================================================
+
+  /**
+   * Save editor state for a file (cursor position, scroll offset, folds)
+   */
+  public async saveEditorState(state: EditorState): Promise<void> {
+    await invoke('save_editor_state', { state });
+  }
+
+  // ============================================================
+  // EXPLORER STATE
+  // ============================================================
+
+  /**
+   * Save explorer state (expanded folders, selected file)
+   */
+  public async saveExplorerState(state: ExplorerState): Promise<void> {
+    await invoke('save_explorer_state', { state });
+  }
+
+  /**
+   * Save or update a provider
+   */
+  public async saveProvider(provider: DbLLMProvider): Promise<void> {
+    await invoke('save_provider', { provider });
+  }
+
+  // ============================================================
+  // WORKSPACE STATE
+  // ============================================================
+
+  /**
+   * Save workspace state (open tabs, panel layout, etc.)
+   */
+  public async saveWorkspaceState(state: WorkspaceState): Promise<void> {
+    await invoke('save_workspace_state', { state });
+  }
+
+  /**
+   * Set a single setting
+   */
+  public async setSetting(key: string, value: string): Promise<void> {
+    await invoke('set_setting', { key, value });
+  }
+
+  /**
+   * Set tool approval mode
+   */
+  public async setToolApproval(toolName: string, approvalMode: string): Promise<void> {
+    await invoke('set_tool_approval', { toolName, approvalMode });
   }
 }
 

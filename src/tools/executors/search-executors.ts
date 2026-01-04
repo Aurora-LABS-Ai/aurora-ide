@@ -3,15 +3,41 @@
  * Handles execution of search tools including aurora_search (semantic search)
  * Supports aurora-semantic v1.2.1 with full filtering capabilities
  */
+import { semanticService } from "../../services/semantic";
+import { useSemanticStore } from "../../store/useSemanticStore";
+import { useWorkspaceStore } from "../../store/useWorkspaceStore";
+import type { SearchMode } from "../../types/database";
+import { toolRegistry } from "../registry";
 
-import { semanticService } from '../../services/semantic';
-import { useWorkspaceStore } from '../../store/useWorkspaceStore';
-import { useSemanticStore } from '../../store/useSemanticStore';
-import { toolRegistry } from '../registry';
-import type { SearchMode } from '../../types/database';
+/**
+ * Search options interface matching aurora-semantic v1.2.1 capabilities
+ */
+export interface AuroraSearchOptions {
+    chunkTypes?: string[];
+    directories?: string[];
+    excludeDirectories?: string[];
+
+    // Filters
+    languages?: string[];
+  limit?: number;
+  minScore?: number;
+  mode?: SearchMode;
+    pathPatterns?: string[];
+    symbolNames?: string[];
+}
 
 export interface AuroraSearchResult {
-  success: boolean;
+  error?: string;
+  filters?: {
+    languages?: string[];
+    chunkTypes?: string[];
+    pathPatterns?: string[];
+    symbolNames?: string[];
+    directories?: string[];
+    excludeDirectories?: string[];
+  };
+  indexStatus: string;
+  message?: string;
   query: string;
   results: Array<{
     filePath: string;
@@ -25,35 +51,9 @@ export interface AuroraSearchResult {
     score: number;
     matchType: string;
   }>;
-  totalResults: number;
   searchMode: string;
-  indexStatus: string;
-  filters?: {
-    languages?: string[];
-    chunkTypes?: string[];
-    pathPatterns?: string[];
-    symbolNames?: string[];
-    directories?: string[];
-    excludeDirectories?: string[];
-  };
-  message?: string;
-  error?: string;
-}
-
-/**
- * Search options interface matching aurora-semantic v1.2.1 capabilities
- */
-export interface AuroraSearchOptions {
-  limit?: number;
-  mode?: SearchMode;
-  minScore?: number;
-  // Filters
-  languages?: string[];
-  chunkTypes?: string[];
-  pathPatterns?: string[];
-  symbolNames?: string[];
-  directories?: string[];
-  excludeDirectories?: string[];
+  success: boolean;
+  totalResults: number;
 }
 
 /**

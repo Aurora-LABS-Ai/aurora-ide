@@ -1,33 +1,31 @@
-import { create } from 'zustand';
+import { create } from "zustand";
+
+interface AuditState {
+  // Actions
+  addEntry: (entry: Omit<AuditEntry, 'id' | 'timestamp'>) => string;
+  clearEntries: () => void;
+  entries: AuditEntry[];
+  getEntriesByThread: (threadId: string) => AuditEntry[];
+  getRecentEntries: (limit?: number) => AuditEntry[];
+  maxEntries: number;
+  updateEntry: (id: string, updates: Partial<AuditEntry>) => void;
+}
 
 /**
  * Audit Store
  * Tracks tool execution history for the audit timeline
  */
-
 export interface AuditEntry {
+  args: Record<string, unknown>;
+  duration?: number; // ms
+  error?: string;
   id: string;
+  result?: string;
+  riskLevel: 'low' | 'medium' | 'high';
+  status: 'pending' | 'executing' | 'executed' | 'rejected' | 'failed';
+  threadId?: string;
   timestamp: number;
   toolName: string;
-  args: Record<string, unknown>;
-  status: 'pending' | 'executing' | 'executed' | 'rejected' | 'failed';
-  result?: string;
-  error?: string;
-  riskLevel: 'low' | 'medium' | 'high';
-  duration?: number; // ms
-  threadId?: string;
-}
-
-interface AuditState {
-  entries: AuditEntry[];
-  maxEntries: number;
-
-  // Actions
-  addEntry: (entry: Omit<AuditEntry, 'id' | 'timestamp'>) => string;
-  updateEntry: (id: string, updates: Partial<AuditEntry>) => void;
-  getEntriesByThread: (threadId: string) => AuditEntry[];
-  getRecentEntries: (limit?: number) => AuditEntry[];
-  clearEntries: () => void;
 }
 
 const generateId = () => `audit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;

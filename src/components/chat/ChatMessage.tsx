@@ -76,7 +76,7 @@ const TimelineEventItem: React.FC<{ event: TimelineEvent; isStreaming?: boolean 
 
     case 'tool':
       return event.tool ? (
-        <ToolTimeline tools={[event.tool]} isStreaming={isStreaming} />
+        <ToolTimeline tools={[event.tool]} />
       ) : null;
 
     case 'content':

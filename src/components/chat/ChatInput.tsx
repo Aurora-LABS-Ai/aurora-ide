@@ -150,12 +150,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   // Flatten files for searching
   const allFiles = useMemo(() => flattenFiles(workspaceFiles), [workspaceFiles]);
 
-  // Consume pending input from external sources (e.g., browser element inspector)
+  // Consume pending input from external sources (e.g., browser element inspector, suggested prompts)
   useEffect(() => {
     if (pendingInputContent) {
-      const pending = consumePendingInput();
+      const { content: pending, replace } = consumePendingInput();
       if (pending) {
-        setContent(prev => prev ? `${prev}\n\n${pending}` : pending);
+        if (replace) {
+          // Replace mode: set content directly (used by suggested prompts)
+          setContent(pending);
+        } else {
+          // Append mode: add to existing content (used by browser inspector)
+          setContent(prev => prev ? `${prev}\n\n${pending}` : pending);
+        }
         // Focus the textarea
         textareaRef.current?.focus();
       }

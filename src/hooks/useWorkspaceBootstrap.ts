@@ -7,6 +7,10 @@ import { useWorkspaceStore } from "../store/useWorkspaceStore";
 /**
  * Automatically initializes the workspace store with the saved workspace
  * from the database when running inside Tauri.
+ * 
+ * This hook restores the FILE EXPLORER (rootPath) from the most recently
+ * opened workspace. The useEditorStore.restoreWorkspace() handles restoring
+ * open TABS separately.
  */
 export const useWorkspaceBootstrap = (): void => {
   const { rootPath, setRootPath } = useWorkspaceStore();
@@ -20,20 +24,22 @@ export const useWorkspaceBootstrap = (): void => {
     hasInitialized.current = true;
 
     // Try to restore the last opened workspace from database
-    const restoreWorkspace = async () => {
+    const restoreWorkspaceFromDb = async () => {
       try {
         const savedState = await databaseService.getWorkspaceState();
         if (savedState?.workspace_path) {
           // Restore the previously opened workspace
-          console.log('Restoring workspace:', savedState.workspace_path);
+          console.log('[WorkspaceBootstrap] Restoring workspace:', savedState.workspace_path);
           setRootPath(savedState.workspace_path);
+        } else {
+          console.log('[WorkspaceBootstrap] No saved workspace found');
         }
         // If no saved workspace, don't auto-open anything - let user choose
       } catch (error) {
-        console.error('Failed to restore workspace from database:', error);
+        console.error('[WorkspaceBootstrap] Failed to restore workspace from database:', error);
       }
     };
 
-    restoreWorkspace();
+    restoreWorkspaceFromDb();
   }, [rootPath, setRootPath]);
 };

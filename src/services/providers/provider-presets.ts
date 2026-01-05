@@ -154,7 +154,24 @@ export function detectProviderType(baseUrl: string, model: string): string {
 export function getChatUrl(baseUrl: string, preset: ProviderPreset): string {
   // Remove trailing slash from base URL
   const base = baseUrl.replace(/\/+$/, '');
-  return `${base}${preset.chatEndpoint}`;
+  
+  // If the base URL already ends with the chat endpoint, don't append it again
+  // This handles cases where users provide full URLs like:
+  // - http://localhost:1234/v1/chat/completions
+  // - http://localhost:11434/v1/chat/completions
+  const endpoint = preset.chatEndpoint;
+  if (base.endsWith(endpoint) || base.endsWith(endpoint.replace(/^\//, ''))) {
+    return base;
+  }
+  
+  // If base URL ends with /v1 and endpoint starts with /chat, just append
+  // This handles: http://localhost:1234/v1 + /chat/completions
+  if (base.endsWith('/v1') && endpoint.startsWith('/chat')) {
+    return `${base}${endpoint}`;
+  }
+  
+  // Standard case: append endpoint to base
+  return `${base}${endpoint}`;
 }
 
 // ============================================================
@@ -283,6 +300,52 @@ export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
     defaultContextWindow: 200000,
     defaultMaxOutput: 128000,
   },
+
+  // ============================================
+  // LM Studio (Local OpenAI-compatible server)
+  // Uses raw HTTP streaming via Rust for reliable local model support
+  // Supports local reasoning models that return `reasoning` field
+  // (Rust normalizes both `reasoning` and `reasoning_content` to `reasoning_content`)
+  // ============================================
+  lmstudio: {
+    id: 'lmstudio',
+    name: 'LM Studio',
+    baseFormat: 'openai',
+    chatEndpoint: '/chat/completions',
+    authType: 'bearer',
+    authHeader: 'Authorization',
+    // Support for local reasoning models
+    // Note: Different models use different param names - some ignore reasoning_effort
+    // but include reasoning in output by default
+    thinkingConfig: {
+      requestParam: { reasoning_effort: 'high' },
+      // Local models use 'reasoning' field, Rust normalizes to reasoning_content
+      responseField: 'reasoning_content',
+    },
+    // LM Studio supports stream_options for usage tracking
+    includeStreamOptions: true,
+    defaultContextWindow: 128000,
+    defaultMaxOutput: 8192,
+    // Flag to use native Rust HTTP streaming instead of frontend HTTP fetch
+    useNativeOpenAI: true,
+  } as ProviderPreset & { useNativeOpenAI?: boolean },
+
+  // ============================================
+  // Ollama (Local OpenAI-compatible server)
+  // ============================================
+  ollama: {
+    id: 'ollama',
+    name: 'Ollama',
+    baseFormat: 'openai',
+    chatEndpoint: '/chat/completions',
+    authType: 'bearer',
+    authHeader: 'Authorization',
+    thinkingConfig: undefined,
+    includeStreamOptions: false,
+    defaultContextWindow: 128000,
+    defaultMaxOutput: 8192,
+    useNativeOpenAI: true,
+  } as ProviderPreset & { useNativeOpenAI?: boolean },
 
   // ============================================
   // Custom (OpenAI-compatible fallback)

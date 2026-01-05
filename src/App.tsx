@@ -37,6 +37,30 @@ import { QuickOpenModal } from "./components/modals/QuickOpenModal";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { initializeSystemInfo } from "./services/context-builder";
 
+// Global handler to suppress Tauri stream cancellation errors
+// These are expected when user clicks stop during AI streaming
+if (typeof window !== 'undefined') {
+  window.addEventListener('unhandledrejection', (event) => {
+    const error = event.reason;
+    // Suppress Tauri cancellation errors - these are expected behavior
+    if (error && typeof error === 'object' && 'type' in error) {
+      if ((error as { type: string }).type === 'cancelation') {
+        event.preventDefault();
+        return;
+      }
+    }
+    // Also suppress "Request cancelled" errors
+    if (error instanceof Error && (
+      error.message === 'Request cancelled' ||
+      error.message.includes('aborted') ||
+      error.name === 'AbortError'
+    )) {
+      event.preventDefault();
+      return;
+    }
+  });
+}
+
 function App() {
   const { initializeFromDatabase } = useThemeStore();
   const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);

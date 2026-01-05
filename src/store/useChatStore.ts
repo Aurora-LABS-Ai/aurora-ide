@@ -10,14 +10,18 @@ interface ChatState {
   // Append content to chat input (used by browser element inspector)
   appendToInput: (content: string) => void;
   clearMessages: () => void;
-  consumePendingInput: () => string | null;
+  consumePendingInput: () => { content: string | null; replace: boolean };
   isLoading: boolean;
   messages: Message[];
   pendingApproval: ToolProposal | null;
 
-  // For external components to append content to the chat input
+  // For external components to set/append content to the chat input
   pendingInputContent: string | null;
+  // Whether pending input should replace existing content (true) or append (false)
+  pendingInputReplace: boolean;
   setLoading: (loading: boolean) => void;
+  // Set input content (replaces existing content)
+  setInputContent: (content: string) => void;
   setPendingApproval: (proposal: ToolProposal | null) => void;
   stopGeneration: () => void;
   updateMessage: (id: string, updates: Partial<Message>) => void;
@@ -30,6 +34,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isLoading: false,
   pendingApproval: null,
   pendingInputContent: null,
+  pendingInputReplace: false,
 
   addMessage: (message) => set((state) => ({
     messages: [
@@ -100,12 +105,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   appendToInput: (content: string) => {
     const current = get().pendingInputContent;
-    set({ pendingInputContent: current ? `${current}\n${content}` : content });
+    set({ pendingInputContent: current ? `${current}\n${content}` : content, pendingInputReplace: false });
+  },
+
+  setInputContent: (content: string) => {
+    set({ pendingInputContent: content, pendingInputReplace: true });
   },
 
   consumePendingInput: () => {
     const content = get().pendingInputContent;
-    set({ pendingInputContent: null });
-    return content;
+    const replace = get().pendingInputReplace;
+    set({ pendingInputContent: null, pendingInputReplace: false });
+    return { content, replace };
   },
 }));

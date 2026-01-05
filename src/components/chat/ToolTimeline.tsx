@@ -382,10 +382,9 @@ interface ToolItemProps {
   tool: ToolCall;
   isLast: boolean;
   index: number;
-  isStreaming?: boolean;
 }
 
-const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast, isStreaming = false }) => {
+const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
   const isFileModifyTool = ['file_create', 'file_write', 'file_patch', 'search_replace'].includes(tool.name);
   const [isOpen, setIsOpen] = useState(false);
 
@@ -396,10 +395,9 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast, isStreamin
     }
   }, [tool.status]);
 
-  // Derived status logic: strictly enforce streaming awareness
-  const isRunning = (tool.status === 'executing' || tool.status === 'pending') && isStreaming;
-  // If it says it's executing but we aren't streaming, it failed/timed out.
-  const isError = tool.status === 'failed' || tool.status === 'rejected' || ((tool.status === 'executing' || tool.status === 'pending') && !isStreaming);
+  // Derived status logic - simple: show running spinner while pending/executing, red X only for actual failures
+  const isRunning = tool.status === 'executing' || tool.status === 'pending';
+  const isError = tool.status === 'failed' || tool.status === 'rejected';
 
   const filePath = tool.args?.path as string;
   const fileName = filePath ? filePath.split(/[/\\]/).pop() || filePath : '';
@@ -534,12 +532,12 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast, isStreamin
 
         <div className={cn(
           "relative z-10 flex h-3 w-3 items-center justify-center rounded-full mt-2.5 transition-all text-[8px]",
-          isRunning ? "bg-blue-500/20 text-blue-400 ring-2 ring-blue-500/10" :
-            isError ? "bg-red-500/20 text-red-400 ring-2 ring-red-500/10" :
+          isError ? "bg-red-500/20 text-red-400 ring-2 ring-red-500/10" :
+            isRunning ? "bg-blue-500/20 text-blue-400 ring-2 ring-blue-500/10" :
               "bg-emerald-500/20 text-emerald-400 ring-2 ring-emerald-500/10"
         )}>
-          {isRunning ? <Loader2 size={8} className="animate-spin" /> :
-            isError ? <X size={8} /> :
+          {isError ? <X size={8} /> :
+            isRunning ? <Loader2 size={8} className="animate-spin" /> :
               <Check size={8} />}
         </div>
       </div>
@@ -551,15 +549,16 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast, isStreamin
             onClick={() => setIsOpen(!isOpen)}
             className="flex-1 text-left flex items-baseline gap-2 group/header outline-none"
           >
-            {isRunning ? (
+            {isError ? (
+              <span className="text-[11px] font-medium tracking-tight text-red-400">
+                {getToolDisplayName(tool.name)}
+              </span>
+            ) : isRunning ? (
               <ShimmerText className="text-[11px] font-medium tracking-tight text-blue-400">
                 {getToolDisplayName(tool.name)}
               </ShimmerText>
             ) : (
-              <span className={cn(
-                "text-[11px] font-medium tracking-tight",
-                isError ? "text-red-400" : "text-text-primary"
-              )}>
+              <span className="text-[11px] font-medium tracking-tight text-text-primary">
                 {getToolDisplayName(tool.name)}
               </span>
             )}
@@ -583,7 +582,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast, isStreamin
 
             {/* Status Message */}
             <span className="text-[10px] text-text-disabled truncate opacity-70 group-hover/header:opacity-100 transition-opacity">
-              {simpleMessage || (isRunning ? 'Running...' : (isError ? 'Failed/Interrupted' : ''))}
+              {simpleMessage || (isError ? 'Failed' : (isRunning ? 'Running...' : ''))}
             </span>
           </button>
         </div>
@@ -628,7 +627,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast, isStreamin
   );
 });
 
-export const ToolTimeline: React.FC<{ tools: ToolCall[], isStreaming?: boolean }> = ({ tools, isStreaming = false }) => {
+export const ToolTimeline: React.FC<{ tools: ToolCall[] }> = ({ tools }) => {
   if (!tools || tools.length === 0) return null;
   return (
     <div className="w-full mt-2 pl-2">
@@ -638,7 +637,6 @@ export const ToolTimeline: React.FC<{ tools: ToolCall[], isStreaming?: boolean }
           tool={tool}
           isLast={idx === tools.length - 1}
           index={idx}
-          isStreaming={isStreaming && idx === tools.length - 1} // Only pass isStreaming=true to the last item
         />
       ))}
     </div>

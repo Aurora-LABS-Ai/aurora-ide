@@ -110,7 +110,7 @@ export interface LLMProvider {
   maxOutputTokens: number;
   model: string;
   name: string;
-  providerType?: "openai" | "deepseek" | "glm" | "anthropic" | "minimax" | "custom"; // Explicit provider type
+  providerType?: "openai" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "custom"; // Explicit provider type
   requiresApiKey?: boolean; // Whether API key is required (false for local)
   supportsThinking: boolean;
   supportsToolStream?: boolean;
@@ -250,6 +250,32 @@ export const PRESET_PROVIDERS: Omit<LLMProvider, "apiKey" | "enabled">[] = [
     providerType: "openai",
     defaultTemperature: 1.0,
     requiresApiKey: true,
+  },
+  {
+    id: "lmstudio",
+    name: "LM Studio",
+    baseUrl: "http://localhost:1234/v1",
+    model: "local-model",
+    contextWindow: 128000,
+    maxOutputTokens: 8192,
+    supportsThinking: false,
+    customModels: [],
+    providerType: "lmstudio",
+    defaultTemperature: 1.0,
+    requiresApiKey: false, // LM Studio doesn't require API key
+  },
+  {
+    id: "ollama",
+    name: "Ollama",
+    baseUrl: "http://localhost:11434/v1",
+    model: "llama3",
+    contextWindow: 128000,
+    maxOutputTokens: 8192,
+    supportsThinking: false,
+    customModels: [],
+    providerType: "ollama",
+    defaultTemperature: 1.0,
+    requiresApiKey: false, // Ollama doesn't require API key
   },
 ];
 const DEFAULT_TOOL_APPROVAL_SETTINGS: Record<string, 'auto' | 'always_ask' | 'deny'> = {

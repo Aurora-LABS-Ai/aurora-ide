@@ -19,7 +19,8 @@ interface ThreadState {
   getThreadList: () => ThreadSummary[];
   isLoading: boolean;
   loadAllThreadsFromFiles: () => Promise<void>;
-  loadThread: (threadId: string) => void;
+  /** Load thread - returns the loaded thread (waits for file load if needed) */
+  loadThread: (threadId: string) => Promise<Thread | null>;
   loadThreadFromFile: (threadId: string) => Promise<Thread | null>;
 
   // Persistence
@@ -254,22 +255,28 @@ export const useThreadStore = create<ThreadState>()(
         return threadId;
       },
 
-      loadThread: (threadId) => {
-        const thread = get().threads[threadId];
-        if (thread) {
+      loadThread: async (threadId) => {
+        const existingThread = get().threads[threadId];
+        if (existingThread) {
           set({ currentThreadId: threadId });
+          console.log(`[ThreadStore] Loaded thread ${threadId} from memory (${existingThread.messages.length} messages)`);
+          return existingThread;
         } else {
-          get().loadThreadFromFile(threadId).then((loadedThread) => {
-            if (loadedThread) {
-              set((state) => ({
-                currentThreadId: threadId,
-                threads: {
-                  ...state.threads,
-                  [threadId]: loadedThread,
-                },
-              }));
-            }
-          });
+          // Must wait for file load to complete before returning
+          const loadedThread = await get().loadThreadFromFile(threadId);
+          if (loadedThread) {
+            set((state) => ({
+              currentThreadId: threadId,
+              threads: {
+                ...state.threads,
+                [threadId]: loadedThread,
+              },
+            }));
+            console.log(`[ThreadStore] Loaded thread ${threadId} from file (${loadedThread.messages.length} messages)`);
+            return loadedThread;
+          }
+          console.warn(`[ThreadStore] Failed to load thread ${threadId}`);
+          return null;
         }
       },
 

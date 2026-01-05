@@ -66,6 +66,7 @@ pub fn run() {
             // LLM HTTP proxy commands (bypasses CORS)
             commands::llm::llm_request,
             commands::llm::llm_stream_request,
+            commands::llm::cancel_llm_stream,
             // Chat state sync commands (bulletproof multi-window)
             commands::chat::get_chat_state,
             commands::chat::set_chat_loading,
@@ -142,6 +143,9 @@ pub fn run() {
             mcp::commands::mcp_call_tool,
             mcp::commands::mcp_get_all_tools,
             mcp::commands::mcp_get_config_path,
+            // OpenAI Native (async-openai) commands for LM Studio, Ollama, etc.
+            commands::openai_native::openai_native_stream,
+            commands::openai_native::openai_native_chat,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

@@ -99,11 +99,26 @@ export class AnthropicProvider extends BaseProvider {
   private currentBlockIndex = -1;
   private currentBlockType = '';
   private preset: ProviderPreset;
+  private currentRequestId: string | null = null;
 
   constructor(config: ProviderConfig) {
     super(config);
     // Get the preset for this provider type
     this.preset = getProviderPreset(config.providerType);
+  }
+
+  /**
+   * Cancel ongoing streaming request
+   */
+  public override cancelRequest(): void {
+    super.cancelRequest();
+    // Also cancel the Rust-side stream
+    if (this.currentRequestId) {
+      invoke('cancel_llm_stream', { requestId: this.currentRequestId }).catch(() => {
+        // Ignore errors - stream might have already completed
+      });
+      this.currentRequestId = null;
+    }
   }
 
   /**
@@ -139,6 +154,7 @@ export class AnthropicProvider extends BaseProvider {
 
     // Generate unique request ID for event handling
     const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    this.currentRequestId = requestId;
 
     try {
       callbacks.onStart?.();
@@ -230,6 +246,7 @@ export class AnthropicProvider extends BaseProvider {
     } catch (error) {
       // Handle various cancellation error formats
       if (error instanceof Error && error.name === 'AbortError') {
+        this.currentRequestId = null;
         throw new Error('Request cancelled');
       }
       
@@ -237,6 +254,7 @@ export class AnthropicProvider extends BaseProvider {
       if (typeof error === 'object' && error !== null && 'type' in error) {
         const tauriError = error as { type: string; msg?: string };
         if (tauriError.type === 'cancelation') {
+          this.currentRequestId = null;
           throw new Error('Request cancelled');
         }
       }
@@ -253,6 +271,8 @@ export class AnthropicProvider extends BaseProvider {
 
       callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
       throw error;
+    } finally {
+      this.currentRequestId = null;
     }
   }
 

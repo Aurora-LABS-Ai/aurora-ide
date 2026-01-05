@@ -80,6 +80,7 @@ impl<'a> WorkspaceRepository<'a> {
         let mut stmt = self.conn.prepare(
             "SELECT workspace_path, open_tabs, panel_sizes, last_opened_at
              FROM workspace_state
+             WHERE workspace_path IS NOT NULL
              ORDER BY last_opened_at DESC
              LIMIT 1",
         )?;

@@ -24,6 +24,7 @@ pub mod themes;
 pub mod semantic;
 pub mod git;
 pub mod browser;
+pub mod openai_native;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileEntry {

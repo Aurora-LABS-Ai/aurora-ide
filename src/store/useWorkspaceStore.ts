@@ -95,6 +95,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     // Update editor store with workspace path
     useEditorStore.getState().setWorkspacePath(path);
 
+    // IMMEDIATELY save workspace state to database when workspace is opened
+    // This ensures the workspace is persisted even if close event fails
+    if (isTauri() && path) {
+      console.log('[WorkspaceStore] Saving workspace path immediately:', path);
+      useEditorStore.getState().saveWorkspace().catch(err => {
+        console.error('[WorkspaceStore] Failed to save workspace:', err);
+      });
+    }
+
     get().loadDirectory(path);
 
     // Start filesystem watcher

@@ -177,10 +177,12 @@ export const ThreadHistory: React.FC<ThreadHistoryProps> = ({ isOpen, onClose })
     onClose();
   };
 
-  const handleSelectThread = (threadId: string) => {
+  const handleSelectThread = async (threadId: string) => {
     // Clear tasks when switching threads - tasks are per-thread
     useTaskStore.getState().clearTasks();
-    loadThread(threadId);
+    // CRITICAL: Wait for thread to fully load before closing modal
+    // This prevents race conditions where user sends message before history is loaded
+    await loadThread(threadId);
     onClose();
   };
 

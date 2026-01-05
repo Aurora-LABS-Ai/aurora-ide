@@ -251,4 +251,6 @@ export type ProviderType =
   | 'deepseek'    // DeepSeek (OpenAI-compatible with extensions)
   | 'glm'         // GLM/Z.AI (OpenAI-compatible with thinking)
   | 'minimax'     // MiniMax M2.1 (supports both OpenAI and Anthropic formats)
-  | 'custom'; // Custom OpenAI-compatible
+  | 'lmstudio'    // LM Studio (local server, uses async-openai Rust crate)
+  | 'ollama'      // Ollama (local server, uses async-openai Rust crate)
+  | 'custom';     // Custom OpenAI-compatible

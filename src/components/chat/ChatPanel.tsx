@@ -28,6 +28,7 @@ import { ChatHeader } from "./ChatHeader";
 import { ThreadHistory } from "./ThreadHistory";
 import { ToolApprovalBanner } from "./ToolApprovalBanner";
 import { useChatStore } from "../../store/useChatStore";
+const { setInputContent } = useChatStore.getState();
 import { useThreadStore, setStreamingState } from "../../store/useThreadStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
@@ -164,7 +165,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
   // Debounced timeline update to prevent state update storm during streaming
   // This batches rapid token updates into periodic UI refreshes
   const pendingTimelineUpdate = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const TIMELINE_UPDATE_DEBOUNCE_MS = 250; // Update UI at most every 250ms during streaming
+  // Reduced from 250ms to 50ms for smoother real-time streaming feel
+  const TIMELINE_UPDATE_DEBOUNCE_MS = 50;
 
   // Flush pending timeline updates immediately (for important state changes)
   const flushTimelineUpdate = useCallback(() => {
@@ -321,16 +323,26 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       // CRITICAL: Sync thread history to agent for conversation continuity
       // This enables the AI to remember previous messages when resuming a thread
       // We sync BEFORE adding the current user message (which happens in addMessageToThread above)
-      if (currentThread?.messages && currentThread.messages.length > 0) {
+      // IMPORTANT: Get fresh thread state from store to avoid stale closures
+      const threadStore = useThreadStore.getState();
+      const freshThread = threadId ? threadStore.threads[threadId] : null;
+      
+      if (freshThread?.messages && freshThread.messages.length > 0) {
         // Exclude the message we just added (it's the last one with our current timestamp)
-        const previousMessages = currentThread.messages.filter(
+        const previousMessages = freshThread.messages.filter(
           m => m.id !== userMessage.id
         );
         if (previousMessages.length > 0) {
           const apiHistory = convertThreadToApiHistory(previousMessages);
           agent.setHistory(apiHistory);
-          console.log(`[ChatPanel] Thread history synced: ${previousMessages.length} UI messages → ${apiHistory.length} API messages`);
+          console.log(`[ChatPanel] Thread history synced: ${previousMessages.length} UI messages -> ${apiHistory.length} API messages`);
+          // Debug: Log first few messages to verify content
+          if (apiHistory.length > 0) {
+            console.log('[ChatPanel] First API message:', { role: apiHistory[0].role, contentPreview: String(apiHistory[0].content || '').slice(0, 100) });
+          }
         }
+      } else {
+        console.log(`[ChatPanel] No previous messages to sync (thread: ${threadId}, hasThread: ${!!freshThread})`);
       }
 
       // Update context store with provider limits
@@ -417,7 +429,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
         await agent.chat(formattedContext, {
           onToken: (token) => {
-
             // Close current thinking block when content starts
             if (currentThinkingEventId) {
               updateTimelineEvent(currentThinkingEventId, {
@@ -798,6 +809,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           console.log("[ChatPanel] Request cancelled by user");
         }
       } finally {
+        // CRITICAL: Flush any pending timeline updates BEFORE clearing the message ID
+        // This ensures all debounced token updates make it to the store
+        flushTimelineUpdate();
+        
         setLoading(false);
         chatSyncBroadcast.setLoading(false);
         // FIX: Mark streaming as ended - this triggers the final DB save
@@ -817,6 +832,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       setPendingApproval,
       addTimelineEvent,
       updateTimelineEvent,
+      flushTimelineUpdate,
       refreshFileExplorer,
       getLLMConfig,
       selectedModel,
@@ -926,12 +942,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
                 <button
                   key={i}
                   onClick={() => {
-                    const input = document.querySelector('textarea[placeholder*="Message"]') as HTMLTextAreaElement;
-                    if (input) {
-                      input.value = prompt;
-                      input.dispatchEvent(new Event('input', { bubbles: true }));
-                      input.focus();
-                    }
+                    // Use store action to properly set input content
+                    setInputContent(prompt);
                   }}
                   className="group flex items-center gap-3 px-3 py-2.5 text-left bg-input/50 hover:bg-input border border-border hover:border-border/80 rounded-xl transition-all duration-200"
                 >

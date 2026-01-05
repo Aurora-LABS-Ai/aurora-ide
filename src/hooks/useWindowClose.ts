@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import { isTauri } from "../lib/tauri";
 import { useEditorStore } from "../store/useEditorStore";
@@ -11,6 +11,9 @@ import { useWorkspaceStore } from "../store/useWorkspaceStore";
  * Following VS Code's pattern: keep in memory, save on exit.
  */
 export const useWindowClose = () => {
+  const tauriUnlistenRef = useRef<(() => void) | null>(null);
+  const isListenerSetup = useRef(false);
+
   useEffect(() => {
     const saveAllState = async () => {
       console.log('[WindowClose] Saving all state before close...');
@@ -19,7 +22,7 @@ export const useWindowClose = () => {
         // Save explorer state (expanded folders, selected file)
         await useWorkspaceStore.getState().saveExplorer();
         
-        // Save workspace state (open tabs, panel sizes)
+        // Save workspace state (open tabs, panel sizes, workspace path)
         await useEditorStore.getState().saveWorkspace();
         
         // Save current thread if any
@@ -45,30 +48,38 @@ export const useWindowClose = () => {
       }
     };
 
-    // Tauri window close event
-    let tauriUnlisten: (() => void) | null = null;
-    
-    if (isTauri()) {
-      import('@tauri-apps/api/event').then(({ listen }) => {
+    // Setup Tauri window close event listener
+    const setupTauriListener = async () => {
+      if (!isTauri() || isListenerSetup.current) return;
+      isListenerSetup.current = true;
+      
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        
         // Listen for Tauri close request
-        listen('tauri://close-requested', async () => {
+        const unlisten = await listen('tauri://close-requested', async () => {
+          console.log('[WindowClose] Tauri close requested');
           await saveAllState();
           // Allow the window to close
-          import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
-            getCurrentWindow().close();
-          });
-        }).then(unlisten => {
-          tauriUnlisten = unlisten;
+          await getCurrentWindow().close();
         });
-      });
-    }
+        
+        tauriUnlistenRef.current = unlisten;
+        console.log('[WindowClose] Tauri close listener registered');
+      } catch (error) {
+        console.error('[WindowClose] Failed to setup Tauri listener:', error);
+      }
+    };
 
+    // Setup listeners
     window.addEventListener('beforeunload', handleBeforeUnload);
+    setupTauriListener();
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
-      if (tauriUnlisten) {
-        tauriUnlisten();
+      if (tauriUnlistenRef.current) {
+        tauriUnlistenRef.current();
       }
     };
   }, []);

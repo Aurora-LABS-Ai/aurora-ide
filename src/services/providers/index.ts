@@ -8,6 +8,7 @@
  * - Singleton pattern for global access
  */
 import { AnthropicProvider } from "./anthropic-provider";
+import { LMStudioProvider } from "./lmstudio-provider";
 import { OpenAIProvider } from "./openai-provider";
 import { PROVIDER_PRESETS, detectProviderType, getProviderPreset } from "./provider-presets";
 import type { IProvider, ProviderConfig, ProviderType } from "./types";
@@ -107,6 +108,12 @@ export function createProvider(config: ProviderConfig): IProvider {
     return new AnthropicProvider({ ...config, providerType: type as ProviderType });
   }
 
+  // Use LM Studio provider for local servers that prefer async-openai
+  // This uses the Rust async-openai crate for more reliable streaming
+  if (type === 'lmstudio' || type === 'ollama' || (preset as { useNativeOpenAI?: boolean }).useNativeOpenAI) {
+    return new LMStudioProvider({ ...config, providerType: type as ProviderType });
+  }
+
   // Default to OpenAI-compatible provider
   return new OpenAIProvider({ ...config, providerType: type as ProviderType });
 }
@@ -192,6 +199,8 @@ export { TokenCounter, tokenCounter } from './token-counter';
 export { OpenAIProvider } from './openai-provider';
 
 export { AnthropicProvider } from './anthropic-provider';
+
+export { LMStudioProvider } from './lmstudio-provider';
 
 // Singleton instance
 export const providerRegistry = new ProviderRegistry();

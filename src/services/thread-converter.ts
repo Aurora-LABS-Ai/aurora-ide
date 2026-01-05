@@ -47,33 +47,44 @@ function extractFromTimeline(timeline: TimelineEvent[]): {
 
             case 'tool':
                 if (event.tool) {
-                    // Add tool call request
-                    toolCalls.push({
-                        id: event.tool.id,
-                        type: 'function',
-                        function: {
-                            name: event.tool.name,
-                            arguments: JSON.stringify(event.tool.args || {}),
-                        },
-                    });
+                    // Only include tool calls that have a result (complete, failed, or rejected)
+                    // Skip pending/executing tools - they were interrupted and have no result
+                    // Including tool_calls without corresponding tool results breaks the API
+                    const hasResult = event.tool.status === 'complete' || 
+                                     event.tool.status === 'failed' || 
+                                     event.tool.status === 'rejected';
+                    
+                    if (hasResult) {
+                        // Add tool call request
+                        toolCalls.push({
+                            id: event.tool.id,
+                            type: 'function',
+                            function: {
+                                name: event.tool.name,
+                                arguments: JSON.stringify(event.tool.args || {}),
+                            },
+                        });
 
-                    // Add tool result if completed
-                    if (event.tool.status === 'complete' && event.tool.result !== undefined) {
-                        toolResults.push({
-                            id: event.tool.id,
-                            result: event.tool.result,
-                        });
-                    } else if (event.tool.status === 'failed' && event.tool.error) {
-                        toolResults.push({
-                            id: event.tool.id,
-                            result: JSON.stringify({ error: event.tool.error }),
-                        });
-                    } else if (event.tool.status === 'rejected') {
-                        toolResults.push({
-                            id: event.tool.id,
-                            result: JSON.stringify({ error: 'Tool execution rejected by user' }),
-                        });
+                        // Add tool result
+                        if (event.tool.status === 'complete' && event.tool.result !== undefined) {
+                            toolResults.push({
+                                id: event.tool.id,
+                                result: event.tool.result,
+                            });
+                        } else if (event.tool.status === 'failed' && event.tool.error) {
+                            toolResults.push({
+                                id: event.tool.id,
+                                result: JSON.stringify({ error: event.tool.error }),
+                            });
+                        } else if (event.tool.status === 'rejected') {
+                            toolResults.push({
+                                id: event.tool.id,
+                                result: JSON.stringify({ error: 'Tool execution rejected by user' }),
+                            });
+                        }
                     }
+                    // Note: pending/executing tools are intentionally skipped
+                    // They represent interrupted operations with no valid result
                 }
                 break;
         }

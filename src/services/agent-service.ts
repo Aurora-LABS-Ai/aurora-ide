@@ -134,7 +134,10 @@ export class AgentService {
           },
           {
             onStart: callbacks.onStart,
-            onToken: callbacks.onToken,
+            onToken: (token) => {
+              finalContent += token;
+              callbacks.onToken?.(token);
+            },
             onThinking: (thinking) => {
               finalThinking += thinking;
               callbacks.onThinking?.(thinking);
@@ -158,15 +161,6 @@ export class AgentService {
         if (response.reasoning_content) {
           finalThinking += response.reasoning_content;
         }
-
-        console.log('[AgentService] Response:', {
-          hasContent: !!response.content,
-          contentLength: response.content?.length || 0,
-          hasReasoning: !!response.reasoning_content,
-          reasoningLength: response.reasoning_content?.length || 0,
-          hasToolCalls: !!response.tool_calls?.length,
-          toolCallCount: response.tool_calls?.length || 0,
-        });
 
         // Check if we have tool calls to execute
         if (response.tool_calls && response.tool_calls.length > 0) {

@@ -219,9 +219,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   restoreWorkspace: async () => {
     try {
       const state = await databaseService.getWorkspaceState();
-      if (state && state.open_tabs.length > 0) {
+      if (state) {
+        // Always set workspace path and panel sizes from saved state
         currentWorkspacePath = state.workspace_path;
         currentPanelSizes = state.panel_sizes;
+      }
+      
+      // Only restore tabs if there are any
+      if (state && state.open_tabs.length > 0) {
 
         // Language detection helper
         const detectLanguage = (filename: string): string => {
@@ -271,14 +276,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   // Save workspace state to database (called ONLY on window close)
   saveWorkspace: async () => {
     try {
+      // Don't save if no workspace is open - prevents saving null workspace_path
+      // which would corrupt the "most recent workspace" query
+      if (!currentWorkspacePath) {
+        return;
+      }
+
       const { tabs, activeTabId } = get();
 
-      // Convert store tabs to database tabs
-      const tabStates: TabState[] = tabs.map(tab => ({
-        path: tab.path,
-        is_active: tab.id === activeTabId,
-        is_dirty: tab.isDirty,
-      }));
+      // Convert store tabs to database tabs (filter out browser tabs)
+      const tabStates: TabState[] = tabs
+        .filter(tab => tab.type !== 'browser' && tab.path)
+        .map(tab => ({
+          path: tab.path,
+          is_active: tab.id === activeTabId,
+          is_dirty: tab.isDirty,
+        }));
 
       const workspaceState: DbWorkspaceState = {
         workspace_path: currentWorkspacePath,

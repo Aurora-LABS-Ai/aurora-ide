@@ -14,6 +14,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 /// Holds the MCP server process and its I/O handles
 struct McpProcess {
     /// The child process
@@ -191,6 +194,14 @@ impl McpManager {
         // Set environment variables
         for (key, value) in &config.env {
             cmd.env(key, value);
+        }
+
+        // On Windows, hide the console window for spawned processes
+        #[cfg(windows)]
+        {
+            // CREATE_NO_WINDOW = 0x08000000
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
         // Spawn process

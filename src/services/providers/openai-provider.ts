@@ -60,11 +60,26 @@ interface TauriStreamChunk {
 
 export class OpenAIProvider extends BaseProvider {
   private preset: ProviderPreset;
+  private currentRequestId: string | null = null;
 
   constructor(config: ProviderConfig) {
     super(config);
     // Get the preset for this provider type
     this.preset = getProviderPreset(config.providerType);
+  }
+
+  /**
+   * Cancel ongoing streaming request
+   */
+  public override cancelRequest(): void {
+    super.cancelRequest();
+    // Also cancel the Rust-side stream
+    if (this.currentRequestId) {
+      invoke('cancel_llm_stream', { requestId: this.currentRequestId }).catch(() => {
+        // Ignore errors - stream might have already completed
+      });
+      this.currentRequestId = null;
+    }
   }
 
   /**
@@ -118,8 +133,10 @@ export class OpenAIProvider extends BaseProvider {
     const body = this.buildRequestBody({ ...request, stream: true });
     const url = getChatUrl(this._config.baseUrl, this.preset);
 
+
     // Generate unique request ID for event handling
     const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    this.currentRequestId = requestId;
 
     // Accumulators
     let content = '';
@@ -128,6 +145,107 @@ export class OpenAIProvider extends BaseProvider {
     
     // Buffer for incomplete SSE lines that span multiple chunks
     let sseBuffer = '';
+    
+    // Helper function to process SSE data
+    const processSSEData = (data: string) => {
+      if (data === '[DONE]') return;
+
+      try {
+        const parsed: OpenAIStreamChunk = JSON.parse(data);
+
+        // Capture usage
+        if (parsed.usage) {
+          callbacks.onUsage?.({
+            promptTokens: parsed.usage.prompt_tokens,
+            completionTokens: parsed.usage.completion_tokens,
+            totalTokens: parsed.usage.total_tokens,
+          });
+        }
+
+        // Handle choices array
+        if (parsed.choices) {
+          for (const choice of parsed.choices) {
+            const delta = choice.delta;
+            if (!delta) continue;
+
+            // Handle reasoning/thinking content (DeepSeek, GLM style)
+            if (delta.reasoning_content) {
+              reasoningContent += delta.reasoning_content;
+              callbacks.onThinking?.(delta.reasoning_content);
+            }
+
+            // Handle regular content
+            if (delta.content) {
+              content += delta.content;
+              callbacks.onToken?.(delta.content);
+            }
+
+            // Handle tool calls
+            if (delta.tool_calls) {
+              for (const tc of delta.tool_calls) {
+                const index = tc.index;
+
+                if (!toolCalls.has(index)) {
+                  toolCalls.set(index, {
+                    id: tc.id || `tool_${index}`,
+                    type: 'function',
+                    function: {
+                      name: tc.function?.name || '',
+                      arguments: tc.function?.arguments || '',
+                    },
+                  });
+                } else {
+                  const existing = toolCalls.get(index)!;
+                  if (tc.function?.name) {
+                    existing.function.name = tc.function.name;
+                  }
+                  if (tc.function?.arguments) {
+                    existing.function.arguments += tc.function.arguments;
+                  }
+                }
+
+                callbacks.onToolCall?.(toolCalls.get(index)!);
+              }
+            }
+          }
+        }
+      } catch {
+        // Skip invalid JSON - might be partial data or non-JSON line
+      }
+    };
+    
+    // Helper function to process buffered lines
+    const processBuffer = (forceProcessAll = false) => {
+      // Split by newlines
+      const lines = sseBuffer.split('\n');
+      
+      // If not forcing, keep the last element in buffer (might be incomplete)
+      if (!forceProcessAll && lines.length > 0) {
+        sseBuffer = lines.pop() || '';
+      } else {
+        sseBuffer = '';
+      }
+      
+      for (const line of lines) {
+        const trimmedLine = line.trim();
+        if (!trimmedLine) continue;
+        
+        // Standard SSE format: "data: {...}"
+        if (trimmedLine.startsWith('data: ')) {
+          const data = trimmedLine.slice(6).trim();
+          processSSEData(data);
+        }
+        // Some local models might send raw JSON without "data: " prefix
+        else if (trimmedLine.startsWith('{')) {
+          processSSEData(trimmedLine);
+        }
+        // Handle "data:" without space (some implementations)
+        else if (trimmedLine.startsWith('data:')) {
+          const data = trimmedLine.slice(5).trim();
+          processSSEData(data);
+        }
+      }
+    };
 
     try {
       callbacks.onStart?.();
@@ -135,90 +253,18 @@ export class OpenAIProvider extends BaseProvider {
       // Set up event listeners for stream chunks
       const unlistenChunk = await listen<TauriStreamChunk>(`llm-stream-${requestId}`, (event) => {
         const chunk = event.payload;
-        if (chunk.done) return;
+        
+        // When stream is done, process any remaining buffer
+        if (chunk.done) {
+          if (sseBuffer.trim()) {
+            processBuffer(true);
+          }
+          return;
+        }
 
         // Append to buffer and process complete lines
         sseBuffer += chunk.data;
-        
-        // Split by newlines but keep track of incomplete last line
-        const lines = sseBuffer.split('\n');
-        
-        // Keep the last element in buffer if it doesn't end with newline
-        // (it might be an incomplete line)
-        if (!chunk.data.endsWith('\n')) {
-          sseBuffer = lines.pop() || '';
-        } else {
-          sseBuffer = '';
-        }
-        
-        for (const line of lines) {
-          const trimmedLine = line.trim();
-          if (!trimmedLine) continue;
-          
-          if (trimmedLine.startsWith('data: ')) {
-            const data = trimmedLine.slice(6).trim();
-            if (data === '[DONE]') return;
-
-            try {
-              const parsed: OpenAIStreamChunk = JSON.parse(data);
-
-              // Capture usage
-              if (parsed.usage) {
-                callbacks.onUsage?.({
-                  promptTokens: parsed.usage.prompt_tokens,
-                  completionTokens: parsed.usage.completion_tokens,
-                  totalTokens: parsed.usage.total_tokens,
-                });
-              }
-
-              for (const choice of parsed.choices) {
-                const delta = choice.delta;
-
-                // Handle reasoning/thinking content (DeepSeek, GLM style)
-                if (delta.reasoning_content) {
-                  reasoningContent += delta.reasoning_content;
-                  callbacks.onThinking?.(delta.reasoning_content);
-                }
-
-                // Handle regular content
-                if (delta.content) {
-                  content += delta.content;
-                  callbacks.onToken?.(delta.content);
-                }
-
-                // Handle tool calls
-                if (delta.tool_calls) {
-                  for (const tc of delta.tool_calls) {
-                    const index = tc.index;
-
-                    if (!toolCalls.has(index)) {
-                      toolCalls.set(index, {
-                        id: tc.id || `tool_${index}`,
-                        type: 'function',
-                        function: {
-                          name: tc.function?.name || '',
-                          arguments: tc.function?.arguments || '',
-                        },
-                      });
-                    } else {
-                      const existing = toolCalls.get(index)!;
-                      if (tc.function?.name) {
-                        existing.function.name = tc.function.name;
-                      }
-                      if (tc.function?.arguments) {
-                        existing.function.arguments += tc.function.arguments;
-                      }
-                    }
-
-                    callbacks.onToolCall?.(toolCalls.get(index)!);
-                  }
-                }
-              }
-            } catch {
-              // Skip invalid JSON
-            }
-          }
-        }
+        processBuffer(false);
       });
 
       // Set up error listener
@@ -264,6 +310,7 @@ export class OpenAIProvider extends BaseProvider {
     } catch (error) {
       // Handle various cancellation error formats
       if (error instanceof Error && error.name === 'AbortError') {
+        this.currentRequestId = null;
         throw new Error('Request cancelled');
       }
       
@@ -271,12 +318,15 @@ export class OpenAIProvider extends BaseProvider {
       if (typeof error === 'object' && error !== null && 'type' in error) {
         const tauriError = error as { type: string; msg?: string };
         if (tauriError.type === 'cancelation') {
+          this.currentRequestId = null;
           throw new Error('Request cancelled');
         }
       }
       
       callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
       throw error;
+    } finally {
+      this.currentRequestId = null;
     }
   }
 

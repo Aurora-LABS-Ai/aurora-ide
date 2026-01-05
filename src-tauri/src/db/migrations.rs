@@ -94,6 +94,14 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [8])?;
             Ok(())
         }
+        9 => {
+            // Migration from v8 to v9: Cleanup NULL workspace_path entries
+            migration_v9(conn)?;
+            // Update schema version
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [9])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -320,6 +328,18 @@ fn migration_v8(conn: &Connection) -> DbResult<()> {
     // Add excluded_directories column to semantic_indexes (workspace-specific)
     conn.execute(
         "ALTER TABLE semantic_indexes ADD COLUMN excluded_directories TEXT DEFAULT '[]'",
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Migration v9: Cleanup NULL workspace_path entries in workspace_state table
+/// These were incorrectly saved when no workspace was open, corrupting the "most recent" query
+fn migration_v9(conn: &Connection) -> DbResult<()> {
+    // Delete all workspace_state entries where workspace_path is NULL
+    conn.execute(
+        "DELETE FROM workspace_state WHERE workspace_path IS NULL",
         [],
     )?;
 

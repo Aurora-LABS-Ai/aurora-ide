@@ -172,4 +172,6 @@ export type ProviderType =
   | "glm"
   | "anthropic"
   | "minimax"
+  | "lmstudio"
+  | "ollama"
   | "custom";

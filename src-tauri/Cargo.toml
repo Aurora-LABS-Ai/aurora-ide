@@ -62,6 +62,15 @@ tauri-plugin-pty = "0.1"
 # MCP (Model Context Protocol) client support
 rmcp = { version = "0.1", features = ["client", "transport-child-process", "transport-sse"] }
 
+# Token counting (accurate tokenizers for GPT-4, Claude, etc.)
+tiktoken-rs = "0.6"
+
+# CLI argument parsing for `aurora .` command
+clap = { version = "4", features = ["derive"] }
+
+# Single instance detection (prevent multiple instances, pass args to existing)
+single-instance = "0.3"
+
 [features]
 # Default: Enable CUDA for NVIDIA GPUs (most common GPU acceleration)
 # For Windows without CUDA: use --features directml instead

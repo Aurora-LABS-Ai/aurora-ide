@@ -18,6 +18,7 @@ use tauri::Emitter;
 pub mod state;
 pub mod settings;
 pub mod threads;
+pub mod tokens;
 pub mod llm;
 pub mod chat;
 pub mod themes;
@@ -797,4 +798,23 @@ pub async fn invalidate_file_cache(path: String, is_prefix: bool) -> Result<(), 
 #[tauri::command]
 pub async fn get_cache_stats() -> (usize, usize) {
     crate::file_cache::get_file_cache().stats()
+}
+
+// =============================================================================
+// CLI COMMANDS
+// =============================================================================
+
+/// Install the Aurora CLI to system PATH
+/// This allows using `aurora .` from any terminal
+#[tauri::command]
+pub async fn install_aurora_cli() -> Result<String, String> {
+    crate::cli::install::install_cli()
+        .map(|_| "Aurora CLI installed successfully".to_string())
+}
+
+/// Uninstall the Aurora CLI from system PATH
+#[tauri::command]
+pub async fn uninstall_aurora_cli() -> Result<String, String> {
+    crate::cli::install::uninstall_cli()
+        .map(|_| "Aurora CLI uninstalled successfully".to_string())
 }

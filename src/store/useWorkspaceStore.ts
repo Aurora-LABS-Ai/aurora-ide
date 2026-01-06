@@ -7,6 +7,17 @@ import { databaseService } from "../services/database";
 import type { FileNode } from "../types";
 import { useEditorStore } from "./useEditorStore";
 
+/**
+ * Strip Windows extended-length path prefix (\\?\)
+ * This prefix causes issues with shell commands and display
+ */
+function stripExtendedPathPrefix(path: string): string {
+  if (path.startsWith('\\\\?\\')) {
+    return path.slice(4);
+  }
+  return path;
+}
+
 interface WorkspaceState {
   clearWorkspace: () => void;
   expandFolder: (folderId: string) => Promise<void>;
@@ -76,6 +87,10 @@ let isLoadingDirectory = false;
 let lastSetRootPath: string | null = null;
 let pendingLoadPath: string | null = null;
 
+// Debounce timer for fs-changed events to prevent excessive refreshes
+let fsChangedDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+const FS_CHANGED_DEBOUNCE_MS = 50; // 50ms debounce - fast but prevents rapid-fire
+
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   rootPath: '',
   files: [],
@@ -84,27 +99,30 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   isLoading: false,
 
   setRootPath: (path) => {
+    // CRITICAL: Strip Windows \\?\ prefix that causes shell command failures
+    const cleanPath = stripExtendedPathPrefix(path);
+    
     // Guard against duplicate setRootPath calls (React Strict Mode, etc.)
-    if (lastSetRootPath === path) {
+    if (lastSetRootPath === cleanPath) {
       return;
     }
-    lastSetRootPath = path;
+    lastSetRootPath = cleanPath;
     
-    set({ rootPath: path });
+    set({ rootPath: cleanPath });
 
     // Update editor store with workspace path
-    useEditorStore.getState().setWorkspacePath(path);
+    useEditorStore.getState().setWorkspacePath(cleanPath);
 
     // IMMEDIATELY save workspace state to database when workspace is opened
     // This ensures the workspace is persisted even if close event fails
-    if (isTauri() && path) {
-      console.log('[WorkspaceStore] Saving workspace path immediately:', path);
+    if (isTauri() && cleanPath) {
+      console.log('[WorkspaceStore] Saving workspace path immediately:', cleanPath);
       useEditorStore.getState().saveWorkspace().catch(err => {
         console.error('[WorkspaceStore] Failed to save workspace:', err);
       });
     }
 
-    get().loadDirectory(path);
+    get().loadDirectory(cleanPath);
 
     // Start filesystem watcher
     if (isTauri()) {
@@ -124,10 +142,17 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             const hasMatch = paths.some(p => p.startsWith(rootPath));
 
             if (hasMatch) {
-              // INSTANT refresh - Rust watcher is efficient
-              await get().refreshDirectory();
+              // Debounce directory refresh to prevent rapid-fire updates
+              // This coalesces multiple rapid fs events into a single refresh
+              if (fsChangedDebounceTimer) {
+                clearTimeout(fsChangedDebounceTimer);
+              }
+              fsChangedDebounceTimer = setTimeout(async () => {
+                fsChangedDebounceTimer = null;
+                await get().refreshDirectory();
+              }, FS_CHANGED_DEBOUNCE_MS);
 
-              // Refresh any open editor tabs that were modified
+              // Refresh any open editor tabs that were modified (immediate, no debounce)
               if (kind === 'modify' || kind === 'create') {
                 const editorStore = useEditorStore.getState();
                 const openTabs = editorStore.tabs;
@@ -375,28 +400,28 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const { rootPath, expandedFolders } = get();
     if (!filePath || !rootPath) return;
 
-    // Normalize path separators
-    const normalizedPath = filePath.replace(/\\/g, '/');
-    const normalizedRoot = rootPath.replace(/\\/g, '/');
+    // Detect the separator used in the file path (preserve original format)
+    const separator = filePath.includes('\\') ? '\\' : '/';
+    
+    // Normalize both paths to the same separator for comparison
+    const normalizedPath = filePath.replace(/[\\/]/g, separator);
+    const normalizedRoot = rootPath.replace(/[\\/]/g, separator);
 
     // Check if the file is within the workspace
     if (!normalizedPath.startsWith(normalizedRoot)) return;
 
     // Get the relative path and extract parent folders
     const relativePath = normalizedPath.slice(normalizedRoot.length);
-    const parts = relativePath.split('/').filter(Boolean);
+    const parts = relativePath.split(separator).filter(Boolean);
     
     // Build list of parent folder paths to expand
     const newExpanded = new Set(expandedFolders);
-    let currentPath = rootPath;
+    let currentPath = normalizedRoot;
     
     // Expand each parent folder (excluding the file itself)
     for (let i = 0; i < parts.length - 1; i++) {
-      currentPath = currentPath + (currentPath.endsWith('/') || currentPath.endsWith('\\') ? '' : '/') + parts[i];
-      // Normalize to match how paths are stored
-      const normalizedCurrentPath = currentPath.replace(/\//g, '\\');
-      newExpanded.add(normalizedCurrentPath);
-      newExpanded.add(currentPath); // Add both variants
+      currentPath = currentPath + separator + parts[i];
+      newExpanded.add(currentPath);
     }
 
     set({ 

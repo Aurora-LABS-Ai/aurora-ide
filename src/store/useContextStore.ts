@@ -7,6 +7,9 @@ interface ContextState extends ContextUsage {
 
   // Actions
   updateUsage: (usage: TokenUsage) => void;
+  
+  // Restore context from saved thread data
+  restoreFromThread: (contextUsage: { usedTokens: number; contextWindow: number; percentage: number } | undefined) => void;
 }
 
 export interface ContextUsage {
@@ -15,6 +18,10 @@ export interface ContextUsage {
 
   // Provider's context window limit
   contextWindow: number;
+
+  // Whether the current usage is from real API data (vs estimate)
+  // When true, estimates won't overwrite the real data
+  hasRealUsage: boolean;
 
   // Whether we're approaching the limit (>80%)
   isNearLimit: boolean;
@@ -72,6 +79,7 @@ export const useContextStore = create<ContextState>((set, get) => ({
   usagePercentage: 0,
   isNearLimit: false,
   isOverLimit: false,
+  hasRealUsage: false,
 
   // Update with actual API usage - this REPLACES the estimate
   updateUsage: (usage: TokenUsage) => {
@@ -90,6 +98,7 @@ export const useContextStore = create<ContextState>((set, get) => ({
       usagePercentage: percentage,
       isNearLimit: percentage >= 80,
       isOverLimit: percentage >= 100,
+      hasRealUsage: true, // Mark that we have real data from API
     });
   },
 
@@ -107,8 +116,21 @@ export const useContextStore = create<ContextState>((set, get) => ({
   },
 
   // Set estimated context (before API responds)
+  // IMPORTANT: If we have real usage data, DON'T replace it with a lower estimate
+  // This prevents the context indicator from dropping when user sends a new message
   setEstimatedContext: (tokens: number) => {
     const state = get();
+    
+    // If we have real usage data and the estimate is lower, keep the real data
+    // The API will update us with accurate new usage when it responds
+    if (state.hasRealUsage && tokens < state.usedContextTokens) {
+      console.log('[ContextStore] Skipping estimate (have real data):', {
+        estimate: tokens,
+        realUsage: state.usedContextTokens,
+      });
+      return; // Don't downgrade real usage with a lower estimate
+    }
+    
     const percentage = calculatePercentage(tokens, state.contextWindow);
 
     set({
@@ -116,6 +138,7 @@ export const useContextStore = create<ContextState>((set, get) => ({
       usagePercentage: percentage,
       isNearLimit: percentage >= 80,
       isOverLimit: percentage >= 100,
+      // Keep hasRealUsage as-is - estimates don't change the flag
     });
   },
 
@@ -126,5 +149,40 @@ export const useContextStore = create<ContextState>((set, get) => ({
     usagePercentage: 0,
     isNearLimit: false,
     isOverLimit: false,
+    hasRealUsage: false, // Reset the flag for new threads
   }),
+
+  // Restore context from saved thread data (used when switching threads or on app startup)
+  restoreFromThread: (contextUsage) => {
+    if (!contextUsage) {
+      // No saved context - reset to clean state
+      set({
+        usedContextTokens: 0,
+        usagePercentage: 0,
+        isNearLimit: false,
+        isOverLimit: false,
+        hasRealUsage: false,
+      });
+      return;
+    }
+
+    const { usedTokens, contextWindow, percentage } = contextUsage;
+    
+    // Restore the saved context state
+    // Mark as real usage since this data came from actual API responses
+    set({
+      usedContextTokens: usedTokens,
+      contextWindow: contextWindow || DEFAULT_CONTEXT_WINDOW,
+      usagePercentage: percentage,
+      isNearLimit: percentage >= 80,
+      isOverLimit: percentage >= 100,
+      hasRealUsage: true, // Saved data is from real API responses
+    });
+
+    console.log('[ContextStore] Restored context from thread:', {
+      usedTokens,
+      contextWindow,
+      percentage,
+    });
+  },
 }));

@@ -66,20 +66,13 @@ export const GitFileItem: React.FC<GitFileItemProps> = ({
     // Select file in workspace
     selectFile(fullPath);
 
-    // Open with loading placeholder
-    openFile(fullPath, fileName, '// Loading...', undefined);
-
-    // Load actual content
+    // Load content first, then open file - prevents "// Loading..." flash
     try {
       const content = await loadFileContent(fullPath);
-      const { tabs } = useEditorStore.getState();
-      const tab = tabs.find(t => t.id === fullPath);
-      if (tab) {
-        useEditorStore.getState().reloadTabContent(fullPath, content);
-      }
+      openFile(fullPath, fileName, content, undefined);
     } catch (err) {
       console.error('Failed to load file:', err);
-      useEditorStore.getState().reloadTabContent(fullPath, `// Failed to load file: ${err}`);
+      openFile(fullPath, fileName, `// Failed to load file: ${err}`, undefined);
     }
   }, [file.status, fullPath, fileName, selectFile, openFile]);
 

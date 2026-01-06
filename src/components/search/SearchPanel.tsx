@@ -227,18 +227,15 @@ export const SearchPanel: React.FC = () => {
   const handleFileClick = useCallback(async (filePath: string, fileName: string, _line?: number) => {
     const { selectFile } = useWorkspaceStore.getState();
     selectFile(filePath);
-    openFile(filePath, fileName, '// Loading...', undefined);
 
     try {
+      // Load content first, then open file - prevents "// Loading..." flash
       const content = await loadFileContent(filePath);
-      const { tabs } = useEditorStore.getState();
-      const tab = tabs.find(t => t.id === filePath);
-      if (tab) {
-        useEditorStore.getState().reloadTabContent(filePath, content);
-      }
+      openFile(filePath, fileName, content, undefined);
       // TODO: If line is provided, scroll to that line in the editor
     } catch (err) {
       console.error('Failed to load file:', err);
+      openFile(filePath, fileName, `// Failed to load file: ${err}`, undefined);
     }
   }, [openFile]);
 

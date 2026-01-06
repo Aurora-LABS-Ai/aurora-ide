@@ -1,0 +1,92 @@
+{
+    "name": "Noir Chrome",
+    "author": "GLM",
+    "version": "1.0.0",
+    "type": "dark",
+    "colors": {
+        "editor": {
+            "background": "#1c1c1e",
+            "foreground": "#f2f2f7",
+            "lineNumbers": "#48484a",
+            "lineNumbersActive": "#8e8e93",
+            "selection": "#0ea5e922",
+            "cursor": "#22d3ee",
+            "cursorLine": "#252528"
+        },
+        "sidebar": {
+            "background": "#121214",
+            "foreground": "#98989d",
+            "border": "#252528",
+            "itemHover": "#ffffff0a",
+            "itemActive": "#22d3ee18",
+            "itemSelected": "#22d3ee2a",
+            "sectionHeader": "#636366"
+        },
+        "chat": {
+            "background": "#121214",
+            "inputBackground": "#121214",
+            "inputBorder": "#2c2c2e",
+            "userMessage": "#252528",
+            "assistantMessage": "#121214",
+            "surface": "#252528",
+            "surfaceBorder": "#2c2c2e",
+            "surfaceMuted": "#1c1c1e",
+            "usageLow": "#4ade80",
+            "usageMedium": "#fbbf24",
+            "usageHigh": "#f87171"
+        },
+        "terminal": {
+            "background": "#1c1c1e",
+            "foreground": "#f2f2f7"
+        },
+        "statusBar": {
+            "background": "#121214",
+            "foreground": "#98989d",
+            "border": "#252528"
+        },
+        "titleBar": {
+            "background": "#121214",
+            "foreground": "#98989d",
+            "border": "#252528"
+        },
+        "common": {
+            "primary": "#22d3ee",
+            "secondary": "#48484a",
+            "success": "#4ade80",
+            "warning": "#fbbf24",
+            "error": "#f87171",
+            "info": "#38bdf8",
+            "border": "#2c2c2e"
+        }
+    },
+    "tokenColors": [
+        {
+            "scope": ["comment", "punctuation.definition.comment"],
+            "settings": { "foreground": "#636366", "fontStyle": "italic" }
+        },
+        {
+            "scope": ["variable", "string constant.other.placeholder"],
+            "settings": { "foreground": "#ffffff" }
+        },
+        {
+            "scope": ["keyword", "storage.type", "storage.modifier"],
+            "settings": { "foreground": "#67e8f9" }
+        },
+        {
+            "scope": ["constant.numeric", "constant.language", "constant.character", "constant.other"],
+            "settings": { "foreground": "#fbbf24" }
+        },
+        {
+            "scope": ["string", "string punctuation.section.embedded source"],
+            "settings": { "foreground": "#a5f3fc" }
+        },
+        {
+            "scope": "entity.name.function",
+            "settings": { "foreground": "#7dd3fc" }
+        },
+        {
+            "scope": "entity.name.tag",
+            "settings": { "foreground": "#f472b6" }
+        }
+    ]
+}

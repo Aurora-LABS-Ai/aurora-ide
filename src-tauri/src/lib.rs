@@ -1,13 +1,27 @@
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Manager, Emitter};
 
 mod commands;
+pub mod cli;
 mod db;
 mod file_cache;
 mod mcp;
+mod services;
 
+use cli::{CliArgs, CliOpenRequest};
+use services::ThreadService;
+
+/// Run Aurora with default (no CLI arguments)
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    run_with_args(CliArgs::default())
+}
+
+/// Run Aurora with CLI arguments (e.g., from `aurora .` command)
+pub fn run_with_args(cli_args: CliArgs) {
+    // Convert CLI args to open request
+    let open_request: CliOpenRequest = (&cli_args).into();
+    
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
@@ -58,11 +72,32 @@ pub fn run() {
             commands::settings::get_all_tool_settings,
             commands::settings::set_tool_approval,
             commands::settings::save_all_tool_settings,
-            // Threads (chat history) commands
+            // Threads (chat history) commands - Legacy
             commands::threads::save_thread,
             commands::threads::get_thread,
             commands::threads::list_threads,
             commands::threads::delete_thread,
+            // Threads (new service-based with events)
+            commands::threads::thread_create,
+            commands::threads::thread_load,
+            commands::threads::thread_delete,
+            commands::threads::thread_list_summaries,
+            commands::threads::thread_add_user_message,
+            commands::threads::thread_start_response,
+            commands::threads::thread_append_token,
+            commands::threads::thread_append_thinking,
+            commands::threads::thread_add_tool_call,
+            commands::threads::thread_finalize_response,
+            commands::threads::thread_update_usage,
+            commands::threads::thread_get_api_history,
+            commands::threads::thread_update_title,
+            // Token counting commands
+            commands::tokens::count_tokens,
+            commands::tokens::count_chat_tokens,
+            commands::tokens::count_messages_tokens,
+            commands::tokens::detect_model_encoding,
+            commands::tokens::estimate_tokens_quick,
+            commands::tokens::truncate_to_tokens,
             // LLM HTTP proxy commands (bypasses CORS)
             commands::llm::llm_request,
             commands::llm::llm_stream_request,
@@ -146,8 +181,11 @@ pub fn run() {
             // OpenAI Native (async-openai) commands for LM Studio, Ollama, etc.
             commands::openai_native::openai_native_stream,
             commands::openai_native::openai_native_chat,
+            // CLI commands (install/uninstall aurora command)
+            commands::install_aurora_cli,
+            commands::uninstall_aurora_cli,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             #[cfg(debug_assertions)]
             {
                 let window = app.get_webview_window("main").unwrap();
@@ -164,6 +202,26 @@ pub fn run() {
 
             // Store shared chat state for multi-window sync
             app.manage(commands::chat::SharedChatState::default());
+
+            // Store thread service for per-message persistence
+            app.manage(ThreadService::new());
+
+            // If CLI provided a path, emit event to frontend to open it
+            // Clone open_request since we're in a move closure
+            let request = open_request.clone();
+            if request.workspace_path.is_some() || request.file_path.is_some() {
+                let window = app.get_webview_window("main");
+                if let Some(win) = window {
+                    // Emit after a short delay to ensure frontend is ready
+                    let win_clone = win.clone();
+                    std::thread::spawn(move || {
+                        // Wait for frontend to initialize
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        let _ = win_clone.emit("cli-open", &request);
+                        println!("[Aurora CLI] Emitted open request: {:?}", request);
+                    });
+                }
+            }
 
             Ok(())
         })

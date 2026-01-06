@@ -29,12 +29,12 @@ export interface ShimmerTextProps extends ComponentPropsWithoutRef<"span"> {
 
 /**
  * Animated shimmer text component for loading states
- * Shows a shiny gradient animation sweeping left to right over stable text
+ * Uses the same aurora-shine animation as the Aurora name during streaming
+ * Smooth light sweep from left to right
  */
 export const ShimmerText: FC<ShimmerTextProps> = ({
     children,
     className = "",
-    shimmerWidth = 100,
     animate = true,
     ...props
 }) => {
@@ -46,32 +46,18 @@ export const ShimmerText: FC<ShimmerTextProps> = ({
         );
     }
 
+    // Match the exact shimmer style from ChatMessage Aurora name
     return (
         <span
-            style={
-                {
-                    "--shimmer-width": `${shimmerWidth}px`,
-                } as CSSProperties
-            }
-            className={`
-                inline-block
-                text-neutral-600/70 
-                dark:text-neutral-400/70
-                
-                /* Shine effect */
-                animate-shimmer 
-                bg-clip-text 
-                text-transparent 
-                bg-no-repeat
-                
-                /* Shine gradient - Start with text color, flash white, end with text color */
-                bg-gradient-to-r 
-                from-zinc-500 
-                via-zinc-200 
-                to-zinc-500
-                
-                ${className}
-            `.trim().replace(/\s+/g, ' ')}
+            style={{
+                background: 'linear-gradient(90deg, #60a5fa 0%, #60a5fa 35%, #ffffff 50%, #60a5fa 65%, #60a5fa 100%)',
+                backgroundSize: '200% 100%',
+                WebkitBackgroundClip: 'text',
+                backgroundClip: 'text',
+                color: 'transparent',
+                animation: 'aurora-shine 1s ease-in-out infinite',
+            } as CSSProperties}
+            className={className}
             {...props}
         >
             {children}

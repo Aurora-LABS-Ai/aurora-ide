@@ -265,6 +265,17 @@ const components = {
   ),
 };
 
+// Streaming cursor component - slim white blinking cursor
+const StreamingCursor: React.FC = () => (
+  <span 
+    className="inline-block animate-cursor-blink ml-px align-baseline text-[11px] font-light"
+    style={{ color: 'rgba(255, 255, 255, 0.8)' }}
+    aria-hidden="true"
+  >
+    |
+  </span>
+);
+
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ content, isStreaming = false }) => {
   if (!content) return null;
 
@@ -281,6 +292,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ content
       >
         {content}
       </Streamdown>
+      {isStreaming && <StreamingCursor />}
     </div>
   );
 });

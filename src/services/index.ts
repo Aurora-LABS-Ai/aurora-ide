@@ -24,5 +24,17 @@ export { multiFileService, MultiFileService } from './multi-file-service';
 
 export type { FileReadResult, MultiFileReadResult } from './multi-file-service';
 
-// Token Estimation
-export * from './token-estimator';
+// Thread Service (Rust-backed per-message persistence)
+export { threadService } from './thread-service';
+export type {
+  ThreadSummary,
+  TokenUsage,
+  ContextUsage,
+  DbMessage,
+  DbThread,
+  ApiMessage,
+} from './thread-service';
+
+// Token Service (Rust-backed tiktoken)
+export { tokenService } from './token-service';
+export type { TokenCount, ChatMessageForCount } from './token-service';

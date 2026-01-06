@@ -1,0 +1,92 @@
+{
+    "name": "Carbon Forest",
+    "author": "GLM",
+    "version": "1.0.0",
+    "type": "dark",
+    "colors": {
+        "editor": {
+            "background": "#121212",
+            "foreground": "#d6d3d1",
+            "lineNumbers": "#44403c",
+            "lineNumbersActive": "#78716c",
+            "selection": "#10b98120",
+            "cursor": "#34d399",
+            "cursorLine": "#1c1917"
+        },
+        "sidebar": {
+            "background": "#0c0c0c",
+            "foreground": "#a8a29e",
+            "border": "#1c1917",
+            "itemHover": "#ffffff0a",
+            "itemActive": "#34d3991a",
+            "itemSelected": "#34d39926",
+            "sectionHeader": "#57534e"
+        },
+        "chat": {
+            "background": "#0c0c0c",
+            "inputBackground": "#0c0c0c",
+            "inputBorder": "#292524",
+            "userMessage": "#1c1917",
+            "assistantMessage": "#0c0c0c",
+            "surface": "#1c1917",
+            "surfaceBorder": "#292524",
+            "surfaceMuted": "#171717",
+            "usageLow": "#34d399",
+            "usageMedium": "#fbbf24",
+            "usageHigh": "#f87171"
+        },
+        "terminal": {
+            "background": "#121212",
+            "foreground": "#d6d3d1"
+        },
+        "statusBar": {
+            "background": "#0c0c0c",
+            "foreground": "#a8a29e",
+            "border": "#1c1917"
+        },
+        "titleBar": {
+            "background": "#0c0c0c",
+            "foreground": "#a8a29e",
+            "border": "#1c1917"
+        },
+        "common": {
+            "primary": "#34d399",
+            "secondary": "#44403c",
+            "success": "#34d399",
+            "warning": "#fbbf24",
+            "error": "#f87171",
+            "info": "#38bdf8",
+            "border": "#292524"
+        }
+    },
+    "tokenColors": [
+        {
+            "scope": ["comment", "punctuation.definition.comment"],
+            "settings": { "foreground": "#57534e", "fontStyle": "italic" }
+        },
+        {
+            "scope": ["variable", "string constant.other.placeholder"],
+            "settings": { "foreground": "#e7e5e4" }
+        },
+        {
+            "scope": ["keyword", "storage.type", "storage.modifier"],
+            "settings": { "foreground": "#6ee7b7" }
+        },
+        {
+            "scope": ["constant.numeric", "constant.language", "constant.character", "constant.other"],
+            "settings": { "foreground": "#fcd34d" }
+        },
+        {
+            "scope": ["string", "string punctuation.section.embedded source"],
+            "settings": { "foreground": "#a7f3d0" }
+        },
+        {
+            "scope": "entity.name.function",
+            "settings": { "foreground": "#2dd4bf" }
+        },
+        {
+            "scope": "entity.name.tag",
+            "settings": { "foreground": "#fb7185" }
+        }
+    ]
+}

@@ -103,49 +103,48 @@ export const TreeNode: React.FC<TreeNodeProps> = ({
   // HANDLERS
   // ============================================
 
-  const handleClick = useCallback(() => {
+  const handleClick = useCallback(async () => {
     if (isFolder) {
       toggleFolder(node.id);
     } else {
-      // OPTIMISTIC FILE OPENING: Show tab immediately, load content in background
-      // This eliminates perceived lag - the tab appears instantly
+      // Select file immediately for visual feedback
       selectFile(node.id);
-
-      // Open with placeholder content immediately (shows loading state)
-      openFile(node.id, node.name, '// Loading...', node.language);
 
       // Track this request to prevent stale async updates
       const requestId = ++latestLoadRequestId;
       const fileId = node.id;
 
-      // Load actual content in background and update
-      loadFileContent(nodePath).then(content => {
+      // Check if file is already open in a tab
+      const { tabs } = useEditorStore.getState();
+      const existingTab = tabs.find(t => t.id === fileId);
+      
+      if (existingTab) {
+        // Tab already exists, just activate it
+        useEditorStore.getState().setActiveTab(fileId);
+        return;
+      }
+
+      // Load content FIRST, then open file - prevents "// Loading..." flash
+      try {
+        const content = await loadFileContent(nodePath);
+        
         // Ignore stale responses (user clicked another file)
         if (requestId !== latestLoadRequestId) {
           return;
         }
 
-        // Update the tab with real content (only if tab still exists)
-        const { tabs } = useEditorStore.getState();
-        const tab = tabs.find(t => t.id === fileId);
-        if (tab) {
-          useEditorStore.getState().reloadTabContent(fileId, content);
-        }
-      }).catch(err => {
+        // Open file with actual content
+        openFile(fileId, node.name, content, node.language);
+      } catch (err) {
         // Ignore stale error responses
         if (requestId !== latestLoadRequestId) {
           return;
         }
 
         console.error('Failed to load file:', err);
-
-        // Only update tab if it still exists
-        const { tabs } = useEditorStore.getState();
-        const tab = tabs.find(t => t.id === fileId);
-        if (tab) {
-          useEditorStore.getState().reloadTabContent(fileId, `// Failed to load file: ${err}`);
-        }
-      });
+        // Open with error message
+        openFile(fileId, node.name, `// Failed to load file: ${err}`, node.language);
+      }
     }
   }, [isFolder, node.id, node.name, node.language, nodePath, toggleFolder, selectFile, openFile]);
 

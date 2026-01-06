@@ -20,8 +20,8 @@
  * See: src/services/theme-service.ts for theme utilities
  */
 
-import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { MessageSquare, Trash2, Search, Plus, Loader2, CornerDownLeft } from 'lucide-react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { MessageSquare, Trash2, Search, Plus, Loader2, CornerDownLeft, CheckSquare, Square, X } from 'lucide-react';
 import { useThreadStore, type ThreadSummary } from '../../store/useThreadStore';
 import { useTaskStore } from '../../store/useTaskStore';
 import { DeleteConfirmDialog } from './DeleteConfirmDialog';
@@ -61,22 +61,38 @@ const formatDate = (timestamp: number): string => {
 
 const ThreadItem: React.FC<{ 
   thread: ThreadSummary; 
-  isSelected: boolean;
+  isHighlighted: boolean;
   isActive: boolean;
+  isChecked: boolean;
+  isSelectMode: boolean;
   onSelect: () => void;
   onDelete: (e: React.MouseEvent) => void;
   onMouseEnter: () => void;
-}> = ({ thread, isSelected, isActive, onSelect, onDelete, onMouseEnter }) => {
+  onToggleCheck: (e: React.MouseEvent) => void;
+}> = ({ thread, isHighlighted, isActive, isChecked, isSelectMode, onSelect, onDelete, onMouseEnter, onToggleCheck }) => {
   return (
     <div
       className={clsx(
-        "group px-3 py-2 flex items-center gap-3 cursor-pointer text-sm",
-        isSelected ? "bg-primary/20 text-zinc-100" : "text-zinc-400 hover:bg-white/[0.03]"
+        "group px-3 py-2 flex items-center gap-2 cursor-pointer text-sm",
+        isHighlighted ? "bg-primary/20 text-zinc-100" : "text-zinc-400 hover:bg-white/[0.03]",
+        isChecked && "bg-primary/10"
       )}
-      onClick={onSelect}
+      onClick={isSelectMode ? onToggleCheck : onSelect}
       onMouseEnter={onMouseEnter}
     >
-      <MessageSquare size={14} className={isSelected ? "text-primary" : "opacity-50"} />
+      {/* Checkbox - always visible in select mode, otherwise on hover */}
+      <button
+        onClick={onToggleCheck}
+        className={clsx(
+          "p-0.5 rounded transition-all shrink-0",
+          isSelectMode || isChecked ? "opacity-100" : "opacity-0 group-hover:opacity-60",
+          isChecked ? "text-primary" : "text-zinc-500 hover:text-zinc-300"
+        )}
+      >
+        {isChecked ? <CheckSquare size={14} /> : <Square size={14} />}
+      </button>
+
+      <MessageSquare size={14} className={isHighlighted ? "text-primary" : "opacity-50"} />
       
       <div className="flex-1 truncate flex items-center justify-between">
         <div className="flex items-center gap-2 min-w-0">
@@ -91,15 +107,17 @@ const ThreadItem: React.FC<{
         </div>
       </div>
       
-      <button
-        onClick={onDelete}
-        className="p-1 rounded opacity-0 group-hover:opacity-100 text-text-disabled hover:text-danger hover:bg-danger/10 transition-all shrink-0"
-        title="Delete"
-      >
-        <Trash2 size={12} />
-      </button>
+      {!isSelectMode && (
+        <button
+          onClick={onDelete}
+          className="p-1 rounded opacity-0 group-hover:opacity-100 text-text-disabled hover:text-danger hover:bg-danger/10 transition-all shrink-0"
+          title="Delete"
+        >
+          <Trash2 size={12} />
+        </button>
+      )}
       
-      {isSelected && <CornerDownLeft size={12} className="opacity-50" />}
+      {isHighlighted && !isSelectMode && <CornerDownLeft size={12} className="opacity-50" />}
     </div>
   );
 };
@@ -118,8 +136,12 @@ export const ThreadHistory: React.FC<ThreadHistoryProps> = ({ isOpen, onClose })
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [deleteTarget, setDeleteTarget] = useState<ThreadSummary | null>(null);
+  const [selectedThreadIds, setSelectedThreadIds] = useState<Set<string>>(new Set());
+  const [isDeleting, setIsDeleting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  const isSelectMode = selectedThreadIds.size > 0;
 
   // Load threads from files when modal opens
   useEffect(() => {
@@ -127,9 +149,46 @@ export const ThreadHistory: React.FC<ThreadHistoryProps> = ({ isOpen, onClose })
       loadAllThreadsFromFiles();
       setSearchQuery('');
       setSelectedIndex(0);
+      setSelectedThreadIds(new Set()); // Clear selection when opening
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   }, [isOpen, loadAllThreadsFromFiles]);
+
+  // Toggle thread selection
+  const toggleThreadSelection = useCallback((threadId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setSelectedThreadIds(prev => {
+      const next = new Set(prev);
+      if (next.has(threadId)) {
+        next.delete(threadId);
+      } else {
+        next.add(threadId);
+      }
+      return next;
+    });
+  }, []);
+
+  // Clear selection
+  const clearSelection = useCallback(() => {
+    setSelectedThreadIds(new Set());
+  }, []);
+
+  // Delete selected threads
+  const deleteSelected = useCallback(async () => {
+    if (selectedThreadIds.size === 0) return;
+    setIsDeleting(true);
+    try {
+      // Delete all selected threads
+      for (const threadId of selectedThreadIds) {
+        await deleteThread(threadId);
+      }
+      setSelectedThreadIds(new Set());
+    } catch (error) {
+      console.error('Failed to delete threads:', error);
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [selectedThreadIds, deleteThread]);
 
   // Filter threads based on search
   const filteredThreads = useMemo(() => {
@@ -161,12 +220,33 @@ export const ThreadHistory: React.FC<ThreadHistoryProps> = ({ isOpen, onClose })
       setSelectedIndex(i => Math.max(i - 1, 0));
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (threadsWithMessages[selectedIndex]) {
+      if (isSelectMode) {
+        // In select mode, toggle current item
+        if (threadsWithMessages[selectedIndex]) {
+          toggleThreadSelection(threadsWithMessages[selectedIndex].id);
+        }
+      } else if (threadsWithMessages[selectedIndex]) {
         handleSelectThread(threadsWithMessages[selectedIndex].id);
       }
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      if (!deleteTarget) onClose();
+      if (isSelectMode) {
+        clearSelection();
+      } else if (!deleteTarget) {
+        onClose();
+      }
+    } else if (e.key === ' ' && threadsWithMessages[selectedIndex]) {
+      // Space to toggle selection
+      e.preventDefault();
+      toggleThreadSelection(threadsWithMessages[selectedIndex].id);
+    } else if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
+      // Ctrl+A to select all
+      e.preventDefault();
+      setSelectedThreadIds(new Set(threadsWithMessages.map(t => t.id)));
+    } else if (e.key === 'Delete' && isSelectMode) {
+      // Delete key to delete selected
+      e.preventDefault();
+      deleteSelected();
     }
   };
 
@@ -219,27 +299,60 @@ export const ThreadHistory: React.FC<ThreadHistoryProps> = ({ isOpen, onClose })
             className="w-[600px] max-w-full bg-sidebar border border-border rounded-xl shadow-2xl shadow-black/50 flex flex-col overflow-hidden"
             onMouseDown={(e) => e.stopPropagation()}
           >
-            {/* Header - Search Bar */}
-            <div className="flex items-center px-3 py-3 border-b border-white/5 bg-white/[0.02]">
-              <Search size={16} className="text-text-secondary mr-2" />
-              <input
-                ref={inputRef}
-                type="text"
-                className="flex-1 bg-transparent border-none outline-none text-sm text-text-primary placeholder:text-text-disabled"
-                placeholder="Search conversations..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={handleKeyDown}
-              />
-              <button
-                onClick={handleNewChat}
-                className="p-1.5 rounded-md bg-primary/80 hover:bg-primary text-white transition-colors mr-2"
-                title="New Chat"
-              >
-                <Plus size={14} />
-              </button>
-              <div className="text-[10px] text-zinc-500 bg-white/5 px-2 py-0.5 rounded">ESC to close</div>
-            </div>
+            {/* Header - Search Bar or Selection Bar */}
+            {isSelectMode ? (
+              <div className="flex items-center px-3 py-2.5 border-b border-white/5 bg-primary/10">
+                <button
+                  onClick={clearSelection}
+                  className="p-1 rounded hover:bg-white/10 text-zinc-400 hover:text-white transition-colors mr-2"
+                  title="Clear selection"
+                >
+                  <X size={16} />
+                </button>
+                <span className="text-sm text-zinc-200 flex-1">
+                  {selectedThreadIds.size} selected
+                </span>
+                <button
+                  onClick={() => setSelectedThreadIds(new Set(threadsWithMessages.map(t => t.id)))}
+                  className="text-xs text-zinc-400 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-colors mr-2"
+                >
+                  Select all
+                </button>
+                <button
+                  onClick={deleteSelected}
+                  disabled={isDeleting}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-danger/80 hover:bg-danger text-white text-xs font-medium transition-colors disabled:opacity-50"
+                >
+                  {isDeleting ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <Trash2 size={12} />
+                  )}
+                  Delete
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center px-3 py-3 border-b border-white/5 bg-white/[0.02]">
+                <Search size={16} className="text-text-secondary mr-2" />
+                <input
+                  ref={inputRef}
+                  type="text"
+                  className="flex-1 bg-transparent border-none outline-none text-sm text-text-primary placeholder:text-text-disabled"
+                  placeholder="Search conversations..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                />
+                <button
+                  onClick={handleNewChat}
+                  className="p-1.5 rounded-md bg-primary/80 hover:bg-primary text-white transition-colors mr-2"
+                  title="New Chat"
+                >
+                  <Plus size={14} />
+                </button>
+                <div className="text-[10px] text-zinc-500 bg-white/5 px-2 py-0.5 rounded">ESC to close</div>
+              </div>
+            )}
 
             {/* Thread List */}
             <div className="max-h-[350px] overflow-y-auto py-1 custom-scrollbar" ref={listRef}>
@@ -257,19 +370,25 @@ export const ThreadHistory: React.FC<ThreadHistoryProps> = ({ isOpen, onClose })
                   <ThreadItem
                     key={thread.id}
                     thread={thread}
-                    isSelected={index === selectedIndex}
+                    isHighlighted={index === selectedIndex}
                     isActive={thread.id === currentThreadId}
+                    isChecked={selectedThreadIds.has(thread.id)}
+                    isSelectMode={isSelectMode}
                     onSelect={() => handleSelectThread(thread.id)}
                     onDelete={(e) => handleDeleteClick(e, thread)}
                     onMouseEnter={() => setSelectedIndex(index)}
+                    onToggleCheck={(e) => toggleThreadSelection(thread.id, e)}
                   />
                 ))
               )}
             </div>
 
             {/* Footer */}
-            <div className="px-3 py-1.5 bg-white/[0.02] border-t border-white/5 text-[10px] text-zinc-400 flex justify-between">
-              <span>Thread History</span>
+            <div className="px-3 py-1.5 bg-white/[0.02] border-t border-white/5 text-[10px] text-zinc-500 flex justify-between">
+              <div className="flex items-center gap-3">
+                <span>Thread History</span>
+                <span className="opacity-60">Space to select • Ctrl+A select all</span>
+              </div>
               <span>{threadsWithMessages.length} conversations</span>
             </div>
           </motion.div>

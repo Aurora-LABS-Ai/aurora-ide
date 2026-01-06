@@ -1,0 +1,92 @@
+{
+    "name": "Midnight Matte",
+    "author": "GLM",
+    "version": "1.0.0",
+    "type": "dark",
+    "colors": {
+        "editor": {
+            "background": "#18181b",
+            "foreground": "#e4e4e7",
+            "lineNumbers": "#3f3f46",
+            "lineNumbersActive": "#71717a",
+            "selection": "#6366f122",
+            "cursor": "#818cf8",
+            "cursorLine": "#1f1f23"
+        },
+        "sidebar": {
+            "background": "#09090b",
+            "foreground": "#a1a1aa",
+            "border": "#18181b",
+            "itemHover": "#ffffff08",
+            "itemActive": "#818cf814",
+            "itemSelected": "#818cf820",
+            "sectionHeader": "#52525b"
+        },
+        "chat": {
+            "background": "#09090b",
+            "inputBackground": "#09090b",
+            "inputBorder": "#27272a",
+            "userMessage": "#18181b",
+            "assistantMessage": "#09090b",
+            "surface": "#18181b",
+            "surfaceBorder": "#27272a",
+            "surfaceMuted": "#121214",
+            "usageLow": "#34d399",
+            "usageMedium": "#facc15",
+            "usageHigh": "#fb7185"
+        },
+        "terminal": {
+            "background": "#18181b",
+            "foreground": "#e4e4e7"
+        },
+        "statusBar": {
+            "background": "#09090b",
+            "foreground": "#a1a1aa",
+            "border": "#18181b"
+        },
+        "titleBar": {
+            "background": "#09090b",
+            "foreground": "#a1a1aa",
+            "border": "#18181b"
+        },
+        "common": {
+            "primary": "#818cf8",
+            "secondary": "#52525b",
+            "success": "#34d399",
+            "warning": "#facc15",
+            "error": "#fb7185",
+            "info": "#60a5fa",
+            "border": "#27272a"
+        }
+    },
+    "tokenColors": [
+        {
+            "scope": ["comment", "punctuation.definition.comment"],
+            "settings": { "foreground": "#52525b", "fontStyle": "italic" }
+        },
+        {
+            "scope": ["variable", "string constant.other.placeholder"],
+            "settings": { "foreground": "#f4f4f5" }
+        },
+        {
+            "scope": ["keyword", "storage.type", "storage.modifier"],
+            "settings": { "foreground": "#a78bfa" }
+        },
+        {
+            "scope": ["constant.numeric", "constant.language", "constant.character", "constant.other"],
+            "settings": { "foreground": "#fbbf24" }
+        },
+        {
+            "scope": ["string", "string punctuation.section.embedded source"],
+            "settings": { "foreground": "#34d399" }
+        },
+        {
+            "scope": "entity.name.function",
+            "settings": { "foreground": "#818cf8" }
+        },
+        {
+            "scope": "entity.name.tag",
+            "settings": { "foreground": "#fb7185" }
+        }
+    ]
+}

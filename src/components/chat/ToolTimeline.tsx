@@ -321,13 +321,43 @@ interface CodeViewProps {
   fileName?: string;
 }
 
+/**
+ * Unescape JSON string escapes to show actual content
+ * Converts \n → newline, \" → ", \\ → \, etc.
+ */
+const unescapeContent = (str: string): string => {
+  if (!str) return str;
+  try {
+    // Try to parse as JSON string to unescape
+    // Wrap in quotes if not already a valid JSON string
+    if (!str.startsWith('"')) {
+      return str
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '\r')
+        .replace(/\\t/g, '\t')
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, '\\');
+    }
+    return JSON.parse(str);
+  } catch {
+    // Manual unescape if JSON parse fails
+    return str
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '\r')
+      .replace(/\\t/g, '\t')
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, '\\');
+  }
+};
+
 const CodeView: React.FC<CodeViewProps> = ({
   data,
   error,
   isStreaming,
   fileName
 }) => {
-  const contentRef = useRef<HTMLPreElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [isExpanded, setIsExpanded] = useState(false);
 
   useEffect(() => {
     if (isStreaming && contentRef.current) {
@@ -347,32 +377,75 @@ const CodeView: React.FC<CodeViewProps> = ({
 
   if (!data && data !== 0 && data !== false) return null;
 
-  // Simple Highlighting
-  const highlightCode = (code: string, _ext: string) => {
-    let highlighted = code;
-    highlighted = highlighted.replace(/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/g, '<span class="text-emerald-300">$1</span>');
-    highlighted = highlighted.replace(/(\/{2,}.*$)/gm, '<span class="text-zinc-500 italic">$1</span>');
-    return highlighted;
-  };
-
-  const isJson = typeof data !== 'string';
-  const content = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+  const rawContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+  
+  // Unescape the content to show actual newlines, quotes, etc.
+  const content = unescapeContent(rawContent);
+  const lines = content.split('\n');
+  const isLongContent = lines.length > 8;
+  const displayLines = isExpanded ? lines : lines.slice(0, 8);
+  
+  // Get file extension for styling
+  const ext = fileName?.split('.').pop()?.toLowerCase() || '';
+  const isCode = ['ts', 'tsx', 'js', 'jsx', 'py', 'rs', 'go', 'css', 'scss', 'html', 'json', 'md'].includes(ext);
 
   return (
     <div className="relative mt-1 group">
-      <pre
+      {/* File header bar */}
+      {fileName && (
+        <div className="flex items-center gap-2 px-2 py-1 bg-black/30 rounded-t border-b border-white/5">
+          <img
+            src={getIconUrl(getIconName(fileName, false))}
+            alt=""
+            className="w-3 h-3 flex-shrink-0 opacity-70"
+          />
+          <span className="text-[9px] text-text-secondary font-mono">{fileName}</span>
+          <span className="text-[8px] text-text-disabled ml-auto">{lines.length} lines</span>
+        </div>
+      )}
+      
+      <div 
         ref={contentRef}
-        style={{ maxHeight: '120px' }}
-        className="font-mono text-[10px] leading-relaxed p-2 text-text-secondary bg-black/20 rounded-md overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-white/10 hover:scrollbar-thumb-white/20 scrollbar-track-transparent"
-      >
-        {isJson ? (
-          <code>{content}</code>
-        ) : fileName ? (
-          <code dangerouslySetInnerHTML={{ __html: highlightCode(content, fileName.split('.').pop()?.toLowerCase() || '') }} />
-        ) : (
-          <code>{content}</code>
+        style={{ maxHeight: isExpanded ? '300px' : '160px' }}
+        className={cn(
+          "font-mono text-[10px] leading-[1.6] bg-black/20 overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-white/10 hover:scrollbar-thumb-white/20 scrollbar-track-transparent",
+          fileName ? "rounded-b" : "rounded"
         )}
-      </pre>
+      >
+        <table className="w-full border-collapse">
+          <tbody>
+            {displayLines.map((line, idx) => (
+              <tr key={idx} className="hover:bg-white/5">
+                {/* Line number */}
+                <td className="text-[9px] text-text-disabled/50 text-right pr-3 pl-2 py-0 select-none w-8 align-top border-r border-white/5">
+                  {idx + 1}
+                </td>
+                {/* Code content */}
+                <td className="pl-3 pr-2 py-0">
+                  <pre className="whitespace-pre-wrap break-all">
+                    <code className={cn(
+                      "text-text-secondary",
+                      isCode && "text-text-primary"
+                    )}>
+                      {line || ' '}
+                    </code>
+                  </pre>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      
+      {/* Expand/Collapse button */}
+      {isLongContent && (
+        <button
+          onClick={(e) => { e.stopPropagation(); setIsExpanded(!isExpanded); }}
+          className="w-full text-center text-[9px] text-text-disabled hover:text-text-primary py-1 bg-black/20 rounded-b border-t border-white/5"
+        >
+          {isExpanded ? 'Show Less' : `Show ${lines.length - 8} More Lines`}
+        </button>
+      )}
     </div>
   );
 };
@@ -439,7 +512,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
   };
 
   // Data processing hook
-  const { displayData, simpleMessage, isFileList, fileList, isMultiFileResult, multiFileResults, isAuroraSearchResult, auroraSearchResults } = useMemo(() => {
+  const { displayData, simpleMessage, isFileList, fileList, isMultiFileResult, multiFileResults, isAuroraSearchResult, auroraSearchResults, searchReplaceData, linesAdded, linesRemoved } = useMemo(() => {
     let raw = null;
     let msg = null;
     let isList = false;
@@ -453,9 +526,16 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
     let isFileChangePending = false;
 
     // file_create, file_write are FILE MODIFY tools so they should show parsed content
+    let searchReplaceData: { oldString?: string; newString?: string } | null = null;
 
-
-    if (isFileModifyTool || tool.name === 'file_read') { // Added file_read here to show content
+    if (tool.name === 'search_replace') {
+      // Special handling for search_replace - show old_string and new_string
+      const oldStr = tool.args?.old_string as string | undefined;
+      const newStr = tool.args?.new_string as string | undefined;
+      if (oldStr || newStr) {
+        searchReplaceData = { oldString: oldStr, newString: newStr };
+      }
+    } else if (isFileModifyTool || tool.name === 'file_read') { // Added file_read here to show content
       const contentField = tool.name === 'file_patch' ? tool.args?.newContent : tool.args?.content;
       if (contentField) raw = contentField;
       else if (tool.rawArgs) {
@@ -471,7 +551,9 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
           if (parsed.content) raw = parsed.content;
         } catch { raw = tool.result; }
       }
-    } else if (tool.result) {
+    }
+    
+    if (tool.result) {
       try {
         const parsed = JSON.parse(tool.result);
         if (tool.name === 'search_replace') {
@@ -480,7 +562,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
         }
         if (parsed.pending) {
           isFileChangePending = true;
-          msg = parsed.message || 'Approval Required';
+          // Don't show "Pending approval" - tools auto-approve
         } else if (tool.name === 'shell_execute') {
           const cmd = parsed.command || tool.args?.command || 'cmd';
           if (parsed.success) {
@@ -511,14 +593,28 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
         } else if (parsed.content) {
           raw = parsed.content;
         } else if (parsed.message) {
-          msg = parsed.message;
+          // Clean up messages - remove long paths, keep it short
+          const rawMsg = parsed.message as string;
+          if (tool.name === 'search_replace') {
+            const match = rawMsg.match(/Replaced (\d+) occurrence/);
+            msg = match ? `Replaced ${match[1]}` : 'Done';
+          } else if (rawMsg.includes(':\\') || rawMsg.includes(':/') || rawMsg.length > 50) {
+            // Message contains path or is too long - simplify it
+            if (rawMsg.toLowerCase().includes('created')) msg = 'Created';
+            else if (rawMsg.toLowerCase().includes('deleted')) msg = 'Deleted';
+            else if (rawMsg.toLowerCase().includes('written') || rawMsg.toLowerCase().includes('wrote')) msg = 'Written';
+            else if (rawMsg.toLowerCase().includes('updated')) msg = 'Updated';
+            else msg = 'Done';
+          } else {
+            msg = rawMsg;
+          }
         } else if (parsed.success) {
           msg = "Done";
         }
       } catch { raw = tool.result; }
     }
 
-    return { displayData: raw, simpleMessage: msg, isFileList: isList, fileList: listData, isMultiFileResult: isMultiFile, multiFileResults: multiFileData, isPendingFileChange: isFileChangePending, isAuroraSearchResult: isAuroraSearch, auroraSearchResults: auroraResults, linesAdded: linesAddedCount, linesRemoved: linesRemovedCount };
+    return { displayData: raw, simpleMessage: msg, isFileList: isList, fileList: listData, isMultiFileResult: isMultiFile, multiFileResults: multiFileData, isPendingFileChange: isFileChangePending, isAuroraSearchResult: isAuroraSearch, auroraSearchResults: auroraResults, linesAdded: linesAddedCount, linesRemoved: linesRemovedCount, searchReplaceData };
   }, [tool]);
 
   return (
@@ -580,9 +676,21 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
               </span>
             )}
 
-            {/* Status Message */}
-            <span className="text-[10px] text-text-disabled truncate opacity-70 group-hover/header:opacity-100 transition-opacity">
-              {simpleMessage || (isError ? 'Failed' : (isRunning ? 'Running...' : ''))}
+            {/* Status Message + Line Diff Stats */}
+            <span className="text-[10px] text-text-disabled truncate opacity-70 group-hover/header:opacity-100 transition-opacity flex items-center gap-1.5">
+              {/* Line diff stats for search_replace */}
+              {(linesAdded !== null || linesRemoved !== null) && (
+                <span className="flex items-center gap-1 font-mono">
+                  {linesAdded !== null && linesAdded > 0 && (
+                    <span className="text-emerald-400">+{linesAdded}</span>
+                  )}
+                  {linesRemoved !== null && linesRemoved > 0 && (
+                    <span className="text-red-400">-{linesRemoved}</span>
+                  )}
+                </span>
+              )}
+              {/* Regular status message */}
+              {!(linesAdded || linesRemoved) && (simpleMessage || (isError ? 'Failed' : (isRunning ? 'Running...' : '')))}
             </span>
           </button>
         </div>
@@ -595,16 +703,56 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
         >
           <div className="pt-2 pl-1 border-l border-white/5 ml-1">
             {/* Arguments List - Minimal */}
-            {Object.keys(tool.args || {}).filter(k => !['content', 'path', 'raw', 'newContent'].includes(k)).length > 0 && (
+            {Object.keys(tool.args || {}).filter(k => !['content', 'path', 'raw', 'newContent', 'todos'].includes(k)).length > 0 && (
               <div className="flex flex-wrap gap-1 mb-2">
                 {Object.entries(tool.args || {})
-                  .filter(([k]) => !['content', 'path', 'raw', 'newContent'].includes(k))
-                  .map(([k, v]) => (
-                    <span key={k} className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 text-text-secondary border border-white/5">
-                      <span className="opacity-60">{k}:</span> {String(v).substring(0, 20)}
-                    </span>
-                  ))
+                  .filter(([k]) => !['content', 'path', 'raw', 'newContent', 'todos'].includes(k))
+                  .map(([k, v]) => {
+                    // Format value properly - handle objects/arrays
+                    let displayValue: string;
+                    if (v === null || v === undefined) {
+                      displayValue = 'null';
+                    } else if (typeof v === 'object') {
+                      displayValue = Array.isArray(v) ? `[${v.length} items]` : '{...}';
+                    } else {
+                      displayValue = String(v).substring(0, 30);
+                    }
+                    return (
+                      <span key={k} className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 text-text-secondary border border-white/5">
+                        <span className="opacity-60">{k}:</span> {displayValue}
+                      </span>
+                    );
+                  })
                 }
+              </div>
+            )}
+            
+            {/* Todo List Display - Special handling for todo_write */}
+            {tool.name === 'todo_write' && tool.args?.todos && Array.isArray(tool.args.todos) && (
+              <div className="mb-2 space-y-1">
+                {(tool.args.todos as Array<{id?: string; content?: string; status?: string}>).map((todo, idx) => (
+                  <div key={todo.id || idx} className="flex items-center gap-2 text-[10px] px-2 py-1 rounded bg-white/5 border border-white/5">
+                    <span className={cn(
+                      "w-1.5 h-1.5 rounded-full flex-shrink-0",
+                      todo.status === 'completed' ? "bg-emerald-400" :
+                      todo.status === 'in_progress' ? "bg-blue-400" :
+                      todo.status === 'cancelled' ? "bg-red-400" :
+                      "bg-zinc-400"
+                    )} />
+                    <span className="text-text-secondary truncate">{todo.content || 'Untitled task'}</span>
+                    {todo.status && (
+                      <span className={cn(
+                        "ml-auto text-[9px] px-1 py-0.5 rounded flex-shrink-0",
+                        todo.status === 'completed' ? "bg-emerald-500/20 text-emerald-400" :
+                        todo.status === 'in_progress' ? "bg-blue-500/20 text-blue-400" :
+                        todo.status === 'cancelled' ? "bg-red-500/20 text-red-400" :
+                        "bg-zinc-500/20 text-zinc-400"
+                      )}>
+                        {todo.status}
+                      </span>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
 
@@ -612,7 +760,39 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
             {isMultiFileResult && multiFileResults.length > 0 && <MultiFileResultsView files={multiFileResults} />}
             {isAuroraSearchResult && auroraSearchResults.length > 0 && <AuroraSearchResultsView results={auroraSearchResults} />}
 
-            {(displayData || tool.error) && !isMultiFileResult && (
+            {/* Search/Replace Diff View */}
+            {searchReplaceData && (searchReplaceData.oldString || searchReplaceData.newString) && (
+              <div className="space-y-2">
+                {/* Old String (what was replaced) */}
+                {searchReplaceData.oldString && (
+                  <div>
+                    <div className="flex items-center gap-2 px-2 py-1 bg-red-500/10 rounded-t border-b border-red-500/20">
+                      <span className="text-[9px] font-medium text-red-400">OLD</span>
+                      <span className="text-[8px] text-red-400/60">removed</span>
+                    </div>
+                    <CodeView
+                      data={searchReplaceData.oldString}
+                      fileName={fileName}
+                    />
+                  </div>
+                )}
+                {/* New String (replacement) */}
+                {searchReplaceData.newString && (
+                  <div>
+                    <div className="flex items-center gap-2 px-2 py-1 bg-emerald-500/10 rounded-t border-b border-emerald-500/20">
+                      <span className="text-[9px] font-medium text-emerald-400">NEW</span>
+                      <span className="text-[8px] text-emerald-400/60">added</span>
+                    </div>
+                    <CodeView
+                      data={searchReplaceData.newString}
+                      fileName={fileName}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {(displayData || tool.error) && !isMultiFileResult && !searchReplaceData && (
               <CodeView
                 data={displayData}
                 error={tool.error}

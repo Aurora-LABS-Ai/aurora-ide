@@ -302,3 +302,32 @@ export const writeFileContent = async (path: string, content: string): Promise<v
 
 // Re-export batch file operations for performance-critical code
 export { readFilesBatch, preloadFiles, getCacheStats } from './file-cache';
+
+// =============================================================================
+// CLI Installation Commands
+// =============================================================================
+
+/**
+ * Install the Aurora CLI command to system PATH
+ * This enables using `aurora .` from any terminal
+ * On Windows: Creates aurora.cmd and adds to user PATH
+ * On Unix: Creates symlink in ~/.local/bin
+ */
+export const installAuroraCli = async (): Promise<string> => {
+  if (!isTauri()) {
+    console.warn('installAuroraCli: Not running in Tauri');
+    return 'Not running in Tauri';
+  }
+  return invoke<string>('install_aurora_cli');
+};
+
+/**
+ * Uninstall the Aurora CLI command from system PATH
+ */
+export const uninstallAuroraCli = async (): Promise<string> => {
+  if (!isTauri()) {
+    console.warn('uninstallAuroraCli: Not running in Tauri');
+    return 'Not running in Tauri';
+  }
+  return invoke<string>('uninstall_aurora_cli');
+};

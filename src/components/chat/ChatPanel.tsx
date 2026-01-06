@@ -35,11 +35,10 @@ import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { useContextStore } from "../../store/useContextStore";
 import { useAuditStore } from "../../store/useAuditStore";
 import { getAgentService, type ProviderConfig } from "../../services";
-import { estimateTokens, estimateToolsTokens } from "../../services/token-estimator";
+import { tokenService } from "../../services/token-service";
 import { toolRegistry } from "../../tools";
 import { registerAllExecutors } from "../../tools";
 import { buildQueryContext, getIDEContext, getIDEContextLight } from "../../services/context-builder";
-import { convertThreadToApiHistory } from "../../services/thread-converter";
 import { chatSyncBroadcast } from "../../hooks/useRustChatSync";
 import { useTaskStore } from "../../store/useTaskStore";
 import { useMcpStore } from "../../store/useMcpStore";
@@ -162,17 +161,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
     [updateMessageInThread],
   );
 
-  // Debounced timeline update to prevent state update storm during streaming
-  // This batches rapid token updates into periodic UI refreshes
-  const pendingTimelineUpdate = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Reduced from 250ms to 50ms for smoother real-time streaming feel
-  const TIMELINE_UPDATE_DEBOUNCE_MS = 50;
+  // RAF-based timeline update for smooth 60fps streaming
+  // Uses requestAnimationFrame instead of setTimeout for smooth visual updates
+  const pendingRAF = useRef<number | null>(null);
 
   // Flush pending timeline updates immediately (for important state changes)
   const flushTimelineUpdate = useCallback(() => {
-    if (pendingTimelineUpdate.current) {
-      clearTimeout(pendingTimelineUpdate.current);
-      pendingTimelineUpdate.current = null;
+    if (pendingRAF.current) {
+      cancelAnimationFrame(pendingRAF.current);
+      pendingRAF.current = null;
     }
     if (currentMessageIdRef.current) {
       updateMessageInThread(currentMessageIdRef.current, {
@@ -181,8 +178,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
     }
   }, [updateMessageInThread]);
 
-  // Helper to update timeline event
-  // @param immediate - if true, bypasses debounce for important updates (tool status changes)
+  // Helper to update timeline event with RAF batching for smooth streaming
+  // @param immediate - if true, bypasses RAF for important updates (tool status changes)
   const updateTimelineEvent = useCallback(
     (eventId: string, updates: Partial<TimelineEvent>, immediate = false) => {
       // Always update the ref immediately (this is synchronous, no re-render)
@@ -196,18 +193,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
         return;
       }
 
-      // Debounce the actual state update to batch rapid token callbacks
-      if (pendingTimelineUpdate.current) {
-        clearTimeout(pendingTimelineUpdate.current);
+      // Use RAF for smooth 60fps streaming - batches within single frame
+      // This is much smoother than setTimeout-based debouncing
+      if (!pendingRAF.current) {
+        pendingRAF.current = requestAnimationFrame(() => {
+          pendingRAF.current = null;
+          if (currentMessageIdRef.current) {
+            updateMessageInThread(currentMessageIdRef.current, {
+              timeline: [...timelineRef.current],
+            });
+          }
+        });
       }
-
-      pendingTimelineUpdate.current = setTimeout(() => {
-        if (currentMessageIdRef.current) {
-          updateMessageInThread(currentMessageIdRef.current, {
-            timeline: [...timelineRef.current],
-          });
-        }
-      }, TIMELINE_UPDATE_DEBOUNCE_MS);
     },
     [updateMessageInThread, flushTimelineUpdate],
   );
@@ -225,14 +222,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       // Reset timeline
       timelineRef.current = [];
 
-      // Ensure we have a thread
+      // Ensure we have a VALID thread (both ID and thread object must exist)
       let threadId = currentThreadId;
       let isNewThread = false;
-      if (!threadId) {
+
+      // Check if currentThreadId is set but thread doesn't exist in memory
+      // This happens when currentThreadId is persisted but threads object is not
+      const threadExists = threadId && threads[threadId];
+
+      if (!threadId || !threadExists) {
         // Clear tasks when creating a new thread - tasks are per-thread
         useTaskStore.getState().clearTasks();
         threadId = createThread();
         isNewThread = true;
+        console.log('[ChatPanel] Created new thread because:', !currentThreadId ? 'no currentThreadId' : 'thread not in memory');
       }
 
       // IMPORTANT: Add user message IMMEDIATELY before any async operations
@@ -322,27 +325,38 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
       // CRITICAL: Sync thread history to agent for conversation continuity
       // This enables the AI to remember previous messages when resuming a thread
-      // We sync BEFORE adding the current user message (which happens in addMessageToThread above)
-      // IMPORTANT: Get fresh thread state from store to avoid stale closures
-      const threadStore = useThreadStore.getState();
-      const freshThread = threadId ? threadStore.threads[threadId] : null;
-      
-      if (freshThread?.messages && freshThread.messages.length > 0) {
-        // Exclude the message we just added (it's the last one with our current timestamp)
-        const previousMessages = freshThread.messages.filter(
-          m => m.id !== userMessage.id
-        );
-        if (previousMessages.length > 0) {
-          const apiHistory = convertThreadToApiHistory(previousMessages);
-          agent.setHistory(apiHistory);
-          console.log(`[ChatPanel] Thread history synced: ${previousMessages.length} UI messages -> ${apiHistory.length} API messages`);
-          // Debug: Log first few messages to verify content
-          if (apiHistory.length > 0) {
-            console.log('[ChatPanel] First API message:', { role: apiHistory[0].role, contentPreview: String(apiHistory[0].content || '').slice(0, 100) });
+      // Skip for new threads - they have no history yet
+      if (threadId && !isNewThread) {
+        // Get history from local store first (faster and always available)
+        const threadStore = useThreadStore.getState();
+        const freshThread = threadStore.threads[threadId];
+
+        if (freshThread?.messages && freshThread.messages.length > 0) {
+          // Exclude the message we just added
+          const previousMessages = freshThread.messages.filter(m => m.id !== userMessage.id);
+          if (previousMessages.length > 0) {
+            // Convert to API format
+            const apiHistory = previousMessages.map(m => {
+              if (m.sender === 'user') {
+                return { role: 'user' as const, content: m.content };
+              } else {
+                // For assistant messages, extract content from timeline if available
+                let content = m.content || '';
+                if (m.timeline && Array.isArray(m.timeline)) {
+                  const contentEvents = m.timeline.filter((e: any) => e.type === 'content');
+                  if (contentEvents.length > 0) {
+                    content = contentEvents.map((e: any) => e.content || '').join('');
+                  }
+                }
+                return { role: 'assistant' as const, content };
+              }
+            });
+            agent.setHistory(apiHistory as any);
+            console.log(`[ChatPanel] Thread history synced: ${apiHistory.length} messages`);
           }
         }
-      } else {
-        console.log(`[ChatPanel] No previous messages to sync (thread: ${threadId}, hasThread: ${!!freshThread})`);
+      } else if (isNewThread) {
+        console.log(`[ChatPanel] New thread - starting fresh conversation`);
       }
 
       // Update context store with provider limits
@@ -360,10 +374,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
       // Estimate FULL request context (system prompt + history + new message + tools)
       // This gives an accurate picture of what's being sent to the LLM
-      const systemPromptTokens = estimateTokens(
-        "Aurora system prompt (~2000 chars)", // Approximate system prompt
-        'text'
-      ) + 500; // Add buffer for system prompt
+      // Using quick estimates for synchronous operation (real tokenizer available via async)
+      const systemPromptTokens = tokenService.quickEstimate(
+        "Aurora system prompt (~2000 chars)" // Approximate system prompt
+      ).tokens + 500; // Add buffer for system prompt
 
       // Simple token estimation for history - just count content
       let historyTokens = 0;
@@ -374,11 +388,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           : (Array.isArray(m.content)
             ? m.content.map(b => 'text' in b ? b.text : '').join('')
             : '');
-        historyTokens += estimateTokens(contentStr || '', 'mixed');
+        historyTokens += tokenService.quickEstimate(contentStr || '').tokens;
       }
 
-      const newMessageTokens = estimateTokens(formattedContext, 'mixed');
-      const toolsTokens = estimateToolsTokens(availableTools);
+      const newMessageTokens = tokenService.quickEstimate(formattedContext).tokens;
+      // Estimate tools tokens from JSON representation
+      const toolsJson = JSON.stringify(availableTools);
+      const toolsTokens = tokenService.quickEstimate(toolsJson).tokens;
 
       const totalEstimatedTokens = systemPromptTokens + historyTokens + newMessageTokens + toolsTokens;
 
@@ -740,11 +756,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
               let responseTokens = 0;
               for (const event of timelineRef.current) {
                 if (event.type === 'content' && event.content) {
-                  responseTokens += estimateTokens(event.content, 'mixed');
+                  responseTokens += tokenService.quickEstimate(event.content).tokens;
                 } else if (event.type === 'thinking' && event.thinking) {
-                  responseTokens += estimateTokens(event.thinking, 'mixed');
+                  responseTokens += tokenService.quickEstimate(event.thinking).tokens;
                 } else if (event.type === 'tool' && event.tool?.result) {
-                  responseTokens += estimateTokens(event.tool.result, 'json');
+                  responseTokens += tokenService.quickEstimate(event.tool.result).tokens;
                 }
               }
               // Add estimated response tokens to context
@@ -812,7 +828,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
         // CRITICAL: Flush any pending timeline updates BEFORE clearing the message ID
         // This ensures all debounced token updates make it to the store
         flushTimelineUpdate();
-        
+
         setLoading(false);
         chatSyncBroadcast.setLoading(false);
         // FIX: Mark streaming as ended - this triggers the final DB save

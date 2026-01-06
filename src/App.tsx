@@ -31,6 +31,7 @@ import { useAutoSave } from "./hooks/useAutoSave";
 import { useTauriDragDrop } from "./hooks/useTauriDragDrop";
 import { useInternalDrag } from "./hooks/useInternalDrag";
 import { useWindowClose } from "./hooks/useWindowClose";
+import { useCliOpen } from "./hooks/useCliOpen";
 import { DragPreview } from "./components/ui/DragPreview";
 import { OnboardingModal } from "./components/modals/OnboardingModal";
 import { QuickOpenModal } from "./components/modals/QuickOpenModal";
@@ -79,6 +80,9 @@ function App() {
 
   // Handle internal drag-drop via mouse events
   useInternalDrag();
+
+  // Handle CLI open requests (aurora . command)
+  useCliOpen();
 
   useEffect(() => {
     // Check if this is the detached chat window based on URL path

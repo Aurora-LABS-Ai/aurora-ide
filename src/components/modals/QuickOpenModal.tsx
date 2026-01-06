@@ -108,12 +108,12 @@ export const QuickOpenModal: React.FC<{ isOpen: boolean; onClose: () => void }> 
             // Read file content from disk
             const content = await readFileContent(path);
             const language = detectLanguage(filename);
-            openFile(path, filename, content, language);
+            openFile(path, filename, content || '', language);
         } catch (error) {
             console.error('Failed to read file:', path, error);
             // Open with empty content if reading fails
             const language = detectLanguage(filename);
-            openFile(path, filename, '', language);
+            openFile(path, filename, '// Failed to load file', language);
         }
 
         onClose();

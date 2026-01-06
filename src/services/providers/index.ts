@@ -194,8 +194,6 @@ export * from './types';
 
 export * from './provider-presets';
 
-export { TokenCounter, tokenCounter } from './token-counter';
-
 export { OpenAIProvider } from './openai-provider';
 
 export { AnthropicProvider } from './anthropic-provider';

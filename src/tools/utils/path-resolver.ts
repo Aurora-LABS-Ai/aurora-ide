@@ -5,6 +5,20 @@
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 
 /**
+ * Strip Windows extended-length path prefix (\\?\)
+ * This prefix is added by Windows path canonicalization but causes issues
+ * with shell commands and some APIs that don't understand it.
+ * 
+ * Example: "\\?\E:\folder" -> "E:\folder"
+ */
+export function stripExtendedPathPrefix(path: string): string {
+  if (path.startsWith('\\\\?\\')) {
+    return path.slice(4);
+  }
+  return path;
+}
+
+/**
  * Get the file/folder name from a path
  */
 export function getBaseName(path: string): string {
@@ -77,14 +91,18 @@ export function requireWorkspace(): string {
  *
  * @param inputPath - The path to resolve (can be relative or absolute)
  * @param rootPath - Optional root path override (defaults to workspace root)
- * @returns The resolved absolute path
+ * @returns The resolved absolute path (always without \\?\ prefix)
  */
 export function resolvePath(inputPath: string | undefined, rootPath?: string): string {
-  const root = rootPath ?? getWorkspaceRootPath();
+  // Get root and strip any \\?\ prefix
+  let root = rootPath ?? getWorkspaceRootPath();
+  if (root) {
+    root = stripExtendedPathPrefix(root);
+  }
 
-  // If no root path available, return input as-is
+  // If no root path available, return input as-is (also stripped)
   if (!root) {
-    return inputPath || '';
+    return inputPath ? stripExtendedPathPrefix(inputPath) : '';
   }
 
   // Handle empty, current directory references
@@ -92,16 +110,19 @@ export function resolvePath(inputPath: string | undefined, rootPath?: string): s
     return root;
   }
 
+  // Strip prefix from input if present
+  const cleanInput = stripExtendedPathPrefix(inputPath);
+
   // If it's already an absolute path, normalize and return
-  if (isAbsolutePath(inputPath)) {
-    return normalizePath(inputPath, root);
+  if (isAbsolutePath(cleanInput)) {
+    return normalizePath(cleanInput, root);
   }
 
   // Join with root path
   const separator = getPathSeparator(root);
 
   // Remove leading ./ or / from the input path
-  const cleanedInput = inputPath.replace(/^\.?[/\\]/, '');
+  const cleanedInput = cleanInput.replace(/^\.?[/\\]/, '');
 
   // Normalize the input path to use the same separator as root
   const normalizedInput = normalizePath(cleanedInput, root);

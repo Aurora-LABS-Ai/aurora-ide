@@ -23,12 +23,13 @@
 import React, { useState } from 'react';
 import { useUiStore } from '../../store/useUiStore';
 import { useSettingsStore, type LLMProvider } from '../../store/useSettingsStore';
-import { X, Server, Layout, Shield, Eye, EyeOff, Plus, Trash2, ChevronDown, Palette, Database, Plug } from 'lucide-react';
+import { X, Server, Layout, Shield, Eye, EyeOff, Plus, Trash2, ChevronDown, Palette, Database, Plug, Terminal, CheckCircle2, AlertCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { ToolSettingsTab } from './ToolSettingsTab';
 import { ThemeSettingsTab } from './ThemeSettingsTab';
 import { SemanticSettingsTab } from './SemanticSettingsTab';
 import { McpSettingsTab } from './McpSettingsTab';
+import { installAuroraCli, uninstallAuroraCli, isTauri } from '../../lib/tauri';
 
 // ============================================
 // ADD PROVIDER FORM
@@ -446,6 +447,46 @@ export const SettingsPanel: React.FC = () => {
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [isAddingProvider, setIsAddingProvider] = useState(false);
+  
+  // CLI installation state
+  const [cliStatus, setCliStatus] = useState<'idle' | 'installing' | 'uninstalling' | 'success' | 'error'>('idle');
+  const [cliMessage, setCliMessage] = useState<string>('');
+
+  const handleInstallCli = async () => {
+    if (!isTauri()) {
+      setCliStatus('error');
+      setCliMessage('CLI installation requires the desktop app');
+      return;
+    }
+    
+    setCliStatus('installing');
+    setCliMessage('Installing Aurora CLI...');
+    
+    try {
+      const result = await installAuroraCli();
+      setCliStatus('success');
+      setCliMessage(result || 'Aurora CLI installed! Restart your terminal to use "aurora ." command.');
+    } catch (error) {
+      setCliStatus('error');
+      setCliMessage(error instanceof Error ? error.message : 'Failed to install CLI');
+    }
+  };
+
+  const handleUninstallCli = async () => {
+    if (!isTauri()) return;
+    
+    setCliStatus('uninstalling');
+    setCliMessage('Uninstalling Aurora CLI...');
+    
+    try {
+      const result = await uninstallAuroraCli();
+      setCliStatus('success');
+      setCliMessage(result || 'Aurora CLI uninstalled successfully.');
+    } catch (error) {
+      setCliStatus('error');
+      setCliMessage(error instanceof Error ? error.message : 'Failed to uninstall CLI');
+    }
+  };
 
   if (!isSettingsOpen) return null;
 
@@ -562,6 +603,83 @@ export const SettingsPanel: React.FC = () => {
             {/* GENERAL TAB */}
             {activeTab === 'general' && (
               <div className="space-y-3">
+                {/* CLI Installation Section */}
+                <div className="p-3 border border-border rounded-lg bg-titlebar">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Terminal className="w-3.5 h-3.5 text-primary" />
+                    <h3 className="text-xs font-medium text-text-primary">Command Line</h3>
+                  </div>
+                  <p className="text-[10px] text-text-secondary mb-3">
+                    Install the <code className="px-1 py-0.5 bg-input rounded text-primary">aurora</code> command to open Aurora from any terminal, like VS Code's <code className="px-1 py-0.5 bg-input rounded">code .</code> command.
+                  </p>
+                  
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleInstallCli}
+                        disabled={cliStatus === 'installing' || cliStatus === 'uninstalling'}
+                        className={clsx(
+                          "flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium rounded transition-colors",
+                          cliStatus === 'installing' || cliStatus === 'uninstalling'
+                            ? "bg-input text-text-disabled cursor-not-allowed"
+                            : "bg-primary text-white hover:bg-primary/80"
+                        )}
+                      >
+                        {cliStatus === 'installing' ? (
+                          <>
+                            <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                            Installing...
+                          </>
+                        ) : (
+                          <>
+                            <Terminal className="w-3 h-3" />
+                            Install CLI
+                          </>
+                        )}
+                      </button>
+                      
+                      <button
+                        onClick={handleUninstallCli}
+                        disabled={cliStatus === 'installing' || cliStatus === 'uninstalling'}
+                        className={clsx(
+                          "flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium rounded transition-colors",
+                          cliStatus === 'installing' || cliStatus === 'uninstalling'
+                            ? "bg-input text-text-disabled cursor-not-allowed"
+                            : "text-text-secondary hover:bg-input hover:text-text-primary border border-border"
+                        )}
+                      >
+                        {cliStatus === 'uninstalling' ? 'Uninstalling...' : 'Uninstall'}
+                      </button>
+                    </div>
+                    
+                    {/* Status message */}
+                    {cliMessage && (
+                      <div className={clsx(
+                        "flex items-start gap-2 p-2 rounded text-[10px]",
+                        cliStatus === 'success' && "bg-success/10 text-success",
+                        cliStatus === 'error' && "bg-danger/10 text-danger",
+                        (cliStatus === 'installing' || cliStatus === 'uninstalling') && "bg-primary/10 text-primary"
+                      )}>
+                        {cliStatus === 'success' && <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" />}
+                        {cliStatus === 'error' && <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />}
+                        <span className="whitespace-pre-wrap">{cliMessage}</span>
+                      </div>
+                    )}
+                    
+                    <div className="mt-1 p-2 bg-input/50 rounded border border-border">
+                      <p className="text-[9px] text-text-disabled font-mono">
+                        Usage examples:
+                      </p>
+                      <div className="mt-1 space-y-0.5 text-[9px] font-mono text-text-secondary">
+                        <p><span className="text-primary">aurora .</span> - Open current folder</p>
+                        <p><span className="text-primary">aurora /path/to/project</span> - Open specific folder</p>
+                        <p><span className="text-primary">aurora file.ts</span> - Open a file</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Editor Settings Section */}
                 <div className="p-3 border border-border rounded-lg bg-titlebar">
                   <h3 className="text-xs font-medium text-text-primary mb-2">Editor</h3>
                   <div className="flex flex-col gap-2">

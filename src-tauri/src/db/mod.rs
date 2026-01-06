@@ -10,7 +10,7 @@ pub use error::DbResult;
 pub use models::{
     EditorState, ExplorerState, WorkspaceState,
     LLMProvider, ToolSetting, AppSettings,
-    ThreadState, CustomTheme,
+    ThreadState, Message, TokenUsage, ContextUsage, ToolCall, CustomTheme,
     SemanticIndex, SemanticIndexStatus, SemanticSettings, SearchMode,
     IndexProgress, SemanticSearchResult,
 };

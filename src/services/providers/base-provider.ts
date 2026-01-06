@@ -4,13 +4,13 @@
  * Implements common functionality:
  * - Request/response lifecycle
  * - Abort handling
- * - Token estimation
+ * - Token estimation (via Rust tiktoken)
  * - Context tracking
  * - Tauri HTTP for CORS bypass
  */
 import { invoke } from "@tauri-apps/api/core";
 
-import { TokenCounter } from "./token-counter";
+import { tokenService } from "../token-service";
 import type { AssistantMessage, ChatRequest, ChatResponse, ContentBlock, IProvider, Message, ProviderConfig, ProviderType, StreamCallbacks, ToolDefinition } from "./types";
 
 // Tauri command types
@@ -31,11 +31,9 @@ interface LlmResponse {
 export abstract class BaseProvider implements IProvider {
   protected _config: ProviderConfig;
   protected abortController: AbortController | null = null;
-  protected tokenCounter: TokenCounter;
 
   constructor(config: ProviderConfig) {
     this._config = config;
-    this.tokenCounter = new TokenCounter();
   }
 
   public get config(): ProviderConfig {
@@ -62,14 +60,38 @@ export abstract class BaseProvider implements IProvider {
   public abstract chat(request: ChatRequest): Promise<ChatResponse>;
 
   // ============================================================
-  // TOKEN COUNTING
+  // TOKEN COUNTING (via Rust tiktoken)
   // ============================================================
   public async countTokens(content: string | ContentBlock[]): Promise<number> {
-    return this.tokenCounter.countTokens(content);
+    // Convert content blocks to string if needed
+    const text = typeof content === 'string' 
+      ? content 
+      : content.map(block => {
+          if (block.type === 'text') return block.text || '';
+          if (block.type === 'thinking') return block.thinking || '';
+          return '';
+        }).join('');
+    
+    const result = await tokenService.countTokens(text, this._config.model);
+    return result.tokens;
   }
 
   public async estimateTokens(messages: Message[], tools?: ToolDefinition[]): Promise<number> {
-    return this.tokenCounter.estimateRequest(messages, tools);
+    // Convert to format expected by token service
+    const chatMessages = messages.map(m => ({
+      role: m.role,
+      content: typeof m.content === 'string' ? m.content : '',
+    }));
+    
+    let total = (await tokenService.countMessagesTokens(chatMessages, this._config.model)).tokens;
+    
+    // Add tool definitions if present
+    if (tools?.length) {
+      const toolsJson = JSON.stringify(tools);
+      total += (await tokenService.countTokens(toolsJson, this._config.model)).tokens;
+    }
+    
+    return total;
   }
 
   // ============================================================

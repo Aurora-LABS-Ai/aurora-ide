@@ -1041,6 +1041,235 @@ const searchReplaceExecutor = async (
 };
 
 // ============================================
+// MULTI SEARCH REPLACE EXECUTOR (Batch replacements in one file)
+// ============================================
+interface ReplacementItem {
+  old_string: string;
+  new_string: string;
+  replace_all?: boolean;
+}
+
+const multiSearchReplaceExecutor = async (
+  args: Record<string, any>,
+  toolCallId?: string,
+): Promise<string> => {
+  if (!isTauri()) {
+    return JSON.stringify({
+      success: false,
+      error: "File operations require desktop app",
+    });
+  }
+
+  const fullPath = resolvePath(args.path);
+  const fileName = fullPath.split(/[/\\]/).pop() || args.path;
+  const replacements = args.replacements as ReplacementItem[];
+
+  console.log("[multi_search_replace] Editing file with batch replacements:", fullPath);
+
+  if (!replacements || !Array.isArray(replacements) || replacements.length === 0) {
+    return JSON.stringify({
+      success: false,
+      error: "replacements must be a non-empty array of {old_string, new_string} objects",
+    });
+  }
+
+  // Validate each replacement
+  for (let i = 0; i < replacements.length; i++) {
+    const rep = replacements[i];
+    if (!rep.old_string) {
+      return JSON.stringify({
+        success: false,
+        error: `Replacement ${i + 1}: old_string is required`,
+      });
+    }
+  }
+
+  try {
+    const originalContent = await readFileContent(fullPath);
+    let newContent = originalContent;
+    let totalReplacements = 0;
+    let totalLinesAdded = 0;
+    let totalLinesRemoved = 0;
+    const replacementDetails: Array<{
+      index: number;
+      found: boolean;
+      occurrences: number;
+      replaced: number;
+    }> = [];
+
+    // Apply each replacement in order
+    for (let i = 0; i < replacements.length; i++) {
+      const rep = replacements[i];
+      const oldString = rep.old_string;
+      const newString = rep.new_string ?? '';
+      const replaceAll = rep.replace_all === true;
+
+      // Check if old_string exists in current content
+      const occurrences = newContent.split(oldString).length - 1;
+
+      if (occurrences === 0) {
+        return JSON.stringify({
+          success: false,
+          error: `Replacement ${i + 1}: Could not find the specified text. Make sure old_string matches EXACTLY (including whitespace, indentation, and newlines).`,
+          path: args.path,
+          fullPath,
+          failedAt: i + 1,
+          replacementsApplied: i,
+          hint: "All changes have been rolled back. Fix the old_string and try again.",
+        });
+      }
+
+      if (occurrences > 1 && !replaceAll) {
+        return JSON.stringify({
+          success: false,
+          error: `Replacement ${i + 1}: Found ${occurrences} occurrences of the text. Either include more context to make it unique, or set replace_all=true for this replacement.`,
+          path: args.path,
+          fullPath,
+          failedAt: i + 1,
+          occurrences,
+          replacementsApplied: i,
+          hint: "All changes have been rolled back. Fix the old_string to be unique or use replace_all.",
+        });
+      }
+
+      // Calculate lines added/removed
+      const oldLines = oldString.split('\n').length;
+      const newLines = newString.split('\n').length;
+      const replacedCount = replaceAll ? occurrences : 1;
+      totalLinesRemoved += oldLines * replacedCount;
+      totalLinesAdded += newLines * replacedCount;
+      totalReplacements += replacedCount;
+
+      // Apply the replacement
+      if (replaceAll) {
+        newContent = newContent.split(oldString).join(newString);
+      } else {
+        newContent = newContent.replace(oldString, newString);
+      }
+
+      replacementDetails.push({
+        index: i + 1,
+        found: true,
+        occurrences,
+        replaced: replacedCount,
+      });
+    }
+
+    // PRE-SAVE VALIDATION: Check syntax before writing
+    const validationError = validateBeforeWrite(newContent, fileName);
+    if (validationError) {
+      console.warn("[multi_search_replace] Syntax validation failed:", fileName);
+      return JSON.stringify({
+        success: false,
+        error: validationError,
+        validation_failed: true,
+        path: args.path,
+        fullPath,
+        hint: "All changes have been rolled back due to syntax errors.",
+      });
+    }
+
+    // CURSOR-STYLE: Write to disk immediately
+    await writeFileContent(fullPath, newContent);
+    triggerRefresh();
+
+    // Check if auto-accept is enabled
+    const autoAccept = useSettingsStore.getState().autoAcceptChanges;
+
+    if (autoAccept) {
+      // Auto-accept mode: File is already written, just update editor if open
+      import('../../store/useEditorStore').then(({ useEditorStore }) => {
+        const tab = useEditorStore.getState().tabs.find(t => t.path === fullPath);
+        if (tab) {
+          useEditorStore.getState().reloadTabContent(tab.id, newContent);
+        }
+      }).catch(() => { });
+
+      operationLog.logOperation(FsOperationType.Edit, args.path, {
+        fullPath,
+        pending: false,
+        autoAccepted: true,
+        replacements: totalReplacements,
+        batchSize: replacements.length,
+        linesAdded: totalLinesAdded,
+        linesRemoved: totalLinesRemoved,
+      });
+
+      return JSON.stringify({
+        success: true,
+        pending: false,
+        message: `Applied ${replacements.length} replacement(s) with ${totalReplacements} total change(s) in ${args.path}`,
+        path: args.path,
+        fullPath,
+        replacementsRequested: replacements.length,
+        totalReplacements,
+        linesAdded: totalLinesAdded,
+        linesRemoved: totalLinesRemoved,
+      });
+    }
+
+    // Import pending changes store (only when NOT auto-accept)
+    const { usePendingChangesStore } = await import('../../store/usePendingChangesStore');
+
+    // Track the change for potential rollback
+    const changeId = usePendingChangesStore.getState().addChange({
+      filePath: fullPath,
+      fileName,
+      content: newContent,
+      originalContent, // Store original for revert on reject
+      operation: 'patch',
+      toolCallId: toolCallId || '',
+    });
+
+    // Automatically open the file in the editor so the user sees the change
+    import('../../store/useEditorStore').then(({ useEditorStore }) => {
+      const ext = fileName.split('.').pop()?.toLowerCase() || '';
+      const langMap: Record<string, string> = {
+        'ts': 'typescript', 'tsx': 'typescript',
+        'js': 'javascript', 'jsx': 'javascript',
+        'json': 'json', 'css': 'css', 'scss': 'scss',
+        'html': 'html', 'md': 'markdown',
+        'rs': 'rust', 'toml': 'toml',
+        'yaml': 'yaml', 'yml': 'yaml',
+        'py': 'python', 'go': 'go',
+      };
+      const language = langMap[ext] || 'plaintext';
+      useEditorStore.getState().openFile(fullPath, fileName, newContent, language);
+    });
+
+    // Log the edit operation
+    operationLog.logOperation(FsOperationType.Edit, args.path, {
+      fullPath,
+      pending: true,
+      changeId,
+      replacements: totalReplacements,
+      batchSize: replacements.length,
+      linesAdded: totalLinesAdded,
+      linesRemoved: totalLinesRemoved,
+    });
+
+    return JSON.stringify({
+      success: true,
+      pending: true,
+      changeId,
+      message: `Applied ${replacements.length} replacement(s) with ${totalReplacements} total change(s) in ${args.path} (pending approval)`,
+      path: args.path,
+      fullPath,
+      replacementsRequested: replacements.length,
+      totalReplacements,
+      linesAdded: totalLinesAdded,
+      linesRemoved: totalLinesRemoved,
+    });
+  } catch (error) {
+    console.error("[multi_search_replace] Error:", error);
+    return JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+// ============================================
 // REGISTER ENHANCED FILE EXECUTORS
 // ============================================
 export const registerEnhancedFileExecutors = (): void => {
@@ -1050,6 +1279,7 @@ export const registerEnhancedFileExecutors = (): void => {
   toolRegistry.registerExecutor("file_read", fileReadExecutor);
   toolRegistry.registerExecutor("file_write", fileWriteExecutor);
   toolRegistry.registerExecutor("search_replace", searchReplaceExecutor);
+  toolRegistry.registerExecutor("multi_search_replace", multiSearchReplaceExecutor);
   toolRegistry.registerExecutor("file_delete", fileDeleteExecutor);
   toolRegistry.registerExecutor("grep", grepExecutor);
   toolRegistry.registerExecutor("multi_file_read", multiFileReadExecutor);

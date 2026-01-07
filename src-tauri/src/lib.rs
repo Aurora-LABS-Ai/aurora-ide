@@ -3,6 +3,7 @@ use tauri::{Manager, Emitter};
 
 mod commands;
 pub mod cli;
+mod context;
 mod db;
 mod file_cache;
 mod mcp;
@@ -184,6 +185,24 @@ pub fn run_with_args(cli_args: CliArgs) {
             // CLI commands (install/uninstall aurora command)
             commands::install_aurora_cli,
             commands::uninstall_aurora_cli,
+            // Context Engine commands (turn-based context management)
+            context::commands::context_add_user_message,
+            context::commands::context_add_assistant_response,
+            context::commands::context_add_tool_call,
+            context::commands::context_add_tool_result,
+            context::commands::context_finalize_turn,
+            context::commands::context_build_messages,
+            context::commands::context_build_request_messages,
+            context::commands::context_get_state,
+            context::commands::context_needs_summarization,
+            context::commands::context_get_turn_to_summarize,
+            context::commands::context_set_turn_summary,
+            context::commands::context_get_summarization_prompt,
+            context::commands::context_clear_thread,
+            context::commands::context_init_from_thread,
+            context::commands::context_get_turns,
+            context::commands::context_update_settings,
+            context::commands::context_estimate_request_tokens,
         ])
         .setup(move |app| {
             #[cfg(debug_assertions)]

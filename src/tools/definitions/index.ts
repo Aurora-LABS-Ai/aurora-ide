@@ -2,8 +2,8 @@
  * Tool Definitions Index
  * Central export for all tool definitions
  * 
- * TOOL COUNT: 17 tools total
- * - File: 7 (create, read, write, search_replace, delete, grep, multi_file_read)
+ * TOOL COUNT: 18 tools total
+ * - File: 8 (create, read, write, search_replace, multi_search_replace, delete, grep, multi_file_read)
  * - Workspace: 3 (tree, folder_create, folder_delete)
  * - Shell: 4 (execute, spawn, kill, list_processes)
  * - Editor: 2 (open_file, read_lints)
@@ -92,21 +92,22 @@ export const toolRiskLevels: Record<string, 'low' | 'medium' | 'high'> = {
   file_read: 'low',
   file_write: 'high',
   search_replace: 'high',
+  multi_search_replace: 'high',
   file_delete: 'high',
   grep: 'low',
   multi_file_read: 'low',
-  
+
   // Workspace tools
   workspace_tree: 'low',
   folder_create: 'medium',
   folder_delete: 'high',
-  
+
   // Shell tools
   shell_execute: 'high',
   shell_spawn: 'high',
   shell_kill: 'medium',
   shell_list_processes: 'low',
-  
+
   // Editor tools
   editor_open_file: 'low',
   read_lints: 'low',

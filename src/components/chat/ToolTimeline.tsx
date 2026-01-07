@@ -378,13 +378,13 @@ const CodeView: React.FC<CodeViewProps> = ({
   if (!data && data !== 0 && data !== false) return null;
 
   const rawContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
-  
+
   // Unescape the content to show actual newlines, quotes, etc.
   const content = unescapeContent(rawContent);
   const lines = content.split('\n');
   const isLongContent = lines.length > 8;
   const displayLines = isExpanded ? lines : lines.slice(0, 8);
-  
+
   // Get file extension for styling
   const ext = fileName?.split('.').pop()?.toLowerCase() || '';
   const isCode = ['ts', 'tsx', 'js', 'jsx', 'py', 'rs', 'go', 'css', 'scss', 'html', 'json', 'md'].includes(ext);
@@ -403,8 +403,8 @@ const CodeView: React.FC<CodeViewProps> = ({
           <span className="text-[8px] text-text-disabled ml-auto">{lines.length} lines</span>
         </div>
       )}
-      
-      <div 
+
+      <div
         ref={contentRef}
         style={{ maxHeight: isExpanded ? '300px' : '160px' }}
         className={cn(
@@ -436,7 +436,7 @@ const CodeView: React.FC<CodeViewProps> = ({
           </tbody>
         </table>
       </div>
-      
+
       {/* Expand/Collapse button */}
       {isLongContent && (
         <button
@@ -458,7 +458,7 @@ interface ToolItemProps {
 }
 
 const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
-  const isFileModifyTool = ['file_create', 'file_write', 'file_patch', 'search_replace'].includes(tool.name);
+  const isFileModifyTool = ['file_create', 'file_write', 'file_patch', 'search_replace', 'multi_search_replace'].includes(tool.name);
   const [isOpen, setIsOpen] = useState(false);
 
   // Auto-expand errors
@@ -512,7 +512,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
   };
 
   // Data processing hook
-  const { displayData, simpleMessage, isFileList, fileList, isMultiFileResult, multiFileResults, isAuroraSearchResult, auroraSearchResults, searchReplaceData, linesAdded, linesRemoved } = useMemo(() => {
+  const { displayData, simpleMessage, isFileList, fileList, isMultiFileResult, multiFileResults, isAuroraSearchResult, auroraSearchResults, searchReplaceData, multiSearchReplaceData, linesAdded, linesRemoved } = useMemo(() => {
     let raw = null;
     let msg = null;
     let isList = false;
@@ -527,6 +527,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
 
     // file_create, file_write are FILE MODIFY tools so they should show parsed content
     let searchReplaceData: { oldString?: string; newString?: string } | null = null;
+    let multiSearchReplaceData: Array<{ oldString?: string; newString?: string }> | null = null;
 
     if (tool.name === 'search_replace') {
       // Special handling for search_replace - show old_string and new_string
@@ -534,6 +535,15 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
       const newStr = tool.args?.new_string as string | undefined;
       if (oldStr || newStr) {
         searchReplaceData = { oldString: oldStr, newString: newStr };
+      }
+    } else if (tool.name === 'multi_search_replace') {
+      // Handle multi_search_replace - show all replacements
+      const replacements = tool.args?.replacements as Array<{ old_string?: string; new_string?: string }> | undefined;
+      if (replacements && Array.isArray(replacements) && replacements.length > 0) {
+        multiSearchReplaceData = replacements.map(r => ({
+          oldString: r.old_string,
+          newString: r.new_string
+        }));
       }
     } else if (isFileModifyTool || tool.name === 'file_read') { // Added file_read here to show content
       const contentField = tool.name === 'file_patch' ? tool.args?.newContent : tool.args?.content;
@@ -552,13 +562,24 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
         } catch { raw = tool.result; }
       }
     }
-    
+
     if (tool.result) {
       try {
         const parsed = JSON.parse(tool.result);
-        if (tool.name === 'search_replace') {
+        if (tool.name === 'search_replace' || tool.name === 'multi_search_replace') {
           if (parsed.linesAdded) linesAddedCount = parsed.linesAdded;
           if (parsed.linesRemoved) linesRemovedCount = parsed.linesRemoved;
+          // For multi_search_replace, aggregate totals from results
+          if (tool.name === 'multi_search_replace' && parsed.results) {
+            let totalAdded = 0;
+            let totalRemoved = 0;
+            for (const r of parsed.results) {
+              if (r.linesAdded) totalAdded += r.linesAdded;
+              if (r.linesRemoved) totalRemoved += r.linesRemoved;
+            }
+            if (totalAdded > 0) linesAddedCount = totalAdded;
+            if (totalRemoved > 0) linesRemovedCount = totalRemoved;
+          }
         }
         if (parsed.pending) {
           isFileChangePending = true;
@@ -595,7 +616,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
         } else if (parsed.message) {
           // Clean up messages - remove long paths, keep it short
           const rawMsg = parsed.message as string;
-          if (tool.name === 'search_replace') {
+          if (tool.name === 'search_replace' || tool.name === 'multi_search_replace') {
             const match = rawMsg.match(/Replaced (\d+) occurrence/);
             msg = match ? `Replaced ${match[1]}` : 'Done';
           } else if (rawMsg.includes(':\\') || rawMsg.includes(':/') || rawMsg.length > 50) {
@@ -614,7 +635,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
       } catch { raw = tool.result; }
     }
 
-    return { displayData: raw, simpleMessage: msg, isFileList: isList, fileList: listData, isMultiFileResult: isMultiFile, multiFileResults: multiFileData, isPendingFileChange: isFileChangePending, isAuroraSearchResult: isAuroraSearch, auroraSearchResults: auroraResults, linesAdded: linesAddedCount, linesRemoved: linesRemovedCount, searchReplaceData };
+    return { displayData: raw, simpleMessage: msg, isFileList: isList, fileList: listData, isMultiFileResult: isMultiFile, multiFileResults: multiFileData, isPendingFileChange: isFileChangePending, isAuroraSearchResult: isAuroraSearch, auroraSearchResults: auroraResults, linesAdded: linesAddedCount, linesRemoved: linesRemovedCount, searchReplaceData, multiSearchReplaceData };
   }, [tool]);
 
   return (
@@ -726,27 +747,27 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                 }
               </div>
             )}
-            
+
             {/* Todo List Display - Special handling for todo_write */}
             {tool.name === 'todo_write' && tool.args?.todos && Array.isArray(tool.args.todos) && (
               <div className="mb-2 space-y-1">
-                {(tool.args.todos as Array<{id?: string; content?: string; status?: string}>).map((todo, idx) => (
+                {(tool.args.todos as Array<{ id?: string; content?: string; status?: string }>).map((todo, idx) => (
                   <div key={todo.id || idx} className="flex items-center gap-2 text-[10px] px-2 py-1 rounded bg-white/5 border border-white/5">
                     <span className={cn(
                       "w-1.5 h-1.5 rounded-full flex-shrink-0",
                       todo.status === 'completed' ? "bg-emerald-400" :
-                      todo.status === 'in_progress' ? "bg-blue-400" :
-                      todo.status === 'cancelled' ? "bg-red-400" :
-                      "bg-zinc-400"
+                        todo.status === 'in_progress' ? "bg-blue-400" :
+                          todo.status === 'cancelled' ? "bg-red-400" :
+                            "bg-zinc-400"
                     )} />
                     <span className="text-text-secondary truncate">{todo.content || 'Untitled task'}</span>
                     {todo.status && (
                       <span className={cn(
                         "ml-auto text-[9px] px-1 py-0.5 rounded flex-shrink-0",
                         todo.status === 'completed' ? "bg-emerald-500/20 text-emerald-400" :
-                        todo.status === 'in_progress' ? "bg-blue-500/20 text-blue-400" :
-                        todo.status === 'cancelled' ? "bg-red-500/20 text-red-400" :
-                        "bg-zinc-500/20 text-zinc-400"
+                          todo.status === 'in_progress' ? "bg-blue-500/20 text-blue-400" :
+                            todo.status === 'cancelled' ? "bg-red-500/20 text-red-400" :
+                              "bg-zinc-500/20 text-zinc-400"
                       )}>
                         {todo.status}
                       </span>
@@ -792,7 +813,47 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
               </div>
             )}
 
-            {(displayData || tool.error) && !isMultiFileResult && !searchReplaceData && (
+            {/* Multi Search/Replace Diff View */}
+            {multiSearchReplaceData && multiSearchReplaceData.length > 0 && (
+              <div className="space-y-3">
+                {multiSearchReplaceData.map((replacement, idx) => (
+                  <div key={idx} className="space-y-1">
+                    <div className="flex items-center gap-2 text-[9px] text-text-disabled">
+                      <span className="font-mono">#{idx + 1}</span>
+                      <span className="flex-1 h-px bg-white/10"></span>
+                    </div>
+                    {/* Old String (what was replaced) */}
+                    {replacement.oldString && (
+                      <div>
+                        <div className="flex items-center gap-2 px-2 py-1 bg-red-500/10 rounded-t border-b border-red-500/20">
+                          <span className="text-[9px] font-medium text-red-400">OLD</span>
+                          <span className="text-[8px] text-red-400/60">removed</span>
+                        </div>
+                        <CodeView
+                          data={replacement.oldString}
+                          fileName={fileName}
+                        />
+                      </div>
+                    )}
+                    {/* New String (replacement) */}
+                    {replacement.newString && (
+                      <div>
+                        <div className="flex items-center gap-2 px-2 py-1 bg-emerald-500/10 rounded-t border-b border-emerald-500/20">
+                          <span className="text-[9px] font-medium text-emerald-400">NEW</span>
+                          <span className="text-[8px] text-emerald-400/60">added</span>
+                        </div>
+                        <CodeView
+                          data={replacement.newString}
+                          fileName={fileName}
+                        />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {(displayData || tool.error) && !isMultiFileResult && !searchReplaceData && !multiSearchReplaceData && (
               <CodeView
                 data={displayData}
                 error={tool.error}

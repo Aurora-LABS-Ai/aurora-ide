@@ -1,14 +1,29 @@
+import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 
+// Rust Context Engine state
+interface RustContextState {
+  threadId: string;
+  totalTurns: number;
+  summarizedTurns: number;
+  usedTokens: number;
+  contextWindow: number;
+  maxOutput: number;
+  usagePercentage: number;
+  needsSummarization: boolean;
+  recentTurnsCount: number;
+}
+
 interface ContextState extends ContextUsage {
+  // Sync with Rust Context Engine
+  syncFromRust: (threadId: string) => Promise<void>;
+  estimateFromRust: (threadId: string, systemPrompt: string) => Promise<void>;
+  
+  // Legacy methods (still used for API callback updates)
   reset: () => void;
   setContextWindow: (contextWindow: number, maxOutputTokens: number) => void;
   setEstimatedContext: (tokens: number) => void;
-
-  // Actions
   updateUsage: (usage: TokenUsage) => void;
-  
-  // Restore context from saved thread data
   restoreFromThread: (contextUsage: { usedTokens: number; contextWindow: number; percentage: number } | undefined) => void;
 }
 
@@ -20,7 +35,6 @@ export interface ContextUsage {
   contextWindow: number;
 
   // Whether the current usage is from real API data (vs estimate)
-  // When true, estimates won't overwrite the real data
   hasRealUsage: boolean;
 
   // Whether we're approaching the limit (>80%)
@@ -35,25 +49,23 @@ export interface ContextUsage {
   // Provider's max output tokens
   maxOutputTokens: number;
 
+  // Whether summarization is recommended (from Rust)
+  needsSummarization: boolean;
+
+  // Number of summarized turns (from Rust)
+  summarizedTurns: number;
+
+  // Total turns in conversation (from Rust)
+  totalTurns: number;
+
   // Calculated percentage used
   usagePercentage: number;
 
-  // Total tokens used in context (from API's prompt_tokens)
+  // Total tokens used in context
   usedContextTokens: number;
 }
 
-/**
- * Context Usage Store
- * Tracks token usage against the provider's context window
- *
- * How it works:
- * - The API's prompt_tokens in each response represents the TOTAL context used
- *   (includes system prompt + all previous messages + current message)
- * - We track prompt_tokens as the "used" context
- * - completion_tokens are added to show total but don't count against context limit
- */
 export interface TokenUsage {
-  // Cache tokens (MiniMax/Anthropic)
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   completionTokens: number;
@@ -80,14 +92,73 @@ export const useContextStore = create<ContextState>((set, get) => ({
   isNearLimit: false,
   isOverLimit: false,
   hasRealUsage: false,
+  totalTurns: 0,
+  summarizedTurns: 0,
+  needsSummarization: false,
 
-  // Update with actual API usage - this REPLACES the estimate
+  // Sync turn counts and summarization status from Rust (NOT token usage - API provides that)
+  syncFromRust: async (threadId: string) => {
+    try {
+      const state = get();
+      const rustState = await invoke<RustContextState>('context_get_state', {
+        threadId,
+        contextWindow: state.contextWindow,
+        maxOutput: state.maxOutputTokens,
+      });
+
+      // Only update turn counts and summarization status
+      // Token usage comes from API via updateUsage() which is more accurate
+      set({
+        totalTurns: rustState.totalTurns,
+        summarizedTurns: rustState.summarizedTurns,
+        needsSummarization: rustState.needsSummarization,
+      });
+
+      console.log('[ContextStore] Synced turn counts from Rust:', {
+        totalTurns: rustState.totalTurns,
+        summarizedTurns: rustState.summarizedTurns,
+        needsSummarization: rustState.needsSummarization,
+      });
+    } catch (err) {
+      console.error('[ContextStore] Failed to sync from Rust:', err);
+    }
+  },
+
+  // Estimate tokens for next request (includes system prompt)
+  estimateFromRust: async (threadId: string, systemPrompt: string) => {
+    try {
+      const state = get();
+      const rustState = await invoke<RustContextState>('context_estimate_request_tokens', {
+        threadId,
+        systemPrompt,
+        contextWindow: state.contextWindow,
+        maxOutput: state.maxOutputTokens,
+      });
+
+      set({
+        usedContextTokens: rustState.usedTokens,
+        usagePercentage: Math.round(rustState.usagePercentage),
+        isNearLimit: rustState.usagePercentage >= 80,
+        isOverLimit: rustState.usagePercentage >= 100,
+        totalTurns: rustState.totalTurns,
+        summarizedTurns: rustState.summarizedTurns,
+        needsSummarization: rustState.needsSummarization,
+        hasRealUsage: false, // This is an estimate, not real API usage
+      });
+
+      console.log('[ContextStore] Estimated tokens from Rust:', {
+        usedTokens: rustState.usedTokens,
+        usagePercentage: rustState.usagePercentage,
+        totalTurns: rustState.totalTurns,
+      });
+    } catch (err) {
+      console.error('[ContextStore] Failed to estimate from Rust:', err);
+    }
+  },
+
+  // Update with actual API usage
   updateUsage: (usage: TokenUsage) => {
     const state = get();
-    // Total context used = new prompt tokens + cached tokens
-    // cacheReadTokens represents cached content that was reused
-    // Without cache: promptTokens = total context
-    // With cache: promptTokens (new) + cacheReadTokens (cached) = total context
     const usedContext = usage.promptTokens + (usage.cacheReadTokens || 0);
     const percentage = calculatePercentage(usedContext, state.contextWindow);
 
@@ -98,7 +169,7 @@ export const useContextStore = create<ContextState>((set, get) => ({
       usagePercentage: percentage,
       isNearLimit: percentage >= 80,
       isOverLimit: percentage >= 100,
-      hasRealUsage: true, // Mark that we have real data from API
+      hasRealUsage: true,
     });
   },
 
@@ -115,20 +186,11 @@ export const useContextStore = create<ContextState>((set, get) => ({
     });
   },
 
-  // Set estimated context (before API responds)
-  // IMPORTANT: If we have real usage data, DON'T replace it with a lower estimate
-  // This prevents the context indicator from dropping when user sends a new message
   setEstimatedContext: (tokens: number) => {
     const state = get();
     
-    // If we have real usage data and the estimate is lower, keep the real data
-    // The API will update us with accurate new usage when it responds
     if (state.hasRealUsage && tokens < state.usedContextTokens) {
-      console.log('[ContextStore] Skipping estimate (have real data):', {
-        estimate: tokens,
-        realUsage: state.usedContextTokens,
-      });
-      return; // Don't downgrade real usage with a lower estimate
+      return;
     }
     
     const percentage = calculatePercentage(tokens, state.contextWindow);
@@ -138,7 +200,6 @@ export const useContextStore = create<ContextState>((set, get) => ({
       usagePercentage: percentage,
       isNearLimit: percentage >= 80,
       isOverLimit: percentage >= 100,
-      // Keep hasRealUsage as-is - estimates don't change the flag
     });
   },
 
@@ -149,40 +210,36 @@ export const useContextStore = create<ContextState>((set, get) => ({
     usagePercentage: 0,
     isNearLimit: false,
     isOverLimit: false,
-    hasRealUsage: false, // Reset the flag for new threads
+    hasRealUsage: false,
+    totalTurns: 0,
+    summarizedTurns: 0,
+    needsSummarization: false,
   }),
 
-  // Restore context from saved thread data (used when switching threads or on app startup)
   restoreFromThread: (contextUsage) => {
     if (!contextUsage) {
-      // No saved context - reset to clean state
       set({
         usedContextTokens: 0,
         usagePercentage: 0,
         isNearLimit: false,
         isOverLimit: false,
         hasRealUsage: false,
+        totalTurns: 0,
+        summarizedTurns: 0,
+        needsSummarization: false,
       });
       return;
     }
 
     const { usedTokens, contextWindow, percentage } = contextUsage;
     
-    // Restore the saved context state
-    // Mark as real usage since this data came from actual API responses
     set({
       usedContextTokens: usedTokens,
       contextWindow: contextWindow || DEFAULT_CONTEXT_WINDOW,
       usagePercentage: percentage,
       isNearLimit: percentage >= 80,
       isOverLimit: percentage >= 100,
-      hasRealUsage: true, // Saved data is from real API responses
-    });
-
-    console.log('[ContextStore] Restored context from thread:', {
-      usedTokens,
-      contextWindow,
-      percentage,
+      hasRealUsage: true,
     });
   },
 }));

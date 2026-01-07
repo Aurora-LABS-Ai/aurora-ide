@@ -1,10 +1,9 @@
 /**
  * Agent Service
  * Orchestrates AI interactions with tool calling and thinking
- * Manages the conversation loop with tool execution
- * 
- * Uses enterprise-grade provider system
+ * Uses Rust Context Engine for turn-based message management
  */
+import { invoke } from '@tauri-apps/api/core';
 import { getToolsForModel, toolRegistry } from "../tools";
 import type { ToolDefinition as LegacyToolDefinition } from "../tools/types";
 import { executeMcpTool, getMcpToolDefinitions, getMcpToolsSummary, isMcpTool, shouldAutoApproveMcpTool } from "./mcp-tools";
@@ -26,10 +25,12 @@ export interface AgentConfig {
   getToolApproval?: (toolName: string) => 'auto' | 'always_ask' | 'deny';
   maxTokens?: number;
   maxToolIterations?: number;
-  providerConfig?: ProviderConfig; // Enterprise provider config
+  providerConfig?: ProviderConfig;
   systemPrompt?: string;
   temperature?: number;
   thinkingEnabled?: boolean;
+  /** Thread ID for context engine */
+  threadId?: string;
 }
 
 export interface AgentResponse {
@@ -45,11 +46,37 @@ export interface AgentResponse {
   }>;
 }
 
+// ============================================
+// RUST CONTEXT ENGINE TYPES
+// ============================================
+interface ApiMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  tool_calls?: Array<{
+    id: string;
+    type: string;
+    function: { name: string; arguments: string };
+  }>;
+  tool_call_id?: string;
+}
+
+interface ContextState {
+  threadId: string;
+  totalTurns: number;
+  summarizedTurns: number;
+  usedTokens: number;
+  contextWindow: number;
+  maxOutput: number;
+  usagePercentage: number;
+  needsSummarization: boolean;
+  recentTurnsCount: number;
+}
+
+// ============================================
 // AGENT SERVICE CLASS
 // ============================================
 export class AgentService {
   private config: AgentConfig;
-  private conversationHistory: Message[] = [];
   private isRunning = false;
   private provider: IProvider | null = null;
 
@@ -64,7 +91,6 @@ export class AgentService {
       ...config,
     };
 
-    // Initialize enterprise provider if config provided
     if (config?.providerConfig) {
       this.provider = createProvider(config.providerConfig);
     }
@@ -72,32 +98,73 @@ export class AgentService {
 
   /**
    * Send a message and get a response with tool execution
+   * Uses Rust Context Engine for message building
    */
   public async chat(
     userMessage: string,
     callbacks: AgentCallbacks,
-    tools?: LegacyToolDefinition[]
+    tools?: LegacyToolDefinition[],
+    ideContext?: string | null
   ): Promise<AgentResponse> {
     this.isRunning = true;
     const provider = this.getProvider();
+    const threadId = this.config.threadId;
 
-    // Get MCP tools summary for system prompt enhancement
+    if (!threadId) {
+      throw new Error('Thread ID required for context engine');
+    }
+
+    // Get provider config for context window
+    const providerConfig = this.config.providerConfig;
+    const contextWindow = providerConfig?.contextWindow || 128000;
+    const maxOutput = providerConfig?.maxOutputTokens || 8192;
+
+    // Add user message to Rust context engine
+    await invoke('context_add_user_message', {
+      threadId,
+      content: userMessage,
+      ideContext: ideContext || null,
+      contextWindow,
+      maxOutput,
+    });
+
+    // Build enhanced system prompt with MCP tools summary
     const mcpSummary = getMcpToolsSummary();
-    const enhancedSystemPrompt = mcpSummary 
+    const enhancedSystemPrompt = mcpSummary
       ? `${this.config.systemPrompt!}\n${mcpSummary}`
       : this.config.systemPrompt!;
 
-    // Build messages with system prompt
-    const messages: Message[] = [
-      { role: 'system', content: enhancedSystemPrompt },
-      ...this.conversationHistory,
-      { role: 'user', content: userMessage },
-    ];
+    // Build messages from Rust context engine
+    const tokenBudget = contextWindow - maxOutput;
+    const contextMessages = await invoke<ApiMessage[]>('context_build_messages', {
+      threadId,
+      systemPrompt: enhancedSystemPrompt,
+      tokenBudget,
+    });
 
-    // Add user message to history
-    this.conversationHistory.push({ role: 'user', content: userMessage });
+    // Convert to provider message format
+    const messages: Message[] = contextMessages.map(msg => {
+      if (msg.role === 'tool') {
+        return {
+          role: 'tool' as const,
+          tool_call_id: msg.tool_call_id!,
+          content: msg.content,
+        };
+      }
+      if (msg.role === 'assistant' && msg.tool_calls) {
+        return {
+          role: 'assistant' as const,
+          content: msg.content,
+          tool_calls: msg.tool_calls,
+        };
+      }
+      return {
+        role: msg.role as 'system' | 'user' | 'assistant',
+        content: msg.content,
+      };
+    });
 
-    // Get available tools - convert legacy format to enterprise format
+    // Get available tools
     const builtInTools: ToolDefinition[] = (tools || getToolsForModel()).map(t => ({
       type: 'function' as const,
       function: {
@@ -107,10 +174,7 @@ export class AgentService {
       },
     }));
 
-    // Get MCP tools from connected servers
     const mcpTools = getMcpToolDefinitions();
-    
-    // Combine built-in tools with MCP tools
     const availableTools: ToolDefinition[] = [...builtInTools, ...mcpTools];
 
     let iteration = 0;
@@ -122,7 +186,7 @@ export class AgentService {
       while (this.isRunning && iteration < this.config.maxToolIterations!) {
         iteration++;
 
-        // Stream the response using enterprise provider
+        // Stream the response
         const response = await provider.streamChat(
           {
             messages,
@@ -148,43 +212,56 @@ export class AgentService {
           }
         );
 
-        // Add assistant message to history
-        messages.push(response);
-        this.conversationHistory.push(response);
+        // Add assistant response to context engine
+        const responseContent = Array.isArray(response.content)
+          ? response.content.map(block => block.type === 'text' ? block.text : '').join('')
+          : response.content;
 
-        // Update final content if we got any
+        await invoke('context_add_assistant_response', {
+          threadId,
+          content: responseContent || '',
+          thinking: response.reasoning_content || null,
+        });
+
+        // Add to local messages for continuation
+        messages.push(response);
+
         if (response.content) {
-          finalContent = Array.isArray(response.content) ? response.content.map(block => block.type === 'text' ? block.text : '').join('') : response.content;
+          finalContent = responseContent || '';
         }
 
-        // Update thinking from reasoning_content
         if (response.reasoning_content) {
           finalThinking += response.reasoning_content;
         }
 
-        // Check if we have tool calls to execute
+        // Handle tool calls
         if (response.tool_calls && response.tool_calls.length > 0) {
-          console.log(`[AgentService] Executing ${response.tool_calls.length} tool calls in parallel...`);
+          console.log(`[AgentService] Executing ${response.tool_calls.length} tool calls...`);
 
-          // Execute all tool calls in parallel for speed (Cursor-style)
+          // Add tool calls to context engine
+          for (const toolCall of response.tool_calls) {
+            await invoke('context_add_tool_call', {
+              threadId,
+              toolCallId: toolCall.id,
+              name: toolCall.function.name,
+              arguments: toolCall.function.arguments,
+            });
+          }
+
+          // Execute tools in parallel
           const toolPromises = response.tool_calls.map(async (toolCall) => {
             if (!this.isRunning) return null;
 
             const toolName = toolCall.function.name;
-            const toolSetting =
-              this.config.getToolApproval?.(toolName) ?? 'always_ask';
-            
-            // Check if this is an MCP tool with auto-approve enabled
+            const toolSetting = this.config.getToolApproval?.(toolName) ?? 'always_ask';
+
             const isMcp = isMcpTool(toolName);
             const mcpAutoApprove = isMcp && shouldAutoApproveMcpTool(toolName);
-            
-            // MCP tools with auto-approve skip user confirmation
-            // Otherwise, check risk level
             const riskRequiresApproval = isMcp ? !mcpAutoApprove : toolRegistry.requiresApproval(toolName);
             const shouldAutoDeny = toolSetting === 'deny';
             const requiresUserApproval =
               !shouldAutoDeny &&
-              !mcpAutoApprove && // Skip approval if MCP server has auto-approve enabled
+              !mcpAutoApprove &&
               (toolSetting === 'always_ask' ||
                 (!this.config.autoApproveTools && riskRequiresApproval));
 
@@ -197,50 +274,44 @@ export class AgentService {
               }
             }
 
-            // Parse tool arguments with error handling (LLMs sometimes produce malformed JSON)
+            // Parse arguments
             let parsedArgs: Record<string, unknown> = {};
             try {
               parsedArgs = JSON.parse(toolCall.function.arguments || '{}');
             } catch (parseError) {
-              console.error(`[AgentService] Failed to parse tool arguments for ${toolName}:`, toolCall.function.arguments);
-              console.error('[AgentService] Parse error:', parseError);
+              console.error(`[AgentService] Failed to parse tool arguments:`, parseError);
               
-              // Try to fix common JSON issues produced by LLMs
+              // Try to fix common JSON issues
               let fixedArgs = toolCall.function.arguments || '{}';
-              
-              // Fix 1: Missing comma between properties (e.g., "value""key" -> "value","key")
-              // This is a common GLM issue where it drops commas
               fixedArgs = fixedArgs.replace(/"([^"]*)"(\s*)"(\w+)":/g, '"$1",$2"$3":');
-              
-              // Fix 2: Remove trailing commas before } or ]
               fixedArgs = fixedArgs.replace(/,\s*([}\]])/g, '$1');
-              
-              // Fix 3: Add missing quotes around unquoted keys
               fixedArgs = fixedArgs.replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3');
-              
-              // Fix 4: Handle escaped backslashes in paths (common in Windows paths)
-              // Sometimes LLMs produce \\\ instead of \\
-              fixedArgs = fixedArgs.replace(/\\\\\\\\/g, '\\\\');
-              
+
               try {
                 parsedArgs = JSON.parse(fixedArgs);
-                console.log('[AgentService] Fixed JSON successfully');
               } catch {
-                // If still can't parse, return error to LLM so it can retry
-                const errorResult: NonNullable<AgentResponse['toolCalls']>[0] = {
-                  id: toolCall.id,
-                  name: toolName,
-                  args: { raw: toolCall.function.arguments },
-                  result: `Error: Invalid JSON in tool arguments. The JSON could not be parsed. Please ensure your tool call arguments are valid JSON with proper commas between properties. Error: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
-                  status: 'failed',
-                };
+                const errorResult = `Error: Invalid JSON in tool arguments. Please ensure valid JSON.`;
                 
+                // Add error result to context engine
+                await invoke('context_add_tool_result', {
+                  threadId,
+                  toolCallId: toolCall.id,
+                  content: errorResult,
+                  isError: true,
+                });
+
                 return {
-                  toolResult: errorResult,
+                  toolResult: {
+                    id: toolCall.id,
+                    name: toolName,
+                    args: { raw: toolCall.function.arguments },
+                    result: errorResult,
+                    status: 'failed' as const,
+                  },
                   message: {
                     role: 'tool' as const,
                     tool_call_id: toolCall.id,
-                    content: errorResult.result,
+                    content: errorResult,
                   } as Message
                 };
               }
@@ -259,14 +330,10 @@ export class AgentService {
 
               try {
                 let resultContent: string;
-                
-                // Check if this is an MCP tool
+
                 if (isMcpTool(toolName)) {
-                  // Execute MCP tool
                   resultContent = await executeMcpTool(toolName, parsedArgs);
                 } else {
-                  // Execute built-in tool with the PARSED args (not the potentially malformed original)
-                  // Create a modified toolCall with properly stringified arguments
                   const fixedToolCall = {
                     ...toolCall,
                     function: {
@@ -277,9 +344,17 @@ export class AgentService {
                   const result = await toolRegistry.executeToolCall(fixedToolCall);
                   resultContent = result.content;
                 }
-                
+
                 toolResult.result = resultContent;
                 toolResult.status = 'executed';
+
+                // Add result to context engine
+                await invoke('context_add_tool_result', {
+                  threadId,
+                  toolCallId: toolCall.id,
+                  content: resultContent,
+                  isError: false,
+                });
 
                 callbacks.onToolExecutionComplete?.(toolCall, resultContent);
 
@@ -292,52 +367,72 @@ export class AgentService {
                   } as Message
                 };
               } catch (error) {
-                toolResult.result = error instanceof Error ? error.message : String(error);
+                const errorMsg = error instanceof Error ? error.message : String(error);
+                toolResult.result = errorMsg;
                 toolResult.status = 'failed';
+
+                // Add error to context engine
+                await invoke('context_add_tool_result', {
+                  threadId,
+                  toolCallId: toolCall.id,
+                  content: JSON.stringify({ error: errorMsg }),
+                  isError: true,
+                });
 
                 return {
                   toolResult,
                   message: {
                     role: 'tool' as const,
                     tool_call_id: toolCall.id,
-                    content: JSON.stringify({ error: toolResult.result }),
+                    content: JSON.stringify({ error: errorMsg }),
                   } as Message
                 };
               }
             } else {
-              // Tool was rejected
+              const rejectMsg = JSON.stringify({ error: 'Tool execution rejected by user', tool: toolName });
+              
+              // Add rejection to context engine
+              await invoke('context_add_tool_result', {
+                threadId,
+                toolCallId: toolCall.id,
+                content: rejectMsg,
+                isError: true,
+              });
+
               return {
                 toolResult,
                 message: {
                   role: 'tool' as const,
                   tool_call_id: toolCall.id,
-                  content: JSON.stringify({
-                    error: 'Tool execution rejected by user',
-                    tool: toolName,
-                  }),
+                  content: rejectMsg,
                 } as Message
               };
             }
           });
 
-          // Wait for all tools to complete in parallel
           const toolResults = await Promise.all(toolPromises);
 
-          // Add all results to messages and tracking
           for (const result of toolResults) {
             if (result) {
               messages.push(result.message);
-              this.conversationHistory.push(result.message);
               executedToolCalls.push(result.toolResult);
             }
           }
 
           callbacks.onIterationComplete?.(iteration);
-          // Continue loop to get next response after tool execution
         } else {
-          // No tool calls, we're done
           break;
         }
+      }
+
+      // Finalize the turn in context engine
+      await invoke('context_finalize_turn', { threadId });
+
+      // Check if summarization is needed
+      const needsSummarization = await invoke<boolean>('context_needs_summarization', { threadId });
+      if (needsSummarization) {
+        console.log('[AgentService] Context at 80%+ - summarization recommended');
+        // Summarization will be triggered separately
       }
 
       callbacks.onComplete?.({
@@ -359,17 +454,31 @@ export class AgentService {
   }
 
   /**
-   * Clear conversation history
+   * Get context state from Rust engine
    */
-  public clearHistory(): void {
-    this.conversationHistory = [];
+  public async getContextState(): Promise<ContextState | null> {
+    const threadId = this.config.threadId;
+    if (!threadId) return null;
+
+    const providerConfig = this.config.providerConfig;
+    const contextWindow = providerConfig?.contextWindow || 128000;
+    const maxOutput = providerConfig?.maxOutputTokens || 8192;
+
+    return invoke<ContextState>('context_get_state', {
+      threadId,
+      contextWindow,
+      maxOutput,
+    });
   }
 
   /**
-   * Get conversation history
+   * Clear context for current thread
    */
-  public getHistory(): Message[] {
-    return [...this.conversationHistory];
+  public async clearContext(): Promise<void> {
+    const threadId = this.config.threadId;
+    if (!threadId) return;
+
+    await invoke('context_clear_thread', { threadId });
   }
 
   /**
@@ -380,19 +489,18 @@ export class AgentService {
   }
 
   /**
-   * Set conversation history from external source (e.g., thread store)
-   * This enables context continuity when resuming a thread
+   * Set thread ID for context engine
    */
-  public setHistory(messages: Message[]): void {
-    this.conversationHistory = [...messages];
-    console.log(`[AgentService] History set with ${messages.length} messages`);
+  public setThreadId(threadId: string): void {
+    this.config.threadId = threadId;
   }
 
   /**
-   * Set provider configuration (enterprise system)
+   * Set provider configuration
    */
   public setProvider(config: ProviderConfig): void {
     this.provider = createProvider(config);
+    this.config.providerConfig = config;
   }
 
   /**
@@ -410,9 +518,6 @@ export class AgentService {
     this.config = { ...this.config, ...config };
   }
 
-  /**
-   * Get the current provider
-   */
   private getProvider(): IProvider {
     if (!this.provider) {
       throw new Error('Provider not initialized. Call setProvider first.');
@@ -434,9 +539,7 @@ export const getAgentService = (): AgentService => {
 /**
  * Initialize agent service with config
  */
-export const initAgentService = (
-  config?: AgentConfig
-): AgentService => {
+export const initAgentService = (config?: AgentConfig): AgentService => {
   agentInstance = new AgentService(config);
   return agentInstance;
 };
@@ -500,22 +603,9 @@ Your main goal is to follow the USER's instructions at each message.
 - Rewriting an entire file from scratch
 - Changes are so extensive that replacing the whole file is cleaner
 
-**search_replace** - Find and replace exact text. PREFERRED for targeted edits. Use when:
-- Editing specific functions or code blocks
-- Fixing bugs in specific locations
-- Adding/modifying/removing imports
-- Changing variable names or values
-- Any targeted edit to existing code
+**search_replace** - Find and replace exact text. PREFERRED for single targeted edits.
 
-HOW search_replace WORKS:
-1. Provide the EXACT text to find (old_string) - must match perfectly including whitespace
-2. Provide the replacement text (new_string)
-3. old_string must be UNIQUE in the file (appears only once)
-4. Include enough context (3-5 lines) to make old_string unique
-
-EXAMPLE:
-old_string: "function hello() {\\n  return 'Hello';\\n}"
-new_string: "function hello() {\\n  return 'Hello World';\\n}"
+**multi_search_replace** - Make MULTIPLE find-and-replace edits in ONE call.
 
 **file_delete** - Delete a file (requires confirmation).
 
@@ -540,17 +630,6 @@ new_string: "function hello() {\\n  return 'Hello World';\\n}"
 ### MCP (Model Context Protocol)
 - MCP servers provide external tools (databases, APIs, etc.) that extend your capabilities.
 - If MCP servers are connected, their tools will be listed below with the server name prefix.
-- MCP tool names follow the format: "ServerName: tool_name" in the UI.
-
-## Task Management Guidelines
-
-Use todo_write for complex tasks (3+ steps).
-
-**Rules:**
-1. Use proactively when starting multi-step tasks
-2. Each task needs 'content' (imperative) and 'activeForm' (present continuous)
-3. Mark ONE task as 'in_progress' at a time
-4. Mark 'completed' IMMEDIATELY after finishing each task
 
 ## Behavioral Guidelines
 
@@ -562,7 +641,7 @@ Use todo_write for complex tasks (3+ steps).
 6. **Actions Over Words** - Use tools, don't just describe what you would do.
 7. **Read Before Edit** - Always read file contents before modifying.
 8. **Fix Mistakes** - If edit introduces errors, fix them. Max 3 loops.
-9. **Correct Paths** - Workspace root is current directory. Use full paths for editor_open_file.`; // ============================================
+9. **Correct Paths** - Workspace root is current directory. Use full paths for editor_open_file.`;
 
 // Singleton instance
 let agentInstance: AgentService | null = null;

@@ -129,10 +129,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
   }, []);
 
   const handleNewChat = useCallback(() => {
-    // Clear agent history for new chat
-    const agent = getAgentService();
-    agent.clearHistory();
-    // Reset context usage tracking
+    // Reset context usage tracking (Rust context engine manages thread contexts separately)
     useContextStore.getState().reset();
     // Don't create thread yet - just clear current
     clearCurrentThread();
@@ -319,45 +316,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
         customParams: llmConfig.customParams,
       };
 
-      // Get agent and set provider (enterprise system)
+      // Get agent and set provider + thread ID (Rust Context Engine)
       const agent = getAgentService();
       agent.setProvider(providerConfig);
-
-      // CRITICAL: Sync thread history to agent for conversation continuity
-      // This enables the AI to remember previous messages when resuming a thread
-      // Skip for new threads - they have no history yet
-      if (threadId && !isNewThread) {
-        // Get history from local store first (faster and always available)
-        const threadStore = useThreadStore.getState();
-        const freshThread = threadStore.threads[threadId];
-
-        if (freshThread?.messages && freshThread.messages.length > 0) {
-          // Exclude the message we just added
-          const previousMessages = freshThread.messages.filter(m => m.id !== userMessage.id);
-          if (previousMessages.length > 0) {
-            // Convert to API format
-            const apiHistory = previousMessages.map(m => {
-              if (m.sender === 'user') {
-                return { role: 'user' as const, content: m.content };
-              } else {
-                // For assistant messages, extract content from timeline if available
-                let content = m.content || '';
-                if (m.timeline && Array.isArray(m.timeline)) {
-                  const contentEvents = m.timeline.filter((e: any) => e.type === 'content');
-                  if (contentEvents.length > 0) {
-                    content = contentEvents.map((e: any) => e.content || '').join('');
-                  }
-                }
-                return { role: 'assistant' as const, content };
-              }
-            });
-            agent.setHistory(apiHistory as any);
-            console.log(`[ChatPanel] Thread history synced: ${apiHistory.length} messages`);
-          }
-        }
-      } else if (isNewThread) {
-        console.log(`[ChatPanel] New thread - starting fresh conversation`);
-      }
+      agent.setThreadId(threadId!);
 
       // Update context store with provider limits
       const contextStore = useContextStore.getState();
@@ -366,48 +328,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
         providerConfig.maxOutputTokens
       );
 
-      // Get conversation history
-      const conversationHistory = agent.getHistory();
-
-      // Get all available tools for token estimation
-      const availableTools = toolRegistry.getToolDefinitions();
-
-      // Estimate FULL request context (system prompt + history + new message + tools)
-      // This gives an accurate picture of what's being sent to the LLM
-      // Using quick estimates for synchronous operation (real tokenizer available via async)
-      const systemPromptTokens = tokenService.quickEstimate(
-        "Aurora system prompt (~2000 chars)" // Approximate system prompt
-      ).tokens + 500; // Add buffer for system prompt
-
-      // Simple token estimation for history - just count content
-      let historyTokens = 0;
-      for (const m of conversationHistory) {
-        // Handle content that can be string or ContentBlock[]
-        const contentStr = typeof m.content === 'string'
-          ? m.content
-          : (Array.isArray(m.content)
-            ? m.content.map(b => 'text' in b ? b.text : '').join('')
-            : '');
-        historyTokens += tokenService.quickEstimate(contentStr || '').tokens;
-      }
-
-      const newMessageTokens = tokenService.quickEstimate(formattedContext).tokens;
-      // Estimate tools tokens from JSON representation
-      const toolsJson = JSON.stringify(availableTools);
-      const toolsTokens = tokenService.quickEstimate(toolsJson).tokens;
-
-      const totalEstimatedTokens = systemPromptTokens + historyTokens + newMessageTokens + toolsTokens;
-
-      console.log('[ChatPanel] Context estimation on send:', {
-        systemPrompt: systemPromptTokens,
-        history: historyTokens,
-        newMessage: newMessageTokens,
-        tools: toolsTokens,
-        total: totalEstimatedTokens,
-      });
-
-      // Update context store with estimated context BEFORE sending
-      contextStore.setEstimatedContext(totalEstimatedTokens);
+      // Token estimation will come from Rust context engine after the request
+      console.log(`[ChatPanel] Using Rust Context Engine for thread: ${threadId}`);
 
       // Create a new assistant message that we'll stream into
       const assistantMessageId = generateId();
@@ -828,6 +750,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
         // CRITICAL: Flush any pending timeline updates BEFORE clearing the message ID
         // This ensures all debounced token updates make it to the store
         flushTimelineUpdate();
+
+        // Sync context state from Rust engine (accurate tiktoken counting)
+        if (threadId) {
+          useContextStore.getState().syncFromRust(threadId);
+        }
 
         setLoading(false);
         chatSyncBroadcast.setLoading(false);

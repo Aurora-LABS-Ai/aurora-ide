@@ -290,12 +290,87 @@ new_string:
   },
 };
 
+// ============================================
+// MULTI SEARCH REPLACE TOOL (Batch replacements in one call)
+// ============================================
+export const multiSearchReplaceTool: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'multi_search_replace',
+    description: `Make MULTIPLE find-and-replace edits to a file in a SINGLE tool call. Much faster than calling search_replace multiple times.
+
+WHEN TO USE multi_search_replace:
+- Making 2 or more separate edits to the same file
+- Refactoring multiple functions at once
+- Updating multiple imports
+- Changing multiple variable names or values
+- Any task requiring multiple targeted edits in one file
+
+HOW IT WORKS:
+1. Provide the file path
+2. Provide an array of replacements, each with old_string and new_string
+3. Each replacement is applied in order
+4. All replacements must be unique in the file (unless replace_all is set per replacement)
+
+EXAMPLE:
+{
+  "path": "src/App.tsx",
+  "replacements": [
+    { "old_string": "import React from 'react'", "new_string": "import * as React from 'react'" },
+    { "old_string": "const count = 0;", "new_string": "const count = 10;" },
+    { "old_string": "function App() {", "new_string": "const App: React.FC = () => {" }
+  ]
+}
+
+IMPORTANT RULES:
+- Each old_string must match EXACTLY (including whitespace, indentation, newlines)
+- Each old_string should be unique in the file for precise replacements
+- Replacements are applied in the order provided
+- If any replacement fails, the entire operation is rolled back
+- Include enough context (3-5 lines) in each old_string to make it unique`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'The path of the file to modify',
+        },
+        replacements: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              old_string: {
+                type: 'string',
+                description: 'The EXACT text to find and replace. Must match perfectly including whitespace and newlines.',
+              },
+              new_string: {
+                type: 'string',
+                description: 'The text to replace old_string with. Can be empty string to delete the old_string.',
+              },
+              replace_all: {
+                type: 'boolean',
+                description: 'If true, replace ALL occurrences of this old_string. Default is false.',
+                default: false,
+              },
+            },
+            required: ['old_string', 'new_string'],
+          },
+          description: 'Array of replacements to apply. Each replacement has old_string, new_string, and optional replace_all.',
+        },
+      },
+      required: ['path', 'replacements'],
+    },
+  },
+};
+
 // Export all file tools as an array
 export const fileTools: ToolDefinition[] = [
   fileCreateTool,
   fileReadTool,
   fileWriteTool,
   searchReplaceTool,
+  multiSearchReplaceTool,
   fileDeleteTool,
   grepTool,
   multiFileReadTool,

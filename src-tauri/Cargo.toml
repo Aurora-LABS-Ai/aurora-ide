@@ -71,6 +71,12 @@ clap = { version = "4", features = ["derive"] }
 # Single instance detection (prevent multiple instances, pass args to existing)
 single-instance = "0.3"
 
+# Note: Checkpoint system uses git CLI directly instead of git2
+# because git2's index operations don't properly work with external worktrees
+
+# Note: Undo/Redo uses a simple custom stack implementation
+# (the undo crate's API was not a good fit for our per-file use case)
+
 [features]
 # Default: Enable CUDA for NVIDIA GPUs (most common GPU acceleration)
 # For Windows without CUDA: use --features directml instead

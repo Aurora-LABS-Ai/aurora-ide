@@ -1,3 +1,4 @@
+mod checkpoints;
 mod explorer;
 mod workspace;
 mod editor;
@@ -6,6 +7,7 @@ mod threads;
 mod themes;
 mod semantic;
 
+pub use checkpoints::CheckpointRepository;
 pub use explorer::ExplorerRepository;
 pub use workspace::WorkspaceRepository;
 pub use editor::EditorRepository;

@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 9;
+pub const SCHEMA_VERSION: i32 = 10;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -21,6 +21,7 @@ pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
     create_custom_themes_table(conn)?;
     create_semantic_indexes_table(conn)?;
     create_semantic_settings_table(conn)?;
+    create_checkpoints_table(conn)?;
 
     Ok(())
 }
@@ -79,6 +80,7 @@ fn create_workspace_state_table(conn: &Connection) -> DbResult<()> {
             open_tabs TEXT NOT NULL, -- JSON array of TabState
             panel_sizes TEXT,        -- JSON of PanelSizes
             last_opened_at TEXT NOT NULL,
+            checkpoint_enabled INTEGER NOT NULL DEFAULT 1, -- 1 = enabled (default), 0 = disabled
             UNIQUE(workspace_path)
         )",
         [],
@@ -315,11 +317,41 @@ fn create_semantic_settings_table(conn: &Connection) -> DbResult<()> {
     // Insert default settings row if not exists - with proper ignore lists
     let default_patterns = r#"["*.min.js","*.min.css","*.map","*.lock","package-lock.json","pnpm-lock.yaml","yarn.lock","Cargo.lock","*.exe","*.dll","*.so","*.dylib","*.wasm","*.png","*.jpg","*.jpeg","*.gif","*.ico","*.svg","*.webp","*.mp3","*.mp4","*.avi","*.mov","*.woff","*.woff2","*.ttf","*.eot","*.otf","*.zip","*.tar","*.gz","*.rar","*.7z","*.pdf","*.db","*.sqlite","*.sqlite3"]"#;
     let default_dirs = r#"["node_modules",".npm",".pnpm",".yarn",".git",".svn",".hg","dist","build","out","output",".output","target","__pycache__",".venv","venv",".env",".pytest_cache",".mypy_cache",".tox",".gradle",".m2","bin","obj","packages",".next",".nuxt",".svelte-kit",".vercel",".netlify",".idea",".vscode",".vs",".cursor",".cache",".parcel-cache",".turbo","coverage",".nyc_output","logs","vendor",".aurora"]"#;
-    
+
     conn.execute(
-        "INSERT OR IGNORE INTO semantic_settings (id, ignored_patterns, ignored_directories, excluded_files, excluded_directories, updated_at) 
+        "INSERT OR IGNORE INTO semantic_settings (id, ignored_patterns, ignored_directories, excluded_files, excluded_directories, updated_at)
          VALUES (1, ?1, ?2, '[]', '[]', datetime('now'))",
         [default_patterns, default_dirs],
+    )?;
+
+    Ok(())
+}
+
+/// Create checkpoints table (tracks file state checkpoints per message)
+fn create_checkpoints_table(conn: &Connection) -> DbResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS checkpoints (
+            id TEXT PRIMARY KEY,              -- Git commit hash
+            message_id TEXT NOT NULL,         -- Associated message ID
+            thread_id TEXT NOT NULL,          -- Thread this checkpoint belongs to
+            workspace_path TEXT NOT NULL,     -- Workspace path
+            created_at TEXT NOT NULL,
+            UNIQUE(thread_id, message_id)
+        )",
+        [],
+    )?;
+
+    // Create indexes for quick lookup
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_checkpoints_thread_id
+         ON checkpoints (thread_id)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_checkpoints_message_id
+         ON checkpoints (message_id)",
+        [],
     )?;
 
     Ok(())

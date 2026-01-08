@@ -26,6 +26,8 @@ pub mod semantic;
 pub mod git;
 pub mod browser;
 pub mod openai_native;
+pub mod checkpoints;
+pub mod undo_redo;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileEntry {

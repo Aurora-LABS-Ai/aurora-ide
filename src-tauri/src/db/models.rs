@@ -12,6 +12,12 @@ pub struct WorkspaceState {
     pub open_tabs: Vec<TabState>,
     pub panel_sizes: Option<PanelSizes>,
     pub last_opened_at: String, // ISO timestamp string from frontend
+    #[serde(default = "default_checkpoint_enabled")]
+    pub checkpoint_enabled: bool, // Whether checkpoints are enabled for this workspace (default: true)
+}
+
+fn default_checkpoint_enabled() -> bool {
+    true
 }
 
 impl WorkspaceState {

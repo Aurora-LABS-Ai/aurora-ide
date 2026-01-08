@@ -171,6 +171,7 @@ export interface ToolSetting {
 }
 
 export interface WorkspaceState {
+  checkpoint_enabled?: boolean; // Whether checkpoints are enabled for this workspace (default: true)
   last_opened_at: string; // ISO timestamp
   open_tabs: TabState[];
   panel_sizes: PanelSizes | null;

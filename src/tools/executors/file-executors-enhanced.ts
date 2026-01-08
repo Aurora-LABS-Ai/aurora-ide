@@ -2,9 +2,11 @@
  * Enhanced File Tool Executors with Operation Logging
  * Integrates operation logging for safety and context awareness
  * Includes pre-save syntax validation to catch errors before writing
+ * Includes undo/redo integration for AI-made changes
  */
 import { deletePath, isTauri, readDirectory, readFileContent, writeFileContent } from "../../lib/tauri";
 import { formatValidationForAgent, supportsValidation, validateSyntax } from "../../services/syntax-validator";
+// Dynamic import of useUndoRedoStore used in file_create and file_write
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { FsOperationType, operationLog } from "../operation-log";
 import { toolRegistry } from "../registry";
@@ -106,6 +108,20 @@ const fileCreateExecutor = async (
     // CURSOR-STYLE: Write to disk immediately
     await writeFileContent(fullPath, processedContent);
     triggerRefresh();
+
+    // Record in undo/redo service and store for AI-created files
+    try {
+      const { useUndoRedoStore } = await import('../../store/useUndoRedoStore');
+      await useUndoRedoStore.getState().recordChange(
+        fullPath,
+        '', // Empty string for new file
+        processedContent,
+        'ai_tool',
+        `AI file_create: ${fileName}`
+      );
+    } catch (e) {
+      console.warn('[file_create] Failed to record undo:', e);
+    }
 
     // Check if auto-accept is enabled BEFORE adding to pending changes
     const autoAccept = useSettingsStore.getState().autoAcceptChanges;
@@ -352,9 +368,31 @@ const fileWriteExecutor = async (
     // Check if auto-accept is enabled BEFORE loading original content (saves time)
     const autoAccept = useSettingsStore.getState().autoAcceptChanges;
 
+    // Load original content BEFORE writing (for undo/redo)
+    let originalContent = '';
+    try {
+      originalContent = await readFileContent(fullPath);
+    } catch {
+      // File doesn't exist yet, originalContent stays empty
+    }
+
     // CURSOR-STYLE: Write to disk immediately
     await writeFileContent(fullPath, processedContent);
     triggerRefresh();
+
+    // Record in undo/redo service and store for AI-made changes
+    try {
+      const { useUndoRedoStore } = await import('../../store/useUndoRedoStore');
+      await useUndoRedoStore.getState().recordChange(
+        fullPath,
+        originalContent,
+        processedContent,
+        'ai_tool',
+        `AI file_write: ${fileName}`
+      );
+    } catch (e) {
+      console.warn('[file_write] Failed to record undo:', e);
+    }
 
     if (autoAccept) {
       // Auto-accept mode: File is already written, just update editor if open
@@ -386,15 +424,15 @@ const fileWriteExecutor = async (
     // Import pending changes store (only when NOT auto-accept)
     const { usePendingChangesStore, loadOriginalContent } = await import('../../store/usePendingChangesStore');
 
-    // Load original content for potential rollback
-    const originalContent = await loadOriginalContent(fullPath);
+    // Use already loaded original content (or reload if needed)
+    const pendingOriginal = originalContent || await loadOriginalContent(fullPath);
 
     // Track the change for potential rollback
     const changeId = usePendingChangesStore.getState().addChange({
       filePath: fullPath,
       fileName,
       content: processedContent,
-      originalContent, // Store original for revert on reject
+      originalContent: pendingOriginal, // Store original for revert on reject
       operation: 'write',
       toolCallId: toolCallId || '',
     });

@@ -102,6 +102,14 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [9])?;
             Ok(())
         }
+        10 => {
+            // Migration from v9 to v10: Add checkpoints table
+            migration_v10(conn)?;
+            // Update schema version
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [10])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -340,6 +348,43 @@ fn migration_v9(conn: &Connection) -> DbResult<()> {
     // Delete all workspace_state entries where workspace_path is NULL
     conn.execute(
         "DELETE FROM workspace_state WHERE workspace_path IS NULL",
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Migration v10: Add checkpoints table and checkpoint_enabled to workspace_state
+fn migration_v10(conn: &Connection) -> DbResult<()> {
+    // Create checkpoints table
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS checkpoints (
+            id TEXT PRIMARY KEY,              -- Git commit hash
+            message_id TEXT NOT NULL,         -- Associated message ID
+            thread_id TEXT NOT NULL,          -- Thread this checkpoint belongs to
+            workspace_path TEXT NOT NULL,     -- Workspace path
+            created_at TEXT NOT NULL,
+            UNIQUE(thread_id, message_id)
+        )",
+        [],
+    )?;
+
+    // Create indexes for quick lookup
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_checkpoints_thread_id
+         ON checkpoints (thread_id)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_checkpoints_message_id
+         ON checkpoints (message_id)",
+        [],
+    )?;
+
+    // Add checkpoint_enabled column to workspace_state (default true = enabled)
+    conn.execute(
+        "ALTER TABLE workspace_state ADD COLUMN checkpoint_enabled INTEGER NOT NULL DEFAULT 1",
         [],
     )?;
 

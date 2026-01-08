@@ -21,7 +21,7 @@
  */
 
 import React, { useMemo, useEffect, useRef } from 'react';
-import Editor, { useMonaco } from '@monaco-editor/react';
+import Editor, { useMonaco, type OnMount } from '@monaco-editor/react';
 import { useEditorStore } from '../../store/useEditorStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useThemeStore } from '../../store/useThemeStore';
@@ -32,6 +32,7 @@ import { isTauri } from '../../lib/tauri';
 import { Search, Settings } from 'lucide-react';
 import { BrowserTab } from './BrowserTab';
 import { setMonacoInstance } from '../../tools/executors/editor-executors';
+import { setActiveMonacoEditor } from '../../lib/monaco-editor-ref';
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
 
@@ -42,6 +43,16 @@ export const CodeEditor: React.FC = () => {
   const activeTheme = useMemo(() => themes.find(t => t.id === activeThemeId) || themes[0], [themes, activeThemeId]);
   const monaco = useMonaco();
   const diagnosticsConfigured = useRef(false);
+
+  // Store Monaco editor instance for programmatic undo/redo
+  const handleEditorMount: OnMount = (editor) => {
+    setActiveMonacoEditor(editor);
+  };
+
+  // Clear editor ref when component unmounts
+  useEffect(() => {
+    return () => setActiveMonacoEditor(null);
+  }, []);
 
 
   // Configure Monaco to disable semantic validation (we don't have project type definitions)
@@ -219,6 +230,7 @@ export const CodeEditor: React.FC = () => {
           defaultValue={activeTab.content}
           value={activeTab.content}
           theme={activeTheme ? getMonacoThemeId(activeTheme) : 'aurora-dark'}
+          onMount={handleEditorMount}
           onChange={(value) => {
             if (value !== undefined) {
               updateTabContent(activeTab.id, value);

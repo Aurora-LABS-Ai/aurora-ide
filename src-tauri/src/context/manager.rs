@@ -150,12 +150,20 @@ impl ContextManager {
     /// Add a tool result to the current round
     pub fn add_tool_result(&mut self, tool_call_id: String, content: String, is_error: bool) -> Option<ToolResult> {
         let round = self.current_round.as_mut()?;
-        
-        // Truncate long results
+
+        // Truncate long results (UTF-8 safe)
         let result = if content.len() > MAX_TOOL_RESULT_LENGTH && !is_error {
+            // Find a valid UTF-8 boundary for truncation
+            let truncate_at = content
+                .char_indices()
+                .take_while(|(i, _)| *i < MAX_TOOL_RESULT_LENGTH)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(0);
+
             let truncated_content = format!(
-                "{}... [truncated, {} chars total]",
-                &content[..MAX_TOOL_RESULT_LENGTH],
+                "{}... [truncated, {} bytes total]",
+                &content[..truncate_at],
                 content.len()
             );
             ToolResult::truncated(tool_call_id.clone(), truncated_content, content.len())
@@ -164,7 +172,7 @@ impl ContextManager {
         } else {
             ToolResult::success(tool_call_id.clone(), content)
         };
-        
+
         round.add_tool_result(tool_call_id, result.clone());
         Some(result)
     }

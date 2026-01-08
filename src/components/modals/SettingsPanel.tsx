@@ -23,13 +23,86 @@
 import React, { useState } from 'react';
 import { useUiStore } from '../../store/useUiStore';
 import { useSettingsStore, type LLMProvider } from '../../store/useSettingsStore';
-import { X, Server, Layout, Shield, Eye, EyeOff, Plus, Trash2, ChevronDown, Palette, Database, Plug, Terminal, CheckCircle2, AlertCircle } from 'lucide-react';
+import { useWorkspaceStore } from '../../store/useWorkspaceStore';
+import { useCheckpointStore } from '../../store/useCheckpointStore';
+import { X, Server, Layout, Shield, Eye, EyeOff, Plus, Trash2, ChevronDown, Palette, Database, Plug, Terminal, CheckCircle2, AlertCircle, History } from 'lucide-react';
 import clsx from 'clsx';
 import { ToolSettingsTab } from './ToolSettingsTab';
 import { ThemeSettingsTab } from './ThemeSettingsTab';
 import { SemanticSettingsTab } from './SemanticSettingsTab';
 import { McpSettingsTab } from './McpSettingsTab';
 import { installAuroraCli, uninstallAuroraCli, isTauri } from '../../lib/tauri';
+
+// ============================================
+// CHECKPOINT SETTINGS COMPONENT
+// ============================================
+
+const CheckpointSettings: React.FC = () => {
+  const { rootPath } = useWorkspaceStore();
+  const { enabled, setEnabled } = useCheckpointStore();
+
+  if (!rootPath) {
+    return (
+      <div className="p-3 border border-border rounded-lg bg-titlebar">
+        <div className="flex items-center gap-2 mb-2">
+          <History className="w-3.5 h-3.5 text-amber-400" />
+          <h3 className="text-xs font-medium text-text-primary">Checkpoints</h3>
+        </div>
+        <p className="text-[10px] text-text-disabled">
+          Open a workspace to configure checkpoint settings.
+        </p>
+      </div>
+    );
+  }
+
+  const workspaceName = rootPath.split(/[/\\]/).pop() || rootPath;
+
+  return (
+    <div className="p-3 border border-border rounded-lg bg-titlebar">
+      <div className="flex items-center gap-2 mb-2">
+        <History className="w-3.5 h-3.5 text-amber-400" />
+        <h3 className="text-xs font-medium text-text-primary">Checkpoints</h3>
+      </div>
+      <p className="text-[10px] text-text-secondary mb-3">
+        Checkpoints capture the state of your workspace files before each message.
+        You can restore to any checkpoint to undo AI changes.
+      </p>
+
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-[10px] text-text-secondary">Enable for this workspace</p>
+          <p className="text-[9px] text-text-disabled truncate max-w-[200px]" title={rootPath}>
+            {workspaceName}
+          </p>
+        </div>
+        <button
+          onClick={() => setEnabled(!enabled)}
+          className={clsx(
+            "relative w-9 h-4 rounded-full transition-all duration-200 flex-shrink-0 overflow-hidden",
+            enabled ? "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.35)]" : "bg-input border border-border"
+          )}
+          aria-pressed={enabled}
+          aria-label="Toggle checkpoints"
+        >
+          <span
+            className={clsx(
+              "absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform duration-200",
+              enabled ? "translate-x-4" : "translate-x-0"
+            )}
+          />
+        </button>
+      </div>
+
+      {enabled && (
+        <div className="mt-2 p-2 bg-amber-500/10 rounded border border-amber-500/20">
+          <p className="text-[9px] text-amber-400">
+            Checkpoints are saved when you send messages. Hover over a user message to see the checkpoint indicator.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+};
 
 // ============================================
 // ADD PROVIDER FORM
@@ -733,6 +806,9 @@ export const SettingsPanel: React.FC = () => {
                     </div>
                   </div>
                 </div>
+
+                {/* Checkpoint Settings Section */}
+                <CheckpointSettings />
               </div>
             )}
           </div>

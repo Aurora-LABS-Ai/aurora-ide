@@ -26,6 +26,7 @@ import { ThinkingBlock } from './ThinkingBlock';
 import { ToolTimeline } from './ToolTimeline';
 import { ToolProposalCard } from './ToolProposalCard';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { CheckpointIndicator } from './CheckpointIndicator';
 import { User, Copy, Check } from 'lucide-react';
 
 // Copy button component with feedback
@@ -115,8 +116,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
               </p>
             </div>
           </div>
-          {/* Copy button and timestamp - visible on hover */}
-          <div className="flex items-center gap-1.5 mt-1 mr-11 opacity-0 group-hover:opacity-100 transition-opacity">
+          {/* Copy button, checkpoint, and timestamp - visible on hover */}
+          <div className="flex items-center gap-2 mt-1 mr-11 opacity-0 group-hover:opacity-100 transition-opacity">
+            <CheckpointIndicator messageId={message.id} messageContent={message.content} />
             <span className="text-[10px] text-text-disabled font-mono">
               {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </span>

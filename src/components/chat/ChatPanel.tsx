@@ -34,6 +34,7 @@ import { useSettingsStore } from "../../store/useSettingsStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { useContextStore } from "../../store/useContextStore";
 import { useAuditStore } from "../../store/useAuditStore";
+import { useCheckpointStore } from "../../store/useCheckpointStore";
 import { getAgentService, type ProviderConfig } from "../../services";
 import { tokenService } from "../../services/token-service";
 import { toolRegistry } from "../../tools";
@@ -114,6 +115,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
   useEffect(() => {
     initExecutors();
   }, []);
+
+  // Initialize checkpoint store when workspace changes
+  useEffect(() => {
+    if (rootPath) {
+      useCheckpointStore.getState().initForWorkspace(rootPath);
+    }
+  }, [rootPath]);
+
+  // Load checkpoints when thread changes
+  useEffect(() => {
+    if (currentThreadId) {
+      useCheckpointStore.getState().loadCheckpointsForThread(currentThreadId);
+    }
+  }, [currentThreadId]);
 
   // Keyboard shortcut: Ctrl+H to open history
   useEffect(() => {
@@ -248,6 +263,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
         timestamp: Date.now(),
       };
       addMessageToThread(userMessage);
+
+      // Create checkpoint for this user message (if enabled for workspace)
+      // Pass threadId directly since the store's threadId might not be set yet for new threads
+      if (rootPath && threadId) {
+        await useCheckpointStore.getState().createCheckpoint(userMessage.id, threadId);
+      }
 
       // Build Cursor-style context with IDE state and attached files
       // Include project layout (file tree) only for first message in thread (if enabled)
@@ -779,6 +800,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       refreshFileExplorer,
       getLLMConfig,
       selectedModel,
+      rootPath,
       // Provider-specific settings are derived from getLLMConfig/selectedModel
     ],
   );

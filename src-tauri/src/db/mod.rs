@@ -15,8 +15,8 @@ pub use models::{
     IndexProgress, SemanticSearchResult,
 };
 pub use repositories::{
-    EditorRepository, ExplorerRepository, WorkspaceRepository, SettingsRepository,
-    ThreadsRepository, ThemeRepository, SemanticRepository,
+    CheckpointRepository, EditorRepository, ExplorerRepository, WorkspaceRepository,
+    SettingsRepository, ThreadsRepository, ThemeRepository, SemanticRepository,
 };
 
 use tauri::AppHandle;
@@ -70,6 +70,11 @@ impl Database {
     /// Get a semantic repository
     pub fn semantic(&self) -> SemanticRepository<'_> {
         SemanticRepository::new(self._conn.connection())
+    }
+
+    /// Get a checkpoints repository
+    pub fn checkpoints(&self) -> CheckpointRepository<'_> {
+        CheckpointRepository::new(self._conn.connection())
     }
 
     /// Get the underlying connection (kept for potential future use)

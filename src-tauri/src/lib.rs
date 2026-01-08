@@ -2,12 +2,14 @@ use std::sync::Mutex;
 use tauri::{Manager, Emitter};
 
 mod commands;
+mod checkpoints;
 pub mod cli;
 mod context;
 mod db;
 mod file_cache;
 mod mcp;
 mod services;
+mod undo_redo;
 
 use cli::{CliArgs, CliOpenRequest};
 use services::ThreadService;
@@ -203,6 +205,26 @@ pub fn run_with_args(cli_args: CliArgs) {
             context::commands::context_get_turns,
             context::commands::context_update_settings,
             context::commands::context_estimate_request_tokens,
+            // Checkpoint commands (workspace file state snapshots)
+            commands::checkpoints::checkpoint_init,
+            commands::checkpoints::checkpoint_create,
+            commands::checkpoints::checkpoint_restore,
+            commands::checkpoints::checkpoint_list,
+            commands::checkpoints::checkpoint_get_by_message,
+            commands::checkpoints::checkpoint_delete_thread,
+            commands::checkpoints::checkpoint_is_initialized,
+            commands::checkpoints::checkpoint_get_enabled,
+            commands::checkpoints::checkpoint_set_enabled,
+            // Undo/Redo commands (per-file history)
+            commands::undo_redo::undo_init_file,
+            commands::undo_redo::undo_record_change,
+            commands::undo_redo::undo_file,
+            commands::undo_redo::redo_file,
+            commands::undo_redo::undo_file_and_save,
+            commands::undo_redo::redo_file_and_save,
+            commands::undo_redo::undo_get_state,
+            commands::undo_redo::undo_clear_file,
+            commands::undo_redo::undo_clear_all,
         ])
         .setup(move |app| {
             #[cfg(debug_assertions)]
@@ -224,6 +246,15 @@ pub fn run_with_args(cli_args: CliArgs) {
 
             // Store thread service for per-message persistence
             app.manage(ThreadService::new());
+
+            // Store checkpoint state for file state snapshots
+            let checkpoint_state = commands::checkpoints::CheckpointState::new();
+            let app_data_dir = handle.path().app_data_dir().expect("Failed to get app data dir");
+            checkpoint_state.init(app_data_dir);
+            app.manage(checkpoint_state);
+
+            // Store undo/redo state for per-file history
+            app.manage(commands::undo_redo::UndoRedoState::new());
 
             // If CLI provided a path, emit event to frontend to open it
             // Clone open_request since we're in a move closure

@@ -10,6 +10,7 @@ interface ThreadState {
   // Message actions
   addMessageToThread: (message: Message) => void;
   clearCurrentThread: () => void;
+  removeMessagesAfter: (messageId: string, includeMessage?: boolean) => void;
 
   // Actions
   createThread: () => string;
@@ -419,6 +420,49 @@ export const useThreadStore = create<ThreadState>()(
         }));
 
         // NO save during streaming - save happens when streaming ends via setStreamingState
+      },
+
+      removeMessagesAfter: (messageId, includeMessage = false) => {
+        const { currentThreadId, threads } = get();
+        if (!currentThreadId) return;
+
+        const thread = threads[currentThreadId];
+        if (!thread) return;
+
+        // Find the index of the message
+        const messageIndex = thread.messages.findIndex(msg => msg.id === messageId);
+        if (messageIndex === -1) return;
+
+        // If includeMessage is true, remove this message too (for checkpoint restore)
+        // Otherwise keep messages up to and including this message
+        const updatedMessages = includeMessage
+          ? thread.messages.slice(0, messageIndex)
+          : thread.messages.slice(0, messageIndex + 1);
+
+        const updatedThread: Thread = {
+          ...thread,
+          messages: updatedMessages,
+          updatedAt: Date.now(),
+        };
+
+        set((state) => ({
+          threads: {
+            ...state.threads,
+            [currentThreadId]: updatedThread,
+          },
+          threadList: state.threadList.map((t) =>
+            t.id === currentThreadId
+              ? {
+                ...t,
+                updatedAt: updatedThread.updatedAt,
+                messageCount: updatedMessages.length,
+              }
+              : t
+          ),
+        }));
+
+        // Save immediately after removing messages
+        get().saveCurrentThread(true);
       },
 
       updateThreadUsage: (tokenUsage, contextUsage) => {

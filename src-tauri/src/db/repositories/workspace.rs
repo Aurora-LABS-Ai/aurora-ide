@@ -24,17 +24,19 @@ impl<'a> WorkspaceRepository<'a> {
             .transpose()?;
 
         self.conn.execute(
-            "INSERT INTO workspace_state (workspace_path, open_tabs, panel_sizes, last_opened_at)
-             VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO workspace_state (workspace_path, open_tabs, panel_sizes, last_opened_at, checkpoint_enabled)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(workspace_path) DO UPDATE SET
                 open_tabs = excluded.open_tabs,
                 panel_sizes = excluded.panel_sizes,
-                last_opened_at = excluded.last_opened_at",
-            [
+                last_opened_at = excluded.last_opened_at,
+                checkpoint_enabled = excluded.checkpoint_enabled",
+            rusqlite::params![
                 state.workspace_path.as_deref(),
-                Some(tabs_json.as_str()),
-                panels_json.as_deref(),
-                Some(state.last_opened_at.as_str()),
+                tabs_json,
+                panels_json,
+                state.last_opened_at,
+                state.checkpoint_enabled as i32,
             ],
         )?;
 
@@ -44,7 +46,7 @@ impl<'a> WorkspaceRepository<'a> {
     /// Get workspace state by path
     pub fn get_by_path(&self, workspace_path: &str) -> DbResult<Option<WorkspaceState>> {
         let mut stmt = self.conn.prepare(
-            "SELECT workspace_path, open_tabs, panel_sizes, last_opened_at
+            "SELECT workspace_path, open_tabs, panel_sizes, last_opened_at, checkpoint_enabled
              FROM workspace_state
              WHERE workspace_path = ?1",
         )?;
@@ -65,6 +67,7 @@ impl<'a> WorkspaceRepository<'a> {
                         .flatten()
                 },
                 last_opened_at: row.get(3)?,
+                checkpoint_enabled: row.get::<_, i32>(4).unwrap_or(1) == 1,
             })
         });
 
@@ -78,7 +81,7 @@ impl<'a> WorkspaceRepository<'a> {
     /// Get the most recently opened workspace
     pub fn get_most_recent(&self) -> DbResult<Option<WorkspaceState>> {
         let mut stmt = self.conn.prepare(
-            "SELECT workspace_path, open_tabs, panel_sizes, last_opened_at
+            "SELECT workspace_path, open_tabs, panel_sizes, last_opened_at, checkpoint_enabled
              FROM workspace_state
              WHERE workspace_path IS NOT NULL
              ORDER BY last_opened_at DESC
@@ -101,6 +104,7 @@ impl<'a> WorkspaceRepository<'a> {
                         .flatten()
                 },
                 last_opened_at: row.get(3)?,
+                checkpoint_enabled: row.get::<_, i32>(4).unwrap_or(1) == 1,
             })
         });
 
@@ -126,7 +130,7 @@ impl<'a> WorkspaceRepository<'a> {
     #[allow(dead_code)]
     pub fn get_all(&self) -> DbResult<Vec<WorkspaceState>> {
         let mut stmt = self.conn.prepare(
-            "SELECT workspace_path, open_tabs, panel_sizes, last_opened_at
+            "SELECT workspace_path, open_tabs, panel_sizes, last_opened_at, checkpoint_enabled
              FROM workspace_state
              ORDER BY last_opened_at DESC",
         )?;
@@ -147,9 +151,44 @@ impl<'a> WorkspaceRepository<'a> {
                         .flatten()
                 },
                 last_opened_at: row.get(3)?,
+                checkpoint_enabled: row.get::<_, i32>(4).unwrap_or(1) == 1,
             })
         })?;
 
         states.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)
+    }
+
+    /// Update only the checkpoint_enabled setting for a workspace
+    pub fn set_checkpoint_enabled(&self, workspace_path: &str, enabled: bool) -> DbResult<()> {
+        let affected = self.conn.execute(
+            "UPDATE workspace_state SET checkpoint_enabled = ?1 WHERE workspace_path = ?2",
+            rusqlite::params![enabled as i32, workspace_path],
+        )?;
+
+        // If no row exists for this workspace, create one with defaults
+        if affected == 0 {
+            self.conn.execute(
+                "INSERT INTO workspace_state (workspace_path, open_tabs, panel_sizes, last_opened_at, checkpoint_enabled)
+                 VALUES (?1, '[]', NULL, datetime('now'), ?2)",
+                rusqlite::params![workspace_path, enabled as i32],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Get checkpoint_enabled setting for a workspace (default true if not found)
+    pub fn get_checkpoint_enabled(&self, workspace_path: &str) -> DbResult<bool> {
+        let result: Result<i32, _> = self.conn.query_row(
+            "SELECT checkpoint_enabled FROM workspace_state WHERE workspace_path = ?1",
+            [workspace_path],
+            |row| row.get(0),
+        );
+
+        match result {
+            Ok(val) => Ok(val == 1),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(true), // Default to enabled
+            Err(e) => Err(DbError::Sqlite(e)),
+        }
     }
 }

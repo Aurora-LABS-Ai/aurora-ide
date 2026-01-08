@@ -39,10 +39,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   fontSize: 14,
 
   openFile: (fileId, filename, content, language = 'typescript') => {
-    const { tabs, setActiveTab } = get();
+    const { tabs, setActiveTab, reloadTabContent } = get();
     const existingTab = tabs.find(t => t.id === fileId);
 
     if (existingTab) {
+      // Update content if it changed (e.g., from agent edits)
+      if (existingTab.content !== content) {
+        reloadTabContent(fileId, content);
+      }
       setActiveTab(fileId);
       return;
     }
@@ -57,6 +61,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     };
 
     set({ tabs: [...tabs, newTab], activeTabId: fileId });
+
+    // Initialize undo/redo tracking for this file
+    queueMicrotask(async () => {
+      try {
+        const { undoRedoService } = await import('../services/undo-redo');
+        await undoRedoService.initFile(fileId, content);
+      } catch {
+        // Ignore undo init errors
+      }
+    });
 
     // PERFORMANCE: Preload sibling files in background for faster subsequent opens
     // This makes clicking between files in the same folder instant

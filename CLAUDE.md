@@ -124,6 +124,7 @@ Located in `src/store/`:
 | `useSemanticStore` | Semantic search settings, indexes, search state |
 | `useThemeStore` | Custom theme management |
 | `usePendingChangesStore` | Pending file changes before approval |
+| `useCheckpointStore` | Checkpoint state, creation, restore operations |
 
 ### Database Persistence (SQLite)
 
@@ -132,7 +133,7 @@ Located in `src/store/`:
 - macOS: `~/Library/Application Support/com.aurora.agent/aurora.db`
 - Linux: `~/.config/com.aurora.agent/aurora.db`
 
-**Schema Version:** 8
+**Schema Version:** 10
 
 **Architecture:** `src-tauri/src/db/`
 
@@ -141,27 +142,30 @@ db/
   mod.rs          - Database manager, exposes repositories
   connection.rs   - SQLite connection with WAL mode
   schema.rs       - Table definitions (version 8)
-  migrations.rs   - Version-based migration system (v1-v8)
+  migrations.rs   - Version-based migration system (v1-v10)
   models.rs       - Rust structs
   repositories/
     settings.rs   - LLM providers, app settings, tool settings
-    workspace.rs  - Workspace state
+    workspace.rs  - Workspace state (includes checkpoint_enabled per workspace)
     editor.rs     - Editor state per file
     explorer.rs   - File explorer state
     threads.rs    - Chat threads with token/context usage
     themes.rs     - Custom themes
     semantic.rs   - Semantic search indexes and settings
+    checkpoints.rs - Checkpoint metadata storage
 ```
 
 **Key Tables:**
 - `llm_providers` - Provider configs (21 columns including customHeaders, customParams as JSON)
 - `app_settings` - Key-value settings store
 - `tool_settings` - Per-tool approval modes
-- `workspace_state`, `editor_state`, `explorer_state`
+- `workspace_state` - Includes `checkpoint_enabled` column for per-workspace checkpoint toggle
+- `editor_state`, `explorer_state`
 - `threads` - Chat history with token usage
 - `custom_themes` - User-imported themes
 - `semantic_indexes` - Per-workspace semantic search indexes with exclusions
 - `semantic_settings` - Global semantic search settings (model path, enabled, etc.)
+- `checkpoints` - Checkpoint metadata (id, message_id, thread_id, workspace_path, created_at)
 
 ### Agent Service
 
@@ -213,6 +217,134 @@ tools/
 | **Editor** | `editor_open_file`, `editor_get_active_file`, `editor_get_selection`, `editor_insert_text`, `editor_get_open_tabs`, `editor_close_tab` |
 | **Search** | `aurora_search` (semantic code search with filters) |
 | **Tasks** | `todo_write` (task list management) |
+
+### Checkpoint System
+
+Aurora includes a checkpoint system that captures workspace file state on every user message, allowing users to restore to any previous point.
+
+**How It Works:**
+- Uses a **shadow Git repository** separate from the user's actual Git repo
+- Shadow repo stored in app data: `%APPDATA%\com.aurora.agent\checkpoints\{workspace_hash}\`
+- Configured with `core.worktree` pointing to actual workspace
+- Each user message creates a Git commit in the shadow repo
+- Uses **git CLI** for all operations (like kilocode's simple-git approach)
+- Restore uses `git clean -fd` + `git reset --hard` to restore files
+
+**Why Git CLI instead of git2 crate:**
+The checkpoint system uses git CLI (via `std::process::Command`) instead of the git2 Rust crate because git2's `index.add_all()` doesn't properly work with external worktrees. When `core.worktree` points to a separate directory, git2's index operations often fail to traverse the workspace files correctly.
+
+**Architecture:**
+
+```
+Frontend (TypeScript)                    Backend (Rust)
+-----------------------                  ---------------
+useCheckpointStore                  ->   checkpoints.rs commands
+  - enabled (per workspace)              - checkpoint_init
+  - checkpoints Map<messageId, CP>       - checkpoint_create
+  - createCheckpoint()                   - checkpoint_restore
+  - restoreToCheckpoint()                - checkpoint_list
+  - loadCheckpointsForThread()           - checkpoint_get_enabled
+                                         - checkpoint_set_enabled
+checkpointService                   ->   CheckpointService (Rust)
+  - createCheckpoint()                   - Shadow git repo management
+  - restoreCheckpoint()                  - git CLI operations
+  - listCheckpoints()
+  - isEnabled() / setEnabled()
+```
+
+**Key Files:**
+- `src-tauri/src/checkpoints/mod.rs` - Module exports
+- `src-tauri/src/checkpoints/service.rs` - Git CLI operations (create, restore)
+- `src-tauri/src/checkpoints/types.rs` - Checkpoint struct, errors
+- `src-tauri/src/commands/checkpoints.rs` - Tauri commands
+- `src-tauri/src/db/repositories/checkpoints.rs` - Database storage
+- `src/services/checkpoint.ts` - Frontend service
+- `src/store/useCheckpointStore.ts` - Zustand store
+- `src/components/chat/CheckpointIndicator.tsx` - UI component
+
+**Database Schema (checkpoints table):**
+```sql
+CREATE TABLE checkpoints (
+  id TEXT PRIMARY KEY,           -- Git commit hash
+  message_id TEXT NOT NULL,      -- Associated message
+  thread_id TEXT NOT NULL,       -- Thread this belongs to
+  workspace_path TEXT NOT NULL,  -- Workspace path
+  created_at TEXT NOT NULL       -- ISO timestamp
+);
+```
+
+**Per-Workspace Enable/Disable:**
+- Stored in `workspace_state.checkpoint_enabled` column
+- Defaults to `true` for new workspaces
+- Toggle in Settings > General tab
+- Persisted per workspace path
+
+**UI Behavior:**
+- Checkpoint icon appears on user messages (hover to see)
+- Click shows "Restore to this point?" confirmation
+- On restore:
+  1. Files restored to checkpoint state via `git reset --hard`
+  2. Untracked files removed via `git clean -fd`
+  3. Messages after checkpoint deleted from UI/DB
+  4. Checkpoint message content put back in input box
+  5. File explorer refreshed
+
+**Multi-Thread Behavior:**
+- Shadow repo is per WORKSPACE, not per thread
+- Git history is linear across all threads in same workspace
+- Each thread only sees its OWN checkpoints in UI
+- Restore works correctly (uses specific commit ID)
+- Caveat: File state is shared - restoring in Thread 1 affects files seen by Thread 2
+
+**Safety:**
+- User's actual `.git` directory is excluded from tracking
+- Sanitizes git environment variables (GIT_DIR, GIT_WORK_TREE, etc.) to prevent interference
+- Common directories excluded: node_modules, dist, build, .idea, .vscode, etc.
+
+### Undo/Redo System
+
+Aurora includes a per-file undo/redo system for tracking programmatic changes (AI edits, tool operations).
+
+**How It Works:**
+- Each file has its own independent undo/redo stack (max 100 entries per file)
+- Changes are recorded when AI tools modify files (`file_write`, `file_create`)
+- User can undo/redo using Ctrl+Z / Ctrl+Y (or Cmd+Z / Cmd+Y on macOS)
+- Complementary to Monaco Editor's built-in keystroke-level undo/redo
+
+**Architecture:**
+
+```
+Frontend (TypeScript)                    Backend (Rust)
+-----------------------                  ---------------
+useUndoRedoStore                    ->   undo_redo.rs commands
+  - fileStates Map<path, state>         - undo_init_file
+  - recordChange()                      - undo_record_change
+  - undo()                              - undo_file / undo_file_and_save
+  - redo()                              - redo_file / redo_file_and_save
+                                        - undo_get_state
+undoRedoService                     ->   UndoRedoService (Rust)
+  - initFile()                          - Per-file undo stack management
+  - recordChange()                      - Simple stack-based history
+  - undo() / redo()
+```
+
+**Key Files:**
+- `src-tauri/src/undo_redo/mod.rs` - Module exports
+- `src-tauri/src/undo_redo/service.rs` - Stack-based undo/redo service
+- `src-tauri/src/undo_redo/types.rs` - FileChange, FileUndoState types
+- `src-tauri/src/commands/undo_redo.rs` - Tauri commands
+- `src/services/undo-redo.ts` - Frontend service
+- `src/store/useUndoRedoStore.ts` - Zustand store
+- `src/hooks/useUndoRedoShortcuts.ts` - Keyboard shortcut handler
+
+**Integration with AI Tools:**
+- `file_write` and `file_create` executors automatically record changes
+- Changes are recorded with source = "ai_tool" for tracking
+- Original content is captured before write for proper undo
+
+**Keyboard Shortcuts:**
+- `Ctrl+Z` / `Cmd+Z`: Undo last AI change
+- `Ctrl+Y` / `Cmd+Y` / `Ctrl+Shift+Z`: Redo last undone change
 
 ### Semantic Search System
 
@@ -454,6 +586,16 @@ await semanticService.updateWorkspaceExclusions(workspacePath, excludedFiles, ex
 **Themes:** `src-tauri/src/commands/themes.rs`
 - `get_all_themes`, `save_theme`, `delete_theme`
 - `set_active_theme_id`, `get_active_theme_id`
+
+**Checkpoints:** `src-tauri/src/commands/checkpoints.rs`
+- `checkpoint_init` - Initialize checkpoint service on app startup
+- `checkpoint_create` - Create checkpoint for user message
+- `checkpoint_restore` - Restore workspace to checkpoint state
+- `checkpoint_list` - Get all checkpoints for a thread
+- `checkpoint_get_by_message` - Get checkpoint by message ID
+- `checkpoint_delete_thread` - Delete all checkpoints for a thread
+- `checkpoint_is_initialized` - Check if checkpoint service is ready
+- `checkpoint_get_enabled`, `checkpoint_set_enabled` - Per-workspace toggle
 
 ## VS Code-Inspired Design
 

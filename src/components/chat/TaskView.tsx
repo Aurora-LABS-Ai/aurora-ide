@@ -143,24 +143,24 @@ export const TaskList: React.FC<{ todos: Task[] }> = ({ todos }) => {
                         >
                             <div className="flex-shrink-0 mt-0.5">
                                 {isCompleted ? (
-                                    <div className="h-4 w-4 rounded-full bg-emerald-500/20 flex items-center justify-center ring-1 ring-emerald-500/40">
-                                        <Check size={10} className="text-emerald-400" strokeWidth={3} />
+                                    <div className="h-4 w-4 rounded-full bg-task-completed/20 flex items-center justify-center ring-1 ring-task-completed/40">
+                                        <Check size={10} className="text-task-completed" strokeWidth={3} />
                                     </div>
                                 ) : isProgress ? (
                                     <div className="h-4 w-4 relative">
-                                        <Loader2 size={16} className="text-emerald-400 animate-spin" strokeWidth={2.5} />
+                                        <Loader2 size={16} className="text-task-completed animate-spin" strokeWidth={2.5} />
                                     </div>
                                 ) : isCancelled ? (
-                                    <XCircle size={16} className="text-red-400/50" />
+                                    <XCircle size={16} className="text-task-cancelled/50" />
                                 ) : (
-                                    <div className="h-4 w-4 rounded-full border border-zinc-700/50" />
+                                    <div className="h-4 w-4 rounded-full border border-task-pending/50" />
                                 )}
                             </div>
 
                             <div className="flex-1 min-w-0 flex flex-col">
                                 <span className={clsx(
                                     "text-[12px] leading-tight font-medium transition-colors",
-                                    isCompleted ? "text-emerald-400/80 line-through decoration-emerald-500/30" :
+                                    isCompleted ? "text-task-completed/80 line-through decoration-task-completed/30" :
                                         isProgress ? "text-text-primary" :
                                             isCancelled ? "text-text-disabled line-through" :
                                                 "text-text-disabled"
@@ -169,7 +169,7 @@ export const TaskList: React.FC<{ todos: Task[] }> = ({ todos }) => {
                                 </span>
 
                                 {isProgress && (
-                                    <span className="text-[10px] text-emerald-500/60 mt-0.5 animate-pulse">
+                                    <span className="text-[10px] text-task-completed/60 mt-0.5 animate-pulse">
                                         Processing...
                                     </span>
                                 )}

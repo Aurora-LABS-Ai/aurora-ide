@@ -48,6 +48,7 @@ export interface ColorValidationResult {
 /**
  * Common/shared color tokens (Requirement 10.6)
  * Covers: primary, secondary, success, warning, error, border colors
+ * Extended with semantic accent colors for consistent UI states
  */
 export interface CommonTokens {
   border: string;
@@ -70,6 +71,56 @@ export interface CommonTokens {
   successForeground: string;
   warning: string;
   warningForeground: string;
+
+  // === Extended Semantic Tokens ===
+
+  // Muted/disabled states
+  muted: string;
+  mutedForeground: string;
+
+  // Accent colors for UI emphasis (file mentions, highlights)
+  accent: string;
+  accentForeground: string;
+  accentMuted: string;
+
+  // Destructive actions (delete, remove)
+  destructive: string;
+  destructiveForeground: string;
+
+  // Git/File diff colors
+  diffAdded: string;
+  diffAddedForeground: string;
+  diffRemoved: string;
+  diffRemovedForeground: string;
+  diffModified: string;
+  diffModifiedForeground: string;
+
+  // Status indicator dots
+  statusActive: string;
+  statusInactive: string;
+  statusError: string;
+  statusWarning: string;
+
+  // Task/Todo status colors
+  taskPending: string;
+  taskInProgress: string;
+  taskCompleted: string;
+  taskCancelled: string;
+
+  // Security/Trust indicators
+  secureConnection: string;
+  insecureConnection: string;
+  localConnection: string;
+
+  // Quick action colors
+  actionAnalyze: string;
+  actionDebug: string;
+  actionGenerate: string;
+  actionTest: string;
+
+  // Checkpoint/restore
+  checkpoint: string;
+  checkpointForeground: string;
 }
 
 // ============================================================================

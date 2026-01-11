@@ -107,13 +107,13 @@ export const FileChangeCard: React.FC<FileChangeCardProps> = ({ changeId, toolCa
         switch (change.status) {
             case 'accepted':
                 return (
-                    <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-400">
+                    <span className="flex items-center gap-1 text-[10px] font-medium text-diff-added">
                         <Check size={10} /> Accepted
                     </span>
                 );
             case 'rejected':
                 return (
-                    <span className="flex items-center gap-1 text-[10px] font-medium text-red-400">
+                    <span className="flex items-center gap-1 text-[10px] font-medium text-diff-removed">
                         <X size={10} /> Rejected
                     </span>
                 );
@@ -264,23 +264,23 @@ export const PendingChangesBar: React.FC<PendingChangesBarProps> = ({ className 
 
     return (
         <div className={clsx(
-            "flex items-center justify-between px-4 py-2 bg-amber-500/10 border-b border-amber-500/20",
+            "flex items-center justify-between px-4 py-2 bg-warning/10 border-b border-warning/20",
             className
         )}>
-            <span className="text-[12px] font-medium text-amber-300">
+            <span className="text-[12px] font-medium text-warning">
                 {pending.length} pending file {pending.length === 1 ? 'change' : 'changes'}
             </span>
             <div className="flex items-center gap-2">
                 <button
                     onClick={handleAcceptAll}
-                    className="flex items-center gap-1 text-[11px] font-medium text-emerald-400 hover:text-emerald-300 transition-colors"
+                    className="flex items-center gap-1 text-[11px] font-medium text-diff-added hover:text-success transition-colors"
                 >
                     <Check size={12} />
                     Accept All
                 </button>
                 <button
                     onClick={rejectAll}
-                    className="flex items-center gap-1 text-[11px] font-medium text-zinc-400 hover:text-red-400 transition-colors"
+                    className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-error transition-colors"
                 >
                     <X size={12} />
                     Reject All

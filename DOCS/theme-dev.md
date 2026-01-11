@@ -45,7 +45,7 @@ Themes are JSON files that define colors for various UI components. A valid them
 
 ## 2. Color Categories
 
-Aurora supports **7 color categories** with **50+ tokens**. All colors must be valid Hex (`#RRGGBB`, `#RGB`, `#RRGGBBAA`), `rgb()`, or `rgba()` strings.
+Aurora supports **7 color categories** with **107 tokens**. All colors must be valid Hex (`#RRGGBB`, `#RGB`, `#RRGGBBAA`), `rgb()`, or `rgba()` strings.
 
 ### 2.1 Editor (14 tokens)
 Controls the main code editing area.
@@ -148,8 +148,10 @@ Controls the window title bar.
 | `border` | Bottom border color |
 | `buttonHover` | Window button hover background |
 
-### 2.7 Common (20 tokens)
-Shared UI elements used throughout the application.
+### 2.7 Common (42 tokens)
+Shared UI elements used throughout the application. This is the most extensive category with semantic tokens for all UI states.
+
+#### Core UI Colors (20 tokens)
 
 | Token | Description |
 |-------|-------------|
@@ -173,6 +175,81 @@ Shared UI elements used throughout the application.
 | `overlay` | Modal overlay background |
 | `scrollbar` | Scrollbar thumb color |
 | `scrollbarHover` | Scrollbar thumb on hover |
+
+#### Muted/Disabled States (2 tokens)
+
+| Token | Description |
+|-------|-------------|
+| `muted` | Muted background for disabled/inactive elements |
+| `mutedForeground` | Text color for muted/disabled states |
+
+#### Accent Colors (3 tokens)
+
+| Token | Description |
+|-------|-------------|
+| `accent` | Accent color for highlights, file mentions |
+| `accentForeground` | Text on accent background |
+| `accentMuted` | Subtle accent background (with transparency) |
+
+#### Destructive Actions (2 tokens)
+
+| Token | Description |
+|-------|-------------|
+| `destructive` | Color for delete/remove actions |
+| `destructiveForeground` | Text on destructive background |
+
+#### Git/File Diff Colors (6 tokens)
+
+| Token | Description |
+|-------|-------------|
+| `diffAdded` | Background for added lines/files |
+| `diffAddedForeground` | Text color for added content |
+| `diffRemoved` | Background for removed lines/files |
+| `diffRemovedForeground` | Text color for removed content |
+| `diffModified` | Background for modified lines/files |
+| `diffModifiedForeground` | Text color for modified content |
+
+#### Status Indicators (4 tokens)
+
+| Token | Description |
+|-------|-------------|
+| `statusActive` | Active/online status dot |
+| `statusInactive` | Inactive/offline status dot |
+| `statusError` | Error status indicator |
+| `statusWarning` | Warning status indicator |
+
+#### Task/Todo Status (4 tokens)
+
+| Token | Description |
+|-------|-------------|
+| `taskPending` | Pending task indicator |
+| `taskInProgress` | In-progress task indicator |
+| `taskCompleted` | Completed task indicator |
+| `taskCancelled` | Cancelled task indicator |
+
+#### Security/Connection Indicators (3 tokens)
+
+| Token | Description |
+|-------|-------------|
+| `secureConnection` | HTTPS/secure connection indicator |
+| `insecureConnection` | HTTP/insecure connection warning |
+| `localConnection` | Localhost/local development indicator |
+
+#### Quick Action Colors (4 tokens)
+
+| Token | Description |
+|-------|-------------|
+| `actionAnalyze` | Analyze action button color |
+| `actionDebug` | Debug action button color |
+| `actionGenerate` | Generate action button color |
+| `actionTest` | Test action button color |
+
+#### Checkpoint/Restore (2 tokens)
+
+| Token | Description |
+|-------|-------------|
+| `checkpoint` | Checkpoint indicator color |
+| `checkpointForeground` | Checkpoint text/icon color |
 
 ---
 
@@ -390,7 +467,37 @@ When you import a theme with the same name and author as an existing one, it upd
       "shadow": "#00000066",
       "overlay": "#00000088",
       "scrollbar": "#2d4356",
-      "scrollbarHover": "#3e5060"
+      "scrollbarHover": "#3e5060",
+      "muted": "#1e3448",
+      "mutedForeground": "#5a7184",
+      "accent": "#5090d3",
+      "accentForeground": "#ffffff",
+      "accentMuted": "#5090d320",
+      "destructive": "#ef5350",
+      "destructiveForeground": "#ffffff",
+      "diffAdded": "#66bb6a",
+      "diffAddedForeground": "#81c784",
+      "diffRemoved": "#ef5350",
+      "diffRemovedForeground": "#e57373",
+      "diffModified": "#ffca28",
+      "diffModifiedForeground": "#ffd54f",
+      "statusActive": "#66bb6a",
+      "statusInactive": "#546e7a",
+      "statusError": "#ef5350",
+      "statusWarning": "#ffca28",
+      "taskPending": "#546e7a",
+      "taskInProgress": "#42a5f5",
+      "taskCompleted": "#66bb6a",
+      "taskCancelled": "#ef5350",
+      "secureConnection": "#66bb6a",
+      "insecureConnection": "#ffca28",
+      "localConnection": "#42a5f5",
+      "actionAnalyze": "#42a5f5",
+      "actionDebug": "#ef5350",
+      "actionGenerate": "#ab47bc",
+      "actionTest": "#66bb6a",
+      "checkpoint": "#ffca28",
+      "checkpointForeground": "#ffd54f"
     }
   },
   "tokenColors": [

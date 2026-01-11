@@ -34,8 +34,8 @@ html, body, #root {
 }
 
 body {
-  background-color: #1e1e1e;
-  color: #d4d4d4;
+  background-color: var(--aurora-editor-background, #1e1e1e);
+  color: var(--aurora-editor-foreground, #d4d4d4);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -61,12 +61,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #424242;
+  background: var(--aurora-common-scrollbar, #424242);
   border-radius: 0;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #555555;
+  background: var(--aurora-common-scrollbar-hover, #555555);
 }
 
 ::-webkit-scrollbar-corner {
@@ -89,12 +89,12 @@ body {
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background: #3a3a3a;
+  background: var(--aurora-common-scrollbar, #3a3a3a);
   border-radius: 2px;
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background: #4a4a4a;
+  background: var(--aurora-common-scrollbar-hover, #4a4a4a);
 }
 
 /* Animation utilities */
@@ -324,6 +324,222 @@ body {
   to {
     opacity: 1;
   }
+}
+
+/* === MARKDOWN CONTENT STYLING === */
+
+/* Code block container - CodeBlockWrapper styles */
+.markdown-content .group\/code {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.markdown-content .group\/code:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+/* Code blocks with syntax highlighting */
+.markdown-content pre {
+  background: transparent;
+  margin: 0;
+  overflow-x: auto;
+  font-family: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Monaco, 'Andale Mono', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  tab-size: 2;
+}
+
+.markdown-content pre code {
+  background: transparent;
+  padding: 0;
+  border: none;
+  font-size: inherit;
+  color: var(--aurora-editor-foreground, #d4d4d4);
+}
+
+/* Inline code styling */
+.markdown-content code:not(pre code) {
+  background: var(--aurora-chat-codeBlock, var(--aurora-editor-background, #1a1a1a));
+  color: var(--aurora-common-primary, #60a5fa);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace;
+  font-size: 11px;
+  border: 1px solid var(--aurora-common-border, #333);
+}
+
+/* Table styling - professional grid rendering */
+.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: var(--aurora-sidebar-background, #1e1e1e);
+}
+
+.markdown-content thead {
+  background: var(--aurora-chat-surface, rgba(255, 255, 255, 0.05));
+}
+
+.markdown-content th {
+  padding: 10px 16px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--aurora-chat-foreground, #e0e0e0);
+  border-bottom: 2px solid var(--aurora-common-border, #333);
+}
+
+.markdown-content td {
+  padding: 10px 16px;
+  color: var(--aurora-chat-foreground, #d4d4d4);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.markdown-content tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.markdown-content tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.markdown-content tbody tr:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* Blockquote styling */
+.markdown-content blockquote {
+  border-left: 3px solid var(--aurora-common-primary, #60a5fa);
+  margin: 12px 0;
+  padding: 8px 16px;
+  background: rgba(96, 165, 250, 0.05);
+  border-radius: 0 8px 8px 0;
+}
+
+.markdown-content blockquote p {
+  margin: 0;
+  color: var(--aurora-chat-foreground, #b0b0b0);
+}
+
+/* Horizontal rule */
+.markdown-content hr {
+  border: none;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--aurora-common-border, #333), transparent);
+  margin: 20px 0;
+}
+
+/* List styling */
+.markdown-content ul {
+  list-style: none;
+  margin: 8px 0;
+  padding-left: 0;
+}
+
+.markdown-content ol {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.markdown-content li {
+  margin: 6px 0;
+  line-height: 1.6;
+  position: relative;
+}
+
+/* Custom bullet points for ul */
+.markdown-content ul > li {
+  padding-left: 16px;
+}
+
+.markdown-content ul > li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--aurora-common-primary, #60a5fa);
+  opacity: 0.6;
+}
+
+/* Headers */
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4 {
+  color: var(--aurora-chat-foreground, #e0e0e0);
+  font-weight: 600;
+}
+
+.markdown-content h1 {
+  font-size: 18px;
+  margin-top: 20px;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--aurora-common-border, #333);
+}
+
+.markdown-content h2 {
+  font-size: 16px;
+  margin-top: 18px;
+  margin-bottom: 8px;
+}
+
+.markdown-content h3 {
+  font-size: 14px;
+  margin-top: 14px;
+  margin-bottom: 6px;
+}
+
+.markdown-content h4 {
+  font-size: 13px;
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+
+/* Links */
+.markdown-content a {
+  color: var(--aurora-common-primary, #60a5fa);
+  text-decoration: none;
+  transition: opacity 0.2s ease;
+}
+
+.markdown-content a:hover {
+  text-decoration: underline;
+  opacity: 0.85;
+}
+
+/* Shiki code block theme overrides */
+.markdown-content .shiki,
+.markdown-content [data-shiki] {
+  background: transparent !important;
+  padding: 0;
+  margin: 0;
+  overflow-x: auto;
+}
+
+.markdown-content .shiki code,
+.markdown-content [data-shiki] code {
+  background: transparent !important;
+  font-family: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* Line numbers for code blocks (if present) */
+.markdown-content pre .line-number {
+  color: var(--aurora-editor-lineNumbersForeground, #666);
+  margin-right: 16px;
+  user-select: none;
+  opacity: 0.5;
+}
+
+/* Selection styling in code blocks */
+.markdown-content pre ::selection {
+  background: var(--aurora-editor-selectionBackground, rgba(96, 165, 250, 0.3));
 }
 
 /* Tauri drag region for touch/pen input on Windows */

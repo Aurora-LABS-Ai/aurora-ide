@@ -8,52 +8,140 @@ export default {
   theme: {
     extend: {
       colors: {
+        // ============================================================
         // VS Code Modern Dark - Mapped to Aurora Theme System variables
-        // Editor
+        // ============================================================
+
+        // === Editor ===
         editor: 'var(--aurora-editor-background)',
         foreground: 'var(--aurora-editor-foreground)',
 
-        // Tabs (mapped to sidebar/editor context)
+        // === Tabs ===
         tabs: 'var(--aurora-title-bar-background)',
         'tabs-active': 'var(--aurora-editor-background)',
 
-        // Sidebar & Panels
+        // === Sidebar & Panels ===
         sidebar: 'var(--aurora-sidebar-background)',
         'sidebar-foreground': 'var(--aurora-sidebar-foreground)',
-        'panel-header': 'var(--aurora-title-bar-background)', // Fixed: was mapping to text color
+        'panel-header': 'var(--aurora-title-bar-background)',
 
-        // Core UI
+        // === Core UI ===
         titlebar: 'var(--aurora-title-bar-background)',
         statusbar: 'var(--aurora-status-bar-background)',
 
-        // Inputs
+        // === Inputs ===
         input: 'var(--aurora-chat-input-background)',
         'input-border': 'var(--aurora-chat-input-border)',
 
-        // Chat
+        // === Chat ===
         'chat-bg': 'var(--aurora-chat-background)',
         'msg-user': 'var(--aurora-chat-user-message)',
         'msg-ai': 'var(--aurora-chat-assistant-message)',
 
-        // Common
+        // === Borders ===
         border: 'var(--aurora-common-border)',
         'border-focus': 'var(--aurora-common-primary)',
+        'border-hover': 'var(--aurora-common-border-hover)',
 
-        // Semantic
+        // === Primary (Accent) ===
         primary: 'var(--aurora-common-primary)',
         'primary-hover': 'var(--aurora-common-primary-hover)',
         'primary-foreground': 'var(--aurora-common-primary-foreground)',
 
-        success: 'var(--aurora-common-success)',
-        warning: 'var(--aurora-common-warning)',
-        danger: 'var(--aurora-common-error)', // Mapping danger to error
-        info: 'var(--aurora-common-info)',
+        // === Secondary ===
+        secondary: 'var(--aurora-common-secondary)',
+        'secondary-hover': 'var(--aurora-common-secondary-hover)',
+        'secondary-foreground': 'var(--aurora-common-secondary-foreground)',
 
-        // Text
+        // === Semantic States ===
+        success: 'var(--aurora-common-success)',
+        'success-foreground': 'var(--aurora-common-success-foreground)',
+        warning: 'var(--aurora-common-warning)',
+        'warning-foreground': 'var(--aurora-common-warning-foreground)',
+        danger: 'var(--aurora-common-error)',
+        'danger-foreground': 'var(--aurora-common-error-foreground)',
+        error: 'var(--aurora-common-error)',
+        'error-foreground': 'var(--aurora-common-error-foreground)',
+        info: 'var(--aurora-common-info)',
+        'info-foreground': 'var(--aurora-common-info-foreground)',
+
+        // === Muted/Disabled ===
+        muted: 'var(--aurora-common-muted)',
+        'muted-foreground': 'var(--aurora-common-muted-foreground)',
+
+        // === Accent (for highlights, file mentions) ===
+        accent: 'var(--aurora-common-accent)',
+        'accent-foreground': 'var(--aurora-common-accent-foreground)',
+        'accent-muted': 'var(--aurora-common-accent-muted)',
+
+        // === Destructive ===
+        destructive: 'var(--aurora-common-destructive)',
+        'destructive-foreground': 'var(--aurora-common-destructive-foreground)',
+
+        // === Git/Diff Colors ===
+        'diff-added': 'var(--aurora-common-diff-added)',
+        'diff-added-foreground': 'var(--aurora-common-diff-added-foreground)',
+        'diff-removed': 'var(--aurora-common-diff-removed)',
+        'diff-removed-foreground': 'var(--aurora-common-diff-removed-foreground)',
+        'diff-modified': 'var(--aurora-common-diff-modified)',
+        'diff-modified-foreground': 'var(--aurora-common-diff-modified-foreground)',
+
+        // === Status Indicators ===
+        'status-active': 'var(--aurora-common-status-active)',
+        'status-inactive': 'var(--aurora-common-status-inactive)',
+        'status-error': 'var(--aurora-common-status-error)',
+        'status-warning': 'var(--aurora-common-status-warning)',
+
+        // === Task/Todo States ===
+        'task-pending': 'var(--aurora-common-task-pending)',
+        'task-progress': 'var(--aurora-common-task-in-progress)',
+        'task-completed': 'var(--aurora-common-task-completed)',
+        'task-cancelled': 'var(--aurora-common-task-cancelled)',
+
+        // === Security/Connection ===
+        'secure': 'var(--aurora-common-secure-connection)',
+        'insecure': 'var(--aurora-common-insecure-connection)',
+        'local': 'var(--aurora-common-local-connection)',
+
+        // === Quick Actions ===
+        'action-analyze': 'var(--aurora-common-action-analyze)',
+        'action-debug': 'var(--aurora-common-action-debug)',
+        'action-generate': 'var(--aurora-common-action-generate)',
+        'action-test': 'var(--aurora-common-action-test)',
+
+        // === Checkpoint/Restore ===
+        checkpoint: 'var(--aurora-common-checkpoint)',
+        'checkpoint-foreground': 'var(--aurora-common-checkpoint-foreground)',
+
+        // === Context Usage Indicators ===
+        'usage-low': 'var(--aurora-chat-usage-low)',
+        'usage-medium': 'var(--aurora-chat-usage-medium)',
+        'usage-high': 'var(--aurora-chat-usage-high)',
+
+        // === Scrollbar ===
+        scrollbar: 'var(--aurora-common-scrollbar)',
+        'scrollbar-hover': 'var(--aurora-common-scrollbar-hover)',
+
+        // === Overlay/Shadow ===
+        overlay: 'var(--aurora-common-overlay)',
+        shadow: 'var(--aurora-common-shadow)',
+
+        // === Text Hierarchy ===
         'text-primary': 'var(--aurora-editor-foreground)',
         'text-secondary': 'var(--aurora-sidebar-foreground)',
-        'text-disabled': 'var(--aurora-common-secondary-foreground)', // Best approximation
+        'text-muted': 'var(--aurora-common-muted-foreground)',
+        'text-disabled': 'var(--aurora-common-muted-foreground)',
         'text-bright': 'var(--aurora-common-primary-foreground)',
+
+        // === Chat Specific ===
+        'thinking-bg': 'var(--aurora-chat-thinking-background)',
+        'thinking-border': 'var(--aurora-chat-thinking-border)',
+        'toolcall-bg': 'var(--aurora-chat-tool-call-background)',
+        'toolcall-border': 'var(--aurora-chat-tool-call-border)',
+        'code-block': 'var(--aurora-chat-code-block)',
+        surface: 'var(--aurora-chat-surface)',
+        'surface-border': 'var(--aurora-chat-surface-border)',
+        'surface-muted': 'var(--aurora-chat-surface-muted)',
       },
       keyframes: {
         shimmer: {

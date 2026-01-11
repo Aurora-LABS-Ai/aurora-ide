@@ -48,7 +48,7 @@ const ActivityBarItem: React.FC<ActivityBarItemProps> = ({
       )}
       style={{
         borderLeft: isActive ? '2px solid var(--aurora-common-primary)' : '2px solid transparent',
-        background: isActive ? 'var(--aurora-sidebar-itemSelected)' : 'transparent',
+        background: isActive ? 'var(--aurora-sidebar-item-selected)' : 'transparent',
       }}
     >
       {icon}
@@ -57,7 +57,7 @@ const ActivityBarItem: React.FC<ActivityBarItemProps> = ({
           className="absolute top-2 right-2 min-w-[16px] h-4 px-1 text-[10px] font-medium rounded-full flex items-center justify-center"
           style={{
             background: 'var(--aurora-common-primary)',
-            color: 'var(--aurora-common-primaryForeground)',
+            color: 'var(--aurora-common-primary-foreground)',
           }}
         >
           {badgeCount > 99 ? '99+' : badgeCount}
@@ -77,7 +77,7 @@ export const ActivityBar: React.FC<ActivityBarProps> = ({
     <div
       className="flex flex-col h-full w-12 border-r"
       style={{
-        background: 'var(--aurora-titleBar-background)',
+        background: 'var(--aurora-title-bar-background)',
         borderColor: 'var(--aurora-common-border)',
       }}
     >

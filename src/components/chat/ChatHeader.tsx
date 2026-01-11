@@ -8,11 +8,18 @@ import { useThreadStore } from '../../store/useThreadStore';
 import { useChatStore } from '../../store/useChatStore';
 import { useContextStore } from '../../store/useContextStore';
 
-const CONTEXT_COLORS = {
-  low: '#a3e635',
-  medium: '#fbbf24',
-  high: '#f87171',
+// Get theme colors at runtime from CSS variables
+const getContextColor = (varName: string, fallback: string): string => {
+  if (typeof window === 'undefined') return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+  return value || fallback;
 };
+
+const getContextColors = () => ({
+  low: getContextColor('--aurora-chat-usage-low', '#22d3ee'),
+  medium: getContextColor('--aurora-chat-usage-medium', '#facc15'),
+  high: getContextColor('--aurora-chat-usage-high', '#ef4444'),
+});
 
 interface ChatHeaderProps {
   onNewChat: () => void;
@@ -22,24 +29,27 @@ interface ChatHeaderProps {
 export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory }) => {
   const { currentThreadId, threads } = useThreadStore();
   const { isLoading } = useChatStore();
-  const { 
-    usagePercentage, 
-    usedContextTokens, 
-    contextWindow, 
+  const {
+    usagePercentage,
+    usedContextTokens,
+    contextWindow,
     isOverLimit,
     totalTurns,
     summarizedTurns,
     needsSummarization,
   } = useContextStore();
 
+  // Get theme colors at render time
+  const contextColors = getContextColors();
+
   const currentThread = currentThreadId ? threads[currentThreadId] : null;
   const hasMessages = currentThread && currentThread.messages.length > 0;
   const title = hasMessages ? currentThread.title : 'New Chat';
 
-  const getContextColor = () => {
-    if (isOverLimit || usagePercentage >= 80) return CONTEXT_COLORS.high;
-    if (usagePercentage >= 30) return CONTEXT_COLORS.medium;
-    return CONTEXT_COLORS.low;
+  const getUsageColor = () => {
+    if (isOverLimit || usagePercentage >= 80) return contextColors.high;
+    if (usagePercentage >= 30) return contextColors.medium;
+    return contextColors.low;
   };
 
   const formatTokens = (n: number) => {
@@ -85,7 +95,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory
                     <span className="text-[9px] text-text-disabled">|</span>
                     <span 
                       className="flex items-center gap-0.5 text-[9px]"
-                      style={{ color: CONTEXT_COLORS.low }}
+                      style={{ color: contextColors.low }}
                       title={`${summarizedTurns} turn(s) summarized to save context`}
                     >
                       <Zap size={8} />
@@ -100,7 +110,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory
                     <span className="text-[9px] text-text-disabled">|</span>
                     <span 
                       className="text-[9px] font-mono"
-                      style={{ color: getContextColor() }}
+                      style={{ color: getUsageColor() }}
                       title={needsSummarization ? 'Summarization recommended' : `${usagePercentage}% of context used`}
                     >
                       {formatTokens(usedContextTokens)}/{formatTokens(contextWindow)}

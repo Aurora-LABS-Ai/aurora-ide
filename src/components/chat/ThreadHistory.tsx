@@ -74,7 +74,7 @@ const ThreadItem: React.FC<{
     <div
       className={clsx(
         "group px-3 py-2 flex items-center gap-2 cursor-pointer text-sm",
-        isHighlighted ? "bg-primary/20 text-zinc-100" : "text-zinc-400 hover:bg-white/[0.03]",
+        isHighlighted ? "bg-primary/20 text-text-primary" : "text-text-secondary hover:bg-white/[0.03]",
         isChecked && "bg-primary/10"
       )}
       onClick={isSelectMode ? onToggleCheck : onSelect}
@@ -86,7 +86,7 @@ const ThreadItem: React.FC<{
         className={clsx(
           "p-0.5 rounded transition-all shrink-0",
           isSelectMode || isChecked ? "opacity-100" : "opacity-0 group-hover:opacity-60",
-          isChecked ? "text-primary" : "text-zinc-500 hover:text-zinc-300"
+          isChecked ? "text-primary" : "text-muted-foreground hover:text-text-primary"
         )}
       >
         {isChecked ? <CheckSquare size={14} /> : <Square size={14} />}
@@ -304,17 +304,17 @@ export const ThreadHistory: React.FC<ThreadHistoryProps> = ({ isOpen, onClose })
               <div className="flex items-center px-3 py-2.5 border-b border-white/5 bg-primary/10">
                 <button
                   onClick={clearSelection}
-                  className="p-1 rounded hover:bg-white/10 text-zinc-400 hover:text-white transition-colors mr-2"
+                  className="p-1 rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors mr-2"
                   title="Clear selection"
                 >
                   <X size={16} />
                 </button>
-                <span className="text-sm text-zinc-200 flex-1">
+                <span className="text-sm text-text-primary flex-1">
                   {selectedThreadIds.size} selected
                 </span>
                 <button
                   onClick={() => setSelectedThreadIds(new Set(threadsWithMessages.map(t => t.id)))}
-                  className="text-xs text-zinc-400 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-colors mr-2"
+                  className="text-xs text-text-secondary hover:text-text-primary px-2 py-1 rounded hover:bg-white/10 transition-colors mr-2"
                 >
                   Select all
                 </button>
@@ -350,7 +350,7 @@ export const ThreadHistory: React.FC<ThreadHistoryProps> = ({ isOpen, onClose })
                 >
                   <Plus size={14} />
                 </button>
-                <div className="text-[10px] text-zinc-500 bg-white/5 px-2 py-0.5 rounded">ESC to close</div>
+                <div className="text-[10px] text-muted-foreground bg-white/5 px-2 py-0.5 rounded">ESC to close</div>
               </div>
             )}
 
@@ -384,7 +384,7 @@ export const ThreadHistory: React.FC<ThreadHistoryProps> = ({ isOpen, onClose })
             </div>
 
             {/* Footer */}
-            <div className="px-3 py-1.5 bg-white/[0.02] border-t border-white/5 text-[10px] text-zinc-500 flex justify-between">
+            <div className="px-3 py-1.5 bg-white/[0.02] border-t border-white/5 text-[10px] text-muted-foreground flex justify-between">
               <div className="flex items-center gap-3">
                 <span>Thread History</span>
                 <span className="opacity-60">Space to select • Ctrl+A select all</span>

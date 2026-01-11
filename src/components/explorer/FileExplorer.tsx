@@ -256,7 +256,7 @@ export const FileExplorer: React.FC = () => {
           title={rootPath || ''}
         >
           <ChevronDown className="w-3 h-3 text-text-secondary" />
-          <Folder className="w-3.5 h-3.5 text-amber-500/80" />
+          <Folder className="w-3.5 h-3.5 text-warning/80" />
           <span className="text-[11px] font-medium text-text-primary truncate flex-1">
             {folderName}
           </span>

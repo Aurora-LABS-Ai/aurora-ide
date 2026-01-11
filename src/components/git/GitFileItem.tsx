@@ -18,13 +18,23 @@ interface GitFileItemProps {
 }
 
 const statusColors: Record<string, string> = {
-  modified: 'var(--aurora-common-warning)',
-  added: 'var(--aurora-common-success)',
-  deleted: 'var(--aurora-common-error)',
+  modified: 'var(--aurora-common-diff-modified)',
+  added: 'var(--aurora-common-diff-added)',
+  deleted: 'var(--aurora-common-diff-removed)',
   renamed: 'var(--aurora-common-info)',
   copied: 'var(--aurora-common-info)',
-  untracked: 'var(--aurora-common-success)',
+  untracked: 'var(--aurora-common-diff-added)',
   conflicted: 'var(--aurora-common-error)',
+};
+
+const statusForegroundColors: Record<string, string> = {
+  modified: 'var(--aurora-common-diff-modified-foreground)',
+  added: 'var(--aurora-common-diff-added-foreground)',
+  deleted: 'var(--aurora-common-diff-removed-foreground)',
+  renamed: 'var(--aurora-common-info-foreground)',
+  copied: 'var(--aurora-common-info-foreground)',
+  untracked: 'var(--aurora-common-diff-added-foreground)',
+  conflicted: 'var(--aurora-common-error-foreground)',
 };
 
 const statusLabels: Record<string, string> = {
@@ -49,6 +59,7 @@ export const GitFileItem: React.FC<GitFileItemProps> = ({
   const fileName = file.path.split(/[/\\]/).pop() || file.path;
   const directory = file.path.substring(0, file.path.length - fileName.length - 1);
   const statusColor = statusColors[file.status] || 'var(--aurora-sidebar-foreground)';
+  const statusForegroundColor = statusForegroundColors[file.status] || 'var(--aurora-sidebar-foreground)';
   const statusLabel = statusLabels[file.status] || '?';
 
   // Build full path for the file
@@ -159,7 +170,10 @@ export const GitFileItem: React.FC<GitFileItemProps> = ({
       {/* Status Badge */}
       <span
         className="text-[10px] font-bold w-4 text-center shrink-0"
-        style={{ color: statusColor }}
+        style={{ 
+          backgroundColor: statusColor,
+          color: statusForegroundColor
+        }}
         title={file.status}
       >
         {statusLabel}

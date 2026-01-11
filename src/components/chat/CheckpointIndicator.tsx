@@ -69,7 +69,7 @@ export const CheckpointIndicator: React.FC<CheckpointIndicatorProps> = ({
 
   if (isRestoring) {
     return (
-      <div className={`flex items-center gap-1 text-amber-400 ${className}`}>
+      <div className={`flex items-center gap-1 text-checkpoint ${className}`}>
         <Loader2 className="w-3 h-3 animate-spin" />
         <span className="text-[10px]">Restoring...</span>
       </div>
@@ -79,10 +79,10 @@ export const CheckpointIndicator: React.FC<CheckpointIndicatorProps> = ({
   if (showConfirm) {
     return (
       <div className={`flex items-center gap-2 ${className}`}>
-        <span className="text-[10px] text-amber-400">Restore to this point?</span>
+        <span className="text-[10px] text-checkpoint">Restore to this point?</span>
         <button
           onClick={handleRestore}
-          className="px-2 py-0.5 text-[10px] bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 rounded transition-colors"
+          className="px-2 py-0.5 text-[10px] bg-checkpoint/20 hover:bg-checkpoint/30 text-checkpoint rounded transition-colors"
         >
           Yes
         </button>
@@ -99,7 +99,7 @@ export const CheckpointIndicator: React.FC<CheckpointIndicatorProps> = ({
   return (
     <button
       onClick={() => setShowConfirm(true)}
-      className={`flex items-center gap-1 text-text-disabled hover:text-amber-400 transition-colors group ${className}`}
+      className={`flex items-center gap-1 text-text-disabled hover:text-checkpoint transition-colors group ${className}`}
       title="Restore to this checkpoint (undo changes after this message)"
     >
       <History className="w-3 h-3" />

@@ -899,10 +899,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             {/* Suggested prompts grid */}
             <div className="w-full grid grid-cols-1 gap-2.5">
               {[
-                { Icon: Search, label: "Analyze Codebase", prompt: "Explain the architecture of this project", color: "text-blue-400" },
-                { Icon: Bug, label: "Find Bugs", prompt: "Scan the current file for potential bugs", color: "text-red-400" },
-                { Icon: Sparkles, label: "Generate Feature", prompt: "Create a new React component for...", color: "text-purple-400" },
-                { Icon: TestTube, label: "Write Tests", prompt: "Write unit tests for the selected code", color: "text-emerald-400" },
+                { Icon: Search, label: "Analyze Codebase", prompt: "Explain the architecture of this project", color: "text-action-analyze" },
+                { Icon: Bug, label: "Find Bugs", prompt: "Scan the current file for potential bugs", color: "text-action-debug" },
+                { Icon: Sparkles, label: "Generate Feature", prompt: "Create a new React component for...", color: "text-action-generate" },
+                { Icon: TestTube, label: "Write Tests", prompt: "Write unit tests for the selected code", color: "text-action-test" },
               ].map(({ Icon, label, prompt, color }, i) => (
                 <button
                   key={i}

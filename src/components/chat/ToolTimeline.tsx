@@ -75,7 +75,7 @@ const FileExplorerView: React.FC<FileExplorerProps> = ({ files }) => {
         {displayedFiles.map((file, idx) => (
           <div key={idx} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-white/5 transition-colors">
             {file.type === 'directory' ? (
-              <Folder size={12} className="text-blue-400/80 fill-blue-400/10" />
+              <Folder size={12} className="text-info/80 fill-info/10" />
             ) : (
               <File size={12} className="text-text-secondary" />
             )}
@@ -159,15 +159,15 @@ const MultiFileResultsView: React.FC<MultiFileResultsProps> = ({ files }) => {
             className={cn(
               "w-full flex items-center justify-between gap-2 rounded px-2 py-1 text-left group transition-colors",
               file.success
-                ? "hover:bg-emerald-500/5 cursor-pointer"
+                ? "hover:bg-success/5 cursor-pointer"
                 : "opacity-60 cursor-not-allowed"
             )}
           >
             <div className="flex items-center gap-2 min-w-0 overflow-hidden">
               {file.success ? (
-                <Check size={10} className="text-emerald-400 shrink-0" />
+                <Check size={10} className="text-success shrink-0" />
               ) : (
-                <X size={10} className="text-red-400 shrink-0" />
+                <X size={10} className="text-error shrink-0" />
               )}
               <img
                 src={getIconUrl(getIconName(fileName, false))}
@@ -367,8 +367,8 @@ const CodeView: React.FC<CodeViewProps> = ({
 
   if (error) {
     return (
-      <div className="mt-1 rounded bg-red-500/10 p-2 border border-red-500/20">
-        <div className="font-mono text-[10px] text-red-300 whitespace-pre-wrap">
+      <div className="mt-1 rounded bg-error/10 p-2 border border-error/20">
+        <div className="font-mono text-[10px] text-error whitespace-pre-wrap">
           <span className="font-bold">Error:</span> {error}
         </div>
       </div>
@@ -649,9 +649,9 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
 
         <div className={cn(
           "relative z-10 flex h-3 w-3 items-center justify-center rounded-full mt-2.5 transition-all text-[8px]",
-          isError ? "bg-red-500/20 text-red-400 ring-2 ring-red-500/10" :
-            isRunning ? "bg-blue-500/20 text-blue-400 ring-2 ring-blue-500/10" :
-              "bg-emerald-500/20 text-emerald-400 ring-2 ring-emerald-500/10"
+          isError ? "bg-error/20 text-error ring-2 ring-error/10" :
+            isRunning ? "bg-task-progress/20 text-task-progress ring-2 ring-task-progress/10" :
+              "bg-success/20 text-success ring-2 ring-success/10"
         )}>
           {isError ? <X size={8} /> :
             isRunning ? <Loader2 size={8} className="animate-spin" /> :
@@ -667,11 +667,11 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
             className="flex-1 text-left flex items-baseline gap-2 group/header outline-none"
           >
             {isError ? (
-              <span className="text-[11px] font-medium tracking-tight text-red-400">
+              <span className="text-[11px] font-medium tracking-tight text-error">
                 {getToolDisplayName(tool.name)}
               </span>
             ) : isRunning ? (
-              <ShimmerText className="text-[11px] font-medium tracking-tight text-blue-400">
+              <ShimmerText className="text-[11px] font-medium tracking-tight text-task-progress">
                 {getToolDisplayName(tool.name)}
               </ShimmerText>
             ) : (
@@ -703,10 +703,10 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
               {(linesAdded !== null || linesRemoved !== null) && (
                 <span className="flex items-center gap-1 font-mono">
                   {linesAdded !== null && linesAdded > 0 && (
-                    <span className="text-emerald-400">+{linesAdded}</span>
+                    <span className="text-diff-added">+{linesAdded}</span>
                   )}
                   {linesRemoved !== null && linesRemoved > 0 && (
-                    <span className="text-red-400">-{linesRemoved}</span>
+                    <span className="text-diff-removed">-{linesRemoved}</span>
                   )}
                 </span>
               )}
@@ -755,19 +755,19 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                   <div key={todo.id || idx} className="flex items-center gap-2 text-[10px] px-2 py-1 rounded bg-white/5 border border-white/5">
                     <span className={cn(
                       "w-1.5 h-1.5 rounded-full flex-shrink-0",
-                      todo.status === 'completed' ? "bg-emerald-400" :
-                        todo.status === 'in_progress' ? "bg-blue-400" :
-                          todo.status === 'cancelled' ? "bg-red-400" :
-                            "bg-zinc-400"
+                      todo.status === 'completed' ? "bg-task-completed" :
+                        todo.status === 'in_progress' ? "bg-task-progress" :
+                          todo.status === 'cancelled' ? "bg-task-cancelled" :
+                            "bg-task-pending"
                     )} />
                     <span className="text-text-secondary truncate">{todo.content || 'Untitled task'}</span>
                     {todo.status && (
                       <span className={cn(
                         "ml-auto text-[9px] px-1 py-0.5 rounded flex-shrink-0",
-                        todo.status === 'completed' ? "bg-emerald-500/20 text-emerald-400" :
-                          todo.status === 'in_progress' ? "bg-blue-500/20 text-blue-400" :
-                            todo.status === 'cancelled' ? "bg-red-500/20 text-red-400" :
-                              "bg-zinc-500/20 text-zinc-400"
+                        todo.status === 'completed' ? "bg-task-completed/20 text-task-completed" :
+                          todo.status === 'in_progress' ? "bg-task-progress/20 text-task-progress" :
+                            todo.status === 'cancelled' ? "bg-task-cancelled/20 text-task-cancelled" :
+                              "bg-task-pending/20 text-task-pending"
                       )}>
                         {todo.status}
                       </span>
@@ -787,9 +787,9 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                 {/* Old String (what was replaced) */}
                 {searchReplaceData.oldString && (
                   <div>
-                    <div className="flex items-center gap-2 px-2 py-1 bg-red-500/10 rounded-t border-b border-red-500/20">
-                      <span className="text-[9px] font-medium text-red-400">OLD</span>
-                      <span className="text-[8px] text-red-400/60">removed</span>
+                    <div className="flex items-center gap-2 px-2 py-1 bg-diff-removed/10 rounded-t border-b border-diff-removed/20">
+                      <span className="text-[9px] font-medium text-diff-removed">OLD</span>
+                      <span className="text-[8px] text-diff-removed/60">removed</span>
                     </div>
                     <CodeView
                       data={searchReplaceData.oldString}
@@ -800,9 +800,9 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                 {/* New String (replacement) */}
                 {searchReplaceData.newString && (
                   <div>
-                    <div className="flex items-center gap-2 px-2 py-1 bg-emerald-500/10 rounded-t border-b border-emerald-500/20">
-                      <span className="text-[9px] font-medium text-emerald-400">NEW</span>
-                      <span className="text-[8px] text-emerald-400/60">added</span>
+                    <div className="flex items-center gap-2 px-2 py-1 bg-diff-added/10 rounded-t border-b border-diff-added/20">
+                      <span className="text-[9px] font-medium text-diff-added">NEW</span>
+                      <span className="text-[8px] text-diff-added/60">added</span>
                     </div>
                     <CodeView
                       data={searchReplaceData.newString}
@@ -825,9 +825,9 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                     {/* Old String (what was replaced) */}
                     {replacement.oldString && (
                       <div>
-                        <div className="flex items-center gap-2 px-2 py-1 bg-red-500/10 rounded-t border-b border-red-500/20">
-                          <span className="text-[9px] font-medium text-red-400">OLD</span>
-                          <span className="text-[8px] text-red-400/60">removed</span>
+                        <div className="flex items-center gap-2 px-2 py-1 bg-diff-removed/10 rounded-t border-b border-diff-removed/20">
+                          <span className="text-[9px] font-medium text-diff-removed">OLD</span>
+                          <span className="text-[8px] text-diff-removed/60">removed</span>
                         </div>
                         <CodeView
                           data={replacement.oldString}
@@ -838,9 +838,9 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                     {/* New String (replacement) */}
                     {replacement.newString && (
                       <div>
-                        <div className="flex items-center gap-2 px-2 py-1 bg-emerald-500/10 rounded-t border-b border-emerald-500/20">
-                          <span className="text-[9px] font-medium text-emerald-400">NEW</span>
-                          <span className="text-[8px] text-emerald-400/60">added</span>
+                        <div className="flex items-center gap-2 px-2 py-1 bg-diff-added/10 rounded-t border-b border-diff-added/20">
+                          <span className="text-[9px] font-medium text-diff-added">NEW</span>
+                          <span className="text-[8px] text-diff-added/60">added</span>
                         </div>
                         <CodeView
                           data={replacement.newString}

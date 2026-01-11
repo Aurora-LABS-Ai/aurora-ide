@@ -90,7 +90,7 @@ const GeneratingStatus: React.FC = () => {
 
   if (!isLoading) {
     return (
-      <p className="text-[10px] text-zinc-600">
+      <p className="text-[10px] text-muted-foreground">
         AI can make mistakes. Review generated code.
       </p>
     );
@@ -419,7 +419,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
 
         {availableModels.length === 0 ? (
           <div className="p-4 text-center">
-            <p className="text-[11px] text-zinc-500 mb-2">No models found</p>
+            <p className="text-[11px] text-muted-foreground mb-2">No models found</p>
             <button
               onClick={() => {
                 setShowModelDropdown(false);
@@ -502,7 +502,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     >
       {/* Drag Overlay */}
       {isDragOver && (
-        <div className="absolute inset-2 z-50 rounded-xl border-2 border-dashed border-emerald-500/50 bg-emerald-500/5 backdrop-blur-sm flex flex-col items-center justify-center text-emerald-400 animate-in fade-in duration-200">
+        <div className="absolute inset-2 z-50 rounded-xl border-2 border-dashed border-accent/50 bg-accent/5 backdrop-blur-sm flex flex-col items-center justify-center text-accent animate-in fade-in duration-200">
           <Paperclip className="w-8 h-8 mb-2 animate-bounce" />
           <span className="text-sm font-medium">Drop to attach context</span>
         </div>
@@ -541,7 +541,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
           >
             <Sparkles size={10} className="text-primary" />
             <span className="truncate max-w-[120px]">{availableModels.length > 0 ? (currentModel || 'Select Model') : 'No Models'}</span>
-            <ChevronDown size={10} className={clsx("text-zinc-500 transition-transform", showModelDropdown && "rotate-180")} />
+            <ChevronDown size={10} className={clsx("text-muted-foreground transition-transform", showModelDropdown && "rotate-180")} />
           </button>
 
           {/* Thinking Toggle - only active if provider supports it */}
@@ -555,10 +555,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
             className={clsx(
               "flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all",
               !providerSupportsThinking
-                ? "bg-transparent text-zinc-600 cursor-not-allowed opacity-50"
+                ? "bg-transparent text-muted-foreground cursor-not-allowed opacity-50"
                 : thinkingEnabled
                   ? "bg-primary/10 text-primary"
-                  : "bg-transparent text-zinc-500 hover:text-zinc-300"
+                  : "bg-transparent text-muted-foreground hover:text-text-primary"
             )}
             style={{
               border: providerSupportsThinking ? '1px solid transparent' : '1px solid transparent',
@@ -579,12 +579,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
 
         {/* Attached Files Scroll */}
         {attachedFiles.length > 0 && (
-          <div className="px-3 py-2 flex flex-wrap gap-2 text-zinc-300">
+          <div className="px-3 py-2 flex flex-wrap gap-2 text-text-primary">
             {attachedFiles.map(file => (
               <div
                 key={file.path}
                 onClick={() => handleFileClick(file)}
-                className="group flex items-center gap-1.5 pl-2 pr-1 py-1 bg-emerald-500/10 text-emerald-400 rounded-md border border-emerald-500/20 text-[10px] cursor-pointer hover:bg-emerald-500/20 transition-colors"
+                className="group flex items-center gap-1.5 pl-2 pr-1 py-1 bg-accent/10 text-accent rounded-md border border-accent/20 text-[10px] cursor-pointer hover:bg-accent/20 transition-colors"
                 title="Click to open file"
               >
                 <FileIcon name={file.name} path={file.path} className="w-3 h-3 min-w-3" />
@@ -594,7 +594,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                     e.stopPropagation();
                     removeAttachedFile(file.path);
                   }}
-                  className="p-0.5 rounded-sm hover:bg-white/10 text-emerald-600 hover:text-red-400 transition-colors"
+                  className="p-0.5 rounded-sm hover:bg-white/10 text-accent hover:text-error transition-colors"
                   title="Remove file"
                 >
                   <X size={10} />
@@ -631,8 +631,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
             className={clsx(
               "p-1 rounded-full transition-all duration-200 flex items-center justify-center tap-highlight-transparent outline-none focus:outline-none",
               isLoading
-                ? "bg-red-500/10 text-red-400 hover:bg-red-500/20"
-                : "hover:bg-transparent" // Reset default hover
+                ? "bg-error/10 text-error hover:bg-error/20"
+                : "hover:bg-transparent"
             )}
             title={isLoading ? 'Stop generation' : 'Send message'}
           >
@@ -643,7 +643,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                 "w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300",
                 (content.trim() || attachedFiles.length > 0)
                   ? "bg-gradient-to-br from-primary to-primary/80 shadow-lg shadow-primary/25 hover:scale-105 hover:shadow-primary/40 active:scale-95"
-                  : "bg-zinc-100/10 text-zinc-500"
+                  : "bg-muted text-muted-foreground"
               )}>
                 <ArrowUp
                   size={16}

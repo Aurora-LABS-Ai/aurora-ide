@@ -505,9 +505,9 @@ export const TerminalPanel: React.FC = () => {
 
                 {/* Status Dot */}
                 {session.ptyConnected ? (
-                  isActive && <div className="w-1.5 h-1.5 rounded-full bg-[#89d185] flex-shrink-0 ml-1" />
+                  isActive && <div className="w-1.5 h-1.5 rounded-full bg-success flex-shrink-0 ml-1" />
                 ) : (
-                  <div className="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0 ml-1" title="Disconnected" />
+                  <div className="w-1.5 h-1.5 rounded-full bg-error flex-shrink-0 ml-1" title="Disconnected" />
                 )}
 
                 <div

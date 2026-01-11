@@ -70,11 +70,11 @@ const AuditEntryCard: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
       {/* Timeline dot */}
       <div className={clsx(
         "absolute -left-[23px] top-2 w-3 h-3 rounded-full border-2 border-border",
-        entry.status === 'executed' ? "bg-emerald-500" :
-          entry.status === 'rejected' ? "bg-red-500" :
-            entry.status === 'failed' ? "bg-orange-500" :
-              entry.status === 'executing' ? "bg-amber-500" :
-                "bg-zinc-500"
+        entry.status === 'executed' ? "bg-success" :
+          entry.status === 'rejected' ? "bg-error" :
+            entry.status === 'failed' ? "bg-warning" :
+              entry.status === 'executing' ? "bg-task-progress" :
+                "bg-muted"
       )} />
 
       <div className="bg-white/[0.02] border border-white/5 rounded-lg p-3 hover:bg-white/[0.03] transition-colors">
@@ -82,33 +82,33 @@ const AuditEntryCard: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
           <div className="flex items-start gap-2.5 min-w-0 flex-1">
             <div className={clsx(
               "p-1.5 rounded-md mt-0.5",
-              entry.status === 'executed' ? "bg-emerald-500/10 text-emerald-400" :
-                entry.status === 'failed' ? "bg-orange-500/10 text-orange-400" :
-                  entry.status === 'rejected' ? "bg-red-500/10 text-red-400" :
-                    "bg-zinc-500/10 text-zinc-400"
+              entry.status === 'executed' ? "bg-success/10 text-success" :
+                entry.status === 'failed' ? "bg-warning/10 text-warning" :
+                  entry.status === 'rejected' ? "bg-error/10 text-error" :
+                    "bg-muted/10 text-muted-foreground"
             )}>
               <Icon size={14} />
             </div>
 
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 mb-1">
-                <span className="font-mono text-[11px] font-semibold text-emerald-400">
+                <span className="font-mono text-[11px] font-semibold text-success">
                   {entry.toolName}
                 </span>
                 {entry.duration && (
-                  <span className="text-[9px] text-zinc-500 font-mono">
+                  <span className="text-[9px] text-muted-foreground font-mono">
                     {formatDuration(entry.duration)}
                   </span>
                 )}
               </div>
 
               {primaryArg && (
-                <p className="text-[11px] text-zinc-400 font-mono truncate">
+                <p className="text-[11px] text-text-secondary font-mono truncate">
                   {primaryArg}
                 </p>
               )}
 
-              <p className="text-[10px] text-zinc-600 mt-1">
+              <p className="text-[10px] text-text-disabled mt-1">
                 {formatDistanceToNow(entry.timestamp, { addSuffix: true })}
               </p>
             </div>
@@ -118,11 +118,11 @@ const AuditEntryCard: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
             {/* Status badge */}
             <div className={clsx(
               "flex items-center gap-1 text-[9px] font-medium px-1.5 py-0.5 rounded",
-              entry.status === 'executed' ? "bg-emerald-500/20 text-emerald-400" :
-                entry.status === 'rejected' ? "bg-red-500/20 text-red-400" :
-                  entry.status === 'failed' ? "bg-orange-500/20 text-orange-400" :
-                    entry.status === 'executing' ? "bg-amber-500/20 text-amber-400" :
-                      "bg-zinc-500/20 text-zinc-400"
+              entry.status === 'executed' ? "bg-success/20 text-success" :
+                entry.status === 'rejected' ? "bg-error/20 text-error" :
+                  entry.status === 'failed' ? "bg-warning/20 text-warning" :
+                    entry.status === 'executing' ? "bg-task-progress/20 text-task-progress" :
+                      "bg-muted/20 text-muted-foreground"
             )}>
               {entry.status === 'executed' && <CheckCircle size={10} />}
               {entry.status === 'rejected' && <XCircle size={10} />}
@@ -135,9 +135,9 @@ const AuditEntryCard: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
             {/* Risk level */}
             <div className={clsx(
               "flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded",
-              entry.riskLevel === 'high' ? "bg-red-500/10 text-red-400" :
-                entry.riskLevel === 'medium' ? "bg-amber-500/10 text-amber-400" :
-                  "bg-zinc-500/10 text-zinc-500"
+              entry.riskLevel === 'high' ? "bg-error/10 text-error" :
+                entry.riskLevel === 'medium' ? "bg-warning/10 text-warning" :
+                  "bg-muted/10 text-muted-foreground"
             )}>
               <AlertTriangle size={8} />
               {entry.riskLevel.toUpperCase()}
@@ -147,7 +147,7 @@ const AuditEntryCard: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
 
         {/* Error message if failed */}
         {entry.error && (
-          <div className="mt-2 p-2 bg-red-500/10 border border-red-500/20 rounded text-[10px] text-red-400 font-mono">
+          <div className="mt-2 p-2 bg-error/10 border border-error/20 rounded text-[10px] text-error font-mono">
             {entry.error}
           </div>
         )}
@@ -155,10 +155,10 @@ const AuditEntryCard: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
         {/* Result preview (collapsed) */}
         {entry.result && entry.status === 'executed' && (
           <details className="mt-2">
-            <summary className="text-[10px] text-zinc-500 cursor-pointer hover:text-zinc-400">
+            <summary className="text-[10px] text-muted-foreground cursor-pointer hover:text-text-secondary">
               View result
             </summary>
-            <div className="mt-1 p-2 bg-black/20 rounded text-[10px] text-zinc-400 font-mono max-h-20 overflow-auto">
+            <div className="mt-1 p-2 bg-black/20 rounded text-[10px] text-text-secondary font-mono max-h-20 overflow-auto">
               {entry.result}
             </div>
           </details>
@@ -191,26 +191,26 @@ export const AuditTimeline: React.FC = () => {
         {/* Header */}
         <div className="h-12 border-b border-white/5 flex items-center justify-between px-4 bg-white/[0.02]">
           <div className="flex items-center gap-3">
-            <h2 className="text-[13px] font-semibold text-zinc-100">Audit Timeline</h2>
+            <h2 className="text-[13px] font-semibold text-text-primary">Audit Timeline</h2>
             <div className="flex items-center gap-2 text-[10px]">
-              <span className="text-zinc-500">{stats.total} total</span>
-              <span className="text-emerald-400">{stats.executed} executed</span>
-              {stats.failed > 0 && <span className="text-orange-400">{stats.failed} failed</span>}
-              {stats.rejected > 0 && <span className="text-red-400">{stats.rejected} rejected</span>}
+              <span className="text-muted-foreground">{stats.total} total</span>
+              <span className="text-success">{stats.executed} executed</span>
+              {stats.failed > 0 && <span className="text-warning">{stats.failed} failed</span>}
+              {stats.rejected > 0 && <span className="text-error">{stats.rejected} rejected</span>}
             </div>
           </div>
           <div className="flex items-center gap-2">
             {entries.length > 0 && (
               <button
                 onClick={clearEntries}
-                className="px-2 py-1 text-[10px] text-zinc-500 hover:text-zinc-300 hover:bg-white/5 rounded transition-colors"
+                className="px-2 py-1 text-[10px] text-muted-foreground hover:text-text-primary hover:bg-white/5 rounded transition-colors"
               >
                 Clear
               </button>
             )}
             <button
               onClick={() => setAuditOpen(false)}
-              className="p-1.5 rounded-md text-zinc-500 hover:bg-white/5 hover:text-zinc-300 transition-colors"
+              className="p-1.5 rounded-md text-muted-foreground hover:bg-white/5 hover:text-text-primary transition-colors"
             >
               <X size={16} />
             </button>
@@ -222,10 +222,10 @@ export const AuditTimeline: React.FC = () => {
           {recentEntries.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center">
               <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center mb-3">
-                <Terminal size={20} className="text-zinc-600" />
+                <Terminal size={20} className="text-text-disabled" />
               </div>
-              <p className="text-[13px] text-zinc-400 mb-1">No tool executions yet</p>
-              <p className="text-[11px] text-zinc-600 max-w-[250px]">
+              <p className="text-[13px] text-text-secondary mb-1">No tool executions yet</p>
+              <p className="text-[11px] text-text-disabled max-w-[250px]">
                 Tool executions will appear here as the AI assistant works on your requests.
               </p>
             </div>

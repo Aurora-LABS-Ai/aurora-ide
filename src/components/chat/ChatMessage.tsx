@@ -51,7 +51,7 @@ const CopyButton: React.FC<{ text: string; className?: string }> = ({ text, clas
       title={copied ? 'Copied!' : 'Copy message'}
     >
       {copied ? (
-        <Check className="w-3.5 h-3.5 text-emerald-400" />
+        <Check className="w-3.5 h-3.5 text-success" />
       ) : (
         <Copy className="w-3.5 h-3.5 text-text-disabled hover:text-text-primary" />
       )}

@@ -4,6 +4,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
+// Windows-specific imports for hiding console window
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+// Windows creation flags - prevents terminal window from appearing
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 use super::types::{Checkpoint, CheckpointError, CheckpointResult};
 
 /// Manages checkpoints using shadow Git repositories
@@ -56,10 +64,16 @@ impl CheckpointService {
 
     /// Run a git command with sanitized environment
     fn run_git_command(&self, repo_path: &Path, args: &[&str]) -> CheckpointResult<String> {
-        let output = Command::new("git")
-            .args(["-C", repo_path.to_str().unwrap_or("")])
+        let mut cmd = Command::new("git");
+        cmd.args(["-C", repo_path.to_str().unwrap_or("")])
             .args(args)
-            .envs(Self::get_sanitized_env())
+            .envs(Self::get_sanitized_env());
+
+        // On Windows, hide the console window to prevent popup
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = cmd
             .output()
             .map_err(|e| CheckpointError::RestoreError(format!("Failed to run git: {}", e)))?;
 
@@ -77,12 +91,16 @@ impl CheckpointService {
 
     /// Run a git command that may fail (used for operations that are ok to fail)
     fn run_git_command_allow_fail(&self, repo_path: &Path, args: &[&str]) -> Option<String> {
-        let output = Command::new("git")
-            .args(["-C", repo_path.to_str().unwrap_or("")])
+        let mut cmd = Command::new("git");
+        cmd.args(["-C", repo_path.to_str().unwrap_or("")])
             .args(args)
-            .envs(Self::get_sanitized_env())
-            .output()
-            .ok()?;
+            .envs(Self::get_sanitized_env());
+
+        // On Windows, hide the console window to prevent popup
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = cmd.output().ok()?;
 
         if output.status.success() {
             Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -137,10 +155,16 @@ impl CheckpointService {
         fs::create_dir_all(repo_path)?;
 
         // Initialize git repository
-        let output = Command::new("git")
-            .args(["init"])
+        let mut cmd = Command::new("git");
+        cmd.args(["init"])
             .current_dir(repo_path)
-            .envs(Self::get_sanitized_env())
+            .envs(Self::get_sanitized_env());
+
+        // On Windows, hide the console window to prevent popup
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let output = cmd
             .output()
             .map_err(|e| CheckpointError::InitializationFailed(format!("Failed to run git init: {}", e)))?;
 

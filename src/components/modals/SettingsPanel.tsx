@@ -45,7 +45,7 @@ const CheckpointSettings: React.FC = () => {
     return (
       <div className="p-3 border border-border rounded-lg bg-titlebar">
         <div className="flex items-center gap-2 mb-2">
-          <History className="w-3.5 h-3.5 text-amber-400" />
+          <History className="w-3.5 h-3.5 text-checkpoint" />
           <h3 className="text-xs font-medium text-text-primary">Checkpoints</h3>
         </div>
         <p className="text-[10px] text-text-disabled">
@@ -60,7 +60,7 @@ const CheckpointSettings: React.FC = () => {
   return (
     <div className="p-3 border border-border rounded-lg bg-titlebar">
       <div className="flex items-center gap-2 mb-2">
-        <History className="w-3.5 h-3.5 text-amber-400" />
+        <History className="w-3.5 h-3.5 text-checkpoint" />
         <h3 className="text-xs font-medium text-text-primary">Checkpoints</h3>
       </div>
       <p className="text-[10px] text-text-secondary mb-3">
@@ -79,7 +79,7 @@ const CheckpointSettings: React.FC = () => {
           onClick={() => setEnabled(!enabled)}
           className={clsx(
             "relative w-9 h-4 rounded-full transition-all duration-200 flex-shrink-0 overflow-hidden",
-            enabled ? "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.35)]" : "bg-input border border-border"
+            enabled ? "bg-checkpoint shadow-[0_0_8px_rgba(245,158,11,0.35)]" : "bg-input border border-border"
           )}
           aria-pressed={enabled}
           aria-label="Toggle checkpoints"
@@ -94,8 +94,8 @@ const CheckpointSettings: React.FC = () => {
       </div>
 
       {enabled && (
-        <div className="mt-2 p-2 bg-amber-500/10 rounded border border-amber-500/20">
-          <p className="text-[9px] text-amber-400">
+        <div className="mt-2 p-2 bg-checkpoint/10 rounded border border-checkpoint/20">
+          <p className="text-[9px] text-checkpoint-foreground">
             Checkpoints are saved when you send messages. Hover over a user message to see the checkpoint indicator.
           </p>
         </div>

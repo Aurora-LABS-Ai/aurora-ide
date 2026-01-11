@@ -340,12 +340,12 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({
             {currentUrl ? (
               secure ? (
                 local ? (
-                  <span title="Local development server"><Shield size={14} className="text-blue-400 flex-shrink-0" /></span>
+                  <span title="Local development server"><Shield size={14} className="text-local flex-shrink-0" /></span>
                 ) : (
-                  <span title="Secure connection"><Lock size={14} className="text-green-400 flex-shrink-0" /></span>
+                  <span title="Secure connection"><Lock size={14} className="text-secure flex-shrink-0" /></span>
                 )
               ) : (
-                <span title="Not secure"><Unlock size={14} className="text-yellow-400 flex-shrink-0" /></span>
+                <span title="Not secure"><Unlock size={14} className="text-insecure flex-shrink-0" /></span>
               )
             ) : (
               <Globe size={14} className="opacity-50 flex-shrink-0" style={{ color: 'var(--aurora-editor-foreground)' }} />

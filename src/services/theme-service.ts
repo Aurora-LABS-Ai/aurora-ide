@@ -323,9 +323,10 @@ export function generateCSSVariables(tokens: ThemeTokens): CSSVariableMap {
  * Requirement 12.4
  */
 export function getCSSVariableName(category: string, token: string): string {
-  // Convert camelCase to kebab-case
+  // Convert camelCase to kebab-case for both category and token
+  const kebabCategory = category.replace(/([A-Z])/g, '-$1').toLowerCase();
   const kebabToken = token.replace(/([A-Z])/g, '-$1').toLowerCase();
-  return `--aurora-${category}-${kebabToken}`;
+  return `--aurora-${kebabCategory}-${kebabToken}`;
 }
 
 /**
@@ -681,6 +682,56 @@ export const DEFAULT_DARK_TOKENS: ThemeTokens = {
     overlay: '#00000080',
     scrollbar: '#3f3f46',
     scrollbarHover: '#52525b',
+
+    // === Extended Semantic Tokens (Dark) ===
+
+    // Muted/disabled states
+    muted: '#27272a',
+    mutedForeground: '#71717a',
+
+    // Accent colors (emerald-based for consistency with primary)
+    accent: '#10b981',
+    accentForeground: '#ffffff',
+    accentMuted: '#10b98120',
+
+    // Destructive actions
+    destructive: '#ef4444',
+    destructiveForeground: '#ffffff',
+
+    // Git/File diff colors
+    diffAdded: '#22c55e',
+    diffAddedForeground: '#4ade80',
+    diffRemoved: '#ef4444',
+    diffRemovedForeground: '#f87171',
+    diffModified: '#f59e0b',
+    diffModifiedForeground: '#fbbf24',
+
+    // Status indicator dots
+    statusActive: '#22c55e',
+    statusInactive: '#52525b',
+    statusError: '#ef4444',
+    statusWarning: '#f59e0b',
+
+    // Task/Todo status colors
+    taskPending: '#52525b',
+    taskInProgress: '#3b82f6',
+    taskCompleted: '#22c55e',
+    taskCancelled: '#ef4444',
+
+    // Security/Trust indicators
+    secureConnection: '#22c55e',
+    insecureConnection: '#f59e0b',
+    localConnection: '#3b82f6',
+
+    // Quick action colors
+    actionAnalyze: '#3b82f6',
+    actionDebug: '#ef4444',
+    actionGenerate: '#a855f7',
+    actionTest: '#22c55e',
+
+    // Checkpoint/restore
+    checkpoint: '#f59e0b',
+    checkpointForeground: '#fbbf24',
   },
 };
 
@@ -786,6 +837,56 @@ export const DEFAULT_LIGHT_TOKENS: ThemeTokens = {
     overlay: '#00000040',
     scrollbar: '#d1d5db',
     scrollbarHover: '#9ca3af',
+
+    // === Extended Semantic Tokens (Light) ===
+
+    // Muted/disabled states
+    muted: '#f3f4f6',
+    mutedForeground: '#6b7280',
+
+    // Accent colors
+    accent: '#059669',
+    accentForeground: '#ffffff',
+    accentMuted: '#05966920',
+
+    // Destructive actions
+    destructive: '#dc2626',
+    destructiveForeground: '#ffffff',
+
+    // Git/File diff colors
+    diffAdded: '#16a34a',
+    diffAddedForeground: '#15803d',
+    diffRemoved: '#dc2626',
+    diffRemovedForeground: '#b91c1c',
+    diffModified: '#d97706',
+    diffModifiedForeground: '#b45309',
+
+    // Status indicator dots
+    statusActive: '#16a34a',
+    statusInactive: '#9ca3af',
+    statusError: '#dc2626',
+    statusWarning: '#d97706',
+
+    // Task/Todo status colors
+    taskPending: '#9ca3af',
+    taskInProgress: '#2563eb',
+    taskCompleted: '#16a34a',
+    taskCancelled: '#dc2626',
+
+    // Security/Trust indicators
+    secureConnection: '#16a34a',
+    insecureConnection: '#d97706',
+    localConnection: '#2563eb',
+
+    // Quick action colors
+    actionAnalyze: '#2563eb',
+    actionDebug: '#dc2626',
+    actionGenerate: '#7c3aed',
+    actionTest: '#16a34a',
+
+    // Checkpoint/restore
+    checkpoint: '#d97706',
+    checkpointForeground: '#b45309',
   },
 };
 

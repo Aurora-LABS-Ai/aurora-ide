@@ -13,12 +13,20 @@ interface ContextUsageIndicatorProps {
   totalTokens?: number;
 }
 
-const RING_COLORS = {
-  track: '#3f3f46',
-  low: '#a3e635',
-  medium: '#fbbf24',
-  high: '#f87171',
+// These values are used in SVG which needs computed color values
+// We get them from CSS variables at runtime
+const getComputedThemeColor = (varName: string, fallback: string): string => {
+  if (typeof window === 'undefined') return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+  return value || fallback;
 };
+
+const getRingColors = () => ({
+  track: getComputedThemeColor('--aurora-common-muted', '#3f3f46'),
+  low: getComputedThemeColor('--aurora-chat-usage-low', '#22d3ee'),
+  medium: getComputedThemeColor('--aurora-chat-usage-medium', '#facc15'),
+  high: getComputedThemeColor('--aurora-chat-usage-high', '#ef4444'),
+});
 
 export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (props) => {
   const {
@@ -35,6 +43,9 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
   const usedTokens = props.usedTokens ?? usedContextTokens;
   const totalTokens = props.totalTokens ?? contextWindow;
 
+  // Get theme colors at render time
+  const ringColors = getRingColors();
+
   if (usedTokens === 0) return null;
 
   const size = 18;
@@ -44,9 +55,9 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
   const offset = circumference - (percentage / 100) * circumference;
 
   const getFillColor = () => {
-    if (isOverLimit || percentage >= 80) return RING_COLORS.high;
-    if (percentage >= 30) return RING_COLORS.medium;
-    return RING_COLORS.low;
+    if (isOverLimit || percentage >= 80) return ringColors.high;
+    if (percentage >= 30) return ringColors.medium;
+    return ringColors.low;
   };
 
   const fillColor = getFillColor();
@@ -73,7 +84,7 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
             cy={size / 2}
             r={radius}
             fill="none"
-            stroke={RING_COLORS.track}
+            stroke={ringColors.track}
             strokeWidth={strokeWidth}
           />
           <circle
@@ -106,8 +117,8 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
             <div
               className="flex items-center gap-1.5 px-2 py-1 mb-2 rounded text-[10px]"
               style={{
-                backgroundColor: `${RING_COLORS.high}33`,
-                color: RING_COLORS.high,
+                backgroundColor: `${ringColors.high}33`,
+                color: ringColors.high,
               }}
             >
               <AlertTriangle size={10} />
@@ -123,7 +134,7 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
             </div>
 
             {/* Progress bar */}
-            <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: RING_COLORS.track }}>
+            <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: ringColors.track }}>
               <div
                 className="h-full transition-all duration-500"
                 style={{
@@ -159,7 +170,7 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
                       <Zap size={10} />
                       Summarized
                     </span>
-                    <span className="font-mono" style={{ color: RING_COLORS.low }}>{summarizedTurns}</span>
+                    <span className="font-mono" style={{ color: ringColors.low }}>{summarizedTurns}</span>
                   </div>
                 )}
               </>

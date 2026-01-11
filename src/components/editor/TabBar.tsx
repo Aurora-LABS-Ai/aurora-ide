@@ -68,7 +68,7 @@ export const TabBar: React.FC = () => {
             onClick={() => setActiveTab(tab.id)}
           >
             {tab.type === 'browser' ? (
-              <Globe className="w-3 h-3 text-blue-400" />
+              <Globe className="w-3 h-3 text-info" />
             ) : (
               <FileIcon name={tab.filename} className="w-3 h-3" />
             )}

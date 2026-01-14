@@ -103,14 +103,22 @@ function App() {
     initializeSystemInfo();
   }, [initializeFromDatabase]);
 
-  // Disable default context menu globally
+  // Disable default context menu globally (except for text-selectable areas)
   useEffect(() => {
     const handleContextMenu = (e: MouseEvent) => {
-      // Allow context menu in input/textarea elements
       const target = e.target as HTMLElement;
+
+      // Allow context menu in input/textarea elements
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") {
         return;
       }
+
+      // Allow context menu in elements with select-text class or markdown-content
+      // This enables right-click copy on chat messages and code blocks
+      if (target.closest('.select-text') || target.closest('.markdown-content')) {
+        return;
+      }
+
       e.preventDefault();
     };
 

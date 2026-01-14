@@ -433,11 +433,18 @@ export class AnthropicProvider extends BaseProvider {
 
         // Add tool_use blocks from tool_calls
         for (const tc of toolCalls) {
+          let input = {};
+          try {
+            input = JSON.parse(tc.function.arguments || '{}');
+          } catch (e) {
+            console.error('[AnthropicProvider] Failed to parse tool arguments:', e);
+            // Use empty object if parsing fails
+          }
           contentBlocks.push({
             type: 'tool_use',
             id: tc.id,
             name: tc.function.name,
-            input: JSON.parse(tc.function.arguments || '{}'),
+            input,
           });
         }
 

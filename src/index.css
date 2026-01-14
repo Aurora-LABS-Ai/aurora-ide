@@ -45,9 +45,17 @@ body {
 }
 
 /* Allow text selection in specific areas */
-.select-text {
-  -webkit-user-select: text;
-  user-select: text;
+.select-text,
+.select-text * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+/* Markdown content should always be selectable */
+.markdown-content,
+.markdown-content * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
 }
 
 /* VS Code style scrollbar */

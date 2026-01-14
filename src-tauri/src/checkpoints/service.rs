@@ -115,8 +115,9 @@ impl CheckpointService {
         let repo_path = self.app_data_dir.join(&workspace_hash);
 
         // Check if we already have this repo cached
+        // Use unwrap_or_else to recover from poisoned mutex (previous panic)
         {
-            let repos = self.repos.lock().unwrap();
+            let repos = self.repos.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if repos.contains_key(workspace_path) {
                 if repo_path.join(".git").exists() {
                     return Ok(repo_path);
@@ -142,7 +143,7 @@ impl CheckpointService {
 
         // Cache the repo path
         {
-            let mut repos = self.repos.lock().unwrap();
+            let mut repos = self.repos.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             repos.insert(workspace_path.to_string(), repo_path.clone());
         }
 
@@ -372,7 +373,7 @@ __pycache__/
 
         // Remove from cache
         {
-            let mut repos = self.repos.lock().unwrap();
+            let mut repos = self.repos.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             repos.remove(workspace_path);
         }
 

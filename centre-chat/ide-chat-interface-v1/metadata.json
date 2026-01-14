@@ -1,0 +1,5 @@
+{
+  "name": "IDE Chat Interface V1",
+  "description": "A futuristic, glass-morphic chat interface for an AI-powered IDE assistant, featuring tool execution cards and a rich input area.",
+  "requestFramePermissions": []
+}

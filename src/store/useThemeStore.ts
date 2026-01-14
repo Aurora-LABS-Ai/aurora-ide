@@ -94,16 +94,25 @@ export const useThemeStore = create<ThemeStore>((set, get) => ({
 
             // Reload all themes from database to get clean state
             const customThemesRaw = await invoke<any[]>('get_custom_themes');
-            const customThemes: ThemeDefinition[] = customThemesRaw.map(t => ({
-                id: t.id,
-                name: t.name,
-                author: t.author,
-                version: t.version,
-                type: t.type,
-                colors: JSON.parse(t.colors),
-                tokenColors: JSON.parse(t.tokenColors),
-                isBuiltIn: false
-            }));
+            const customThemes: ThemeDefinition[] = customThemesRaw
+                .map(t => {
+                    try {
+                        return {
+                            id: t.id,
+                            name: t.name,
+                            author: t.author,
+                            version: t.version,
+                            type: t.type,
+                            colors: JSON.parse(t.colors),
+                            tokenColors: JSON.parse(t.tokenColors),
+                            isBuiltIn: false
+                        };
+                    } catch (e) {
+                        console.error(`[ThemeStore] Failed to parse theme "${t.name}":`, e);
+                        return null;
+                    }
+                })
+                .filter((t): t is ThemeDefinition => t !== null);
 
             // Rebuild themes list with built-ins + fresh custom themes
             const builtInThemes = get().themes.filter(t => t.isBuiltIn);
@@ -190,16 +199,25 @@ export const useThemeStore = create<ThemeStore>((set, get) => ({
 
             // Load custom themes from DB (backend handles deduplication)
             const customThemesRaw = await invoke<any[]>('get_custom_themes');
-            const customThemes: ThemeDefinition[] = customThemesRaw.map(t => ({
-                id: t.id,
-                name: t.name,
-                author: t.author,
-                version: t.version,
-                type: t.type,
-                colors: JSON.parse(t.colors),
-                tokenColors: JSON.parse(t.tokenColors),
-                isBuiltIn: false
-            }));
+            const customThemes: ThemeDefinition[] = customThemesRaw
+                .map(t => {
+                    try {
+                        return {
+                            id: t.id,
+                            name: t.name,
+                            author: t.author,
+                            version: t.version,
+                            type: t.type,
+                            colors: JSON.parse(t.colors),
+                            tokenColors: JSON.parse(t.tokenColors),
+                            isBuiltIn: false
+                        };
+                    } catch (e) {
+                        console.error(`[ThemeStore] Failed to parse theme "${t.name}":`, e);
+                        return null;
+                    }
+                })
+                .filter((t): t is ThemeDefinition => t !== null);
 
             const allThemes = [darkTheme, lightTheme, ...customThemes];
 

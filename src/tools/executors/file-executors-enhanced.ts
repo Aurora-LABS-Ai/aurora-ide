@@ -30,15 +30,11 @@ interface GrepMatch {
   lineNumber: number;
 }
 
-// Helper to convert escape sequences to actual characters
-const processEscapeSequences = (content: string): string => {
-  if (!content) return content;
-  return content
-    .replace(/\\n/g, '\n')
-    .replace(/\\t/g, '\t')
-    .replace(/\\r/g, '\r')
-    .replace(/\\\\/g, '\\');
-};
+// NOTE: processEscapeSequences was REMOVED
+// JSON.parse() already handles escape sequences correctly when parsing tool arguments.
+// Double-processing caused bugs like unterminated string literals when AI wrote code
+// containing backslashes (e.g., regex patterns, Windows paths, escape sequences).
+// The AI sends properly escaped JSON - we must NOT double-process it.
 
 // NO-OP: Rust file watcher handles refresh via fs-changed events
 const triggerRefresh = () => { };
@@ -90,7 +86,8 @@ const fileCreateExecutor = async (
   console.log("[file_create] Writing file (Cursor-style):", fullPath);
 
   try {
-    const processedContent = args.content ? processEscapeSequences(args.content) : '';
+    // Content is already properly escaped by JSON.parse - use directly
+    const processedContent = args.content ?? '';
 
     // PRE-SAVE VALIDATION: Check syntax before writing
     const validationError = validateBeforeWrite(processedContent, fileName);
@@ -350,7 +347,8 @@ const fileWriteExecutor = async (
   console.log("[file_write] Writing file (Cursor-style):", fullPath);
 
   try {
-    const processedContent = processEscapeSequences(args.content);
+    // Content is already properly escaped by JSON.parse - use directly
+    const processedContent = args.content ?? '';
 
     // PRE-SAVE VALIDATION: Check syntax before writing
     const validationError = validateBeforeWrite(processedContent, fileName);

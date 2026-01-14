@@ -61,10 +61,25 @@ const CopyButton: React.FC<{ text: string; className?: string }> = ({ text, clas
 
 // Extract text content from timeline events for copying
 const extractTimelineText = (timeline: TimelineEvent[]): string => {
-  return timeline
-    .filter(event => event.type === 'content' && event.content)
-    .map(event => event.content)
-    .join('\n\n');
+  const parts: string[] = [];
+
+  for (const event of timeline) {
+    if (event.type === 'content' && event.content) {
+      parts.push(event.content);
+    } else if (event.type === 'thinking' && event.thinking) {
+      // Include thinking content (user might want to copy reasoning)
+      parts.push(`[Thinking]\n${event.thinking}`);
+    } else if (event.type === 'tool' && event.tool) {
+      // Include tool name and result summary
+      const toolName = event.tool.name || 'Tool';
+      const result = event.tool.result ? `Result: ${event.tool.result.substring(0, 500)}${event.tool.result.length > 500 ? '...' : ''}` : '';
+      if (result) {
+        parts.push(`[${toolName}]\n${result}`);
+      }
+    }
+  }
+
+  return parts.join('\n\n');
 };
 
 // Render a single timeline event

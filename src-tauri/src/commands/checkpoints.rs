@@ -18,7 +18,8 @@ impl CheckpointState {
     }
 
     pub fn init(&self, app_data_dir: std::path::PathBuf) {
-        let mut guard = self.service.lock().unwrap();
+        // Use unwrap_or_else to recover from poisoned mutex (previous panic)
+        let mut guard = self.service.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if guard.is_none() {
             *guard = Some(CheckpointService::new(app_data_dir));
         }
@@ -84,7 +85,7 @@ pub async fn checkpoint_create(
         }
     }
 
-    let guard = checkpoint_state.service.lock().unwrap();
+    let guard = checkpoint_state.service.lock().map_err(|e| format!("Lock error: {}", e))?;
     let service = guard.as_ref().ok_or("Checkpoint service not initialized")?;
 
     match service.create_checkpoint(&workspace_path, &thread_id, &message_id) {
@@ -122,7 +123,7 @@ pub async fn checkpoint_restore(
     checkpoint_state: State<'_, CheckpointState>,
     db: State<'_, Mutex<Database>>,
 ) -> Result<RestoreResponse, String> {
-    let guard = checkpoint_state.service.lock().unwrap();
+    let guard = checkpoint_state.service.lock().map_err(|e| format!("Lock error: {}", e))?;
     let service = guard.as_ref().ok_or("Checkpoint service not initialized")?;
 
     // First, restore the workspace files
@@ -196,7 +197,7 @@ pub async fn checkpoint_delete_thread(
 
     // Optionally delete the workspace checkpoints (git repo)
     if let Some(ws_path) = workspace_path {
-        let guard = checkpoint_state.service.lock().unwrap();
+        let guard = checkpoint_state.service.lock().map_err(|e| format!("Lock error: {}", e))?;
         if let Some(service) = guard.as_ref() {
             let _ = service.delete_workspace_checkpoints(&ws_path);
         }
@@ -211,7 +212,7 @@ pub async fn checkpoint_is_initialized(
     workspace_path: String,
     checkpoint_state: State<'_, CheckpointState>,
 ) -> Result<bool, String> {
-    let guard = checkpoint_state.service.lock().unwrap();
+    let guard = checkpoint_state.service.lock().map_err(|e| format!("Lock error: {}", e))?;
     let service = guard.as_ref().ok_or("Checkpoint service not initialized")?;
     Ok(service.is_initialized(&workspace_path))
 }

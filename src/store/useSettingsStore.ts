@@ -5,6 +5,21 @@ import { databaseService } from "../services/database";
 import type { LLMProviderConfig } from "../services/llm-types";
 import type { AppSettings as DbAppSettings, DbLLMProvider } from "../types/database";
 
+const UI_FONT_FAMILIES: Record<string, string> = {
+  system: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif",
+  inter: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+  segoe: "'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif",
+  roboto: "'Roboto', -apple-system, BlinkMacSystemFont, sans-serif",
+};
+
+const applyUiPreferences = (scale: number, fontFamily: string) => {
+  if (typeof document === 'undefined') return;
+  const resolvedFamily = UI_FONT_FAMILIES[fontFamily] ?? UI_FONT_FAMILIES.system;
+  document.documentElement.style.setProperty('--aurora-ui-scale', String(scale));
+  document.documentElement.style.setProperty('--aurora-ui-font-family', resolvedFamily);
+};
+
+
 // ============================================
 // SETTINGS STATE TYPES
 // ============================================
@@ -70,6 +85,8 @@ interface SettingsState {
   setTheme: (theme: "dark" | "light") => void;
   setThinkingEnabled: (enabled: boolean) => void;
   setToolApproval: (toolName: string, setting: 'auto' | 'always_ask' | 'deny') => void;
+  setUiFontFamily: (family: string) => void;
+  setUiScale: (scale: number) => void;
   setWrapMode: (enabled: boolean) => void;
 
   // Agent Guardrails
@@ -85,10 +102,15 @@ interface SettingsState {
   thinkingEnabled: boolean;
   toolApprovalSettings: Record<string, 'auto' | 'always_ask' | 'deny'>;
 
+  // UI Settings
+  uiFontFamily: string;
+  uiScale: number;
+
   // Provider actions
   updateProvider: (id: string, updates: Partial<LLMProvider>) => void;
   wrapMode: boolean;
 }
+
 
 // ============================================
 // PROVIDER TYPES
@@ -334,6 +356,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   fontSize: 14,
   wrapMode: true,
 
+  // UI Settings
+  uiFontFamily: "system",
+  uiScale: 1.1,
+
+
   // Theme
   theme: "dark",
 
@@ -401,6 +428,9 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       // Load app settings
       const appSettings = await databaseService.getAppSettings();
       if (appSettings) {
+        const uiFontFamily = appSettings.uiFontFamily ?? "system";
+        const uiScale = appSettings.uiScale ?? 1.1;
+
         set({
           selectedModel: appSettings.selectedModel || "glm:glm-4.7",
           autoApproveTools: appSettings.autoApproveTools ?? false,
@@ -416,8 +446,13 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           autoSave: (appSettings.autoSave as SettingsState['autoSave']) || 'off',
           autoSaveDelay: appSettings.autoSaveDelay ?? 1000,
           maxToolCallsPerRequest: appSettings.maxToolCallsPerRequest ?? 25,
+          uiFontFamily,
+          uiScale,
         });
+
+        applyUiPreferences(uiScale, uiFontFamily);
       }
+
 
       // Load tool settings
       const toolSettings = await databaseService.getAllToolSettings();
@@ -429,7 +464,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         set({ toolApprovalSettings: settings });
       }
 
+      const { uiScale, uiFontFamily } = get();
+      applyUiPreferences(uiScale, uiFontFamily);
+
       set({ isInitialized: true, isLoading: false });
+
 
       // Load onboarding state from localStorage
       const hasSeen = localStorage.getItem('aurora_has_seen_onboarding') === 'true';
@@ -460,7 +499,10 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         autoSave: state.autoSave,
         autoSaveDelay: state.autoSaveDelay,
         maxToolCallsPerRequest: state.maxToolCallsPerRequest,
+        uiFontFamily: state.uiFontFamily,
+        uiScale: state.uiScale,
       };
+
       await databaseService.saveAppSettings(appSettings);
 
       // Save providers
@@ -613,10 +655,23 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     get().saveToDatabase();
   },
 
+  setUiScale: (scale: number) => {
+    set({ uiScale: scale });
+    applyUiPreferences(scale, get().uiFontFamily);
+    get().saveToDatabase();
+  },
+
+  setUiFontFamily: (family: string) => {
+    set({ uiFontFamily: family });
+    applyUiPreferences(get().uiScale, family);
+    get().saveToDatabase();
+  },
+
   setTheme: (theme: "dark" | "light") => {
     set({ theme });
     get().saveToDatabase();
   },
+
 
   setThinkingEnabled: (enabled: boolean) => {
     set({ thinkingEnabled: enabled });

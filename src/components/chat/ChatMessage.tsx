@@ -83,7 +83,11 @@ const extractTimelineText = (timeline: TimelineEvent[]): string => {
 };
 
 // Render a single timeline event
-const TimelineEventItem: React.FC<{ event: TimelineEvent; isStreaming?: boolean }> = ({ event, isStreaming = false }) => {
+const TimelineEventItem: React.FC<{ 
+  event: TimelineEvent; 
+  isStreaming?: boolean;
+  toolVariant?: 'timeline' | 'cards';
+}> = ({ event, isStreaming = false, toolVariant = 'timeline' }) => {
   switch (event.type) {
     case 'thinking':
       return event.thinking ? (
@@ -92,7 +96,7 @@ const TimelineEventItem: React.FC<{ event: TimelineEvent; isStreaming?: boolean 
 
     case 'tool':
       return event.tool ? (
-        <ToolTimeline tools={[event.tool]} />
+        <ToolTimeline tools={[event.tool]} variant={toolVariant} />
       ) : null;
 
     case 'content':
@@ -111,9 +115,10 @@ interface ChatMessageProps {
   message: Message;
   isStreaming?: boolean; // Whether this message is currently being streamed
   isLastMessage?: boolean; // Whether this is the last message in the list
+  toolVariant?: 'timeline' | 'cards'; // Style variant for tool displays
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming = false, isLastMessage = false }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming = false, isLastMessage = false, toolVariant = 'timeline' }) => {
   const isUser = message.sender === 'user';
 
   if (isUser) {
@@ -196,6 +201,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
                 key={event.id}
                 event={event}
                 isStreaming={isStreaming && isLastMessage && idx === message.timeline!.length - 1}
+                toolVariant={toolVariant}
               />
             ))
           ) : (
@@ -204,7 +210,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
                 <ThinkingBlock content={message.thinking} isGenerating={message.isThinking} />
               )}
               {message.tools && message.tools.length > 0 && (
-                <ToolTimeline tools={message.tools} />
+                <ToolTimeline tools={message.tools} variant={toolVariant} />
               )}
               {message.content && (
                 <div className="py-1">

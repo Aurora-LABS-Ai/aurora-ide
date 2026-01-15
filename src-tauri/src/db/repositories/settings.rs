@@ -90,9 +90,15 @@ impl<'a> SettingsRepository<'a> {
             match setting.key.as_str() {
                 "selectedModel" => settings.selected_model = serde_json::from_str(&setting.value).unwrap_or(settings.selected_model),
                 "autoApproveTools" => settings.auto_approve_tools = serde_json::from_str(&setting.value).unwrap_or(settings.auto_approve_tools),
+                "autoAcceptChanges" => settings.auto_accept_changes = serde_json::from_str(&setting.value).unwrap_or(settings.auto_accept_changes),
                 "fontSize" => settings.font_size = serde_json::from_str(&setting.value).unwrap_or(settings.font_size),
+                "wrapMode" => settings.wrap_mode = serde_json::from_str(&setting.value).unwrap_or(settings.wrap_mode),
                 "theme" => settings.theme = serde_json::from_str(&setting.value).unwrap_or(settings.theme),
                 "thinkingEnabled" => settings.thinking_enabled = serde_json::from_str(&setting.value).unwrap_or(settings.thinking_enabled),
+                "syntaxValidationEnabled" => settings.syntax_validation_enabled = serde_json::from_str(&setting.value).unwrap_or(settings.syntax_validation_enabled),
+                "projectLayoutEnabled" => settings.project_layout_enabled = serde_json::from_str(&setting.value).unwrap_or(settings.project_layout_enabled),
+                "uiFontFamily" => settings.ui_font_family = serde_json::from_str(&setting.value).unwrap_or(settings.ui_font_family.clone()),
+                "uiScale" => settings.ui_scale = serde_json::from_str(&setting.value).unwrap_or(settings.ui_scale),
                 "maxTokens" => settings.max_tokens = serde_json::from_str(&setting.value).unwrap_or(settings.max_tokens),
                 "temperature" => settings.temperature = serde_json::from_str(&setting.value).unwrap_or(settings.temperature),
                 "autoSave" => settings.auto_save = serde_json::from_str(&setting.value).unwrap_or(settings.auto_save),
@@ -100,6 +106,7 @@ impl<'a> SettingsRepository<'a> {
                 "maxToolCallsPerRequest" => settings.max_tool_calls_per_request = serde_json::from_str(&setting.value).unwrap_or(settings.max_tool_calls_per_request),
                 _ => {}
             }
+
         }
         
         Ok(settings)
@@ -109,15 +116,22 @@ impl<'a> SettingsRepository<'a> {
     pub fn save_app_settings(&self, settings: &AppSettings) -> DbResult<()> {
         self.set_setting("selectedModel", &serde_json::to_string(&settings.selected_model).unwrap_or_default())?;
         self.set_setting("autoApproveTools", &serde_json::to_string(&settings.auto_approve_tools).unwrap_or_default())?;
+        self.set_setting("autoAcceptChanges", &serde_json::to_string(&settings.auto_accept_changes).unwrap_or_default())?;
         self.set_setting("fontSize", &serde_json::to_string(&settings.font_size).unwrap_or_default())?;
+        self.set_setting("wrapMode", &serde_json::to_string(&settings.wrap_mode).unwrap_or_default())?;
         self.set_setting("theme", &serde_json::to_string(&settings.theme).unwrap_or_default())?;
         self.set_setting("thinkingEnabled", &serde_json::to_string(&settings.thinking_enabled).unwrap_or_default())?;
+        self.set_setting("syntaxValidationEnabled", &serde_json::to_string(&settings.syntax_validation_enabled).unwrap_or_default())?;
+        self.set_setting("projectLayoutEnabled", &serde_json::to_string(&settings.project_layout_enabled).unwrap_or_default())?;
+        self.set_setting("uiFontFamily", &serde_json::to_string(&settings.ui_font_family).unwrap_or_default())?;
+        self.set_setting("uiScale", &serde_json::to_string(&settings.ui_scale).unwrap_or_default())?;
         self.set_setting("maxTokens", &serde_json::to_string(&settings.max_tokens).unwrap_or_default())?;
         self.set_setting("temperature", &serde_json::to_string(&settings.temperature).unwrap_or_default())?;
         self.set_setting("autoSave", &serde_json::to_string(&settings.auto_save).unwrap_or_default())?;
         self.set_setting("autoSaveDelay", &serde_json::to_string(&settings.auto_save_delay).unwrap_or_default())?;
         self.set_setting("maxToolCallsPerRequest", &serde_json::to_string(&settings.max_tool_calls_per_request).unwrap_or_default())?;
         Ok(())
+
     }
 
     // ============================================================

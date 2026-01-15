@@ -54,15 +54,17 @@ export const useWindowClose = () => {
       isListenerSetup.current = true;
       
       try {
-        const { listen } = await import('@tauri-apps/api/event');
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const currentWindow = getCurrentWindow();
+
+        if (currentWindow.label !== 'main') {
+          return;
+        }
         
-        // Listen for Tauri close request
-        const unlisten = await listen('tauri://close-requested', async () => {
+        const unlisten = await currentWindow.onCloseRequested(async () => {
           console.log('[WindowClose] Tauri close requested');
           await saveAllState();
-          // Allow the window to close
-          await getCurrentWindow().close();
+          await currentWindow.close();
         });
         
         tauriUnlistenRef.current = unlisten;
@@ -71,6 +73,7 @@ export const useWindowClose = () => {
         console.error('[WindowClose] Failed to setup Tauri listener:', error);
       }
     };
+
 
     // Setup listeners
     window.addEventListener('beforeunload', handleBeforeUnload);

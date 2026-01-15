@@ -28,6 +28,8 @@ import { useThemeStore } from "../../store/useThemeStore";
 import { useRustChatSync } from "../../hooks/useRustChatSync";
 import { useMemo } from "react";
 
+const CHAT_WINDOW_LABEL = "chat-detached";
+
 export const DetachedChatWindow: React.FC = () => {
   const { reattachChat } = useUiStore();
   const { activeThemeId, themes } = useThemeStore();
@@ -71,9 +73,12 @@ export const DetachedChatWindow: React.FC = () => {
 
   const handleReattach = useCallback(async () => {
     try {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
       reattachChat();
-      await getCurrentWindow().close();
+      const chatWindow = await WebviewWindow.getByLabel(CHAT_WINDOW_LABEL);
+      if (chatWindow) {
+        await chatWindow.close();
+      }
     } catch (err) {
       console.error("Failed to reattach:", err);
       reattachChat();

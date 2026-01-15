@@ -27,6 +27,11 @@ interface UiState {
   toggleChat: () => void;
   toggleSidebar: () => void;
 
+  // Agent Mode - full-screen chat interface with file changes panel
+  isAgentMode: boolean;
+  setAgentMode: (isActive: boolean) => void;
+  toggleAgentMode: () => void;
+
   // Actions
   toggleTheme: () => void;
   toolApprovalState: {
@@ -42,6 +47,7 @@ export const useUiStore = create<UiState>((set) => ({
   isSettingsOpen: false,
   isAuditOpen: false,
   isChatOpen: true,
+  isAgentMode: false,
   toolApprovalState: {
     isOpen: false,
     proposal: null,
@@ -52,6 +58,10 @@ export const useUiStore = create<UiState>((set) => ({
     position: null,
     size: null,
   },
+
+  // Agent Mode actions
+  setAgentMode: (isActive) => set({ isAgentMode: isActive }),
+  toggleAgentMode: () => set((state) => ({ isAgentMode: !state.isAgentMode })),
 
   toggleTheme: () =>
     set((state) => {

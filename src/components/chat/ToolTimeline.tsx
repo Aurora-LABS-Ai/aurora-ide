@@ -37,6 +37,7 @@ import type { ToolCall } from '../../types';
 import { getIconName, getIconUrl } from '../../lib/material-icon-theme';
 import { ShimmerText } from '../ui/ShimmerText';
 import { getToolDisplayName } from '../../services/mcp-tools';
+import { getToolIcon } from '../icons/ToolIcons';
 
 // --- Utility ---
 function cn(...inputs: (string | undefined | null | false)[]) {
@@ -459,6 +460,7 @@ interface ToolItemProps {
 
 const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
   const isFileModifyTool = ['file_create', 'file_write', 'file_patch', 'search_replace', 'multi_search_replace'].includes(tool.name);
+  const isFolderTool = ['list_workspace', 'list_directory', 'create_directory', 'delete_directory'].includes(tool.name);
   const [isOpen, setIsOpen] = useState(false);
 
   // Auto-expand errors
@@ -648,14 +650,14 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
         )} />
 
         <div className={cn(
-          "relative z-10 flex h-3 w-3 items-center justify-center rounded-full mt-2.5 transition-all text-[8px]",
+          "relative z-10 flex h-3 w-3 items-center justify-center rounded-full mt-2.5 transition-all text-[8px] leading-none",
           isError ? "bg-error/20 text-error ring-2 ring-error/10" :
             isRunning ? "bg-task-progress/20 text-task-progress ring-2 ring-task-progress/10" :
               "bg-success/20 text-success ring-2 ring-success/10"
         )}>
-          {isError ? <X size={8} /> :
-            isRunning ? <Loader2 size={8} className="animate-spin" /> :
-              <Check size={8} />}
+          {isError ? <X size={8} className="block" /> :
+            isRunning ? <Loader2 size={8} className="animate-spin block" /> :
+              <Check size={8} className="block" />}
         </div>
       </div>
 
@@ -664,8 +666,14 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
         <div className="flex items-start gap-2">
           <button
             onClick={() => setIsOpen(!isOpen)}
-            className="flex-1 text-left flex items-baseline gap-2 group/header outline-none"
+            className="flex-1 text-left flex items-center gap-2 group/header outline-none"
           >
+            {/* Tool Icon */}
+            <span className="flex-shrink-0">
+              {getToolIcon(tool.name, 14)}
+            </span>
+            
+            {/* Tool Name */}
             {isError ? (
               <span className="text-[11px] font-medium tracking-tight text-error">
                 {getToolDisplayName(tool.name)}
@@ -680,20 +688,32 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
               </span>
             )}
 
-            {/* Compact Filename Pill if applicable */}
-            {fileName && (
+            {/* Compact Filename/Folder Pill if applicable */}
+            {(fileName || isFolderTool) && (
               <span
-                onClick={handleFileClick}
-                role="button"
-                tabIndex={0}
-                className="flex items-center gap-1.5 text-[10px] text-text-secondary px-1.5 py-0.5 rounded-sm bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 transition-all cursor-pointer"
+                onClick={fileName ? handleFileClick : undefined}
+                role={fileName ? "button" : undefined}
+                tabIndex={fileName ? 0 : undefined}
+                className={cn(
+                  "flex items-center gap-1.5 text-[10px] text-text-secondary px-1.5 py-0.5 rounded-sm bg-white/5 border border-white/5",
+                  fileName && "hover:bg-white/10 hover:border-white/10 transition-all cursor-pointer"
+                )}
               >
-                <img
-                  src={getIconUrl(getIconName(fileName, false))}
-                  alt=""
-                  className="w-3 h-3 flex-shrink-0"
-                />
-                <span className="opacity-80 hover:opacity-100 underline decoration-transparent hover:decoration-white/20 underline-offset-2">{fileName}</span>
+                {isFolderTool ? (
+                  <Folder size={12} className="text-info/80 fill-info/10 flex-shrink-0" />
+                ) : (
+                  <img
+                    src={getIconUrl(getIconName(fileName, false))}
+                    alt=""
+                    className="w-3 h-3 flex-shrink-0"
+                  />
+                )}
+                <span className={cn(
+                  "opacity-80",
+                  fileName && "hover:opacity-100 underline decoration-transparent hover:decoration-white/20 underline-offset-2"
+                )}>
+                  {fileName || (filePath ? filePath.split(/[/\\]/).pop() : 'directory')}
+                </span>
               </span>
             )}
 
@@ -787,7 +807,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                 {/* Old String (what was replaced) */}
                 {searchReplaceData.oldString && (
                   <div>
-                    <div className="flex items-center gap-2 px-2 py-1 bg-diff-removed/10 rounded-t border-b border-diff-removed/20">
+                    <div className="flex items-center gap-2 px-2 py-1 bg-diff-removed/10 rounded-t">
                       <span className="text-[9px] font-medium text-diff-removed">OLD</span>
                       <span className="text-[8px] text-diff-removed/60">removed</span>
                     </div>
@@ -800,7 +820,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                 {/* New String (replacement) */}
                 {searchReplaceData.newString && (
                   <div>
-                    <div className="flex items-center gap-2 px-2 py-1 bg-diff-added/10 rounded-t border-b border-diff-added/20">
+                    <div className="flex items-center gap-2 px-2 py-1 bg-diff-added/10 rounded-t">
                       <span className="text-[9px] font-medium text-diff-added">NEW</span>
                       <span className="text-[8px] text-diff-added/60">added</span>
                     </div>
@@ -825,7 +845,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                     {/* Old String (what was replaced) */}
                     {replacement.oldString && (
                       <div>
-                        <div className="flex items-center gap-2 px-2 py-1 bg-diff-removed/10 rounded-t border-b border-diff-removed/20">
+                        <div className="flex items-center gap-2 px-2 py-1 bg-diff-removed/10 rounded-t">
                           <span className="text-[9px] font-medium text-diff-removed">OLD</span>
                           <span className="text-[8px] text-diff-removed/60">removed</span>
                         </div>
@@ -838,7 +858,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                     {/* New String (replacement) */}
                     {replacement.newString && (
                       <div>
-                        <div className="flex items-center gap-2 px-2 py-1 bg-diff-added/10 rounded-t border-b border-diff-added/20">
+                        <div className="flex items-center gap-2 px-2 py-1 bg-diff-added/10 rounded-t">
                           <span className="text-[9px] font-medium text-diff-added">NEW</span>
                           <span className="text-[8px] text-diff-added/60">added</span>
                         </div>
@@ -868,8 +888,41 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
   );
 });
 
-export const ToolTimeline: React.FC<{ tools: ToolCall[] }> = ({ tools }) => {
+interface ToolTimelineProps {
+  tools: ToolCall[];
+  variant?: 'timeline' | 'cards';
+}
+
+export const ToolTimeline: React.FC<ToolTimelineProps> = ({ tools, variant = 'timeline' }) => {
   if (!tools || tools.length === 0) return null;
+
+  // Card variant - wrap each tool in a card-style container
+  if (variant === 'cards') {
+    return (
+      <div className="w-full mt-2 space-y-2">
+        {tools.map((tool, idx) => (
+          <div
+            key={tool.id}
+            className="rounded-xl border transition-all duration-200 overflow-hidden"
+            style={{
+              background: 'var(--aurora-chat-surface)',
+              borderColor: 'var(--aurora-common-border)',
+            }}
+          >
+            <div className="px-1">
+              <ToolItem
+                tool={tool}
+                isLast={true}
+                index={idx}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // Default timeline variant
   return (
     <div className="w-full mt-2 pl-2">
       {tools.map((tool, idx) => (

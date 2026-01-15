@@ -512,16 +512,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
       <div
         onClick={handleContainerClick}
         className={clsx(
-          "rounded-xl transition-all duration-200 cursor-text",
+          "rounded-xl transition-all duration-500 cursor-text relative overflow-hidden",
           isLoading ? "shadow-primary/10" : ""
         )}
         style={{
           backgroundColor: 'var(--aurora-chat-input-background)',
           border: isFocused
-            ? '1px solid var(--aurora-common-primary)'
+            ? '1px solid color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)'
             : '1px solid var(--aurora-chat-input-border)',
-          boxShadow: isLoading
-            ? '0 0 0 1px color-mix(in srgb, var(--aurora-chat-usage-low) 20%, transparent)'
+          boxShadow: isFocused
+            ? '0 0 10px color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)'
             : 'none',
         }}
       >

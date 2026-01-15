@@ -288,9 +288,18 @@ pub mod install {
         Ok(())
     }
 
+    /// Check if the CLI command is installed
+    pub fn is_cli_installed() -> Result<bool, String> {
+        let install_dir = get_cli_install_path();
+        let cmd_path = install_dir.join("aurora.cmd");
+        let exe_path = install_dir.join("aurora.exe");
+        Ok(cmd_path.exists() || exe_path.exists())
+    }
+
     /// Uninstall the CLI command from PATH
     pub fn uninstall_cli() -> Result<(), String> {
         let install_dir = get_cli_install_path();
+
         let install_dir_str = install_dir.to_str()
             .ok_or("Invalid install path")?;
 
@@ -372,9 +381,16 @@ pub mod install {
         Ok(())
     }
 
+    /// Check if the CLI command is installed
+    pub fn is_cli_installed() -> Result<bool, String> {
+        let symlink_path = get_cli_install_path().join("aurora");
+        Ok(symlink_path.exists() || symlink_path.is_symlink())
+    }
+
     /// Uninstall the CLI command
     pub fn uninstall_cli() -> Result<(), String> {
         let symlink_path = get_cli_install_path().join("aurora");
+
         
         if symlink_path.exists() || symlink_path.is_symlink() {
             std::fs::remove_file(&symlink_path)

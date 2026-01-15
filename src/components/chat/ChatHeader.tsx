@@ -3,10 +3,11 @@
  */
 
 import React from 'react';
-import { Plus, History, Loader2, Sparkles, MessageSquare, Zap } from 'lucide-react';
+import { Plus, History, Loader2, Sparkles, MessageSquare, Zap, Maximize2 } from 'lucide-react';
 import { useThreadStore } from '../../store/useThreadStore';
 import { useChatStore } from '../../store/useChatStore';
 import { useContextStore } from '../../store/useContextStore';
+import { useUiStore } from '../../store/useUiStore';
 
 // Get theme colors at runtime from CSS variables
 const getContextColor = (varName: string, fallback: string): string => {
@@ -20,6 +21,21 @@ const getContextColors = () => ({
   medium: getContextColor('--aurora-chat-usage-medium', '#facc15'),
   high: getContextColor('--aurora-chat-usage-high', '#ef4444'),
 });
+
+// Agent Mode Toggle Button
+const AgentModeToggle: React.FC = () => {
+  const { toggleAgentMode } = useUiStore();
+
+  return (
+    <button
+      onClick={toggleAgentMode}
+      className="flex items-center justify-center w-7 h-7 rounded-md text-text-secondary hover:text-primary hover:bg-primary/10 border border-transparent hover:border-primary/20 transition-all duration-200"
+      title="Agent Mode - Full Screen Chat"
+    >
+      <Maximize2 className="w-3.5 h-3.5" />
+    </button>
+  );
+};
 
 interface ChatHeaderProps {
   onNewChat: () => void;
@@ -138,6 +154,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory
           >
             <Plus className="w-4 h-4" />
           </button>
+          <AgentModeToggle />
         </div>
       </div>
     </div>

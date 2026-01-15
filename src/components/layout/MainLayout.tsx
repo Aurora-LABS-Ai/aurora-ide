@@ -35,13 +35,14 @@ import { ToolApprovalModal } from "../modals/ToolApprovalModal";
 import { AuditTimeline } from "../modals/AuditTimeline";
 import { TerminalPanel } from "../terminal/Terminal";
 import { ThemePanel } from "../theme/ThemePanel";
+import { AgentModeLayout } from "../agent";
 import { useUiStore } from "../../store/useUiStore";
 import { useRustChatSync } from "../../hooks/useRustChatSync";
 import { useTerminalStore } from "../../store/useTerminalStore";
 import { useGitStore } from "../../store/useGitStore";
 
 export const MainLayout: React.FC = () => {
-  const { isChatOpen, detachedChat, setSettingsOpen, isSidebarOpen, toggleSidebar } = useUiStore();
+  const { isChatOpen, detachedChat, setSettingsOpen, isSidebarOpen, toggleSidebar, isAgentMode } = useUiStore();
   const { isOpen: isTerminalOpen } = useTerminalStore();
   const { status } = useGitStore();
 
@@ -81,7 +82,7 @@ export const MainLayout: React.FC = () => {
 
       {/* Main horizontal layout */}
       <div className="flex-1 flex min-h-0">
-        {/* Activity Bar (VS Code-style icon strip) */}
+        {/* Activity Bar (VS Code-style icon strip) - Always visible */}
         <ActivityBar
           activePanel={activePanel}
           onPanelChange={setActivePanel}
@@ -90,7 +91,7 @@ export const MainLayout: React.FC = () => {
         />
 
         <PanelGroup direction="horizontal" id="main-panel-group">
-          {/* Sidebar Content (Explorer / Git / Search) */}
+          {/* Sidebar Content (Explorer / Git / Search) - Always visible when open */}
           {isSidebarOpen && (
             <>
               <Panel
@@ -111,29 +112,33 @@ export const MainLayout: React.FC = () => {
             </>
           )}
 
-          {/* Center area: Editor + Terminal stacked vertically */}
+          {/* Center area: Editor/Agent + Terminal stacked vertically */}
           <Panel
             id="center-panel"
             order={2}
-            defaultSize={showChatPanel ? 57 : 82}
+            defaultSize={isAgentMode ? 82 : (showChatPanel ? 57 : 82)}
             minSize={30}
           >
             <div className="h-full flex flex-col">
-              {/* Editor takes remaining space */}
+              {/* Main content area */}
               <div className="flex-1 min-h-0 overflow-hidden">
-                <EditorPanel />
+                {isAgentMode ? (
+                  <AgentModeLayout />
+                ) : (
+                  <EditorPanel />
+                )}
               </div>
 
-              {/* Terminal at bottom of center area */}
+              {/* Terminal at bottom - works in both modes */}
               {isTerminalOpen && <TerminalPanel />}
             </div>
           </Panel>
 
-          {showChatPanel && (
+          {/* Chat panel - only in normal mode */}
+          {!isAgentMode && showChatPanel && (
             <>
               <PanelResizeHandle className="w-[1px] bg-border hover:bg-primary transition-colors" />
 
-              {/* Chat */}
               <Panel
                 id="chat-panel"
                 order={3}

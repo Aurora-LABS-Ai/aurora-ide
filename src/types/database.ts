@@ -18,7 +18,10 @@ export interface AppSettings {
   temperature: number;
   theme: string;
   thinkingEnabled: boolean;
+  uiFontFamily?: string;
+  uiScale?: number;
   wrapMode: boolean;
+
 }
 
 // ============================================================

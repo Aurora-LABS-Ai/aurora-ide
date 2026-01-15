@@ -1,2 +1,6 @@
 [build]
-target-dir = "target"
+# Output build artifacts to project root build folder
+target-dir = "../build"
+
+[env]
+CARGO_INCREMENTAL = "0"

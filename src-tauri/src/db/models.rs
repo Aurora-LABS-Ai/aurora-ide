@@ -219,9 +219,15 @@ pub struct AppSettings {
     // General settings
     pub selected_model: String,
     pub auto_approve_tools: bool,
+    pub auto_accept_changes: bool,
     pub font_size: i32,
+    pub wrap_mode: bool,
     pub theme: String,
     pub thinking_enabled: bool,
+    pub syntax_validation_enabled: bool,
+    pub project_layout_enabled: bool,
+    pub ui_font_family: String,
+    pub ui_scale: f64,
     pub max_tokens: i32,
     pub temperature: f64,
     
@@ -233,20 +239,28 @@ pub struct AppSettings {
     pub max_tool_calls_per_request: i32,
 }
 
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             selected_model: "glm:glm-4.7".to_string(),
             auto_approve_tools: false,
+            auto_accept_changes: false,
             font_size: 14,
+            wrap_mode: true,
             theme: "dark".to_string(),
             thinking_enabled: true,
+            syntax_validation_enabled: true,
+            project_layout_enabled: true,
+            ui_font_family: "system".to_string(),
+            ui_scale: 1.1,
             max_tokens: 8192,
             temperature: 1.0,
             auto_save: "off".to_string(),
             auto_save_delay: 1000,
             max_tool_calls_per_request: 25,
         }
+
     }
 }
 

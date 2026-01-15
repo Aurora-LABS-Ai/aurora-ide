@@ -186,7 +186,9 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::openai_native::openai_native_chat,
             // CLI commands (install/uninstall aurora command)
             commands::install_aurora_cli,
+            commands::is_aurora_cli_installed,
             commands::uninstall_aurora_cli,
+
             // Context Engine commands (turn-based context management)
             context::commands::context_add_user_message,
             context::commands::context_add_assistant_response,

@@ -814,6 +814,12 @@ pub async fn install_aurora_cli() -> Result<String, String> {
         .map(|_| "Aurora CLI installed successfully".to_string())
 }
 
+/// Check if the Aurora CLI is installed
+#[tauri::command]
+pub async fn is_aurora_cli_installed() -> Result<bool, String> {
+    crate::cli::install::is_cli_installed()
+}
+
 /// Uninstall the Aurora CLI from system PATH
 #[tauri::command]
 pub async fn uninstall_aurora_cli() -> Result<String, String> {

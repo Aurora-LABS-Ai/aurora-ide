@@ -322,6 +322,17 @@ export const installAuroraCli = async (): Promise<string> => {
 };
 
 /**
+ * Check if the Aurora CLI command is installed
+ */
+export const isAuroraCliInstalled = async (): Promise<boolean> => {
+  if (!isTauri()) {
+    console.warn('isAuroraCliInstalled: Not running in Tauri');
+    return false;
+  }
+  return invoke<boolean>('is_aurora_cli_installed');
+};
+
+/**
  * Uninstall the Aurora CLI command from system PATH
  */
 export const uninstallAuroraCli = async (): Promise<string> => {

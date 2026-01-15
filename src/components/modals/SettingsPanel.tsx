@@ -20,7 +20,7 @@
  * See: src/services/theme-service.ts for theme utilities
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useUiStore } from '../../store/useUiStore';
 import { useSettingsStore, type LLMProvider } from '../../store/useSettingsStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
@@ -31,7 +31,14 @@ import { ToolSettingsTab } from './ToolSettingsTab';
 import { ThemeSettingsTab } from './ThemeSettingsTab';
 import { SemanticSettingsTab } from './SemanticSettingsTab';
 import { McpSettingsTab } from './McpSettingsTab';
-import { installAuroraCli, uninstallAuroraCli, isTauri } from '../../lib/tauri';
+import { installAuroraCli, uninstallAuroraCli, isAuroraCliInstalled, isTauri } from '../../lib/tauri';
+
+const UI_FONT_OPTIONS = [
+  { value: 'system', label: 'System' },
+  { value: 'inter', label: 'Inter' },
+  { value: 'segoe', label: 'Segoe UI' },
+  { value: 'roboto', label: 'Roboto' },
+];
 
 // ============================================
 // CHECKPOINT SETTINGS COMPONENT
@@ -509,6 +516,10 @@ export const SettingsPanel: React.FC = () => {
     addCustomProvider,
     autoSave,
     setAutoSave,
+    uiFontFamily,
+    uiScale,
+    setUiFontFamily,
+    setUiScale,
   } = useSettingsStore();
 
   // Note: Thinking, temperature, and maxTokens are now per-provider settings
@@ -524,6 +535,34 @@ export const SettingsPanel: React.FC = () => {
   // CLI installation state
   const [cliStatus, setCliStatus] = useState<'idle' | 'installing' | 'uninstalling' | 'success' | 'error'>('idle');
   const [cliMessage, setCliMessage] = useState<string>('');
+  const [cliInstalled, setCliInstalled] = useState<boolean | null>(null);
+  const [isCheckingCli, setIsCheckingCli] = useState(false);
+
+  useEffect(() => {
+    if (!isSettingsOpen || !isTauri()) {
+      return;
+    }
+
+    let isActive = true;
+    setIsCheckingCli(true);
+    isAuroraCliInstalled()
+      .then((installed) => {
+        if (!isActive) return;
+        setCliInstalled(installed);
+      })
+      .catch(() => {
+        if (!isActive) return;
+        setCliInstalled(null);
+      })
+      .finally(() => {
+        if (!isActive) return;
+        setIsCheckingCli(false);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [isSettingsOpen]);
 
   const handleInstallCli = async () => {
     if (!isTauri()) {
@@ -539,6 +578,7 @@ export const SettingsPanel: React.FC = () => {
       const result = await installAuroraCli();
       setCliStatus('success');
       setCliMessage(result || 'Aurora CLI installed! Restart your terminal to use "aurora ." command.');
+      setCliInstalled(true);
     } catch (error) {
       setCliStatus('error');
       setCliMessage(error instanceof Error ? error.message : 'Failed to install CLI');
@@ -555,6 +595,7 @@ export const SettingsPanel: React.FC = () => {
       const result = await uninstallAuroraCli();
       setCliStatus('success');
       setCliMessage(result || 'Aurora CLI uninstalled successfully.');
+      setCliInstalled(false);
     } catch (error) {
       setCliStatus('error');
       setCliMessage(error instanceof Error ? error.message : 'Failed to uninstall CLI');
@@ -688,41 +729,43 @@ export const SettingsPanel: React.FC = () => {
                   
                   <div className="flex flex-col gap-2">
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={handleInstallCli}
-                        disabled={cliStatus === 'installing' || cliStatus === 'uninstalling'}
-                        className={clsx(
-                          "flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium rounded transition-colors",
-                          cliStatus === 'installing' || cliStatus === 'uninstalling'
-                            ? "bg-input text-text-disabled cursor-not-allowed"
-                            : "bg-primary text-white hover:bg-primary/80"
-                        )}
-                      >
-                        {cliStatus === 'installing' ? (
-                          <>
-                            <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                            Installing...
-                          </>
-                        ) : (
-                          <>
-                            <Terminal className="w-3 h-3" />
-                            Install CLI
-                          </>
-                        )}
-                      </button>
-                      
-                      <button
-                        onClick={handleUninstallCli}
-                        disabled={cliStatus === 'installing' || cliStatus === 'uninstalling'}
-                        className={clsx(
-                          "flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium rounded transition-colors",
-                          cliStatus === 'installing' || cliStatus === 'uninstalling'
-                            ? "bg-input text-text-disabled cursor-not-allowed"
-                            : "text-text-secondary hover:bg-input hover:text-text-primary border border-border"
-                        )}
-                      >
-                        {cliStatus === 'uninstalling' ? 'Uninstalling...' : 'Uninstall'}
-                      </button>
+                      {cliInstalled ? (
+                        <button
+                          onClick={handleUninstallCli}
+                          disabled={cliStatus === 'installing' || cliStatus === 'uninstalling' || isCheckingCli}
+                          className={clsx(
+                            "flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium rounded transition-colors",
+                            cliStatus === 'installing' || cliStatus === 'uninstalling' || isCheckingCli
+                              ? "bg-input text-text-disabled cursor-not-allowed"
+                              : "text-text-secondary hover:bg-input hover:text-text-primary border border-border"
+                          )}
+                        >
+                          {cliStatus === 'uninstalling' ? 'Uninstalling...' : 'Uninstall'}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={handleInstallCli}
+                          disabled={cliStatus === 'installing' || cliStatus === 'uninstalling' || isCheckingCli}
+                          className={clsx(
+                            "flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium rounded transition-colors",
+                            cliStatus === 'installing' || cliStatus === 'uninstalling' || isCheckingCli
+                              ? "bg-input text-text-disabled cursor-not-allowed"
+                              : "bg-primary text-white hover:bg-primary/80"
+                          )}
+                        >
+                          {cliStatus === 'installing' || isCheckingCli ? (
+                            <>
+                              <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                              {isCheckingCli ? 'Checking...' : 'Installing...'}
+                            </>
+                          ) : (
+                            <>
+                              <Terminal className="w-3 h-3" />
+                              Install CLI
+                            </>
+                          )}
+                        </button>
+                      )}
                     </div>
                     
                     {/* Status message */}
@@ -749,6 +792,43 @@ export const SettingsPanel: React.FC = () => {
                         <p><span className="text-primary">aurora file.ts</span> - Open a file</p>
                       </div>
                     </div>
+                  </div>
+                </div>
+
+                {/* Interface Settings Section */}
+                <div className="p-3 border border-border rounded-lg bg-titlebar">
+                  <h3 className="text-xs font-medium text-text-primary mb-2">Interface</h3>
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] text-text-secondary">UI Font</label>
+                      <select
+                        value={uiFontFamily}
+                        onChange={(e) => setUiFontFamily(e.target.value)}
+                        className="bg-input border border-input-border rounded px-2 py-1 text-[10px] text-text-primary"
+                      >
+                        {UI_FONT_OPTIONS.map(option => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-[10px] text-text-secondary">UI Scale</p>
+                        <p className="text-[9px] text-text-disabled">Resize text and UI density</p>
+                      </div>
+                      <span className="text-[10px] font-mono text-primary">
+                        {Math.round(uiScale * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.9"
+                      max="1.3"
+                      step="0.05"
+                      value={uiScale}
+                      onChange={(e) => setUiScale(parseFloat(e.target.value))}
+                      className="w-full h-1 bg-input-border rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
+                    />
                   </div>
                 </div>
 

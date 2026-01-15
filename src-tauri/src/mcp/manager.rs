@@ -228,13 +228,33 @@ impl McpManager {
             stdin.flush()
                 .map_err(|e| format!("Failed to flush stdin: {}", e))?;
 
-            let mut line = String::new();
-            reader.read_line(&mut line)
-                .map_err(|e| format!("Failed to read from MCP server: {}", e))?;
-            
-            serde_json::from_str(&line)
-                .map_err(|e| format!("Failed to parse response: {}", e))
+            let mut last_error: Option<String> = None;
+            for _ in 0..10 {
+                let mut line = String::new();
+                let bytes = reader.read_line(&mut line)
+                    .map_err(|e| format!("Failed to read from MCP server: {}", e))?;
+
+                if bytes == 0 {
+                    break;
+                }
+
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                match serde_json::from_str(trimmed) {
+                    Ok(value) => return Ok(value),
+                    Err(err) => {
+                        last_error = Some(format!("Failed to parse response: {} (line: {})", err, trimmed));
+                        continue;
+                    }
+                }
+            }
+
+            Err(last_error.unwrap_or_else(|| "Failed to parse response: empty output".to_string()))
         };
+
 
         // 1. Send initialize request
         let init_request = serde_json::json!({
@@ -291,26 +311,38 @@ impl McpManager {
         let tools_response = send_request(&mut stdin, &mut reader, tools_request)?;
         
         // Parse tools from response
-        if let Some(result) = tools_response.get("result") {
-            if let Some(tools_array) = result.get("tools").and_then(|t| t.as_array()) {
-                for tool in tools_array {
-                    let name = tool.get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    let description = tool.get("description")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let input_schema = tool.get("inputSchema").cloned();
-                    
-                    tools.push(McpToolInfo {
-                        name,
-                        description,
-                        input_schema,
-                    });
+        let tools_value = tools_response
+            .get("result")
+            .and_then(|result| {
+                if let Some(array) = result.get("tools") {
+                    Some(array)
+                } else if result.is_array() {
+                    Some(result)
+                } else {
+                    None
                 }
+            })
+            .or_else(|| tools_response.get("tools"));
+
+        if let Some(tools_array) = tools_value.and_then(|t| t.as_array()) {
+            for tool in tools_array {
+                let name = tool.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let description = tool.get("description")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let input_schema = tool.get("inputSchema").cloned();
+                
+                tools.push(McpToolInfo {
+                    name,
+                    description,
+                    input_schema,
+                });
             }
         }
+
 
         // 4. Try to list resources (optional, some servers don't support this)
         let resources_request = serde_json::json!({

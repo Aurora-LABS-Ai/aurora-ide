@@ -27,7 +27,10 @@ import {
   Eye,
   EyeOff,
   Check,
+  Pencil,
+  Save,
 } from 'lucide-react';
+
 import clsx from 'clsx';
 import { DeleteConfirmDialog } from '../chat/DeleteConfirmDialog';
 
@@ -382,6 +385,40 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
   const [isConnecting, setIsConnecting] = useState(false);
   const [showEnv, setShowEnv] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editName, setEditName] = useState(server.config.name);
+  const [editTransport, setEditTransport] = useState<McpTransportType>(server.config.transport);
+  const [editCommand, setEditCommand] = useState(server.config.command || '');
+  const [editArgs, setEditArgs] = useState(server.config.args.join(' '));
+  const [editUrl, setEditUrl] = useState(server.config.url || '');
+  const [editEnv, setEditEnv] = useState(
+    Object.entries(server.config.env)
+      .map(([key, value]) => `${key}=${value}`)
+      .join('\n')
+  );
+  const [editAutoStart, setEditAutoStart] = useState(server.config.autoStart);
+  const [editAutoApprove, setEditAutoApprove] = useState(server.config.autoApprove);
+
+
+  useEffect(() => {
+    if (!isExpanded) {
+      setIsEditing(false);
+      return;
+    }
+
+    setEditName(server.config.name);
+    setEditTransport(server.config.transport);
+    setEditCommand(server.config.command || '');
+    setEditArgs(server.config.args.join(' '));
+    setEditUrl(server.config.url || '');
+    setEditEnv(
+      Object.entries(server.config.env)
+        .map(([key, value]) => `${key}=${value}`)
+        .join('\n')
+    );
+    setEditAutoStart(server.config.autoStart);
+    setEditAutoApprove(server.config.autoApprove);
+  }, [isExpanded, server.config]);
 
   const handleConnect = async () => {
     setIsConnecting(true);
@@ -396,6 +433,50 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
   const handleToggle = async () => {
     await toggleServer(server.config.id, !server.config.enabled);
   };
+
+  const handleSaveEdit = async () => {
+    const envObj: Record<string, string> = {};
+    if (editEnv.trim()) {
+      editEnv.split('\n').forEach((line) => {
+        const [key, ...valueParts] = line.split('=');
+        if (key && valueParts.length > 0) {
+          envObj[key.trim()] = valueParts.join('=').trim();
+        }
+      });
+    }
+
+    const updatedConfig: McpServerConfig = {
+      ...server.config,
+      name: editName.trim() || server.config.name,
+      transport: editTransport,
+      command: editTransport === 'stdio' ? editCommand.trim() : undefined,
+      args: editArgs.trim() ? editArgs.trim().split(/\s+/) : [],
+      url: editTransport === 'sse' ? editUrl.trim() : undefined,
+      env: envObj,
+      autoStart: editAutoStart,
+      autoApprove: editAutoApprove,
+    };
+
+    await updateServer(updatedConfig);
+    setIsEditing(false);
+  };
+
+  const handleCancelEdit = () => {
+    setEditName(server.config.name);
+    setEditTransport(server.config.transport);
+    setEditCommand(server.config.command || '');
+    setEditArgs(server.config.args.join(' '));
+    setEditUrl(server.config.url || '');
+    setEditEnv(
+      Object.entries(server.config.env)
+        .map(([key, value]) => `${key}=${value}`)
+        .join('\n')
+    );
+    setEditAutoStart(server.config.autoStart);
+    setEditAutoApprove(server.config.autoApprove);
+    setIsEditing(false);
+  };
+
 
   const handleRemove = () => {
     setShowDeleteDialog(true);
@@ -501,6 +582,18 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
               )}
             </>
           )}
+          <button
+            onClick={() => setIsEditing((prev) => !prev)}
+            className={clsx(
+              "p-1 rounded",
+              isEditing
+                ? "text-primary bg-primary/10"
+                : "text-text-secondary hover:text-text-primary hover:bg-input"
+            )}
+            title={isEditing ? "Stop editing" : "Edit server"}
+          >
+            <Pencil className="w-3.5 h-3.5" />
+          </button>
           {/* Delete button */}
           <button
             onClick={handleRemove}
@@ -525,6 +618,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
             />
           </button>
         </div>
+
       </div>
 
       {/* Expanded Content */}
@@ -552,63 +646,171 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
               <span className="text-[10px] text-text-secondary">Auto-approve all tools</span>
             </div>
             <button
-              onClick={async () => {
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (isEditing) {
+                  setEditAutoApprove(!editAutoApprove);
+                  return;
+                }
                 const updatedConfig = { ...server.config, autoApprove: !server.config.autoApprove };
                 await updateServer(updatedConfig);
               }}
               className={clsx(
                 'relative w-8 h-4 rounded-full transition-colors',
-                server.config.autoApprove ? 'bg-success' : 'bg-input border border-border'
+                (isEditing ? editAutoApprove : server.config.autoApprove) ? 'bg-success' : 'bg-input border border-border'
               )}
             >
               <div
                 className={clsx(
                   'absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform',
-                  server.config.autoApprove ? 'translate-x-4' : 'translate-x-0.5'
+                  (isEditing ? editAutoApprove : server.config.autoApprove) ? 'translate-x-4' : 'translate-x-0.5'
                 )}
               />
             </button>
           </div>
 
-          {/* Transport info */}
-          <div>
-            <label className="text-[10px] text-text-disabled block mb-0.5">
-              {server.config.transport === 'stdio' ? 'Command' : 'URL'}
-            </label>
-            <div className="text-[10px] text-text-secondary font-mono bg-input rounded px-2 py-1 border border-border">
-              {server.config.transport === 'stdio' ? (
+          {isEditing ? (
+            <div className="space-y-2">
+              <div>
+                <label className="text-[10px] text-text-disabled block mb-0.5">Name</label>
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-primary"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-text-disabled block mb-0.5">Transport</label>
+                <select
+                  value={editTransport}
+                  onChange={(e) => setEditTransport(e.target.value as McpTransportType)}
+                  className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-primary"
+                >
+                  <option value="stdio">Stdio</option>
+                  <option value="sse">SSE (not yet supported)</option>
+                </select>
+              </div>
+              {editTransport === 'stdio' ? (
                 <>
-                  {server.config.command} {server.config.args.join(' ')}
+                  <div>
+                    <label className="text-[10px] text-text-disabled block mb-0.5">Command</label>
+                    <input
+                      type="text"
+                      value={editCommand}
+                      onChange={(e) => setEditCommand(e.target.value)}
+                      className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-primary font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-text-disabled block mb-0.5">Args</label>
+                    <input
+                      type="text"
+                      value={editArgs}
+                      onChange={(e) => setEditArgs(e.target.value)}
+                      className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-primary font-mono"
+                    />
+                  </div>
                 </>
               ) : (
-                server.config.url
-              )}
-            </div>
-          </div>
-
-          {/* Environment variables */}
-          {Object.keys(server.config.env).length > 0 && (
-            <div>
-              <div className="flex items-center justify-between mb-0.5">
-                <label className="text-[10px] text-text-disabled">Environment Variables</label>
-                <button
-                  onClick={() => setShowEnv(!showEnv)}
-                  className="p-0.5 rounded text-text-disabled hover:text-text-secondary"
-                >
-                  {showEnv ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                </button>
-              </div>
-              {showEnv && (
-                <div className="text-[10px] text-text-secondary font-mono bg-input rounded px-2 py-1 border border-border space-y-0.5">
-                  {Object.entries(server.config.env).map(([key, value]) => (
-                    <div key={key}>
-                      {key}={value}
-                    </div>
-                  ))}
+                <div>
+                  <label className="text-[10px] text-text-disabled block mb-0.5">URL</label>
+                  <input
+                    type="text"
+                    value={editUrl}
+                    onChange={(e) => setEditUrl(e.target.value)}
+                    className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-primary font-mono"
+                  />
                 </div>
               )}
+              <div>
+                <label className="text-[10px] text-text-disabled block mb-0.5">Environment Variables</label>
+                <textarea
+                  value={editEnv}
+                  onChange={(e) => setEditEnv(e.target.value)}
+                  rows={2}
+                  className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-primary font-mono resize-none"
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] text-text-secondary">Auto-start</label>
+                <button
+                  onClick={() => setEditAutoStart(!editAutoStart)}
+                  className={clsx(
+                    'relative w-8 h-4 rounded-full transition-colors',
+                    editAutoStart ? 'bg-primary' : 'bg-input border border-border'
+                  )}
+                >
+                  <div
+                    className={clsx(
+                      'absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform',
+                      editAutoStart ? 'translate-x-4' : 'translate-x-0.5'
+                    )}
+                  />
+                </button>
+              </div>
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  onClick={handleCancelEdit}
+                  className="px-2.5 py-1 text-[10px] text-text-secondary hover:text-text-primary"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveEdit}
+                  className="px-2.5 py-1 text-[10px] font-semibold text-white bg-primary hover:bg-primary/80 rounded"
+                >
+                  <span className="inline-flex items-center gap-1">
+                    <Save className="w-3 h-3" />
+                    Save
+                  </span>
+                </button>
+              </div>
             </div>
+          ) : (
+            <>
+              {/* Transport info */}
+              <div>
+                <label className="text-[10px] text-text-disabled block mb-0.5">
+                  {server.config.transport === 'stdio' ? 'Command' : 'URL'}
+                </label>
+                <div className="text-[10px] text-text-secondary font-mono bg-input rounded px-2 py-1 border border-border">
+                  {server.config.transport === 'stdio' ? (
+                    <>
+                      {server.config.command} {server.config.args.join(' ')}
+                    </>
+                  ) : (
+                    server.config.url
+                  )}
+                </div>
+              </div>
+
+              {/* Environment variables */}
+              {Object.keys(server.config.env).length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <label className="text-[10px] text-text-disabled">Environment Variables</label>
+                    <button
+                      onClick={() => setShowEnv(!showEnv)}
+                      className="p-0.5 rounded text-text-disabled hover:text-text-secondary"
+                    >
+                      {showEnv ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                    </button>
+                  </div>
+                  {showEnv && (
+                    <div className="text-[10px] text-text-secondary font-mono bg-input rounded px-2 py-1 border border-border space-y-0.5">
+                      {Object.entries(server.config.env).map(([key, value]) => (
+                        <div key={key}>
+                          {key}={value}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
           )}
+
 
           {/* Tools list with tooltips */}
           {server.tools.length > 0 && (

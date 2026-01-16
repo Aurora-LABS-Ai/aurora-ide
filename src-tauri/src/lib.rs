@@ -188,6 +188,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::install_aurora_cli,
             commands::is_aurora_cli_installed,
             commands::uninstall_aurora_cli,
+            commands::aurora_websearch,
+
 
             // Context Engine commands (turn-based context management)
             context::commands::context_add_user_message,

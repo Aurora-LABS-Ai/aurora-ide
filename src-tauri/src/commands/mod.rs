@@ -55,13 +55,119 @@ pub struct SystemInfo {
     pub shell: Option<String>, // Default shell path
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuroraWebSearchRequest {
+    pub action: Option<String>,
+    pub query: Option<String>,
+    pub url: Option<String>,
+    pub num_results: Option<u32>,
+    pub region: Option<String>,
+    pub safe_search: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuroraWebSearchResponse {
+    pub success: bool,
+    pub action: String,
+    pub query: Option<String>,
+    pub url: Option<String>,
+    pub results: Option<serde_json::Value>,
+    pub content: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+
 static FS_WATCHER: OnceLock<Mutex<Option<notify::RecommendedWatcher>>> = OnceLock::new();
 
 fn get_watcher_handle() -> &'static Mutex<Option<notify::RecommendedWatcher>> {
     FS_WATCHER.get_or_init(|| Mutex::new(None))
 }
 
+#[tauri::command]
+pub async fn aurora_websearch(request: AuroraWebSearchRequest) -> Result<AuroraWebSearchResponse, String> {
+    use aurora_websearch::{AuroraSearchBuilder, SafeSearch};
+
+    let action = request.action.clone().unwrap_or_else(|| {
+        if request.url.is_some() {
+            "fetch".to_string()
+        } else {
+            "search".to_string()
+        }
+    });
+
+    // Build the search client with configuration
+    let mut builder = AuroraSearchBuilder::new();
+    
+    // Set limit if provided
+    if let Some(num_results) = request.num_results {
+        builder = builder.limit(num_results as usize);
+    }
+    
+    // Set region if provided
+    if let Some(ref region) = request.region {
+        builder = builder.region(region.clone());
+    }
+    
+    // Set safe search if provided
+    if let Some(ref safe_search) = request.safe_search {
+        let safe = match safe_search.to_uppercase().as_str() {
+            "OFF" => SafeSearch::Off,
+            "STRICT" => SafeSearch::Strict,
+            _ => SafeSearch::Moderate,
+        };
+        builder = builder.safe_search(safe);
+    }
+    
+    let aurora = builder.build()
+        .map_err(|e| format!("Failed to create search client: {}", e))?;
+
+    if action == "fetch" {
+        let url = request.url.clone().ok_or_else(|| "URL is required for fetch".to_string())?;
+        
+        let content = aurora.extract_content(&url)
+            .await
+            .map_err(|e| format!("Web fetch failed: {}", e))?;
+        
+        let content_value = serde_json::to_value(&content)
+            .map_err(|e| format!("Failed to serialize fetch response: {}", e))?;
+        
+        return Ok(AuroraWebSearchResponse {
+            success: true,
+            action,
+            query: None,
+            url: request.url,
+            results: None,
+            content: Some(content_value),
+            error: None,
+        });
+    }
+
+    // Search action
+    let query = request.query.clone().ok_or_else(|| "Query is required for search".to_string())?;
+    let limit = request.num_results.unwrap_or(10) as usize;
+    
+    let results = aurora.search_with_limit(&query, limit)
+        .await
+        .map_err(|e| format!("Web search failed: {}", e))?;
+    
+    let results_value = serde_json::to_value(&results)
+        .map_err(|e| format!("Failed to serialize search response: {}", e))?;
+
+    Ok(AuroraWebSearchResponse {
+        success: true,
+        action,
+        query: Some(query),
+        url: None,
+        results: Some(results_value),
+        content: None,
+        error: None,
+    })
+}
+
 /// Read directory contents
+
 /// 
 /// Args:
 ///   path: Directory path to read

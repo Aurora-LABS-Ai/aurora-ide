@@ -56,9 +56,6 @@ pub enum UndoRedoError {
     #[error("File not found in undo history: {0}")]
     FileNotFound(String),
 
-    #[error("Failed to read file: {0}")]
-    ReadError(String),
-
     #[error("Failed to write file: {0}")]
     WriteError(String),
 

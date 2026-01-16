@@ -1,3 +1,6 @@
+// Allow dead code for CRUD methods that are part of the complete API
+#![allow(dead_code)]
+
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::db::error::DbResult;

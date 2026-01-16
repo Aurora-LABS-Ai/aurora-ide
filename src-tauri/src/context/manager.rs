@@ -2,6 +2,12 @@
 //! 
 //! Manages conversation context with turn-based storage and token tracking.
 //! Handles adding messages, tracking usage, and determining when summarization is needed.
+//!
+//! Note: Some methods are kept for API completeness and future integration,
+//! even if not currently used in the codebase.
+
+// Allow dead code for API methods kept for completeness and future use
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -373,9 +379,9 @@ impl ContextManager {
 // GLOBAL CONTEXT STORE - Thread-safe with atomic operations
 // ============================================================
 
-/// Global store for context managers (one per thread)
-/// Uses write lock for ALL operations to prevent race conditions
 lazy_static::lazy_static! {
+    /// Global store for context managers (one per thread).
+    /// Uses write lock for ALL operations to prevent race conditions.
     static ref CONTEXT_STORE: Arc<RwLock<HashMap<String, ContextManager>>> = 
         Arc::new(RwLock::new(HashMap::new()));
 }

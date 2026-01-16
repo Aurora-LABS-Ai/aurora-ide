@@ -2,6 +2,12 @@
 //! 
 //! Core data structures for turn-based conversation management.
 //! Inspired by VS Code Copilot's Turn/Round architecture.
+//!
+//! Note: Some methods are kept for API completeness and future use,
+//! even if not currently used in the codebase.
+
+// Allow dead code for API methods kept for completeness
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

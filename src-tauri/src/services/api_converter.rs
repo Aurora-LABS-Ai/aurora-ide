@@ -10,6 +10,9 @@
 //! API Message Format:
 //! - role ('user'|'assistant'|'tool'), content, tool_calls?, reasoning_content?
 
+// Allow dead code for utility functions kept for API completeness
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

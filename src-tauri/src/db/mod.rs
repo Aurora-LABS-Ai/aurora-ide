@@ -10,10 +10,11 @@ pub use error::DbResult;
 pub use models::{
     EditorState, ExplorerState, WorkspaceState,
     LLMProvider, ToolSetting, AppSettings,
-    ThreadState, Message, TokenUsage, ContextUsage, ToolCall, CustomTheme,
+    ThreadState, Message, TokenUsage, ContextUsage, CustomTheme,
     SemanticIndex, SemanticIndexStatus, SemanticSettings, SearchMode,
     IndexProgress, SemanticSearchResult,
 };
+// Note: ToolCall is available via crate::db::models::ToolCall or crate::context::types::ToolCall
 pub use repositories::{
     CheckpointRepository, EditorRepository, ExplorerRepository, WorkspaceRepository,
     SettingsRepository, ThreadsRepository, ThemeRepository, SemanticRepository,

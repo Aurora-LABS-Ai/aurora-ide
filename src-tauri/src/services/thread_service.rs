@@ -9,6 +9,9 @@
 //! - Multi-window synchronization via Tauri events
 //! - Thread history preserved forever
 
+// Allow dead code for StreamState fields kept for debugging/future use
+#![allow(dead_code)]
+
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

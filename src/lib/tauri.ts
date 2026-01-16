@@ -342,3 +342,35 @@ export const uninstallAuroraCli = async (): Promise<string> => {
   }
   return invoke<string>('uninstall_aurora_cli');
 };
+
+export interface AuroraWebSearchRequest {
+  action?: string;
+  query?: string;
+  url?: string;
+  numResults?: number;
+  region?: string;
+  safeSearch?: string;
+}
+
+export interface AuroraWebSearchResponse {
+  success: boolean;
+  action?: string;
+  query?: string;
+  url?: string;
+  results?: unknown;
+  content?: unknown;
+  error?: string;
+}
+
+/**
+ * Run native web search / fetch via Aurora WebSearch SDK
+ */
+export const auroraWebSearch = async (
+  request: AuroraWebSearchRequest,
+): Promise<AuroraWebSearchResponse> => {
+  if (!isTauri()) {
+    console.warn('auroraWebSearch: Not running in Tauri');
+    return { success: false, error: 'Not running in Tauri' };
+  }
+  return invoke<AuroraWebSearchResponse>('aurora_websearch', { request });
+};

@@ -2,6 +2,11 @@
 //! 
 //! Builds API messages from conversation context with smart prioritization.
 //! Recent turns get full content, older turns use summaries when available.
+//!
+//! Note: Builder methods kept for future integration with context window management.
+
+// Allow dead code for builder methods kept for future use
+#![allow(dead_code)]
 
 use crate::context::types::*;
 use crate::context::manager::ContextManager;

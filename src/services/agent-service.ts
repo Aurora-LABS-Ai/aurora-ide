@@ -585,7 +585,12 @@ Your main goal is to follow the USER's instructions at each message.
 - Returns file paths, line numbers, code snippets, and relevance scores
 - If returns "disabled/not_indexed", tell user to enable in Settings > Semantic Search
 
+**auroro_websearch** - Native web search and page fetch
+- Use for live web research or fetching a specific URL
+- Supports search queries and page extraction with optional CSS selectors
+
 **grep** - Pattern-based search for exact matches
+
 - Use for exact symbol/string searches: function names, variable names, imports
 - Supports regex and case-insensitive search
 - Use 'glob' parameter to filter by file type (e.g., glob="*.ts")

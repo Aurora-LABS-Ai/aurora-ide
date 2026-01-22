@@ -3,11 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::process::Command;
-
-// Windows-specific imports
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
+use tokio::process::Command;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -69,7 +65,7 @@ pub struct GitCommit {
 // Helper Functions
 // ============================================================================
 
-fn run_git_command(workspace_path: &str, args: &[&str]) -> Result<String, String> {
+async fn run_git_command(workspace_path: &str, args: &[&str]) -> Result<String, String> {
     let path = Path::new(workspace_path);
     if !path.exists() {
         return Err(format!("Workspace path does not exist: {}", workspace_path));
@@ -81,16 +77,16 @@ fn run_git_command(workspace_path: &str, args: &[&str]) -> Result<String, String
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
 
-    match cmd.output() {
-        Ok(output) => {
-            if output.status.success() {
-                Ok(String::from_utf8_lossy(&output.stdout).to_string())
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                Err(stderr.trim().to_string())
-            }
-        }
-        Err(e) => Err(format!("Failed to execute git: {}", e)),
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("Failed to execute git: {}", e))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        Err(stderr.trim().to_string())
     }
 }
 
@@ -123,7 +119,7 @@ pub async fn git_is_repository(workspace_path: String) -> Result<bool, String> {
 #[tauri::command]
 pub async fn git_get_status(workspace_path: String) -> Result<GitStatus, String> {
     // Get porcelain status
-    let status_output = run_git_command(&workspace_path, &["status", "--porcelain=v1", "-uall"])?;
+    let status_output = run_git_command(&workspace_path, &["status", "--porcelain=v1", "-uall"]).await?;
 
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
@@ -191,7 +187,7 @@ pub async fn git_get_status(workspace_path: String) -> Result<GitStatus, String>
     }
 
     // Get ahead/behind count
-    let (ahead, behind) = get_ahead_behind(&workspace_path).unwrap_or((0, 0));
+    let (ahead, behind) = get_ahead_behind(&workspace_path).await.unwrap_or((0, 0));
 
     Ok(GitStatus {
         staged,
@@ -203,9 +199,13 @@ pub async fn git_get_status(workspace_path: String) -> Result<GitStatus, String>
     })
 }
 
-fn get_ahead_behind(workspace_path: &str) -> Result<(i32, i32), String> {
-    let output = run_git_command(workspace_path, &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])?;
-    let parts: Vec<&str> = output.trim().split_whitespace().collect();
+async fn get_ahead_behind(workspace_path: &str) -> Result<(i32, i32), String> {
+    let output = run_git_command(
+        workspace_path,
+        &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+    )
+    .await?;
+    let parts: Vec<&str> = output.split_whitespace().collect();
 
     if parts.len() >= 2 {
         let behind = parts[0].parse().unwrap_or(0);
@@ -220,7 +220,7 @@ fn get_ahead_behind(workspace_path: &str) -> Result<(i32, i32), String> {
 #[tauri::command]
 pub async fn git_get_branches(workspace_path: String) -> Result<BranchResult, String> {
     // Get current branch
-    let current = run_git_command(&workspace_path, &["rev-parse", "--abbrev-ref", "HEAD"])?
+    let current = run_git_command(&workspace_path, &["rev-parse", "--abbrev-ref", "HEAD"]).await?
         .trim()
         .to_string();
 
@@ -228,13 +228,14 @@ pub async fn git_get_branches(workspace_path: String) -> Result<BranchResult, St
     let output = run_git_command(
         &workspace_path,
         &["branch", "-a", "--format=%(refname:short)|%(upstream:short)|%(objectname:short)"],
-    )?;
+    )
+    .await?;
 
     let mut branches = Vec::new();
 
     for line in output.lines() {
         let parts: Vec<&str> = line.split('|').collect();
-        let name = parts.get(0).unwrap_or(&"").trim().to_string();
+        let name = parts.first().unwrap_or(&"").trim().to_string();
 
         if name.is_empty() {
             continue;
@@ -266,7 +267,8 @@ pub async fn git_get_commits(workspace_path: String, limit: u32) -> Result<Vec<G
     let output = run_git_command(
         &workspace_path,
         &["log", &format!("--format={}", format), &format!("-{}", limit)],
-    )?;
+    )
+    .await?;
 
     let mut commits = Vec::new();
 
@@ -305,34 +307,35 @@ pub async fn git_get_commits(workspace_path: String, limit: u32) -> Result<Vec<G
 #[tauri::command]
 pub async fn git_current_branch(workspace_path: String) -> Result<String, String> {
     run_git_command(&workspace_path, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .await
         .map(|s| s.trim().to_string())
 }
 
 /// Stage a file
 #[tauri::command]
 pub async fn git_stage_file(workspace_path: String, file_path: String) -> Result<(), String> {
-    run_git_command(&workspace_path, &["add", &file_path])?;
+    run_git_command(&workspace_path, &["add", &file_path]).await?;
     Ok(())
 }
 
 /// Unstage a file
 #[tauri::command]
 pub async fn git_unstage_file(workspace_path: String, file_path: String) -> Result<(), String> {
-    run_git_command(&workspace_path, &["reset", "HEAD", &file_path])?;
+    run_git_command(&workspace_path, &["reset", "HEAD", &file_path]).await?;
     Ok(())
 }
 
 /// Stage all changes
 #[tauri::command]
 pub async fn git_stage_all(workspace_path: String) -> Result<(), String> {
-    run_git_command(&workspace_path, &["add", "-A"])?;
+    run_git_command(&workspace_path, &["add", "-A"]).await?;
     Ok(())
 }
 
 /// Unstage all changes
 #[tauri::command]
 pub async fn git_unstage_all(workspace_path: String) -> Result<(), String> {
-    run_git_command(&workspace_path, &["reset", "HEAD"])?;
+    run_git_command(&workspace_path, &["reset", "HEAD"]).await?;
     Ok(())
 }
 
@@ -340,20 +343,20 @@ pub async fn git_unstage_all(workspace_path: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn git_discard_changes(workspace_path: String, file_path: String) -> Result<(), String> {
     // First try checkout for tracked files
-    let result = run_git_command(&workspace_path, &["checkout", "--", &file_path]);
+    let result = run_git_command(&workspace_path, &["checkout", "--", &file_path]).await;
     if result.is_ok() {
         return Ok(());
     }
 
     // If that fails, try clean for untracked files
-    run_git_command(&workspace_path, &["clean", "-f", &file_path])?;
+    run_git_command(&workspace_path, &["clean", "-f", &file_path]).await?;
     Ok(())
 }
 
 /// Create a commit
 #[tauri::command]
 pub async fn git_commit(workspace_path: String, message: String) -> Result<String, String> {
-    let output = run_git_command(&workspace_path, &["commit", "-m", &message])?;
+    let output = run_git_command(&workspace_path, &["commit", "-m", &message]).await?;
     Ok(output)
 }
 
@@ -362,7 +365,7 @@ pub async fn git_commit(workspace_path: String, message: String) -> Result<Strin
 #[tauri::command]
 pub async fn git_checkout(workspace_path: String, branch: String) -> Result<(), String> {
     // First, try normal checkout
-    let result = run_git_command(&workspace_path, &["checkout", &branch]);
+    let result = run_git_command(&workspace_path, &["checkout", &branch]).await;
     
     if result.is_ok() {
         return Ok(());
@@ -373,7 +376,8 @@ pub async fn git_checkout(workspace_path: String, branch: String) -> Result<(), 
     let track_result = run_git_command(
         &workspace_path, 
         &["checkout", "-b", &branch, &format!("origin/{}", branch)]
-    );
+    )
+    .await;
     
     if track_result.is_ok() {
         return Ok(());
@@ -387,21 +391,21 @@ pub async fn git_checkout(workspace_path: String, branch: String) -> Result<(), 
 /// Create a new branch
 #[tauri::command]
 pub async fn git_create_branch(workspace_path: String, name: String) -> Result<(), String> {
-    run_git_command(&workspace_path, &["checkout", "-b", &name])?;
+    run_git_command(&workspace_path, &["checkout", "-b", &name]).await?;
     Ok(())
 }
 
 /// Pull from remote
 #[tauri::command]
 pub async fn git_pull(workspace_path: String) -> Result<(), String> {
-    run_git_command(&workspace_path, &["pull"])?;
+    run_git_command(&workspace_path, &["pull"]).await?;
     Ok(())
 }
 
 /// Push to remote
 #[tauri::command]
 pub async fn git_push(workspace_path: String) -> Result<(), String> {
-    run_git_command(&workspace_path, &["push"])?;
+    run_git_command(&workspace_path, &["push"]).await?;
     Ok(())
 }
 
@@ -409,8 +413,8 @@ pub async fn git_push(workspace_path: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn git_get_diff(workspace_path: String, file_path: String, staged: bool) -> Result<String, String> {
     if staged {
-        run_git_command(&workspace_path, &["diff", "--cached", &file_path])
+        run_git_command(&workspace_path, &["diff", "--cached", &file_path]).await
     } else {
-        run_git_command(&workspace_path, &["diff", &file_path])
+        run_git_command(&workspace_path, &["diff", &file_path]).await
     }
 }

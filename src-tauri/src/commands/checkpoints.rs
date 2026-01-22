@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
@@ -7,7 +8,7 @@ use crate::db::Database;
 
 /// Checkpoint service state wrapper
 pub struct CheckpointState {
-    pub service: Mutex<Option<CheckpointService>>,
+    pub service: Mutex<Option<Arc<CheckpointService>>>,
 }
 
 impl CheckpointState {
@@ -21,7 +22,7 @@ impl CheckpointState {
         // Use unwrap_or_else to recover from poisoned mutex (previous panic)
         let mut guard = self.service.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if guard.is_none() {
-            *guard = Some(CheckpointService::new(app_data_dir));
+            *guard = Some(Arc::new(CheckpointService::new(app_data_dir)));
         }
     }
 }
@@ -85,10 +86,28 @@ pub async fn checkpoint_create(
         }
     }
 
-    let guard = checkpoint_state.service.lock().map_err(|e| format!("Lock error: {}", e))?;
-    let service = guard.as_ref().ok_or("Checkpoint service not initialized")?;
+    let service = {
+        let guard = checkpoint_state
+            .service
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))?;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or("Checkpoint service not initialized")?
+    };
 
-    match service.create_checkpoint(&workspace_path, &thread_id, &message_id) {
+    let workspace_path_clone = workspace_path.clone();
+    let thread_id_clone = thread_id.clone();
+    let message_id_clone = message_id.clone();
+
+    let checkpoint_result = tokio::task::spawn_blocking(move || {
+        service.create_checkpoint(&workspace_path_clone, &thread_id_clone, &message_id_clone)
+    })
+    .await
+    .map_err(|e| format!("Checkpoint task failed: {}", e))?;
+
+    match checkpoint_result {
         Ok(checkpoint) => {
             // Save to database
             let db_guard = db.lock().map_err(|e| e.to_string())?;
@@ -123,11 +142,28 @@ pub async fn checkpoint_restore(
     checkpoint_state: State<'_, CheckpointState>,
     db: State<'_, Mutex<Database>>,
 ) -> Result<RestoreResponse, String> {
-    let guard = checkpoint_state.service.lock().map_err(|e| format!("Lock error: {}", e))?;
-    let service = guard.as_ref().ok_or("Checkpoint service not initialized")?;
+    let service = {
+        let guard = checkpoint_state
+            .service
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))?;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or("Checkpoint service not initialized")?
+    };
+
+    let workspace_path_clone = workspace_path.clone();
+    let checkpoint_id_clone = checkpoint_id.clone();
+
+    let restore_result = tokio::task::spawn_blocking(move || {
+        service.restore_checkpoint(&workspace_path_clone, &checkpoint_id_clone)
+    })
+    .await
+    .map_err(|e| format!("Restore task failed: {}", e))?;
 
     // First, restore the workspace files
-    if let Err(e) = service.restore_checkpoint(&workspace_path, &checkpoint_id) {
+    if let Err(e) = restore_result {
         return Ok(RestoreResponse {
             success: false,
             deleted_message_ids: Vec::new(),
@@ -197,9 +233,17 @@ pub async fn checkpoint_delete_thread(
 
     // Optionally delete the workspace checkpoints (git repo)
     if let Some(ws_path) = workspace_path {
-        let guard = checkpoint_state.service.lock().map_err(|e| format!("Lock error: {}", e))?;
-        if let Some(service) = guard.as_ref() {
-            let _ = service.delete_workspace_checkpoints(&ws_path);
+        let service = {
+            let guard = checkpoint_state
+                .service
+                .lock()
+                .map_err(|e| format!("Lock error: {}", e))?;
+            guard.as_ref().cloned()
+        };
+
+        if let Some(service) = service {
+            let ws_path_clone = ws_path.clone();
+            let _ = tokio::task::spawn_blocking(move || service.delete_workspace_checkpoints(&ws_path_clone)).await;
         }
     }
 
@@ -212,9 +256,23 @@ pub async fn checkpoint_is_initialized(
     workspace_path: String,
     checkpoint_state: State<'_, CheckpointState>,
 ) -> Result<bool, String> {
-    let guard = checkpoint_state.service.lock().map_err(|e| format!("Lock error: {}", e))?;
-    let service = guard.as_ref().ok_or("Checkpoint service not initialized")?;
-    Ok(service.is_initialized(&workspace_path))
+    let service = {
+        let guard = checkpoint_state
+            .service
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))?;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or("Checkpoint service not initialized")?
+    };
+
+    let workspace_path_clone = workspace_path.clone();
+    let result = tokio::task::spawn_blocking(move || service.is_initialized(&workspace_path_clone))
+        .await
+        .map_err(|e| format!("Checkpoint init check task failed: {}", e))?;
+
+    Ok(result)
 }
 
 /// Get checkpoint enabled setting for a workspace

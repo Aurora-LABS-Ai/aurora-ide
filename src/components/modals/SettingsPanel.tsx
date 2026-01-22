@@ -32,6 +32,7 @@ import { ThemeSettingsTab } from './ThemeSettingsTab';
 import { SemanticSettingsTab } from './SemanticSettingsTab';
 import { McpSettingsTab } from './McpSettingsTab';
 import { installAuroraCli, uninstallAuroraCli, isAuroraCliInstalled, isTauri } from '../../lib/tauri';
+import { TogglePill } from '../ui/TogglePill';
 
 const UI_FONT_OPTIONS = [
   { value: 'system', label: 'System' },
@@ -82,22 +83,13 @@ const CheckpointSettings: React.FC = () => {
             {workspaceName}
           </p>
         </div>
-        <button
-          onClick={() => setEnabled(!enabled)}
-          className={clsx(
-            "relative w-9 h-4 rounded-full transition-all duration-200 flex-shrink-0 overflow-hidden",
-            enabled ? "bg-checkpoint shadow-[0_0_8px_rgba(245,158,11,0.35)]" : "bg-input border border-border"
-          )}
-          aria-pressed={enabled}
-          aria-label="Toggle checkpoints"
-        >
-          <span
-            className={clsx(
-              "absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform duration-200",
-              enabled ? "translate-x-4" : "translate-x-0"
-            )}
-          />
-        </button>
+        <TogglePill
+          checked={enabled}
+          onChange={setEnabled}
+          ariaLabel="Toggle checkpoints"
+          variant="checkpoint"
+          size="sm"
+        />
       </div>
 
       {enabled && (
@@ -348,18 +340,13 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           )}
-          <button
-            onClick={() => updateProvider(provider.id, { enabled: !provider.enabled })}
-            className={clsx(
-              "relative w-8 h-4 rounded-full transition-colors",
-              provider.enabled ? "bg-primary" : "bg-input border border-border"
-            )}
-          >
-            <div className={clsx(
-              "absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform",
-              provider.enabled ? "translate-x-4" : "translate-x-0.5"
-            )} />
-          </button>
+          <TogglePill
+            checked={provider.enabled}
+            onChange={(next) => updateProvider(provider.id, { enabled: next })}
+            ariaLabel={`Toggle ${provider.name}`}
+            variant="primary"
+            size="sm"
+          />
         </div>
       </div>
 
@@ -851,22 +838,13 @@ export const SettingsPanel: React.FC = () => {
                         <p className="text-[10px] text-text-secondary">Auto line wrap</p>
                         <p className="text-[9px] text-text-disabled">Controls wrapping in editors and previews</p>
                       </div>
-                      <button
-                        onClick={() => setWrapMode(!wrapMode)}
-                        className={clsx(
-                          "relative w-9 h-4 rounded-full transition-all duration-200 flex-shrink-0 overflow-hidden",
-                          wrapMode ? "bg-primary shadow-[0_0_8px_rgba(99,102,241,0.35)]" : "bg-input border border-border"
-                        )}
-                        aria-pressed={wrapMode}
-                        aria-label="Toggle auto line wrap"
-                      >
-                        <span
-                          className={clsx(
-                            "absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform duration-200",
-                            wrapMode ? "translate-x-4" : "translate-x-0"
-                          )}
-                        />
-                      </button>
+                      <TogglePill
+                        checked={wrapMode}
+                        onChange={setWrapMode}
+                        ariaLabel="Toggle auto line wrap"
+                        variant="primary"
+                        size="sm"
+                      />
                     </div>
                     <div className="flex items-center justify-between">
                       <div>

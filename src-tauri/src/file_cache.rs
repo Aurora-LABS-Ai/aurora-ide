@@ -17,6 +17,8 @@ const MAX_CACHE_SIZE: usize = 50 * 1024 * 1024;
 /// Maximum single file size to cache (5MB - don't cache huge files)
 const MAX_FILE_SIZE: usize = 5 * 1024 * 1024;
 
+
+
 /// Cached file entry with content and metadata
 #[derive(Clone)]
 pub struct CachedFile {
@@ -171,31 +173,32 @@ fn get_file_mtime(path: &str) -> Option<u64> {
 /// Read file content with caching
 pub fn read_file_cached(path: &str) -> Result<String, String> {
     let file_path = Path::new(path);
-    
+
     if !file_path.exists() {
         return Err(format!("File does not exist: {}", path));
     }
-    
+
     if !file_path.is_file() {
         return Err(format!("Path is not a file: {}", path));
     }
-    
+
     let cache = get_file_cache();
-    
+
     // Try cache first
     if let Some(content) = cache.get(path) {
         return Ok(content);
     }
-    
+
     // Read from disk
     let content = std::fs::read_to_string(file_path)
         .map_err(|e| format!("Failed to read file: {}", e))?;
-    
+
     // Cache the content
     cache.set(path, content.clone());
-    
+
     Ok(content)
 }
+
 
 /// Read multiple files in batch with caching
 pub fn read_files_batch_cached(paths: Vec<String>) -> std::collections::HashMap<String, Result<String, String>> {

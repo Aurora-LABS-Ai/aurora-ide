@@ -39,6 +39,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::read_file_content,
             commands::write_file_content,
             commands::execute_command,
+            commands::execute_command_stream,
+            commands::cancel_command_stream,
             commands::get_system_info,
             commands::create_file,
             commands::create_folder,

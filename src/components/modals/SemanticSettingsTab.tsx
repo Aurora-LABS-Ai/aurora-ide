@@ -28,6 +28,7 @@ import {
   Save,
 } from 'lucide-react';
 import clsx from 'clsx';
+import { TogglePill } from '../ui/TogglePill';
 import { useSemanticStore } from '../../store/useSemanticStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -375,20 +376,13 @@ export const SemanticSettingsTab: React.FC = () => {
               <p className="text-[9px] text-text-disabled">AI-powered code search using embeddings</p>
             </div>
           </div>
-          <button
-            onClick={() => saveSettings({ enabled: !settings?.enabled })}
-            className={clsx(
-              "relative w-9 h-4 rounded-full transition-all duration-200 flex-shrink-0 overflow-hidden",
-              settings?.enabled ? "bg-primary shadow-[0_0_8px_rgba(99,102,241,0.35)]" : "bg-input border border-border"
-            )}
-          >
-            <span
-              className={clsx(
-                "absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform duration-200",
-                settings?.enabled ? "translate-x-4" : "translate-x-0"
-              )}
-            />
-          </button>
+          <TogglePill
+            checked={!!settings?.enabled}
+            onChange={(next) => saveSettings({ enabled: next })}
+            ariaLabel="Toggle semantic search"
+            variant="primary"
+            size="sm"
+          />
         </div>
       </div>
 
@@ -666,20 +660,13 @@ export const SemanticSettingsTab: React.FC = () => {
                 <p className="text-[10px] text-text-secondary">Auto-index on workspace open</p>
                 <p className="text-[9px] text-text-disabled">Automatically index new workspaces</p>
               </div>
-              <button
-                onClick={() => saveSettings({ autoIndex: !settings?.autoIndex })}
-                className={clsx(
-                  "relative w-8 h-4 rounded-full transition-colors",
-                  settings?.autoIndex ? "bg-primary" : "bg-input border border-border"
-                )}
-              >
-                <span
-                  className={clsx(
-                    "absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform",
-                    settings?.autoIndex ? "translate-x-3.5" : "translate-x-0"
-                  )}
-                />
-              </button>
+              <TogglePill
+                checked={!!settings?.autoIndex}
+                onChange={(next) => saveSettings({ autoIndex: next })}
+                ariaLabel="Toggle auto-index on workspace open"
+                variant="primary"
+                size="sm"
+              />
             </div>
 
             {/* Max File Size */}

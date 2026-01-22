@@ -88,20 +88,96 @@ if (typeof window !== 'undefined') {
   window.addEventListener('beforeunload', cleanupAllSessions);
 }
 
-// Get shell executable based on profile and platform
-const getShellExecutable = async (profile: ShellProfile, currentPlatform: string): Promise<string> => {
+type ShellSpawnConfig = {
+  exe: string;
+  args: string[];
+  env?: Record<string, string | undefined>;
+};
+
+const buildPowerShellInitCommand = (): string => {
+  return [
+    "$global:AuroraPromptVersion='1'",
+    "function global:Aurora-ShortPath([string]$p,[int]$maxLen){",
+    "  if(-not $p){ return '' }",
+    "  if($maxLen -lt 20){ return (Split-Path -Leaf $p) }",
+    "  $drive=''",
+    "  $rest=$p",
+    "  if($p -match '^[A-Za-z]:'){ $drive=$p.Substring(0,2); $rest=$p.Substring(2) }",
+    "  $parts = ($rest -split '[\\\\/]+') | Where-Object { $_ -ne '' }",
+    "  if($parts.Count -le 3){ return ($drive + '\\' + ($parts -join '\\')).TrimEnd('\\') }",
+    "  $head = $parts[0]",
+    "  $tail = ($parts | Select-Object -Last 2) -join '\\'",
+    "  return ($drive + '\\' + $head + '\\...\\' + $tail).TrimEnd('\\')",
+    "}",
+    "function global:prompt{",
+    "  $w=80; try{ $w=$Host.UI.RawUI.WindowSize.Width } catch {}",
+    "  if($w -lt 40){ return '> ' }",
+    "  $path=(Get-Location).Path",
+    "  $short=Aurora-ShortPath $path ($w-28)",
+    "  $ok= if($?){'OK'} else {'ERR'}",
+    "  $ver= try{ $PSVersionTable.PSVersion.Major } catch { 0 }",
+    "  $useColor=$false; try{ $useColor = [bool]$Host.UI.SupportsVirtualTerminal } catch {}",
+    "  if(-not $useColor){ return \"$short | pwsh$ver | $ok`n> \" }",
+    "  $esc=[char]27",
+    "  $c=\"$esc[36m\"; $y=\"$esc[33m\"; $g=\"$esc[32m\"; $r=\"$esc[31m\"; $d=\"$esc[90m\"; $x=\"$esc[0m\"",
+    "  $sc= if($ok -eq 'OK'){ $g } else { $r }",
+    "  return \"${c}${short}${x} ${d}|${x} ${y}pwsh${ver}${x} ${d}|${x} ${sc}${ok}${x}`n> \"",
+    "}",
+    "try{ Set-PSReadLineOption -BellStyle None -ErrorAction SilentlyContinue } catch {}",
+  ].join('; ');
+};
+
+const buildBashEnv = (): Record<string, string | undefined> => {
+  const promptCommand = [
+    '__aurora_last=$?;',
+    'if [ -z "$COLUMNS" ]; then __aurora_cols=80; else __aurora_cols=$COLUMNS; fi;',
+    'if [ "$__aurora_cols" -lt 40 ]; then __aurora_min=1; else __aurora_min=0; fi;',
+    'if command -v tput >/dev/null 2>&1; then __aurora_colors=$(tput colors 2>/dev/null || echo 0); else __aurora_colors=0; fi;',
+    'if [ "$TERM" = "dumb" ] || [ -z "$TERM" ] || [ "$__aurora_colors" -lt 8 ]; then __aurora_color=0; else __aurora_color=1; fi;',
+    'if [ "$__aurora_min" -eq 1 ]; then PS1="> "; else ',
+    '  if [ "$__aurora_color" -eq 1 ]; then ',
+    "    __a_c='\\[\\033[36m\\]'; __a_y='\\[\\033[33m\\]'; __a_g='\\[\\033[32m\\]'; __a_r='\\[\\033[31m\\]'; __a_d='\\[\\033[90m\\]'; __a_x='\\[\\033[0m\\]';",
+    "  else __a_c=''; __a_y=''; __a_g=''; __a_r=''; __a_d=''; __a_x=''; fi;",
+    '  if [ "$__aurora_last" -eq 0 ]; then __a_s="${__a_g}OK${__a_x}"; else __a_s="${__a_r}ERR${__a_x}"; fi;',
+    '  PS1="${__a_c}\\w${__a_x} ${__a_d}|${__a_x} ${__a_y}bash${BASH_VERSINFO[0]}${__a_x} ${__a_d}|${__a_x} ${__a_s}\\n> ";',
+    'fi',
+  ].join(' ');
+
+  return {
+    TERM: 'xterm-256color',
+    PROMPT_DIRTRIM: '3',
+    PROMPT_COMMAND: promptCommand,
+  };
+};
+
+const getShellSpawnConfig = async (profile: ShellProfile, currentPlatform: string): Promise<ShellSpawnConfig> => {
   if (profile === 'bash') {
     if (currentPlatform === 'windows') {
-      // Common Git Bash paths
-      return 'C:\\Program Files\\Git\\bin\\bash.exe';
+      return {
+        exe: 'C:\\Program Files\\Git\\bin\\bash.exe',
+        args: ['--noprofile', '--norc', '-i'],
+        env: buildBashEnv(),
+      };
     }
-    return '/bin/bash';
+    return {
+      exe: '/bin/bash',
+      args: ['--noprofile', '--norc', '-i'],
+      env: buildBashEnv(),
+    };
   }
-  // PowerShell
+
   if (currentPlatform === 'windows') {
-    return 'pwsh.exe';
+    return {
+      exe: 'pwsh.exe',
+      args: ['-NoLogo', '-NoExit', '-Command', buildPowerShellInitCommand()],
+    };
   }
-  return '/bin/bash'; // Fallback for non-windows if powershell requested
+
+  return {
+    exe: '/bin/bash',
+    args: ['--noprofile', '--norc', '-i'],
+    env: buildBashEnv(),
+  };
 };
 
 // ============================================
@@ -173,9 +249,39 @@ const XTermSession: React.FC<{ sessionId: string; isVisible: boolean }> = ({ ses
   useEffect(() => {
     if (!containerRef.current || !session || !isTauri()) return;
 
-    // Check if already initialized for this session
-    if (ptySessionsMap.has(sessionId)) {
-      setIsInitialized(true);
+    const existing = ptySessionsMap.get(sessionId);
+    if (existing) {
+      try {
+        const container = containerRef.current;
+        const term = existing.terminal;
+
+        if (container) {
+          if (term.element) {
+            if (term.element.parentElement !== container) {
+              container.innerHTML = '';
+              container.appendChild(term.element);
+            }
+          } else {
+            term.open(container);
+          }
+        }
+
+        registerSessionHandler(sessionId, (data: string) => {
+          term.write(data);
+        });
+
+        setIsInitialized(true);
+        setTimeout(() => {
+          try {
+            existing.fitAddon.fit();
+            existing.terminal.focus();
+          } catch (e) {
+          }
+        }, 10);
+      } catch (err) {
+        console.error('[Terminal] Failed to reattach session:', err);
+      }
+
       return;
     }
 
@@ -186,7 +292,7 @@ const XTermSession: React.FC<{ sessionId: string; isVisible: boolean }> = ({ ses
     const initNewSession = async () => {
       try {
         const currentPlatform = await platform();
-        const shellExe = await getShellExecutable(session.profile, currentPlatform);
+        const spawnConfig = await getShellSpawnConfig(session.profile, currentPlatform);
 
         // Create xterm.js terminal
         // Create xterm.js terminal
@@ -235,11 +341,25 @@ const XTermSession: React.FC<{ sessionId: string; isVisible: boolean }> = ({ ses
         }
 
         // Spawn PTY
-        const pty = spawn(shellExe, [], {
+        let pty: IPty;
+        try {
+          pty = spawn(spawnConfig.exe, spawnConfig.args, {
           cols: term.cols || 80,
           rows: term.rows || 24,
           cwd: rootPath || undefined,
+          env: spawnConfig.env,
         });
+        } catch (e) {
+          if (session.profile === 'powershell' && currentPlatform === 'windows') {
+            pty = spawn('powershell.exe', ['-NoLogo', '-NoExit', '-Command', buildPowerShellInitCommand()], {
+              cols: term.cols || 80,
+              rows: term.rows || 24,
+              cwd: rootPath || undefined,
+            });
+          } else {
+            throw e;
+          }
+        }
 
         // Store session data
         const sessionData: PtySessionData = {
@@ -285,7 +405,7 @@ const XTermSession: React.FC<{ sessionId: string; isVisible: boolean }> = ({ ses
 
         // Initial fit
         setTimeout(() => {
-          try { fitAddon.fit(); } catch (e) { }
+          try { fitAddon.fit(); } catch (e) { void e; }
         }, 50);
 
       } catch (err) {
@@ -298,11 +418,6 @@ const XTermSession: React.FC<{ sessionId: string; isVisible: boolean }> = ({ ses
     };
 
     initNewSession();
-
-    // Cleanup handler on unmount
-    return () => {
-      unregisterSessionHandler(sessionId);
-    };
   }, [sessionId, session, rootPath, setPtyConnected, setSessionRunning, registerSessionHandler, unregisterSessionHandler]);
 
   // Handle Visibility Changes & Resizing
@@ -341,7 +456,7 @@ const XTermSession: React.FC<{ sessionId: string; isVisible: boolean }> = ({ ses
       resizeTimeout = setTimeout(() => {
         try {
           sessionData.fitAddon.fit();
-        } catch (e) { }
+        } catch (e) { void e; }
       }, 100);
     };
 

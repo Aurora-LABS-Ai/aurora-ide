@@ -58,9 +58,16 @@ const editorOpenFileExecutor = async (args: Record<string, unknown>): Promise<st
       'py': 'python', 'go': 'go',
     };
     const language = langMap[ext] || 'plaintext';
+    const isLargeFile = content.length > 2 * 1024 * 1024;
 
     // Open file in editor using full path
-    useEditorStore.getState().openFile(fullPath, filename, content, language);
+    useEditorStore.getState().openFile(
+      fullPath,
+      filename,
+      content,
+      isLargeFile ? 'plaintext' : language
+    );
+
 
     return JSON.stringify({
       success: true,

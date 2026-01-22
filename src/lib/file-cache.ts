@@ -18,6 +18,8 @@ interface CacheEntry {
   timestamp: number;
 }
 
+
+
 /**
  * Frontend LRU file cache
  * Works in conjunction with the Rust backend cache for maximum performance
@@ -212,6 +214,7 @@ export async function readFileCached(path: string): Promise<string> {
 
   return content;
 }
+
 
 /**
  * Read multiple files in a single IPC call

@@ -51,26 +51,67 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return;
     }
 
+    const isLargeFile = content.length > 2 * 1024 * 1024;
+    const effectiveLanguage = isLargeFile ? 'plaintext' : language;
     const newTab: Tab = {
       id: fileId,
       path: fileId,
       filename,
       content,
       isDirty: false,
-      language
+      isLargeFile,
+      language: effectiveLanguage
     };
 
     set({ tabs: [...tabs, newTab], activeTabId: fileId });
 
-    // Initialize undo/redo tracking for this file
-    queueMicrotask(async () => {
-      try {
-        const { undoRedoService } = await import('../services/undo-redo');
-        await undoRedoService.initFile(fileId, content);
-      } catch {
-        // Ignore undo init errors
-      }
-    });
+    if (!isLargeFile) {
+      // Initialize undo/redo tracking for this file
+      queueMicrotask(async () => {
+        try {
+          const { undoRedoService } = await import('../services/undo-redo');
+          await undoRedoService.initFile(fileId, content);
+        } catch {
+          // Ignore undo init errors
+        }
+      });
+
+      // PERFORMANCE: Preload sibling files in background for faster subsequent opens
+      // This makes clicking between files in the same folder instant
+      queueMicrotask(async () => {
+        try {
+          const { preloadFiles } = await import('../lib/file-cache');
+          const { useWorkspaceStore } = await import('./useWorkspaceStore');
+          const { files } = useWorkspaceStore.getState();
+
+          // Find the parent folder and preload siblings
+          const dir = fileId.substring(0, fileId.lastIndexOf(fileId.includes('\\') ? '\\' : '/'));
+          const findSiblings = (nodes: typeof files): string[] => {
+            for (const node of nodes) {
+              if (node.path === dir && node.children) {
+                return node.children
+                  .filter(c => c.type === 'file' && c.path !== fileId && c.path)
+                  .slice(0, 5) // Preload up to 5 siblings
+                  .map(c => c.path!);
+              }
+              if (node.children) {
+                const found = findSiblings(node.children);
+                if (found.length) return found;
+              }
+            }
+            return [];
+          };
+
+          const siblings = findSiblings(files);
+          if (siblings.length > 0) {
+            preloadFiles(siblings);
+          }
+        } catch {
+          // Ignore preload errors - this is just an optimization
+        }
+      });
+    }
+
 
     // PERFORMANCE: Preload sibling files in background for faster subsequent opens
     // This makes clicking between files in the same folder instant
@@ -128,23 +169,36 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   updateTabContent: (tabId, content) => set(state => ({
-    tabs: state.tabs.map(tab =>
-      tab.id === tabId
-        ? { ...tab, content, isDirty: true }
-        : tab
-    )
+    tabs: state.tabs.map(tab => {
+      if (tab.id !== tabId) return tab;
+      const isLargeFile = content.length > 2 * 1024 * 1024;
+      return {
+        ...tab,
+        content,
+        isDirty: true,
+        isLargeFile,
+        language: isLargeFile ? 'plaintext' : tab.language,
+      };
+    })
   })),
 
   // Reload content from external source (e.g., fs watcher) - doesn't mark dirty
   reloadTabContent: (tabId, content) => {
     return set(state => ({
-      tabs: state.tabs.map(tab =>
-        tab.id === tabId
-          ? { ...tab, content, isDirty: false }
-          : tab
-      )
+      tabs: state.tabs.map(tab => {
+        if (tab.id !== tabId) return tab;
+        const isLargeFile = content.length > 2 * 1024 * 1024;
+        return {
+          ...tab,
+          content,
+          isDirty: false,
+          isLargeFile,
+          language: isLargeFile ? 'plaintext' : tab.language,
+        };
+      })
     }));
   },
+
 
   setFontSize: (fontSize) => set({ fontSize }),
 

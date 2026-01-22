@@ -47,6 +47,7 @@ export interface Tab {
   filename: string;
   id: string;
   isDirty: boolean;
+  isLargeFile?: boolean;
   language: string;
   path: string;
 
@@ -54,6 +55,7 @@ export interface Tab {
   type?: 'file' | 'browser';
   url?: string;
 }
+
 
 export interface TimelineEvent {
   // For content events

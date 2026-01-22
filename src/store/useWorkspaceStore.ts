@@ -73,9 +73,11 @@ export const loadFileContent = async (path: string): Promise<string> => {
     return await readFileContent(path);
   } catch (err) {
     console.error('Failed to load file:', err);
-    return '// Failed to load file';
+    const message = err instanceof Error ? err.message : String(err);
+    return `// Failed to load file: ${message}`;
   }
 };
+
 
 // Global watcher cleanup
 let fsUnlisten: (() => void) | null = null;

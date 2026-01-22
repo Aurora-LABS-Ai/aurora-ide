@@ -15,6 +15,11 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 use notify::{recommended_watcher, Config, Event, EventKind, RecursiveMode, Watcher};
 use tauri::Emitter;
 
+use parking_lot::RwLock;
+use tokio::io::AsyncReadExt;
+use tokio::process::Command as TokioCommand;
+
+
 pub mod state;
 pub mod settings;
 pub mod threads;
@@ -44,6 +49,112 @@ pub struct CommandOutput {
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub success: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandStreamChunk {
+    pub stream: String,
+    pub data: String,
+    pub done: bool,
+    pub exit_code: Option<i32>,
+    pub success: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveCommandStream {
+    pid: Option<u32>,
+    cancelled: bool,
+}
+
+lazy_static::lazy_static! {
+    static ref ACTIVE_COMMAND_STREAMS: RwLock<HashMap<String, ActiveCommandStream>> =
+        RwLock::new(HashMap::new());
+}
+
+fn is_command_stream_cancelled(request_id: &str) -> bool {
+    let streams = ACTIVE_COMMAND_STREAMS.read();
+    streams.get(request_id).map(|s| s.cancelled).unwrap_or(false)
+}
+
+fn cleanup_command_stream(request_id: &str) {
+    let mut streams = ACTIVE_COMMAND_STREAMS.write();
+    streams.remove(request_id);
+}
+
+fn try_kill_pid(pid: u32) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let _ = cmd.output();
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output();
+        Ok(())
+    }
+}
+
+fn build_shell_command(
+    shell_profile: &str,
+    command: &str,
+    cwd: &Option<String>,
+) -> (String, TokioCommand) {
+    let (shell_exe, shell_args): (String, Vec<&str>) = match shell_profile {
+        "bash" => {
+            #[cfg(target_os = "windows")]
+            {
+                let git_bash_paths = [
+                    r"C:\Program Files\Git\bin\bash.exe",
+                    r"C:\Program Files (x86)\Git\bin\bash.exe",
+                    r"C:\Git\bin\bash.exe",
+                ];
+
+                let bash_path = git_bash_paths
+                    .iter()
+                    .find(|p| std::path::Path::new(p).exists())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "bash".to_string());
+
+                (bash_path, vec!["-c"])
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                ("bash".to_string(), vec!["-c"])
+            }
+        }
+        _ => {
+            #[cfg(target_os = "windows")]
+            {
+                ("pwsh".to_string(), vec!["-NoProfile", "-NonInteractive", "-Command"])
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                ("sh".to_string(), vec!["-c"])
+            }
+        }
+    };
+
+    let mut cmd = TokioCommand::new(&shell_exe);
+    for arg in &shell_args {
+        cmd.arg(arg);
+    }
+    cmd.arg(command);
+
+    if let Some(ref working_dir) = cwd {
+        cmd.current_dir(working_dir);
+    }
+
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    (shell_exe, cmd)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -245,9 +356,12 @@ pub async fn read_directory(path: String, include_hidden: Option<bool>) -> Resul
 /// Read file content (cached for performance)
 #[tauri::command]
 pub async fn read_file_content(path: String) -> Result<String, String> {
-    // Use the cached file reader for performance
-    crate::file_cache::read_file_cached(&path)
+    // Offload blocking I/O to keep the async runtime responsive
+    tokio::task::spawn_blocking(move || crate::file_cache::read_file_cached(&path))
+        .await
+        .map_err(|e| format!("Failed to load file: {}", e))?
 }
+
 
 /// Write file content
 #[tauri::command]
@@ -273,109 +387,300 @@ pub async fn write_file_content(path: String, content: String) -> Result<(), Str
 
 /// Execute a shell command with optional shell profile
 #[tauri::command]
-pub async fn execute_command(command: String, cwd: Option<String>, shell: Option<String>) -> Result<CommandOutput, String> {
+pub async fn execute_command(
+    command: String,
+    cwd: Option<String>,
+    shell: Option<String>,
+    timeout_ms: Option<u64>,
+) -> Result<CommandOutput, String> {
+    use std::process::Stdio;
+    use std::time::Duration;
+
     let shell_profile = shell.as_deref().unwrap_or("powershell");
-    
-    // Determine shell and arguments based on profile
-    let (shell_exe, shell_args): (String, Vec<&str>) = match shell_profile {
-        "bash" => {
-            // Try common Git Bash locations on Windows
-            #[cfg(target_os = "windows")]
-            {
-                let git_bash_paths = [
-                    r"C:\Program Files\Git\bin\bash.exe",
-                    r"C:\Program Files (x86)\Git\bin\bash.exe",
-                    r"C:\Git\bin\bash.exe",
-                ];
-                
-                let bash_path = git_bash_paths.iter()
-                    .find(|p| std::path::Path::new(p).exists())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "bash".to_string());
-                
-                // Don't use -i flag - causes PTY warnings without proper terminal
-                (bash_path, vec!["-c"])
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                ("bash".to_string(), vec!["-c"])
-            }
-        }
-        _ => {
-            // Default to PowerShell
-            #[cfg(target_os = "windows")]
-            {
-                ("pwsh".to_string(), vec!["-NoProfile", "-NonInteractive", "-Command"])
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                ("sh".to_string(), vec!["-c"])
-            }
-        }
-    };
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
 
-    let mut cmd = Command::new(&shell_exe);
-    
-    // Add shell arguments
-    for arg in &shell_args {
-        cmd.arg(arg);
-    }
-    cmd.arg(&command);
+    let (shell_exe, mut cmd) = build_shell_command(shell_profile, &command, &cwd);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
 
-    if let Some(ref working_dir) = cwd {
-        cmd.current_dir(working_dir);
-    }
-
-    // On Windows, hide the console window to prevent popup
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-
-    // Execute command
-    match cmd.output() {
-        Ok(output) => {
-            Ok(CommandOutput {
-                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-                exit_code: output.status.code(),
-                success: output.status.success(),
-            })
-        }
+    let child = match cmd.spawn() {
+        Ok(c) => c,
         Err(e) => {
-            // On Windows with PowerShell, try fallback to powershell.exe
             #[cfg(target_os = "windows")]
             if shell_profile != "bash" {
-                let mut fallback_cmd = Command::new("powershell");
-                fallback_cmd
+                let mut fallback = TokioCommand::new("powershell");
+                fallback
                     .arg("-NoProfile")
                     .arg("-NonInteractive")
                     .arg("-Command")
                     .arg(&command);
-                
                 if let Some(ref working_dir) = cwd {
-                    fallback_cmd.current_dir(working_dir);
+                    fallback.current_dir(working_dir);
                 }
+                fallback.stdout(Stdio::piped());
+                fallback.stderr(Stdio::piped());
+                fallback.creation_flags(CREATE_NO_WINDOW);
 
-                // Hide console window for fallback command too
-                fallback_cmd.creation_flags(CREATE_NO_WINDOW);
-
-                match fallback_cmd.output() {
-                    Ok(output) => {
-                        return Ok(CommandOutput {
-                            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-                            exit_code: output.status.code(),
-                            success: output.status.success(),
-                        });
-                    }
+                match fallback.spawn() {
+                    Ok(c) => c,
                     Err(fallback_e) => {
-                        return Err(format!("Failed to execute with pwsh and powershell: {}, {}", e, fallback_e));
+                        return Err(format!(
+                            "Failed to execute with pwsh and powershell: {}, {}",
+                            e, fallback_e
+                        ));
+                    }
+                }
+            } else {
+                return Err(format!("Failed to execute command with {}: {}", shell_exe, e));
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                return Err(format!("Failed to execute command with {}: {}", shell_exe, e));
+            }
+        }
+    };
+
+    let pid = child.id();
+
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(res) => res.map_err(|e| format!("Command execution failed: {}", e))?,
+        Err(_) => {
+            if let Some(pid) = pid {
+                let _ = try_kill_pid(pid);
+            }
+            return Err(format!("Command timed out after {}ms", timeout.as_millis()));
+        }
+    };
+
+    Ok(CommandOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code(),
+        success: output.status.success(),
+    })
+}
+
+#[tauri::command]
+pub fn cancel_command_stream(request_id: String) -> Result<(), String> {
+    let mut streams = ACTIVE_COMMAND_STREAMS.write();
+    if let Some(stream) = streams.get_mut(&request_id) {
+        stream.cancelled = true;
+        if let Some(pid) = stream.pid {
+            let _ = try_kill_pid(pid);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn execute_command_stream(
+    app: tauri::AppHandle,
+    request_id: String,
+    command: String,
+    cwd: Option<String>,
+    shell: Option<String>,
+    timeout_ms: Option<u64>,
+) -> Result<CommandOutput, String> {
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    {
+        let mut streams = ACTIVE_COMMAND_STREAMS.write();
+        streams.insert(
+            request_id.clone(),
+            ActiveCommandStream {
+                pid: None,
+                cancelled: false,
+            },
+        );
+    }
+
+    let shell_profile = shell.as_deref().unwrap_or("powershell");
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
+    let (shell_exe, mut cmd) = build_shell_command(shell_profile, &command, &cwd);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            cleanup_command_stream(&request_id);
+            return Err(format!("Failed to spawn command with {}: {}", shell_exe, e));
+        }
+    };
+
+    let pid = child.id();
+    {
+        let mut streams = ACTIVE_COMMAND_STREAMS.write();
+        if let Some(stream) = streams.get_mut(&request_id) {
+            stream.pid = pid;
+        }
+    }
+
+    let mut stdout_buf = String::new();
+    let mut stderr_buf = String::new();
+
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture stdout".to_string())?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to capture stderr".to_string())?;
+
+    let mut stdout_bytes = vec![0u8; 4096];
+    let mut stderr_bytes = vec![0u8; 4096];
+
+    let mut stdout_done = false;
+    let mut stderr_done = false;
+
+    let mut wait_fut = Box::pin(child.wait());
+    let mut timeout_fut = Box::pin(tokio::time::sleep(timeout));
+
+    loop {
+        if is_command_stream_cancelled(&request_id) {
+            if let Some(pid) = pid {
+                let _ = try_kill_pid(pid);
+            }
+            break;
+        }
+
+        tokio::select! {
+            _ = &mut timeout_fut => {
+                if let Some(pid) = pid {
+                    let _ = try_kill_pid(pid);
+                }
+                let _ = app.emit(
+                    &format!("shell-stream-error-{}", request_id),
+                    format!("Command timed out after {}ms", timeout.as_millis()),
+                );
+                break;
+            }
+            read = stdout.read(&mut stdout_bytes), if !stdout_done => {
+                match read {
+                    Ok(0) => { stdout_done = true; }
+                    Ok(n) => {
+                        let data = String::from_utf8_lossy(&stdout_bytes[..n]).to_string();
+                        stdout_buf.push_str(&data);
+                        let _ = app.emit(
+                            &format!("shell-stream-{}", request_id),
+                            CommandStreamChunk {
+                                stream: "stdout".to_string(),
+                                data,
+                                done: false,
+                                exit_code: None,
+                                success: None,
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        stdout_done = true;
+                        let _ = app.emit(
+                            &format!("shell-stream-error-{}", request_id),
+                            format!("stdout read error: {}", e),
+                        );
                     }
                 }
             }
-            
-            Err(format!("Failed to execute command with {}: {}", shell_exe, e))
+            read = stderr.read(&mut stderr_bytes), if !stderr_done => {
+                match read {
+                    Ok(0) => { stderr_done = true; }
+                    Ok(n) => {
+                        let data = String::from_utf8_lossy(&stderr_bytes[..n]).to_string();
+                        stderr_buf.push_str(&data);
+                        let _ = app.emit(
+                            &format!("shell-stream-{}", request_id),
+                            CommandStreamChunk {
+                                stream: "stderr".to_string(),
+                                data,
+                                done: false,
+                                exit_code: None,
+                                success: None,
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        stderr_done = true;
+                        let _ = app.emit(
+                            &format!("shell-stream-error-{}", request_id),
+                            format!("stderr read error: {}", e),
+                        );
+                    }
+                }
+            }
+            status = &mut wait_fut => {
+                let (exit_code, success) = match status {
+                    Ok(s) => (s.code(), Some(s.success())),
+                    Err(_) => (None, None),
+                };
+
+                let mut tail = Vec::new();
+                if stdout.read_to_end(&mut tail).await.is_ok() && !tail.is_empty() {
+                    let data = String::from_utf8_lossy(&tail).to_string();
+                    stdout_buf.push_str(&data);
+                    let _ = app.emit(
+                        &format!("shell-stream-{}", request_id),
+                        CommandStreamChunk {
+                            stream: "stdout".to_string(),
+                            data,
+                            done: false,
+                            exit_code: None,
+                            success: None,
+                        },
+                    );
+                }
+
+                tail.clear();
+                if stderr.read_to_end(&mut tail).await.is_ok() && !tail.is_empty() {
+                    let data = String::from_utf8_lossy(&tail).to_string();
+                    stderr_buf.push_str(&data);
+                    let _ = app.emit(
+                        &format!("shell-stream-{}", request_id),
+                        CommandStreamChunk {
+                            stream: "stderr".to_string(),
+                            data,
+                            done: false,
+                            exit_code: None,
+                            success: None,
+                        },
+                    );
+                }
+
+                let _ = app.emit(
+                    &format!("shell-stream-{}", request_id),
+                    CommandStreamChunk {
+                        stream: "meta".to_string(),
+                        data: String::new(),
+                        done: true,
+                        exit_code,
+                        success,
+                    },
+                );
+
+                cleanup_command_stream(&request_id);
+                return Ok(CommandOutput {
+                    stdout: stdout_buf,
+                    stderr: stderr_buf,
+                    exit_code,
+                    success: success.unwrap_or(false),
+                });
+            }
+        }
+
+        if stdout_done && stderr_done && is_command_stream_cancelled(&request_id) {
+            break;
         }
     }
+
+    cleanup_command_stream(&request_id);
+    Ok(CommandOutput {
+        stdout: stdout_buf,
+        stderr: stderr_buf,
+        exit_code: Some(1),
+        success: false,
+    })
 }
 
 /// Get system information (Cursor-style detailed info)

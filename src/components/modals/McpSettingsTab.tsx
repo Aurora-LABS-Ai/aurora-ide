@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 
 import clsx from 'clsx';
+import { TogglePill } from '../ui/TogglePill';
 import { DeleteConfirmDialog } from '../chat/DeleteConfirmDialog';
 
 // ============================================
@@ -603,20 +604,13 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
             <Trash2 className="w-3.5 h-3.5" />
           </button>
           {/* Enable/Disable toggle */}
-          <button
-            onClick={handleToggle}
-            className={clsx(
-              'relative w-8 h-4 rounded-full transition-colors',
-              server.config.enabled ? 'bg-primary' : 'bg-input border border-border'
-            )}
-          >
-            <div
-              className={clsx(
-                'absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform',
-                server.config.enabled ? 'translate-x-4' : 'translate-x-0.5'
-              )}
-            />
-          </button>
+          <TogglePill
+            checked={server.config.enabled}
+            onChange={() => handleToggle()}
+            ariaLabel={`Toggle ${server.config.name || 'MCP server'}`}
+            variant="primary"
+            size="sm"
+          />
         </div>
 
       </div>
@@ -645,28 +639,20 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
               <Check className="w-3.5 h-3.5 text-success" />
               <span className="text-[10px] text-text-secondary">Auto-approve all tools</span>
             </div>
-            <button
-              onClick={async (e) => {
-                e.stopPropagation();
+            <TogglePill
+              checked={isEditing ? editAutoApprove : server.config.autoApprove}
+              onChange={async (next) => {
                 if (isEditing) {
-                  setEditAutoApprove(!editAutoApprove);
+                  setEditAutoApprove(next);
                   return;
                 }
-                const updatedConfig = { ...server.config, autoApprove: !server.config.autoApprove };
+                const updatedConfig = { ...server.config, autoApprove: next };
                 await updateServer(updatedConfig);
               }}
-              className={clsx(
-                'relative w-8 h-4 rounded-full transition-colors',
-                (isEditing ? editAutoApprove : server.config.autoApprove) ? 'bg-success' : 'bg-input border border-border'
-              )}
-            >
-              <div
-                className={clsx(
-                  'absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform',
-                  (isEditing ? editAutoApprove : server.config.autoApprove) ? 'translate-x-4' : 'translate-x-0.5'
-                )}
-              />
-            </button>
+              ariaLabel="Toggle MCP auto-approve all tools"
+              variant="success"
+              size="sm"
+            />
           </div>
 
           {isEditing ? (
@@ -734,20 +720,13 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
               </div>
               <div className="flex items-center justify-between">
                 <label className="text-[10px] text-text-secondary">Auto-start</label>
-                <button
-                  onClick={() => setEditAutoStart(!editAutoStart)}
-                  className={clsx(
-                    'relative w-8 h-4 rounded-full transition-colors',
-                    editAutoStart ? 'bg-primary' : 'bg-input border border-border'
-                  )}
-                >
-                  <div
-                    className={clsx(
-                      'absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform',
-                      editAutoStart ? 'translate-x-4' : 'translate-x-0.5'
-                    )}
-                  />
-                </button>
+                <TogglePill
+                  checked={editAutoStart}
+                  onChange={setEditAutoStart}
+                  ariaLabel="Toggle MCP auto-start"
+                  variant="primary"
+                  size="sm"
+                />
               </div>
               <div className="flex items-center justify-end gap-2 pt-1">
                 <button

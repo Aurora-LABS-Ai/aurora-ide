@@ -136,6 +136,35 @@ export const executeCommand = async (command: string, cwd?: string, shell?: 'pow
   return invoke<CommandOutput>('execute_command', { command, cwd, shell });
 };
 
+export const executeCommandStream = async (
+  requestId: string,
+  command: string,
+  cwd?: string,
+  shell?: 'powershell' | 'bash',
+  timeoutMs?: number,
+): Promise<CommandOutput> => {
+  if (!isTauri()) {
+    console.warn('executeCommandStream: Not running in Tauri');
+    return { stdout: '', stderr: 'Not running in Tauri', exit_code: 1, success: false };
+  }
+  return invoke<CommandOutput>('execute_command_stream', {
+    app: undefined,
+    requestId,
+    command,
+    cwd,
+    shell,
+    timeoutMs,
+  });
+};
+
+export const cancelCommandStream = async (requestId: string): Promise<void> => {
+  if (!isTauri()) {
+    console.warn('cancelCommandStream: Not running in Tauri');
+    return;
+  }
+  await invoke<void>('cancel_command_stream', { requestId });
+};
+
 // System Operations
 export const getSystemInfo = async (): Promise<SystemInfo> => {
   if (!isTauri()) {

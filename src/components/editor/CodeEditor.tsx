@@ -237,7 +237,7 @@ export const CodeEditor: React.FC = () => {
             }
           }}
           options={{
-            minimap: { enabled: true },
+            minimap: { enabled: !activeTab.isLargeFile },
             fontSize: fontSize,
             scrollBeyondLastLine: false,
             automaticLayout: true,
@@ -251,7 +251,9 @@ export const CodeEditor: React.FC = () => {
             renderWhitespace: 'selection',
             tabSize: 2,
             cursorBlinking: 'smooth',
-            smoothScrolling: true,
+            smoothScrolling: !activeTab.isLargeFile,
+            renderValidationDecorations: activeTab.isLargeFile ? 'off' : 'on',
+            renderLineHighlight: activeTab.isLargeFile ? 'none' : 'all',
           }}
         />
       </div>

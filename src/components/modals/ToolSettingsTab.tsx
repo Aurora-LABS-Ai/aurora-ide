@@ -29,6 +29,7 @@ import React from 'react';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { Terminal, FileText, FolderOpen, Code, AlertTriangle, Shield, Map } from 'lucide-react';
 import clsx from 'clsx';
+import { TogglePill } from '../ui/TogglePill';
 
 // Group tools by category for better organization
 const TOOL_CATEGORIES = {
@@ -154,18 +155,13 @@ export const ToolSettingsTab: React.FC = () => {
             <h3 className="text-xs font-medium text-text-primary">Auto-approve Tools</h3>
             <p className="text-[10px] text-text-secondary">Execute all tools without asking</p>
           </div>
-          <button
-            onClick={() => setAutoApproveTools(!autoApproveTools)}
-            className={clsx(
-              "relative w-8 h-4 rounded-full transition-colors",
-              autoApproveTools ? "bg-primary" : "bg-input border border-border"
-            )}
-          >
-            <div className={clsx(
-              "absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform",
-              autoApproveTools ? "translate-x-4" : "translate-x-0.5"
-            )} />
-          </button>
+          <TogglePill
+            checked={autoApproveTools}
+            onChange={setAutoApproveTools}
+            ariaLabel="Toggle auto-approve tools"
+            variant="primary"
+            size="sm"
+          />
         </div>
       </div>
 
@@ -176,18 +172,13 @@ export const ToolSettingsTab: React.FC = () => {
             <h3 className="text-xs font-medium text-text-primary">Auto-accept File Changes</h3>
             <p className="text-[10px] text-text-secondary">Skip diff review, accept all file modifications immediately</p>
           </div>
-          <button
-            onClick={() => setAutoAcceptChanges(!autoAcceptChanges)}
-            className={clsx(
-              "relative w-8 h-4 rounded-full transition-colors",
-              autoAcceptChanges ? "bg-primary" : "bg-input border border-border"
-            )}
-          >
-            <div className={clsx(
-              "absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform",
-              autoAcceptChanges ? "translate-x-4" : "translate-x-0.5"
-            )} />
-          </button>
+          <TogglePill
+            checked={autoAcceptChanges}
+            onChange={setAutoAcceptChanges}
+            ariaLabel="Toggle auto-accept file changes"
+            variant="primary"
+            size="sm"
+          />
         </div>
         {autoAcceptChanges && (
           <p className="text-[10px] text-warning mt-2">
@@ -213,18 +204,13 @@ export const ToolSettingsTab: React.FC = () => {
               <h3 className="text-xs font-medium text-text-primary">Pre-save Syntax Validation</h3>
               <p className="text-[10px] text-text-secondary">Check syntax before writing files (JSON, JS, TS, JSX, TSX, CSS)</p>
             </div>
-            <button
-              onClick={() => setSyntaxValidationEnabled(!syntaxValidationEnabled)}
-              className={clsx(
-                "relative w-8 h-4 rounded-full transition-colors",
-                syntaxValidationEnabled ? "bg-success" : "bg-input border border-border"
-              )}
-            >
-              <div className={clsx(
-                "absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform",
-                syntaxValidationEnabled ? "translate-x-4" : "translate-x-0.5"
-              )} />
-            </button>
+          <TogglePill
+            checked={syntaxValidationEnabled}
+            onChange={setSyntaxValidationEnabled}
+            ariaLabel="Toggle pre-save syntax validation"
+            variant="success"
+            size="sm"
+          />
           </div>
           {syntaxValidationEnabled && (
             <p className="text-[10px] text-success mt-2">
@@ -243,18 +229,13 @@ export const ToolSettingsTab: React.FC = () => {
                 <p className="text-[10px] text-text-secondary">Include file tree in first message to help agent understand project structure</p>
               </div>
             </div>
-            <button
-              onClick={() => setProjectLayoutEnabled(!projectLayoutEnabled)}
-              className={clsx(
-                "relative w-8 h-4 rounded-full transition-colors",
-                projectLayoutEnabled ? "bg-success" : "bg-input border border-border"
-              )}
-            >
-              <div className={clsx(
-                "absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform",
-                projectLayoutEnabled ? "translate-x-4" : "translate-x-0.5"
-              )} />
-            </button>
+          <TogglePill
+            checked={projectLayoutEnabled}
+            onChange={setProjectLayoutEnabled}
+            ariaLabel="Toggle project file map"
+            variant="success"
+            size="sm"
+          />
           </div>
           {projectLayoutEnabled && (
             <p className="text-[10px] text-success mt-2">

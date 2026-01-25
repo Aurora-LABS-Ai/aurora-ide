@@ -43,7 +43,7 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ content, isGenerat
   }, [isGenerating]);
 
   return (
-    <div className="py-2 pl-3 group">
+    <div className="py-2 pl-3 group" style={{ background: 'var(--aurora-chat-thinkingBackground)' }}>
       <button
         onClick={() => setIsExpanded(!isExpanded)}
         className="flex items-center gap-2 text-xs font-medium w-full outline-none text-left"
@@ -76,7 +76,7 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ content, isGenerat
             exit={{ height: 0, opacity: 0 }}
             className="overflow-hidden"
           >
-            <div className="mt-1 ml-2 pl-3 border-l border-white/10">
+            <div className="mt-1 ml-2 pl-3" style={{ borderLeft: '1px solid var(--aurora-chat-thinkingBorder)' }}>
               <p className="font-mono text-[10px] text-text-secondary leading-relaxed whitespace-pre-wrap break-words py-1 opacity-80">
                 {content || <span className="italic opacity-50">Initializing...</span>}
               </p>

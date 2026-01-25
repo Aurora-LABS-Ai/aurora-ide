@@ -171,6 +171,21 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                   }
                 }
               }
+
+              // Handle deleted files - mark corresponding tabs as deleted
+              if (kind === 'remove') {
+                const editorStore = useEditorStore.getState();
+                const openTabs = editorStore.tabs;
+
+                for (const deletedPath of paths) {
+                  const matchingTab = openTabs.find(tab => tab.path === deletedPath);
+                  if (matchingTab) {
+                    // If tab has unsaved changes, keep it open but mark as deleted
+                    // If tab is clean, user can decide to close it
+                    editorStore.markTabAsDeleted(matchingTab.id);
+                  }
+                }
+              }
             }
           });
         } catch (err) {

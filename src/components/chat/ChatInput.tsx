@@ -288,7 +288,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     setHasInteracted(true);
   };
 
-  const handleStopOrSend = () => {
+  const handleStopOrSend = (e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    
     if (isLoading) {
       stopGeneration();
     } else {
@@ -364,16 +369,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     return createPortal(
       <div
         id="mention-popup"
-        className="fixed z-[10000] w-64 bg-sidebar ring-1 ring-border rounded-lg shadow-2xl overflow-hidden flex flex-col"
-        style={popupStyle}
+        className="fixed z-[10000] w-64 ring-1 ring-border rounded-lg shadow-2xl overflow-hidden flex flex-col"
+        style={{ ...popupStyle, backgroundColor: 'var(--aurora-chat-surface)' }}
       >
-        <div className="px-2 py-1.5 bg-white/5 border-b border-white/5 text-[10px] items-center flex justify-between text-text-secondary">
+        <div className="px-2 py-1.5 border-b border-border text-[10px] items-center flex justify-between" style={{ backgroundColor: 'var(--aurora-chat-surface)', color: 'var(--aurora-text-secondary)' }}>
           <span className="font-semibold uppercase tracking-wider">Suggested Files</span>
           <span className="text-[10px]">{filteredFiles.length} found</span>
         </div>
 
         {filteredFiles.length === 0 ? (
-          <div className="p-3 text-center text-text-disabled text-[11px] italic">
+          <div className="p-3 text-center text-[11px] italic" style={{ color: 'var(--aurora-text-disabled)' }}>
             {allFiles.length === 0 ? "No files in workspace" : "No matching files found"}
           </div>
         ) : (
@@ -385,8 +390,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                 onMouseEnter={() => setSelectedFileIndex(idx)}
                 className={clsx(
                   "w-full text-left flex items-center gap-2 px-2 py-1.5 rounded text-[11px] transition-colors",
-                  idx === selectedFileIndex ? "bg-primary/20 text-primary" : "text-text-secondary hover:bg-white/5"
+                  idx === selectedFileIndex
+                    ? "text-primary"
+                    : "hover:bg-white/5"
                 )}
+                style={{
+                  color: idx === selectedFileIndex ? 'var(--aurora-common-primary)' : 'var(--aurora-text-secondary)'
+                }}
               >
                 <FileIcon name={file.name} path={file.path} className="w-4 h-4 min-w-4" />
                 <span className="truncate">{file.name}</span>
@@ -406,14 +416,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     const dropdown = (
       <div
         id="model-dropdown-portal"
-        className="fixed w-60 bg-sidebar ring-1 ring-border rounded-xl shadow-xl shadow-black/80 overflow-hidden z-[9999]"
+        className="fixed w-60 bg-sidebar ring-1 ring-border rounded-xl shadow-xl overflow-hidden z-[9999]"
         style={{
           top: dropdownPosition.top,
           left: dropdownPosition.left,
           transform: 'translateY(-100%)',
+          backgroundColor: 'var(--aurora-sidebar-background)',
+          boxShadow: 'var(--aurora-common-shadow)'
         }}
       >
-        <div className="px-3 py-2 border-b border-border bg-white/[0.02]">
+        <div className="px-3 py-2 border-b border-border" style={{ backgroundColor: 'var(--aurora-title-bar-background)' }}>
           <span className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Select Model</span>
         </div>
 
@@ -438,8 +450,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                 key={`${providerId}:${model}`}
                 onClick={() => handleModelSelect(providerId, model)}
                 className={clsx(
-                  "w-full px-3 py-2 text-left text-[12px] hover:bg-white/5 transition-colors flex items-center justify-between group",
-                  selectedModel === `${providerId}:${model}` && "bg-primary/10 text-primary hover:bg-primary/15"
+                  "w-full px-3 py-2 text-left text-[12px] hover:bg-sidebar-item-hover transition-colors flex items-center justify-between group",
+                  selectedModel === `${providerId}:${model}` && "bg-sidebar-item-selected text-primary hover:bg-sidebar-item-selected/80"
                 )}
               >
                 <div className="flex flex-col">
@@ -512,17 +524,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
       <div
         onClick={handleContainerClick}
         className={clsx(
-          "rounded-xl transition-all duration-500 cursor-text relative overflow-hidden",
-          isLoading ? "shadow-primary/10" : ""
+          "rounded-xl transition-all duration-500 cursor-text relative overflow-hidden"
         )}
         style={{
           backgroundColor: 'var(--aurora-chat-input-background)',
           border: isFocused
             ? '1px solid color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)'
             : '1px solid var(--aurora-chat-input-border)',
-          boxShadow: isFocused
-            ? '0 0 10px color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)'
-            : 'none',
+          boxShadow: 'none',
         }}
       >
 
@@ -642,7 +651,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
               <div className={clsx(
                 "w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300",
                 (content.trim() || attachedFiles.length > 0)
-                  ? "bg-gradient-to-br from-primary to-primary/80 shadow-lg shadow-primary/25 hover:scale-105 hover:shadow-primary/40 active:scale-95"
+                  ? "bg-gradient-to-br from-primary to-primary/80 hover:scale-105 active:scale-95"
                   : "bg-muted text-muted-foreground"
               )}>
                 <ArrowUp

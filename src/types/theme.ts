@@ -87,6 +87,11 @@ export interface CommonTokens {
   destructive: string;
   destructiveForeground: string;
 
+  // General text colors
+  textPrimary: string;
+  textSecondary: string;
+  textDisabled: string;
+
   // Git/File diff colors
   diffAdded: string;
   diffAddedForeground: string;

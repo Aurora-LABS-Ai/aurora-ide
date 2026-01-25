@@ -20,7 +20,7 @@
  * See: src/services/theme-service.ts for theme utilities
  */
 
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useMemo } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { TitleBar } from "./TitleBar";
 import { StatusBar } from "./StatusBar";
@@ -76,6 +76,17 @@ export const MainLayout: React.FC = () => {
     setSettingsOpen(true);
   }, [setSettingsOpen]);
 
+  // Calculate center panel size based on sidebar and chat visibility
+  const centerPanelDefaultSize = useMemo(() => {
+    if (isAgentMode) return 82;
+    if (!showChatPanel) return 100; // No chat panel, center panel gets full width
+    // With chat panel shown, calculate center panel size
+    // Chat panel always stays at 25%, center panel gets the rest
+    // When sidebar is open (18%): center panel = 100% - 18% - 25% = 57%
+    // When sidebar is closed (0%): center panel = 100% - 0% - 25% = 75%
+    return isSidebarOpen ? 57 : 75;
+  }, [isAgentMode, showChatPanel, isSidebarOpen]);
+
   return (
     <div className="h-screen flex flex-col bg-editor text-text-primary overflow-hidden">
       <TitleBar />
@@ -116,7 +127,7 @@ export const MainLayout: React.FC = () => {
           <Panel
             id="center-panel"
             order={2}
-            defaultSize={isAgentMode ? 82 : (showChatPanel ? 57 : 82)}
+            defaultSize={centerPanelDefaultSize}
             minSize={30}
           >
             <div className="h-full flex flex-col">

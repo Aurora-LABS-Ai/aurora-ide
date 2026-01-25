@@ -31,12 +31,79 @@
 aurora-agent-frontend/
 ├── src/
 │   ├── components/     # React components (organized by feature)
+│   │   ├── agent/      # Agent-related components
+│   │   ├── chat/       # Chat interface components
+│   │   ├── editor/     # Code editor components
+│   │   ├── explorer/   # File explorer components
+│   │   ├── git/        # Git integration components
+│   │   ├── icons/      # Icon library
+│   │   ├── layout/     # Layout components
+│   │   ├── modals/     # Modal dialogs
+│   │   ├── search/     # Search components
+│   │   ├── terminal/   # Terminal components
+│   │   ├── theme/      # Theme components
+│   │   └── ui/         # Shared UI components
 │   ├── services/       # Business logic and external API calls
-│   ├── store/         # Zustand state management
+│   │   ├── providers/  # LLM provider implementations
+│   │   ├── agent-service.ts
+│   │   ├── llm-provider.ts
+│   │   ├── database.ts
+│   │   ├── theme-service.ts
+│   │   ├── git.ts
+│   │   ├── checkpoint.ts
+│   │   ├── mcp-tools.ts
+│   │   ├── semantic.ts
+│   │   ├── context-builder.ts
+│   │   ├── thread-service.ts
+│   │   ├── token-service.ts
+│   │   └── undo-redo.ts
+│   ├── store/         # Zustand state management (18 stores)
+│   │   ├── useSettingsStore.ts
+│   │   ├── useChatStore.ts
+│   │   ├── useThreadStore.ts
+│   │   ├── useEditorStore.ts
+│   │   ├── useWorkspaceStore.ts
+│   │   ├── useUiStore.ts
+│   │   ├── useThemeStore.ts
+│   │   ├── useGitStore.ts
+│   │   ├── useMcpStore.ts
+│   │   ├── useCheckpointStore.ts
+│   │   ├── useSemanticStore.ts
+│   │   ├── useContextStore.ts
+│   │   ├── useTerminalStore.ts
+│   │   ├── useTaskStore.ts
+│   │   ├── useAuditStore.ts
+│   │   ├── usePendingChangesStore.ts
+│   │   ├── useUndoRedoStore.ts
+│   │   └── useDragStore.ts
 │   ├── tools/         # AI tool definitions and executors
-│   ├── types/         # TypeScript type definitions
+│   │   ├── definitions/  # Tool schemas
+│   │   ├── executors/    # Tool implementations
+│   │   ├── registry.ts
+│   │   ├── operation-log.ts
+│   │   └── types.ts
 │   ├── hooks/         # Custom React hooks
-│   └── themes/        # UI theme definitions
+│   │   ├── useWorkspaceBootstrap.ts
+│   │   ├── useAutoSave.ts
+│   │   ├── useWindowClose.ts
+│   │   ├── useTauriDragDrop.ts
+│   │   ├── useInternalDrag.ts
+│   │   ├── useCliOpen.ts
+│   │   ├── useGlobalShortcuts.ts
+│   │   ├── useUndoRedoShortcuts.ts
+│   │   ├── useDetachedChatWindow.ts
+│   │   ├── useRustChatSync.ts
+│   │   ├── useWindowStateSync.ts
+│   │   ├── useThemeImportDrag.ts
+│   │   └── useExplorerKeyboard.ts
+│   ├── types/         # TypeScript type definitions
+│   │   ├── database.ts
+│   │   ├── theme.ts
+│   │   └── index.ts
+│   ├── lib/           # Utility libraries
+│   ├── themes/        # UI theme definitions
+│   ├── App.tsx        # Main application component
+│   └── main.tsx       # Application entry point
 ├── src-tauri/
 │   ├── src/
 │   │   ├── commands/  # Tauri command handlers (Rust)
@@ -127,64 +194,91 @@ pnpm test:coverage
 
 ### Adding State Management
 
-1. **Create Store File**
-   ```typescript
-   // src/store/useMyFeatureStore.ts
-   import { create } from 'zustand';
+The application uses 18 specialized Zustand stores for different domains:
 
-   interface MyFeatureState {
-     data: any[];
-     isLoading: boolean;
+**Core Stores:**
+- `useSettingsStore` - App settings, LLM providers, editor preferences
+- `useChatStore` - Chat messages and loading states
+- `useThreadStore` - Conversation thread management
+- `useEditorStore` - Code editor tabs and content
+- `useWorkspaceStore` - File explorer state
+- `useUiStore` - UI state (themes, modals, panels)
 
-     loadData: () => Promise<void>;
-     addItem: (item: any) => void;
-   }
+**Feature Stores:**
+- `useThemeStore` - Theme loading and management
+- `useGitStore` - Git repository state
+- `useMcpStore` - MCP server state
+- `useCheckpointStore` - Checkpoint/restore state
+- `useSemanticStore` - Semantic search state
+- `useContextStore` - Context building state
+- `useTerminalStore` - Terminal state
+- `useTaskStore` - Task management
 
-   export const useMyFeatureStore = create<MyFeatureState>()((set, get) => ({
-     data: [],
-     isLoading: false,
+**Utility Stores:**
+- `useAuditStore` - Audit logging
+- `usePendingChangesStore` - Pending file changes
+- `useUndoRedoStore` - Undo/redo history
+- `useDragStore` - Drag and drop state
 
-     loadData: async () => {
-       set({ isLoading: true });
-       try {
-         // Load data logic
-         const data = await fetchData();
-         set({ data, isLoading: false });
-       } catch (error) {
-         set({ isLoading: false });
-         throw error;
-       }
-     },
+#### Creating a New Store
 
-     addItem: (item) =>
-       set((state) => ({
-         data: [...state.data, item]
-       }))
-   }));
-   ```
+```typescript
+// src/store/useMyFeatureStore.ts
+import { create } from 'zustand';
 
-2. **Use in Components**
-   ```typescript
-   import { useMyFeatureStore } from '../store/useMyFeatureStore';
+interface MyFeatureState {
+  data: any[];
+  isLoading: boolean;
 
-   export function MyComponent() {
-     const { data, isLoading, loadData, addItem } = useMyFeatureStore();
+  loadData: () => Promise<void>;
+  addItem: (item: any) => void;
+}
 
-     useEffect(() => {
-       loadData();
-     }, [loadData]);
+export const useMyFeatureStore = create<MyFeatureState>()((set, get) => ({
+  data: [],
+  isLoading: false,
 
-     if (isLoading) return <div>Loading...</div>;
+  loadData: async () => {
+    set({ isLoading: true });
+    try {
+      const data = await fetchData();
+      set({ data, isLoading: false });
+    } catch (error) {
+      set({ isLoading: false });
+      throw error;
+    }
+  },
 
-     return (
-       <div>
-         {data.map(item => <div key={item.id}>{item.name}</div>)}
-         <button onClick={() => addItem({ id: 1, name: 'New' })}>
-           Add Item
-         </button>
-       </div>
-     );
-   }
+  addItem: (item) =>
+    set((state) => ({
+      data: [...state.data, item]
+    }))
+}));
+```
+
+#### Using a Store in Components
+
+```typescript
+import { useMyFeatureStore } from '../store/useMyFeatureStore';
+
+export function MyComponent() {
+  const { data, isLoading, loadData, addItem } = useMyFeatureStore();
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  if (isLoading) return <div>Loading...</div>;
+
+  return (
+    <div>
+      {data.map(item => <div key={item.id}>{item.name}</div>}
+      <button onClick={() => addItem({ id: 1, name: 'New' })}>
+        Add Item
+      </button>
+    </div>
+  );
+}
    ```
 
 ### Adding Database Persistence
@@ -317,48 +411,135 @@ When creating new files, ensure they include:
 
 ## Common Workflows
 
-### Creating an API Endpoint
+### Creating an MCP Tool
 
-1. **Define Types**
+1. **Define Tool Schema**
    ```typescript
-   // src/types/api.ts
-   export interface ApiRequest {
-     action: string;
-     data: any;
-   }
-
-   export interface ApiResponse {
-     success: boolean;
-     data?: any;
-     error?: string;
-   }
-   ```
-
-2. **Add Frontend Service**
-   ```typescript
-   // src/services/apiService.ts
-   export class ApiService {
-     async callEndpoint(request: ApiRequest): Promise<ApiResponse> {
-       return await invoke('api_endpoint', { request });
-     }
-   }
-   ```
-
-3. **Add Tauri Command**
-   ```rust
-   // src-tauri/src/commands/api.rs
-   #[tauri::command]
-   pub fn api_endpoint(request: ApiRequest) -> Result<ApiResponse, String> {
-       match request.action.as_str() {
-           "create" => {
-               // Handle create action
-               Ok(ApiResponse {
-                   success: true,
-                   data: serde_json::json!({"id": "123"})
-               })
-           }
-           _ => Err("Unknown action".to_string())
+   // src/tools/definitions/mcp-custom-tools.ts
+   export const mcpCustomTools = [
+     {
+       name: 'my_custom_mcp_tool',
+       description: 'Description of what this tool does',
+       inputSchema: {
+         type: 'object',
+         properties: {
+           param1: { type: 'string', description: 'Parameter description' }
+         },
+         required: ['param1']
        }
+     }
+   ];
+   ```
+
+2. **Register Tool in MCP Store**
+   ```typescript
+   // The MCP store automatically discovers tools from connected servers
+   // Tools are available via useMcpStore.getAllTools()
+   ```
+
+### Adding Git Operations
+
+1. **Use Git Store**
+   ```typescript
+   import { useGitStore } from '../store/useGitStore';
+
+   export function GitOperations() {
+     const {
+       status,
+       branches,
+       commits,
+       loadStatus,
+       loadBranches,
+       stageFile,
+       commit,
+       checkout
+     } = useGitStore();
+
+     const handleCommit = async () => {
+       await stageFile('path/to/file.ts');
+       await commit('My commit message');
+     };
+
+     return <div>...</div>;
+   }
+   ```
+
+### Implementing Checkpoints
+
+1. **Use Checkpoint Store**
+   ```typescript
+   import { useCheckpointStore } from '../store/useCheckpointStore';
+
+   export function CheckpointManager() {
+     const {
+       checkpoints,
+       createCheckpoint,
+       restoreToCheckpoint,
+       hasCheckpoint
+     } = useCheckpointStore();
+
+     const createAndRestore = async (messageId: string) => {
+       const created = await createCheckpoint(messageId);
+       if (created) {
+         const checkpoint = checkpoints.get(messageId);
+         if (checkpoint) {
+           await restoreToCheckpoint(checkpoint.id);
+         }
+       }
+     };
+
+     return <div>...</div>;
+   }
+   ```
+
+### Adding Semantic Search
+
+1. **Use Semantic Store**
+   ```typescript
+   import { useSemanticStore } from '../store/useSemanticStore';
+
+   export function SemanticSearch() {
+     const {
+       searchResults,
+       searchCode,
+       buildContext
+     } = useSemanticStore();
+
+     const handleSearch = async (query: string) => {
+       await searchCode(query);
+     };
+
+     return <div>...</div>;
+   }
+   ```
+
+### Creating Custom Hooks
+
+1. **Create Hook File**
+   ```typescript
+   // src/hooks/useMyCustomHook.ts
+   import { useEffect, useState } from 'react';
+   import { useMyFeatureStore } from '../store/useMyFeatureStore';
+
+   export function useMyCustomHook() {
+     const [value, setValue] = useState(null);
+     const { loadData } = useMyFeatureStore();
+
+     useEffect(() => {
+       loadData();
+     }, [loadData]);
+
+     return { value, setValue };
+   }
+   ```
+
+2. **Use Hook in Component**
+   ```typescript
+   import { useMyCustomHook } from '../hooks/useMyCustomHook';
+
+   export function MyComponent() {
+     const { value } = useMyCustomHook();
+     return <div>{value}</div>;
    }
    ```
 
@@ -432,6 +613,58 @@ When creating new files, ensure they include:
    }
    ```
 
+### Adding a New Tool
+
+1. **Define Tool Schema**
+   ```typescript
+   // src/tools/definitions/my-new-tool.ts
+   export const myNewTool = {
+     name: 'my_new_tool',
+     description: 'Description of what this tool does',
+     inputSchema: {
+       type: 'object',
+       properties: {
+         param1: { type: 'string', description: 'Parameter description' }
+       },
+       required: ['param1']
+     }
+   };
+   ```
+
+2. **Create Tool Executor**
+   ```typescript
+   // src/tools/executors/my-new-tool-executor.ts
+   import { invoke } from '@tauri-apps/api/core';
+
+   export async function executeMyNewTool(params: { param1: string }) {
+     return await invoke('my_new_tool_command', { params });
+   }
+   ```
+
+3. **Register Tool**
+   ```typescript
+   // src/tools/registry.ts
+   import { myNewTool } from '../definitions/my-new-tool';
+   import { executeMyNewTool } from '../executors/my-new-tool-executor';
+
+   registerTool({
+     definition: myNewTool,
+     executor: executeMyNewTool,
+     riskLevel: 'medium' // 'low' | 'medium' | 'high'
+   });
+   ```
+
+4. **Add Tauri Command**
+   ```rust
+   // src-tauri/src/commands/mod.rs
+   #[tauri::command]
+   pub fn my_new_tool_command(params: MyToolParams) -> Result<String, String> {
+       // Implementation
+       Ok("Result")
+   }
+   ```
+   ```
+
 ## Debugging
 
 ### Frontend Debugging
@@ -476,6 +709,11 @@ When creating new files, ensure they include:
 - **State not persisting**: Verify database schema and migrations
 - **UI not updating**: Check Zustand store subscriptions
 - **Build failures**: Ensure Rust dependencies are installed
+- **MCP servers not connecting**: Check server configuration and logs
+- **Git operations failing**: Verify Git repository initialization
+- **Theme not applying**: Check theme store initialization and CSS variables
+- **Checkpoints not restoring**: Verify checkpoint creation and file paths
+- **Semantic search not working**: Check context builder and embeddings
 
 ## Build and Deployment
 

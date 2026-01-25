@@ -239,40 +239,160 @@ aurora-agent-frontend/
 ### Frontend Architecture
 
 #### State Management (Zustand Stores)
-The application uses six specialized Zustand stores located in `src/store/`:
+The application uses 18 specialized Zustand stores located in `src/store/`:
 
 1. **useSettingsStore** (`src/store/useSettingsStore.ts`)
    - Global app settings and LLM provider configurations
    - Persists to localStorage with versioning
    - Manages provider selection, tool approval settings, editor preferences
+   - UI preferences (font scale, font family)
+   - Autosave settings
 
 2. **useChatStore** (`src/store/useChatStore.ts`)
    - Chat messages and loading states
    - Tool approval workflow state management
+   - Message CRUD operations
 
 3. **useThreadStore** (`src/store/useThreadStore.ts`)
    - Conversation thread management and persistence
-   - Auto-saves threads to `.aurora/threads/{threadId}.json`
+   - Rust-backed per-message persistence via thread-service
+   - Thread summaries for history
+   - Auto-saves on message changes
 
 4. **useEditorStore** (`src/store/useEditorStore.ts`)
    - Code editor tabs and file content management
    - Cursor position, scroll offset, and folding state tracking
+   - Workspace restoration from database
 
 5. **useWorkspaceStore** (`src/store/useWorkspaceStore.ts`)
    - File explorer tree structure and navigation
    - Workspace root path management
+   - Folder expansion state
 
 6. **useUiStore** (`src/store/useUiStore.ts`)
    - UI state management (themes, modals, panel visibility)
    - Detached chat window state synchronization
 
+7. **useThemeStore** (`src/store/useThemeStore.ts`)
+   - Theme loading and management
+   - Built-in and custom theme support
+   - Theme import/export with validation
+   - Cross-window theme synchronization
+
+8. **useGitStore** (`src/store/useGitStore.ts`)
+   - Git repository state management
+   - Branch operations (checkout, create, pull, push)
+   - Commit and staging operations
+   - Git status tracking
+
+9. **useMcpStore** (`src/store/useMcpStore.ts`)
+   - MCP (Model Context Protocol) server state
+   - Server configuration and connection management
+   - Tool discovery and execution
+   - Server lifecycle management
+
+10. **useCheckpointStore** (`src/store/useCheckpointStore.ts`)
+    - Checkpoint creation and restoration
+    - Message-to-checkpoint mapping
+    - Workspace checkpoint management
+
+11. **useSemanticStore** (`src/store/useSemanticStore.ts`)
+    - Semantic search state
+    - Context management for AI
+    - Vector search operations
+
+12. **useContextStore** (`src/store/useContextStore.ts`)
+    - Context building and management
+    - System info caching
+    - Token usage tracking
+
+13. **useTerminalStore** (`src/store/useTerminalStore.ts`)
+    - Terminal state management
+    - Process tracking
+    - Command history
+
+14. **useTaskStore** (`src/store/useTaskStore.ts`)
+    - Task and todo management
+    - Task status tracking
+
+15. **useAuditStore** (`src/store/useAuditStore.ts`)
+    - Audit logging
+    - Operation tracking
+
+16. **usePendingChangesStore** (`src/store/usePendingChangesStore.ts`)
+    - Pending file changes tracking
+    - Change approval workflow
+
+17. **useUndoRedoStore** (`src/store/useUndoRedoStore.ts`)
+    - Undo/redo history
+    - State snapshot management
+
+18. **useDragStore** (`src/store/useDragStore.ts`)
+    - Drag and drop state
+    - File drag operations
+
 #### Component Architecture
 Located in `src/components/`:
 
-- **layout/MainLayout.tsx** - Three-panel layout (Explorer | Editor | Chat)
-- **ChatPanel** - Chat interface with message history and input
-- **EditorPanel** - Monaco editor with tab management
-- **FileExplorer** - File tree with expand/collapse functionality
+**Layout Components** (`src/components/layout/`):
+- `MainLayout.tsx` - Three-panel layout (Explorer | Editor | Chat)
+- `TitleBar.tsx` - Custom title bar with window controls
+- `ResizablePanels.tsx` - Panel resizing logic
+
+**Chat Components** (`src/components/chat/`):
+- `ChatPanel.tsx` - Main chat interface
+- `MessageList.tsx` - Message display with timeline events
+- `ChatInput.tsx` - Input field with tool suggestions
+- `DetachedChatWindow.tsx` - Detachable chat window
+- `ThreadSidebar.tsx` - Thread history sidebar
+- `ThinkingIndicator.tsx` - AI thinking animation
+- `ToolCallBlock.tsx` - Tool execution display
+
+**Editor Components** (`src/components/editor/`):
+- `EditorPanel.tsx` - Monaco editor with tab management
+- `TabBar.tsx` - File tabs with close buttons
+- `Editor.tsx` - Monaco editor wrapper
+
+**Explorer Components** (`src/components/explorer/`):
+- `FileExplorer.tsx` - File tree with expand/collapse
+- `FileTreeItem.tsx` - Individual file/folder item
+- `FileContextMenu.tsx` - Right-click context menu
+
+**Git Components** (`src/components/git/`):
+- `GitPanel.tsx` - Git operations panel
+- `BranchSelector.tsx` - Branch selection dropdown
+- `CommitPanel.tsx` - Commit interface
+- `DiffViewer.tsx` - File diff display
+
+**Agent Components** (`src/components/agent/`):
+- `AgentStatus.tsx` - Agent activity indicator
+- `ToolApprovalModal.tsx` - Tool approval dialog
+
+**Terminal Components** (`src/components/terminal/`):
+- `TerminalPanel.tsx` - Integrated terminal with xterm.js
+
+**UI Components** (`src/components/ui/`):
+- `Button.tsx` - Styled button component
+- `Modal.tsx` - Modal dialog wrapper
+- `Input.tsx` - Text input component
+- `Select.tsx` - Dropdown select component
+- `DragPreview.tsx` - Drag preview overlay
+
+**Modal Components** (`src/components/modals/`):
+- `SettingsPanel.tsx` - Settings modal
+- `OnboardingModal.tsx` - First-time setup
+- `QuickOpenModal.tsx` - Command palette
+- `ThemeImportModal.tsx` - Theme import dialog
+
+**Search Components** (`src/components/search/`):
+- `SearchPanel.tsx` - File search interface
+- `SearchResults.tsx` - Search results display
+
+**Theme Components** (`src/components/theme/`):
+- `ThemeSelector.tsx` - Theme selection dropdown
+
+**Icons** (`src/components/icons/`):
+- Icon library and icon components
 
 ### Backend Architecture (Rust/Tauri)
 
@@ -330,28 +450,172 @@ Located in `src/tools/`:
 - `shell-tools.ts` - Shell command execution
 - `workspace-tools.ts` - Workspace navigation and search
 - `editor-tools.ts` - Editor operations (open files, tabs)
+- `mcp-tools.ts` - MCP tool definitions
+- `git-tools.ts` - Git operations
+- `semantic-tools.ts` - Semantic search operations
+- `agent-tools.ts` - Agent-specific tools
 
 #### Tool Executors (`executors/`)
 - Each tool has a risk level: low (auto-approve), medium/high (requires approval)
 - Tools are executed via Tauri commands
+- MCP tool execution support
 
 #### Tool Registry (`registry.ts`)
 - Central tool registry and management
 - Tool discovery and validation
+- MCP server tool registration
 
-### LLM Provider System
+#### Tool Utilities
+- `operation-log.ts` - Tool execution logging
+- `types.ts` - Tool type definitions
+- `utils/` - Tool utility functions
 
-#### Service Layer (`src/services/llm-provider.ts`)
-- Singleton pattern for provider instance management
-- Supports multiple providers: OpenAI, DeepSeek, GLM, Anthropic, custom
-- Provider-specific handling for different APIs
-- Streaming SSE (Server-Sent Events) implementation
+### MCP (Model Context Protocol) System
 
-#### Agent Service (`src/services/agent-service.ts`)
-- Orchestrates AI conversation with tool execution
-- Conversation loop: LLM → Tool Calls → Execution → Response
-- Max 25 tool iterations per request
-- Tool approval workflow integration
+Located in `src/services/mcp-tools.ts` and `src/store/useMcpStore.ts`:
+
+#### MCP Features
+- **Server Management**: Add, remove, connect, disconnect MCP servers
+- **Tool Discovery**: Automatic tool discovery from connected servers
+- **Tool Execution**: Call MCP tools through unified interface
+- **Resource Access**: Access MCP resources (files, databases)
+- **Configuration**: JSON-based server configuration
+
+#### MCP Store Operations
+- `loadServers` - Load servers from configuration
+- `addServer` - Add new MCP server configuration
+- `connectServer` - Connect to MCP server
+- `callTool` - Execute MCP tool
+- `getAllTools` - Get all available tools from all servers
+
+### Git Integration System
+
+Located in `src/services/git.ts` and `src/store/useGitStore.ts`:
+
+#### Git Features
+- **Repository Detection**: Auto-detect Git repositories
+- **Branch Management**: List, create, checkout, switch branches
+- **Commit Operations**: Stage files, create commits, view diff
+- **Remote Operations**: Pull, push to remotes
+- **Status Tracking**: Track modified, staged, untracked files
+- **Commit History**: View recent commits
+
+#### Git Store Operations
+- `initialize` - Initialize Git tracking for workspace
+- `loadStatus` - Load current Git status
+- `loadBranches` - Load all branches
+- `loadCommits` - Load commit history
+- `stageFile/unstageFile` - Stage/unstage files
+- `commit` - Create new commit
+- `checkout` - Switch branches
+- `pull/push` - Sync with remote
+
+### Checkpoint/Restore System
+
+Located in `src/services/checkpoint.ts` and `src/store/useCheckpointStore.ts`:
+
+#### Checkpoint Features
+- **Checkpoint Creation**: Automatic checkpoints on user messages
+- **Restore Operations**: Restore to any previous checkpoint
+- **Workspace Checkpoints**: Per-workspace checkpoint management
+- **Thread Association**: Checkpoints linked to specific threads
+
+#### Checkpoint Store Operations
+- `createCheckpoint` - Create checkpoint for message
+- `restoreToCheckpoint` - Restore workspace state
+- `loadCheckpointsForThread` - Load checkpoints for thread
+- `setEnabled` - Enable/disable checkpoints for workspace
+
+### Semantic Search System
+
+Located in `src/services/semantic.ts` and `src/store/useSemanticStore.ts`:
+
+#### Semantic Features
+- **Vector Search**: Semantic code search using embeddings
+- **Context Building**: Build context for AI from workspace
+- **Code Understanding**: Understand code structure and relationships
+- **Smart Suggestions**: Provide relevant code suggestions
+
+### Context Building System
+
+Located in `src/services/context-builder.ts` and `src/store/useContextStore.ts`:
+
+#### Context Features
+- **System Info**: OS, architecture, hostname detection
+- **Token Counting**: Accurate token counting for context
+- **Context Optimization**: Optimize context for LLM
+- **Usage Tracking**: Track context usage across requests
+
+### Thread Persistence System
+
+Located in `src/services/thread-service.ts`:
+
+#### Thread Features
+- **Rust-Backed Persistence**: Per-message Rust storage
+- **Thread Summaries**: Automatic summary generation
+- **Metadata Tracking**: Track tokens, context usage
+- **Efficient Storage**: Binary format for efficiency
+
+### Token Counting System
+
+Located in `src/services/token-service.ts`:
+
+#### Token Features
+- **Rust-Backed tiktoken**: Fast token counting
+- **Multi-Model Support**: Support for various tokenizers
+- **Accurate Counting**: Precise token counting for billing
+
+### Undo/Redo System
+
+Located in `src/services/undo-redo.ts` and `src/store/useUndoRedoStore.ts`:
+
+#### Undo/Redo Features
+- **State Snapshots**: Capture application state
+- **Undo/Redo Stack**: Manage undo/redo history
+- **Keyboard Shortcuts**: Ctrl+Z/Ctrl+Shift+Z support
+
+### Service Layer Architecture
+
+Located in `src/services/`:
+
+**Core Services**:
+- `agent-service.ts` - AI agent orchestration and conversation management
+- `llm-provider.ts` - LLM provider abstraction and API calls
+- `database.ts` - Database service for state persistence
+- `theme-service.ts` - Theme validation and management
+
+**Feature Services**:
+- `git.ts` - Git operations service
+- `checkpoint.ts` - Checkpoint/restore operations
+- `mcp-tools.ts` - MCP server and tool management
+- `semantic.ts` - Semantic search operations
+- `context-builder.ts` - Context building for AI
+- `thread-service.ts` - Thread persistence (Rust-backed)
+- `token-service.ts` - Token counting (Rust-backed tiktoken)
+- `undo-redo.ts` - Undo/redo operations
+- `multi-file-service.ts` - Multi-file reading operations
+- `syntax-validator.ts` - Syntax validation
+
+**Provider Services** (`providers/`):
+- Enterprise provider implementations
+- Custom provider support
+
+### Custom Hooks
+
+Located in `src/hooks/`:
+- `useWorkspaceBootstrap.ts` - Workspace initialization
+- `useAutoSave.ts` - Auto-save functionality
+- `useWindowClose.ts` - Window close handling
+- `useTauriDragDrop.ts` - External file drag-drop
+- `useInternalDrag.ts` - Internal drag-drop
+- `useCliOpen.ts` - CLI open command handling
+- `useGlobalShortcuts.ts` - Global keyboard shortcuts
+- `useUndoRedoShortcuts.ts` - Undo/redo shortcuts
+- `useDetachedChatWindow.ts` - Detached chat window management
+- `useRustChatSync.ts` - Rust chat state synchronization
+- `useWindowStateSync.ts` - Window state sync
+- `useThemeImportDrag.ts` - Theme file drag import
+- `useExplorerKeyboard.ts` - Explorer keyboard navigation
 
 ## Data Flow
 
@@ -408,3 +672,12 @@ User Action → Component Event Handler → Zustand Store Action → Tauri Comma
 4. **Thinking Mode** - Provider-specific thinking content handling
 5. **VS Code-Inspired Design** - Color hierarchy and familiar interface patterns
 6. **Tool Approval System** - Granular control over AI tool execution with per-tool settings
+7. **MCP (Model Context Protocol)** - Extensible tool system via MCP servers
+8. **Git Integration** - Full Git operations within the editor
+9. **Checkpoint/Restore** - Workspace state snapshots and restoration
+10. **Semantic Search** - AI-powered code search using embeddings
+11. **Rust-Backed Services** - Thread persistence, token counting, and more via Rust
+12. **Undo/Redo System** - Full undo/redo support with keyboard shortcuts
+13. **Auto-Save** - Configurable auto-save with multiple triggers
+14. **Context Building** - Smart context optimization for AI
+15. **Multi-File Operations** - Batch file reading and analysis

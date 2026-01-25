@@ -124,8 +124,8 @@ export const TreeNode: React.FC<TreeNodeProps> = ({
         return;
       }
 
-      // Open immediately with placeholder to keep UI responsive
-      openFile(fileId, node.name, '// Loading file...', node.language);
+      // Open immediately with loading state
+      openFile(fileId, node.name, '', node.language, true);
 
       try {
         const content = await loadFileContent(nodePath);
@@ -135,8 +135,8 @@ export const TreeNode: React.FC<TreeNodeProps> = ({
           return;
         }
 
-        // Replace placeholder with actual content
-        openFile(fileId, node.name, content, node.language);
+        // Replace loading state with actual content
+        openFile(fileId, node.name, content, node.language, false);
       } catch (err) {
         // Ignore stale error responses
         if (requestId !== latestLoadRequestId) {
@@ -146,7 +146,7 @@ export const TreeNode: React.FC<TreeNodeProps> = ({
         console.error('Failed to load file:', err);
         const message = err instanceof Error ? err.message : String(err);
         // Open with error message
-        openFile(fileId, node.name, `// Failed to load file: ${message}`, node.language);
+        openFile(fileId, node.name, `// Failed to load file: ${message}`, node.language, false);
       }
     }
   }, [isFolder, node.id, node.name, node.language, nodePath, toggleFolder, selectFile, openFile]);

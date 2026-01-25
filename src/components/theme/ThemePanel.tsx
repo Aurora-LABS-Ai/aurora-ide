@@ -35,22 +35,54 @@ const THEME_TEMPLATE: ThemeFile = {
 
 export const ThemePanel: React.FC = () => {
     const { themes, activeThemeId, setActiveTheme, importTheme, isLoading, error } = useThemeStore();
-    const [activeTab, setActiveTab] = useState<TabType>('themes');
+    const [activeTab, setActiveTab] = useState<TabType>(() => {
+        // Restore from localStorage
+        const saved = localStorage.getItem('theme-panel-active-tab');
+        return (saved === 'themes' || saved === 'editor') ? saved : 'themes';
+    });
     const [previewThemeId, setPreviewThemeId] = useState<string | null>(null);
     const committedThemeIdRef = useRef<string>(activeThemeId);
     
-    const [editorState, setEditorState] = useState<EditorState>({
-        jsonInput: JSON.stringify(THEME_TEMPLATE, null, 2),
-        parseError: null,
-        isPreviewing: false,
-        previewTheme: null,
-        saveStatus: 'idle',
-        saveError: null
+    const [editorState, setEditorState] = useState<EditorState>(() => {
+        // Restore editor state from localStorage
+        const saved = localStorage.getItem('theme-panel-editor-state');
+        if (saved) {
+            try {
+                return JSON.parse(saved);
+            } catch {
+                return {
+                    jsonInput: JSON.stringify(THEME_TEMPLATE, null, 2),
+                    parseError: null,
+                    isPreviewing: false,
+                    previewTheme: null,
+                    saveStatus: 'idle',
+                    saveError: null
+                };
+            }
+        }
+        return {
+            jsonInput: JSON.stringify(THEME_TEMPLATE, null, 2),
+            parseError: null,
+            isPreviewing: false,
+            previewTheme: null,
+            saveStatus: 'idle',
+            saveError: null
+        };
     });
 
     useEffect(() => {
         committedThemeIdRef.current = activeThemeId;
     }, [activeThemeId]);
+
+    // Persist active tab to localStorage
+    useEffect(() => {
+        localStorage.setItem('theme-panel-active-tab', activeTab);
+    }, [activeTab]);
+
+    // Persist editor state to localStorage
+    useEffect(() => {
+        localStorage.setItem('theme-panel-editor-state', JSON.stringify(editorState));
+    }, [editorState]);
 
     const handleMouseEnter = (themeId: string) => {
         if (themeId !== previewThemeId) {
@@ -235,26 +267,42 @@ export const ThemePanel: React.FC = () => {
             </div>
 
             {/* Tab Content */}
-            {activeTab === 'themes' ? (
-                <ThemesTab
-                    themes={themes}
-                    activeThemeId={activeThemeId}
-                    previewThemeId={previewThemeId}
-                    committedThemeIdRef={committedThemeIdRef}
-                    onMouseEnter={handleMouseEnter}
-                    onMouseLeave={handleMouseLeaveList}
-                    onSelect={handleSelect}
-                />
-            ) : (
-                <EditorTab
-                    editorState={editorState}
-                    onJsonChange={handleJsonChange}
-                    onPreview={handlePreview}
-                    onCancelPreview={handleCancelPreview}
-                    onSave={handleSaveTheme}
-                    onLoadTemplate={handleLoadTemplate}
-                />
-            )}
+            <div className="flex-1 overflow-hidden">
+                {activeTab === 'themes' ? (
+                    <ThemesTab
+                        themes={themes}
+                        activeThemeId={activeThemeId}
+                        previewThemeId={previewThemeId}
+                        committedThemeIdRef={committedThemeIdRef}
+                        onMouseEnter={handleMouseEnter}
+                        onMouseLeave={handleMouseLeaveList}
+                        onSelect={handleSelect}
+                        onEdit={(theme) => {
+                            setEditorState(prev => ({
+                                ...prev,
+                                jsonInput: JSON.stringify({
+                                    name: theme.name,
+                                    type: theme.type,
+                                    author: theme.author,
+                                    version: theme.version,
+                                    colors: theme.colors,
+                                    tokenColors: theme.tokenColors
+                                }, null, 2)
+                            }));
+                            setActiveTab('editor');
+                        }}
+                    />
+                ) : (
+                    <EditorTab
+                        editorState={editorState}
+                        onJsonChange={handleJsonChange}
+                        onPreview={handlePreview}
+                        onCancelPreview={handleCancelPreview}
+                        onSave={handleSaveTheme}
+                        onLoadTemplate={handleLoadTemplate}
+                    />
+                )}
+            </div>
         </div>
     );
 };
@@ -267,6 +315,7 @@ interface ThemesTabProps {
     onMouseEnter: (themeId: string) => void;
     onMouseLeave: () => void;
     onSelect: (themeId: string) => void;
+    onEdit: (theme: ThemeDefinition) => void;
 }
 
 const ThemesTab: React.FC<ThemesTabProps> = ({
@@ -276,7 +325,8 @@ const ThemesTab: React.FC<ThemesTabProps> = ({
     committedThemeIdRef,
     onMouseEnter,
     onMouseLeave,
-    onSelect
+    onSelect,
+    onEdit
 }) => {
     return (
         <>
@@ -329,6 +379,16 @@ const ThemesTab: React.FC<ThemesTabProps> = ({
                                         </span>
                                     </div>
                                 </div>
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onEdit(theme);
+                                    }}
+                                    className="p-1.5 rounded-md hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors opacity-0 group-hover:opacity-100"
+                                    title="Edit theme"
+                                >
+                                    <PenLine size={14} />
+                                </button>
                             </div>
 
                             {/* Mini Preview Strip */}
@@ -370,6 +430,79 @@ const EditorTab: React.FC<EditorTabProps> = ({
     onLoadTemplate
 }) => {
     const { jsonInput, parseError, isPreviewing, previewTheme, saveStatus, saveError } = editorState;
+    const [showVisualEditor, setShowVisualEditor] = useState(true);
+    const [editedColors, setEditedColors] = useState<Record<string, string>>({});
+
+    // Parse theme colors from JSON
+    const themeColors = React.useMemo(() => {
+        try {
+            const parsed = JSON.parse(jsonInput) as ThemeFile;
+            return parsed.colors || {};
+        } catch {
+            return {};
+        }
+    }, [jsonInput]);
+
+    // Flatten colors for easier editing
+    const flatColors = React.useMemo(() => {
+        const colors: Record<string, { path: string; value: string; category: string }> = {};
+        
+        const flatten = (obj: any, prefix: string = '', category: string = '') => {
+            for (const key in obj) {
+                const value = obj[key];
+                const fullPath = prefix ? `${prefix}.${key}` : key;
+                if (typeof value === 'string' && value.startsWith('#')) {
+                    colors[fullPath] = { path: fullPath, value, category };
+                } else if (typeof value === 'object' && value !== null) {
+                    flatten(value, fullPath, category || key);
+                }
+            }
+        };
+        
+        flatten(themeColors);
+        return colors;
+    }, [themeColors]);
+
+    // Handle color change
+    const handleColorChange = (path: string, value: string) => {
+        setEditedColors(prev => ({ ...prev, [path]: value }));
+        
+        // Update JSON with new color
+        try {
+            const parsed = JSON.parse(jsonInput) as ThemeFile;
+            const pathParts = path.split('.');
+            let current: any = parsed.colors;
+            
+            for (let i = 0; i < pathParts.length - 1; i++) {
+                current = current[pathParts[i]];
+            }
+            
+            current[pathParts[pathParts.length - 1]] = value;
+            
+            const newJson = JSON.stringify(parsed, null, 2);
+            onJsonChange(newJson);
+            
+            // Auto-preview if valid
+            if (!parseError) {
+                onPreview();
+            }
+        } catch (e) {
+            console.error('Error updating color:', e);
+        }
+    };
+
+    // Group colors by category
+    const groupedColors = React.useMemo(() => {
+        const groups: Record<string, typeof flatColors> = {};
+        for (const [key, color] of Object.entries(flatColors)) {
+            const category = color.category || 'other';
+            if (!groups[category]) {
+                groups[category] = {};
+            }
+            groups[category][key] = color;
+        }
+        return groups;
+    }, [flatColors]);
 
     return (
         <div className="flex flex-col h-full">
@@ -379,15 +512,23 @@ const EditorTab: React.FC<EditorTabProps> = ({
                     <div>
                         <span className="text-sm font-semibold uppercase tracking-wider">Theme Editor</span>
                         <div className="text-[10px] text-text-secondary mt-1">
-                            Paste JSON to preview and save
+                            {showVisualEditor ? 'Visual editor - click colors to edit' : 'Paste JSON to preview and save'}
                         </div>
                     </div>
-                    <button
-                        onClick={onLoadTemplate}
-                        className="text-[10px] px-2 py-1 rounded bg-secondary/50 hover:bg-secondary text-text-secondary hover:text-text-primary transition-colors"
-                    >
-                        Load Template
-                    </button>
+                    <div className="flex gap-2">
+                        <button
+                            onClick={() => setShowVisualEditor(!showVisualEditor)}
+                            className="text-[10px] px-2 py-1 rounded bg-secondary/50 hover:bg-secondary text-text-secondary hover:text-text-primary transition-colors"
+                        >
+                            {showVisualEditor ? 'Show JSON' : 'Show Visual'}
+                        </button>
+                        <button
+                            onClick={onLoadTemplate}
+                            className="text-[10px] px-2 py-1 rounded bg-secondary/50 hover:bg-secondary text-text-secondary hover:text-text-primary transition-colors"
+                        >
+                            Load Template
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -407,54 +548,92 @@ const EditorTab: React.FC<EditorTabProps> = ({
                 </div>
             )}
 
-            {/* JSON Textarea */}
-            <div className="flex-1 p-3 overflow-hidden flex flex-col">
-                <textarea
-                    value={jsonInput}
-                    onChange={(e) => onJsonChange(e.target.value)}
-                    placeholder="Paste your theme JSON here..."
-                    className={clsx(
-                        "flex-1 w-full p-3 rounded-lg border font-mono text-[11px] leading-relaxed resize-none",
-                        "bg-input/50 focus:outline-none focus:ring-1 transition-all",
-                        parseError
-                            ? "border-error/50 focus:ring-error/50 focus:border-error"
-                            : "border-border focus:ring-primary/50 focus:border-primary"
+            {/* Visual Editor */}
+            {showVisualEditor ? (
+                <div className="flex-1 p-3 overflow-y-auto">
+                    {Object.entries(groupedColors).map(([category, colors]) => (
+                        <div key={category} className="mb-4">
+                            <div className="text-xs font-semibold uppercase tracking-wider text-text-secondary mb-2">
+                                {category}
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                                {Object.entries(colors).map(([path, color]) => {
+                                    const currentValue = editedColors[path] || color.value;
+                                    return (
+                                        <div key={path} className="flex items-center gap-2">
+                                            <input
+                                                type="color"
+                                                value={currentValue}
+                                                onChange={(e) => handleColorChange(path, e.target.value)}
+                                                className="w-8 h-8 rounded cursor-pointer border-0"
+                                                title={path}
+                                            />
+                                            <div className="flex-1 min-w-0">
+                                                <input
+                                                    type="text"
+                                                    value={currentValue}
+                                                    onChange={(e) => handleColorChange(path, e.target.value)}
+                                                    className="w-full px-2 py-1 rounded text-[10px] font-mono bg-input/50 border border-border focus:border-primary focus:outline-none"
+                                                    placeholder="#000000"
+                                                />
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            ) : (
+                /* JSON Textarea */
+                <div className="flex-1 p-3 overflow-hidden flex flex-col">
+                    <textarea
+                        value={jsonInput}
+                        onChange={(e) => onJsonChange(e.target.value)}
+                        placeholder="Paste your theme JSON here..."
+                        className={clsx(
+                            "flex-1 w-full p-3 rounded-lg border font-mono text-[11px] leading-relaxed resize-none",
+                            "bg-input/50 focus:outline-none focus:ring-1 transition-all",
+                            parseError
+                                ? "border-error/50 focus:ring-error/50 focus:border-error"
+                                : "border-border focus:ring-primary/50 focus:border-primary"
+                        )}
+                        spellCheck={false}
+                    />
+
+                    {/* Error Display */}
+                    {parseError && (
+                        <div className="mt-2 p-2 rounded bg-error/10 border border-error/30">
+                            <div className="flex items-start gap-2">
+                                <AlertCircle size={14} className="text-error flex-shrink-0 mt-0.5" />
+                                <pre className="text-[10px] text-error whitespace-pre-wrap break-words flex-1">
+                                    {parseError}
+                                </pre>
+                            </div>
+                        </div>
                     )}
-                    spellCheck={false}
-                />
 
-                {/* Error Display */}
-                {parseError && (
-                    <div className="mt-2 p-2 rounded bg-error/10 border border-error/30">
-                        <div className="flex items-start gap-2">
-                            <AlertCircle size={14} className="text-error flex-shrink-0 mt-0.5" />
-                            <pre className="text-[10px] text-error whitespace-pre-wrap break-words flex-1">
-                                {parseError}
-                            </pre>
+                    {/* Save Error */}
+                    {saveError && (
+                        <div className="mt-2 p-2 rounded bg-error/10 border border-error/30">
+                            <div className="flex items-start gap-2">
+                                <AlertCircle size={14} className="text-error flex-shrink-0 mt-0.5" />
+                                <span className="text-[10px] text-error">{saveError}</span>
+                            </div>
                         </div>
-                    </div>
-                )}
+                    )}
 
-                {/* Save Error */}
-                {saveError && (
-                    <div className="mt-2 p-2 rounded bg-error/10 border border-error/30">
-                        <div className="flex items-start gap-2">
-                            <AlertCircle size={14} className="text-error flex-shrink-0 mt-0.5" />
-                            <span className="text-[10px] text-error">{saveError}</span>
+                    {/* Success Message */}
+                    {saveStatus === 'success' && (
+                        <div className="mt-2 p-2 rounded bg-success/10 border border-success/30">
+                            <div className="flex items-center gap-2">
+                                <CheckCircle2 size={14} className="text-success" />
+                                <span className="text-[10px] text-success">Theme saved successfully!</span>
+                            </div>
                         </div>
-                    </div>
-                )}
-
-                {/* Success Message */}
-                {saveStatus === 'success' && (
-                    <div className="mt-2 p-2 rounded bg-success/10 border border-success/30">
-                        <div className="flex items-center gap-2">
-                            <CheckCircle2 size={14} className="text-success" />
-                            <span className="text-[10px] text-success">Theme saved successfully!</span>
-                        </div>
-                    </div>
-                )}
-            </div>
+                    )}
+                </div>
+            )}
 
             {/* Action Buttons */}
             <div className="p-3 border-t border-border flex gap-2">

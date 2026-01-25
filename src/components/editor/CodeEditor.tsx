@@ -20,7 +20,7 @@
  * See: src/services/theme-service.ts for theme utilities
  */
 
-import React, { useMemo, useEffect, useRef } from 'react';
+import React, { useMemo, useEffect, useRef, useState } from 'react';
 import Editor, { useMonaco, type OnMount } from '@monaco-editor/react';
 import { useEditorStore } from '../../store/useEditorStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
@@ -29,12 +29,17 @@ import { useUiStore } from '../../store/useUiStore';
 import { themeService, getMonacoThemeId } from '../../services/theme-service';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { isTauri } from '../../lib/tauri';
-import { Search, Settings } from 'lucide-react';
+import { Search, Settings, Eye, FileCode, Columns } from 'lucide-react';
 import { BrowserTab } from './BrowserTab';
+import { MarkdownPreview } from './MarkdownPreview';
 import { setMonacoInstance } from '../../tools/executors/editor-executors';
 import { setActiveMonacoEditor } from '../../lib/monaco-editor-ref';
+import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
+const MARKDOWN_EXTS = new Set(['md', 'markdown', 'mdown', 'mkdn', 'mkd']);
+
+type ViewMode = 'raw' | 'preview' | 'split';
 
 export const CodeEditor: React.FC = () => {
   const { tabs, activeTabId, updateTabContent, fontSize } = useEditorStore();
@@ -43,6 +48,8 @@ export const CodeEditor: React.FC = () => {
   const activeTheme = useMemo(() => themes.find(t => t.id === activeThemeId) || themes[0], [themes, activeThemeId]);
   const monaco = useMonaco();
   const diagnosticsConfigured = useRef(false);
+  
+  const [viewMode, setViewMode] = useState<ViewMode>('raw');
 
   // Store Monaco editor instance for programmatic undo/redo
   const handleEditorMount: OnMount = (editor) => {
@@ -139,11 +146,24 @@ export const CodeEditor: React.FC = () => {
     return !!ext && IMAGE_EXTS.has(ext);
   }, [activeTab]);
 
+  const isMarkdown = useMemo(() => {
+    if (!activeTab?.path) return false;
+    const ext = activeTab.path.split('.').pop()?.toLowerCase();
+    return !!ext && MARKDOWN_EXTS.has(ext);
+  }, [activeTab]);
+
   const imageSrc = useMemo(() => {
     if (!isImage || !activeTab?.path) return null;
     if (!isTauri()) return null;
     return convertFileSrc(activeTab.path);
   }, [isImage, activeTab]);
+
+  // Reset view mode when switching away from markdown files
+  useEffect(() => {
+    if (!isMarkdown && viewMode !== 'raw') {
+      setViewMode('raw');
+    }
+  }, [isMarkdown, viewMode]);
 
   if (!activeTab) {
     const openSettings = () => useUiStore.getState().setSettingsOpen(true);
@@ -190,6 +210,17 @@ export const CodeEditor: React.FC = () => {
     );
   }
 
+  if (activeTab.isLoading) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-text-secondary bg-editor">
+        <div className="flex flex-col items-center gap-2">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary/50 border-t-primary"></div>
+          <p className="text-sm">Loading file...</p>
+        </div>
+      </div>
+    );
+  }
+
   if (isImage) {
     return (
       <div className="flex-1 bg-editor overflow-auto flex items-center justify-center">
@@ -220,43 +251,141 @@ export const CodeEditor: React.FC = () => {
 
   return (
     <div className="flex-1 bg-editor overflow-hidden relative flex flex-col">
-      {/* Monaco Editor */}
-      <div className="flex-1 relative overflow-hidden">
-        <Editor
-          height="100%"
-          path={activeTab.path}
-          defaultLanguage={activeTab.language}
-          language={activeTab.language}
-          defaultValue={activeTab.content}
-          value={activeTab.content}
-          theme={activeTheme ? getMonacoThemeId(activeTheme) : 'aurora-dark'}
-          onMount={handleEditorMount}
-          onChange={(value) => {
-            if (value !== undefined) {
-              updateTabContent(activeTab.id, value);
-            }
-          }}
-          options={{
-            minimap: { enabled: !activeTab.isLargeFile },
-            fontSize: fontSize,
-            scrollBeyondLastLine: false,
-            automaticLayout: true,
-            wordWrap: wrapMode ? 'on' : 'off',
-            wrappingIndent: 'same',
-            wrappingStrategy: 'advanced',
-            padding: { top: 16, bottom: 16 },
-            fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace",
-            fontLigatures: true,
-            lineNumbers: 'on',
-            renderWhitespace: 'selection',
-            tabSize: 2,
-            cursorBlinking: 'smooth',
-            smoothScrolling: !activeTab.isLargeFile,
-            renderValidationDecorations: activeTab.isLargeFile ? 'off' : 'on',
-            renderLineHighlight: activeTab.isLargeFile ? 'none' : 'all',
-          }}
-        />
-      </div>
+      {/* View Mode Toggle for Markdown Files */}
+      {isMarkdown && (
+        <div className="h-8 border-b border-border flex items-center justify-between px-3 bg-sidebar">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setViewMode('raw')}
+              className={`flex items-center gap-1.5 px-2 py-1 text-[11px] rounded transition-colors ${
+                viewMode === 'raw'
+                  ? 'bg-primary/20 text-primary font-medium'
+                  : 'text-text-secondary hover:bg-input/50 hover:text-text-primary'
+              }`}
+              title="Raw markdown"
+            >
+              <FileCode size={12} />
+              <span>Raw</span>
+            </button>
+            <button
+              onClick={() => setViewMode('preview')}
+              className={`flex items-center gap-1.5 px-2 py-1 text-[11px] rounded transition-colors ${
+                viewMode === 'preview'
+                  ? 'bg-primary/20 text-primary font-medium'
+                  : 'text-text-secondary hover:bg-input/50 hover:text-text-primary'
+              }`}
+              title="Preview"
+            >
+              <Eye size={12} />
+              <span>Preview</span>
+            </button>
+            <button
+              onClick={() => setViewMode('split')}
+              className={`flex items-center gap-1.5 px-2 py-1 text-[11px] rounded transition-colors ${
+                viewMode === 'split'
+                  ? 'bg-primary/20 text-primary font-medium'
+                  : 'text-text-secondary hover:bg-input/50 hover:text-text-primary'
+              }`}
+              title="Split view"
+            >
+              <Columns size={12} />
+              <span>Split</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Content Area */}
+      {viewMode === 'raw' || !isMarkdown ? (
+        <div className="flex-1 relative overflow-hidden">
+          <Editor
+            height="100%"
+            path={activeTab.path}
+            defaultLanguage={activeTab.language}
+            language={activeTab.language}
+            defaultValue={activeTab.content}
+            value={activeTab.content}
+            theme={activeTheme ? getMonacoThemeId(activeTheme) : 'aurora-dark'}
+            onMount={handleEditorMount}
+            onChange={(value) => {
+              if (value !== undefined) {
+                updateTabContent(activeTab.id, value);
+              }
+            }}
+            options={{
+              minimap: { enabled: !activeTab.isLargeFile },
+              fontSize: fontSize,
+              scrollBeyondLastLine: false,
+              automaticLayout: true,
+              wordWrap: wrapMode ? 'on' : 'off',
+              wrappingIndent: 'same',
+              wrappingStrategy: 'advanced',
+              padding: { top: 16, bottom: 16 },
+              fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace",
+              fontLigatures: true,
+              lineNumbers: 'on',
+              renderWhitespace: 'selection',
+              tabSize: 2,
+              cursorBlinking: 'smooth',
+              smoothScrolling: !activeTab.isLargeFile,
+              renderValidationDecorations: activeTab.isLargeFile ? 'off' : 'on',
+              renderLineHighlight: activeTab.isLargeFile ? 'none' : 'all',
+            }}
+          />
+        </div>
+      ) : viewMode === 'preview' && isMarkdown ? (
+        <div className="flex-1 overflow-auto p-6">
+          <MarkdownPreview content={activeTab.content} />
+        </div>
+      ) : (
+        // Split view
+        <PanelGroup direction="horizontal" className="flex-1">
+          <Panel defaultSize={50} minSize={20} maxSize={80}>
+            <div className="h-full overflow-hidden">
+              <Editor
+                height="100%"
+                path={activeTab.path}
+                defaultLanguage={activeTab.language}
+                language={activeTab.language}
+                defaultValue={activeTab.content}
+                value={activeTab.content}
+                theme={activeTheme ? getMonacoThemeId(activeTheme) : 'aurora-dark'}
+                onMount={handleEditorMount}
+                onChange={(value) => {
+                  if (value !== undefined) {
+                    updateTabContent(activeTab.id, value);
+                  }
+                }}
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: fontSize,
+                  scrollBeyondLastLine: false,
+                  automaticLayout: true,
+                  wordWrap: wrapMode ? 'on' : 'off',
+                  wrappingIndent: 'same',
+                  wrappingStrategy: 'advanced',
+                  padding: { top: 16, bottom: 16 },
+                  fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace",
+                  fontLigatures: true,
+                  lineNumbers: 'on',
+                  renderWhitespace: 'selection',
+                  tabSize: 2,
+                  cursorBlinking: 'smooth',
+                  smoothScrolling: false,
+                  renderValidationDecorations: 'on',
+                  renderLineHighlight: 'all',
+                }}
+              />
+            </div>
+          </Panel>
+          <PanelResizeHandle className="w-1 hover:bg-primary/50 transition-colors cursor-col-resize" />
+          <Panel defaultSize={50} minSize={20} maxSize={80}>
+            <div className="h-full overflow-auto p-6">
+              <MarkdownPreview content={activeTab.content} />
+            </div>
+          </Panel>
+        </PanelGroup>
+      )}
     </div>
   );
 };

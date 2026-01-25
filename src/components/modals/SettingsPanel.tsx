@@ -25,7 +25,7 @@ import { useUiStore } from '../../store/useUiStore';
 import { useSettingsStore, type LLMProvider } from '../../store/useSettingsStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useCheckpointStore } from '../../store/useCheckpointStore';
-import { X, Server, Layout, Shield, Eye, EyeOff, Plus, Trash2, ChevronDown, Palette, Database, Plug, Terminal, CheckCircle2, AlertCircle, History } from 'lucide-react';
+import { X, Server, Layout, Shield, Eye, EyeOff, Plus, Trash2, ChevronDown, Palette, Database, Plug, Terminal, CheckCircle2, AlertCircle, History, Info, Sparkles, BookOpen, Wrench, Heart } from 'lucide-react';
 import clsx from 'clsx';
 import { ToolSettingsTab } from './ToolSettingsTab';
 import { ThemeSettingsTab } from './ThemeSettingsTab';
@@ -514,7 +514,7 @@ export const SettingsPanel: React.FC = () => {
 
   // Each provider has its own supportsThinking, defaultTemperature, and defaultMaxTokens
 
-  const [activeTab, setActiveTab] = useState<'providers' | 'tools' | 'general' | 'themes' | 'semantic' | 'mcp'>('providers');
+  const [activeTab, setActiveTab] = useState<'providers' | 'tools' | 'general' | 'themes' | 'semantic' | 'mcp' | 'about'>('providers');
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [isAddingProvider, setIsAddingProvider] = useState(false);
@@ -614,6 +614,7 @@ export const SettingsPanel: React.FC = () => {
             { id: 'themes', label: 'Appearance', icon: Palette },
             { id: 'tools', label: 'Tools', icon: Shield },
             { id: 'general', label: 'General', icon: Layout },
+            { id: 'about', label: 'About', icon: Info },
           ].map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -638,7 +639,8 @@ export const SettingsPanel: React.FC = () => {
                   activeTab === 'semantic' ? 'Semantic Search' :
                     activeTab === 'themes' ? 'Appearance & Theme' :
                       activeTab === 'tools' ? 'Tool Settings' :
-                        'General Settings'}
+                        activeTab === 'about' ? 'About Aurora' :
+                          'General Settings'}
             </h2>
             <button
               onClick={() => setSettingsOpen(false)}
@@ -867,6 +869,134 @@ export const SettingsPanel: React.FC = () => {
 
                 {/* Checkpoint Settings Section */}
                 <CheckpointSettings />
+              </div>
+            )}
+
+            {/* ABOUT TAB */}
+            {activeTab === 'about' && (
+              <div className="space-y-4">
+                {/* Hero Section */}
+                <div className="p-6 border border-border rounded-lg bg-titlebar text-center">
+                  <h1 className="text-3xl font-bold mb-2" style={{ fontFamily: 'Georgia, serif' }}>
+                    Aurora
+                  </h1>
+                  <p className="text-sm mb-4" style={{ fontFamily: 'Georgia, serif', fontStyle: 'italic' }}>
+                    AI-Powered Agentic Code Editor
+                  </p>
+                  <div className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-primary/20 text-primary text-xs font-medium">
+                    <Heart className="w-3 h-3" />
+                    Made with Love for the Agent World
+                  </div>
+                </div>
+
+                {/* Author Section */}
+                <div className="p-4 border border-border rounded-lg bg-titlebar">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-12 h-12 rounded-full bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center text-white text-xl font-bold" style={{ fontFamily: 'Georgia, serif' }}>
+                      A
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-bold" style={{ fontFamily: 'Georgia, serif' }}>
+                        Alvan
+                      </h3>
+                      <p className="text-xs text-text-secondary" style={{ fontFamily: 'monospace' }}>
+                        Creator & Developer
+                      </p>
+                    </div>
+                  </div>
+                  <p className="text-sm text-text-secondary" style={{ fontFamily: 'Georgia, serif' }}>
+                    This project is developed by <span className="font-bold text-primary">Alvan</span> with passion for building tools that empower developers in the age of AI agents.
+                  </p>
+                </div>
+
+                {/* Mission Section */}
+                <div className="p-4 border border-border rounded-lg bg-titlebar">
+                  <h3 className="text-sm font-bold mb-2" style={{ fontFamily: 'Georgia, serif' }}>
+                    Our Mission
+                  </h3>
+                  <p className="text-sm text-text-secondary mb-3" style={{ fontFamily: 'Georgia, serif' }}>
+                    Aurora is a free, open-source code editor designed for the agentic world. We believe in building tools that enhance developer productivity while maintaining the freedom to innovate.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-success/20 text-success text-xs font-medium" style={{ fontFamily: 'monospace' }}>
+                      <Sparkles className="w-3 h-3" />
+                      Free for Everyone
+                    </div>
+                    <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-primary/20 text-primary text-xs font-medium" style={{ fontFamily: 'monospace' }}>
+                      <BookOpen className="w-3 h-3" />
+                      Open Source
+                    </div>
+                    <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-info/20 text-info text-xs font-medium" style={{ fontFamily: 'monospace' }}>
+                      <Wrench className="w-3 h-3" />
+                      Community Driven
+                    </div>
+                  </div>
+                </div>
+
+                {/* Features Section */}
+                <div className="p-4 border border-border rounded-lg bg-titlebar">
+                  <h3 className="text-sm font-bold mb-3" style={{ fontFamily: 'Georgia, serif' }}>
+                    Key Features
+                  </h3>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="flex items-start gap-2">
+                      <span className="text-primary mt-0.5" style={{ fontFamily: 'monospace' }}>▸</span>
+                      <div>
+                        <p className="text-xs font-medium text-text-primary" style={{ fontFamily: 'Georgia, serif' }}>
+                          AI-Native Design
+                        </p>
+                        <p className="text-[10px] text-text-secondary">
+                          Built from the ground up for AI agents
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="text-primary mt-0.5" style={{ fontFamily: 'monospace' }}>▸</span>
+                      <div>
+                        <p className="text-xs font-medium text-text-primary" style={{ fontFamily: 'Georgia, serif' }}>
+                          MCP Support
+                        </p>
+                        <p className="text-[10px] text-text-secondary">
+                          Extensible via Model Context Protocol
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="text-primary mt-0.5" style={{ fontFamily: 'monospace' }}>▸</span>
+                      <div>
+                        <p className="text-xs font-medium text-text-primary" style={{ fontFamily: 'Georgia, serif' }}>
+                          Git Integration
+                        </p>
+                        <p className="text-[10px] text-text-secondary">
+                          Full Git operations built-in
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="text-primary mt-0.5" style={{ fontFamily: 'monospace' }}>▸</span>
+                      <div>
+                        <p className="text-xs font-medium text-text-primary" style={{ fontFamily: 'Georgia, serif' }}>
+                          Beautiful Themes
+                        </p>
+                        <p className="text-[10px] text-text-secondary">
+                          VS Code-inspired with 50+ tokens
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Version Info */}
+                <div className="p-4 border border-border rounded-lg bg-titlebar">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-text-secondary" style={{ fontFamily: 'monospace' }}>
+                      Version 0.1.1
+                    </span>
+                    <span className="text-text-secondary" style={{ fontFamily: 'monospace' }}>
+                      © 2025 Alvan
+                    </span>
+                  </div>
+                </div>
               </div>
             )}
           </div>

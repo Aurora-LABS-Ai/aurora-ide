@@ -910,7 +910,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
                     // Use store action to properly set input content
                     setInputContent(prompt);
                   }}
-                  className="group flex items-center gap-3 px-3 py-2.5 text-left bg-input/50 hover:bg-input border border-border hover:border-border/80 rounded-xl transition-all duration-200"
+                  className="group flex items-center gap-3 px-3 py-2.5 text-left bg-input hover:bg-input border border-border hover:border-border/80 rounded-xl transition-all duration-200"
                 >
                   <div className={`p-1.5 rounded-lg bg-sidebar group-hover:bg-sidebar/80 transition-colors ${color}`}>
                     <Icon size={14} strokeWidth={2.5} />

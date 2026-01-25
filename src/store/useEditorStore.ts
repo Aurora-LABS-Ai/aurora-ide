@@ -10,12 +10,15 @@ interface EditorState {
   closeTab: (tabId: string) => void;
   fontSize: number;
 
+  // Mark tab as deleted (file was removed from filesystem)
+  markTabAsDeleted: (tabId: string) => void;
+
   // Browser tab actions
   openBrowserTab: (url?: string) => void;
 
   // Actions
-  openFile: (fileId: string, filename: string, content: string, language?: string) => void;
-  reloadTabContent: (tabId: string, content: string) => void;
+  openFile: (fileId: string, filename: string, content: string, language?: string, isLoading?: boolean) => void;
+  reloadTabContent: (tabId: string, content: string, isLoading?: boolean) => void;
 
   // Database actions
   restoreWorkspace: () => Promise<void>;
@@ -38,7 +41,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   activeTabId: null,
   fontSize: 14,
 
-  openFile: (fileId, filename, content, language = 'typescript') => {
+  openFile: (fileId, filename, content, language = 'typescript', isLoading = false) => {
     const { tabs, setActiveTab, reloadTabContent } = get();
     const existingTab = tabs.find(t => t.id === fileId);
 
@@ -60,6 +63,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       content,
       isDirty: false,
       isLargeFile,
+      isLoading,
       language: effectiveLanguage
     };
 
@@ -111,42 +115,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         }
       });
     }
-
-
-    // PERFORMANCE: Preload sibling files in background for faster subsequent opens
-    // This makes clicking between files in the same folder instant
-    queueMicrotask(async () => {
-      try {
-        const { preloadFiles } = await import('../lib/file-cache');
-        const { useWorkspaceStore } = await import('./useWorkspaceStore');
-        const { files } = useWorkspaceStore.getState();
-
-        // Find the parent folder and preload siblings
-        const dir = fileId.substring(0, fileId.lastIndexOf(fileId.includes('\\') ? '\\' : '/'));
-        const findSiblings = (nodes: typeof files): string[] => {
-          for (const node of nodes) {
-            if (node.path === dir && node.children) {
-              return node.children
-                .filter(c => c.type === 'file' && c.path !== fileId && c.path)
-                .slice(0, 5) // Preload up to 5 siblings
-                .map(c => c.path!);
-            }
-            if (node.children) {
-              const found = findSiblings(node.children);
-              if (found.length) return found;
-            }
-          }
-          return [];
-        };
-
-        const siblings = findSiblings(files);
-        if (siblings.length > 0) {
-          preloadFiles(siblings);
-        }
-      } catch {
-        // Ignore preload errors - this is just an optimization
-      }
-    });
     // NO saveWorkspace() here - save only on window close
   },
 
@@ -183,7 +151,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   })),
 
   // Reload content from external source (e.g., fs watcher) - doesn't mark dirty
-  reloadTabContent: (tabId, content) => {
+  reloadTabContent: (tabId, content, isLoading = false) => {
     return set(state => ({
       tabs: state.tabs.map(tab => {
         if (tab.id !== tabId) return tab;
@@ -192,13 +160,23 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           ...tab,
           content,
           isDirty: false,
+          isDeleted: false, // File exists again, clear deleted flag
           isLargeFile,
+          isLoading,
           language: isLargeFile ? 'plaintext' : tab.language,
         };
       })
     }));
   },
 
+  // Mark a tab as deleted when the underlying file is removed from filesystem
+  markTabAsDeleted: (tabId) => {
+    set(state => ({
+      tabs: state.tabs.map(tab =>
+        tab.id === tabId ? { ...tab, isDeleted: true } : tab
+      )
+    }));
+  },
 
   setFontSize: (fontSize) => set({ fontSize }),
 

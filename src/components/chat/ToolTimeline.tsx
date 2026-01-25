@@ -74,7 +74,7 @@ const FileExplorerView: React.FC<FileExplorerProps> = ({ files }) => {
 
       <div className="pl-2 mt-1 grid gap-0.5">
         {displayedFiles.map((file, idx) => (
-          <div key={idx} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-white/5 transition-colors">
+          <div key={idx} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-sidebar-item-hover transition-colors">
             {file.type === 'directory' ? (
               <Folder size={12} className="text-info/80 fill-info/10" />
             ) : (
@@ -82,7 +82,7 @@ const FileExplorerView: React.FC<FileExplorerProps> = ({ files }) => {
             )}
             <span className={cn(
               "truncate text-[10px]",
-              file.type === 'directory' ? "text-text-primary font-medium" : "text-text-secondary"
+              file.type === 'file' ? "text-text-secondary" : "text-text-primary font-medium"
             )}>
               {file.name}
             </span>
@@ -244,10 +244,10 @@ const AuroraSearchResultsView: React.FC<AuroraSearchResultsProps> = ({ results }
           const scorePercent = Math.round(result.score * 100);
 
           return (
-            <div key={idx} className="group border-b border-white/5 last:border-0">
+            <div key={idx} className="group border-b border-border last:border-0">
               <div
                 onClick={() => handleResultClick(result)}
-                className="w-full flex items-center gap-2 px-2 py-1 hover:bg-white/5 cursor-pointer transition-colors"
+                className="w-full flex items-center gap-2 px-2 py-1 hover:bg-sidebar-item-hover cursor-pointer transition-colors"
               >
                 <img
                   src={getIconUrl(getIconName(result.fileName, false))}
@@ -265,7 +265,7 @@ const AuroraSearchResultsView: React.FC<AuroraSearchResultsProps> = ({ results }
                 </div>
 
                 <div className="flex items-center gap-1 flex-shrink-0">
-                  <div className="w-4 h-0.5 bg-white/10 rounded-full overflow-hidden">
+                  <div className="w-4 h-0.5 bg-sidebar-item-hover rounded-full overflow-hidden">
                     <div
                       className="h-full bg-primary/70 rounded-full"
                       style={{ width: `${scorePercent}%` }}
@@ -289,7 +289,7 @@ const AuroraSearchResultsView: React.FC<AuroraSearchResultsProps> = ({ results }
 
               {isResultExpanded && (
                 <div className="px-2 pb-1.5">
-                  <pre className="text-[9px] font-mono text-text-secondary bg-black/20 rounded p-1.5 overflow-x-auto whitespace-pre-wrap break-words">
+                  <pre className="text-[9px] font-mono text-text-secondary bg-code-block rounded p-1.5 overflow-x-auto whitespace-pre-wrap break-words">
                     {result.content}
                   </pre>
                 </div>
@@ -394,7 +394,7 @@ const CodeView: React.FC<CodeViewProps> = ({
     <div className="relative mt-1 group">
       {/* File header bar */}
       {fileName && (
-        <div className="flex items-center gap-2 px-2 py-1 bg-black/30 rounded-t border-b border-white/5">
+        <div className="flex items-center gap-2 px-2 py-1 bg-code-block rounded-t border-b border-border">
           <img
             src={getIconUrl(getIconName(fileName, false))}
             alt=""
@@ -409,16 +409,16 @@ const CodeView: React.FC<CodeViewProps> = ({
         ref={contentRef}
         style={{ maxHeight: isExpanded ? '300px' : '160px' }}
         className={cn(
-          "font-mono text-[10px] leading-[1.6] bg-black/20 overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-white/10 hover:scrollbar-thumb-white/20 scrollbar-track-transparent",
+          "font-mono text-[10px] leading-[1.6] bg-code-block overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-white/10 hover:scrollbar-thumb-white/20 scrollbar-track-transparent",
           fileName ? "rounded-b" : "rounded"
         )}
       >
         <table className="w-full border-collapse">
           <tbody>
             {displayLines.map((line, idx) => (
-              <tr key={idx} className="hover:bg-white/5">
+              <tr key={idx} className="hover:bg-sidebar-item-hover">
                 {/* Line number */}
-                <td className="text-[9px] text-text-disabled/50 text-right pr-3 pl-2 py-0 select-none w-8 align-top border-r border-white/5">
+                <td className="text-[9px] text-text-disabled/50 text-right pr-3 pl-2 py-0 select-none w-8 align-top border-r border-border">
                   {idx + 1}
                 </td>
                 {/* Code content */}
@@ -442,7 +442,7 @@ const CodeView: React.FC<CodeViewProps> = ({
       {isLongContent && (
         <button
           onClick={(e) => { e.stopPropagation(); setIsExpanded(!isExpanded); }}
-          className="w-full text-center text-[9px] text-text-disabled hover:text-text-primary py-1 bg-black/20 rounded-b border-t border-white/5"
+          className="w-full text-center text-[9px] text-text-disabled hover:text-text-primary py-1 bg-code-block rounded-b border-t border-border"
         >
           {isExpanded ? 'Show Less' : `Show ${lines.length - 8} More Lines`}
         </button>
@@ -695,8 +695,8 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                 role={fileName ? "button" : undefined}
                 tabIndex={fileName ? 0 : undefined}
                 className={cn(
-                  "flex items-center gap-1.5 text-[10px] text-text-secondary px-1.5 py-0.5 rounded-sm bg-white/5 border border-white/5",
-                  fileName && "hover:bg-white/10 hover:border-white/10 transition-all cursor-pointer"
+                  "flex items-center gap-1.5 text-[10px] text-text-secondary px-1.5 py-0.5 rounded-sm bg-sidebar-item-hover border border-border",
+                  fileName && "hover:bg-sidebar-item-active hover:border-border transition-all cursor-pointer"
                 )}
               >
                 {isFolderTool ? (
@@ -742,7 +742,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
           animate={{ height: isOpen ? 'auto' : 0, opacity: isOpen ? 1 : 0 }}
           className="overflow-hidden"
         >
-          <div className="pt-2 pl-1 border-l border-white/5 ml-1">
+          <div className="pt-2 pl-1 border-l border-border ml-1">
             {/* Arguments List - Minimal */}
             {Object.keys(tool.args || {}).filter(k => !['content', 'path', 'raw', 'newContent', 'todos'].includes(k)).length > 0 && (
               <div className="flex flex-wrap gap-1 mb-2">
@@ -759,7 +759,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                       displayValue = String(v).substring(0, 30);
                     }
                     return (
-                      <span key={k} className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 text-text-secondary border border-white/5">
+                      <span key={k} className="text-[9px] px-1.5 py-0.5 rounded bg-sidebar-item-hover text-text-secondary border border-border">
                         <span className="opacity-60">{k}:</span> {displayValue}
                       </span>
                     );
@@ -772,7 +772,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
             {tool.name === 'todo_write' && tool.args?.todos && Array.isArray(tool.args.todos) && (
               <div className="mb-2 space-y-1">
                 {(tool.args.todos as Array<{ id?: string; content?: string; status?: string }>).map((todo, idx) => (
-                  <div key={todo.id || idx} className="flex items-center gap-2 text-[10px] px-2 py-1 rounded bg-white/5 border border-white/5">
+                  <div key={todo.id || idx} className="flex items-center gap-2 text-[10px] px-2 py-1 rounded bg-sidebar-item-hover border border-border">
                     <span className={cn(
                       "w-1.5 h-1.5 rounded-full flex-shrink-0",
                       todo.status === 'completed' ? "bg-task-completed" :

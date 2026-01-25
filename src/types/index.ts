@@ -46,8 +46,10 @@ export interface Tab {
   favicon?: string;
   filename: string;
   id: string;
+  isDeleted?: boolean;
   isDirty: boolean;
   isLargeFile?: boolean;
+  isLoading?: boolean;
   language: string;
   path: string;
 

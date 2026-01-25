@@ -23,6 +23,11 @@ export default {
         // === Sidebar & Panels ===
         sidebar: 'var(--aurora-sidebar-background)',
         'sidebar-foreground': 'var(--aurora-sidebar-foreground)',
+        'sidebar-item-hover': 'var(--aurora-sidebar-item-hover)',
+        'sidebar-item-active': 'var(--aurora-sidebar-item-active)',
+        'sidebar-item-selected': 'var(--aurora-sidebar-item-selected)',
+        'sidebar-section-header': 'var(--aurora-sidebar-section-header)',
+        'sidebar-border': 'var(--aurora-sidebar-border)',
         'panel-header': 'var(--aurora-title-bar-background)',
 
         // === Core UI ===

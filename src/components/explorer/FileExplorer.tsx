@@ -201,7 +201,7 @@ export const FileExplorer: React.FC = () => {
   return (
     <div className="h-full flex flex-col bg-sidebar">
       {/* Explorer Title Bar - Premium Header */}
-      <div className="h-9 px-4 flex items-center justify-between border-b border-white/5 bg-sidebar/50 backdrop-blur-sm select-none">
+      <div className="h-9 px-4 flex items-center justify-between border-b border-sidebar-border bg-sidebar select-none">
         <span className="text-[11px] font-bold text-text-secondary uppercase tracking-widest opacity-80">
           Explorer
         </span>
@@ -214,7 +214,7 @@ export const FileExplorer: React.FC = () => {
           }}
           className={`p-1 rounded-md transition-all duration-200 ${menuPosition
             ? 'text-text-primary'
-            : 'text-text-disabled hover:text-text-secondary hover:bg-white/5'
+            : 'text-text-disabled hover:text-text-secondary hover:bg-sidebar-item-hover'
             }`}
           style={{
             backgroundColor: menuPosition ? 'var(--aurora-sidebar-itemSelected)' : undefined
@@ -290,7 +290,7 @@ export const FileExplorer: React.FC = () => {
 
       {/* Search bar */}
       {showSearch && hasFolder && (
-        <div className="px-3 py-2 border-b border-border/40 bg-sidebar/80 backdrop-blur-sm animate-in slide-in-from-top-2 duration-200">
+        <div className="px-3 py-2 border-b border-sidebar-border bg-sidebar animate-in slide-in-from-top-2 duration-200">
           <div className="relative group">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-disabled group-focus-within:text-primary transition-colors" />
             <input
@@ -299,12 +299,12 @@ export const FileExplorer: React.FC = () => {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search files..."
-              className="w-full pl-8 pr-8 py-1.5 text-[12px] bg-input/50 hover:bg-input border border-border/50 rounded-md focus:border-primary/60 focus:outline-none focus:ring-1 focus:ring-primary/20 text-text-primary placeholder:text-text-disabled transition-all shadow-sm"
+              className="w-full pl-8 pr-8 py-1.5 text-[12px] bg-input hover:bg-input border border-border/50 rounded-md focus:border-primary/60 focus:outline-none focus:ring-1 focus:ring-primary/20 text-text-primary placeholder:text-text-disabled transition-all shadow-sm"
             />
             {searchQuery && (
               <button
                 onClick={() => setSearchQuery('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-disabled hover:text-text-primary transition-colors hover:bg-white/10 rounded-full p-0.5"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-disabled hover:text-text-primary transition-colors hover:bg-sidebar-item-hover rounded-full p-0.5"
               >
                 <X className="w-3 h-3" />
               </button>

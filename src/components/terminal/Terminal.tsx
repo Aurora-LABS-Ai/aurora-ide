@@ -660,20 +660,20 @@ export const TerminalPanel: React.FC = () => {
 
             {/* Dropdown Menu - Fixed Position to avoid clipping issues if container was overflow */}
             {showProfileMenu && (
-              <div className="absolute right-0 top-full mt-1 w-48 bg-sidebar border border-border rounded-md shadow-2xl z-[100] py-1 overflow-hidden ring-1 ring-black/20 animate-in fade-in zoom-in-95 duration-100 origin-top-right">
-                <div className="px-3 py-1.5 text-[10px] uppercase font-bold text-text-secondary tracking-wider bg-sidebar/50">
+              <div className="absolute right-0 top-full mt-1 w-48 bg-sidebar border border-border rounded-md shadow-2xl z-[100] py-1 overflow-hidden ring-1 ring-border animate-in fade-in zoom-in-95 duration-100 origin-top-right">
+                <div className="px-3 py-1.5 text-[10px] uppercase font-bold text-text-secondary tracking-wider bg-sidebar-section-header">
                   Select Profile
                 </div>
                 <button
                   onClick={() => handleNewSession('powershell')}
-                  className="w-full px-3 py-2 text-left text-[13px] text-text-primary hover:bg-primary/20 hover:text-white flex items-center gap-2.5 transition-colors"
+                  className="w-full px-3 py-2 text-left text-[13px] text-text-primary hover:bg-sidebar-item-hover flex items-center gap-2.5 transition-colors"
                 >
                   <TerminalIcon className="w-4 h-4 text-text-primary" />
                   <span>PowerShell</span>
                 </button>
                 <button
                   onClick={() => handleNewSession('bash')}
-                  className="w-full px-3 py-2 text-left text-[13px] text-text-primary hover:bg-primary/20 hover:text-white flex items-center gap-2.5 transition-colors"
+                  className="w-full px-3 py-2 text-left text-[13px] text-text-primary hover:bg-sidebar-item-hover flex items-center gap-2.5 transition-colors"
                 >
                   <ShellIcon profile="bash" className="w-4 h-4 text-[#f05033]" /> {/* Git color hint */}
                   <span>Git Bash</span>

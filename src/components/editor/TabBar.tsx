@@ -66,16 +66,23 @@ export const TabBar: React.FC = () => {
                 : "bg-tabs text-text-secondary hover:text-text-primary"
             )}
             onClick={() => setActiveTab(tab.id)}
+            title={tab.isDeleted ? `${tab.filename} (deleted)` : tab.filename}
           >
             {tab.type === 'browser' ? (
               <Globe className="w-3 h-3 text-info" />
             ) : (
-              <FileIcon name={tab.filename} className="w-3 h-3" />
+              <FileIcon name={tab.filename} className={clsx("w-3 h-3", tab.isDeleted && "opacity-50")} />
             )}
-            <span className="text-[12px] truncate max-w-[120px]">
+            <span className={clsx(
+              "text-[12px] truncate max-w-[120px]",
+              tab.isDeleted && "text-error line-through opacity-75"
+            )}>
               {tab.filename}
             </span>
-            {tab.isDirty && <div className="w-1.5 h-1.5 rounded-full bg-text-secondary group-hover:hidden" />}
+            {tab.isDeleted && (
+              <span className="text-[10px] text-error opacity-75">(deleted)</span>
+            )}
+            {tab.isDirty && !tab.isDeleted && <div className="w-1.5 h-1.5 rounded-full bg-text-secondary group-hover:hidden" />}
             <button
               className={clsx(
                 "p-0.5 rounded hover:bg-border opacity-0 group-hover:opacity-100 transition-opacity",

@@ -231,17 +231,14 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
       {/* Main Input Box */}
       <div
         className={clsx(
-          "rounded-xl transition-all duration-300 cursor-text",
-          isLoading && "shadow-primary/10"
+          "rounded-xl transition-all duration-300 cursor-text"
         )}
         style={{
           backgroundColor: 'var(--aurora-chat-input-background)',
           border: isFocused
             ? '1px solid color-mix(in srgb, var(--aurora-common-primary) 12%, transparent)'
             : '1px solid var(--aurora-chat-input-border)',
-          boxShadow: isFocused
-            ? '0 10px 32px rgba(0,0,0,0.35)'
-            : '0 6px 20px rgba(0,0,0,0.28)',
+          boxShadow: 'none',
         }}
         onClick={() => textareaRef.current?.focus()}
       >
@@ -345,7 +342,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
               <div className={clsx(
                 "w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300",
                 (content.trim() || attachedFiles.length > 0)
-                  ? "bg-gradient-to-br from-primary to-primary/80 shadow-lg shadow-primary/25 hover:scale-105"
+                  ? "bg-gradient-to-br from-primary to-primary/80 hover:scale-105"
                   : "bg-muted text-muted-foreground"
               )}>
                 <ArrowUp

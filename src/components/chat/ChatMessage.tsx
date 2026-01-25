@@ -21,6 +21,7 @@
  */
 
 import React, { useState, useCallback } from 'react';
+import { motion } from 'framer-motion';
 import type { Message, TimelineEvent } from '../../types';
 import { ThinkingBlock } from './ThinkingBlock';
 import { ToolTimeline } from './ToolTimeline';
@@ -47,7 +48,7 @@ const CopyButton: React.FC<{ text: string; className?: string }> = ({ text, clas
   return (
     <button
       onClick={handleCopy}
-      className={`p-1 rounded hover:bg-white/10 transition-all ${className}`}
+      className={`p-1 rounded hover:bg-sidebar-item-hover transition-all ${className}`}
       title={copied ? 'Copied!' : 'Copy message'}
     >
       {copied ? (
@@ -123,7 +124,12 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
 
   if (isUser) {
     return (
-      <div className="flex justify-end px-4 py-4 group">
+      <motion.div 
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, ease: "easeOut" }}
+        className="flex justify-end px-4 py-4 group"
+      >
         <div className="max-w-[85%] flex flex-col items-end min-w-0">
           <div className="flex gap-3 flex-row-reverse min-w-0 w-full">
             <div className="w-8 h-8 rounded-lg bg-input flex items-center justify-center shrink-0">
@@ -145,7 +151,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
             <CopyButton text={message.content} />
           </div>
         </div>
-      </div>
+      </motion.div>
     );
   }
 
@@ -162,7 +168,12 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
   const copyableText = getCopyableText();
 
   return (
-    <div className="px-4 py-4 group relative">
+    <motion.div 
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease: "easeOut" }}
+      className="px-4 py-4 group relative"
+    >
       {/* Avatar column */}
       <div className="absolute left-4 top-4 w-8 h-8 flex items-center justify-center shrink-0 overflow-hidden">
         <img src="/app-icon.svg" alt="Aurora" className="w-6 h-6 drop-shadow-sm" />
@@ -217,6 +228,14 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
                   <MarkdownRenderer content={message.content} isStreaming={isStreaming && isLastMessage} />
                 </div>
               )}
+
+              {/* Skeleton Loader for initial thinking/response */}
+              {isStreaming && isLastMessage && !message.content && !message.thinking && (!message.tools || message.tools.length === 0) && (!message.timeline || message.timeline.length === 0) && (
+                <div className="py-2 space-y-2 max-w-md animate-pulse opacity-60">
+                   <div className="h-3 bg-sidebar-item-hover rounded w-3/4"></div>
+                   <div className="h-3 bg-sidebar-item-hover rounded w-1/2"></div>
+                </div>
+              )}
             </>
           )}
 
@@ -234,6 +253,6 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
           </div>
         )}
       </div>
-    </div>
+    </motion.div>
   );
 };

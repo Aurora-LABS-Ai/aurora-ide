@@ -187,6 +187,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       updateMessageInThread(currentMessageIdRef.current, {
         timeline: [...timelineRef.current],
       });
+      // Broadcast to other windows for detached chat support
+      chatSyncBroadcast.broadcastStreamUpdate(currentMessageIdRef.current, timelineRef.current);
     }
   }, [updateMessageInThread]);
 
@@ -214,6 +216,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             updateMessageInThread(currentMessageIdRef.current, {
               timeline: [...timelineRef.current],
             });
+            // Broadcast to other windows for detached chat support
+            chatSyncBroadcast.broadcastStreamUpdate(currentMessageIdRef.current, timelineRef.current);
           }
         });
       }

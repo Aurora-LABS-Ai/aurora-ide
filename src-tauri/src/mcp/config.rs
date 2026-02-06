@@ -33,6 +33,9 @@ pub struct McpServerEntry {
     pub env: HashMap<String, String>,
     /// URL (for SSE)
     pub url: Option<String>,
+    /// Custom headers (for SSE)
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
     /// Whether enabled
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -108,6 +111,7 @@ impl McpConfig {
                     args: entry.args.clone(),
                     env: entry.env.clone(),
                     url: entry.url.clone(),
+                    headers: entry.headers.clone(),
                     enabled: entry.enabled,
                     auto_start: entry.auto_start,
                     auto_approve: entry.auto_approve,
@@ -128,6 +132,7 @@ impl McpConfig {
                     args: config.args.clone(),
                     env: config.env.clone(),
                     url: config.url.clone(),
+                    headers: config.headers.clone(),
                     enabled: config.enabled,
                     auto_start: config.auto_start,
                     auto_approve: config.auto_approve,
@@ -148,6 +153,7 @@ impl McpConfig {
             args: config.args.clone(),
             env: config.env.clone(),
             url: config.url.clone(),
+            headers: config.headers.clone(),
             enabled: config.enabled,
             auto_start: config.auto_start,
             auto_approve: config.auto_approve,
@@ -186,6 +192,7 @@ mod tests {
                 args: vec!["-y".to_string(), "@modelcontextprotocol/server-git".to_string()],
                 env: HashMap::new(),
                 url: None,
+                headers: HashMap::new(),
                 enabled: true,
                 auto_start: false,
                 auto_approve: true,

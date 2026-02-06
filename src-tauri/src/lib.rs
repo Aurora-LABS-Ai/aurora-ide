@@ -115,6 +115,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::chat::update_chat_state,
             commands::chat::update_chat_state,
             commands::chat::clear_chat_state,
+            commands::chat::broadcast_chat_event,
             // Theme commands
             commands::themes::get_custom_themes,
             commands::themes::save_custom_theme,

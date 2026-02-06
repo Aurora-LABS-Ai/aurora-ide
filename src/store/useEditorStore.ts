@@ -36,6 +36,11 @@ interface EditorState {
 // Workspace path tracking
 let currentWorkspacePath: string | null = null;
 let currentPanelSizes: PanelSizes | null = null;
+
+// File size thresholds for performance optimization (shared constants)
+const LARGE_FILE_THRESHOLD = 100 * 1024; // 100KB - disable most features, use plaintext
+const MEDIUM_FILE_THRESHOLD = 50 * 1024; // 50KB - disable some features but keep syntax highlighting
+
 export const useEditorStore = create<EditorState>((set, get) => ({
   tabs: [],
   activeTabId: null,
@@ -54,7 +59,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return;
     }
 
-    const isLargeFile = content.length > 2 * 1024 * 1024;
+    const isLargeFile = content.length > LARGE_FILE_THRESHOLD;
+    const isMediumFile = !isLargeFile && content.length > MEDIUM_FILE_THRESHOLD;
     const effectiveLanguage = isLargeFile ? 'plaintext' : language;
     const newTab: Tab = {
       id: fileId,
@@ -63,6 +69,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       content,
       isDirty: false,
       isLargeFile,
+      isMediumFile,
       isLoading,
       language: effectiveLanguage
     };
@@ -139,12 +146,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   updateTabContent: (tabId, content) => set(state => ({
     tabs: state.tabs.map(tab => {
       if (tab.id !== tabId) return tab;
-      const isLargeFile = content.length > 2 * 1024 * 1024;
+      const isLargeFile = content.length > LARGE_FILE_THRESHOLD;
+      const isMediumFile = !isLargeFile && content.length > MEDIUM_FILE_THRESHOLD;
       return {
         ...tab,
         content,
         isDirty: true,
         isLargeFile,
+        isMediumFile,
         language: isLargeFile ? 'plaintext' : tab.language,
       };
     })
@@ -155,13 +164,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     return set(state => ({
       tabs: state.tabs.map(tab => {
         if (tab.id !== tabId) return tab;
-        const isLargeFile = content.length > 2 * 1024 * 1024;
+        const isLargeFile = content.length > LARGE_FILE_THRESHOLD;
+        const isMediumFile = !isLargeFile && content.length > MEDIUM_FILE_THRESHOLD;
         return {
           ...tab,
           content,
           isDirty: false,
           isDeleted: false, // File exists again, clear deleted flag
           isLargeFile,
+          isMediumFile,
           isLoading,
           language: isLargeFile ? 'plaintext' : tab.language,
         };

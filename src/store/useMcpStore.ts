@@ -61,6 +61,7 @@ export interface McpServerConfig {
   name: string;
   transport: McpTransportType;
   url?: string;
+  headers: Record<string, string>;
 }
 
 export interface McpServerInfo {

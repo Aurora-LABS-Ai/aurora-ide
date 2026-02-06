@@ -57,6 +57,31 @@ pub fn set_chat_loading(
     Ok(())
 }
 
+/// Broadcast a generic chat event to all windows
+#[tauri::command]
+pub fn broadcast_chat_event(
+    app: AppHandle,
+    event_type: String,
+    payload: String,
+    source: String,
+) -> Result<(), String> {
+    // Broadcast to all windows
+    let _ = app.emit("chat-broadcast", BroadcastEvent {
+        event_type,
+        payload,
+        source,
+    });
+    
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BroadcastEvent {
+    pub event_type: String,
+    pub payload: String,
+    pub source: String,
+}
+
 /// Set current thread ID and broadcast to all windows
 #[tauri::command]
 pub fn set_current_thread(

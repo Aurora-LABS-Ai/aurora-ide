@@ -58,7 +58,9 @@ const editorOpenFileExecutor = async (args: Record<string, unknown>): Promise<st
       'py': 'python', 'go': 'go',
     };
     const language = langMap[ext] || 'plaintext';
-    const isLargeFile = content.length > 2 * 1024 * 1024;
+    // Must match threshold in useEditorStore.ts
+    const LARGE_FILE_THRESHOLD = 100 * 1024; // 100KB
+    const isLargeFile = content.length > LARGE_FILE_THRESHOLD;
 
     // Open file in editor using full path
     useEditorStore.getState().openFile(

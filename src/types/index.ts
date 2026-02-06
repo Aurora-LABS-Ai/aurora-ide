@@ -49,6 +49,7 @@ export interface Tab {
   isDeleted?: boolean;
   isDirty: boolean;
   isLargeFile?: boolean;
+  isMediumFile?: boolean;
   isLoading?: boolean;
   language: string;
   path: string;

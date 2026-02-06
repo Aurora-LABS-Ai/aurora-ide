@@ -14,7 +14,7 @@ node_modules
 dist
 dist-ssr
 *.local
-
+void-main
 # Tauri build artifacts
 src-tauri/target/
 # Note: Cargo.lock should be committed for applications

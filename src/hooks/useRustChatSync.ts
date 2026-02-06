@@ -26,6 +26,12 @@ interface ChatStateEvent {
     state: ChatState;
 }
 
+interface BroadcastEvent {
+    event_type: string;
+    payload: string;
+    source: string;
+}
+
 // Window identifier for this window
 const getWindowSource = (): string => {
     if (typeof window !== 'undefined') {
@@ -43,12 +49,14 @@ export function useRustChatSync() {
     const setPendingApproval = useChatStore((s) => s.setPendingApproval);
     const loadThread = useThreadStore((s) => s.loadThread);
     const clearCurrentThread = useThreadStore((s) => s.clearCurrentThread);
+    const updateMessageInThread = useThreadStore((s) => s.updateMessageInThread);
 
     // Listen for chat state changes from Rust
     useEffect(() => {
         if (!isTauri()) return;
 
         let unlisten: (() => void) | null = null;
+        let unlistenBroadcast: (() => void) | null = null;
 
         const setup = async () => {
             try {
@@ -70,6 +78,25 @@ export function useRustChatSync() {
                         loadThread(state.current_thread_id);
                     } else {
                         clearCurrentThread();
+                    }
+                });
+
+                // Listen for generic broadcasts (like stream updates)
+                unlistenBroadcast = await listen<BroadcastEvent>('chat-broadcast', (event) => {
+                    const { event_type, payload, source } = event.payload;
+                    const mySource = getWindowSource();
+
+                    if (source === mySource) return;
+
+                    if (event_type === 'stream-update') {
+                        try {
+                            const update = JSON.parse(payload);
+                            updateMessageInThread(update.messageId, {
+                                timeline: update.timeline
+                            });
+                        } catch (e) {
+                            console.error('[RustChatSync] Failed to parse stream update:', e);
+                        }
                     }
                 });
 
@@ -97,8 +124,15 @@ export function useRustChatSync() {
                     // Ignore cleanup errors
                 }
             }
+            if (unlistenBroadcast) {
+                try {
+                    unlistenBroadcast();
+                } catch {
+                    // Ignore cleanup errors
+                }
+            }
         };
-    }, [setLoading, setPendingApproval, loadThread, clearCurrentThread]);
+    }, [setLoading, setPendingApproval, loadThread, clearCurrentThread, updateMessageInThread]);
 
     // Helper functions to update state via Rust (broadcasts to all windows)
     const broadcastLoading = useCallback(async (isLoading: boolean) => {
@@ -202,6 +236,19 @@ export const chatSyncBroadcast = {
             });
         } catch (error) {
             console.error('[RustChatSync] Broadcast failed:', error);
+        }
+    },
+
+    async broadcastStreamUpdate(messageId: string, timeline: any[]) {
+        if (!isTauri()) return;
+        try {
+            await invoke('broadcast_chat_event', {
+                eventType: 'stream-update',
+                payload: JSON.stringify({ messageId, timeline }),
+                source: getWindowSource(),
+            });
+        } catch (error) {
+            console.error('[RustChatSync] Broadcast stream failed:', error);
         }
     },
 };

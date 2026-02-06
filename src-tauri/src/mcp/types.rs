@@ -42,6 +42,9 @@ pub struct McpServerConfig {
     pub env: HashMap<String, String>,
     /// URL for SSE transport
     pub url: Option<String>,
+    /// Custom headers for SSE transport
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
     /// Whether this server is enabled
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -69,6 +72,7 @@ impl McpServerConfig {
             args: Vec::new(),
             env: HashMap::new(),
             url: None,
+            headers: HashMap::new(),
             enabled: true,
             auto_start: false,
             auto_approve: false,
@@ -86,6 +90,7 @@ impl McpServerConfig {
             args: Vec::new(),
             env: HashMap::new(),
             url: Some(url.into()),
+            headers: HashMap::new(),
             enabled: true,
             auto_start: false,
             auto_approve: false,

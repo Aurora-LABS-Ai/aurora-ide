@@ -29,11 +29,107 @@ import {
   Check,
   Pencil,
   Save,
+  ShoppingBag,
+  Download,
 } from 'lucide-react';
 
 import clsx from 'clsx';
 import { TogglePill } from '../ui/TogglePill';
 import { DeleteConfirmDialog } from '../chat/DeleteConfirmDialog';
+
+// ============================================
+// MARKETPLACE DATA
+// ============================================
+
+interface MarketplaceItem {
+  id: string;
+  name: string;
+  description: string;
+  author: string;
+  transport: 'stdio' | 'sse';
+  command?: string;
+  args?: string[];
+  url?: string;
+  envExample?: string;
+}
+
+const MARKETPLACE_ITEMS: MarketplaceItem[] = [
+  {
+    id: 'git',
+    name: 'Git',
+    description: 'Git repository operations (read, commit, diff)',
+    author: 'Model Context Protocol',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-git', '.'],
+  },
+  {
+    id: 'postgres',
+    name: 'PostgreSQL',
+    description: 'Read-only database access for querying tables and schemas',
+    author: 'Model Context Protocol',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://user:password@localhost/db'],
+  },
+  {
+    id: 'filesystem',
+    name: 'Filesystem',
+    description: 'Secure file access outside the workspace',
+    author: 'Model Context Protocol',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '/path/to/allowed/dir'],
+  },
+  {
+    id: 'github',
+    name: 'GitHub',
+    description: 'Search, PRs, Issues, and file operations',
+    author: 'Model Context Protocol',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-github'],
+    envExample: 'GITHUB_PERSONAL_ACCESS_TOKEN=your_token',
+  },
+  {
+    id: 'sqlite',
+    name: 'SQLite',
+    description: 'SQLite database access and query execution',
+    author: 'Model Context Protocol',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-sqlite', 'my-db.sqlite'],
+  },
+  {
+    id: 'google-drive',
+    name: 'Google Drive',
+    description: 'Access files and folders in Google Drive',
+    author: 'Model Context Protocol',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-google-drive'],
+  },
+  {
+    id: 'slack',
+    name: 'Slack',
+    description: 'Read and post messages to Slack channels',
+    author: 'Model Context Protocol',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-slack'],
+    envExample: 'SLACK_BOT_TOKEN=xoxb-...\nSLACK_TEAM_ID=T...',
+  },
+  {
+    id: 'brave-search',
+    name: 'Brave Search',
+    description: 'Web search using Brave Search API',
+    author: 'Model Context Protocol',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-brave-search'],
+    envExample: 'BRAVE_API_KEY=your_key',
+  },
+];
 
 // ============================================
 // ADD SERVER FORM
@@ -42,22 +138,50 @@ import { DeleteConfirmDialog } from '../chat/DeleteConfirmDialog';
 type AddMode = 'form' | 'json';
 
 interface AddServerFormProps {
+  initialConfig?: Partial<McpServerConfig>;
   onSave: (config: Omit<McpServerConfig, 'id'>) => void;
   onCancel: () => void;
 }
 
-const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
+const AddServerForm: React.FC<AddServerFormProps> = ({ initialConfig, onSave, onCancel }) => {
   const [mode, setMode] = useState<AddMode>('form');
   
   // Form mode state
-  const [name, setName] = useState('');
-  const [transport, setTransport] = useState<McpTransportType>('stdio');
-  const [command, setCommand] = useState('');
-  const [args, setArgs] = useState('');
-  const [url, setUrl] = useState('');
-  const [envVars, setEnvVars] = useState('');
-  const [autoStart, setAutoStart] = useState(false);
-  const [autoApprove, setAutoApprove] = useState(true); // Default to auto-approve for convenience
+  const [name, setName] = useState(initialConfig?.name || '');
+  const [transport, setTransport] = useState<McpTransportType>(initialConfig?.transport || 'stdio');
+  const [command, setCommand] = useState(initialConfig?.command || '');
+  const [args, setArgs] = useState(initialConfig?.args?.join(' ') || '');
+  const [url, setUrl] = useState(initialConfig?.url || '');
+  const [envVars, setEnvVars] = useState(
+    initialConfig?.env 
+      ? Object.entries(initialConfig.env).map(([k, v]) => `${k}=${v}`).join('\n') 
+      : ''
+  );
+  const [headerVars, setHeaderVars] = useState(
+    initialConfig?.headers 
+      ? Object.entries(initialConfig.headers).map(([k, v]) => `${k}=${v}`).join('\n') 
+      : ''
+  );
+  const [autoStart, setAutoStart] = useState(initialConfig?.autoStart || false);
+  const [autoApprove, setAutoApprove] = useState(initialConfig?.autoApprove !== false);
+
+  // If initialConfig provided, switch to form mode by default
+  useEffect(() => {
+    if (initialConfig) {
+      setMode('form');
+      if (initialConfig.name) setName(initialConfig.name);
+      if (initialConfig.transport) setTransport(initialConfig.transport);
+      if (initialConfig.command) setCommand(initialConfig.command);
+      if (initialConfig.args) setArgs(initialConfig.args.join(' '));
+      if (initialConfig.url) setUrl(initialConfig.url);
+      if (initialConfig.env) {
+        setEnvVars(Object.entries(initialConfig.env).map(([k, v]) => `${k}=${v}`).join('\n'));
+      }
+      if (initialConfig.headers) {
+        setHeaderVars(Object.entries(initialConfig.headers).map(([k, v]) => `${k}=${v}`).join('\n'));
+      }
+    }
+  }, [initialConfig]);
 
   // JSON mode state
   const [jsonInput, setJsonInput] = useState('');
@@ -93,6 +217,17 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
       });
     }
 
+    // Parse header vars (KEY=VALUE format, one per line)
+    const headerObj: Record<string, string> = {};
+    if (headerVars.trim()) {
+      headerVars.split('\n').forEach((line) => {
+        const [key, ...valueParts] = line.split('=');
+        if (key && valueParts.length > 0) {
+          headerObj[key.trim()] = valueParts.join('=').trim();
+        }
+      });
+    }
+
     onSave({
       name: name.trim(),
       transport,
@@ -100,6 +235,7 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
       args: argsArray,
       env: envObj,
       url: transport === 'sse' ? url.trim() : undefined,
+      headers: headerObj,
       enabled: true,
       autoStart,
       autoApprove,
@@ -133,6 +269,7 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
             args: Array.isArray(cfg.args) ? cfg.args : [],
             env: typeof cfg.env === 'object' && cfg.env !== null ? cfg.env as Record<string, string> : {},
             url: cfg.url as string | undefined,
+            headers: typeof cfg.headers === 'object' && cfg.headers !== null ? cfg.headers as Record<string, string> : {},
             enabled: cfg.enabled !== false,
             autoStart: cfg.autoStart === true,
             autoApprove: cfg.autoApprove !== false, // Default to true
@@ -161,6 +298,7 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
         args: Array.isArray(parsed.args) ? parsed.args : [],
         env: typeof parsed.env === 'object' ? parsed.env : {},
         url: parsed.url,
+        headers: typeof parsed.headers === 'object' ? parsed.headers : {},
         enabled: parsed.enabled !== false,
         autoStart: parsed.autoStart === true,
         autoApprove: parsed.autoApprove !== false, // Default to true
@@ -278,6 +416,21 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
               className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary font-mono resize-none"
             />
           </div>
+
+          {transport === 'sse' && (
+            <div>
+              <label className="text-[10px] text-text-secondary block mb-0.5">
+                Headers (KEY=VALUE, one per line)
+              </label>
+              <textarea
+                value={headerVars}
+                onChange={(e) => setHeaderVars(e.target.value)}
+                placeholder="Authorization=Bearer token&#10;X-Custom-Header=value"
+                rows={2}
+                className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary font-mono resize-none"
+              />
+            </div>
+          )}
 
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
@@ -674,7 +827,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
                   className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-primary"
                 >
                   <option value="stdio">Stdio</option>
-                  <option value="sse">SSE (not yet supported)</option>
+                  <option value="sse">SSE (HTTP Server)</option>
                 </select>
               </div>
               {editTransport === 'stdio' ? (
@@ -854,13 +1007,86 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
 };
 
 // ============================================
+// MARKETPLACE CARD
+// ============================================
+
+interface MarketplaceCardProps {
+  item: MarketplaceItem;
+  isInstalled: boolean;
+  onInstall: (item: MarketplaceItem) => void;
+}
+
+const MarketplaceCard: React.FC<MarketplaceCardProps> = ({ item, isInstalled, onInstall }) => {
+  return (
+    <div className="border border-border rounded-lg bg-titlebar p-3 flex flex-col justify-between h-full">
+      <div>
+        <div className="flex items-start justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded bg-primary/10 flex items-center justify-center text-primary">
+              <Globe className="w-4 h-4" />
+            </div>
+            <div>
+              <h4 className="text-xs font-medium text-text-primary">{item.name}</h4>
+              <p className="text-[9px] text-text-secondary">by {item.author}</p>
+            </div>
+          </div>
+          {isInstalled && (
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-success/10 text-success flex items-center gap-1">
+              <Check className="w-2.5 h-2.5" />
+              Installed
+            </span>
+          )}
+        </div>
+        
+        <p className="text-[10px] text-text-secondary leading-relaxed mb-3 h-8 line-clamp-2">
+          {item.description}
+        </p>
+        
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-[9px] px-1.5 py-0.5 rounded bg-input text-text-secondary font-mono border border-border">
+            {item.transport}
+          </span>
+          {item.transport === 'stdio' && (
+            <span className="text-[9px] px-1.5 py-0.5 rounded bg-input text-text-disabled font-mono border border-border truncate max-w-[120px]">
+              {item.command}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <button
+        onClick={() => onInstall(item)}
+        disabled={isInstalled}
+        className={clsx(
+          "w-full py-1.5 rounded text-[10px] font-medium transition-colors flex items-center justify-center gap-1.5",
+          isInstalled
+            ? "bg-input text-text-disabled cursor-default"
+            : "bg-primary text-white hover:bg-primary/80"
+        )}
+      >
+        {isInstalled ? (
+          "Installed"
+        ) : (
+          <>
+            <Download className="w-3 h-3" />
+            Install
+          </>
+        )}
+      </button>
+    </div>
+  );
+};
+
+// ============================================
 // MAIN COMPONENT
 // ============================================
 
 export const McpSettingsTab: React.FC = () => {
   const { servers, isLoading, configPath, error, loadServers, refreshServers, getConfigPath, addServer } = useMcpStore();
+  const [activeTab, setActiveTab] = useState<'installed' | 'marketplace'>('installed');
   const [isAddingServer, setIsAddingServer] = useState(false);
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
+  const [installConfig, setInstallConfig] = useState<Partial<McpServerConfig> | undefined>(undefined);
 
   // Load servers on mount (only once, preserves connection state)
   useEffect(() => {
@@ -871,6 +1097,35 @@ export const McpSettingsTab: React.FC = () => {
   const handleAddServer = async (config: Omit<McpServerConfig, 'id'>) => {
     await addServer(config);
     setIsAddingServer(false);
+    setInstallConfig(undefined);
+  };
+
+  const handleInstall = (item: MarketplaceItem) => {
+    // Prepare config from marketplace item
+    const config: Partial<McpServerConfig> = {
+      name: item.name,
+      transport: item.transport,
+      command: item.command,
+      args: item.args || [],
+      url: item.url,
+      enabled: true,
+      autoStart: true,
+      autoApprove: true,
+    };
+    
+    // Add env example if present
+    if (item.envExample) {
+      const env: Record<string, string> = {};
+      item.envExample.split('\n').forEach(line => {
+        const [k, v] = line.split('=');
+        if (k && v) env[k] = v;
+      });
+      config.env = env;
+    }
+
+    setInstallConfig(config);
+    setIsAddingServer(true);
+    setActiveTab('installed');
   };
 
   const handleRefresh = () => {
@@ -910,72 +1165,143 @@ export const McpSettingsTab: React.FC = () => {
           >
             <RefreshCw className={clsx('w-3.5 h-3.5', isLoading && 'animate-spin')} />
           </button>
-          <button
-            onClick={() => setIsAddingServer(true)}
-            className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors"
-          >
-            <Plus className="w-3 h-3" />
-            Add Server
-          </button>
         </div>
       </div>
 
-      {/* Config file path - click to copy */}
-      {configPath && (
+      {/* Tabs */}
+      <div className="flex items-center gap-1 border-b border-border">
         <button
-          onClick={handleCopyPath}
-          className="flex items-center gap-2 text-[10px] text-text-disabled hover:text-text-secondary transition-colors group"
-          title="Click to copy path"
-        >
-          {copied ? (
-            <Check className="w-3 h-3 text-success" />
-          ) : (
-            <Copy className="w-3 h-3 group-hover:text-primary" />
+          onClick={() => setActiveTab('installed')}
+          className={clsx(
+            "px-3 py-1.5 text-xs font-medium border-b-2 transition-colors flex items-center gap-1.5",
+            activeTab === 'installed'
+              ? "border-primary text-primary"
+              : "border-transparent text-text-secondary hover:text-text-primary"
           )}
-          <span className="font-mono">{configPath}</span>
-          {copied && <span className="text-success text-[9px]">Copied!</span>}
+        >
+          <Server className="w-3.5 h-3.5" />
+          Installed
+          <span className="bg-input text-text-secondary px-1.5 rounded-full text-[9px]">
+            {servers.length}
+          </span>
         </button>
-      )}
+        <button
+          onClick={() => setActiveTab('marketplace')}
+          className={clsx(
+            "px-3 py-1.5 text-xs font-medium border-b-2 transition-colors flex items-center gap-1.5",
+            activeTab === 'marketplace'
+              ? "border-primary text-primary"
+              : "border-transparent text-text-secondary hover:text-text-primary"
+          )}
+        >
+          <ShoppingBag className="w-3.5 h-3.5" />
+          Marketplace
+        </button>
+      </div>
 
-      {/* Error message */}
-      {error && (
-        <div className="p-2 rounded bg-danger/10 border border-danger/20 text-xs text-danger flex items-center gap-2">
-          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-          {error}
-        </div>
-      )}
+      {/* Content */}
+      {activeTab === 'installed' ? (
+        <div className="space-y-4">
+          {/* Action Bar */}
+          <div className="flex items-center justify-between">
+            {configPath && (
+              <button
+                onClick={handleCopyPath}
+                className="flex items-center gap-2 text-[10px] text-text-disabled hover:text-text-secondary transition-colors group"
+                title="Click to copy path"
+              >
+                {copied ? (
+                  <Check className="w-3 h-3 text-success" />
+                ) : (
+                  <Copy className="w-3 h-3 group-hover:text-primary" />
+                )}
+                <span className="font-mono">{configPath}</span>
+                {copied && <span className="text-success text-[9px]">Copied!</span>}
+              </button>
+            )}
+            
+            <button
+              onClick={() => {
+                setInstallConfig(undefined);
+                setIsAddingServer(true);
+              }}
+              className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors"
+            >
+              <Plus className="w-3 h-3" />
+              Add Custom Server
+            </button>
+          </div>
 
-      {/* Add server form */}
-      {isAddingServer && <AddServerForm onSave={handleAddServer} onCancel={() => setIsAddingServer(false)} />}
+          {/* Error message */}
+          {error && (
+            <div className="p-2 rounded bg-danger/10 border border-danger/20 text-xs text-danger flex items-center gap-2">
+              <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+              {error}
+            </div>
+          )}
 
-      {/* Server list */}
-      {isLoading ? (
-        <div className="flex items-center justify-center py-8 text-text-secondary">
-          <Loader2 className="w-5 h-5 animate-spin" />
-        </div>
-      ) : servers.length === 0 ? (
-        <div className="text-center py-8">
-          <Server className="w-8 h-8 text-text-disabled mx-auto mb-2" />
-          <p className="text-xs text-text-secondary">No MCP servers configured</p>
-          <p className="text-[10px] text-text-disabled mt-1">
-            Add a server to extend Aurora with external tools
-          </p>
+          {/* Add server form */}
+          {isAddingServer && (
+            <AddServerForm 
+              initialConfig={installConfig}
+              onSave={handleAddServer} 
+              onCancel={() => {
+                setIsAddingServer(false);
+                setInstallConfig(undefined);
+              }} 
+            />
+          )}
+
+          {/* Server list */}
+          {isLoading ? (
+            <div className="flex items-center justify-center py-8 text-text-secondary">
+              <Loader2 className="w-5 h-5 animate-spin" />
+            </div>
+          ) : servers.length === 0 && !isAddingServer ? (
+            <div className="text-center py-8">
+              <Server className="w-8 h-8 text-text-disabled mx-auto mb-2" />
+              <p className="text-xs text-text-secondary">No MCP servers configured</p>
+              <p className="text-[10px] text-text-disabled mt-1">
+                Check the Marketplace to discover available tools
+              </p>
+              <button
+                onClick={() => setActiveTab('marketplace')}
+                className="mt-3 px-3 py-1.5 text-xs font-medium text-primary bg-primary/10 hover:bg-primary/20 rounded transition-colors"
+              >
+                Browse Marketplace
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {servers.map((server) => (
+                <ServerCard
+                  key={server.config.id}
+                  server={server}
+                  isExpanded={expandedServer === server.config.id}
+                  onToggleExpand={() =>
+                    setExpandedServer(expandedServer === server.config.id ? null : server.config.id)
+                  }
+                />
+              ))}
+            </div>
+          )}
         </div>
       ) : (
-        <div className="space-y-2">
-          {servers.map((server) => (
-            <ServerCard
-              key={server.config.id}
-              server={server}
-              isExpanded={expandedServer === server.config.id}
-              onToggleExpand={() =>
-                setExpandedServer(expandedServer === server.config.id ? null : server.config.id)
-              }
-            />
-          ))}
+        /* Marketplace Tab */
+        <div className="grid grid-cols-2 gap-3">
+          {MARKETPLACE_ITEMS.map((item) => {
+            const isInstalled = servers.some(s => s.config.name === item.name); // Simple check by name
+            return (
+              <MarketplaceCard
+                key={item.id}
+                item={item}
+                isInstalled={isInstalled}
+                onInstall={handleInstall}
+              />
+            );
+          })}
         </div>
       )}
-
     </div>
   );
 };

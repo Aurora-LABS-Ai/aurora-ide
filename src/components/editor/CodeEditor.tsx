@@ -29,7 +29,7 @@ import { useUiStore } from '../../store/useUiStore';
 import { themeService, getMonacoThemeId } from '../../services/theme-service';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { isTauri } from '../../lib/tauri';
-import { Search, Settings, Eye, FileCode, Columns } from 'lucide-react';
+import { Search, Settings, Eye, FileCode, Columns, AlertTriangle } from 'lucide-react';
 import { BrowserTab } from './BrowserTab';
 import { MarkdownPreview } from './MarkdownPreview';
 import { setMonacoInstance } from '../../tools/executors/editor-executors';
@@ -251,6 +251,24 @@ export const CodeEditor: React.FC = () => {
 
   return (
     <div className="flex-1 bg-editor overflow-hidden relative flex flex-col">
+      {/* Large File Warning Banner */}
+      {(activeTab.isLargeFile || activeTab.isMediumFile) && (
+        <div className={`h-7 border-b border-border flex items-center gap-2 px-3 ${
+          activeTab.isLargeFile ? 'bg-yellow-500/10 text-yellow-500' : 'bg-blue-500/10 text-blue-400'
+        }`}>
+          <AlertTriangle size={12} />
+          <span className="text-[11px]">
+            {activeTab.isLargeFile 
+              ? 'Large file detected — Some features disabled for better performance'
+              : 'Medium file — Some features reduced for better performance'
+            }
+          </span>
+          <span className="text-[10px] opacity-60 ml-auto">
+            {(activeTab.content.length / 1024).toFixed(0)} KB
+          </span>
+        </div>
+      )}
+
       {/* View Mode Toggle for Markdown Files */}
       {isMarkdown && (
         <div className="h-8 border-b border-border flex items-center justify-between px-3 bg-sidebar">
@@ -307,29 +325,89 @@ export const CodeEditor: React.FC = () => {
             value={activeTab.content}
             theme={activeTheme ? getMonacoThemeId(activeTheme) : 'aurora-dark'}
             onMount={handleEditorMount}
+            loading={
+              <div className="flex-1 flex items-center justify-center text-text-secondary bg-editor h-full">
+                <div className="flex flex-col items-center gap-2">
+                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary/50 border-t-primary"></div>
+                  <p className="text-xs text-text-disabled">Loading editor...</p>
+                </div>
+              </div>
+            }
             onChange={(value) => {
               if (value !== undefined) {
                 updateTabContent(activeTab.id, value);
               }
             }}
             options={{
-              minimap: { enabled: !activeTab.isLargeFile },
+              // === PERFORMANCE OPTIMIZATIONS ===
+              // Enable Monaco's built-in large file optimizations
+              largeFileOptimizations: activeTab.isLargeFile || activeTab.isMediumFile,
+              
+              // Stop rendering line content after this many characters (prevents long line lag)
+              stopRenderingLineAfter: activeTab.isLargeFile ? 5000 : (activeTab.isMediumFile ? 10000 : -1),
+              
+              // Limit tokenization (syntax highlighting) per line
+              maxTokenizationLineLength: activeTab.isLargeFile ? 1000 : (activeTab.isMediumFile ? 5000 : 20000),
+              
+              // Disable bracket pair colorization for large files (expensive)
+              bracketPairColorization: { 
+                enabled: !activeTab.isLargeFile && !activeTab.isMediumFile,
+                independentColorPoolPerBracketType: false 
+              },
+              
+              // Disable code folding for large files
+              folding: !activeTab.isLargeFile,
+              foldingStrategy: 'indentation',
+              
+              // Disable hover for large files
+              hover: { enabled: !activeTab.isLargeFile },
+              
+              // Disable occurrence highlighting
+              occurrencesHighlight: activeTab.isLargeFile ? 'off' : 'singleFile',
+              
+              // Disable selection highlight for large files
+              selectionHighlight: !activeTab.isLargeFile,
+              
+              // Disable sticky scroll (expensive for large files)
+              stickyScroll: { enabled: !activeTab.isLargeFile && !activeTab.isMediumFile },
+              
+              // Disable link detection for large files
+              links: !activeTab.isLargeFile,
+              
+              // Disable color decorators for large files
+              colorDecorators: !activeTab.isLargeFile,
+              
+              // === STANDARD OPTIONS ===
+              minimap: { enabled: !activeTab.isLargeFile && !activeTab.isMediumFile },
               fontSize: fontSize,
               scrollBeyondLastLine: false,
               automaticLayout: true,
-              wordWrap: wrapMode ? 'on' : 'off',
+              // Force word wrap off for large files for better performance
+              wordWrap: activeTab.isLargeFile ? 'off' : (wrapMode ? 'on' : 'off'),
               wrappingIndent: 'same',
-              wrappingStrategy: 'advanced',
+              wrappingStrategy: activeTab.isLargeFile ? 'simple' : 'advanced',
               padding: { top: 16, bottom: 16 },
               fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace",
-              fontLigatures: true,
+              fontLigatures: !activeTab.isLargeFile, // Disable ligatures for large files
               lineNumbers: 'on',
-              renderWhitespace: 'selection',
+              renderWhitespace: activeTab.isLargeFile ? 'none' : 'selection',
               tabSize: 2,
               cursorBlinking: 'smooth',
-              smoothScrolling: !activeTab.isLargeFile,
+              smoothScrolling: !activeTab.isLargeFile && !activeTab.isMediumFile,
               renderValidationDecorations: activeTab.isLargeFile ? 'off' : 'on',
               renderLineHighlight: activeTab.isLargeFile ? 'none' : 'all',
+              // Disable guides for large files
+              guides: {
+                indentation: !activeTab.isLargeFile,
+                bracketPairs: !activeTab.isLargeFile && !activeTab.isMediumFile,
+                highlightActiveIndentation: !activeTab.isLargeFile,
+                bracketPairsHorizontal: !activeTab.isLargeFile,
+              },
+              // Disable quick suggestions for large files
+              quickSuggestions: !activeTab.isLargeFile,
+              suggestOnTriggerCharacters: !activeTab.isLargeFile,
+              // Disable parameter hints for large files
+              parameterHints: { enabled: !activeTab.isLargeFile },
             }}
           />
         </div>
@@ -351,29 +429,49 @@ export const CodeEditor: React.FC = () => {
                 value={activeTab.content}
                 theme={activeTheme ? getMonacoThemeId(activeTheme) : 'aurora-dark'}
                 onMount={handleEditorMount}
+                loading={
+                  <div className="flex items-center justify-center text-text-secondary bg-editor h-full">
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary/50"></div>
+                  </div>
+                }
                 onChange={(value) => {
                   if (value !== undefined) {
                     updateTabContent(activeTab.id, value);
                   }
                 }}
                 options={{
+                  // Performance options for split view (minimap always off)
+                  largeFileOptimizations: activeTab.isLargeFile || activeTab.isMediumFile,
+                  stopRenderingLineAfter: activeTab.isLargeFile ? 5000 : 10000,
+                  maxTokenizationLineLength: activeTab.isLargeFile ? 1000 : 5000,
+                  bracketPairColorization: { enabled: !activeTab.isLargeFile },
+                  folding: !activeTab.isLargeFile,
+                  hover: { enabled: !activeTab.isLargeFile },
+                  occurrencesHighlight: activeTab.isLargeFile ? 'off' : 'singleFile',
+                  selectionHighlight: !activeTab.isLargeFile,
+                  stickyScroll: { enabled: false },
                   minimap: { enabled: false },
                   fontSize: fontSize,
                   scrollBeyondLastLine: false,
                   automaticLayout: true,
-                  wordWrap: wrapMode ? 'on' : 'off',
+                  wordWrap: activeTab.isLargeFile ? 'off' : (wrapMode ? 'on' : 'off'),
                   wrappingIndent: 'same',
-                  wrappingStrategy: 'advanced',
+                  wrappingStrategy: 'simple',
                   padding: { top: 16, bottom: 16 },
                   fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace",
-                  fontLigatures: true,
+                  fontLigatures: !activeTab.isLargeFile,
                   lineNumbers: 'on',
-                  renderWhitespace: 'selection',
+                  renderWhitespace: activeTab.isLargeFile ? 'none' : 'selection',
                   tabSize: 2,
                   cursorBlinking: 'smooth',
                   smoothScrolling: false,
-                  renderValidationDecorations: 'on',
-                  renderLineHighlight: 'all',
+                  renderValidationDecorations: activeTab.isLargeFile ? 'off' : 'on',
+                  renderLineHighlight: activeTab.isLargeFile ? 'none' : 'all',
+                  guides: {
+                    indentation: !activeTab.isLargeFile,
+                    bracketPairs: false,
+                  },
+                  quickSuggestions: !activeTab.isLargeFile,
                 }}
               />
             </div>

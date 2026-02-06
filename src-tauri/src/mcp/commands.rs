@@ -51,7 +51,7 @@ pub async fn mcp_toggle_server(id: String, enabled: bool) -> Result<McpServerSta
 /// Connect to an MCP server
 #[tauri::command]
 pub async fn mcp_connect_server(id: String) -> Result<McpServerState, String> {
-    MCP_MANAGER.connect_server(&id)
+    MCP_MANAGER.connect_server(&id).await
 }
 
 /// Disconnect from an MCP server
@@ -63,7 +63,7 @@ pub async fn mcp_disconnect_server(id: String) -> Result<(), String> {
 /// Call a tool on an MCP server
 #[tauri::command]
 pub async fn mcp_call_tool(request: McpToolCallRequest) -> Result<McpToolCallResult, String> {
-    MCP_MANAGER.call_tool(request)
+    MCP_MANAGER.call_tool(request).await
 }
 
 /// Get all tools from all connected MCP servers

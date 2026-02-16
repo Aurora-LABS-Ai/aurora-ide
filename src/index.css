@@ -23,7 +23,7 @@
 
 :root {
   color-scheme: dark;
-  --aurora-ui-scale: 1.1;
+  --aurora-ui-scale: 1;
   --aurora-ui-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
 }
 
@@ -41,6 +41,13 @@ body {
   font-family: var(--aurora-ui-font-family);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /*
+   * UI scale compensation:
+   * We scale via zoom, then compensate width/height so root layouts remain fully visible.
+   * Without this, bottom/right UI can be clipped at scale > 1.
+   */
+  width: calc(100% / var(--aurora-ui-scale));
+  height: calc(100% / var(--aurora-ui-scale));
   zoom: var(--aurora-ui-scale);
   /* Disable default context menu */
   -webkit-user-select: none;

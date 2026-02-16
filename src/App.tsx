@@ -26,6 +26,7 @@ import { DetachedChatWindow } from "./components/chat/DetachedChatWindow";
 
 import { useWorkspaceBootstrap } from "./hooks/useWorkspaceBootstrap";
 import { useEditorStore } from "./store/useEditorStore";
+import { useSettingsStore } from "./store/useSettingsStore";
 import { useThemeStore } from "./store/useThemeStore";
 import { useAutoSave } from "./hooks/useAutoSave";
 import { useTauriDragDrop } from "./hooks/useTauriDragDrop";
@@ -64,6 +65,9 @@ if (typeof window !== 'undefined') {
 
 function App() {
   const { initializeFromDatabase } = useThemeStore();
+  const settingsInitialized = useSettingsStore((state) => state.isInitialized);
+  const hasSeenOnboarding = useSettingsStore((state) => state.hasSeenOnboarding);
+  const initializeSettings = useSettingsStore((state) => state.initializeFromDatabase);
   const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
   const [isDetachedWindow, setIsDetachedWindow] = useState(false);
   const restoreWorkspace = useEditorStore((state) => state.restoreWorkspace);
@@ -98,10 +102,11 @@ function App() {
   }, [isDetachedWindow, restoreWorkspace]);
 
   useEffect(() => {
+    initializeSettings();
     initializeFromDatabase();
     // Initialize system info cache for context builder
     initializeSystemInfo();
-  }, [initializeFromDatabase]);
+  }, [initializeFromDatabase, initializeSettings]);
 
   // Disable default context menu globally (except for text-selectable areas)
   useEffect(() => {
@@ -134,11 +139,30 @@ function App() {
     return <DetachedChatWindow />;
   }
 
+  // Hold initial render until settings are initialized, preventing
+  // first-frame UI flash behind onboarding.
+  if (!settingsInitialized) {
+    return (
+      <div className="h-full w-full bg-editor text-text-primary flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-8 w-8 rounded-lg bg-primary/15 border border-primary/30 flex items-center justify-center animate-pulse">
+            <div className="h-3 w-3 rounded-full bg-primary" />
+          </div>
+          <p className="text-xs text-text-secondary uppercase tracking-wider">Initializing Aurora</p>
+        </div>
+      </div>
+    );
+  }
+
+  // First-run onboarding is a full-screen takeover. The IDE mounts only after completion.
+  if (!hasSeenOnboarding) {
+    return <OnboardingModal />;
+  }
+
   return (
     <>
       <MainLayout />
       <DragPreview />
-      <OnboardingModal />
       <QuickOpenModal isOpen={isQuickOpenOpen} onClose={() => setIsQuickOpenOpen(false)} />
     </>
   );

@@ -21,7 +21,10 @@ fn main() {
     if env_path.is_some() || env_file.is_some() {
         // We're the spawned GUI process - run with the path from env
         let mut args = CliArgs::default();
-        if let Some(path) = env_path {
+        if let Some(file) = env_file {
+            // Preserve explicit file-open intent.
+            args.path = Some(std::path::PathBuf::from(file));
+        } else if let Some(path) = env_path {
             args.path = Some(std::path::PathBuf::from(path));
         }
         // Clear env vars so child processes don't inherit them

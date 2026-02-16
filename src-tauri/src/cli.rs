@@ -242,11 +242,12 @@ pub mod install {
         std::fs::write(&batch_path, batch_content)
             .map_err(|e| format!("Failed to create aurora.cmd: {}", e))?;
 
-        // Also copy/link the exe (for direct usage)
-        let exe_path = install_dir.join("aurora.exe");
-        if exe_path != current_exe {
-            std::fs::copy(&current_exe, &exe_path)
-                .map_err(|e| format!("Failed to copy executable: {}", e))?;
+        // Remove stale `aurora.exe` snapshots from older installs.
+        // If present, Windows may prefer it over aurora.cmd and launch an outdated build.
+        let stale_exe_path = install_dir.join("aurora.exe");
+        if stale_exe_path.exists() {
+            std::fs::remove_file(&stale_exe_path)
+                .map_err(|e| format!("Failed to remove stale aurora.exe: {}", e))?;
         }
 
         // Add to user PATH using PowerShell
@@ -292,8 +293,7 @@ pub mod install {
     pub fn is_cli_installed() -> Result<bool, String> {
         let install_dir = get_cli_install_path();
         let cmd_path = install_dir.join("aurora.cmd");
-        let exe_path = install_dir.join("aurora.exe");
-        Ok(cmd_path.exists() || exe_path.exists())
+        Ok(cmd_path.exists())
     }
 
     /// Uninstall the CLI command from PATH

@@ -358,7 +358,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   // UI Settings
   uiFontFamily: "system",
-  uiScale: 1.1,
+  uiScale: 1,
 
 
   // Theme
@@ -429,7 +429,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       const appSettings = await databaseService.getAppSettings();
       if (appSettings) {
         const uiFontFamily = appSettings.uiFontFamily ?? "system";
-        const uiScale = appSettings.uiScale ?? 1.1;
+        const uiScale = appSettings.uiScale ?? 1;
 
         set({
           selectedModel: appSettings.selectedModel || "glm:glm-4.7",

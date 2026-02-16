@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import { getLanguageFromExtension } from "../lib/file-utils";
 import { isTauri, writeFileContent } from "../lib/tauri";
 import { databaseService } from "../services/database";
 import type { Tab } from "../types";
@@ -46,7 +47,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   activeTabId: null,
   fontSize: 14,
 
-  openFile: (fileId, filename, content, language = 'typescript', isLoading = false) => {
+  openFile: (fileId, filename, content, language, isLoading = false) => {
     const { tabs, setActiveTab, reloadTabContent } = get();
     const existingTab = tabs.find(t => t.id === fileId);
 
@@ -61,7 +62,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
     const isLargeFile = content.length > LARGE_FILE_THRESHOLD;
     const isMediumFile = !isLargeFile && content.length > MEDIUM_FILE_THRESHOLD;
-    const effectiveLanguage = isLargeFile ? 'plaintext' : language;
+    const resolvedLanguage = language || getLanguageFromExtension(filename);
+    const effectiveLanguage = isLargeFile ? 'plaintext' : resolvedLanguage;
     const newTab: Tab = {
       id: fileId,
       path: fileId,
@@ -285,22 +287,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       // Only restore tabs if there are any
       if (state && state.open_tabs.length > 0) {
 
-        // Language detection helper
-        const detectLanguage = (filename: string): string => {
-          const ext = filename.split('.').pop()?.toLowerCase() || '';
-          const langMap: Record<string, string> = {
-            'ts': 'typescript', 'tsx': 'typescript',
-            'js': 'javascript', 'jsx': 'javascript',
-            'json': 'json', 'css': 'css', 'scss': 'scss',
-            'html': 'html', 'md': 'markdown',
-            'rs': 'rust', 'toml': 'toml',
-            'yaml': 'yaml', 'yml': 'yaml',
-            'py': 'python', 'go': 'go',
-            'txt': 'plaintext',
-          };
-          return langMap[ext] || 'plaintext';
-        };
-
         // PERFORMANCE: Use batch file reading - single IPC call for all files
         const { readFilesBatch } = await import('../lib/file-cache');
         const paths = state.open_tabs.map(tab => tab.path);
@@ -316,7 +302,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
             filename,
             content,
             isDirty: tab.is_dirty,
-            language: detectLanguage(filename),
+            language: getLanguageFromExtension(filename),
           };
         });
 

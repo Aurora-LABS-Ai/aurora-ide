@@ -40,11 +40,15 @@ import { useUiStore } from "../../store/useUiStore";
 import { useRustChatSync } from "../../hooks/useRustChatSync";
 import { useTerminalStore } from "../../store/useTerminalStore";
 import { useGitStore } from "../../store/useGitStore";
+import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 
 export const MainLayout: React.FC = () => {
   const { isChatOpen, detachedChat, setSettingsOpen, isSidebarOpen, toggleSidebar, isAgentMode } = useUiStore();
   const { isOpen: isTerminalOpen } = useTerminalStore();
-  const { status } = useGitStore();
+  const status = useGitStore((state) => state.status);
+  const initializeGit = useGitStore((state) => state.initialize);
+  const resetGit = useGitStore((state) => state.reset);
+  const rootPath = useWorkspaceStore((state) => state.rootPath);
 
   // Sidebar panel state
   const [activePanel, setActivePanel] = useState<SidebarPanel>('explorer');
@@ -63,6 +67,17 @@ export const MainLayout: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [toggleSidebar]);
+
+  // Initialize git state as soon as a workspace is available.
+  // This keeps source-control status in sync before the Git panel is opened.
+  React.useEffect(() => {
+    if (rootPath) {
+      void initializeGit(rootPath);
+      return;
+    }
+
+    resetGit();
+  }, [rootPath, initializeGit, resetGit]);
 
   // Show chat panel only if it's open AND not detached
   const showChatPanel = isChatOpen && !detachedChat.isDetached;
@@ -88,7 +103,7 @@ export const MainLayout: React.FC = () => {
   }, [isAgentMode, showChatPanel, isSidebarOpen]);
 
   return (
-    <div className="h-screen flex flex-col bg-editor text-text-primary overflow-hidden">
+    <div className="h-full flex flex-col bg-editor text-text-primary overflow-hidden">
       <TitleBar />
 
       {/* Main horizontal layout */}

@@ -15,6 +15,7 @@ import { listen } from '@tauri-apps/api/event';
 import { useWorkspaceStore } from '../store/useWorkspaceStore';
 import { useEditorStore } from '../store/useEditorStore';
 import { isTauri, readFileContent } from '../lib/tauri';
+import { getLanguageFromExtension } from '../lib/file-utils';
 
 export interface CliOpenRequest {
   /** Workspace root folder to open */
@@ -59,7 +60,7 @@ export function useCliOpen() {
             try {
               const content = await readFileContent(request.file_path);
               const filename = request.file_path.split(/[/\\]/).pop() || request.file_path;
-              const language = detectLanguage(filename);
+              const language = getLanguageFromExtension(filename);
               
               openFile(request.file_path, filename, content, language);
 
@@ -95,51 +96,5 @@ export function useCliOpen() {
       }
     };
   }, [setRootPath, rootPath, openFile]);
-}
-
-/**
- * Detect language from filename extension
- */
-function detectLanguage(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase() || '';
-  const langMap: Record<string, string> = {
-    'ts': 'typescript',
-    'tsx': 'typescript',
-    'js': 'javascript',
-    'jsx': 'javascript',
-    'json': 'json',
-    'css': 'css',
-    'scss': 'scss',
-    'less': 'less',
-    'html': 'html',
-    'htm': 'html',
-    'md': 'markdown',
-    'mdx': 'markdown',
-    'rs': 'rust',
-    'toml': 'toml',
-    'yaml': 'yaml',
-    'yml': 'yaml',
-    'py': 'python',
-    'go': 'go',
-    'java': 'java',
-    'c': 'c',
-    'cpp': 'cpp',
-    'h': 'c',
-    'hpp': 'cpp',
-    'cs': 'csharp',
-    'rb': 'ruby',
-    'php': 'php',
-    'sh': 'shell',
-    'bash': 'shell',
-    'zsh': 'shell',
-    'ps1': 'powershell',
-    'sql': 'sql',
-    'graphql': 'graphql',
-    'gql': 'graphql',
-    'vue': 'vue',
-    'svelte': 'svelte',
-    'txt': 'plaintext',
-  };
-  return langMap[ext] || 'plaintext';
 }
 

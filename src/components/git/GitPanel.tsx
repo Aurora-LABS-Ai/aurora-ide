@@ -5,7 +5,7 @@
  * Use theme tokens via CSS variables.
  */
 
-import React, { useEffect, useCallback } from 'react';
+import React, { useCallback } from 'react';
 import {
   RefreshCw,
   Plus,
@@ -18,13 +18,11 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useGitStore } from '../../store/useGitStore';
-import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { GitFileItem } from './GitFileItem';
 import { GitCommitInput } from './GitCommitInput';
 import { GitBranchSelector } from './GitBranchSelector';
 
 export const GitPanel: React.FC = () => {
-  const { rootPath } = useWorkspaceStore();
   const {
     isLoading,
     isInitialized,
@@ -32,7 +30,6 @@ export const GitPanel: React.FC = () => {
     status,
     expandedSections,
     commitMessage,
-    initialize,
     refresh,
     stageFile,
     unstageFile,
@@ -45,13 +42,6 @@ export const GitPanel: React.FC = () => {
     toggleSection,
     setCommitMessage,
   } = useGitStore();
-
-  // Initialize git when workspace changes
-  useEffect(() => {
-    if (rootPath) {
-      initialize(rootPath);
-    }
-  }, [rootPath, initialize]);
 
   const handleRefresh = useCallback(() => {
     refresh();

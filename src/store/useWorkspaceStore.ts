@@ -2,6 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import { create } from "zustand";
 
+import { getLanguageFromExtension } from "../lib/file-utils";
 import { isTauri, readDirectory, readFileContent, startFsWatcher, stopFsWatcher } from "../lib/tauri";
 import { databaseService } from "../services/database";
 import type { FileNode } from "../types";
@@ -40,28 +41,6 @@ interface WorkspaceState {
   setRootPath: (path: string) => void;
   toggleFolder: (folderId: string) => Promise<void>;
 }
-
-const getLanguageFromExtension = (filename: string): string => {
-  const ext = filename.split('.').pop()?.toLowerCase();
-  const langMap: Record<string, string> = {
-    'ts': 'typescript',
-    'tsx': 'typescript',
-    'js': 'javascript',
-    'jsx': 'javascript',
-    'json': 'json',
-    'css': 'css',
-    'scss': 'scss',
-    'html': 'html',
-    'md': 'markdown',
-    'rs': 'rust',
-    'toml': 'toml',
-    'yaml': 'yaml',
-    'yml': 'yaml',
-    'py': 'python',
-    'go': 'go',
-  };
-  return langMap[ext || ''] || 'plaintext';
-};
 
 // Helper to load file content
 export const loadFileContent = async (path: string): Promise<string> => {

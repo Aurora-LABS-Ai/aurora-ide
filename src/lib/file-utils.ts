@@ -4,9 +4,6 @@
  */
 
 /**
- * Get language identifier from file extension for Monaco editor
- */
-/**
  * Get file path from drag data transfer
  */
 export const getDragFilePath = (e: React.DragEvent): string | null => {
@@ -19,13 +16,45 @@ export const getDragFilePath = (e: React.DragEvent): string | null => {
 export const getFilename = (path: string): string => {
     return path.split(/[/\\]/).pop() || path;
 };
+
+/**
+ * Get language identifier from file extension or well-known filename for Monaco editor.
+ */
 export const getLanguageFromExtension = (filename: string): string => {
-    const ext = filename.split('.').pop()?.toLowerCase();
+    const normalized = getFilename(filename).trim().toLowerCase();
+    if (!normalized) return 'plaintext';
+
+    // Handle compound declaration files.
+    if (
+        normalized.endsWith('.d.ts') ||
+        normalized.endsWith('.d.mts') ||
+        normalized.endsWith('.d.cts')
+    ) {
+        return 'typescript';
+    }
+
+    const byNameMap: Record<string, string> = {
+        'dockerfile': 'dockerfile',
+        'makefile': 'makefile',
+        'cmakelists.txt': 'cmake',
+        'justfile': 'plaintext',
+        'jenkinsfile': 'groovy',
+        '.bashrc': 'shell',
+        '.zshrc': 'shell',
+        '.profile': 'shell',
+        '.gitignore': 'plaintext',
+    };
+    if (byNameMap[normalized]) {
+        return byNameMap[normalized];
+    }
+
+    const ext = normalized.includes('.') ? normalized.split('.').pop() || '' : '';
     const langMap: Record<string, string> = {
         // TypeScript/JavaScript
         'ts': 'typescript',
         'tsx': 'typescript',
-        'd.ts': 'typescript',
+        'mts': 'typescript',
+        'cts': 'typescript',
         'js': 'javascript',
         'jsx': 'javascript',
         'mjs': 'javascript',
@@ -40,11 +69,13 @@ export const getLanguageFromExtension = (filename: string): string => {
         'htm': 'html',
         'xhtml': 'html',
         'md': 'markdown',
+        'mdx': 'markdown',
         'vue': 'vue',
         'svelte': 'svelte',
         // Systems
         'rs': 'rust',
         'toml': 'toml',
+        'lock': 'toml',
         'go': 'go',
         'c': 'c',
         'cpp': 'cpp',
@@ -66,7 +97,12 @@ export const getLanguageFromExtension = (filename: string): string => {
         'sh': 'shell',
         'bash': 'shell',
         'zsh': 'shell',
+        'fish': 'shell',
         'ps1': 'powershell',
+        'psm1': 'powershell',
+        'psd1': 'powershell',
+        'bat': 'bat',
+        'cmd': 'bat',
         // Config/Data
         'yaml': 'yaml',
         'yml': 'yaml',
@@ -74,9 +110,12 @@ export const getLanguageFromExtension = (filename: string): string => {
         'graphql': 'graphql',
         'gql': 'graphql',
         'xml': 'xml',
-        'dockerfile': 'dockerfile',
+        'ini': 'ini',
+        'conf': 'ini',
+        'env': 'ini',
+        'txt': 'plaintext',
     };
-    return langMap[ext || ''] || 'plaintext';
+    return langMap[ext] || 'plaintext';
 };
 
 /**

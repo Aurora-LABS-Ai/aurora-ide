@@ -112,7 +112,7 @@ export const DetachedChatWindow: React.FC = () => {
 
   return (
     <div
-      className={`h-screen flex flex-col bg-sidebar text-text-primary overflow-hidden ${themeMode === "dark" ? "dark" : ""}`}
+      className={`h-full flex flex-col bg-sidebar text-text-primary overflow-hidden ${themeMode === "dark" ? "dark" : ""}`}
       style={{ colorScheme: themeMode }}
     >
       {/* Custom Title Bar for Detached Window */}

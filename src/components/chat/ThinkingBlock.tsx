@@ -43,28 +43,34 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ content, isGenerat
   }, [isGenerating]);
 
   return (
-    <div className="py-2 pl-3 group" style={{ background: 'var(--aurora-chat-thinkingBackground)' }}>
+    <div
+      className="my-1 ml-3 rounded-xl border border-border bg-surface/60 overflow-hidden"
+      style={{
+        background: 'color-mix(in srgb, var(--aurora-chat-surface) 92%, transparent)',
+      }}
+    >
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="flex items-center gap-2 text-xs font-medium w-full outline-none text-left"
+        aria-expanded={isExpanded}
+        className="flex items-center gap-2 px-2.5 py-1.5 text-xs font-medium w-full outline-none text-left transition-colors hover:bg-sidebar-item-hover/30"
       >
         <div className={clsx(
           "flex items-center justify-center w-4 h-4 rounded-full transition-colors",
-          isGenerating ? "text-[var(--aurora-common-primary)]" : "text-text-disabled group-hover:text-text-secondary"
+          isGenerating ? "bg-primary/15 text-primary" : "bg-input/40 text-text-secondary"
         )}>
           {isGenerating ? <Loader2 size={12} className="animate-spin" /> : <BrainCircuit size={12} />}
         </div>
 
         <span className={clsx(
           "text-[11px] transition-colors",
-          isGenerating ? "text-[var(--aurora-common-primary)] animate-pulse" : "text-text-disabled group-hover:text-text-secondary"
+          isGenerating ? "text-primary animate-pulse" : "text-text-secondary"
         )}>
           {isGenerating ? 'Thinking...' : 'Process Log'}
         </span>
 
         <ChevronRight size={10} className={clsx(
-          "text-text-disabled transition-transform opacity-0 group-hover:opacity-100",
-          isExpanded && "rotate-90 opacity-100"
+          "text-text-disabled transition-transform ml-auto",
+          isExpanded && "rotate-90"
         )} />
       </button>
 
@@ -76,8 +82,8 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ content, isGenerat
             exit={{ height: 0, opacity: 0 }}
             className="overflow-hidden"
           >
-            <div className="mt-1 ml-2 pl-3" style={{ borderLeft: '1px solid var(--aurora-chat-thinkingBorder)' }}>
-              <p className="font-mono text-[10px] text-text-secondary leading-relaxed whitespace-pre-wrap break-words py-1 opacity-80">
+            <div className="border-t border-border/60 bg-input/25 px-3 py-2">
+              <p className="font-mono text-[10px] text-text-secondary leading-relaxed whitespace-pre-wrap break-words">
                 {content || <span className="italic opacity-50">Initializing...</span>}
               </p>
             </div>

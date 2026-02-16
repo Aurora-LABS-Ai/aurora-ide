@@ -146,7 +146,7 @@ const CopyButton: React.FC<{ text: string; size?: 'sm' | 'md' }> = ({ text, size
       className={`${padding} rounded transition-all duration-200 flex items-center gap-1`}
       style={{
         background: copied ? 'var(--aurora-common-success)' : 'transparent',
-        color: copied ? 'var(--aurora-common-successForeground)' : 'var(--aurora-editor-foreground)',
+        color: copied ? 'var(--aurora-common-success-foreground)' : 'var(--aurora-editor-foreground)',
         opacity: copied ? 1 : 0.5,
       }}
       onMouseEnter={(e) => { if (!copied) e.currentTarget.style.opacity = '0.9'; }}
@@ -188,7 +188,7 @@ const CodeBlockWrapper: React.FC<{
     <div 
       className="group/code relative my-3 rounded-lg overflow-hidden"
       style={{ 
-        background: 'var(--aurora-chat-codeBlock, var(--aurora-editor-background))',
+        background: 'var(--aurora-chat-code-block, var(--aurora-editor-background))',
         border: '1px solid var(--aurora-common-border)',
       }}
     >
@@ -287,7 +287,7 @@ const components = {
       <code
         className="px-1.5 py-0.5 rounded font-mono text-[11px] mx-0.5"
         style={{ 
-          background: 'var(--aurora-chat-codeBlock, var(--aurora-editor-background))',
+          background: 'var(--aurora-chat-code-block, var(--aurora-editor-background))',
           color: 'var(--aurora-common-primary)',
           border: '1px solid var(--aurora-common-border)',
         }}
@@ -479,7 +479,7 @@ const components = {
   ),
   tr: ({ children, ...props }: React.HTMLAttributes<HTMLTableRowElement>) => (
     <tr 
-      className="transition-colors hover:bg-white/[0.03] even:bg-white/[0.02]"
+      className="transition-colors hover:bg-sidebar-item-hover even:bg-input/30"
       {...props}
     >
       {children}

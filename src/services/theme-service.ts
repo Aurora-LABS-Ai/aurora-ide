@@ -10,6 +10,173 @@ import type { CSSVariableMap, ColorValidationResult, DeepPartial, MonacoThemeDat
 // Theme Service Class
 // ============================================================================
 
+interface RgbaColor {
+  a: number;
+  b: number;
+  g: number;
+  r: number;
+}
+
+const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
+
+const parseHexColor = (value: string): RgbaColor | null => {
+  const hex = value.trim().replace(/^#/, "");
+
+  if (![3, 4, 6, 8].includes(hex.length)) {
+    return null;
+  }
+
+  const normalized =
+    hex.length === 3 || hex.length === 4
+      ? hex
+          .split("")
+          .map((ch) => ch + ch)
+          .join("")
+      : hex;
+
+  const hasAlpha = normalized.length === 8;
+  const r = Number.parseInt(normalized.slice(0, 2), 16);
+  const g = Number.parseInt(normalized.slice(2, 4), 16);
+  const b = Number.parseInt(normalized.slice(4, 6), 16);
+  const a = hasAlpha ? Number.parseInt(normalized.slice(6, 8), 16) / 255 : 1;
+
+  if ([r, g, b].some(Number.isNaN) || Number.isNaN(a)) {
+    return null;
+  }
+
+  return { r, g, b, a: clamp01(a) };
+};
+
+const parseRgbColor = (value: string): RgbaColor | null => {
+  const rgbMatch = value.trim().match(
+    /^rgba?\(\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*[, ]\s*(\d{1,3})(?:\s*[,/]\s*([0-9]*\.?[0-9]+))?\s*\)$/i
+  );
+
+  if (!rgbMatch) {
+    return null;
+  }
+
+  const r = Number(rgbMatch[1]);
+  const g = Number(rgbMatch[2]);
+  const b = Number(rgbMatch[3]);
+  const a = rgbMatch[4] !== undefined ? Number(rgbMatch[4]) : 1;
+
+  if (
+    [r, g, b].some((channel) => Number.isNaN(channel) || channel < 0 || channel > 255) ||
+    Number.isNaN(a)
+  ) {
+    return null;
+  }
+
+  return {
+    r,
+    g,
+    b,
+    a: clamp01(a),
+  };
+};
+
+const parseColor = (value: string): RgbaColor | null => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (trimmed.startsWith("#")) {
+    return parseHexColor(trimmed);
+  }
+  if (trimmed.toLowerCase().startsWith("rgb")) {
+    return parseRgbColor(trimmed);
+  }
+  return null;
+};
+
+const srgbToLinear = (value: number): number => {
+  const normalized = value / 255;
+  if (normalized <= 0.04045) {
+    return normalized / 12.92;
+  }
+  return ((normalized + 0.055) / 1.055) ** 2.4;
+};
+
+const getLuminance = (color: RgbaColor): number =>
+  0.2126 * srgbToLinear(color.r) +
+  0.7152 * srgbToLinear(color.g) +
+  0.0722 * srgbToLinear(color.b);
+
+const mixColors = (base: RgbaColor, overlay: RgbaColor, overlayRatio: number): RgbaColor => {
+  const ratio = clamp01(overlayRatio);
+  const inverse = 1 - ratio;
+  return {
+    r: Math.round(base.r * inverse + overlay.r * ratio),
+    g: Math.round(base.g * inverse + overlay.g * ratio),
+    b: Math.round(base.b * inverse + overlay.b * ratio),
+    a: clamp01(base.a * inverse + overlay.a * ratio),
+  };
+};
+
+const toCssRgba = (color: RgbaColor): string => {
+  if (color.a >= 0.999) {
+    return `rgb(${color.r} ${color.g} ${color.b})`;
+  }
+  return `rgba(${color.r}, ${color.g}, ${color.b}, ${Number(color.a.toFixed(3))})`;
+};
+
+const normalizeDarkSidebarToken = (
+  root: HTMLElement,
+  tokenName: "--aurora-sidebar-item-hover" | "--aurora-sidebar-item-active" | "--aurora-sidebar-item-selected",
+  baseBackground: RgbaColor,
+  originalValue: string,
+  overlayRatio: number
+): void => {
+  const parsedOriginal = parseColor(originalValue);
+  if (!parsedOriginal) {
+    return;
+  }
+
+  // Only correct very bright interaction colors in dark themes.
+  if (getLuminance(parsedOriginal) < 0.35) {
+    return;
+  }
+
+  const normalized = mixColors(baseBackground, parsedOriginal, overlayRatio);
+  root.style.setProperty(tokenName, toCssRgba(normalized));
+};
+
+const normalizeDarkSidebarInteractionTokens = (theme: ThemeDefinition): void => {
+  if (theme.type !== "dark") {
+    return;
+  }
+
+  const root = document.documentElement;
+  const baseBackground = parseColor(theme.colors.sidebar.background);
+
+  if (!baseBackground) {
+    return;
+  }
+
+  normalizeDarkSidebarToken(
+    root,
+    "--aurora-sidebar-item-hover",
+    baseBackground,
+    theme.colors.sidebar.itemHover,
+    0.2
+  );
+  normalizeDarkSidebarToken(
+    root,
+    "--aurora-sidebar-item-active",
+    baseBackground,
+    theme.colors.sidebar.itemActive,
+    0.3
+  );
+  normalizeDarkSidebarToken(
+    root,
+    "--aurora-sidebar-item-selected",
+    baseBackground,
+    theme.colors.sidebar.itemSelected,
+    0.35
+  );
+};
+
 /**
  * Theme service singleton for managing theme operations
  */
@@ -22,6 +189,7 @@ class ThemeService {
   public applyTheme(theme: ThemeDefinition): void {
     // Inject CSS variables
     injectCSSVariables(theme.colors);
+    normalizeDarkSidebarInteractionTokens(theme);
 
     // Store current theme
     this.currentTheme = theme;

@@ -8,7 +8,7 @@ import type { WorkspaceState as DbWorkspaceState, PanelSizes, TabState } from ".
 
 interface EditorState {
   activeTabId: string | null;
-  closeTab: (tabId: string) => void;
+  closeTab: (tabId: string, options?: { skipUnsavedWarning?: boolean }) => void;
   fontSize: number;
 
   // Mark tab as deleted (file was removed from filesystem)
@@ -127,8 +127,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     // NO saveWorkspace() here - save only on window close
   },
 
-  closeTab: (tabId) => {
+  closeTab: (tabId, _options) => {
     const { tabs, activeTabId } = get();
+    const tabToClose = tabs.find((tab) => tab.id === tabId);
+    if (!tabToClose) return;
+
     const newTabs = tabs.filter(t => t.id !== tabId);
 
     let newActiveId = activeTabId;

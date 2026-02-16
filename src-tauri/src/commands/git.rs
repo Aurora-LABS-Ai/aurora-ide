@@ -61,6 +61,13 @@ pub struct GitCommit {
     pub refs: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitFileVersions {
+    pub original_content: String,
+    pub modified_content: String,
+}
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -102,6 +109,13 @@ fn parse_status_code(code: &str) -> String {
         "!" => "ignored".to_string(),
         _ => "modified".to_string(),
     }
+}
+
+async fn read_file_lossy(path: &Path) -> Result<String, String> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| format!("Failed to read file '{}': {}", path.display(), e))?;
+    Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
 // ============================================================================
@@ -417,4 +431,80 @@ pub async fn git_get_diff(workspace_path: String, file_path: String, staged: boo
     } else {
         run_git_command(&workspace_path, &["diff", &file_path]).await
     }
+}
+
+/// Get full file versions for split diff view.
+/// For staged files: compares HEAD -> index.
+/// For unstaged files: compares index -> working tree.
+#[tauri::command]
+pub async fn git_get_file_versions(
+    workspace_path: String,
+    file_path: String,
+    staged: bool,
+    old_path: Option<String>,
+) -> Result<GitFileVersions, String> {
+    let normalized_file_path = file_path.replace('\\', "/");
+    let normalized_old_path = old_path.map(|value| value.replace('\\', "/"));
+    let head_lookup_path = normalized_old_path
+        .as_deref()
+        .unwrap_or(&normalized_file_path)
+        .to_string();
+
+    let working_file_path = Path::new(&workspace_path).join(&file_path);
+
+    if staged {
+        let original_content = run_git_command(
+            &workspace_path,
+            &["show", &format!("HEAD:{}", head_lookup_path)],
+        )
+        .await
+        .unwrap_or_default();
+
+        let modified_content = match run_git_command(
+            &workspace_path,
+            &["show", &format!(":{}", normalized_file_path)],
+        )
+        .await
+        {
+            Ok(content) => content,
+            Err(_) => {
+                if working_file_path.exists() {
+                    read_file_lossy(&working_file_path).await.unwrap_or_default()
+                } else {
+                    String::new()
+                }
+            }
+        };
+
+        return Ok(GitFileVersions {
+            original_content,
+            modified_content,
+        });
+    }
+
+    let original_content = match run_git_command(
+        &workspace_path,
+        &["show", &format!(":{}", normalized_file_path)],
+    )
+    .await
+    {
+        Ok(content) => content,
+        Err(_) => run_git_command(
+            &workspace_path,
+            &["show", &format!("HEAD:{}", head_lookup_path)],
+        )
+        .await
+        .unwrap_or_default(),
+    };
+
+    let modified_content = if working_file_path.exists() {
+        read_file_lossy(&working_file_path).await.unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    Ok(GitFileVersions {
+        original_content,
+        modified_content,
+    })
 }

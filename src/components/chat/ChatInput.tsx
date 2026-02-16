@@ -392,7 +392,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                   "w-full text-left flex items-center gap-2 px-2 py-1.5 rounded text-[11px] transition-colors",
                   idx === selectedFileIndex
                     ? "text-primary"
-                    : "hover:bg-white/5"
+                    : "hover:bg-sidebar-item-hover"
                 )}
                 style={{
                   color: idx === selectedFileIndex ? 'var(--aurora-common-primary)' : 'var(--aurora-text-secondary)'
@@ -545,7 +545,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
             style={{
               backgroundColor: 'var(--aurora-chat-surface)',
               border: '1px solid transparent',
-              boxShadow: '0 0 0 1px var(--aurora-chat-surfaceBorder)',
+              boxShadow: '0 0 0 1px var(--aurora-chat-surface-border)',
             }}
           >
             <Sparkles size={10} className="text-primary" />
@@ -573,8 +573,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
               border: providerSupportsThinking ? '1px solid transparent' : '1px solid transparent',
               boxShadow: providerSupportsThinking
                 ? thinkingEnabled
-                  ? '0 0 0 1px color-mix(in srgb, var(--aurora-chat-surfaceBorder) 40%, transparent)'
-                  : '0 0 0 1px var(--aurora-chat-surfaceBorder)'
+                  ? '0 0 0 1px color-mix(in srgb, var(--aurora-chat-surface-border) 40%, transparent)'
+                  : '0 0 0 1px var(--aurora-chat-surface-border)'
                 : 'none',
               backgroundColor: providerSupportsThinking && thinkingEnabled
                 ? 'color-mix(in srgb, var(--aurora-chat-surface) 70%, var(--aurora-common-primary) 10%)'
@@ -603,7 +603,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                     e.stopPropagation();
                     removeAttachedFile(file.path);
                   }}
-                  className="p-0.5 rounded-sm hover:bg-white/10 text-accent hover:text-error transition-colors"
+                  className="p-0.5 rounded-sm hover:bg-input/50 text-accent hover:text-error transition-colors"
                   title="Remove file"
                 >
                   <X size={10} />
@@ -624,7 +624,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
             onKeyDown={handleKeyDown}
             disabled={disabled || isLoading}
             placeholder={attachedFiles.length > 0 ? "Ask a question about these files..." : "Message Aurora (Type @ to add files)..."}
-            className="w-full bg-transparent text-[13px] text-text-primary resize-none outline-none min-h-[40px] max-h-[200px] placeholder:text-text-disabled font-light leading-relaxed"
+            className="w-full bg-transparent text-[13px] text-text-primary resize-none border-0 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0 focus-visible:border-0 focus-visible:outline-none min-h-[40px] max-h-[200px] placeholder:text-text-disabled font-light leading-relaxed"
             rows={1}
           />
         </div>
@@ -658,7 +658,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                   size={16}
                   className={clsx(
                     "transition-all duration-300",
-                    (content.trim() || attachedFiles.length > 0) ? "text-white stroke-[2.5px]" : "opacity-50"
+                    (content.trim() || attachedFiles.length > 0) ? "text-primary-foreground stroke-[2.5px]" : "opacity-50"
                   )}
                 />
               </div>

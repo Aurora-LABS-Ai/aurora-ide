@@ -41,7 +41,7 @@ export const AgentChatMessage: React.FC<AgentChatMessageProps> = ({ message }) =
             key={index}
             className="font-mono text-xs px-1.5 py-0.5 rounded mx-1"
             style={{
-              background: 'var(--aurora-chat-codeBlock)',
+              background: 'var(--aurora-chat-code-block)',
               color: 'var(--aurora-common-primary)',
             }}
           >
@@ -64,8 +64,8 @@ export const AgentChatMessage: React.FC<AgentChatMessageProps> = ({ message }) =
               ? 'var(--aurora-common-primary)'
               : 'var(--aurora-common-secondary)',
             color: isAgent
-              ? 'var(--aurora-common-primaryForeground)'
-              : 'var(--aurora-common-secondaryForeground)',
+              ? 'var(--aurora-common-primary-foreground)'
+              : 'var(--aurora-common-secondary-foreground)',
           }}
         >
           {message.senderName.charAt(0)}
@@ -80,7 +80,7 @@ export const AgentChatMessage: React.FC<AgentChatMessageProps> = ({ message }) =
           </span>
           <span
             className="text-[10px]"
-            style={{ color: 'var(--aurora-common-mutedForeground)' }}
+            style={{ color: 'var(--aurora-common-muted-foreground)' }}
           >
             {message.timestamp}
           </span>
@@ -95,7 +95,7 @@ export const AgentChatMessage: React.FC<AgentChatMessageProps> = ({ message }) =
         {isAgent && (
           <button
             className="flex items-center gap-1.5 text-xs transition-colors w-max group"
-            style={{ color: 'var(--aurora-common-mutedForeground)' }}
+            style={{ color: 'var(--aurora-common-muted-foreground)' }}
           >
             <span className="material-icons-round text-sm group-hover:text-[var(--aurora-common-primary)] transition-colors">
               hub

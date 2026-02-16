@@ -138,11 +138,11 @@ export const AgentChangesTree: React.FC<AgentChangesTreeProps> = ({ className })
   const getChangeColor = (type: FileChangeType) => {
     switch (type) {
       case 'created':
-        return 'var(--aurora-common-diffAdded)';
+        return 'var(--aurora-common-diff-added)';
       case 'modified':
-        return 'var(--aurora-common-diffModified)';
+        return 'var(--aurora-common-diff-modified)';
       case 'deleted':
-        return 'var(--aurora-common-diffRemoved)';
+        return 'var(--aurora-common-diff-removed)';
     }
   };
 
@@ -170,7 +170,7 @@ export const AgentChangesTree: React.FC<AgentChangesTreeProps> = ({ className })
               className="text-[10px] px-1.5 py-0.5 rounded-full"
               style={{
                 background: 'var(--aurora-common-primary)',
-                color: 'var(--aurora-common-primaryForeground)',
+                color: 'var(--aurora-common-primary-foreground)',
               }}
             >
               {totalChanges}
@@ -179,7 +179,7 @@ export const AgentChangesTree: React.FC<AgentChangesTreeProps> = ({ className })
         </div>
         <div className="flex items-center gap-1">
           <button
-            className="p-1.5 rounded hover:bg-white/10 transition-colors"
+            className="p-1.5 rounded hover:bg-input/50 transition-colors"
             title="Refresh"
             style={{ color: 'var(--aurora-sidebar-foreground)' }}
           >
@@ -196,7 +196,7 @@ export const AgentChangesTree: React.FC<AgentChangesTreeProps> = ({ className })
           >
             <FileEdit
               className="w-8 h-8 mb-2"
-              style={{ color: 'var(--aurora-common-mutedForeground)', opacity: 0.5 }}
+              style={{ color: 'var(--aurora-common-muted-foreground)', opacity: 0.5 }}
             />
             <p
               className="text-sm font-medium mb-1"
@@ -220,7 +220,7 @@ export const AgentChangesTree: React.FC<AgentChangesTreeProps> = ({ className })
                 count={grouped.modified.length}
                 isExpanded={expandedSections.has('modified')}
                 onToggle={() => toggleSection('modified')}
-                color="var(--aurora-common-diffModified)"
+                color="var(--aurora-common-diff-modified)"
               >
                 {grouped.modified.map((change) => (
                   <FileItem
@@ -240,7 +240,7 @@ export const AgentChangesTree: React.FC<AgentChangesTreeProps> = ({ className })
                 count={grouped.created.length}
                 isExpanded={expandedSections.has('created')}
                 onToggle={() => toggleSection('created')}
-                color="var(--aurora-common-diffAdded)"
+                color="var(--aurora-common-diff-added)"
               >
                 {grouped.created.map((change) => (
                   <FileItem
@@ -260,7 +260,7 @@ export const AgentChangesTree: React.FC<AgentChangesTreeProps> = ({ className })
                 count={grouped.deleted.length}
                 isExpanded={expandedSections.has('deleted')}
                 onToggle={() => toggleSection('deleted')}
-                color="var(--aurora-common-diffRemoved)"
+                color="var(--aurora-common-diff-removed)"
               >
                 {grouped.deleted.map((change) => (
                   <FileItem
@@ -306,7 +306,7 @@ const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
     >
       <button
         onClick={onToggle}
-        className="w-full px-3 py-2 flex items-center gap-2 hover:bg-white/5 transition-colors cursor-pointer select-none"
+        className="w-full px-3 py-2 flex items-center gap-2 hover:bg-sidebar-item-hover transition-colors cursor-pointer select-none"
       >
         {isExpanded ? (
           <ChevronDown
@@ -329,7 +329,7 @@ const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
           className="text-[10px] px-1.5 py-0.5 rounded-full"
           style={{
             background: color,
-            color: 'white',
+            color: 'var(--aurora-common-primary-foreground)',
           }}
         >
           {count}
@@ -389,7 +389,7 @@ const FileItem: React.FC<FileItemProps> = ({ change, onClick, color, disabled })
   return (
     <div
       onClick={disabled ? undefined : onClick}
-      className={`group flex items-center gap-2 px-4 py-1.5 transition-colors ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-white/5 cursor-pointer'}`}
+      className={`group flex items-center gap-2 px-4 py-1.5 transition-colors ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-sidebar-item-hover cursor-pointer'}`}
     >
       <img
         src={getIconUrl(getIconName(change.fileName, false))}
@@ -407,7 +407,7 @@ const FileItem: React.FC<FileItemProps> = ({ change, onClick, color, disabled })
         {dirPath && (
           <span
             className="text-[10px] truncate block"
-            style={{ color: 'var(--aurora-common-mutedForeground)' }}
+            style={{ color: 'var(--aurora-common-muted-foreground)' }}
           >
             {dirPath}
           </span>

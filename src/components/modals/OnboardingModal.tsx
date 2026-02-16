@@ -28,7 +28,6 @@ import {
   FolderOpen,
   Keyboard,
   Settings,
-  Sparkles,
   Terminal,
   Zap
 } from 'lucide-react';
@@ -95,7 +94,6 @@ export const OnboardingModal: React.FC = () => {
 
   const handleOpenSettings = () => {
     setSettingsOpen(true);
-    setHasSeenOnboarding(true);
   };
 
   const handleOpenWorkspace = async () => {
@@ -141,7 +139,7 @@ export const OnboardingModal: React.FC = () => {
           <aside className="w-full lg:w-[320px] border-b lg:border-b-0 lg:border-r border-border bg-editor px-6 py-7">
             <div className="flex items-center gap-2 mb-8">
               <div className="h-8 w-8 rounded-lg bg-primary/15 border border-primary/30 flex items-center justify-center">
-                <Sparkles className="w-4 h-4 text-primary" />
+                <img src="/empty-state.png" alt="Onboarding" className="w-5 h-5 object-contain" />
               </div>
               <div className="sora-font text-lg font-bold tracking-tight">
                 <span className="text-primary">Aurora</span>
@@ -210,6 +208,13 @@ export const OnboardingModal: React.FC = () => {
                       <p className="text-base text-text-secondary max-w-2xl">
                         Aurora combines editing, terminal, Git, and AI execution in one workspace. This setup takes less than a minute.
                       </p>
+                      <div className="mt-6 inline-flex items-center justify-center rounded-2xl border border-border bg-editor/70 p-3 shadow-premium">
+                        <img
+                          src="/empty-state.png"
+                          alt="Aurora empty state"
+                          className="w-24 h-24 object-contain"
+                        />
+                      </div>
                     </div>
 
                     <div className="grid md:grid-cols-3 gap-3">

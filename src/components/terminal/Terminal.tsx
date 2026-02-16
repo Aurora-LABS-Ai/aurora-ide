@@ -650,7 +650,7 @@ export const TerminalPanel: React.FC = () => {
               onClick={handlePlusClick}
               className={clsx(
                 "h-[24px] px-2 flex items-center gap-1 rounded text-text-primary transition-colors",
-                showProfileMenu ? "bg-input text-white" : "hover:bg-input"
+                showProfileMenu ? "bg-input text-text-primary" : "hover:bg-input"
               )}
               title="New Terminal Profile"
             >
@@ -686,7 +686,7 @@ export const TerminalPanel: React.FC = () => {
 
           <button
             onClick={closeTerminal}
-            className="h-[24px] w-[24px] flex items-center justify-center text-text-secondary hover:text-text-primary rounded hover:bg-danger hover:text-white transition-colors"
+            className="h-[24px] w-[24px] flex items-center justify-center text-text-secondary hover:text-text-primary rounded hover:bg-danger hover:text-danger-foreground transition-colors"
             title="Close Panel"
           >
             <X className="w-4 h-4" />
@@ -702,7 +702,7 @@ export const TerminalPanel: React.FC = () => {
             <div className="text-sm">No active terminal sessions</div>
             <button
               onClick={() => handleNewSession('powershell')}
-              className="px-4 py-1.5 bg-primary text-white text-xs rounded hover:bg-primary-hover transition-colors"
+              className="px-4 py-1.5 bg-primary text-primary-foreground text-xs rounded hover:bg-primary-hover transition-colors"
             >
               Start New Session
             </button>

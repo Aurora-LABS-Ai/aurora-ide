@@ -87,7 +87,7 @@ export const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
                 className="absolute w-px h-full transition-colors duration-300"
                 style={{
                     left: `${i * 12 + 15}px`,
-                    backgroundColor: 'var(--aurora-editor-indentGuide)',
+                    backgroundColor: 'var(--aurora-editor-indent-guide)',
                     opacity: 0.2 // Subtle opacity for guides
                 }}
             />
@@ -105,7 +105,7 @@ export const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
             style={{
                 paddingLeft: `${level * 12 + 12}px`,
                 backgroundColor: isSelected
-                    ? 'var(--aurora-sidebar-itemSelected)'
+                    ? 'var(--aurora-sidebar-item-selected)'
                     : undefined,
                 // Add hover effect manually to avoid conflict with selected state
                 cursor: 'pointer'
@@ -113,7 +113,7 @@ export const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
             // Hover effect via style injection on events to support complex gradients if needed, 
             // or rely on CSS classes if tokens support it. Here we use inline styles for strict token adherence.
             onMouseEnter={(e) => {
-                if (!isSelected) e.currentTarget.style.backgroundColor = 'var(--aurora-sidebar-itemHover)';
+                if (!isSelected) e.currentTarget.style.backgroundColor = 'var(--aurora-sidebar-item-hover)';
             }}
             onMouseLeave={(e) => {
                 if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent';
@@ -156,7 +156,7 @@ export const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
             <span className={clsx(
                 "text-[13px] truncate ml-1.5 z-10 relative transition-colors"
             )} style={{
-                color: isSelected ? 'var(--aurora-common-primaryForeground)' : 'var(--aurora-sidebar-foreground)',
+                color: isSelected ? 'var(--aurora-common-primary-foreground)' : 'var(--aurora-sidebar-foreground)',
                 fontWeight: isSelected ? 500 : 400
             }}>
                 {name}

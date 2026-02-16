@@ -12,6 +12,7 @@ import { useWorkspaceStore, loadFileContent } from '../../store/useWorkspaceStor
 
 interface GitFileItemProps {
   file: GitFileChange;
+  onOpenDiff?: (file: GitFileChange) => void;
   onStage?: () => void;
   onUnstage?: () => void;
   onDiscard?: () => void;
@@ -27,16 +28,6 @@ const statusColors: Record<string, string> = {
   conflicted: 'var(--aurora-common-error)',
 };
 
-const statusForegroundColors: Record<string, string> = {
-  modified: 'var(--aurora-common-diff-modified-foreground)',
-  added: 'var(--aurora-common-diff-added-foreground)',
-  deleted: 'var(--aurora-common-diff-removed-foreground)',
-  renamed: 'var(--aurora-common-info-foreground)',
-  copied: 'var(--aurora-common-info-foreground)',
-  untracked: 'var(--aurora-common-diff-added-foreground)',
-  conflicted: 'var(--aurora-common-error-foreground)',
-};
-
 const statusLabels: Record<string, string> = {
   modified: 'M',
   added: 'A',
@@ -49,6 +40,7 @@ const statusLabels: Record<string, string> = {
 
 export const GitFileItem: React.FC<GitFileItemProps> = ({
   file,
+  onOpenDiff,
   onStage,
   onUnstage,
   onDiscard,
@@ -59,7 +51,6 @@ export const GitFileItem: React.FC<GitFileItemProps> = ({
   const fileName = file.path.split(/[/\\]/).pop() || file.path;
   const directory = file.path.substring(0, file.path.length - fileName.length - 1);
   const statusColor = statusColors[file.status] || 'var(--aurora-sidebar-foreground)';
-  const statusForegroundColor = statusForegroundColors[file.status] || 'var(--aurora-sidebar-foreground)';
   const statusLabel = statusLabels[file.status] || '?';
 
   // Build full path for the file
@@ -67,8 +58,8 @@ export const GitFileItem: React.FC<GitFileItemProps> = ({
     ? `${rootPath}${rootPath.endsWith('/') || rootPath.endsWith('\\') ? '' : '/'}${file.path}`.replace(/\//g, '\\')
     : file.path;
 
-  // Handle clicking on a file - open it in editor
-  const handleClick = useCallback(async () => {
+  // Open file directly in editor (fallback when diff view is bypassed)
+  const openFileInEditor = useCallback(async () => {
     // Don't open deleted files
     if (file.status === 'deleted') {
       return;
@@ -86,6 +77,18 @@ export const GitFileItem: React.FC<GitFileItemProps> = ({
       openFile(fullPath, fileName, `// Failed to load file: ${err}`, undefined);
     }
   }, [file.status, fullPath, fileName, selectFile, openFile]);
+
+  // Default click opens split diff; Ctrl/Cmd+Click opens file content directly
+  const handleClick = useCallback(
+    async (event: React.MouseEvent) => {
+      if (onOpenDiff && !event.ctrlKey && !event.metaKey) {
+        onOpenDiff(file);
+        return;
+      }
+      await openFileInEditor();
+    },
+    [file, onOpenDiff, openFileInEditor]
+  );
 
   const handleStage = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -105,8 +108,12 @@ export const GitFileItem: React.FC<GitFileItemProps> = ({
   return (
     <div
       onClick={handleClick}
-      className="group px-3 py-1.5 flex items-center gap-2 hover:bg-white/5 cursor-pointer transition-colors"
-      title={file.path}
+      className="group px-3 py-1.5 flex items-center gap-2 hover:bg-sidebar-item-hover cursor-pointer transition-colors"
+      title={
+        onOpenDiff
+          ? `${file.path}\nClick to view split diff\nCtrl/Cmd+Click to open file`
+          : file.path
+      }
     >
       {/* Material File Icon */}
       <FileIcon
@@ -117,10 +124,7 @@ export const GitFileItem: React.FC<GitFileItemProps> = ({
 
       {/* File Info */}
       <div className="flex-1 min-w-0 flex items-center gap-2">
-        <span
-          className="text-[13px] truncate"
-          style={{ color: statusColor }}
-        >
+        <span className="text-[13px] truncate text-text-primary">
           {fileName}
         </span>
         {directory && (
@@ -138,7 +142,7 @@ export const GitFileItem: React.FC<GitFileItemProps> = ({
         {onDiscard && file.status !== 'untracked' && (
           <button
             onClick={handleDiscard}
-            className="p-1 rounded hover:bg-white/10 transition-colors"
+            className="p-1 rounded hover:bg-input/50 transition-colors"
             title="Discard Changes"
             style={{ color: 'var(--aurora-sidebar-foreground)' }}
           >
@@ -148,7 +152,7 @@ export const GitFileItem: React.FC<GitFileItemProps> = ({
         {onStage && (
           <button
             onClick={handleStage}
-            className="p-1 rounded hover:bg-white/10 transition-colors"
+            className="p-1 rounded hover:bg-input/50 transition-colors"
             title="Stage"
             style={{ color: 'var(--aurora-sidebar-foreground)' }}
           >
@@ -158,7 +162,7 @@ export const GitFileItem: React.FC<GitFileItemProps> = ({
         {onUnstage && (
           <button
             onClick={handleUnstage}
-            className="p-1 rounded hover:bg-white/10 transition-colors"
+            className="p-1 rounded hover:bg-input/50 transition-colors"
             title="Unstage"
             style={{ color: 'var(--aurora-sidebar-foreground)' }}
           >
@@ -169,11 +173,8 @@ export const GitFileItem: React.FC<GitFileItemProps> = ({
 
       {/* Status Badge */}
       <span
-        className="text-[10px] font-bold w-4 text-center shrink-0"
-        style={{ 
-          backgroundColor: statusColor,
-          color: statusForegroundColor
-        }}
+        className="text-[10px] font-semibold tabular-nums w-4 text-right shrink-0"
+        style={{ color: statusColor }}
         title={file.status}
       >
         {statusLabel}

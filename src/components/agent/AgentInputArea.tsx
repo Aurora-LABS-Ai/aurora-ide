@@ -169,7 +169,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
           transform: 'translateY(-100%)',
         }}
       >
-        <div className="px-3 py-2 border-b border-border bg-white/[0.02]">
+        <div className="px-3 py-2 border-b border-border bg-input/30">
           <span className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Select Model</span>
         </div>
 
@@ -194,7 +194,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
                 key={`${providerId}:${model}`}
                 onClick={() => handleModelSelect(providerId, model)}
                 className={clsx(
-                  "w-full px-3 py-2 text-left text-[12px] hover:bg-white/5 transition-colors flex items-center justify-between group",
+                  "w-full px-3 py-2 text-left text-[12px] hover:bg-sidebar-item-hover transition-colors flex items-center justify-between group",
                   selectedModel === `${providerId}:${model}` && "bg-primary/10 text-primary hover:bg-primary/15"
                 )}
               >
@@ -252,7 +252,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
             style={{
               backgroundColor: 'var(--aurora-chat-surface)',
               border: '1px solid transparent',
-              boxShadow: '0 0 0 1px var(--aurora-chat-surfaceBorder)',
+              boxShadow: '0 0 0 1px var(--aurora-chat-surface-border)',
             }}
           >
             <Sparkles size={10} className="text-primary" />
@@ -274,7 +274,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
             )}
             style={{
               boxShadow: providerSupportsThinking
-                ? '0 0 0 1px var(--aurora-chat-surfaceBorder)'
+                ? '0 0 0 1px var(--aurora-chat-surface-border)'
                 : 'none',
             }}
           >
@@ -299,7 +299,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
                     e.stopPropagation();
                     removeAttachedFile(file.path);
                   }}
-                  className="p-0.5 rounded-sm hover:bg-white/10 text-accent hover:text-error transition-colors"
+                  className="p-0.5 rounded-sm hover:bg-input/50 text-accent hover:text-error transition-colors"
                 >
                   <X size={10} />
                 </button>
@@ -319,7 +319,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
             onKeyDown={handleKeyDown}
             disabled={disabled || isLoading}
             placeholder={attachedFiles.length > 0 ? "Ask about these files..." : "Message Aurora (Type @ to add files)..."}
-            className="w-full bg-transparent text-[13px] text-text-primary resize-none outline-none min-h-[28px] max-h-[140px] placeholder:text-text-disabled font-light leading-relaxed"
+            className="w-full bg-transparent text-[13px] text-text-primary resize-none border-0 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0 focus-visible:border-0 focus-visible:outline-none min-h-[28px] max-h-[140px] placeholder:text-text-disabled font-light leading-relaxed"
             rows={1}
           />
         </div>
@@ -349,7 +349,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
                   size={16}
                   className={clsx(
                     "transition-all duration-300",
-                    (content.trim() || attachedFiles.length > 0) ? "text-white stroke-[2.5px]" : "opacity-50"
+                    (content.trim() || attachedFiles.length > 0) ? "text-primary-foreground stroke-[2.5px]" : "opacity-50"
                   )}
                 />
               </div>

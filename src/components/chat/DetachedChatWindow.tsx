@@ -128,7 +128,7 @@ export const DetachedChatWindow: React.FC = () => {
             className="flex items-center gap-2 px-3 h-full"
           >
             <img
-              src="/app-icon.svg"
+              src="/aurora_icon.png"
               alt="Aurora"
               className="w-5 h-5 shrink-0"
             />
@@ -179,7 +179,7 @@ export const DetachedChatWindow: React.FC = () => {
               className="w-10 h-full hover:bg-danger transition-colors flex items-center justify-center group"
               title="Close"
             >
-              <X className="w-4 h-4 text-text-secondary group-hover:text-white" />
+              <X className="w-4 h-4 text-text-secondary group-hover:text-danger-foreground" />
             </button>
           </div>
         </div>
@@ -193,7 +193,7 @@ export const DetachedChatWindow: React.FC = () => {
           <div className="h-full flex items-center justify-center">
             <div className="flex flex-col items-center gap-3">
               <img
-                src="/app-icon.svg"
+                src="/aurora_icon.png"
                 alt="Aurora"
                 className="w-8 h-8 animate-pulse"
               />

@@ -85,7 +85,7 @@ const AuroraRulesIcon: React.FC<{ className?: string }> = ({ className }) => (
 const AuroraFolderIcon: React.FC<{ open?: boolean; className?: string }> = ({ open, className }) => (
   <div className={`relative ${className}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
     <img
-      src="/app-icon.svg"
+      src="/aurora_icon.png"
       alt=".aurora"
       className={className}
       draggable={false}

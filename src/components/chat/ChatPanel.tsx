@@ -26,7 +26,6 @@ import { ChatMessages } from "./ChatMessages";
 import { ChatInput, type AttachedFile } from "./ChatInput";
 import { ChatHeader } from "./ChatHeader";
 import { ThreadHistory } from "./ThreadHistory";
-import { ToolApprovalBanner } from "./ToolApprovalBanner";
 import { useChatStore } from "../../store/useChatStore";
 const { setInputContent } = useChatStore.getState();
 import { useThreadStore, setStreamingState } from "../../store/useThreadStore";
@@ -43,6 +42,7 @@ import { buildQueryContext, getIDEContext, getIDEContextLight } from "../../serv
 import { chatSyncBroadcast } from "../../hooks/useRustChatSync";
 import { useTaskStore } from "../../store/useTaskStore";
 import { useMcpStore } from "../../store/useMcpStore";
+import { parseToolArguments, parseToolArgumentsForDisplay } from "../../lib/tool-arguments";
 import type {
   ToolProposal,
   ToolCall,
@@ -463,13 +463,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
                 args: {},
               };
 
-              try {
-                newToolCall.args = JSON.parse(
-                  toolCall.function.arguments || "{}",
-                );
-              } catch {
-                newToolCall.args = { raw: toolCall.function.arguments };
-              }
+              newToolCall.args = parseToolArgumentsForDisplay(
+                toolCall.function.arguments,
+              );
 
               addTimelineEvent({
                 type: "tool",
@@ -494,9 +490,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
               const rawArgs = toolCall.function.arguments || '';
               let parsedArgs = existingToolEvent.tool!.args || {};
 
-              try {
-                parsedArgs = JSON.parse(rawArgs);
-              } catch {
+              const parseResult = parseToolArguments(rawArgs);
+              if (parseResult.status !== 'invalid') {
+                parsedArgs = parseResult.args;
+              } else {
                 // JSON still incomplete - keep existing parsed args but update rawArgs
               }
 
@@ -529,7 +526,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
               description: `Execute ${toolName}`,
               riskLevel: toolName.startsWith('shell_') || toolName.includes('delete') ? 'high' : 'medium',
               status: "pending",
-              parameters: JSON.parse(toolCall.function.arguments || "{}"),
+              parameters: parseToolArgumentsForDisplay(toolCall.function.arguments),
             };
 
             pendingToolCallRef.current = { toolCall, resolve: null as any };
@@ -541,12 +538,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           },
           onToolExecutionStart: (toolCall) => {
             const toolName = toolCall.function.name;
-            let parsedArgs = {};
-            try {
-              parsedArgs = JSON.parse(toolCall.function.arguments || '{}');
-            } catch {
-              parsedArgs = { raw: toolCall.function.arguments };
-            }
+            const parsedArgs = parseToolArgumentsForDisplay(toolCall.function.arguments);
 
             // Add to audit store
             const riskLevel = toolRegistry.getRiskLevel(toolName);
@@ -827,12 +819,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
     const pending = pendingToolCallRef.current;
     if (pending?.toolCall) {
       const toolName = pending.toolCall.function.name;
-      let parsedArgs = {};
-      try {
-        parsedArgs = JSON.parse(pending.toolCall.function.arguments || '{}');
-      } catch {
-        parsedArgs = { raw: pending.toolCall.function.arguments };
-      }
+      const parsedArgs = parseToolArgumentsForDisplay(
+        pending.toolCall.function.arguments
+      );
 
       // Add rejection to audit store
       const auditStore = useAuditStore.getState();
@@ -880,16 +869,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       {/* Chat Content */}
       {isEmpty ? (
         <div className="flex-1 flex flex-col items-center justify-center px-6 relative overflow-hidden">
-          {/* Ambient Background Gradient */}
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 bg-primary/5 rounded-full blur-[100px] pointer-events-none" />
-
           <div className="relative z-10 flex flex-col items-center max-w-sm w-full">
-            <div className="w-20 h-20 mb-6 relative group cursor-default">
-              <div className="absolute inset-0 bg-primary/20 rounded-2xl blur-xl group-hover:bg-primary/30 transition-all duration-500" />
+            <div className="w-20 h-20 mb-6">
               <img
-                src="/app-icon.svg"
-                alt="Aurora"
-                className="relative z-10 w-full h-full drop-shadow-xl transform group-hover:scale-105 transition-transform duration-500"
+                src="/aurora_icon.png"
+                alt="Chat empty state"
+                className="w-full h-full object-contain opacity-85"
               />
             </div>
 
@@ -928,16 +913,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           </div>
         </div>
       ) : (
-        <ChatMessages messages={messages} />
-      )}
-
-      {/* Tool Approval Banner */}
-      {pendingApproval && (
-        <ToolApprovalBanner
-          proposal={pendingApproval}
-          onApprove={handleApprove}
-          onReject={handleReject}
-          onApproveRemember={handleApproveRemember}
+        <ChatMessages
+          messages={messages}
+          pendingApproval={pendingApproval}
+          onApprovePending={handleApprove}
+          onRejectPending={handleReject}
+          onApprovePendingRemember={handleApproveRemember}
         />
       )}
 

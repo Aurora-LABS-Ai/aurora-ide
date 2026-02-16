@@ -4,6 +4,7 @@
  */
 import { allTools } from "./definitions";
 import { getEnhancedToolRiskLevel } from "./definitions/risk-levels-enhanced";
+import { parseToolArguments } from "../lib/tool-arguments";
 import type { RegisteredTool, ToolCallRequest, ToolCallResult, ToolDefinition, ToolExecutor, TrackedToolCall } from "./types";
 
 class ToolRegistry {
@@ -41,16 +42,15 @@ class ToolRegistry {
     }
 
     // Parse arguments
-    let args: Record<string, any>;
-    try {
-      args = JSON.parse(toolCall.function.arguments);
-    } catch (e) {
+    const parsedArgsResult = parseToolArguments(toolCall.function.arguments);
+    if (parsedArgsResult.status === 'invalid') {
       return {
         tool_call_id: toolCall.id,
         role: 'tool',
         content: JSON.stringify({ error: 'Invalid JSON arguments' }),
       };
     }
+    const args = parsedArgsResult.args;
 
     // Track the tool call
     const trackedCall: TrackedToolCall = {

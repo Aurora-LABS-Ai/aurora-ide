@@ -99,6 +99,7 @@ impl<'a> SettingsRepository<'a> {
                 "projectLayoutEnabled" => settings.project_layout_enabled = serde_json::from_str(&setting.value).unwrap_or(settings.project_layout_enabled),
                 "uiFontFamily" => settings.ui_font_family = serde_json::from_str(&setting.value).unwrap_or(settings.ui_font_family.clone()),
                 "uiScale" => settings.ui_scale = serde_json::from_str(&setting.value).unwrap_or(settings.ui_scale),
+                "uiTextScale" => settings.ui_text_scale = serde_json::from_str(&setting.value).unwrap_or(settings.ui_text_scale),
                 "maxTokens" => settings.max_tokens = serde_json::from_str(&setting.value).unwrap_or(settings.max_tokens),
                 "temperature" => settings.temperature = serde_json::from_str(&setting.value).unwrap_or(settings.temperature),
                 "autoSave" => settings.auto_save = serde_json::from_str(&setting.value).unwrap_or(settings.auto_save),
@@ -125,6 +126,7 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting("projectLayoutEnabled", &serde_json::to_string(&settings.project_layout_enabled).unwrap_or_default())?;
         self.set_setting("uiFontFamily", &serde_json::to_string(&settings.ui_font_family).unwrap_or_default())?;
         self.set_setting("uiScale", &serde_json::to_string(&settings.ui_scale).unwrap_or_default())?;
+        self.set_setting("uiTextScale", &serde_json::to_string(&settings.ui_text_scale).unwrap_or_default())?;
         self.set_setting("maxTokens", &serde_json::to_string(&settings.max_tokens).unwrap_or_default())?;
         self.set_setting("temperature", &serde_json::to_string(&settings.temperature).unwrap_or_default())?;
         self.set_setting("autoSave", &serde_json::to_string(&settings.auto_save).unwrap_or_default())?;

@@ -88,7 +88,7 @@ export const CheckpointIndicator: React.FC<CheckpointIndicatorProps> = ({
         </button>
         <button
           onClick={() => setShowConfirm(false)}
-          className="px-2 py-0.5 text-[10px] bg-white/5 hover:bg-white/10 text-text-secondary rounded transition-colors"
+          className="px-2 py-0.5 text-[10px] bg-input/50 hover:bg-input text-text-secondary rounded transition-colors"
         >
           No
         </button>

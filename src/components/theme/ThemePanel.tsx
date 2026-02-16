@@ -267,7 +267,7 @@ export const ThemePanel: React.FC = () => {
             </div>
 
             {/* Tab Content */}
-            <div className="flex-1 overflow-hidden">
+            <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
                 {activeTab === 'themes' ? (
                     <ThemesTab
                         themes={themes}
@@ -338,7 +338,7 @@ const ThemesTab: React.FC<ThemesTabProps> = ({
             </div>
 
             <div
-                className="flex-1 overflow-y-auto p-2 space-y-2"
+                className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2"
                 onMouseLeave={onMouseLeave}
             >
                 {themes.map((theme) => {
@@ -384,7 +384,7 @@ const ThemesTab: React.FC<ThemesTabProps> = ({
                                         e.stopPropagation();
                                         onEdit(theme);
                                     }}
-                                    className="p-1.5 rounded-md hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors opacity-0 group-hover:opacity-100"
+                                    className="p-1.5 rounded-md hover:bg-input/50 text-text-secondary hover:text-text-primary transition-colors opacity-0 group-hover:opacity-100"
                                     title="Edit theme"
                                 >
                                     <PenLine size={14} />
@@ -505,7 +505,7 @@ const EditorTab: React.FC<EditorTabProps> = ({
     }, [flatColors]);
 
     return (
-        <div className="flex flex-col h-full">
+        <div className="flex flex-col h-full min-h-0">
             {/* Editor Header */}
             <div className="p-3 border-b border-border">
                 <div className="flex items-center justify-between">
@@ -550,7 +550,7 @@ const EditorTab: React.FC<EditorTabProps> = ({
 
             {/* Visual Editor */}
             {showVisualEditor ? (
-                <div className="flex-1 p-3 overflow-y-auto">
+                <div className="flex-1 min-h-0 p-3 overflow-y-auto">
                     {Object.entries(groupedColors).map(([category, colors]) => (
                         <div key={category} className="mb-4">
                             <div className="text-xs font-semibold uppercase tracking-wider text-text-secondary mb-2">
@@ -586,7 +586,7 @@ const EditorTab: React.FC<EditorTabProps> = ({
                 </div>
             ) : (
                 /* JSON Textarea */
-                <div className="flex-1 p-3 overflow-hidden flex flex-col">
+                <div className="flex-1 min-h-0 p-3 overflow-hidden flex flex-col">
                     <textarea
                         value={jsonInput}
                         onChange={(e) => onJsonChange(e.target.value)}

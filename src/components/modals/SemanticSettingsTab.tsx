@@ -423,7 +423,7 @@ export const SemanticSettingsTab: React.FC = () => {
                 className={clsx(
                   "px-2 py-1.5 rounded border transition-colors",
                   modelPathDirty
-                    ? "bg-primary border-primary text-white hover:bg-primary/80"
+                    ? "bg-primary border-primary text-primary-foreground hover:bg-primary/80"
                     : "bg-input border-input-border text-text-disabled cursor-not-allowed"
                 )}
                 title={modelPathDirty ? "Save model path" : "No changes to save"}
@@ -551,7 +551,7 @@ export const SemanticSettingsTab: React.FC = () => {
               ) : (
                 <button
                   onClick={handleStartIndexing}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                   Re-index
@@ -565,7 +565,7 @@ export const SemanticSettingsTab: React.FC = () => {
             <button
               onClick={handleStartIndexing}
               disabled={isIndexing}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors disabled:opacity-50"
             >
               {isIndexing ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -810,7 +810,7 @@ export const SemanticSettingsTab: React.FC = () => {
                         <div className="px-3 py-2 border-t border-border flex justify-end">
                           <button
                             onClick={() => setShowDirPicker(false)}
-                            className="px-3 py-1 text-xs font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors"
+                            className="px-3 py-1 text-xs font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors"
                           >
                             Done
                           </button>

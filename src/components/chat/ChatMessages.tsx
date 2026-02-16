@@ -23,13 +23,23 @@
 import React, { useRef, useEffect, useCallback } from 'react';
 import { ChatMessage } from './ChatMessage';
 import { useChatStore } from '../../store/useChatStore';
-import type { Message } from '../../types';
+import type { Message, ToolProposal } from '../../types';
 
 interface ChatMessagesProps {
   messages: Message[];
+  pendingApproval?: ToolProposal | null;
+  onApprovePending?: () => void;
+  onRejectPending?: () => void;
+  onApprovePendingRemember?: () => void;
 }
 
-export const ChatMessages: React.FC<ChatMessagesProps> = ({ messages }) => {
+export const ChatMessages: React.FC<ChatMessagesProps> = ({
+  messages,
+  pendingApproval = null,
+  onApprovePending,
+  onRejectPending,
+  onApprovePendingRemember,
+}) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const { isLoading } = useChatStore();
@@ -97,6 +107,10 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({ messages }) => {
             message={msg}
             isStreaming={isLoading}
             isLastMessage={index === messages.length - 1}
+            pendingApproval={pendingApproval}
+            onApprovePending={onApprovePending}
+            onRejectPending={onRejectPending}
+            onApprovePendingRemember={onApprovePendingRemember}
           />
         ))}
         <div ref={bottomRef} className="h-4" />

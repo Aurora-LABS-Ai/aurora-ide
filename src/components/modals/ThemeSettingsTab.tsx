@@ -186,7 +186,7 @@ export const ThemeSettingsTab: React.FC = () => {
                         />
                         <button
                             onClick={handleImportClick}
-                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors"
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors"
                         >
                             <Upload size={12} />
                             Import Theme

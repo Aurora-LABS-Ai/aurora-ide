@@ -321,7 +321,7 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ initialConfig, onSave, on
             className={clsx(
               'px-2 py-0.5 text-[10px] rounded transition-colors',
               mode === 'form'
-                ? 'bg-primary text-white'
+                ? 'bg-primary text-primary-foreground'
                 : 'text-text-secondary hover:text-text-primary'
             )}
           >
@@ -332,7 +332,7 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ initialConfig, onSave, on
             className={clsx(
               'px-2 py-0.5 text-[10px] rounded transition-colors',
               mode === 'json'
-                ? 'bg-primary text-white'
+                ? 'bg-primary text-primary-foreground'
                 : 'text-text-secondary hover:text-text-primary'
             )}
           >
@@ -466,7 +466,7 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ initialConfig, onSave, on
             <button
               onClick={handleFormSubmit}
               disabled={!name.trim() || (transport === 'stdio' ? !command.trim() : !url.trim())}
-              className="px-3 py-1 text-xs font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors disabled:opacity-50"
+              className="px-3 py-1 text-xs font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors disabled:opacity-50"
             >
               Add Server
             </button>
@@ -513,7 +513,7 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ initialConfig, onSave, on
             <button
               onClick={handleJsonSubmit}
               disabled={!jsonInput.trim()}
-              className="px-3 py-1 text-xs font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors disabled:opacity-50"
+              className="px-3 py-1 text-xs font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors disabled:opacity-50"
             >
               Add Server
             </button>
@@ -890,7 +890,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
                 </button>
                 <button
                   onClick={handleSaveEdit}
-                  className="px-2.5 py-1 text-[10px] font-semibold text-white bg-primary hover:bg-primary/80 rounded"
+                  className="px-2.5 py-1 text-[10px] font-semibold text-primary-foreground bg-primary hover:bg-primary/80 rounded"
                 >
                   <span className="inline-flex items-center gap-1">
                     <Save className="w-3 h-3" />
@@ -1061,7 +1061,7 @@ const MarketplaceCard: React.FC<MarketplaceCardProps> = ({ item, isInstalled, on
           "w-full py-1.5 rounded text-[10px] font-medium transition-colors flex items-center justify-center gap-1.5",
           isInstalled
             ? "bg-input text-text-disabled cursor-default"
-            : "bg-primary text-white hover:bg-primary/80"
+            : "bg-primary text-primary-foreground hover:bg-primary/80"
         )}
       >
         {isInstalled ? (
@@ -1225,7 +1225,7 @@ export const McpSettingsTab: React.FC = () => {
                 setInstallConfig(undefined);
                 setIsAddingServer(true);
               }}
-              className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors"
+              className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors"
             >
               <Plus className="w-3 h-3" />
               Add Custom Server

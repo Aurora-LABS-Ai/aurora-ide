@@ -28,11 +28,11 @@ import { toolRegistry } from '../../tools';
 import { registerAllExecutors } from '../../tools';
 import { buildQueryContext, getIDEContext, getIDEContextLight } from '../../services/context-builder';
 import { chatSyncBroadcast } from '../../hooks/useRustChatSync';
+import { parseToolArguments, parseToolArgumentsForDisplay } from '../../lib/tool-arguments';
 import { AgentChangesTree } from './AgentChangesTree';
 import { AgentInputArea, type AttachedFile } from './AgentInputArea';
 import { ChatMessage } from '../chat/ChatMessage';
 import { ThreadHistory } from '../chat/ThreadHistory';
-import { ToolApprovalBanner } from '../chat/ToolApprovalBanner';
 import type { ToolProposal, ToolCall, Message, TimelineEvent } from '../../types';
 
 // Initialize executors on module load
@@ -384,11 +384,7 @@ export const AgentModeLayout: React.FC = () => {
                 status: 'pending',
                 args: {},
               };
-              try {
-                newToolCall.args = JSON.parse(toolCall.function.arguments || '{}');
-              } catch {
-                newToolCall.args = { raw: toolCall.function.arguments };
-              }
+              newToolCall.args = parseToolArgumentsForDisplay(toolCall.function.arguments);
               addTimelineEvent({ type: 'tool', tool: newToolCall });
 
               if (
@@ -401,9 +397,10 @@ export const AgentModeLayout: React.FC = () => {
             } else {
               const rawArgs = toolCall.function.arguments || '';
               let parsedArgs = existingToolEvent.tool!.args || {};
-              try {
-                parsedArgs = JSON.parse(rawArgs);
-              } catch {}
+              const parseResult = parseToolArguments(rawArgs);
+              if (parseResult.status !== 'invalid') {
+                parsedArgs = parseResult.args;
+              }
               const updatedTool = { ...existingToolEvent.tool!, args: parsedArgs, rawArgs };
               updateTimelineEvent(existingToolEvent.id, { tool: updatedTool });
             }
@@ -420,7 +417,7 @@ export const AgentModeLayout: React.FC = () => {
               description: `Execute ${toolName}`,
               riskLevel: toolName.startsWith('shell_') || toolName.includes('delete') ? 'high' : 'medium',
               status: 'pending',
-              parameters: JSON.parse(toolCall.function.arguments || '{}'),
+              parameters: parseToolArgumentsForDisplay(toolCall.function.arguments),
             };
 
             pendingToolCallRef.current = { toolCall, resolve: null as any };
@@ -431,12 +428,7 @@ export const AgentModeLayout: React.FC = () => {
           },
           onToolExecutionStart: (toolCall) => {
             const toolName = toolCall.function.name;
-            let parsedArgs = {};
-            try {
-              parsedArgs = JSON.parse(toolCall.function.arguments || '{}');
-            } catch {
-              parsedArgs = { raw: toolCall.function.arguments };
-            }
+            const parsedArgs = parseToolArgumentsForDisplay(toolCall.function.arguments);
             const riskLevel = toolRegistry.getRiskLevel(toolName);
             const auditId = auditStore.addEntry({
               toolName,
@@ -642,12 +634,9 @@ export const AgentModeLayout: React.FC = () => {
     const pending = pendingToolCallRef.current;
     if (pending?.toolCall) {
       const toolName = pending.toolCall.function.name;
-      let parsedArgs = {};
-      try {
-        parsedArgs = JSON.parse(pending.toolCall.function.arguments || '{}');
-      } catch {
-        parsedArgs = { raw: pending.toolCall.function.arguments };
-      }
+      const parsedArgs = parseToolArgumentsForDisplay(
+        pending.toolCall.function.arguments
+      );
       const auditStore = useAuditStore.getState();
       const riskLevel = toolRegistry.getRiskLevel(toolName);
       auditStore.addEntry({
@@ -699,7 +688,7 @@ export const AgentModeLayout: React.FC = () => {
       <div
         className="h-10 px-4 flex items-center justify-between border-b shrink-0"
         style={{
-          background: 'var(--aurora-titleBar-background)',
+          background: 'var(--aurora-title-bar-background)',
           borderColor: 'var(--aurora-common-border)',
         }}
       >
@@ -715,20 +704,20 @@ export const AgentModeLayout: React.FC = () => {
           <div>
             <h2
               className="text-sm font-semibold"
-              style={{ color: 'var(--aurora-titleBar-foreground)' }}
+              style={{ color: 'var(--aurora-title-bar-foreground)' }}
             >
               {title}
             </h2>
             {hasMessages && (
               <div className="flex items-center gap-2 text-[10px]">
                 {totalTurns > 0 && (
-                  <span style={{ color: 'var(--aurora-common-mutedForeground)' }}>
+                  <span style={{ color: 'var(--aurora-common-muted-foreground)' }}>
                     {totalTurns} turn{totalTurns !== 1 ? 's' : ''}
                   </span>
                 )}
                 {summarizedTurns > 0 && (
                   <>
-                    <span style={{ color: 'var(--aurora-common-mutedForeground)' }}>|</span>
+                    <span style={{ color: 'var(--aurora-common-muted-foreground)' }}>|</span>
                     <span style={{ color: contextColors.low }} className="flex items-center gap-0.5">
                       <Zap size={8} />
                       {summarizedTurns}
@@ -737,7 +726,7 @@ export const AgentModeLayout: React.FC = () => {
                 )}
                 {usedContextTokens > 0 && (
                   <>
-                    <span style={{ color: 'var(--aurora-common-mutedForeground)' }}>|</span>
+                    <span style={{ color: 'var(--aurora-common-muted-foreground)' }}>|</span>
                     <span className="font-mono" style={{ color: getUsageColor() }}>
                       {formatTokens(usedContextTokens)}/{formatTokens(contextWindow)}
                     </span>
@@ -752,17 +741,17 @@ export const AgentModeLayout: React.FC = () => {
         <div className="flex items-center gap-1">
           <button
             onClick={() => setIsHistoryOpen(true)}
-            className="w-7 h-7 rounded-md flex items-center justify-center transition-all duration-200 hover:bg-white/5"
+            className="w-7 h-7 rounded-md flex items-center justify-center transition-all duration-200 hover:bg-input/50"
             style={{ 
-              color: 'var(--aurora-common-mutedForeground)',
+              color: 'var(--aurora-common-muted-foreground)',
               border: '1px solid transparent',
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.color = 'var(--aurora-titleBar-foreground)';
+              e.currentTarget.style.color = 'var(--aurora-title-bar-foreground)';
               e.currentTarget.style.borderColor = 'var(--aurora-common-border)';
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.color = 'var(--aurora-common-mutedForeground)';
+              e.currentTarget.style.color = 'var(--aurora-common-muted-foreground)';
               e.currentTarget.style.borderColor = 'transparent';
             }}
             title="Chat History (Ctrl+H)"
@@ -775,15 +764,15 @@ export const AgentModeLayout: React.FC = () => {
             style={{
               background: 'rgba(var(--aurora-common-primary-rgb, 6, 182, 212), 0.1)',
               color: 'var(--aurora-common-primary)',
-              border: '1px solid rgba(255, 255, 255, 0.05)',
+              border: '1px solid var(--aurora-common-border)',
             }}
             onMouseEnter={(e) => {
               e.currentTarget.style.background = 'rgba(var(--aurora-common-primary-rgb, 6, 182, 212), 0.2)';
-              e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+              e.currentTarget.style.borderColor = 'var(--aurora-common-border-hover)';
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.background = 'rgba(var(--aurora-common-primary-rgb, 6, 182, 212), 0.1)';
-              e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.05)';
+              e.currentTarget.style.borderColor = 'var(--aurora-common-border)';
             }}
             title="New Chat"
           >
@@ -791,9 +780,9 @@ export const AgentModeLayout: React.FC = () => {
           </button>
           <button
             onClick={toggleAgentMode}
-            className="w-7 h-7 rounded-md flex items-center justify-center transition-all duration-200 hover:bg-white/5"
+            className="w-7 h-7 rounded-md flex items-center justify-center transition-all duration-200 hover:bg-input/50"
             style={{ 
-              color: 'var(--aurora-common-mutedForeground)',
+              color: 'var(--aurora-common-muted-foreground)',
               border: '1px solid transparent',
             }}
             onMouseEnter={(e) => {
@@ -802,7 +791,7 @@ export const AgentModeLayout: React.FC = () => {
               e.currentTarget.style.background = 'rgba(var(--aurora-common-primary-rgb, 6, 182, 212), 0.1)';
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.color = 'var(--aurora-common-mutedForeground)';
+              e.currentTarget.style.color = 'var(--aurora-common-muted-foreground)';
               e.currentTarget.style.borderColor = 'transparent';
               e.currentTarget.style.background = 'transparent';
             }}
@@ -828,9 +817,9 @@ export const AgentModeLayout: React.FC = () => {
                   <div className="flex flex-col items-center max-w-lg w-full">
                     <div className="w-20 h-20 mb-6">
                       <img
-                        src="/app-icon.svg"
-                        alt="Aurora"
-                        className="w-full h-full"
+                        src="/aurora_icon.png"
+                        alt="Agent empty state"
+                        className="w-full h-full object-contain opacity-85"
                       />
                     </div>
                     <h1
@@ -841,7 +830,7 @@ export const AgentModeLayout: React.FC = () => {
                     </h1>
                     <p
                       className="text-sm text-center leading-relaxed max-w-[320px]"
-                      style={{ color: 'var(--aurora-common-mutedForeground)' }}
+                      style={{ color: 'var(--aurora-common-muted-foreground)' }}
                     >
                       Your advanced AI engineering companion for complex tasks.
                     </p>
@@ -857,21 +846,15 @@ export const AgentModeLayout: React.FC = () => {
                         isStreaming={isLoading}
                         isLastMessage={index === messages.length - 1}
                         toolVariant="cards"
+                        pendingApproval={pendingApproval}
+                        onApprovePending={handleApprove}
+                        onRejectPending={handleReject}
+                        onApprovePendingRemember={handleApproveRemember}
                       />
                     ))}
                     <div ref={bottomRef} className="h-4" />
                   </div>
                 </div>
-              )}
-
-              {/* Tool Approval Banner */}
-              {pendingApproval && (
-                <ToolApprovalBanner
-                  proposal={pendingApproval}
-                  onApprove={handleApprove}
-                  onReject={handleReject}
-                  onApproveRemember={handleApproveRemember}
-                />
               )}
 
               {/* Input - Fixed at bottom, centered */}

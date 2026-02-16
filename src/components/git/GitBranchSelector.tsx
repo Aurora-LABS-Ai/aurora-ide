@@ -93,7 +93,7 @@ export const GitBranchSelector: React.FC = () => {
       {/* Branch Button */}
       <button
         onClick={handleToggle}
-        className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-white/5 transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-sidebar-item-hover transition-colors"
         style={{
           background: 'var(--aurora-editor-background)',
           border: '1px solid var(--aurora-common-border)',
@@ -146,7 +146,7 @@ export const GitBranchSelector: React.FC = () => {
           ) : (
             <button
               onClick={() => setIsCreating(true)}
-              className="w-full px-3 py-2 flex items-center gap-2 hover:bg-white/5 transition-colors"
+              className="w-full px-3 py-2 flex items-center gap-2 hover:bg-sidebar-item-hover transition-colors"
             >
               <Plus className="w-4 h-4" style={{ color: 'var(--aurora-common-primary)' }} />
               <span className="text-[13px]" style={{ color: 'var(--aurora-sidebar-foreground)' }}>
@@ -173,7 +173,7 @@ export const GitBranchSelector: React.FC = () => {
                 <button
                   key={branch.name}
                   onClick={() => handleCheckout(branch.name, false)}
-                  className="w-full px-3 py-1.5 flex items-center gap-2 hover:bg-white/5 transition-colors"
+                  className="w-full px-3 py-1.5 flex items-center gap-2 hover:bg-sidebar-item-hover transition-colors"
                 >
                   {branch.isCurrent ? (
                     <Check className="w-4 h-4" style={{ color: 'var(--aurora-common-success)' }} />
@@ -212,7 +212,7 @@ export const GitBranchSelector: React.FC = () => {
                 <button
                   key={branch.name}
                   onClick={() => handleCheckout(branch.name, true)}
-                  className="w-full px-3 py-1.5 flex items-center gap-2 hover:bg-white/5 transition-colors"
+                  className="w-full px-3 py-1.5 flex items-center gap-2 hover:bg-sidebar-item-hover transition-colors"
                 >
                   <div className="w-4" />
                   <span

@@ -175,13 +175,12 @@ export const CodeEditor: React.FC = () => {
     return (
       <div className="flex-1 flex items-center justify-center text-text-secondary bg-editor">
         <div className="text-center max-w-xs">
-          {/* Icon with glow effect - matching chat panel style */}
-          <div className="w-16 h-16 mx-auto mb-5 relative group">
-            <div className="absolute inset-0 bg-primary/15 rounded-2xl blur-xl" />
+          {/* Empty state icon */}
+          <div className="w-16 h-16 mx-auto mb-5">
             <img
-              src="/app-icon.svg"
-              alt="Aurora"
-              className="relative z-10 w-full h-full drop-shadow-lg"
+              src="/aurora_icon.png"
+              alt="Editor empty state"
+              className="w-full h-full object-contain opacity-85"
             />
           </div>
           <p className="text-sm text-text-primary mb-1">Select a file to start editing</p>

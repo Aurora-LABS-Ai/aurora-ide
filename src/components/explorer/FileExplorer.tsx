@@ -217,7 +217,7 @@ export const FileExplorer: React.FC = () => {
             : 'text-text-disabled hover:text-text-secondary hover:bg-sidebar-item-hover'
             }`}
           style={{
-            backgroundColor: menuPosition ? 'var(--aurora-sidebar-itemSelected)' : undefined
+            backgroundColor: menuPosition ? 'var(--aurora-sidebar-item-selected)' : undefined
           }}
           title="More Actions"
         >

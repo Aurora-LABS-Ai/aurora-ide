@@ -132,7 +132,7 @@ export const TitleBar: React.FC = () => {
           <div className="h-4 w-[1px] bg-border mx-1" />
 
           <img
-            src="/app-icon.svg"
+            src="/aurora_icon.png"
             alt="Aurora"
             className="w-5 h-5 shrink-0"
           />
@@ -220,7 +220,7 @@ export const TitleBar: React.FC = () => {
             className="w-12 h-full hover:bg-danger transition-colors flex items-center justify-center group"
             title="Close"
           >
-            <X className="w-4 h-4 text-text-secondary group-hover:text-white" />
+            <X className="w-4 h-4 text-text-secondary group-hover:text-danger-foreground" />
           </button>
         </div>
       </div>

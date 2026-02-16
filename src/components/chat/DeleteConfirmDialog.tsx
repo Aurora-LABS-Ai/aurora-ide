@@ -107,7 +107,7 @@ export const DeleteConfirmDialog: React.FC<DeleteConfirmDialogProps> = ({
           </button>
           <button
             onClick={onConfirm}
-            className="px-4 py-2 rounded-xl text-[13px] font-medium text-white bg-danger hover:bg-danger/80 transition-colors"
+            className="px-4 py-2 rounded-xl text-[13px] font-medium text-danger-foreground bg-danger hover:bg-danger/80 transition-colors"
           >
             Delete
           </button>

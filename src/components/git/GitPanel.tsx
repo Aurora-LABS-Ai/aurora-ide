@@ -5,7 +5,7 @@
  * Use theme tokens via CSS variables.
  */
 
-import React, { useCallback } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   RefreshCw,
   Plus,
@@ -18,11 +18,28 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useGitStore } from '../../store/useGitStore';
+import { useWorkspaceStore } from '../../store/useWorkspaceStore';
+import { getLanguageFromExtension } from '../../lib/file-utils';
+import { gitService, type GitFileChange } from '../../services/git';
 import { GitFileItem } from './GitFileItem';
 import { GitCommitInput } from './GitCommitInput';
 import { GitBranchSelector } from './GitBranchSelector';
+import { GitDiffModal } from './GitDiffModal';
+
+interface GitDiffPreviewState {
+  error: string | null;
+  filePath: string;
+  isLoading: boolean;
+  language: string;
+  modified: string;
+  oldPath?: string;
+  original: string;
+  staged: boolean;
+  status: string;
+}
 
 export const GitPanel: React.FC = () => {
+  const rootPath = useWorkspaceStore((state) => state.rootPath);
   const {
     isLoading,
     isInitialized,
@@ -42,6 +59,13 @@ export const GitPanel: React.FC = () => {
     toggleSection,
     setCommitMessage,
   } = useGitStore();
+  const [diffPreview, setDiffPreview] = useState<GitDiffPreviewState | null>(null);
+  const diffRequestIdRef = useRef(0);
+  const stagedCount = status?.staged.length ?? 0;
+  const unstagedCount = (status?.unstaged.length ?? 0) + (status?.untracked.length ?? 0);
+  const conflictedCount = status?.conflicted.length ?? 0;
+  const canCommitChanges = stagedCount > 0 || unstagedCount > 0;
+  const commitDisabledByState = conflictedCount > 0 || !canCommitChanges;
 
   const handleRefresh = useCallback(() => {
     refresh();
@@ -65,12 +89,20 @@ export const GitPanel: React.FC = () => {
 
   const handleCommit = useCallback(async () => {
     if (!commitMessage.trim()) return;
+    if (conflictedCount > 0) return;
+
     try {
-      await commit(commitMessage);
+      // Smart commit: if nothing is staged but there are local changes,
+      // stage everything first so commit is never blocked by section state.
+      if (stagedCount === 0 && unstagedCount > 0) {
+        await stageAll();
+      }
+
+      await commit(commitMessage.trim());
     } catch (error) {
       console.error('Failed to commit:', error);
     }
-  }, [commit, commitMessage]);
+  }, [commit, commitMessage, conflictedCount, stagedCount, stageAll, unstagedCount]);
 
   const handlePull = useCallback(async () => {
     try {
@@ -87,6 +119,70 @@ export const GitPanel: React.FC = () => {
       console.error('Failed to push:', error);
     }
   }, [push]);
+
+  const handleCloseDiff = useCallback(() => {
+    diffRequestIdRef.current += 1;
+    setDiffPreview(null);
+  }, []);
+
+  const handleOpenDiff = useCallback(async (file: GitFileChange) => {
+    const language = getLanguageFromExtension(file.path) || 'plaintext';
+    const requestId = ++diffRequestIdRef.current;
+
+    setDiffPreview({
+      error: null,
+      filePath: file.path,
+      isLoading: true,
+      language,
+      modified: '',
+      oldPath: file.oldPath,
+      original: '',
+      staged: file.staged,
+      status: file.status,
+    });
+
+    if (!rootPath) {
+      setDiffPreview((current) =>
+        current && diffRequestIdRef.current === requestId
+          ? {
+              ...current,
+              error: 'No workspace is open. Unable to load diff preview.',
+              isLoading: false,
+            }
+          : current
+      );
+      return;
+    }
+
+    try {
+      const versions = await gitService.getFileVersions(rootPath, file.path, file.staged, file.oldPath);
+      if (diffRequestIdRef.current !== requestId) return;
+
+      setDiffPreview((current) =>
+        current
+          ? {
+              ...current,
+              error: null,
+              isLoading: false,
+              modified: versions.modifiedContent,
+              original: versions.originalContent,
+            }
+          : current
+      );
+    } catch (error) {
+      if (diffRequestIdRef.current !== requestId) return;
+      const message = error instanceof Error ? error.message : String(error);
+      setDiffPreview((current) =>
+        current
+          ? {
+              ...current,
+              error: message || 'Failed to load diff preview.',
+              isLoading: false,
+            }
+          : current
+      );
+    }
+  }, [rootPath]);
 
   // Not initialized yet
   if (!isInitialized) {
@@ -125,10 +221,6 @@ export const GitPanel: React.FC = () => {
     );
   }
 
-  const stagedCount = status?.staged.length ?? 0;
-  const unstagedCount = (status?.unstaged.length ?? 0) + (status?.untracked.length ?? 0);
-  const conflictedCount = status?.conflicted.length ?? 0;
-
   return (
     <div className="h-full flex flex-col" style={{ background: 'var(--aurora-sidebar-background)' }}>
       {/* Header */}
@@ -152,7 +244,7 @@ export const GitPanel: React.FC = () => {
           value={commitMessage}
           onChange={setCommitMessage}
           onCommit={handleCommit}
-          disabled={stagedCount === 0}
+          disabled={commitDisabledByState}
         />
       </div>
 
@@ -171,6 +263,7 @@ export const GitPanel: React.FC = () => {
               <GitFileItem
                 key={file.path}
                 file={file}
+                onOpenDiff={handleOpenDiff}
                 onStage={() => stageFile(file.path)}
                 onDiscard={() => discardChanges(file.path)}
               />
@@ -188,7 +281,7 @@ export const GitPanel: React.FC = () => {
             stagedCount > 0 ? (
               <button
                 onClick={handleUnstageAll}
-                className="p-1 rounded hover:bg-white/10 transition-colors"
+                className="p-1 rounded hover:bg-input/50 transition-colors"
                 title="Unstage All"
                 style={{ color: 'var(--aurora-sidebar-foreground)' }}
               >
@@ -201,6 +294,7 @@ export const GitPanel: React.FC = () => {
             <GitFileItem
               key={file.path}
               file={file}
+              onOpenDiff={handleOpenDiff}
               onUnstage={() => unstageFile(file.path)}
             />
           ))}
@@ -221,7 +315,7 @@ export const GitPanel: React.FC = () => {
             unstagedCount > 0 ? (
               <button
                 onClick={handleStageAll}
-                className="p-1 rounded hover:bg-white/10 transition-colors"
+                className="p-1 rounded hover:bg-input/50 transition-colors"
                 title="Stage All"
                 style={{ color: 'var(--aurora-sidebar-foreground)' }}
               >
@@ -234,6 +328,7 @@ export const GitPanel: React.FC = () => {
             <GitFileItem
               key={file.path}
               file={file}
+              onOpenDiff={handleOpenDiff}
               onStage={() => stageFile(file.path)}
               onDiscard={() => discardChanges(file.path)}
             />
@@ -242,6 +337,7 @@ export const GitPanel: React.FC = () => {
             <GitFileItem
               key={file.path}
               file={file}
+              onOpenDiff={handleOpenDiff}
               onStage={() => stageFile(file.path)}
               onDiscard={() => discardChanges(file.path)}
             />
@@ -253,6 +349,20 @@ export const GitPanel: React.FC = () => {
           )}
         </CollapsibleSection>
       </div>
+
+      <GitDiffModal
+        error={diffPreview?.error}
+        filePath={diffPreview?.filePath ?? ''}
+        isLoading={diffPreview?.isLoading ?? false}
+        isOpen={Boolean(diffPreview)}
+        language={diffPreview?.language ?? 'plaintext'}
+        modified={diffPreview?.modified ?? ''}
+        oldPath={diffPreview?.oldPath}
+        onClose={handleCloseDiff}
+        original={diffPreview?.original ?? ''}
+        staged={diffPreview?.staged ?? false}
+        status={diffPreview?.status ?? 'modified'}
+      />
     </div>
   );
 };
@@ -296,7 +406,7 @@ const PanelHeader: React.FC<PanelHeaderProps> = ({
         {onPull && behind > 0 && (
           <button
             onClick={onPull}
-            className="p-1.5 rounded hover:bg-white/10 transition-colors flex items-center gap-1"
+            className="p-1.5 rounded hover:bg-input/50 transition-colors flex items-center gap-1"
             title={`Pull (${behind} behind)`}
             style={{ color: 'var(--aurora-sidebar-foreground)' }}
           >
@@ -307,7 +417,7 @@ const PanelHeader: React.FC<PanelHeaderProps> = ({
         {onPush && ahead > 0 && (
           <button
             onClick={onPush}
-            className="p-1.5 rounded hover:bg-white/10 transition-colors flex items-center gap-1"
+            className="p-1.5 rounded hover:bg-input/50 transition-colors flex items-center gap-1"
             title={`Push (${ahead} ahead)`}
             style={{ color: 'var(--aurora-sidebar-foreground)' }}
           >
@@ -318,7 +428,7 @@ const PanelHeader: React.FC<PanelHeaderProps> = ({
         <button
           onClick={onRefresh}
           disabled={isLoading}
-          className="p-1.5 rounded hover:bg-white/10 transition-colors disabled:opacity-50"
+          className="p-1.5 rounded hover:bg-input/50 transition-colors disabled:opacity-50"
           title="Refresh"
           style={{ color: 'var(--aurora-sidebar-foreground)' }}
         >
@@ -353,7 +463,7 @@ const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
       <div
         role="button"
         onClick={onToggle}
-        className="w-full px-3 py-2 flex items-center gap-2 hover:bg-white/5 transition-colors cursor-pointer select-none"
+        className="w-full px-3 py-2 flex items-center gap-2 hover:bg-sidebar-item-hover transition-colors cursor-pointer select-none"
       >
         {isExpanded ? (
           <ChevronDown className="w-3.5 h-3.5" style={{ color: 'var(--aurora-sidebar-foreground)', opacity: 0.6 }} />
@@ -374,7 +484,10 @@ const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
             className="text-[10px] px-1.5 py-0.5 rounded-full"
             style={{
               background: variant === 'danger' ? 'var(--aurora-common-error)' : 'var(--aurora-common-primary)',
-              color: 'white',
+              color:
+                variant === 'danger'
+                  ? 'var(--aurora-common-error-foreground)'
+                  : 'var(--aurora-common-primary-foreground)',
             }}
           >
             {count}

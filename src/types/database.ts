@@ -20,6 +20,7 @@ export interface AppSettings {
   thinkingEnabled: boolean;
   uiFontFamily?: string;
   uiScale?: number;
+  uiTextScale?: number;
   wrapMode: boolean;
 
 }

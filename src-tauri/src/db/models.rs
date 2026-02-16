@@ -228,6 +228,7 @@ pub struct AppSettings {
     pub project_layout_enabled: bool,
     pub ui_font_family: String,
     pub ui_scale: f64,
+    pub ui_text_scale: f64,
     pub max_tokens: i32,
     pub temperature: f64,
     
@@ -253,7 +254,8 @@ impl Default for AppSettings {
             syntax_validation_enabled: true,
             project_layout_enabled: true,
             ui_font_family: "system".to_string(),
-            ui_scale: 1.1,
+            ui_scale: 1.0,
+            ui_text_scale: 1.0,
             max_tokens: 8192,
             temperature: 1.0,
             auto_save: "off".to_string(),

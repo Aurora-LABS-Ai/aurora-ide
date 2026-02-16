@@ -81,7 +81,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory
         {/* Left side - Title & Info */}
         <div className="relative flex items-center gap-2.5 min-w-0 flex-1">
           {/* Icon */}
-          <div className="relative flex items-center justify-center w-7 h-7 rounded-md bg-gradient-to-br from-primary/10 to-transparent border border-white/5 shrink-0">
+          <div className="relative flex items-center justify-center w-7 h-7 rounded-md bg-gradient-to-br from-primary/10 to-transparent border border-border/50 shrink-0">
             {isLoading ? (
               <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />
             ) : hasMessages ? (
@@ -142,14 +142,14 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory
         <div className="relative flex items-center gap-1 shrink-0">
           <button
             onClick={onOpenHistory}
-            className="flex items-center justify-center w-7 h-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-white/5 border border-transparent hover:border-border/50 transition-all duration-200"
+            className="flex items-center justify-center w-7 h-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-input/50 border border-transparent hover:border-border/50 transition-all duration-200"
             title="Chat History (Ctrl+H)"
           >
             <History className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={onNewChat}
-            className="flex items-center justify-center w-7 h-7 rounded-md text-primary bg-primary/10 hover:bg-primary/20 border border-white/5 hover:border-white/10 transition-all duration-200"
+            className="flex items-center justify-center w-7 h-7 rounded-md text-primary bg-primary/10 hover:bg-primary/20 border border-border/50 hover:border-border transition-all duration-200"
             title="New Chat"
           >
             <Plus className="w-4 h-4" />

@@ -10,12 +10,23 @@ const UI_FONT_FAMILIES: Record<string, string> = {
   inter: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
   segoe: "'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif",
   roboto: "'Roboto', -apple-system, BlinkMacSystemFont, sans-serif",
+  manrope: "'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  poppins: "'Poppins', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+  sourceSans: "'Source Sans 3', 'Source Sans Pro', 'Segoe UI', sans-serif",
+  openSans: "'Open Sans', 'Segoe UI', Roboto, sans-serif",
+  nunito: "'Nunito Sans', 'Nunito', 'Segoe UI', sans-serif",
+  lato: "'Lato', 'Segoe UI', Roboto, sans-serif",
+  ubuntu: "'Ubuntu', 'Segoe UI', Roboto, sans-serif",
 };
 
-const applyUiPreferences = (scale: number, fontFamily: string) => {
+const clampTextScale = (value: number): number => Math.min(1.4, Math.max(0.85, value));
+
+const applyUiPreferences = (fontFamily: string, textScale: number) => {
   if (typeof document === 'undefined') return;
   const resolvedFamily = UI_FONT_FAMILIES[fontFamily] ?? UI_FONT_FAMILIES.system;
-  document.documentElement.style.setProperty('--aurora-ui-scale', String(scale));
+  // UI scaling is intentionally disabled. Keep this hardcoded at 1.
+  document.documentElement.style.setProperty('--aurora-ui-scale', '1');
+  document.documentElement.style.setProperty('--aurora-ui-text-scale', String(clampTextScale(textScale)));
   document.documentElement.style.setProperty('--aurora-ui-font-family', resolvedFamily);
 };
 
@@ -86,7 +97,7 @@ interface SettingsState {
   setThinkingEnabled: (enabled: boolean) => void;
   setToolApproval: (toolName: string, setting: 'auto' | 'always_ask' | 'deny') => void;
   setUiFontFamily: (family: string) => void;
-  setUiScale: (scale: number) => void;
+  setUiTextScale: (scale: number) => void;
   setWrapMode: (enabled: boolean) => void;
 
   // Agent Guardrails
@@ -104,7 +115,7 @@ interface SettingsState {
 
   // UI Settings
   uiFontFamily: string;
-  uiScale: number;
+  uiTextScale: number;
 
   // Provider actions
   updateProvider: (id: string, updates: Partial<LLMProvider>) => void;
@@ -358,7 +369,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   // UI Settings
   uiFontFamily: "system",
-  uiScale: 1,
+  uiTextScale: 1,
 
 
   // Theme
@@ -429,7 +440,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       const appSettings = await databaseService.getAppSettings();
       if (appSettings) {
         const uiFontFamily = appSettings.uiFontFamily ?? "system";
-        const uiScale = appSettings.uiScale ?? 1;
+        const uiTextScale = appSettings.uiTextScale ?? 1;
 
         set({
           selectedModel: appSettings.selectedModel || "glm:glm-4.7",
@@ -447,10 +458,10 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           autoSaveDelay: appSettings.autoSaveDelay ?? 1000,
           maxToolCallsPerRequest: appSettings.maxToolCallsPerRequest ?? 25,
           uiFontFamily,
-          uiScale,
+          uiTextScale,
         });
 
-        applyUiPreferences(uiScale, uiFontFamily);
+        applyUiPreferences(uiFontFamily, uiTextScale);
       }
 
 
@@ -464,8 +475,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         set({ toolApprovalSettings: settings });
       }
 
-      const { uiScale, uiFontFamily } = get();
-      applyUiPreferences(uiScale, uiFontFamily);
+      const { uiTextScale, uiFontFamily } = get();
+      applyUiPreferences(uiFontFamily, uiTextScale);
 
       set({ isInitialized: true, isLoading: false });
 
@@ -500,7 +511,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         autoSaveDelay: state.autoSaveDelay,
         maxToolCallsPerRequest: state.maxToolCallsPerRequest,
         uiFontFamily: state.uiFontFamily,
-        uiScale: state.uiScale,
+        uiScale: 1,
+        uiTextScale: state.uiTextScale,
       };
 
       await databaseService.saveAppSettings(appSettings);
@@ -655,15 +667,16 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     get().saveToDatabase();
   },
 
-  setUiScale: (scale: number) => {
-    set({ uiScale: scale });
-    applyUiPreferences(scale, get().uiFontFamily);
+  setUiTextScale: (scale: number) => {
+    const clamped = clampTextScale(scale);
+    set({ uiTextScale: clamped });
+    applyUiPreferences(get().uiFontFamily, clamped);
     get().saveToDatabase();
   },
 
   setUiFontFamily: (family: string) => {
     set({ uiFontFamily: family });
-    applyUiPreferences(get().uiScale, family);
+    applyUiPreferences(family, get().uiTextScale);
     get().saveToDatabase();
   },
 

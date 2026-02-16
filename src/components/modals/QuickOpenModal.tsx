@@ -153,7 +153,7 @@ export const QuickOpenModal: React.FC<{ isOpen: boolean; onClose: () => void }> 
                     className="w-[600px] max-w-full bg-sidebar border border-border rounded-xl shadow-2xl shadow-black/50 flex flex-col overflow-hidden"
                     onMouseDown={e => e.stopPropagation()}
                 >
-                    <div className="flex items-center px-3 py-3 border-b border-white/5 bg-white/[0.02]">
+                    <div className="flex items-center px-3 py-3 border-b border-border bg-input/30">
                         <Search size={16} className="text-text-secondary mr-2" />
                         <input
                             ref={inputRef}
@@ -164,7 +164,7 @@ export const QuickOpenModal: React.FC<{ isOpen: boolean; onClose: () => void }> 
                             onChange={e => setQuery(e.target.value)}
                             onKeyDown={handleKeyDown}
                         />
-                        <div className="text-[10px] text-muted-foreground bg-white/5 px-2 py-0.5 rounded">ESC to close</div>
+                        <div className="text-[10px] text-muted-foreground bg-input/50 px-2 py-0.5 rounded">ESC to close</div>
                     </div>
 
                     <div className="max-h-[300px] overflow-y-auto py-1 custom-scrollbar" ref={listRef}>
@@ -180,7 +180,7 @@ export const QuickOpenModal: React.FC<{ isOpen: boolean; onClose: () => void }> 
                                         key={file}
                                         className={clsx(
                                             "px-3 py-2 flex items-center gap-3 cursor-pointer text-sm",
-                                            index === selectedIndex ? "bg-primary/20 text-text-primary" : "text-text-secondary hover:bg-white/[0.03]"
+                                            index === selectedIndex ? "bg-primary/20 text-text-primary" : "text-text-secondary hover:bg-sidebar-item-hover"
                                         )}
                                         onMouseEnter={() => setSelectedIndex(index)}
                                         onClick={() => handleSelect(file)}
@@ -197,7 +197,7 @@ export const QuickOpenModal: React.FC<{ isOpen: boolean; onClose: () => void }> 
                         )}
                     </div>
 
-                    <div className="px-3 py-1.5 bg-white/[0.02] border-t border-white/5 text-[10px] text-muted-foreground flex justify-between">
+                    <div className="px-3 py-1.5 bg-input/30 border-t border-border text-[10px] text-muted-foreground flex justify-between">
                         <span>Quick Open</span>
                         <span>{results.length} results</span>
                     </div>

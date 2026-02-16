@@ -65,7 +65,7 @@ export const GitCommitInput: React.FC<GitCommitInputProps> = ({
         className="w-full py-2 px-4 rounded-lg text-[13px] font-medium transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
         style={{
           background: canCommit ? 'var(--aurora-common-primary)' : 'var(--aurora-common-border)',
-          color: canCommit ? 'white' : 'var(--aurora-sidebar-foreground)',
+          color: canCommit ? 'var(--aurora-common-primary-foreground)' : 'var(--aurora-sidebar-foreground)',
         }}
       >
         <Check className="w-4 h-4" />

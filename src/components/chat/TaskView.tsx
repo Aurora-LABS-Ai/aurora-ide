@@ -138,7 +138,7 @@ export const TaskList: React.FC<{ todos: Task[] }> = ({ todos }) => {
                             key={task.id || idx}
                             className={clsx(
                                 "flex items-start gap-3 px-3 py-2.5 rounded-lg transition-all duration-300",
-                                isProgress ? "bg-white/[0.03] border border-white/5" : "hover:bg-white/[0.01] border border-transparent"
+                                isProgress ? "bg-input/40 border border-border" : "hover:bg-input/20 border border-transparent"
                             )}
                         >
                             <div className="flex-shrink-0 mt-0.5">

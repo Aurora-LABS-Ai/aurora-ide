@@ -33,7 +33,7 @@ import {
 import clsx from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { motion } from 'framer-motion';
-import type { ToolCall } from '../../types';
+import type { ToolCall, ToolProposal } from '../../types';
 import { getIconName, getIconUrl } from '../../lib/material-icon-theme';
 import { ShimmerText } from '../ui/ShimmerText';
 import { getToolDisplayName } from '../../services/mcp-tools';
@@ -43,6 +43,22 @@ import { getToolIcon } from '../icons/ToolIcons';
 function cn(...inputs: (string | undefined | null | false)[]) {
   return twMerge(clsx(inputs));
 }
+
+const formatApprovalValue = (value: unknown): string => {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value === 'string') {
+    return value.length > 120 ? `${value.slice(0, 120)}...` : value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  try {
+    const json = JSON.stringify(value);
+    return json.length > 120 ? `${json.slice(0, 120)}...` : json;
+  } catch {
+    return '[unserializable]';
+  }
+};
 
 // --- 1. File Explorer Component ---
 interface FileExplorerProps {
@@ -409,7 +425,7 @@ const CodeView: React.FC<CodeViewProps> = ({
         ref={contentRef}
         style={{ maxHeight: isExpanded ? '300px' : '160px' }}
         className={cn(
-          "font-mono text-[10px] leading-[1.6] bg-code-block overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-white/10 hover:scrollbar-thumb-white/20 scrollbar-track-transparent",
+          "font-mono text-[10px] leading-[1.6] bg-code-block overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-scrollbar hover:scrollbar-thumb-scrollbar-hover scrollbar-track-transparent",
           fileName ? "rounded-b" : "rounded"
         )}
       >
@@ -456,12 +472,24 @@ interface ToolItemProps {
   tool: ToolCall;
   isLast: boolean;
   index: number;
+  pendingApproval?: ToolProposal | null;
+  onApprovePending?: () => void;
+  onRejectPending?: () => void;
+  onApprovePendingRemember?: () => void;
 }
 
-const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
+const ToolItem: React.FC<ToolItemProps> = React.memo(({
+  tool,
+  isLast,
+  pendingApproval,
+  onApprovePending,
+  onRejectPending,
+  onApprovePendingRemember,
+}) => {
   const isFileModifyTool = ['file_create', 'file_write', 'file_patch', 'search_replace', 'multi_search_replace'].includes(tool.name);
   const isFolderTool = ['list_workspace', 'list_directory', 'create_directory', 'delete_directory'].includes(tool.name);
   const [isOpen, setIsOpen] = useState(false);
+  const [showApprovalDetails, setShowApprovalDetails] = useState(false);
 
   // Auto-expand errors
   useEffect(() => {
@@ -473,6 +501,14 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
   // Derived status logic - simple: show running spinner while pending/executing, red X only for actual failures
   const isRunning = tool.status === 'executing' || tool.status === 'pending';
   const isError = tool.status === 'failed' || tool.status === 'rejected';
+  const isAwaitingApproval = Boolean(
+    pendingApproval &&
+    pendingApproval.id === tool.id &&
+    pendingApproval.status === 'pending' &&
+    tool.status === 'pending'
+  );
+  const approvalParameters = pendingApproval?.parameters ?? {};
+  const hasApprovalParameters = Object.keys(approvalParameters).length > 0;
 
   const filePath = tool.args?.path as string;
   const fileName = filePath ? filePath.split(/[/\\]/).pop() || filePath : '';
@@ -695,8 +731,8 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                 role={fileName ? "button" : undefined}
                 tabIndex={fileName ? 0 : undefined}
                 className={cn(
-                  "flex items-center gap-1.5 text-[10px] text-text-secondary px-1.5 py-0.5 rounded-sm bg-sidebar-item-hover border border-border",
-                  fileName && "hover:bg-sidebar-item-active hover:border-border transition-all cursor-pointer"
+                  "flex items-center gap-1.5 text-[10px] text-text-secondary px-1.5 py-0.5 rounded-sm bg-input/40 border border-border",
+                  fileName && "hover:bg-input/70 hover:border-border-hover transition-all cursor-pointer"
                 )}
               >
                 {isFolderTool ? (
@@ -710,7 +746,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                 )}
                 <span className={cn(
                   "opacity-80",
-                  fileName && "hover:opacity-100 underline decoration-transparent hover:decoration-white/20 underline-offset-2"
+                  fileName && "hover:opacity-100 underline decoration-transparent hover:decoration-border/50 underline-offset-2"
                 )}>
                   {fileName || (filePath ? filePath.split(/[/\\]/).pop() : 'directory')}
                 </span>
@@ -731,10 +767,95 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                 </span>
               )}
               {/* Regular status message */}
-              {!(linesAdded || linesRemoved) && (simpleMessage || (isError ? 'Failed' : (isRunning ? 'Running...' : '')))}
+              {!(linesAdded || linesRemoved) &&
+                (isAwaitingApproval
+                  ? 'Awaiting approval...'
+                  : simpleMessage || (isError ? 'Failed' : (isRunning ? 'Running...' : '')))}
             </span>
           </button>
         </div>
+
+        {isAwaitingApproval && (
+          <div className="mt-2 ml-1 rounded-lg border border-border bg-input/30 p-2.5">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
+                Approval Needed
+              </span>
+              <span
+                className={cn(
+                  "text-[9px] px-1.5 py-0.5 rounded-full border",
+                  pendingApproval?.riskLevel === 'high'
+                    ? "text-danger border-danger/40 bg-danger/10"
+                    : pendingApproval?.riskLevel === 'medium'
+                      ? "text-warning border-warning/40 bg-warning/10"
+                      : "text-success border-success/40 bg-success/10"
+                )}
+              >
+                {pendingApproval?.riskLevel ?? 'medium'}
+              </span>
+              <span className="ml-auto text-[10px] text-text-secondary font-mono">
+                {tool.name}
+              </span>
+            </div>
+
+            {hasApprovalParameters && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowApprovalDetails((prev) => !prev);
+                }}
+                className="mt-1 text-[10px] text-text-disabled hover:text-text-secondary transition-colors"
+              >
+                {showApprovalDetails ? 'Hide parameters' : 'Show parameters'}
+              </button>
+            )}
+
+            {showApprovalDetails && hasApprovalParameters && (
+              <div className="mt-2 rounded-md border border-border/70 bg-input/40 p-2 space-y-1.5">
+                {Object.entries(approvalParameters).map(([key, value]) => (
+                  <div key={key} className="flex gap-2">
+                    <span className="w-24 shrink-0 text-[9px] uppercase tracking-wide text-text-secondary">
+                      {key}
+                    </span>
+                    <span className="text-[10px] font-mono text-text-primary break-all">
+                      {formatApprovalValue(value)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRejectPending?.();
+                }}
+                className="px-2.5 py-1 rounded-md border border-border text-[10px] font-medium text-text-secondary hover:text-danger hover:border-danger/50 transition-colors"
+              >
+                Reject
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onApprovePending?.();
+                }}
+                className="px-2.5 py-1 rounded-md bg-primary text-primary-foreground text-[10px] font-semibold hover:bg-primary/90 transition-colors"
+              >
+                Approve
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onApprovePendingRemember?.();
+                }}
+                className="px-2.5 py-1 rounded-md border border-primary/40 text-[10px] font-medium text-primary hover:bg-primary/10 transition-colors"
+              >
+                Approve & remember
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* EXPANDED CONTENT - No Box, just indented */}
         <motion.div
@@ -759,7 +880,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                       displayValue = String(v).substring(0, 30);
                     }
                     return (
-                      <span key={k} className="text-[9px] px-1.5 py-0.5 rounded bg-sidebar-item-hover text-text-secondary border border-border">
+                      <span key={k} className="text-[9px] px-1.5 py-0.5 rounded bg-input/40 text-text-secondary border border-border">
                         <span className="opacity-60">{k}:</span> {displayValue}
                       </span>
                     );
@@ -772,7 +893,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
             {tool.name === 'todo_write' && tool.args?.todos && Array.isArray(tool.args.todos) && (
               <div className="mb-2 space-y-1">
                 {(tool.args.todos as Array<{ id?: string; content?: string; status?: string }>).map((todo, idx) => (
-                  <div key={todo.id || idx} className="flex items-center gap-2 text-[10px] px-2 py-1 rounded bg-sidebar-item-hover border border-border">
+                  <div key={todo.id || idx} className="flex items-center gap-2 text-[10px] px-2 py-1 rounded bg-input/40 border border-border">
                     <span className={cn(
                       "w-1.5 h-1.5 rounded-full flex-shrink-0",
                       todo.status === 'completed' ? "bg-task-completed" :
@@ -840,7 +961,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
                   <div key={idx} className="space-y-1">
                     <div className="flex items-center gap-2 text-[9px] text-text-disabled">
                       <span className="font-mono">#{idx + 1}</span>
-                      <span className="flex-1 h-px bg-white/10"></span>
+                      <span className="flex-1 h-px bg-border"></span>
                     </div>
                     {/* Old String (what was replaced) */}
                     {replacement.oldString && (
@@ -891,9 +1012,20 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({ tool, isLast }) => {
 interface ToolTimelineProps {
   tools: ToolCall[];
   variant?: 'timeline' | 'cards';
+  pendingApproval?: ToolProposal | null;
+  onApprovePending?: () => void;
+  onRejectPending?: () => void;
+  onApprovePendingRemember?: () => void;
 }
 
-export const ToolTimeline: React.FC<ToolTimelineProps> = ({ tools, variant = 'timeline' }) => {
+export const ToolTimeline: React.FC<ToolTimelineProps> = ({
+  tools,
+  variant = 'timeline',
+  pendingApproval = null,
+  onApprovePending,
+  onRejectPending,
+  onApprovePendingRemember,
+}) => {
   if (!tools || tools.length === 0) return null;
 
   // Card variant - wrap each tool in a card-style container
@@ -914,6 +1046,10 @@ export const ToolTimeline: React.FC<ToolTimelineProps> = ({ tools, variant = 'ti
                 tool={tool}
                 isLast={true}
                 index={idx}
+                pendingApproval={pendingApproval}
+                onApprovePending={onApprovePending}
+                onRejectPending={onRejectPending}
+                onApprovePendingRemember={onApprovePendingRemember}
               />
             </div>
           </div>
@@ -931,6 +1067,10 @@ export const ToolTimeline: React.FC<ToolTimelineProps> = ({ tools, variant = 'ti
           tool={tool}
           isLast={idx === tools.length - 1}
           index={idx}
+          pendingApproval={pendingApproval}
+          onApprovePending={onApprovePending}
+          onRejectPending={onRejectPending}
+          onApprovePendingRemember={onApprovePendingRemember}
         />
       ))}
     </div>

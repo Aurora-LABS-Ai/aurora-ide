@@ -16,11 +16,27 @@ export type TogglePillProps = {
   labelOff?: string;
 };
 
-const variantClasses: Record<ToggleVariant, { activeBg: string; focusRing: string }> = {
-  primary: { activeBg: 'bg-primary', focusRing: 'focus-visible:ring-primary/40' },
-  success: { activeBg: 'bg-success', focusRing: 'focus-visible:ring-success/40' },
-  warning: { activeBg: 'bg-warning', focusRing: 'focus-visible:ring-warning/40' },
-  checkpoint: { activeBg: 'bg-checkpoint', focusRing: 'focus-visible:ring-checkpoint/40' },
+const variantClasses: Record<ToggleVariant, { activeBg: string; activeText: string; focusRing: string }> = {
+  primary: {
+    activeBg: 'bg-primary',
+    activeText: 'text-primary-foreground',
+    focusRing: 'focus-visible:ring-primary/40',
+  },
+  success: {
+    activeBg: 'bg-success',
+    activeText: 'text-success-foreground',
+    focusRing: 'focus-visible:ring-success/40',
+  },
+  warning: {
+    activeBg: 'bg-warning',
+    activeText: 'text-warning-foreground',
+    focusRing: 'focus-visible:ring-warning/40',
+  },
+  checkpoint: {
+    activeBg: 'bg-checkpoint',
+    activeText: 'text-checkpoint-foreground',
+    focusRing: 'focus-visible:ring-checkpoint/40',
+  },
 };
 
 const sizeClasses: Record<ToggleSize, { root: string; text: string }> = {
@@ -91,7 +107,7 @@ export const TogglePill: React.FC<TogglePillProps> = ({
         className={clsx(
           'z-10 select-none font-medium tracking-wide',
           s.text,
-          checked ? 'text-text-secondary' : 'text-white',
+          checked ? 'text-text-secondary' : v.activeText,
         )}
       >
         {labelOff}
@@ -100,7 +116,7 @@ export const TogglePill: React.FC<TogglePillProps> = ({
         className={clsx(
           'z-10 select-none font-medium tracking-wide',
           s.text,
-          checked ? 'text-white' : 'text-text-secondary',
+          checked ? v.activeText : 'text-text-secondary',
         )}
       >
         {labelOn}

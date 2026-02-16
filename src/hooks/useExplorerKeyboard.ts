@@ -73,7 +73,8 @@ export const useExplorerKeyboard = ({
         if (confirmed) {
           try {
             await deletePath(node.path || node.id);
-            closeTab(node.id);
+            // File is intentionally deleted, so skip unsaved close warning.
+            closeTab(node.id, { skipUnsavedWarning: true });
             await refreshDirectory();
           } catch (err) {
             console.error('Failed to delete:', err);

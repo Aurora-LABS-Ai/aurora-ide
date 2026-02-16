@@ -39,6 +39,13 @@ const UI_FONT_OPTIONS = [
   { value: 'inter', label: 'Inter' },
   { value: 'segoe', label: 'Segoe UI' },
   { value: 'roboto', label: 'Roboto' },
+  { value: 'manrope', label: 'Manrope' },
+  { value: 'poppins', label: 'Poppins' },
+  { value: 'sourceSans', label: 'Source Sans 3' },
+  { value: 'openSans', label: 'Open Sans' },
+  { value: 'nunito', label: 'Nunito Sans' },
+  { value: 'lato', label: 'Lato' },
+  { value: 'ubuntu', label: 'Ubuntu' },
 ];
 
 // ============================================
@@ -253,7 +260,7 @@ const AddProviderForm: React.FC<AddProviderFormProps> = ({ onSave, onCancel }) =
         <button
           onClick={handleSubmit}
           disabled={!name.trim() || !baseUrl.trim() || !model.trim()}
-          className="px-3 py-1 text-xs font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors disabled:opacity-50"
+          className="px-3 py-1 text-xs font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors disabled:opacity-50"
         >
           Add
         </button>
@@ -453,7 +460,7 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
               <button
                 onClick={handleAddModel}
                 disabled={!newModelId.trim()}
-                className="px-2 py-1.5 rounded bg-primary text-white text-xs font-medium hover:bg-primary/80 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-2 py-1.5 rounded bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/80 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Plus className="w-3 h-3" />
               </button>
@@ -504,9 +511,9 @@ export const SettingsPanel: React.FC = () => {
     autoSave,
     setAutoSave,
     uiFontFamily,
-    uiScale,
+    uiTextScale,
     setUiFontFamily,
-    setUiScale,
+    setUiTextScale,
   } = useSettingsStore();
 
   // Note: Thinking, temperature, and maxTokens are now per-provider settings
@@ -660,7 +667,7 @@ export const SettingsPanel: React.FC = () => {
                   </p>
                   <button
                     onClick={() => setIsAddingProvider(true)}
-                    className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-white bg-primary hover:bg-primary/80 rounded transition-colors"
+                    className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors"
                   >
                     <Plus className="w-3 h-3" />
                     Add
@@ -739,12 +746,12 @@ export const SettingsPanel: React.FC = () => {
                             "flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium rounded transition-colors",
                             cliStatus === 'installing' || cliStatus === 'uninstalling' || isCheckingCli
                               ? "bg-input text-text-disabled cursor-not-allowed"
-                              : "bg-primary text-white hover:bg-primary/80"
+                            : "bg-primary text-primary-foreground hover:bg-primary/80"
                           )}
                         >
                           {cliStatus === 'installing' || isCheckingCli ? (
                             <>
-                              <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                              <span className="w-3 h-3 border-2 border-border/40 border-t-primary rounded-full animate-spin" />
                               {isCheckingCli ? 'Checking...' : 'Installing...'}
                             </>
                           ) : (
@@ -802,20 +809,20 @@ export const SettingsPanel: React.FC = () => {
                     </div>
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="text-[10px] text-text-secondary">UI Scale</p>
-                        <p className="text-[9px] text-text-disabled">Resize text and UI density</p>
+                        <p className="text-[10px] text-text-secondary">Text Size</p>
+                        <p className="text-[9px] text-text-disabled">Adjust text only (no UI scaling)</p>
                       </div>
                       <span className="text-[10px] font-mono text-primary">
-                        {Math.round(uiScale * 100)}%
+                        {Math.round(uiTextScale * 100)}%
                       </span>
                     </div>
                     <input
                       type="range"
-                      min="0.9"
-                      max="1.3"
+                      min="0.85"
+                      max="1.4"
                       step="0.05"
-                      value={uiScale}
-                      onChange={(e) => setUiScale(parseFloat(e.target.value))}
+                      value={uiTextScale}
+                      onChange={(e) => setUiTextScale(parseFloat(e.target.value))}
                       className="w-full h-1 bg-input-border rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
                     />
                   </div>
@@ -892,7 +899,7 @@ export const SettingsPanel: React.FC = () => {
                 {/* Author Section */}
                 <div className="p-4 border border-border rounded-lg bg-titlebar">
                   <div className="flex items-center gap-3 mb-3">
-                    <div className="w-12 h-12 rounded-full bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center text-white text-xl font-bold" style={{ fontFamily: 'Georgia, serif' }}>
+                    <div className="w-12 h-12 rounded-full bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center text-primary-foreground text-xl font-bold" style={{ fontFamily: 'Georgia, serif' }}>
                       A
                     </div>
                     <div>

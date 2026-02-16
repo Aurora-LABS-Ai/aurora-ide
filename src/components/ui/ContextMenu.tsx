@@ -131,7 +131,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }
             onMouseEnter={(e) => {
               if (!item.disabled) {
                 e.currentTarget.style.backgroundColor = item.danger ? 'var(--aurora-common-error)' : 'var(--aurora-common-primary)';
-                e.currentTarget.style.color = item.danger ? 'var(--aurora-common-errorForeground)' : 'var(--aurora-common-primaryForeground)';
+                e.currentTarget.style.color = item.danger ? 'var(--aurora-common-error-foreground)' : 'var(--aurora-common-primary-foreground)';
               }
             }}
             onMouseLeave={(e) => {

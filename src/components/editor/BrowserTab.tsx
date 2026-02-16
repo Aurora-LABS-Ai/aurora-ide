@@ -285,7 +285,7 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({
       <div
         className="flex items-center gap-2 px-2 py-1.5 border-b flex-shrink-0"
         style={{
-          backgroundColor: 'var(--aurora-titleBar-background)',
+          backgroundColor: 'var(--aurora-title-bar-background)',
           borderColor: 'var(--aurora-common-border)',
         }}
       >
@@ -294,7 +294,7 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({
           <button
             onClick={goBack}
             disabled={!canGoBack}
-            className="p-1.5 rounded-md transition-colors disabled:opacity-30 hover:bg-[var(--aurora-sidebar-itemHover)] disabled:hover:bg-transparent"
+            className="p-1.5 rounded-md transition-colors disabled:opacity-30 hover:bg-[var(--aurora-sidebar-item-hover)] disabled:hover:bg-transparent"
             style={{ color: 'var(--aurora-editor-foreground)' }}
             title="Back (Alt+Left)"
           >
@@ -303,7 +303,7 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({
           <button
             onClick={goForward}
             disabled={!canGoForward}
-            className="p-1.5 rounded-md transition-colors disabled:opacity-30 hover:bg-[var(--aurora-sidebar-itemHover)] disabled:hover:bg-transparent"
+            className="p-1.5 rounded-md transition-colors disabled:opacity-30 hover:bg-[var(--aurora-sidebar-item-hover)] disabled:hover:bg-transparent"
             style={{ color: 'var(--aurora-editor-foreground)' }}
             title="Forward (Alt+Right)"
           >
@@ -312,7 +312,7 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({
           <button
             onClick={refresh}
             disabled={!currentUrl}
-            className="p-1.5 rounded-md transition-colors hover:bg-[var(--aurora-sidebar-itemHover)] disabled:opacity-30"
+            className="p-1.5 rounded-md transition-colors hover:bg-[var(--aurora-sidebar-item-hover)] disabled:opacity-30"
             style={{ color: 'var(--aurora-editor-foreground)' }}
             title="Refresh (F5)"
           >
@@ -320,7 +320,7 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({
           </button>
           <button
             onClick={goHome}
-            className="p-1.5 rounded-md transition-colors hover:bg-[var(--aurora-sidebar-itemHover)]"
+            className="p-1.5 rounded-md transition-colors hover:bg-[var(--aurora-sidebar-item-hover)]"
             style={{ color: 'var(--aurora-editor-foreground)' }}
             title="Home (localhost:3000)"
           >
@@ -333,8 +333,8 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({
           <div
             className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-colors"
             style={{
-              backgroundColor: 'var(--aurora-chat-inputBackground)',
-              borderColor: 'var(--aurora-chat-inputBorder)',
+              backgroundColor: 'var(--aurora-chat-input-background)',
+              borderColor: 'var(--aurora-chat-input-border)',
             }}
           >
             {currentUrl ? (
@@ -384,7 +384,7 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({
           <button
             onClick={openWithDevTools}
             disabled={!currentUrl}
-            className="p-1.5 rounded-md transition-colors hover:bg-[var(--aurora-sidebar-itemHover)] disabled:opacity-30"
+            className="p-1.5 rounded-md transition-colors hover:bg-[var(--aurora-sidebar-item-hover)] disabled:opacity-30"
             style={{ color: 'var(--aurora-editor-foreground)' }}
             title="Inspect with DevTools (opens in browser)"
           >
@@ -396,7 +396,7 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({
           <button
             onClick={openExternal}
             disabled={!currentUrl}
-            className="p-1.5 rounded-md transition-colors hover:bg-[var(--aurora-sidebar-itemHover)] disabled:opacity-30"
+            className="p-1.5 rounded-md transition-colors hover:bg-[var(--aurora-sidebar-item-hover)] disabled:opacity-30"
             style={{ color: 'var(--aurora-editor-foreground)' }}
             title="Open in external browser"
           >
@@ -467,14 +467,14 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({
                 className="px-4 py-2 rounded-lg text-sm font-medium transition-colors hover:opacity-90"
                 style={{
                   backgroundColor: 'var(--aurora-common-primary)',
-                  color: 'var(--aurora-common-primaryForeground)',
+                  color: 'var(--aurora-common-primary-foreground)',
                 }}
               >
                 localhost:3000
               </button>
               <button
                 onClick={() => navigate('http://localhost:5173')}
-                className="px-4 py-2 rounded-lg text-sm font-medium border transition-colors hover:bg-[var(--aurora-sidebar-itemHover)]"
+                className="px-4 py-2 rounded-lg text-sm font-medium border transition-colors hover:bg-[var(--aurora-sidebar-item-hover)]"
                 style={{
                   borderColor: 'var(--aurora-common-border)',
                   color: 'var(--aurora-editor-foreground)',
@@ -484,7 +484,7 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({
               </button>
               <button
                 onClick={() => navigate('http://localhost:8080')}
-                className="px-4 py-2 rounded-lg text-sm font-medium border transition-colors hover:bg-[var(--aurora-sidebar-itemHover)]"
+                className="px-4 py-2 rounded-lg text-sm font-medium border transition-colors hover:bg-[var(--aurora-sidebar-item-hover)]"
                 style={{
                   borderColor: 'var(--aurora-common-border)',
                   color: 'var(--aurora-editor-foreground)',
@@ -509,7 +509,7 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({
             <span className="text-sm flex-1">{error}</span>
             <button
               onClick={() => setError(null)}
-              className="p-1 rounded hover:bg-white/10"
+              className="p-1 rounded hover:bg-input/50"
             >
               <X size={14} />
             </button>

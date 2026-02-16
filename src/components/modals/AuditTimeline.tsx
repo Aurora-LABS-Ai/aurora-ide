@@ -77,7 +77,7 @@ const AuditEntryCard: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
                 "bg-muted"
       )} />
 
-      <div className="bg-white/[0.02] border border-white/5 rounded-lg p-3 hover:bg-white/[0.03] transition-colors">
+      <div className="bg-input/30 border border-border rounded-lg p-3 hover:bg-input/40 transition-colors">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-2.5 min-w-0 flex-1">
             <div className={clsx(
@@ -189,7 +189,7 @@ export const AuditTimeline: React.FC = () => {
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-150">
       <div className="bg-sidebar border border-border rounded-xl shadow-2xl shadow-black/50 w-[550px] h-[70vh] flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="h-12 border-b border-white/5 flex items-center justify-between px-4 bg-white/[0.02]">
+        <div className="h-12 border-b border-border flex items-center justify-between px-4 bg-input/30">
           <div className="flex items-center gap-3">
             <h2 className="text-[13px] font-semibold text-text-primary">Audit Timeline</h2>
             <div className="flex items-center gap-2 text-[10px]">
@@ -203,14 +203,14 @@ export const AuditTimeline: React.FC = () => {
             {entries.length > 0 && (
               <button
                 onClick={clearEntries}
-                className="px-2 py-1 text-[10px] text-muted-foreground hover:text-text-primary hover:bg-white/5 rounded transition-colors"
+                className="px-2 py-1 text-[10px] text-muted-foreground hover:text-text-primary hover:bg-input/50 rounded transition-colors"
               >
                 Clear
               </button>
             )}
             <button
               onClick={() => setAuditOpen(false)}
-              className="p-1.5 rounded-md text-muted-foreground hover:bg-white/5 hover:text-text-primary transition-colors"
+              className="p-1.5 rounded-md text-muted-foreground hover:bg-input/50 hover:text-text-primary transition-colors"
             >
               <X size={16} />
             </button>
@@ -221,7 +221,7 @@ export const AuditTimeline: React.FC = () => {
         <div className="flex-1 overflow-y-auto p-4">
           {recentEntries.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center">
-              <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center mb-3">
+              <div className="w-12 h-12 rounded-full bg-input/50 flex items-center justify-center mb-3">
                 <Terminal size={20} className="text-text-disabled" />
               </div>
               <p className="text-[13px] text-text-secondary mb-1">No tool executions yet</p>
@@ -230,7 +230,7 @@ export const AuditTimeline: React.FC = () => {
               </p>
             </div>
           ) : (
-            <div className="relative border-l border-white/10 ml-2 space-y-3">
+            <div className="relative border-l border-border/50 ml-2 space-y-3">
               {recentEntries.map((entry) => (
                 <AuditEntryCard key={entry.id} entry={entry} />
               ))}

@@ -160,6 +160,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::git::git_pull,
             commands::git::git_push,
             commands::git::git_get_diff,
+            commands::git::git_get_file_versions,
             // Browser WebView commands
             commands::browser::create_browser_webview,
             commands::browser::get_inspector_script,

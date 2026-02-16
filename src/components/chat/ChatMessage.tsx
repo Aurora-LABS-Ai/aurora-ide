@@ -22,7 +22,7 @@
 
 import React, { useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import type { Message, TimelineEvent } from '../../types';
+import type { Message, TimelineEvent, ToolProposal } from '../../types';
 import { ThinkingBlock } from './ThinkingBlock';
 import { ToolTimeline } from './ToolTimeline';
 import { ToolProposalCard } from './ToolProposalCard';
@@ -88,7 +88,19 @@ const TimelineEventItem: React.FC<{
   event: TimelineEvent; 
   isStreaming?: boolean;
   toolVariant?: 'timeline' | 'cards';
-}> = ({ event, isStreaming = false, toolVariant = 'timeline' }) => {
+  pendingApproval?: ToolProposal | null;
+  onApprovePending?: () => void;
+  onRejectPending?: () => void;
+  onApprovePendingRemember?: () => void;
+}> = ({
+  event,
+  isStreaming = false,
+  toolVariant = 'timeline',
+  pendingApproval = null,
+  onApprovePending,
+  onRejectPending,
+  onApprovePendingRemember,
+}) => {
   switch (event.type) {
     case 'thinking':
       return event.thinking ? (
@@ -97,7 +109,14 @@ const TimelineEventItem: React.FC<{
 
     case 'tool':
       return event.tool ? (
-        <ToolTimeline tools={[event.tool]} variant={toolVariant} />
+        <ToolTimeline
+          tools={[event.tool]}
+          variant={toolVariant}
+          pendingApproval={pendingApproval}
+          onApprovePending={onApprovePending}
+          onRejectPending={onRejectPending}
+          onApprovePendingRemember={onApprovePendingRemember}
+        />
       ) : null;
 
     case 'content':
@@ -117,9 +136,22 @@ interface ChatMessageProps {
   isStreaming?: boolean; // Whether this message is currently being streamed
   isLastMessage?: boolean; // Whether this is the last message in the list
   toolVariant?: 'timeline' | 'cards'; // Style variant for tool displays
+  pendingApproval?: ToolProposal | null;
+  onApprovePending?: () => void;
+  onRejectPending?: () => void;
+  onApprovePendingRemember?: () => void;
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming = false, isLastMessage = false, toolVariant = 'timeline' }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = ({
+  message,
+  isStreaming = false,
+  isLastMessage = false,
+  toolVariant = 'timeline',
+  pendingApproval = null,
+  onApprovePending,
+  onRejectPending,
+  onApprovePendingRemember,
+}) => {
   const isUser = message.sender === 'user';
 
   if (isUser) {
@@ -176,7 +208,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
     >
       {/* Avatar column */}
       <div className="absolute left-4 top-4 w-8 h-8 flex items-center justify-center shrink-0 overflow-hidden">
-        <img src="/app-icon.svg" alt="Aurora" className="w-6 h-6 drop-shadow-sm" />
+        <img src="/aurora_icon.png" alt="Aurora" className="w-6 h-6 drop-shadow-sm" />
       </div>
 
       {/* Content column */}
@@ -213,6 +245,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
                 event={event}
                 isStreaming={isStreaming && isLastMessage && idx === message.timeline!.length - 1}
                 toolVariant={toolVariant}
+                pendingApproval={pendingApproval}
+                onApprovePending={onApprovePending}
+                onRejectPending={onRejectPending}
+                onApprovePendingRemember={onApprovePendingRemember}
               />
             ))
           ) : (
@@ -221,7 +257,14 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, isStreaming =
                 <ThinkingBlock content={message.thinking} isGenerating={message.isThinking} />
               )}
               {message.tools && message.tools.length > 0 && (
-                <ToolTimeline tools={message.tools} variant={toolVariant} />
+                <ToolTimeline
+                  tools={message.tools}
+                  variant={toolVariant}
+                  pendingApproval={pendingApproval}
+                  onApprovePending={onApprovePending}
+                  onRejectPending={onRejectPending}
+                  onApprovePendingRemember={onApprovePendingRemember}
+                />
               )}
               {message.content && (
                 <div className="py-1">

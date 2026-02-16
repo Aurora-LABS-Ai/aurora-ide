@@ -349,7 +349,7 @@ export const SearchPanel: React.FC = () => {
             {searchQuery && (
               <button
                 onClick={handleClear}
-                className="p-1 rounded hover:bg-white/10 transition-colors"
+                className="p-1 rounded hover:bg-input/50 transition-colors"
                 style={{ color: 'var(--aurora-sidebar-foreground)' }}
               >
                 <X className="w-4 h-4" />
@@ -373,7 +373,7 @@ export const SearchPanel: React.FC = () => {
               <div
                 key={file.path}
                 onClick={() => handleFileClick(file.path!, file.name)}
-                className="px-3 py-1.5 flex items-center gap-2 hover:bg-white/5 cursor-pointer transition-colors"
+                className="px-3 py-1.5 flex items-center gap-2 hover:bg-sidebar-item-hover cursor-pointer transition-colors"
               >
                 <FileIcon name={file.name} path={file.path} className="w-4 h-4 shrink-0" />
                 <span
@@ -400,7 +400,7 @@ export const SearchPanel: React.FC = () => {
                 {/* File header */}
                 <div
                   onClick={() => toggleFileExpansion(result.filePath)}
-                  className="px-3 py-1.5 flex items-center gap-2 hover:bg-white/5 cursor-pointer transition-colors"
+                  className="px-3 py-1.5 flex items-center gap-2 hover:bg-sidebar-item-hover cursor-pointer transition-colors"
                 >
                   {expandedFiles.has(result.filePath) ? (
                     <ChevronDown className="w-4 h-4" style={{ color: 'var(--aurora-sidebar-foreground)', opacity: 0.5 }} />
@@ -429,7 +429,7 @@ export const SearchPanel: React.FC = () => {
                       <div
                         key={idx}
                         onClick={() => handleFileClick(result.filePath, result.fileName, match.line)}
-                        className="px-3 py-1 flex items-start gap-2 hover:bg-white/5 cursor-pointer transition-colors"
+                        className="px-3 py-1 flex items-start gap-2 hover:bg-sidebar-item-hover cursor-pointer transition-colors"
                       >
                         <span
                           className="text-[11px] w-8 text-right shrink-0"

@@ -45,6 +45,11 @@ export interface GitStatus {
   untracked: GitFileChange[];
 }
 
+export interface GitFileVersions {
+  modifiedContent: string;
+  originalContent: string;
+}
+
 // Service implementation
 class GitService {
   /**
@@ -125,6 +130,26 @@ class GitService {
       throw new Error('Git operations require desktop app');
     }
     return await invoke<string>('git_get_diff', { workspacePath, filePath, staged });
+  }
+
+  /**
+   * Get original/modified content for split diff view
+   */
+  public async getFileVersions(
+    workspacePath: string,
+    filePath: string,
+    staged: boolean = false,
+    oldPath?: string
+  ): Promise<GitFileVersions> {
+    if (!isTauri()) {
+      throw new Error('Git operations require desktop app');
+    }
+    return await invoke<GitFileVersions>('git_get_file_versions', {
+      workspacePath,
+      filePath,
+      staged,
+      oldPath: oldPath ?? null,
+    });
   }
 
   /**

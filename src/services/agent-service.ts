@@ -4,6 +4,7 @@
  * Uses Rust Context Engine for turn-based message management
  */
 import { invoke } from '@tauri-apps/api/core';
+import { parseToolArguments } from "../lib/tool-arguments";
 import { getToolsForModel, toolRegistry } from "../tools";
 import type { ToolDefinition as LegacyToolDefinition } from "../tools/types";
 import { executeMcpTool, getMcpToolDefinitions, getMcpToolsSummary, isMcpTool, shouldAutoApproveMcpTool } from "./mcp-tools";
@@ -274,48 +275,42 @@ export class AgentService {
               }
             }
 
-            // Parse arguments
-            let parsedArgs: Record<string, unknown> = {};
-            try {
-              parsedArgs = JSON.parse(toolCall.function.arguments || '{}');
-            } catch (parseError) {
-              console.error(`[AgentService] Failed to parse tool arguments:`, parseError);
-              
-              // Try to fix common JSON issues
-              let fixedArgs = toolCall.function.arguments || '{}';
-              fixedArgs = fixedArgs.replace(/"([^"]*)"(\s*)"(\w+)":/g, '"$1",$2"$3":');
-              fixedArgs = fixedArgs.replace(/,\s*([}\]])/g, '$1');
-              fixedArgs = fixedArgs.replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3');
+            const parsedArgsResult = parseToolArguments(toolCall.function.arguments);
+            if (parsedArgsResult.status === 'invalid') {
+              console.error(`[AgentService] Failed to parse tool arguments:`, parsedArgsResult.error);
 
-              try {
-                parsedArgs = JSON.parse(fixedArgs);
-              } catch {
-                const errorResult = `Error: Invalid JSON in tool arguments. Please ensure valid JSON.`;
-                
-                // Add error result to context engine
-                await invoke('context_add_tool_result', {
-                  threadId,
-                  toolCallId: toolCall.id,
+              const errorResult = `Error: Invalid JSON in tool arguments (malformed or incomplete).`;
+
+              // Add error result to context engine
+              await invoke('context_add_tool_result', {
+                threadId,
+                toolCallId: toolCall.id,
+                content: errorResult,
+                isError: true,
+              });
+
+              return {
+                toolResult: {
+                  id: toolCall.id,
+                  name: toolName,
+                  args: { raw: toolCall.function.arguments },
+                  result: errorResult,
+                  status: 'failed' as const,
+                },
+                message: {
+                  role: 'tool' as const,
+                  tool_call_id: toolCall.id,
                   content: errorResult,
-                  isError: true,
-                });
-
-                return {
-                  toolResult: {
-                    id: toolCall.id,
-                    name: toolName,
-                    args: { raw: toolCall.function.arguments },
-                    result: errorResult,
-                    status: 'failed' as const,
-                  },
-                  message: {
-                    role: 'tool' as const,
-                    tool_call_id: toolCall.id,
-                    content: errorResult,
-                  } as Message
-                };
-              }
+                } as Message
+              };
             }
+
+            if (parsedArgsResult.status === 'repaired') {
+              console.warn(
+                `[AgentService] Repaired malformed tool arguments for ${toolName}`
+              );
+            }
+            const parsedArgs = parsedArgsResult.args;
 
             const toolResult: NonNullable<AgentResponse['toolCalls']>[0] = {
               id: toolCall.id,

@@ -46,7 +46,7 @@ export const AgentToolCard: React.FC<AgentToolCardProps> = ({ action }) => {
       style={{
         background: isOpen
           ? 'var(--aurora-chat-surface)'
-          : 'var(--aurora-chat-surfaceMuted)',
+          : 'var(--aurora-chat-surface-muted)',
       }}
       onClick={() => setIsOpen(!isOpen)}
     >
@@ -73,7 +73,7 @@ export const AgentToolCard: React.FC<AgentToolCardProps> = ({ action }) => {
           </span>
           <span
             className={`material-icons-round text-sm transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`}
-            style={{ color: 'var(--aurora-common-mutedForeground)' }}
+            style={{ color: 'var(--aurora-common-muted-foreground)' }}
           >
             expand_more
           </span>
@@ -88,12 +88,12 @@ export const AgentToolCard: React.FC<AgentToolCardProps> = ({ action }) => {
         className={`grid transition-all duration-300 ease-in-out ${isOpen ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}
       >
         <div className="overflow-hidden">
-          <div className="px-3 pb-3 pt-1.5 border-t border-white/5">
+          <div className="px-3 pb-3 pt-1.5 border-t border-border/50">
             <div
               className="p-2.5 font-mono text-[11px] leading-relaxed"
               style={{
-                background: 'var(--aurora-chat-codeBlock)',
-                color: 'var(--aurora-common-mutedForeground)',
+                background: 'var(--aurora-chat-code-block)',
+                color: 'var(--aurora-common-muted-foreground)',
                 borderRadius: '0.75rem',
               }}
             >
@@ -103,7 +103,7 @@ export const AgentToolCard: React.FC<AgentToolCardProps> = ({ action }) => {
               </div>
               <div className="mb-2">
                 <span style={{ color: 'var(--aurora-common-primary)' }}>{action.toolName}</span>
-                <span style={{ color: 'var(--aurora-common-mutedForeground)' }}>({action.args})</span>
+                <span style={{ color: 'var(--aurora-common-muted-foreground)' }}>({action.args})</span>
               </div>
 
               <div className="flex justify-between items-center mb-1 opacity-70 mt-3">

@@ -158,7 +158,7 @@ export const ToolApprovalBanner: React.FC<ToolApprovalBannerProps> = ({
           </button>
           <button
             onClick={onApprove}
-            className="inline-flex items-center gap-1 rounded-full bg-primary px-3.5 py-1 text-[11px] font-semibold text-white shadow-lg shadow-primary/20 transition hover:bg-primary/90"
+            className="inline-flex items-center gap-1 rounded-full bg-primary px-3.5 py-1 text-[11px] font-semibold text-primary-foreground shadow-lg shadow-primary/20 transition hover:bg-primary/90"
           >
             <Check className="h-3.5 w-3.5" />
             Approve

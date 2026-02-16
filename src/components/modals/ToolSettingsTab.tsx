@@ -112,7 +112,7 @@ const ApprovalSelect: React.FC<ApprovalSelectProps> = ({ value, onChange }) => {
       value={value}
       onChange={(e) => onChange(e.target.value as 'auto' | 'always_ask' | 'deny')}
       className={clsx(
-        "px-2 py-0.5 text-[10px] rounded border bg-input",
+        "px-2 py-0.5 text-[10px] rounded border border-input-border bg-input text-text-secondary focus:outline-none",
         value === 'auto' && 'border-success/50 text-success',
         value === 'always_ask' && 'border-warning/50 text-warning',
         value === 'deny' && 'border-danger/50 text-danger'

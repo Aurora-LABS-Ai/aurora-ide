@@ -40,7 +40,7 @@ pub struct FileCache {
 impl FileCache {
     pub fn new() -> Self {
         // Allow up to 1000 files in cache
-        let cache = LruCache::new(NonZeroUsize::new(1000).unwrap());
+        let cache = LruCache::new(NonZeroUsize::new(1000).expect("cache size must be non-zero"));
         Self {
             cache: RwLock::new(cache),
             total_size: RwLock::new(0),

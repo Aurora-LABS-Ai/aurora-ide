@@ -329,14 +329,7 @@ export class AgentService {
                 if (isMcpTool(toolName)) {
                   resultContent = await executeMcpTool(toolName, parsedArgs);
                 } else {
-                  const fixedToolCall = {
-                    ...toolCall,
-                    function: {
-                      ...toolCall.function,
-                      arguments: JSON.stringify(parsedArgs),
-                    },
-                  };
-                  const result = await toolRegistry.executeToolCall(fixedToolCall);
+                  const result = await toolRegistry.executeToolCall(toolCall, parsedArgs);
                   resultContent = result.content;
                 }
 

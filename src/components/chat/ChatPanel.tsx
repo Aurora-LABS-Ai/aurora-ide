@@ -27,7 +27,6 @@ import { ChatInput, type AttachedFile } from "./ChatInput";
 import { ChatHeader } from "./ChatHeader";
 import { ThreadHistory } from "./ThreadHistory";
 import { useChatStore } from "../../store/useChatStore";
-const { setInputContent } = useChatStore.getState();
 import { useThreadStore, setStreamingState } from "../../store/useThreadStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
@@ -69,7 +68,7 @@ interface ChatPanelProps {
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
-  const { setLoading, isLoading, pendingApproval, setPendingApproval } =
+  const { setLoading, isLoading, pendingApproval, setPendingApproval, setInputContent } =
     useChatStore();
 
   const {

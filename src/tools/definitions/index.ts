@@ -14,6 +14,7 @@
 import type { ToolDefinition } from "../types";
 import { editorTools } from "./editor-tools";
 import { fileTools } from "./file-tools";
+import { getEnhancedToolRiskLevel } from "./risk-levels-enhanced";
 import { searchTools } from "./search-tools";
 import { shellTools } from "./shell-tools";
 import { todoTools } from "./todo-tools";
@@ -26,7 +27,7 @@ export const getToolByName = (name: string): ToolDefinition | undefined => {
 
 // Get risk level for a tool
 export const getToolRiskLevel = (toolName: string): 'low' | 'medium' | 'high' => {
-  return toolRiskLevels[toolName] || 'medium';
+  return getEnhancedToolRiskLevel(toolName);
 };
 
 export * from './file-tools';

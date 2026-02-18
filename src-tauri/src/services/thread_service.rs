@@ -611,10 +611,10 @@ fn generate_id() -> String {
 
 /// Simple random index (no external rand crate needed)
 fn rand_index(max: usize) -> usize {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or(Duration::ZERO)
         .subsec_nanos() as usize;
     nanos % max
 }

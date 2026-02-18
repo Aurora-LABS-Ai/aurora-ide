@@ -30,7 +30,10 @@ class ToolRegistry {
   /**
    * Execute a tool call
    */
-  public async executeToolCall(toolCall: ToolCallRequest): Promise<ToolCallResult> {
+  public async executeToolCall(
+    toolCall: ToolCallRequest,
+    preParsedArgs?: Record<string, unknown>
+  ): Promise<ToolCallResult> {
     const tool = this.tools.get(toolCall.function.name);
 
     if (!tool) {
@@ -41,16 +44,21 @@ class ToolRegistry {
       };
     }
 
-    // Parse arguments
-    const parsedArgsResult = parseToolArguments(toolCall.function.arguments);
-    if (parsedArgsResult.status === 'invalid') {
-      return {
-        tool_call_id: toolCall.id,
-        role: 'tool',
-        content: JSON.stringify({ error: 'Invalid JSON arguments' }),
-      };
+    let args: Record<string, unknown>;
+    if (preParsedArgs) {
+      args = preParsedArgs;
+    } else {
+      // Parse arguments
+      const parsedArgsResult = parseToolArguments(toolCall.function.arguments);
+      if (parsedArgsResult.status === 'invalid') {
+        return {
+          tool_call_id: toolCall.id,
+          role: 'tool',
+          content: JSON.stringify({ error: 'Invalid JSON arguments' }),
+        };
+      }
+      args = parsedArgsResult.args;
     }
-    const args = parsedArgsResult.args;
 
     // Track the tool call
     const trackedCall: TrackedToolCall = {

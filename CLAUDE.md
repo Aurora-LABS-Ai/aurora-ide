@@ -18,7 +18,7 @@ pnpm tauri:build
 pnpm build
 
 # Lint code
-pnpm lint
+pnpm build
 ```
 
 **Note:** Use `pnpm` as the package manager for this project.

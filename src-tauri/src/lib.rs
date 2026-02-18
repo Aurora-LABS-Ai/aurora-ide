@@ -113,7 +113,6 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::chat::set_current_thread,
             commands::chat::set_pending_approval,
             commands::chat::update_chat_state,
-            commands::chat::update_chat_state,
             commands::chat::clear_chat_state,
             commands::chat::broadcast_chat_event,
             // Theme commands

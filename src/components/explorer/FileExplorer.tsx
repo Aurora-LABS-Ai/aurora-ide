@@ -20,7 +20,7 @@
  * See: src/services/theme-service.ts for theme utilities
  */
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   MoreVertical, FolderOpen, FilePlus, FolderPlus,
   Plus, ChevronDown, Search, X, RefreshCw,
@@ -170,7 +170,10 @@ export const FileExplorer: React.FC = () => {
     return filter(nodes);
   }, []);
 
-  const filteredFiles = filterFiles(files, searchQuery);
+  const filteredFiles = useMemo(
+    () => filterFiles(files, searchQuery),
+    [files, searchQuery, filterFiles]
+  );
 
   const handleOpenFolder = async () => {
     setMenuPosition(null);

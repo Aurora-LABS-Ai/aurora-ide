@@ -66,35 +66,51 @@ async function buildAttachedFiles(
   const filesAsPathsOnly: string[] = [];
   const fileSections: string[] = [];
 
-  // Process files - first N get full content, rest get path only
-  for (let i = 0; i < attachedFiles.length; i++) {
-    const file = attachedFiles[i];
+  // First N files get full content, remaining files are provided as path-only references.
+  const filesForFullContent = attachedFiles.slice(0, MAX_FULL_CONTENT_FILES);
+  filesAsPathsOnly.push(...attachedFiles.slice(MAX_FULL_CONTENT_FILES).map((file) => file.path));
 
-    if (i < MAX_FULL_CONTENT_FILES) {
-      // Read and include full content
+  // Read full-content files in parallel, while preserving the input order in output.
+  const fullFileResults = await Promise.all(
+    filesForFullContent.map(async (file) => {
       try {
         const content = await readFileContent(file.path);
         const { formatted, lineCount, truncated } = formatFileWithLineNumbers(content, MAX_FILE_LINES);
-
-        filesWithContent.push({
-          path: file.path,
-          name: file.name,
+        return {
+          ok: true as const,
+          file,
           content,
+          formatted,
           lineCount,
           truncated,
-        });
-
-        fileSections.push(`<file path="${file.path}" lines="${lineCount}"${truncated ? ' truncated="true"' : ''}>
-${formatted}
-</file>`);
+        };
       } catch (error) {
-        fileSections.push(`<file path="${file.path}" error="true">
-Failed to read file: ${error}
-</file>`);
+        return {
+          ok: false as const,
+          file,
+          error,
+        };
       }
+    })
+  );
+
+  for (const result of fullFileResults) {
+    if (result.ok) {
+      filesWithContent.push({
+        path: result.file.path,
+        name: result.file.name,
+        content: result.content,
+        lineCount: result.lineCount,
+        truncated: result.truncated,
+      });
+
+      fileSections.push(`<file path="${result.file.path}" lines="${result.lineCount}"${result.truncated ? ' truncated="true"' : ''}>
+${result.formatted}
+</file>`);
     } else {
-      // Path only - instruct AI to use tool
-      filesAsPathsOnly.push(file.path);
+      fileSections.push(`<file path="${result.file.path}" error="true">
+Failed to read file: ${result.error}
+</file>`);
     }
   }
 

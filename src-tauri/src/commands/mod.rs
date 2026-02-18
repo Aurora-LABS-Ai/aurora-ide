@@ -687,22 +687,25 @@ pub async fn execute_command_stream(
 #[tauri::command]
 pub async fn get_system_info() -> Result<SystemInfo, String> {
     let os = std::env::consts::OS.to_string();
-    
-    // Get OS version
-    let os_version = get_os_version();
-    
-    // Get default shell
-    let shell = get_default_shell();
-    
-    Ok(SystemInfo {
-        os,
-        os_version,
-        arch: std::env::consts::ARCH.to_string(),
-        hostname: hostname::get()
-            .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "unknown".to_string()),
-        shell,
+    let arch = std::env::consts::ARCH.to_string();
+
+    tokio::task::spawn_blocking(move || {
+        // These helpers use blocking I/O / process execution, so run off the async runtime.
+        let os_version = get_os_version();
+        let shell = get_default_shell();
+
+        SystemInfo {
+            os,
+            os_version,
+            arch,
+            hostname: hostname::get()
+                .map(|h| h.to_string_lossy().to_string())
+                .unwrap_or_else(|_| "unknown".to_string()),
+            shell,
+        }
     })
+    .await
+    .map_err(|e| format!("Failed to collect system info: {}", e))
 }
 
 /// Get OS version string
@@ -1191,7 +1194,14 @@ use std::collections::HashMap;
 /// Returns a map of path -> content (or error message)
 #[tauri::command]
 pub async fn read_files_batch(paths: Vec<String>) -> HashMap<String, Result<String, String>> {
-    crate::file_cache::read_files_batch_cached(paths)
+    let fallback_paths = paths.clone();
+    match tokio::task::spawn_blocking(move || crate::file_cache::read_files_batch_cached(paths)).await {
+        Ok(results) => results,
+        Err(error) => fallback_paths
+            .into_iter()
+            .map(|path| (path, Err(format!("Batch file read task failed: {}", error))))
+            .collect(),
+    }
 }
 
 /// Invalidate a specific file or directory prefix from the cache

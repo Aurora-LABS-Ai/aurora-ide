@@ -15,6 +15,7 @@ import { getSystemInfo, readDirectory, readFileContent } from "../lib/tauri";
 import { useEditorStore } from "../store/useEditorStore";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import type { FileNode } from "../types";
+import type { Tab } from "../types";
 
 export interface BuiltContext {
   filesAsPathsOnly: string[];
@@ -348,7 +349,7 @@ export function generateProjectLayout(files: FileNode[], workspacePath: string, 
 
   const lines: string[] = [];
   let fileCount = 0;
-  let skippedFolders: string[] = [];
+  const skippedFolders: string[] = [];
 
   // Add workspace root
   lines.push(`${workspacePath}/`);
@@ -452,7 +453,7 @@ export function getIDEContext(includeProjectLayout: boolean = true): ContextConf
   const editorState = useEditorStore.getState();
 
   // Get open tabs with more detail
-  const openFiles = editorState.tabs.map((tab: any) => ({
+  const openFiles = editorState.tabs.map((tab: Tab) => ({
     path: tab.path,
     isActive: tab.id === editorState.activeTabId,
     cursorLine: undefined, // Could add cursor tracking later
@@ -554,7 +555,7 @@ export async function loadProjectRules(workspacePath: string): Promise<ProjectRu
     if (rules.length > 0) {
       console.log(`[ContextBuilder] Loaded ${rules.length} project rule(s) from ${RULES_FOLDER}/`);
     }
-  } catch (error) {
+  } catch {
     // .aurora folder doesn't exist or can't be read - that's fine
     console.log(`[ContextBuilder] No project rules found (${RULES_FOLDER}/ not accessible)`);
   }

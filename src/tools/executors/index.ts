@@ -54,8 +54,6 @@ export const registerAllExecutors = (): void => {
 let executorsRegistered = false;
 
 // Export individual registration functions for selective registration
-export { registerFileExecutors } from './file-executors';
-
 export { registerWorkspaceExecutors } from './workspace-executors';
 
 export { registerShellExecutors } from './shell-executors';

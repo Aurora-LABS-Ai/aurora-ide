@@ -7,7 +7,7 @@
  * See: DOCS/theme-dev.md for full token reference
  */
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Sparkles, Brain, ArrowUp, Square, X, Paperclip, ChevronDown, Settings } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { useSettingsStore } from '../../store/useSettingsStore';
@@ -17,6 +17,7 @@ import { loadFileContent } from '../../store/useWorkspaceStore';
 import { useEditorStore } from '../../store/useEditorStore';
 import { FileIcon } from '../explorer/FileIcons';
 import { getDragFilePath, getFilename, getLanguageFromExtension } from '../../lib/file-utils';
+import { resolveThinkingModelPair } from '../../lib/thinking-models';
 import clsx from 'clsx';
 
 export interface AttachedFile {
@@ -53,8 +54,21 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
   const llmConfig = getLLMConfig();
   const providerSupportsThinking = llmConfig?.supportsThinking ?? false;
   const availableModels = getAvailableModels();
-  const selectedModelName = selectedModel?.split(':')[1] ?? '';
-  const currentModel = llmConfig?.name || selectedModelName || 'Select Model';
+  const [selectedProviderId = '', selectedModelName = ''] = selectedModel.split(':');
+  const providerModels = useMemo(
+    () =>
+      availableModels
+        .filter((item) => item.providerId === selectedProviderId)
+        .map((item) => item.model),
+    [availableModels, selectedProviderId]
+  );
+  const thinkingPair = useMemo(
+    () => resolveThinkingModelPair(selectedModelName, providerModels),
+    [selectedModelName, providerModels]
+  );
+  const showThinkingToggle = providerSupportsThinking && !!thinkingPair;
+  const effectiveThinkingEnabled = thinkingPair ? thinkingPair.currentModelIsThinking : thinkingEnabled;
+  const currentModel = llmConfig?.model || selectedModelName || 'Select Model';
   const currentModelLabel = availableModels.length > 0 ? currentModel : 'No Models';
 
   // Auto-resize textarea
@@ -155,6 +169,31 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
     setSelectedModel(`${providerId}:${model}`);
     setShowModelDropdown(false);
   };
+
+  const handleThinkingToggle = useCallback(() => {
+    if (!thinkingPair || !selectedProviderId) {
+      setThinkingEnabled(!thinkingEnabled);
+      return;
+    }
+
+    const nextModel = effectiveThinkingEnabled
+      ? thinkingPair.nonThinkModel
+      : thinkingPair.thinkModel;
+
+    if (nextModel && nextModel !== selectedModelName) {
+      setSelectedModel(`${selectedProviderId}:${nextModel}`);
+    } else {
+      setThinkingEnabled(!thinkingEnabled);
+    }
+  }, [
+    thinkingPair,
+    selectedProviderId,
+    effectiveThinkingEnabled,
+    selectedModelName,
+    setSelectedModel,
+    setThinkingEnabled,
+    thinkingEnabled,
+  ]);
 
   const renderDropdown = () => {
     if (!showModelDropdown) return null;
@@ -260,27 +299,28 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
             <ChevronDown size={10} className={clsx("text-muted-foreground transition-transform", showModelDropdown && "rotate-180")} />
           </button>
 
-          {/* Thinking Toggle */}
-          <button
-            onClick={() => providerSupportsThinking && setThinkingEnabled(!thinkingEnabled)}
-            disabled={!providerSupportsThinking}
-            className={clsx(
-              "flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all",
-              !providerSupportsThinking
-                ? "bg-transparent text-muted-foreground cursor-not-allowed opacity-50"
-                : thinkingEnabled
+          {/* Thinking toggle only appears when provider exposes model pairs (think/non-think). */}
+          {showThinkingToggle && (
+            <button
+              onClick={handleThinkingToggle}
+              title={effectiveThinkingEnabled
+                ? `Switch to ${thinkingPair?.nonThinkModel}`
+                : `Switch to ${thinkingPair?.thinkModel}`
+              }
+              className={clsx(
+                "flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all",
+                effectiveThinkingEnabled
                   ? "bg-primary/10 text-primary"
                   : "bg-transparent text-muted-foreground hover:text-text-primary"
-            )}
-            style={{
-              boxShadow: providerSupportsThinking
-                ? '0 0 0 1px var(--aurora-chat-surface-border)'
-                : 'none',
-            }}
-          >
-            <Brain size={12} className={thinkingEnabled && providerSupportsThinking ? "animate-pulse" : ""} />
-            <span>Thinking</span>
-          </button>
+              )}
+              style={{
+                boxShadow: '0 0 0 1px var(--aurora-chat-surface-border)',
+              }}
+            >
+              <Brain size={12} className={effectiveThinkingEnabled ? "animate-pulse" : ""} />
+              <span>Thinking</span>
+            </button>
+          )}
         </div>
 
         {/* Attached Files */}

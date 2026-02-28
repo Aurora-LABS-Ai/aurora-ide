@@ -32,6 +32,7 @@ import type { FileNode } from '../../types';
 import clsx from 'clsx';
 import { createPortal } from 'react-dom';
 import { getDragFilePath, getFilename, getLanguageFromExtension } from '../../lib/file-utils';
+import { resolveThinkingModelPair } from '../../lib/thinking-models';
 import { FileIcon } from '../explorer/FileIcons';
 import { CompactTaskList } from './TaskView';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
@@ -73,13 +74,11 @@ const flattenFiles = (nodes: FileNode[]): FileNode[] => {
 const GeneratingStatus: React.FC = () => {
   const { isLoading } = useChatStore();
   const [messageIndex, setMessageIndex] = useState(0);
+  const visibleMessageIndex = isLoading ? messageIndex : 0;
 
   // Rotate through messages every 2.5 seconds
   useEffect(() => {
-    if (!isLoading) {
-      setMessageIndex(0);
-      return;
-    }
+    if (!isLoading) return;
 
     const interval = setInterval(() => {
       setMessageIndex((prev) => (prev + 1) % GENERATING_MESSAGES.length);
@@ -98,14 +97,13 @@ const GeneratingStatus: React.FC = () => {
 
   return (
     <ShimmerText className="text-[10px] font-medium">
-      {GENERATING_MESSAGES[messageIndex]}
+      {GENERATING_MESSAGES[visibleMessageIndex]}
     </ShimmerText>
   );
 };
 
 export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   const [content, setContent] = useState('');
-  const [_showOptions, _setShowOptions] = useState(false);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0 });
   const [isDragOver, setIsDragOver] = useState(false);
@@ -118,8 +116,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   // Mention Logic State
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIndex, setMentionIndex] = useState<number>(-1);
-  const [_mentionCoords, _setMentionCoords] = useState({ top: 0, left: 0 });
-  const [filteredFiles, setFilteredFiles] = useState<FileNode[]>([]);
+  const [mentionPopupPosition, setMentionPopupPosition] = useState<{ bottom: number; left: number } | null>(null);
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -145,7 +142,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
 
   // Re-compute available models when providers change
   const availableModels = getAvailableModels();
-  const [, currentModel] = selectedModel.split(':');
+  const [selectedProviderId = '', currentModel = ''] = selectedModel.split(':');
+  const providerModels = useMemo(
+    () =>
+      availableModels
+        .filter((item) => item.providerId === selectedProviderId)
+        .map((item) => item.model),
+    [availableModels, selectedProviderId]
+  );
+  const thinkingPair = useMemo(
+    () => resolveThinkingModelPair(currentModel, providerModels),
+    [currentModel, providerModels]
+  );
+  const showThinkingToggle = providerSupportsThinking && !!thinkingPair;
+  const effectiveThinkingEnabled = thinkingPair ? thinkingPair.currentModelIsThinking : thinkingEnabled;
 
   // Flatten files for searching
   const allFiles = useMemo(() => flattenFiles(workspaceFiles), [workspaceFiles]);
@@ -155,15 +165,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     if (pendingInputContent) {
       const { content: pending, replace } = consumePendingInput();
       if (pending) {
-        if (replace) {
-          // Replace mode: set content directly (used by suggested prompts)
-          setContent(pending);
-        } else {
-          // Append mode: add to existing content (used by browser inspector)
-          setContent(prev => prev ? `${prev}\n\n${pending}` : pending);
-        }
-        // Focus the textarea
-        textareaRef.current?.focus();
+        const rafId = window.requestAnimationFrame(() => {
+          if (replace) {
+            // Replace mode: set content directly (used by suggested prompts)
+            setContent(pending);
+          } else {
+            // Append mode: add to existing content (used by browser inspector)
+            setContent(prev => prev ? `${prev}\n\n${pending}` : pending);
+          }
+          // Focus the textarea
+          textareaRef.current?.focus();
+        });
+        return () => window.cancelAnimationFrame(rafId);
       }
     }
   }, [pendingInputContent, consumePendingInput]);
@@ -189,15 +202,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
         if (!query.includes('\n')) {
           setMentionQuery(query);
           setMentionIndex(lastAtSymbol);
-
-          // Calculate coords (simplified approximation)
+          setSelectedFileIndex(0);
           if (textareaRef.current) {
-            const rect = textareaRef.current.getBoundingClientRect();
-            // This is a rough approx, for production ideally use a proper caret coordinator or hidden div mirror
-            // For now, we center it above the textarea or at outline
-            _setMentionCoords({
-              top: rect.top - 10,
-              left: rect.left + 20 + (query.length * 6), // Offset slightly
+            const inputRect = textareaRef.current.getBoundingClientRect();
+            setMentionPopupPosition({
+              bottom: window.innerHeight - inputRect.top + 10,
+              left: inputRect.left + 20,
             });
           }
           return;
@@ -206,18 +216,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     }
 
     setMentionQuery(null);
+    setMentionPopupPosition(null);
   };
 
-  // Filter files when mention query changes
-  useEffect(() => {
-    if (mentionQuery !== null) {
-      const lowerQuery = mentionQuery.toLowerCase();
-      const filtered = allFiles
-        .filter(f => f.name.toLowerCase().includes(lowerQuery))
-        .slice(0, 10); // Limit results
-      setFilteredFiles(filtered);
-      setSelectedFileIndex(0);
-    }
+  const filteredFiles = useMemo(() => {
+    if (mentionQuery === null) return [];
+    const lowerQuery = mentionQuery.toLowerCase();
+    return allFiles
+      .filter((file) => file.name.toLowerCase().includes(lowerQuery))
+      .slice(0, 10);
   }, [mentionQuery, allFiles]);
 
   // Handle File Selection
@@ -347,20 +354,42 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     setShowModelDropdown(false);
   };
 
+  const handleThinkingToggle = useCallback(() => {
+    if (!thinkingPair || !selectedProviderId) {
+      setThinkingEnabled(!thinkingEnabled);
+      return;
+    }
+
+    const nextModel = effectiveThinkingEnabled
+      ? thinkingPair.nonThinkModel
+      : thinkingPair.thinkModel;
+
+    if (nextModel && nextModel !== currentModel) {
+      setSelectedModel(`${selectedProviderId}:${nextModel}`);
+    } else {
+      setThinkingEnabled(!thinkingEnabled);
+    }
+  }, [
+    thinkingPair,
+    selectedProviderId,
+    effectiveThinkingEnabled,
+    currentModel,
+    setSelectedModel,
+    setThinkingEnabled,
+    thinkingEnabled,
+  ]);
+
   // Render Mention Popup
   const renderMentionPopup = () => {
     // Only return null if query is null. If files are 0, we still want to show "No files found"
     if (mentionQuery === null) return null;
-
-    // Calculate position
-    const inputRect = textareaRef.current?.getBoundingClientRect();
-    if (!inputRect) return null;
+    if (!mentionPopupPosition) return null;
 
     // Position above the input box (simple implementation)
     // We can improve this by using the mentionCoords logic if stable
     const popupStyle = {
-      bottom: window.innerHeight - inputRect.top + 10,
-      left: inputRect.left + 20, // Align with typical text start
+      bottom: mentionPopupPosition.bottom,
+      left: mentionPopupPosition.left, // Align with typical text start
       maxHeight: '300px',
     };
 
@@ -553,37 +582,34 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
             <ChevronDown size={10} className={clsx("text-muted-foreground transition-transform", showModelDropdown && "rotate-180")} />
           </button>
 
-          {/* Thinking Toggle - only active if provider supports it */}
-          <button
-            onClick={() => providerSupportsThinking && setThinkingEnabled(!thinkingEnabled)}
-            disabled={!providerSupportsThinking}
-            title={providerSupportsThinking
-              ? (thinkingEnabled ? 'Disable thinking mode' : 'Enable thinking mode')
-              : 'Current model does not support thinking mode'
-            }
-            className={clsx(
-              "flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all",
-              !providerSupportsThinking
-                ? "bg-transparent text-muted-foreground cursor-not-allowed opacity-50"
-                : thinkingEnabled
+          {/* Thinking toggle only appears when provider exposes model pairs (think/non-think). */}
+          {showThinkingToggle && (
+            <button
+              onClick={handleThinkingToggle}
+              title={effectiveThinkingEnabled
+                ? `Switch to ${thinkingPair?.nonThinkModel}`
+                : `Switch to ${thinkingPair?.thinkModel}`
+              }
+              className={clsx(
+                "flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all",
+                effectiveThinkingEnabled
                   ? "bg-primary/10 text-primary"
                   : "bg-transparent text-muted-foreground hover:text-text-primary"
-            )}
-            style={{
-              border: providerSupportsThinking ? '1px solid transparent' : '1px solid transparent',
-              boxShadow: providerSupportsThinking
-                ? thinkingEnabled
+              )}
+              style={{
+                border: '1px solid transparent',
+                boxShadow: effectiveThinkingEnabled
                   ? '0 0 0 1px color-mix(in srgb, var(--aurora-chat-surface-border) 40%, transparent)'
-                  : '0 0 0 1px var(--aurora-chat-surface-border)'
-                : 'none',
-              backgroundColor: providerSupportsThinking && thinkingEnabled
-                ? 'color-mix(in srgb, var(--aurora-chat-surface) 70%, var(--aurora-common-primary) 10%)'
-                : 'var(--aurora-chat-surface)',
-            }}
-          >
-            <Brain size={12} className={thinkingEnabled && providerSupportsThinking ? "animate-pulse" : ""} />
-            <span>Thinking</span>
-          </button>
+                  : '0 0 0 1px var(--aurora-chat-surface-border)',
+                backgroundColor: effectiveThinkingEnabled
+                  ? 'color-mix(in srgb, var(--aurora-chat-surface) 70%, var(--aurora-common-primary) 10%)'
+                  : 'var(--aurora-chat-surface)',
+              }}
+            >
+              <Brain size={12} className={effectiveThinkingEnabled ? "animate-pulse" : ""} />
+              <span>Thinking</span>
+            </button>
+          )}
         </div>
 
         {/* Attached Files Scroll */}

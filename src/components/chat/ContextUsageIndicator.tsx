@@ -3,8 +3,9 @@
  * Shows context window usage with turn counts and summarization status
  */
 
-import React from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Database, AlertTriangle, Layers, Zap } from 'lucide-react';
+import { createPortal } from 'react-dom';
 import { useContextStore } from '../../store/useContextStore';
 
 interface ContextUsageIndicatorProps {
@@ -46,8 +47,6 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
   // Get theme colors at render time
   const ringColors = getRingColors();
 
-  if (usedTokens === 0) return null;
-
   const size = 18;
   const strokeWidth = 2.5;
   const radius = (size - strokeWidth) / 2;
@@ -61,6 +60,9 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
   };
 
   const fillColor = getFillColor();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isTooltipVisible, setIsTooltipVisible] = useState(false);
+  const [tooltipPosition, setTooltipPosition] = useState<{ left: number; top: number } | null>(null);
 
   const formatTokens = (n: number | undefined) => {
     if (n === undefined || n === null) return '0';
@@ -69,8 +71,51 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
     return n.toLocaleString();
   };
 
+  const updateTooltipPosition = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    setTooltipPosition({
+      left: rect.left,
+      top: rect.top - 12, // small gap above the trigger
+    });
+  }, []);
+
+  const handleMouseEnter = () => {
+    updateTooltipPosition();
+    setIsTooltipVisible(true);
+  };
+
+  const handleMouseLeave = () => {
+    setIsTooltipVisible(false);
+  };
+
+  useEffect(() => {
+    if (!isTooltipVisible) return;
+
+    const handleViewportChange = () => updateTooltipPosition();
+    window.addEventListener('scroll', handleViewportChange, true);
+    window.addEventListener('resize', handleViewportChange);
+
+    return () => {
+      window.removeEventListener('scroll', handleViewportChange, true);
+      window.removeEventListener('resize', handleViewportChange);
+    };
+  }, [isTooltipVisible, updateTooltipPosition]);
+
+  if (usedTokens === 0) return null;
+
   return (
-    <div className="w-fit group relative flex items-center cursor-help animate-in fade-in zoom-in duration-300">
+    <div
+      ref={containerRef}
+      className="w-fit relative flex items-center cursor-help animate-in fade-in zoom-in duration-300"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      onFocus={handleMouseEnter}
+      onBlur={handleMouseLeave}
+      tabIndex={0}
+    >
       {/* Circular Progress */}
       <div className="relative" style={{ width: size, height: size }}>
         <svg 
@@ -104,80 +149,90 @@ export const ContextUsageIndicator: React.FC<ContextUsageIndicatorProps> = (prop
         </svg>
       </div>
 
-      {/* Tooltip */}
-      <div className="absolute bottom-full left-0 mb-3 hidden group-hover:block z-50">
-        <div className="bg-sidebar border border-border rounded-lg shadow-xl shadow-black/50 p-2.5 min-w-[200px] backdrop-blur-md">
-          <div className="flex items-center gap-1.5 mb-1.5 text-text-secondary text-[10px] uppercase tracking-wider font-semibold">
-            <Database size={10} />
-            Context Window
-          </div>
-
-          {/* Warning Banner */}
-          {percentage >= 80 && (
-            <div
-              className="flex items-center gap-1.5 px-2 py-1 mb-2 rounded text-[10px]"
-              style={{
-                backgroundColor: `${ringColors.high}33`,
-                color: ringColors.high,
-              }}
-            >
-              <AlertTriangle size={10} />
-              {isOverLimit ? 'Context limit exceeded!' : needsSummarization ? 'Summarization recommended' : 'Context running low'}
-            </div>
-          )}
-
-          <div className="space-y-1.5">
-            {/* Usage percentage */}
-            <div className="flex justify-between items-center text-xs">
-              <span className="text-text-secondary">Usage</span>
-              <span className="font-mono font-medium" style={{ color: fillColor }}>{percentage}%</span>
+      {/* Tooltip rendered to body to avoid clipping/stacking issues. */}
+      {isTooltipVisible && tooltipPosition && createPortal(
+        <div
+          className="fixed z-[12000] pointer-events-none"
+          style={{
+            left: tooltipPosition.left,
+            top: tooltipPosition.top,
+            transform: 'translateY(-100%)',
+          }}
+        >
+          <div className="bg-sidebar border border-border rounded-lg shadow-xl shadow-black/50 p-2.5 min-w-[200px] backdrop-blur-md">
+            <div className="flex items-center gap-1.5 mb-1.5 text-text-secondary text-[10px] uppercase tracking-wider font-semibold">
+              <Database size={10} />
+              Context Window
             </div>
 
-            {/* Progress bar */}
-            <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: ringColors.track }}>
+            {/* Warning Banner */}
+            {percentage >= 80 && (
               <div
-                className="h-full transition-all duration-500"
+                className="flex items-center gap-1.5 px-2 py-1 mb-2 rounded text-[10px]"
                 style={{
-                  width: `${Math.min(100, percentage)}%`,
-                  backgroundColor: fillColor,
+                  backgroundColor: `${ringColors.high}33`,
+                  color: ringColors.high,
                 }}
-              />
-            </div>
+              >
+                <AlertTriangle size={10} />
+                {isOverLimit ? 'Context limit exceeded!' : needsSummarization ? 'Summarization recommended' : 'Context running low'}
+              </div>
+            )}
 
-            {/* Token count */}
-            <div className="flex justify-between items-center text-[9px] text-text-disabled font-mono">
-              <span>{formatTokens(usedTokens)} / {formatTokens(totalTokens)}</span>
-            </div>
+            <div className="space-y-1.5">
+              {/* Usage percentage */}
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-text-secondary">Usage</span>
+                <span className="font-mono font-medium" style={{ color: fillColor }}>{percentage}%</span>
+              </div>
 
-            {/* Divider */}
-            {totalTurns > 0 && (
-              <>
-                <div className="h-px my-1" style={{ backgroundColor: 'var(--aurora-common-border)' }} />
-                
-                {/* Turns info */}
-                <div className="flex justify-between items-center text-xs">
-                  <span className="flex items-center gap-1 text-text-secondary">
-                    <Layers size={10} />
-                    Turns
-                  </span>
-                  <span className="font-mono text-text-primary">{totalTurns}</span>
-                </div>
+              {/* Progress bar */}
+              <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: ringColors.track }}>
+                <div
+                  className="h-full transition-all duration-500"
+                  style={{
+                    width: `${Math.min(100, percentage)}%`,
+                    backgroundColor: fillColor,
+                  }}
+                />
+              </div>
 
-                {/* Summarized turns */}
-                {summarizedTurns > 0 && (
+              {/* Token count */}
+              <div className="flex justify-between items-center text-[9px] text-text-disabled font-mono">
+                <span>{formatTokens(usedTokens)} / {formatTokens(totalTokens)}</span>
+              </div>
+
+              {/* Divider */}
+              {totalTurns > 0 && (
+                <>
+                  <div className="h-px my-1" style={{ backgroundColor: 'var(--aurora-common-border)' }} />
+                  
+                  {/* Turns info */}
                   <div className="flex justify-between items-center text-xs">
                     <span className="flex items-center gap-1 text-text-secondary">
-                      <Zap size={10} />
-                      Summarized
+                      <Layers size={10} />
+                      Turns
                     </span>
-                    <span className="font-mono" style={{ color: ringColors.low }}>{summarizedTurns}</span>
+                    <span className="font-mono text-text-primary">{totalTurns}</span>
                   </div>
-                )}
-              </>
-            )}
+
+                  {/* Summarized turns */}
+                  {summarizedTurns > 0 && (
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="flex items-center gap-1 text-text-secondary">
+                        <Zap size={10} />
+                        Summarized
+                      </span>
+                      <span className="font-mono" style={{ color: ringColors.low }}>{summarizedTurns}</span>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
           </div>
-        </div>
-      </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 };

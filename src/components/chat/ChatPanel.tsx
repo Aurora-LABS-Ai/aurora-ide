@@ -33,7 +33,7 @@ import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { useContextStore } from "../../store/useContextStore";
 import { useAuditStore } from "../../store/useAuditStore";
 import { useCheckpointStore } from "../../store/useCheckpointStore";
-import { getAgentService, type ProviderConfig } from "../../services";
+import { getAgentService, type ProviderConfig, type ToolCallRequest } from "../../services";
 import { tokenService } from "../../services/token-service";
 import { toolRegistry } from "../../tools";
 import { registerAllExecutors } from "../../tools";
@@ -67,35 +67,39 @@ interface ChatPanelProps {
   isDetached?: boolean;
 }
 
+interface PendingToolCallState {
+  resolve: ((approved: boolean) => void) | null;
+  toolCall: ToolCallRequest;
+}
+
 export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
-  const { setLoading, isLoading, pendingApproval, setPendingApproval, setInputContent } =
-    useChatStore();
+  const setLoading = useChatStore((state) => state.setLoading);
+  const isLoading = useChatStore((state) => state.isLoading);
+  const pendingApproval = useChatStore((state) => state.pendingApproval);
+  const setPendingApproval = useChatStore((state) => state.setPendingApproval);
+  const setInputContent = useChatStore((state) => state.setInputContent);
 
-  const {
-    currentThreadId,
-    threads,
-    createThread,
-    addMessageToThread,
-    updateMessageInThread,
-    updateThreadUsage,
-    clearCurrentThread,
-  } = useThreadStore();
+  const currentThreadId = useThreadStore((state) => state.currentThreadId);
+  const threads = useThreadStore((state) => state.threads);
+  const createThread = useThreadStore((state) => state.createThread);
+  const addMessageToThread = useThreadStore((state) => state.addMessageToThread);
+  const updateMessageInThread = useThreadStore((state) => state.updateMessageInThread);
+  const updateThreadUsage = useThreadStore((state) => state.updateThreadUsage);
+  const clearCurrentThread = useThreadStore((state) => state.clearCurrentThread);
 
-  const { refreshDirectory, rootPath } = useWorkspaceStore();
+  const refreshDirectory = useWorkspaceStore((state) => state.refreshDirectory);
+  const rootPath = useWorkspaceStore((state) => state.rootPath);
 
-  const {
-    autoApproveTools,
-    maxToolCallsPerRequest,
-    getToolApproval,
-    setToolApproval,
-    getLLMConfig,
-    selectedModel,
-  } = useSettingsStore();
+  const autoApproveTools = useSettingsStore((state) => state.autoApproveTools);
+  const maxToolCallsPerRequest = useSettingsStore((state) => state.maxToolCallsPerRequest);
+  const getToolApproval = useSettingsStore((state) => state.getToolApproval);
+  const setToolApproval = useSettingsStore((state) => state.setToolApproval);
+  const getLLMConfig = useSettingsStore((state) => state.getLLMConfig);
 
   // Get provider-specific settings (each model has its own characteristics)
   const llmConfig = getLLMConfig();
   // Get user's thinking toggle preference from settings
-  const { thinkingEnabled: userThinkingEnabled } = useSettingsStore();
+  const userThinkingEnabled = useSettingsStore((state) => state.thinkingEnabled);
   // Combine: user wants thinking AND provider supports it
   const thinkingEnabled = userThinkingEnabled && (llmConfig?.supportsThinking ?? false);
   const temperature = llmConfig?.defaultTemperature ?? 1.0;
@@ -103,7 +107,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const currentMessageIdRef = useRef<string | null>(null);
-  const pendingToolCallRef = useRef<any>(null);
+  const pendingToolCallRef = useRef<PendingToolCallState | null>(null);
   const timelineRef = useRef<TimelineEvent[]>([]);
 
   // Get current thread messages
@@ -528,10 +532,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
               parameters: parseToolArgumentsForDisplay(toolCall.function.arguments),
             };
 
-            pendingToolCallRef.current = { toolCall, resolve: null as any };
+            const pendingState: PendingToolCallState = { toolCall, resolve: null };
+            pendingToolCallRef.current = pendingState;
 
             return new Promise<boolean>((resolve) => {
-              pendingToolCallRef.current.resolve = resolve;
+              pendingState.resolve = resolve;
               setPendingApproval(proposal);
             });
           },
@@ -646,7 +651,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
               const contentStr = typeof finalMessage.content === 'string'
                 ? finalMessage.content
                 : (Array.isArray(finalMessage.content)
-                  ? finalMessage.content.map(b => 'text' in b ? (b as any).text : '').join('')
+                  ? finalMessage.content
+                    .map((block) =>
+                      typeof block === 'object' &&
+                        block !== null &&
+                        'text' in block &&
+                        typeof block.text === 'string'
+                        ? block.text
+                        : ''
+                    )
+                    .join('')
                   : '');
               if (contentStr) {
                 addTimelineEvent({
@@ -747,7 +761,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           for (const event of timelineRef.current) {
             if (event.type === 'tool' && event.tool?.status === 'executing') {
               updateTimelineEvent(event.id, {
-                tool: { ...event.tool, status: 'cancelled' as any },
+                tool: { ...event.tool, status: 'failed' },
               });
             }
           }
@@ -781,12 +795,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
     },
     [
       currentThreadId,
+      currentThread?.messages,
+      threads,
       createThread,
       addMessageToThread,
-      updateMessageInThread,
+      updateThreadUsage,
       setLoading,
       autoApproveTools,
       maxToolCallsPerRequest,
+      thinkingEnabled,
+      temperature,
+      maxTokens,
       getToolApproval,
       setPendingApproval,
       addTimelineEvent,
@@ -794,9 +813,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       flushTimelineUpdate,
       refreshFileExplorer,
       getLLMConfig,
-      selectedModel,
       rootPath,
-      // Provider-specific settings are derived from getLLMConfig/selectedModel
+      // Provider-specific settings are derived from getLLMConfig.
     ],
   );
 

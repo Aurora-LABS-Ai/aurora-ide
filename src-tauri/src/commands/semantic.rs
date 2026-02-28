@@ -951,8 +951,7 @@ pub fn get_semantic_data_directory() -> Result<String, String> {
 /// All workspaces share this directory, aurora-semantic manages internal structure
 #[tauri::command]
 pub fn get_semantic_index_path(_workspace_id: String) -> Result<String, String> {
-    // All indexes are in the same shared directory now
-    let dir = get_semantic_data_dir()?;
-    Ok(dir.to_string_lossy().to_string())
+    // Legacy compatibility alias.
+    get_semantic_data_directory()
 }
 

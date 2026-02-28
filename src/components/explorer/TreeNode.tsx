@@ -26,7 +26,7 @@
  * Uses sub-components for rendering and hooks for logic
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { memo, useState, useCallback } from 'react';
 import type { FileNode } from '../../types';
 import { useWorkspaceStore, loadFileContent } from '../../store/useWorkspaceStore';
 import { useEditorStore } from '../../store/useEditorStore';
@@ -66,7 +66,7 @@ interface TreeNodeProps {
 // COMPONENT
 // ============================================
 
-export const TreeNode: React.FC<TreeNodeProps> = ({
+const TreeNodeComponent: React.FC<TreeNodeProps> = ({
   node,
   level,
   renameTargetId,
@@ -78,9 +78,19 @@ export const TreeNode: React.FC<TreeNodeProps> = ({
   onCreateSubmit,
   onCreateCancel,
 }) => {
-  // Store hooks
-  const { expandedFolders, toggleFolder, expandFolder, selectedFileId, selectFile, refreshDirectory, rootPath } = useWorkspaceStore();
-  const { openFile } = useEditorStore();
+  // Subscribe to minimal store slices to reduce recursive tree re-renders.
+  const toggleFolder = useWorkspaceStore((state) => state.toggleFolder);
+  const expandFolder = useWorkspaceStore((state) => state.expandFolder);
+  const selectFile = useWorkspaceStore((state) => state.selectFile);
+  const refreshDirectory = useWorkspaceStore((state) => state.refreshDirectory);
+  const rootPath = useWorkspaceStore((state) => state.rootPath);
+  const isExpanded = useWorkspaceStore(
+    useCallback((state) => state.expandedFolders.has(node.id), [node.id])
+  );
+  const isSelected = useWorkspaceStore(
+    useCallback((state) => state.selectedFileId === node.id, [node.id])
+  );
+  const openFile = useEditorStore((state) => state.openFile);
 
   // Local state
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
@@ -94,8 +104,6 @@ export const TreeNode: React.FC<TreeNodeProps> = ({
   const isCreatingHere = parentIsCreating && parentIsCreating.parentId === node.id;
   const isCreating = localIsCreating || (isCreatingHere ? parentIsCreating.type : null);
   const inputValue = isCreatingHere ? parentCreateValue : localInputValue;
-  const isExpanded = expandedFolders.has(node.id);
-  const isSelected = selectedFileId === node.id;
   const isFolder = node.type === 'folder';
   const nodePath = node.path || node.id;
 
@@ -423,3 +431,6 @@ export const TreeNode: React.FC<TreeNodeProps> = ({
     </div>
   );
 };
+
+TreeNodeComponent.displayName = 'TreeNode';
+export const TreeNode = memo(TreeNodeComponent);

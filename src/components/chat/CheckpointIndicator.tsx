@@ -71,7 +71,7 @@ export const CheckpointIndicator: React.FC<CheckpointIndicatorProps> = ({
     return (
       <div className={`flex items-center gap-1 text-checkpoint ${className}`}>
         <Loader2 className="w-3 h-3 animate-spin" />
-        <span className="text-[10px]">Restoring...</span>
+        <span className="text-[10px] font-medium">Restoring Checkpoint...</span>
       </div>
     );
   }
@@ -79,7 +79,7 @@ export const CheckpointIndicator: React.FC<CheckpointIndicatorProps> = ({
   if (showConfirm) {
     return (
       <div className={`flex items-center gap-2 ${className}`}>
-        <span className="text-[10px] text-checkpoint">Restore to this point?</span>
+        <span className="text-[10px] text-checkpoint font-medium">Restore to this Checkpoint?</span>
         <button
           onClick={handleRestore}
           className="px-2 py-0.5 text-[10px] bg-checkpoint/20 hover:bg-checkpoint/30 text-checkpoint rounded transition-colors"
@@ -99,12 +99,12 @@ export const CheckpointIndicator: React.FC<CheckpointIndicatorProps> = ({
   return (
     <button
       onClick={() => setShowConfirm(true)}
-      className={`flex items-center gap-1 text-text-disabled hover:text-checkpoint transition-colors group ${className}`}
-      title="Restore to this checkpoint (undo changes after this message)"
+      className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded-md border border-checkpoint/35 bg-checkpoint/10 text-checkpoint hover:bg-checkpoint/20 transition-colors ${className}`}
+      title="Restore to this Checkpoint (undo changes after this message)"
     >
       <History className="w-3 h-3" />
-      <span className="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">
-        checkpoint
+      <span className="text-[10px] font-semibold tracking-wide">
+        Checkpoint
       </span>
     </button>
   );

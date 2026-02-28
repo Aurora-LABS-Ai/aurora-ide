@@ -49,7 +49,8 @@ export const FileTree: React.FC<FileTreeProps> = ({
   onCreateSubmit,
   onCreateCancel,
 }) => {
-  const { files: storeFiles, rootPath } = useWorkspaceStore();
+  const storeFiles = useWorkspaceStore((state) => state.files);
+  const rootPath = useWorkspaceStore((state) => state.rootPath);
   const files = propFiles || storeFiles;
 
   // Check if we're creating at root level

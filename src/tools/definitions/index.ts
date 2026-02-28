@@ -86,39 +86,4 @@ export const toolCategories = {
   },
 };
 
-// Risk levels for tools (used for approval flow)
-export const toolRiskLevels: Record<string, 'low' | 'medium' | 'high'> = {
-  // File tools
-  file_create: 'medium',
-  file_read: 'low',
-  file_write: 'high',
-  search_replace: 'high',
-  multi_search_replace: 'high',
-  file_delete: 'high',
-  grep: 'low',
-  multi_file_read: 'low',
-
-  // Workspace tools
-  workspace_tree: 'low',
-  folder_create: 'medium',
-  folder_delete: 'high',
-
-  // Shell tools
-  shell_execute: 'high',
-  shell_spawn: 'high',
-  shell_kill: 'medium',
-  shell_list_processes: 'low',
-
-  // Editor tools
-  editor_open_file: 'low',
-  read_lints: 'low',
-
-  // Search tools
-  aurora_search: 'low', // Read-only semantic search
-
-  // Todo tools
-  todo_write: 'low', // Auto-approve - just updates UI task list
-
-  // Note: MCP tools are handled separately via mcp-tools.ts
-  // Their approval is determined by the server's autoApprove setting
-};
+// Risk levels are centralized in risk-levels-enhanced.ts.

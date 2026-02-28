@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { create } from "zustand";
 
+import { resolveThinkingModelPair } from "../lib/thinking-models";
 import { databaseService } from "../services/database";
 import type { LLMProviderConfig } from "../services/llm-types";
 import type { AppSettings as DbAppSettings, DbLLMProvider } from "../types/database";
@@ -159,6 +160,28 @@ const createDefaultProviders = (): LLMProvider[] => {
     enabled: true,
     isCustom: false,
   }));
+};
+
+const getProviderModelList = (provider: LLMProvider): string[] => {
+  const models = provider.customModels?.length ? provider.customModels : [provider.model];
+  return Array.from(new Set(models.filter(Boolean)));
+};
+
+const syncThinkingForSelectedModel = (
+  selectedModel: string,
+  providers: LLMProvider[],
+  currentThinkingEnabled: boolean
+): boolean => {
+  const [providerId, model] = selectedModel.split(":");
+  if (!providerId || !model) return currentThinkingEnabled;
+
+  const provider = providers.find((p) => p.id === providerId);
+  if (!provider || !provider.supportsThinking) return currentThinkingEnabled;
+
+  const pair = resolveThinkingModelPair(model, getProviderModelList(provider));
+  if (!pair) return currentThinkingEnabled;
+
+  return pair.currentModelIsThinking;
 };
 
 function dbToProvider(db: DbLLMProvider): LLMProvider {
@@ -441,9 +464,16 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       if (appSettings) {
         const uiFontFamily = appSettings.uiFontFamily ?? "system";
         const uiTextScale = appSettings.uiTextScale ?? 1;
+        const selectedModel = appSettings.selectedModel || "glm:glm-4.7";
+        const persistedThinkingEnabled = appSettings.thinkingEnabled ?? true;
+        const syncedThinkingEnabled = syncThinkingForSelectedModel(
+          selectedModel,
+          get().providers,
+          persistedThinkingEnabled
+        );
 
         set({
-          selectedModel: appSettings.selectedModel || "glm:glm-4.7",
+          selectedModel,
           autoApproveTools: appSettings.autoApproveTools ?? false,
           autoAcceptChanges: appSettings.autoAcceptChanges ?? false,
           syntaxValidationEnabled: appSettings.syntaxValidationEnabled ?? true,
@@ -451,7 +481,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           fontSize: appSettings.fontSize ?? 14,
           wrapMode: appSettings.wrapMode ?? true,
           theme: (appSettings.theme as 'dark' | 'light') || "dark",
-          thinkingEnabled: appSettings.thinkingEnabled ?? true,
+          thinkingEnabled: syncedThinkingEnabled,
           maxTokens: appSettings.maxTokens ?? 8192,
           temperature: appSettings.temperature ?? 1.0,
           autoSave: (appSettings.autoSave as SettingsState['autoSave']) || 'off',
@@ -588,7 +618,10 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   },
 
   setSelectedModel: (model: string) => {
-    set({ selectedModel: model });
+    set((state) => ({
+      selectedModel: model,
+      thinkingEnabled: syncThinkingForSelectedModel(model, state.providers, state.thinkingEnabled),
+    }));
     get().saveToDatabase();
   },
 

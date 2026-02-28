@@ -2,8 +2,15 @@
  * MCP Tools Service
  * Integrates MCP server tools into the Aurora agent
  */
-import { type McpToolInfo, useMcpStore } from "../store/useMcpStore";
+import { type McpServerState, type McpToolInfo, useMcpStore } from "../store/useMcpStore";
 import type { FunctionParameters, ToolDefinition } from "../tools/types";
+
+interface ParsedMcpToolName {
+  autoApprove: boolean;
+  originalToolName: string;
+  serverId: string;
+  serverName: string;
+}
 
 /**
  * Execute an MCP tool call
@@ -266,25 +273,33 @@ export function mcpToolToDefinition(
 /**
  * Parse MCP tool name to extract server ID and original tool name
  */
-export function parseMcpToolName(toolName: string): { serverId: string; serverName: string; originalToolName: string; autoApprove: boolean } | null {
+export function parseMcpToolName(toolName: string): ParsedMcpToolName | null {
   if (!isMcpTool(toolName)) return null;
-  
+
+  const servers = getServersForParse();
+
+  const cached = mcpToolParseCache.get(toolName);
+  if (cached !== undefined) {
+    return cached;
+  }
+
   // Format: mcp_{serverId}_{toolName}
-  // Need to find the server ID from the tool name
-  const { servers } = useMcpStore.getState();
-  
+  // Need to find the server ID from the tool name.
   for (const server of servers) {
     const serverPrefix = `mcp_${server.config.id.replace(/[^a-zA-Z0-9]/g, '_')}_`;
     if (toolName.startsWith(serverPrefix)) {
-      return {
+      const parsed: ParsedMcpToolName = {
         serverId: server.config.id,
         serverName: server.config.name,
         originalToolName: toolName.slice(serverPrefix.length),
         autoApprove: server.config.autoApprove,
       };
+      mcpToolParseCache.set(toolName, parsed);
+      return parsed;
     }
   }
-  
+
+  mcpToolParseCache.set(toolName, null);
   return null;
 }
 
@@ -313,3 +328,15 @@ export function shouldAutoApproveMcpTool(toolName: string): boolean {
 
 // Cache for MCP tool display names (tool name -> display name)
 const mcpToolDisplayNameCache = new Map<string, string>();
+// Cache parsed MCP tool names to avoid repeated server scans.
+const mcpToolParseCache = new Map<string, ParsedMcpToolName | null>();
+let mcpToolParseServersRef: McpServerState[] | null = null;
+
+const getServersForParse = (): McpServerState[] => {
+  const servers = useMcpStore.getState().servers;
+  if (servers !== mcpToolParseServersRef) {
+    mcpToolParseServersRef = servers;
+    mcpToolParseCache.clear();
+  }
+  return servers;
+};

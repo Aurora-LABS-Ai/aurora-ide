@@ -18,24 +18,32 @@ pnpm tauri:build
 pnpm build
 
 # Lint code
-pnpm build
+pnpm lint
+
+# Run tests
+pnpm test
 ```
 
 **Note:** Use `pnpm` as the package manager for this project.
 
 ## Project Overview
 
-Aurora is an AI-powered agentic code editor built with Tauri (Rust backend + React frontend). It provides a VS Code-like interface with an AI assistant that can execute tools to manipulate files, run commands, navigate workspaces, and perform semantic code search.
+Aurora is an AI-powered agentic code editor built with Tauri (Rust backend + React frontend). It provides a VS Code-like interface with an AI assistant that can execute tools to manipulate files, run commands, navigate workspaces, perform semantic code search, integrate MCP servers, and manage Git repositories.
+
+**Current Version:** 0.1.2
 
 ### Technology Stack
 
 **Frontend:**
-- React 18.3.1 + TypeScript
+- React 18.3.1 + TypeScript 5.9
 - Vite 7.2.4 (build tool)
 - Monaco Editor (code editing)
 - Zustand 5.0.9 (state management)
-- Tailwind CSS (styling with VS Code-inspired dark theme)
+- Tailwind CSS (styling with VS Code-inspired dark theme + CSS variable system)
 - react-resizable-panels (layout)
+- @xterm/xterm (integrated terminal)
+- Framer Motion (animations)
+- Lucide React (icons)
 
 **Backend (Rust):**
 - Tauri 2.x
@@ -46,9 +54,56 @@ Aurora is an AI-powered agentic code editor built with Tauri (Rust backend + Rea
 - tauri-plugin-process, tauri-plugin-os, tauri-plugin-clipboard-manager
 - rusqlite (SQLite database for state persistence)
 - aurora-semantic v1.2.1 (semantic code search with ONNX embeddings)
+- rmcp v0.1 (MCP client support)
+- reqwest (HTTP client for streaming)
 - Tokio (async runtime)
 
+**External Dependencies:**
+- aurora_websearch (native web search SDK)
+- tauri-pty (PTY terminal support)
+
 ## Architecture
+
+### High-Level Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Frontend (React/TS)                      │
+│  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐   │
+│  │ Agent Mode  │  │ Editor Panel │  │ Chat Panel   │   │
+│  │ (Full-chat) │  │ (Monaco)     │  │ (Timeline)   │   │
+│  └─────────────┘  └──────────────┘  └──────────────┘   │
+│         │                 │                 │               │
+│         └─────────────────┴─────────────────┘               │
+│                           │                               │
+│                  ┌────────▼────────┐                      │
+│                  │  State Stores   │                      │
+│                  │   (Zustand)    │                      │
+│                  └────────┬──────��─┘                      │
+└───────────────────────────┼───────────────────────────────────┘
+                            │ Tauri IPC
+                            │
+┌───────────────────────────▼──────────��────────────────────────┐
+│                  Rust Backend (Tauri)                       │
+│  ┌──────────────┐  ┌─────────────┐  ┌──────────────┐   │
+│  │Context Engine│  │   MCP       │  │ Checkpoint   │   │
+│  │(Turn-based) │  │  Manager    │  │ Service      │   │
+│  └──────────────┘  └─────────────┘  └──────────────┘   │
+│  ┌──────────────┐  ┌─────────────┐  ┌──────────────┐   │
+│  │Undo/Redo    │  │  Services   │  │ Database     │   │
+│  │(Per-file)   │  │  (Thread,   │  │ (SQLite)     │   │
+│  │              │  │   Token)    │  │              │   │
+│  └──────────────┘  └─────────────┘  └──────────────┘   │
+│         │                │                 │               │
+│         └────────────────┴─────────────────┘               │
+│                           │                               │
+│         ┌─────────────────▼─────────────────┐              │
+│         │        External Integrations        │              │
+│         │  MCP Servers | Semantic Search   │              │
+│         │  Git | Web Search | CLI         │              │
+│         └──────────────────────────────────┘              │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ### Provider Presets System
 
@@ -104,27 +159,115 @@ function createProvider(config: ProviderConfig): IProvider {
 }
 ```
 
+### Context Engine (Turn-Based Conversation Management)
+
+The Context Engine is a Rust-based system that manages conversation state in turns/rounds rather than a flat message list. This enables smart context budgeting, automatic summarization, and efficient message building.
+
+**Architecture:** `src-tauri/src/context/`
+
+```
+context/
+  mod.rs          - Module exports
+  types.rs        - Turn, ContextState, TurnSummary types
+  manager.rs      - ContextEngine (main logic)
+  builder.rs      - Message building with token budget
+  commands.rs     - Tauri commands (context_add_user_message, etc.)
+```
+
+**Key Features:**
+- **Turn Structure:** Each user message + AI response + tool calls = one turn
+- **Smart Message Building:** Builds API messages from turns with token budget awareness
+- **Automatic Summarization:** Detects when context is at 80%+, triggers summarization
+- **Tool Result Truncation:** Caps tool results at 500 lines to save context
+- **Context Estimation:** Tracks used tokens vs context window
+
+**Tauri Commands:**
+- `context_add_user_message` - Add user message with IDE context
+- `context_add_assistant_response` - Add AI response with thinking
+- `context_add_tool_call` - Record tool call
+- `context_add_tool_result` - Record tool result (with error flag)
+- `context_finalize_turn` - Mark turn as complete
+- `context_build_messages` - Build API messages from turns
+- `context_build_request_messages` - Build request-specific messages
+- `context_get_state` - Get context state (usage, turns, etc.)
+- `context_needs_summarization` - Check if summarization needed
+- `context_get_turn_to_summarize` - Get turn to summarize
+- `context_set_turn_summary` - Store turn summary
+- `context_get_summarization_prompt` - Get prompt for summarization
+- `context_clear_thread` - Reset context for thread
+- `context_init_from_thread` - Load from DB thread data
+- `context_get_turns` - Get all turns
+- `context_update_settings` - Update context settings
+- `context_estimate_request_tokens` - Estimate token count
+
+**Frontend Integration:**
+- `useContextStore` - Manages context state in Zustand
+- `AgentService` - Uses Context Engine for all conversations
+- `context-builder.ts` - Legacy, being replaced by Rust engine
+
+### MCP (Model Context Protocol) Integration
+
+Aurora includes full MCP client support for connecting to external MCP servers (databases, APIs, custom tools).
+
+**Architecture:** `src-tauri/src/mcp/`
+
+```
+mcp/
+  mod.rs          - Module exports
+  types.rs        - McpServerConfig, McpToolInfo, McpServerState
+  config.rs       - McpConfig (JSON file persistence)
+  manager.rs      - McpManager (connection lifecycle, tool execution)
+  commands.rs     - Tauri commands
+```
+
+**Supported Transports:**
+- **stdio:** Spawn process, communicate via JSON-RPC over stdin/stdout
+- **SSE:** Connect via Server-Sent Events, POST endpoint for messages
+
+**Key Features:**
+- **Auto-connect:** Servers with `autoStart: true` connect on app launch
+- **Tool Registration:** MCP tools automatically integrated into agent tool registry
+- **Prefix Naming:** MCP tools prefixed with `mcp_{serverId}_{toolName}`
+- **Resource Listing:** Lists server resources (optional, some servers don't support)
+- **Auto-approval:** Per-server `autoApprove` setting for skipping user confirmation
+
+**Frontend Integration:**
+- `useMcpStore` - Manages server states in Zustand
+- `McpSettingsTab.tsx` - UI for managing MCP servers
+- `mcp-tools.ts` - Converts MCP tools to Aurora tool format
+- `getMcpToolsSummary()` - Adds MCP tools to system prompt
+
+**MCP Tool Execution Flow:**
+```
+User Request -> Agent calls mcp_* tool -> parseMcpToolName() ->
+executeMcpTool() -> useMcpStore.callTool() -> Rust McpManager.call_tool() ->
+MCP Server (stdio/SSE) -> Return result -> Format as tool result
+```
+
 ### State Management (Zustand Stores)
 
 Located in `src/store/`:
 
-| Store | Purpose |
-|-------|---------|
-| `useSettingsStore` | Global app settings, LLM providers, model selection. Persists to SQLite. Model format: `"providerId:model"` |
-| `useChatStore` | Chat messages, loading state, tool approval workflow |
-| `useThreadStore` | Conversation thread management, persists to `.aurora/threads/` |
-| `useEditorStore` | Monaco editor tabs, active tab, file content caching |
-| `useWorkspaceStore` | File explorer, root path, file tree, filesystem watcher |
-| `useUiStore` | Theme, modal states, chat panel visibility |
-| `useDragStore` | Drag-drop state for file operations |
-| `useTaskStore` | Task/todo list management (UI display) |
-| `useTerminalStore` | Integrated terminal sessions |
-| `useContextStore` | Context window usage tracking |
-| `useAuditStore` | Tool execution audit log |
-| `useSemanticStore` | Semantic search settings, indexes, search state |
-| `useThemeStore` | Custom theme management |
-| `usePendingChangesStore` | Pending file changes before approval |
-| `useCheckpointStore` | Checkpoint state, creation, restore operations |
+| Store | Purpose | Key Features |
+|-------|---------|--------------|
+| `useSettingsStore` | Global app settings, LLM providers, model selection. Persists to SQLite. Model format: `\"providerId:model\"` | Provider management, tool approval, thinking toggle |
+| `useChatStore` | Chat messages, loading state, tool approval workflow | Multi-window sync via Rust SharedChatState |
+| `useThreadStore` | Conversation thread management, persists to `.aurora/threads/` | Thread creation, message CRUD, usage tracking |
+| `useEditorStore` | Monaco editor tabs, active tab, file content caching | Multi-tab, language detection |
+| `useWorkspaceStore` | File explorer, root path, file tree, filesystem watcher | Git integration, auto-refresh |
+| `useUiStore` | Theme, modal states, chat panel visibility, agent mode | Layout management, UI toggles |
+| `useDragStore` | Drag-drop state for file operations | File/folder drag-drop |
+| `useTaskStore` | Task/todo list management (UI display) | Agent mode tasks |
+| `useTerminalStore` | Integrated terminal sessions | Multi-session PTY terminals |
+| `useContextStore` | Context window usage tracking, turn management | Rust Context Engine sync |
+| `useAuditStore` | Tool execution audit log | Timeline, risk tracking |
+| `useSemanticStore` | Semantic search settings, indexes, search state | Per-workspace indexing |
+| `useThemeStore` | Custom theme management | Import/export, active theme |
+| `usePendingChangesStore` | Pending file changes before approval | Pre-edit preview |
+| `useCheckpointStore` | Checkpoint state, creation, restore operations | Git-based snapshots |
+| `useUndoRedoStore` | Per-file undo/redo state | Stack-based history |
+| **`useGitStore`** | Git repository state | Branches, commits, status, diff |
+| **`useMcpStore`** | MCP server management | Connection lifecycle, tools |
 
 ### Database Persistence (SQLite)
 
@@ -161,7 +304,7 @@ db/
 - `tool_settings` - Per-tool approval modes
 - `workspace_state` - Includes `checkpoint_enabled` column for per-workspace checkpoint toggle
 - `editor_state`, `explorer_state`
-- `threads` - Chat history with token usage
+- `threads` - Chat history with token usage, turn-based structure
 - `custom_themes` - User-imported themes
 - `semantic_indexes` - Per-workspace semantic search indexes with exclusions
 - `semantic_settings` - Global semantic search settings (model path, enabled, etc.)
@@ -172,14 +315,19 @@ db/
 Located in `src/services/agent-service.ts`:
 
 - Orchestrates AI conversation with tool execution
+- **Uses Rust Context Engine** for turn-based message management
 - Conversation loop: LLM -> Tool Calls -> Execution -> Response
 - Max 25 tool iterations per request
 - Streaming callbacks: `onToken`, `onThinking`, `onToolCall`, `onToolExecution`, `onUsage`, `onComplete`
+- **MCP Tool Integration:** MCP tools automatically included in available tools
+- **Auto-Approval:** Respects per-tool and per-MCP server approval settings
 
 **Flow:**
 ```
 User Input -> ChatPanel -> context-builder.ts -> agent.setProvider(config)
--> agent.chat() -> Provider.streamChat() -> Tool Execution -> Response
+-> agent.chat() -> Context Engine (build messages) -> Provider.streamChat()
+-> Tool Execution (built-in + MCP) -> Response
+-> Context Engine (finalize turn) -> Store
 ```
 
 ### Tool System
@@ -215,8 +363,14 @@ tools/
 | **Workspace** | `workspace_tree`, `folder_create`, `folder_delete`, `workspace_info` |
 | **Shell** | `shell_execute`, `shell_spawn`, `shell_kill`, `shell_list_processes` |
 | **Editor** | `editor_open_file`, `editor_get_active_file`, `editor_get_selection`, `editor_insert_text`, `editor_get_open_tabs`, `editor_close_tab` |
-| **Search** | `aurora_search` (semantic code search with filters) |
+| **Search** | `aurora_search` (semantic code search with filters), `auroro_websearch` (web search + page fetch) |
 | **Tasks** | `todo_write` (task list management) |
+| **MCP** | `mcp_*` (dynamic, from connected servers) |
+
+**Tool Risk Levels:**
+- **High:** `shell_*`, `file_delete`, `folder_delete`, `shell_spawn`, `shell_kill`
+- **Medium:** `file_write`, `file_create`, `file_patch`, `folder_create`, `shell_execute`
+- **Low:** All others (read-only operations)
 
 ### Checkpoint System
 
@@ -353,7 +507,7 @@ Aurora includes a powerful semantic code search engine powered by `aurora-semant
 **Features:**
 - AI-powered semantic search using ONNX embeddings (Jina Code 1.5B recommended)
 - Hybrid search mode: combines lexical (keywords) + semantic (meaning)
-- GPU acceleration support (CUDA, DirectML, CoreML)
+- GPU acceleration support (CUDA, DirectML, CoreML, TensorRT)
 - Per-workspace indexing with workspace-specific exclusions
 - Filtering by language, chunk type, path patterns, symbol names, directories
 
@@ -389,12 +543,169 @@ semanticService                     ->   aurora-semantic crate
 - Global ignored patterns and directories
 - Workspace-specific exclusions (stored per-workspace in `semantic_indexes`)
 
+### Git Integration
+
+Aurora includes full Git integration for managing repositories within the workspace.
+
+**Architecture:** `src-tauri/src/commands/git.rs`
+
+**Available Commands:**
+- `git_is_repository` - Check if workspace is a Git repo
+- `git_get_status` - Get current status (modified, untracked, staged files)
+- `git_get_branches` - List all branches
+- `git_get_commits` - Get commit history
+- `git_current_branch` - Get current branch name
+- `git_stage_file` - Stage a file
+- `git_unstage_file` - Unstage a file
+- `git_stage_all` - Stage all changes
+- `git_unstage_all` - Unstage all changes
+- `git_discard_changes` - Discard changes to a file
+- `git_commit` - Create commit with message
+- `git_checkout` - Checkout branch or commit
+- `git_create_branch` - Create new branch
+- `git_pull` - Pull from remote
+- `git_push` - Push to remote
+- `git_get_diff` - Get diff for file or changeset
+- `git_get_file_versions` - Get file history
+
+**Frontend Components:**
+- `GitPanel.tsx` - Main Git sidebar panel
+- `GitBranchSelector.tsx` - Branch selection dropdown
+- `GitCommitInput.tsx` - Commit message input
+- `GitDiffModal.tsx` - Diff viewer modal
+- `GitFileItem.tsx` - File change item in status list
+- `useGitStore` - Zustand store for Git state
+
+### Web Search Integration
+
+Aurora includes native web search capabilities via the `aurora_websearch` SDK (DuckDuckGo backend).
+
+**Architecture:** `src-tauri/src/commands/mod.rs`
+
+**Available Commands:**
+- `aurora_websearch` - Unified search/fetch command
+
+**Modes:**
+- **search:** Provide a query to search the web. Returns titles, URLs, snippets.
+- **fetch:** Provide a url to fetch and extract clean text content from a web page.
+
+**Features:**
+- Powered by DuckDuckGo
+- Clean text extraction from web pages
+- Search result titles, URLs, snippets
+- Page fetching with content extraction
+- Configurable region and safe search settings
+
+### Agent Mode
+
+Agent Mode is a full-screen chat interface optimized for complex, multi-step tasks.
+
+**Architecture:** `src/components/agent/AgentModeLayout.tsx`
+
+**Key Features:**
+- Full-screen chat with centered content
+- **Timeline-based message display** (content, thinking, tools)
+- File changes panel on the right (collapsible)
+- Thread history sidebar
+- Context usage indicator with summarization status
+- New chat button (Ctrl+H for history)
+- Exit to regular editor mode (Esc)
+
+**Components:**
+- `AgentModeLayout.tsx` - Main layout with PanelGroup
+- `AgentInputArea.tsx` - Input area with file attachments
+- `AgentChatMessage.tsx` - Message display with timeline
+- `AgentToolCard.tsx` - Tool execution card
+- `AgentChangesTree.tsx` - File changes panel
+
+**Timeline Events:**
+Each message contains a timeline of events:
+- `thinking` - AI reasoning (from `reasoning_content` or `thinking` blocks)
+- `content` - Response content
+- `tool` - Tool call execution (with status: pending, executing, complete, rejected, cancelled)
+
+**Keyboard Shortcuts:**
+- `Esc` - Exit agent mode
+- `Ctrl+H` - Open thread history
+
+### CLI Integration
+
+Aurora supports CLI commands for launching from terminal.
+
+**Architecture:** `src-tauri/src/cli.rs`
+
+**Available Commands:**
+```bash
+# Install CLI (symlink aurora to PATH)
+aurora --install-cli
+
+# Uninstall CLI
+aurora --uninstall-cli
+
+# Open Aurora with workspace
+aurora <path/to/workspace>
+
+# Open Aurora with specific file
+aurora <path/to/file>
+
+# Detach mode (frees terminal immediately)
+aurora <path> &
+```
+
+**Features:**
+- Single-instance detection (pass args to existing instance)
+- Detached process spawning (terminal freed immediately)
+- Auto-detect workspace vs file
+- Cross-platform installation (Windows: `%APPDATA%\com.aurora.agent\aurora.exe`, Unix: `~/.local/bin/aurora`)
+
+### OpenAI Native Provider
+
+The OpenAI Native provider uses raw HTTP streaming to support extended thinking fields not exposed by the async-openai crate.
+
+**Architecture:** `src-tauri/src/commands/openai_native.rs`
+
+**Features:**
+- Raw HTTP streaming via `reqwest`
+- Supports `reasoning_content` (DeepSeek, GLM) and `reasoning` (LM Studio local models)
+- Custom body parameters via `extra_body` (e.g., `reasoning_effort`)
+- Stream options for usage tracking
+- SSE event parsing with buffering
+
+**Tauri Commands:**
+- `openai_native_stream` - Streaming chat completion
+- `openai_native_chat` - Non-streaming chat completion
+
+**Emit Events:**
+- `openai-native-chunk-{requestId}` - Streaming content chunks
+- `openai-native-usage-{requestId}` - Token usage info
+- `openai-native-error-{requestId}` - Error events
+
+### Browser Preview
+
+Aurora includes a browser preview panel for viewing web content within the IDE.
+
+**Current Implementation:** iframe-based
+- Uses standard `<iframe>` element
+- Limited to same-origin or X-Frame-Options: allowframeorigin
+- No native inspector (use browser DevTools with F12)
+
+**Future Plans:**
+- Native WebView with Tauri's webview API
+- Full DevTools integration
+- Script injection for element inspection
+- Enhanced navigation controls
+
+**Tauri Commands:** `src-tauri/src/commands/browser.rs` (currently placeholders)
+
+**Frontend Component:** `src/components/editor/BrowserTab.tsx`
+
 ### Component Architecture
 
 **Layout:** `src/components/layout/MainLayout.tsx`
 - Three-panel layout: Explorer (18%) | Editor (57%) | Chat (25%)
 - Custom title bar with window controls
 - Detachable chat window
+- Activity bar for mode switching
 
 **Key Components:**
 
@@ -402,13 +713,73 @@ semanticService                     ->   aurora-semantic crate
 |-----------|---------|
 | `ChatPanel` | Chat interface with message history, thread sidebar |
 | `ChatInput` | Input with model selector, thinking toggle, file mentions |
-| `ChatHistory` | Message display with markdown rendering |
+| `ChatMessages` | Message display with timeline |
+| `ChatMessage` | Individual message with tool cards |
 | `EditorPanel` | Monaco editor with tabs |
 | `FileExplorer` | File tree with context menu, drag-drop |
 | `Terminal` | Integrated terminal with multiple sessions (PTY-based) |
-| `SettingsPanel` | Settings modal with tabs (Providers, Semantic Search, Appearance, Tools, General) |
+| `GitPanel` | Git status, branches, commits, diff viewer |
+| `SettingsPanel` | Settings modal with tabs (Providers, MCP, Semantic Search, Appearance, Tools, General) |
+| `McpSettingsTab` | MCP server management |
 | `SemanticSettingsTab` | Semantic search configuration |
 | `TaskList` | Todo/task display panel |
+| `SearchPanel` | Quick file search (Cmd/Ctrl+P) |
+| `QuickOpenModal` | Quick file/command picker |
+| `OnboardingModal` | First-run setup wizard |
+| `AuditTimeline` | Tool execution history viewer |
+
+### Theme System
+
+Aurora uses a CSS variable-based theme system for easy customization.
+
+**Theme Architecture:**
+- CSS variables in format `--aurora-{category}-{token}`
+- Categories: `common`, `chat`, `editor`, `explorer`, `git`, `title-bar`
+- Tokens: `primary`, `background`, `foreground`, `border`, `muted-foreground`, etc.
+
+**Theme Storage:**
+- Built-in themes: `src/themes/` directory
+- Custom themes: Stored in SQLite database (`custom_themes` table)
+- Active theme ID: Stored in `app_settings`
+
+**Theme Components:**
+- `ThemeSettingsTab.tsx` - Theme selection and import/export
+- `ThemePanel.tsx` - Theme preview editor
+- `ThemeDropdown.tsx` - Quick theme switcher in status bar
+
+**Example Themes:**
+- `aurora-dark-complete.json` - Full dark theme
+- `aurora-light-complete.json` - Light theme
+- `aurora-modern-dark-v2.json` - Modern dark variant
+- `CarbonForest.json` - Green-tinged forest theme
+- `midnight-slate.json` - Midnight blue theme
+- `toxic-green.json` - Neon green hacker theme
+
+### Token Counting
+
+Aurora includes multiple token counting methods for different providers.
+
+**Architecture:** `src-tauri/src/services/token_service.rs`
+
+**Tauri Commands:**
+- `count_tokens` - Count tokens for text using specified model encoding
+- `count_chat_tokens` - Count tokens for chat messages
+- `count_messages_tokens` - Count tokens for API message array
+- `detect_model_encoding` - Detect tokenizer encoding for model
+- `estimate_tokens_quick` - Fast character-based estimation (1 token ≈ 4 chars)
+- `truncate_to_tokens` - Truncate text to fit token budget
+
+**Supported Encodings:**
+- `cl100k_base` - OpenAI GPT-4, GPT-3.5-turbo
+- `o200k_base` - OpenAI GPT-4-turbo, GPT-4o
+- `p50k_base` - OpenAI code-davinci-002
+- `r50k_base` - OpenAI older models
+- `claude-3` - Anthropic Claude 3
+
+**Frontend Integration:** `src/services/token-service.ts`
+- Quick estimation for UI (no backend call)
+- Accurate counting via Tauri commands
+- Model-specific encoding detection
 
 ### Thinking Mode Integration
 
@@ -425,21 +796,27 @@ const providerSupportsThinking = llmConfig?.supportsThinking ?? false;
 const thinkingEnabled = userThinkingEnabled && (llmConfig?.supportsThinking ?? false);
 ```
 
+**Reasoning Content Fields:**
+- `reasoning_content` - DeepSeek, GLM (OpenAI-style)
+- `thinking` - Anthropic Claude (content block)
+- `reasoning` - LM Studio local models
+
 ## File Structure
 
 ### Services (`src/services/`)
 
 | File | Purpose |
 |------|---------|
-| `agent-service.ts` | AI conversation orchestration |
-| `context-builder.ts` | Cursor-style IDE context gathering |
+| `agent-service.ts` | AI conversation orchestration with Context Engine |
+| `context-builder.ts` | Cursor-style IDE context gathering (legacy, being replaced) |
 | `thread-converter.ts` | UI -> API message format conversion |
-| `token-estimator.ts` | Character-based token estimation |
+| `token-service.ts` | Token counting service |
 | `database.ts` | Frontend database API |
 | `semantic.ts` | Semantic search service (frontend) |
 | `theme-service.ts` | Custom theme loading and management |
 | `syntax-validator.ts` | Code syntax validation |
 | `multi-file-service.ts` | Multi-file read operations |
+| `mcp-tools.ts` | MCP tool integration |
 
 ### Providers (`src/services/providers/`)
 
@@ -451,20 +828,36 @@ const thinkingEnabled = userThinkingEnabled && (llmConfig?.supportsThinking ?? f
 | `openai-provider.ts` | OpenAI, DeepSeek, GLM implementation |
 | `anthropic-provider.ts` | Claude, MiniMax implementation |
 | `token-counter.ts` | Character-based token estimation |
-| `context-manager.ts` | Context overflow handling |
+| `context-manager.ts` | Context overflow handling (legacy) |
 | `index.ts` | Provider factory and registry |
 
-### Key UI Components
+### Rust Commands (`src-tauri/src/commands/`)
 
-| File | Purpose |
-|------|---------|
-| `components/chat/ChatPanel.tsx` | Main chat orchestration |
-| `components/chat/ChatInput.tsx` | Input with model/thinking controls |
-| `components/chat/ChatHistory.tsx` | Message display |
-| `components/modals/SettingsPanel.tsx` | Settings modal |
-| `components/modals/SemanticSettingsTab.tsx` | Semantic search settings |
-| `components/terminal/Terminal.tsx` | Integrated terminal |
-| `components/tasks/TaskList.tsx` | Todo list display |
+| Module | Commands |
+|--------|-----------|
+| `mod.rs` | File operations, batch ops, CLI install |
+| `settings.rs` | Providers, app settings, tool approval |
+| `chat.rs` | State sync for multi-window |
+| `threads.rs` | Thread CRUD, per-message operations, legacy APIs |
+| `state.rs` | Workspace, editor, explorer state persistence |
+| `semantic.rs` | Semantic search settings, indexing, search |
+| `themes.rs` | Theme CRUD, active theme |
+| `git.rs` | Git operations (status, commits, branches, diff) |
+| `browser.rs` | Browser preview (iframe mode, placeholders for native) |
+| `openai_native.rs` | Raw HTTP streaming for extended thinking |
+| `tokens.rs` | Token counting, encoding detection |
+| `checkpoints.rs` | Checkpoint lifecycle (Git CLI) |
+| `undo_redo.rs` | Per-file undo/redo (stack-based) |
+| `llm.rs` | HTTP proxy for LLM streaming (CORS bypass) |
+| `mcp/commands.rs` | MCP server management, tool execution |
+
+### Rust Services (`src-tauri/src/services/`)
+
+| Module | Purpose |
+|--------|---------|
+| `thread_service.rs` | Thread state management (per-message persistence) |
+| `token_service.rs` | Token counting with tiktoken-rs |
+| `api_converter.rs` | Format conversion (UI ↔ API ↔ Rust) |
 
 ## Important Patterns
 
@@ -503,22 +896,35 @@ All provider quirks are defined in presets:
 - **Anthropic/MiniMax**: Use `x-api-key` header, `anthropic-version` required
 - **Custom**: No assumptions, user configures via customParams
 
-### Context Management
+### Context Management with Context Engine
 
 ```typescript
-// Token estimation before each request
-const totalTokens = systemPromptTokens + historyTokens + newMessageTokens + toolsTokens;
+// AgentService automatically uses Rust Context Engine
+const agent = getAgentService();
+agent.setThreadId(threadId);
 
-// Context state tracking
-const contextState = {
-  usedTokens,
-  contextWindow,
-  percentage,
-  isNearLimit: percentage >= 80,
-  isOverLimit: usedTokens > allowedTokens,
-};
+// Each turn is managed by Context Engine
+await agent.chat(userMessage, callbacks, tools, ideContext);
 
-// Automatic truncation at 50% when over limit
+// Context state is available
+const state = await agent.getContextState();
+// { threadId, totalTurns, summarizedTurns, usedTokens, contextWindow, ... }
+```
+
+### MCP Tool Integration
+
+```typescript
+// MCP tools are automatically available to the agent
+const mcpTools = getMcpToolDefinitions();
+// Returns ToolDefinition[] prefixed with 'mcp_{serverId}_{toolName}'
+
+// Execute MCP tool (same as built-in tools)
+const result = await executeMcpTool('mcp_mcp_server1_db_info', {});
+// Returns formatted result content
+
+// Display name for UI
+const displayName = getToolDisplayName('mcp_mcp_server1_db_info');
+// Returns: "Server Name: db_info"
 ```
 
 ### Semantic Search Usage
@@ -555,56 +961,40 @@ interface SemanticIndex {
 await semanticService.updateWorkspaceExclusions(workspacePath, excludedFiles, excludedDirectories);
 ```
 
-## Rust Backend Commands
+### Checkpoint Integration
 
-**File Operations:** `src-tauri/src/commands/mod.rs`
-- `read_directory`, `read_file_content`, `write_file_content`
-- `create_file`, `create_folder`, `delete_path`, `rename_path`, `copy_path`
-- `execute_command`, `get_system_info`
-- `start_fs_watcher`, `stop_fs_watcher`
+```typescript
+// In chat/send handler
+const userMessage = { id: 'msg-1', content: '...', timestamp: Date.now() };
+addMessageToThread(userMessage);
 
-**Settings:** `src-tauri/src/commands/settings.rs`
-- `get_all_providers`, `save_provider`, `delete_provider`
-- `get_app_settings`, `save_app_settings`
-- `set_tool_approval`, `get_all_tool_settings`
+// Create checkpoint for user message
+if (rootPath && threadId) {
+  await useCheckpointStore.getState().createCheckpoint(userMessage.id, threadId);
+}
 
-**LLM Streaming:** `src-tauri/src/commands/llm.rs`
-- `llm_request` - Non-streaming HTTP request
-- `llm_stream_request` - Streaming with Tauri events
+// Restore from checkpoint
+await useCheckpointStore.getState().restoreToCheckpoint(checkpointId);
+// - Restores files to snapshot state
+// - Deletes messages after checkpoint
+// - Refreshes file explorer
+```
 
-**Semantic Search:** `src-tauri/src/commands/semantic.rs`
-- `get_semantic_settings`, `save_semantic_settings`, `set_semantic_model_path`
-- `validate_semantic_model_path`, `get_semantic_model_info`
-- `get_all_semantic_indexes`, `get_semantic_index`, `get_semantic_index_by_path`
-- `save_semantic_index`, `delete_semantic_index`, `update_semantic_index_status`
-- `update_workspace_exclusions` - Per-workspace exclusion management
-- `start_semantic_indexing`, `cancel_semantic_indexing`, `is_semantic_indexing`
-- `semantic_search` - Execute search with filters
-- `get_semantic_data_directory`, `get_semantic_index_path`
-- `get_execution_provider_info`, `get_available_gpu_features`
+### Undo/Redo Integration
 
-**Themes:** `src-tauri/src/commands/themes.rs`
-- `get_all_themes`, `save_theme`, `delete_theme`
-- `set_active_theme_id`, `get_active_theme_id`
+```typescript
+// Automatically recorded by file_write and file_create executors
+// Manual recording:
+useUndoRedoStore.getState().recordChange(filePath, {
+  content: oldContent,
+  newContent: newContent,
+  source: 'ai_tool',
+});
 
-**Checkpoints:** `src-tauri/src/commands/checkpoints.rs`
-- `checkpoint_init` - Initialize checkpoint service on app startup
-- `checkpoint_create` - Create checkpoint for user message
-- `checkpoint_restore` - Restore workspace to checkpoint state
-- `checkpoint_list` - Get all checkpoints for a thread
-- `checkpoint_get_by_message` - Get checkpoint by message ID
-- `checkpoint_delete_thread` - Delete all checkpoints for a thread
-- `checkpoint_is_initialized` - Check if checkpoint service is ready
-- `checkpoint_get_enabled`, `checkpoint_set_enabled` - Per-workspace toggle
-
-## VS Code-Inspired Design
-
-- Color hierarchy: titlebar (darkest) -> tabs -> sidebar -> editor (lightest)
-- Integrated terminal with PowerShell/Bash profiles (PTY-based)
-- File explorer with expand/collapse, context menu, drag-drop
-- Monaco editor with syntax highlighting
-- Detachable chat window
-- Custom theme support (import VS Code themes)
+// Undo/Redo via keyboard shortcuts or API
+await useUndoRedoStore.getState().undo(filePath);
+await useUndoRedoStore.getState().redo(filePath);
+```
 
 ## Performance Considerations
 
@@ -623,4 +1013,105 @@ The semantic settings tab uses several optimizations to prevent UI freezing:
 - Engine is cached as singleton (not recreated per search)
 - Index files stored in user app data (not workspace)
 - Workspace-specific exclusions stored in database
-- GPU acceleration when available (CUDA, DirectML, CoreML)
+- GPU acceleration when available (CUDA, DirectML, CoreML, TensorRT)
+
+### File Operations
+
+- **Multi-file reads**: `multi_file_read` parallelizes reads (10-100x faster)
+- **Batch operations**: `read_files_batch` command for bulk reads
+- **File cache**: In-memory cache with LRU eviction
+- **FS watcher**: Debounced events to prevent excessive UI updates
+
+## VS Code-Inspired Design
+
+- Color hierarchy: titlebar (darkest) -> tabs -> sidebar -> editor (lightest)
+- Integrated terminal with PowerShell/Bash profiles (PTY-based)
+- File explorer with expand/collapse, context menu, drag-drop
+- Monaco editor with syntax highlighting
+- Detachable chat window
+- Custom theme support (import VS Code themes)
+- Git integration (status, branches, commits, diff viewer)
+- Quick open (Cmd/Ctrl+P)
+- Multi-cursor editing
+- Split view (planned)
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl/Cmd+P` | Quick open |
+| `Ctrl/Cmd+H` | Chat history (Agent Mode) |
+| `Ctrl/Cmd+Shift+P` | Command palette (planned) |
+| `Ctrl/Cmd+S` | Save file |
+| `Ctrl/Cmd+Z` | Undo |
+| `Ctrl/Cmd+Y` / `Ctrl/Cmd+Shift+Z` | Redo |
+| `Ctrl/Cmd+W` | Close tab |
+| `Ctrl/Cmd+T` | New tab |
+| `Ctrl/Cmd+B` | Toggle sidebar |
+| `Ctrl/Cmd+J` | Toggle terminal |
+| `Ctrl/Cmd+K` | Focus chat |
+| `Esc` | Close modal / Exit Agent Mode |
+
+## Development Notes
+
+### Running Tests
+
+```bash
+# Run all tests
+pnpm test
+
+# Run tests in watch mode
+pnpm test:watch
+
+# Run with coverage
+pnpm test:coverage
+```
+
+### Building for Production
+
+```bash
+# Build optimized production bundle
+pnpm tauri:build
+
+# Outputs:
+# - src-tauri/target/release/bundle/
+#   - Windows: .msi, .nsis installer
+#   - macOS: .dmg, .app
+#   - Linux: .AppImage, .deb
+```
+
+### Code Style
+
+- Use `pnpm lint` before committing
+- Follow ESLint rules in `eslint.config.js`
+- TypeScript strict mode enabled
+- Use 2-space indentation for TypeScript/React
+- Use 4-space indentation for Rust
+
+### Contributing
+
+1. Create feature branch from `main`
+2. Make changes with clear commit messages
+3. Run tests and linting
+4. Submit pull request with description
+5. Ensure all new features have tests
+
+### Known Issues
+
+- Git checkpoints don't work with submodules
+- MCP SSE connections may timeout with slow servers
+- Semantic search indexing can take time for large codebases
+- Browser preview limited to iframe (no native WebView yet)
+
+### Future Roadmap
+
+- [ ] Native WebView browser preview
+- [ ] Split view for editor
+- [ ] Remote development (SSH)
+- [ ] Debug adapter integration
+- [ ] Extensions marketplace
+- [ ] Collaboration features (real-time)
+- [ ] AI code review (pull request analysis)
+- [ ] Automated testing
+- [ ] Docker integration
+- [ ] Kubernetes manifests

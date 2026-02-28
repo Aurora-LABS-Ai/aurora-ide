@@ -42,6 +42,11 @@ interface WorkspaceState {
   toggleFolder: (folderId: string) => Promise<void>;
 }
 
+interface FsChangedPayload {
+  kind?: string;
+  paths?: string[];
+}
+
 // Helper to load file content
 export const loadFileContent = async (path: string): Promise<string> => {
   if (!isTauri()) {
@@ -115,11 +120,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             fsUnlisten = null;
           }
           await startFsWatcher(path);
-          fsUnlisten = await listen('fs-changed', async (event: any) => {
+          fsUnlisten = await listen<FsChangedPayload>('fs-changed', async (event) => {
             const { rootPath } = get();
             if (!rootPath) return;
-            const paths: string[] = event?.payload?.paths || [];
-            const kind: string = event?.payload?.kind || 'any';
+            const paths: string[] = event.payload?.paths || [];
+            const kind: string = event.payload?.kind || 'any';
             const hasMatch = paths.some(p => p.startsWith(rootPath));
 
             if (hasMatch) {

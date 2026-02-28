@@ -417,7 +417,9 @@ export class OpenAIProvider extends BaseProvider {
 
     // Thinking mode - use preset configuration
     // Only enable if: provider supports it AND user has it enabled AND provider preset has config
-    if (this._config.supportsThinking && request.thinkingEnabled !== false) {
+    const isDeepSeekReasonerModel =
+      this.preset.id === 'deepseek' && model.toLowerCase().includes('reasoner');
+    if (this._config.supportsThinking && request.thinkingEnabled !== false && !isDeepSeekReasonerModel) {
       const thinkingParams = buildThinkingParams(this.preset, true);
       Object.assign(body, thinkingParams);
     }

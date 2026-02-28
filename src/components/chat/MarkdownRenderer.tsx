@@ -178,7 +178,10 @@ const CodeBlockWrapper: React.FC<{
     if (!rawCode && codeRef.current) {
       // Extract text content from the code block
       const text = codeRef.current.textContent || '';
-      setCodeText(text);
+      const rafId = window.requestAnimationFrame(() => {
+        setCodeText(text);
+      });
+      return () => window.cancelAnimationFrame(rafId);
     }
   }, [rawCode, children]);
 
@@ -351,36 +354,45 @@ const components = {
   ),
 
   // Lists with better styling
-  ul: ({ children, ...props }: React.HTMLAttributes<HTMLUListElement>) => (
+  ul: ({ children, style, className, ...props }: React.HTMLAttributes<HTMLUListElement>) => (
     <ul 
-      className="my-2 ml-4 space-y-1 text-[13px]"
-      style={{ color: 'var(--aurora-chat-foreground)' }}
+      className={["my-2 space-y-1 text-[13px]", className].filter(Boolean).join(" ")}
       {...props}
+      style={{
+        ...(style || {}),
+        color: 'var(--aurora-chat-foreground)',
+        listStyleType: 'disc',
+        paddingLeft: '1.25rem',
+        listStylePosition: 'outside',
+      }}
     >
       {children}
     </ul>
   ),
-  ol: ({ children, ...props }: React.HTMLAttributes<HTMLOListElement>) => (
+  ol: ({ children, style, className, ...props }: React.HTMLAttributes<HTMLOListElement>) => (
     <ol 
-      className="my-2 ml-4 space-y-1 text-[13px] list-decimal"
-      style={{ color: 'var(--aurora-chat-foreground)' }}
+      className={["my-2 space-y-1 text-[13px]", className].filter(Boolean).join(" ")}
       {...props}
+      style={{
+        ...(style || {}),
+        color: 'var(--aurora-chat-foreground)',
+        listStyleType: 'decimal',
+        paddingLeft: '1.25rem',
+        listStylePosition: 'outside',
+      }}
     >
       {children}
     </ol>
   ),
-  li: ({ children, ...props }: React.HTMLAttributes<HTMLLIElement>) => (
+  li: ({ children, style, className, ...props }: React.HTMLAttributes<HTMLLIElement>) => (
     <li 
-      className="text-[13px] leading-relaxed pl-1 relative before:content-[''] before:absolute before:left-[-12px] before:top-[9px] before:w-1 before:h-1 before:rounded-full"
+      className={["text-[13px] leading-relaxed", className].filter(Boolean).join(" ")}
+      {...props}
       style={{ 
+        ...(style || {}),
         color: 'var(--aurora-chat-foreground)',
       }}
-      {...props}
     >
-      <span 
-        className="absolute left-[-14px] top-[7px] w-1.5 h-1.5 rounded-full"
-        style={{ background: 'var(--aurora-common-primary)', opacity: 0.6 }}
-      />
       {children}
     </li>
   ),

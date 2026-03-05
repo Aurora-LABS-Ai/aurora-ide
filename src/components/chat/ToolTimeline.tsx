@@ -336,6 +336,8 @@ interface CodeViewProps {
   error?: string;
   isStreaming?: boolean;
   fileName?: string;
+  variant?: 'added' | 'removed' | 'normal';
+  hideHeader?: boolean;
 }
 
 /**
@@ -371,7 +373,9 @@ const CodeView: React.FC<CodeViewProps> = ({
   data,
   error,
   isStreaming,
-  fileName
+  fileName,
+  variant = 'normal',
+  hideHeader = false
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -384,7 +388,7 @@ const CodeView: React.FC<CodeViewProps> = ({
 
   if (error) {
     return (
-      <div className="mt-1 rounded bg-error/10 p-2 border border-error/20">
+      <div className="mt-2 rounded-md bg-error/10 p-2 border border-error/20">
         <div className="font-mono text-[10px] text-error whitespace-pre-wrap">
           <span className="font-bold">Error:</span> {error}
         </div>
@@ -407,42 +411,87 @@ const CodeView: React.FC<CodeViewProps> = ({
   const isCode = ['ts', 'tsx', 'js', 'jsx', 'py', 'rs', 'go', 'css', 'scss', 'html', 'json', 'md'].includes(ext);
 
   return (
-    <div className="relative mt-1 group">
+    <div className={cn(
+      "relative mt-2 group border rounded-md overflow-hidden transition-colors",
+      variant === 'added' ? "border-diff-added/20" :
+      variant === 'removed' ? "border-diff-removed/20" :
+      "border-border/50"
+    )}>
       {/* File header bar */}
-      {fileName && (
-        <div className="flex items-center gap-2 px-2 py-1 bg-code-block rounded-t border-b border-border">
+      {fileName && !hideHeader && (
+        <div className={cn(
+          "flex items-center gap-2 px-3 py-1.5 border-b rounded-t-md",
+          variant === 'added' ? "bg-diff-added/10 border-diff-added/20 text-diff-added" : 
+          variant === 'removed' ? "bg-diff-removed/10 border-diff-removed/20 text-diff-removed" : 
+          "bg-code-block border-border/50 text-text-secondary"
+        )}>
           <img
             src={getIconUrl(getIconName(fileName, false))}
             alt=""
-            className="w-3 h-3 flex-shrink-0 opacity-70"
+            className="w-3.5 h-3.5 flex-shrink-0 opacity-90"
           />
-          <span className="text-[9px] text-text-secondary font-mono">{fileName}</span>
-          <span className="text-[8px] text-text-disabled ml-auto">{lines.length} lines</span>
+          <span className="text-[10.5px] font-mono tracking-tight">{fileName}</span>
+          
+          <div className="ml-auto flex items-center gap-1.5 ">
+            {variant === 'added' && (
+              <span className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[9px] font-mono bg-diff-added/20 text-diff-added border border-diff-added/20">
+                <span className="opacity-80">new</span>
+                <span className="font-semibold">+{lines.length}</span>
+              </span>
+            )}
+            {variant === 'removed' && (
+              <span className="flex items-center gap-1.5 px-2 py-0.5 rounded text-[9px] font-mono bg-diff-removed/20 text-diff-removed border border-diff-removed/20">
+                <span className="opacity-80">removed</span>
+                <span className="font-semibold">-{lines.length}</span>
+              </span>
+            )}
+            {variant === 'normal' && (
+              <span className="text-[9px] text-text-disabled">{lines.length} lines</span>
+            )}
+          </div>
         </div>
       )}
 
       <div
         ref={contentRef}
-        style={{ maxHeight: isExpanded ? '300px' : '160px' }}
+        style={{ 
+          maxHeight: isExpanded ? '400px' : '180px',
+          ...(variant === 'removed' ? {
+            backgroundImage: 'repeating-linear-gradient(-45deg, transparent, transparent 8px, color-mix(in srgb, currentColor 3%, transparent) 8px, color-mix(in srgb, currentColor 3%, transparent) 16px)'
+          } : {})
+        }}
         className={cn(
-          "font-mono text-[10px] leading-[1.6] bg-code-block overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-scrollbar hover:scrollbar-thumb-scrollbar-hover scrollbar-track-transparent",
-          fileName ? "rounded-b" : "rounded"
+          "font-mono text-[10.5px] leading-[1.65] overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-scrollbar scrollbar-track-transparent",
+          (!fileName || hideHeader) ? "rounded-md" : "rounded-b-md",
+          variant === 'added' ? "bg-diff-added/[0.04] text-diff-added" :
+          variant === 'removed' ? "bg-diff-removed/[0.04] text-diff-removed" :
+          "bg-code-block text-text-secondary"
         )}
       >
         <table className="w-full border-collapse">
           <tbody>
             {displayLines.map((line, idx) => (
-              <tr key={idx} className="hover:bg-sidebar-item-hover">
+              <tr key={idx} className={cn(
+                "hover:bg-sidebar-item-hover transition-colors",
+                variant === 'added' && "hover:bg-diff-added/10",
+                variant === 'removed' && "hover:bg-diff-removed/10"
+              )}>
                 {/* Line number */}
-                <td className="text-[9px] text-text-disabled/50 text-right pr-3 pl-2 py-0 select-none w-8 align-top border-r border-border">
+                <td className={cn(
+                  "text-[9px] text-right pr-3 pl-2 py-0 select-none w-10 align-top border-r",
+                  variant === 'added' ? "text-diff-added/50 border-diff-added/20" : 
+                  variant === 'removed' ? "text-diff-removed/50 border-diff-removed/20" : 
+                  "text-text-disabled/50 border-border/40"
+                )}>
                   {idx + 1}
                 </td>
                 {/* Code content */}
-                <td className="pl-3 pr-2 py-0">
-                  <pre className="whitespace-pre-wrap break-all">
+                <td className="pl-3 pr-4 py-0">
+                  <pre className="whitespace-pre-wrap break-all inline-block w-full">
                     <code className={cn(
-                      "text-text-secondary",
-                      isCode && "text-text-primary"
+                      variant === 'added' ? "text-diff-added/90" :
+                      variant === 'removed' ? "text-diff-removed/90" :
+                      isCode ? "text-text-primary" : "text-text-secondary"
                     )}>
                       {line || ' '}
                     </code>
@@ -458,7 +507,12 @@ const CodeView: React.FC<CodeViewProps> = ({
       {isLongContent && (
         <button
           onClick={(e) => { e.stopPropagation(); setIsExpanded(!isExpanded); }}
-          className="w-full text-center text-[9px] text-text-disabled hover:text-text-primary py-1 bg-code-block rounded-b border-t border-border"
+          className={cn(
+            "w-full text-center text-[9.5px] py-1 border-t transition-colors",
+            variant === 'added' ? "bg-diff-added/10 border-diff-added/20 text-diff-added/70 hover:text-diff-added" :
+            variant === 'removed' ? "bg-diff-removed/10 border-diff-removed/20 text-diff-removed/70 hover:text-diff-removed" :
+            "bg-code-block border-border/50 text-text-disabled hover:text-text-primary"
+          )}
         >
           {isExpanded ? 'Show Less' : `Show ${lines.length - 8} More Lines`}
         </button>
@@ -924,39 +978,29 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({
 
             {/* Search/Replace Diff View */}
             {searchReplaceData && (searchReplaceData.oldString || searchReplaceData.newString) && (
-              <div className="space-y-2">
+              <div className="space-y-2 mt-2">
                 {/* Old String (what was replaced) */}
                 {searchReplaceData.oldString && (
-                  <div>
-                    <div className="flex items-center gap-2 px-2 py-1 bg-diff-removed/10 rounded-t">
-                      <span className="text-[9px] font-medium text-diff-removed">OLD</span>
-                      <span className="text-[8px] text-diff-removed/60">removed</span>
-                    </div>
-                    <CodeView
-                      data={searchReplaceData.oldString}
-                      fileName={fileName}
-                    />
-                  </div>
+                  <CodeView
+                    data={searchReplaceData.oldString}
+                    fileName={fileName}
+                    variant="removed"
+                  />
                 )}
                 {/* New String (replacement) */}
                 {searchReplaceData.newString && (
-                  <div>
-                    <div className="flex items-center gap-2 px-2 py-1 bg-diff-added/10 rounded-t">
-                      <span className="text-[9px] font-medium text-diff-added">NEW</span>
-                      <span className="text-[8px] text-diff-added/60">added</span>
-                    </div>
-                    <CodeView
-                      data={searchReplaceData.newString}
-                      fileName={fileName}
-                    />
-                  </div>
+                  <CodeView
+                    data={searchReplaceData.newString}
+                    fileName={fileName}
+                    variant="added"
+                  />
                 )}
               </div>
             )}
 
             {/* Multi Search/Replace Diff View */}
             {multiSearchReplaceData && multiSearchReplaceData.length > 0 && (
-              <div className="space-y-3">
+              <div className="space-y-3 mt-2">
                 {multiSearchReplaceData.map((replacement, idx) => (
                   <div key={idx} className="space-y-1">
                     <div className="flex items-center gap-2 text-[9px] text-text-disabled">
@@ -965,29 +1009,19 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({
                     </div>
                     {/* Old String (what was replaced) */}
                     {replacement.oldString && (
-                      <div>
-                        <div className="flex items-center gap-2 px-2 py-1 bg-diff-removed/10 rounded-t">
-                          <span className="text-[9px] font-medium text-diff-removed">OLD</span>
-                          <span className="text-[8px] text-diff-removed/60">removed</span>
-                        </div>
-                        <CodeView
-                          data={replacement.oldString}
-                          fileName={fileName}
-                        />
-                      </div>
+                      <CodeView
+                        data={replacement.oldString}
+                        fileName={fileName}
+                        variant="removed"
+                      />
                     )}
                     {/* New String (replacement) */}
                     {replacement.newString && (
-                      <div>
-                        <div className="flex items-center gap-2 px-2 py-1 bg-diff-added/10 rounded-t">
-                          <span className="text-[9px] font-medium text-diff-added">NEW</span>
-                          <span className="text-[8px] text-diff-added/60">added</span>
-                        </div>
-                        <CodeView
-                          data={replacement.newString}
-                          fileName={fileName}
-                        />
-                      </div>
+                      <CodeView
+                        data={replacement.newString}
+                        fileName={fileName}
+                        variant="added"
+                      />
                     )}
                   </div>
                 ))}
@@ -1000,6 +1034,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({
                 error={tool.error}
                 isStreaming={isRunning}
                 fileName={fileName}
+                variant={(isFileModifyTool && !tool.error) ? 'added' : 'normal'}
               />
             )}
           </div>

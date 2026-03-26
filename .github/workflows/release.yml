@@ -34,10 +34,11 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - uses: tauri-apps/tauri-action@v1
+      - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          projectPath: src-tauri
           tagName: v__VERSION__
           releaseName: "Aurora v__VERSION__"
           releaseBody: "Windows installer (CPU-only semantic search). Download the bundle below."

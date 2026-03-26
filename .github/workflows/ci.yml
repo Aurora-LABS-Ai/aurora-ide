@@ -1,5 +1,7 @@
 name: CI
 
+# Fast checks only: Vite/TS build. Full Tauri desktop builds run on Release (Windows workflow).
+
 on:
   push:
     branches: [main, master]
@@ -29,34 +31,3 @@ jobs:
 
       - name: Build frontend
         run: pnpm run build
-
-  tauri-check:
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Linux dependencies (Tauri / WebKit)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - name: cargo check (CPU-only, matches release builds)
-        working-directory: src-tauri
-        run: cargo check --no-default-features --features cpu-only

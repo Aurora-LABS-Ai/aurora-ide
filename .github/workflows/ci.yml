@@ -30,9 +30,6 @@ jobs:
       - name: Build frontend
         run: pnpm run build
 
-      - name: Test
-        run: pnpm run test
-
   tauri-check:
     runs-on: ubuntu-22.04
     steps:

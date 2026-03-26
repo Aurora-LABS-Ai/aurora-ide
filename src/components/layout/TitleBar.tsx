@@ -109,10 +109,23 @@ export const TitleBar: React.FC = () => {
     }
   }, [isDetached, createDetachedWindow, focusDetachedWindow]);
 
+  const chromeButtonStyle: React.CSSProperties = {
+    backgroundColor: 'color-mix(in srgb, var(--aurora-common-secondary) 72%, var(--aurora-title-bar-background) 28%)',
+    border: '1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)',
+    boxShadow: `
+      inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent),
+      inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 8%, transparent)
+    `,
+  };
+
   return (
     <div
       data-tauri-drag-region
-      className="h-8 bg-titlebar flex items-center justify-between border-b border-border select-none"
+      className="flex h-9 items-center justify-between border-b select-none"
+      style={{
+        background: 'color-mix(in srgb, var(--aurora-title-bar-background) 84%, var(--aurora-editor-background) 16%)',
+        borderColor: 'color-mix(in srgb, var(--aurora-common-border) 72%, transparent)',
+      }}
       onMouseDown={handleMouseDown}
     >
       {/* Left side - App branding */}
@@ -120,25 +133,26 @@ export const TitleBar: React.FC = () => {
         <div data-tauri-drag-region className="flex items-center gap-2 px-3 h-full">
           <button
             onClick={toggleSidebar}
-            className={`p-1 rounded transition-colors ${isSidebarOpen
+            className={`flex h-7 w-7 items-center justify-center rounded-[10px] transition-colors ${isSidebarOpen
               ? "text-primary bg-primary/10"
               : "text-text-secondary hover:text-text-primary hover:bg-input/50"
               }`}
+            style={chromeButtonStyle}
             title={isSidebarOpen ? "Hide Sidebar (Ctrl+B)" : "Show Sidebar (Ctrl+B)"}
           >
             <PanelLeft className="w-4 h-4" />
           </button>
 
-          <div className="h-4 w-[1px] bg-border mx-1" />
+          <div className="mx-1 h-4 w-[1px] bg-border" />
 
           <img
             src="/aurora_icon.png"
             alt="Aurora"
-            className="w-5 h-5 shrink-0"
+            className="h-4 w-4 shrink-0 object-contain"
           />
           <span
             data-tauri-drag-region
-            className="text-[12px] text-text-secondary"
+            className="text-[12px] font-medium tracking-[0.01em] text-text-secondary"
           >
             Aurora
           </span>
@@ -148,17 +162,19 @@ export const TitleBar: React.FC = () => {
       {/* Right side - Actions + Window controls */}
       <div className="flex items-center h-full" data-no-drag>
         {/* Action buttons */}
-        <div className="flex items-center gap-0.5 px-2">
+        <div className="flex items-center gap-1 px-2">
           <button
             onClick={() => setAuditOpen(true)}
-            className="p-1.5 text-text-secondary hover:text-text-primary hover:bg-input/50 rounded transition-colors"
+            className="flex h-7 w-7 items-center justify-center rounded-[10px] text-text-secondary transition-colors hover:text-text-primary hover:bg-input/50"
+            style={chromeButtonStyle}
             title="Audit Timeline"
           >
             <History className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => setSettingsOpen(true)}
-            className="p-1.5 text-text-secondary hover:text-text-primary hover:bg-input/50 rounded transition-colors"
+            className="flex h-7 w-7 items-center justify-center rounded-[10px] text-text-secondary transition-colors hover:text-text-primary hover:bg-input/50"
+            style={chromeButtonStyle}
             title="Settings"
           >
             <Settings className="w-3.5 h-3.5" />
@@ -167,12 +183,13 @@ export const TitleBar: React.FC = () => {
           <button
             onClick={toggleChat}
             disabled={isDetached}
-            className={`p-1.5 rounded transition-colors ${isDetached
+            className={`flex h-7 w-7 items-center justify-center rounded-[10px] transition-colors ${isDetached
               ? "text-text-disabled cursor-not-allowed"
               : isChatOpen
                 ? "text-primary bg-primary/10"
                 : "text-text-secondary hover:text-text-primary hover:bg-input/50"
               }`}
+            style={chromeButtonStyle}
             title={
               isDetached
                 ? "Chat is detached"
@@ -185,10 +202,11 @@ export const TitleBar: React.FC = () => {
           </button>
           <button
             onClick={handleDetachChat}
-            className={`p-1.5 rounded transition-colors ${isDetached
+            className={`flex h-7 w-7 items-center justify-center rounded-[10px] transition-colors ${isDetached
               ? "text-primary bg-primary/10"
               : "text-text-secondary hover:text-text-primary hover:bg-input/50"
               }`}
+            style={chromeButtonStyle}
             title={
               isDetached
                 ? "Focus detached chat window"
@@ -200,24 +218,24 @@ export const TitleBar: React.FC = () => {
         </div>
 
         {/* Window controls */}
-        <div className="flex items-center h-full ml-2">
+        <div className="ml-2 flex items-center h-full border-l border-border">
           <button
             onClick={handleMinimize}
-            className="w-12 h-full hover:bg-text-secondary/20 transition-colors flex items-center justify-center"
+            className="flex h-full w-11 items-center justify-center transition-colors hover:bg-text-secondary/20"
             title="Minimize"
           >
             <Minus className="w-4 h-4 text-text-secondary" />
           </button>
           <button
             onClick={handleMaximize}
-            className="w-12 h-full hover:bg-text-secondary/20 transition-colors flex items-center justify-center"
+            className="flex h-full w-11 items-center justify-center transition-colors hover:bg-text-secondary/20"
             title="Maximize"
           >
             <Square className="w-3 h-3 text-text-secondary" />
           </button>
           <button
             onClick={handleClose}
-            className="w-12 h-full hover:bg-danger transition-colors flex items-center justify-center group"
+            className="group flex h-full w-11 items-center justify-center transition-colors hover:bg-danger"
             title="Close"
           >
             <X className="w-4 h-4 text-text-secondary group-hover:text-danger-foreground" />

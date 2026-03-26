@@ -25,7 +25,7 @@
   color-scheme: dark;
   --aurora-ui-scale: 1;
   --aurora-ui-text-scale: 1;
-  --aurora-ui-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  --aurora-ui-font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
 }
 
 html, body, #root {
@@ -442,13 +442,13 @@ button:focus-visible {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--aurora-chat-foreground, #e0e0e0);
+  color: var(--aurora-common-text-primary, #e0e0e0);
   border-bottom: 2px solid var(--aurora-common-border, #333);
 }
 
 .markdown-content td {
   padding: 10px 16px;
-  color: var(--aurora-chat-foreground, #d4d4d4);
+  color: var(--aurora-common-text-primary, #d4d4d4);
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
@@ -457,11 +457,11 @@ button:focus-visible {
 }
 
 .markdown-content tbody tr:nth-child(even) {
-  background: rgba(255, 255, 255, 0.02);
+  background: color-mix(in srgb, var(--aurora-common-text-primary) 2%, transparent);
 }
 
 .markdown-content tbody tr:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: color-mix(in srgb, var(--aurora-common-text-primary) 4%, transparent);
 }
 
 /* Blockquote styling */
@@ -475,7 +475,7 @@ button:focus-visible {
 
 .markdown-content blockquote p {
   margin: 0;
-  color: var(--aurora-chat-foreground, #b0b0b0);
+  color: var(--aurora-common-text-secondary, #b0b0b0);
 }
 
 /* Horizontal rule */
@@ -507,7 +507,7 @@ button:focus-visible {
 }
 
 .markdown-content li::marker {
-  color: var(--aurora-chat-foreground, #d4d4d4);
+  color: var(--aurora-common-text-secondary, #d4d4d4);
 }
 
 /* Headers */
@@ -515,7 +515,7 @@ button:focus-visible {
 .markdown-content h2,
 .markdown-content h3,
 .markdown-content h4 {
-  color: var(--aurora-chat-foreground, #e0e0e0);
+  color: var(--aurora-common-text-primary, #e0e0e0);
   font-weight: 600;
 }
 

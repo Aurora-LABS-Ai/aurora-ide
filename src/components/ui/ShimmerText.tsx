@@ -50,7 +50,14 @@ export const ShimmerText: FC<ShimmerTextProps> = ({
     return (
         <span
             style={{
-                background: 'linear-gradient(90deg, #60a5fa 0%, #60a5fa 35%, #ffffff 50%, #60a5fa 65%, #60a5fa 100%)',
+                background: `linear-gradient(
+                    90deg,
+                    var(--aurora-common-primary) 0%,
+                    var(--aurora-common-primary) 35%,
+                    var(--aurora-common-primary-foreground) 50%,
+                    var(--aurora-common-primary) 65%,
+                    var(--aurora-common-primary) 100%
+                )`,
                 backgroundSize: '200% 100%',
                 WebkitBackgroundClip: 'text',
                 backgroundClip: 'text',

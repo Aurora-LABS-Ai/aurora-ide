@@ -87,6 +87,7 @@ const extractTimelineText = (timeline: TimelineEvent[]): string => {
 const TimelineEventItem: React.FC<{ 
   event: TimelineEvent; 
   isStreaming?: boolean;
+  isActivelyStreaming?: boolean;
   toolVariant?: 'timeline' | 'cards';
   pendingApproval?: ToolProposal | null;
   onApprovePending?: () => void;
@@ -95,6 +96,7 @@ const TimelineEventItem: React.FC<{
 }> = ({
   event,
   isStreaming = false,
+  isActivelyStreaming = false,
   toolVariant = 'timeline',
   pendingApproval = null,
   onApprovePending,
@@ -112,6 +114,7 @@ const TimelineEventItem: React.FC<{
         <ToolTimeline
           tools={[event.tool]}
           variant={toolVariant}
+          isActivelyStreaming={isActivelyStreaming}
           pendingApproval={pendingApproval}
           onApprovePending={onApprovePending}
           onRejectPending={onRejectPending}
@@ -169,7 +172,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
             </div>
 
             <div className="bg-input text-text-primary rounded-2xl rounded-tr-sm px-4 py-2.5 border border-border shadow-sm min-w-0 max-w-full overflow-hidden">
-              <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed opacity-90 font-light select-text cursor-text overflow-wrap-anywhere" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+              <p className="whitespace-pre-wrap break-words text-[14px] leading-[1.6] font-normal tracking-[0.01em] text-text-primary select-text cursor-text overflow-wrap-anywhere" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                 {message.content}
               </p>
             </div>
@@ -244,6 +247,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                 key={event.id}
                 event={event}
                 isStreaming={isStreaming && isLastMessage && idx === message.timeline!.length - 1}
+                isActivelyStreaming={isStreaming && isLastMessage}
                 toolVariant={toolVariant}
                 pendingApproval={pendingApproval}
                 onApprovePending={onApprovePending}
@@ -260,6 +264,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                 <ToolTimeline
                   tools={message.tools}
                   variant={toolVariant}
+                  isActivelyStreaming={isStreaming && isLastMessage}
                   pendingApproval={pendingApproval}
                   onApprovePending={onApprovePending}
                   onRejectPending={onRejectPending}

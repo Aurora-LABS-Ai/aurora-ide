@@ -141,6 +141,19 @@ class DatabaseService {
   }
 
   /**
+   * Get recently opened workspaces ordered by most recent first
+   */
+  public async listRecentWorkspaces(limit: number = 3): Promise<WorkspaceState[]> {
+    try {
+      const result = await invoke<WorkspaceState[]>('list_recent_workspaces', { limit });
+      return result;
+    } catch (error) {
+      console.error('Failed to list recent workspaces:', error);
+      return [];
+    }
+  }
+
+  /**
    * Check if any providers exist in the database
    */
   public async hasProviders(): Promise<boolean> {

@@ -7,7 +7,13 @@
  * Get file path from drag data transfer
  */
 export const getDragFilePath = (e: React.DragEvent): string | null => {
-    return e.dataTransfer.getData(DND_FILE_PATH_KEY) || e.dataTransfer.getData('text/plain') || null;
+    const internalPath = e.dataTransfer.getData(DND_FILE_PATH_KEY) || e.dataTransfer.getData('text/plain');
+    if (internalPath) {
+        return internalPath;
+    }
+
+    const nativeFile = e.dataTransfer.files?.[0] as File & { path?: string };
+    return nativeFile?.path || null;
 };
 
 /**

@@ -20,11 +20,11 @@ export interface DbMessage {
   isThinking?: boolean;
   role: string;
   thinking?: string;
-  timeline?: any;
+  timeline?: unknown;
   timestamp: string;
-  toolProposal?: any;
-  tool_calls?: Array<any>;
-  tools?: any;
+  toolProposal?: unknown;
+  tool_calls?: unknown[];
+  tools?: unknown;
 }
 
 export interface DbThread {
@@ -172,6 +172,13 @@ export const getSystemInfo = async (): Promise<SystemInfo> => {
     return { os: 'unknown', os_version: 'unknown', arch: 'unknown', hostname: 'unknown', shell: null };
   }
   return invoke<SystemInfo>('get_system_info');
+};
+export const getGlobalSkillsPath = async (): Promise<string | null> => {
+  if (!isTauri()) {
+    console.warn('getGlobalSkillsPath: Not running in Tauri');
+    return null;
+  }
+  return invoke<string | null>('get_global_skills_path');
 };
 export const getThreadFromDb = async (id: string): Promise<DbThread | null> => {
   if (!isTauri()) {
@@ -370,6 +377,39 @@ export const uninstallAuroraCli = async (): Promise<string> => {
     return 'Not running in Tauri';
   }
   return invoke<string>('uninstall_aurora_cli');
+};
+
+/**
+ * Install Aurora into the Windows Explorer context menu for folders.
+ */
+export const installAuroraContextMenu = async (): Promise<string> => {
+  if (!isTauri()) {
+    console.warn('installAuroraContextMenu: Not running in Tauri');
+    return 'Not running in Tauri';
+  }
+  return invoke<string>('install_aurora_context_menu');
+};
+
+/**
+ * Check whether the Aurora Windows Explorer context menu is installed.
+ */
+export const isAuroraContextMenuInstalled = async (): Promise<boolean> => {
+  if (!isTauri()) {
+    console.warn('isAuroraContextMenuInstalled: Not running in Tauri');
+    return false;
+  }
+  return invoke<boolean>('is_aurora_context_menu_installed');
+};
+
+/**
+ * Remove Aurora from the Windows Explorer context menu.
+ */
+export const uninstallAuroraContextMenu = async (): Promise<string> => {
+  if (!isTauri()) {
+    console.warn('uninstallAuroraContextMenu: Not running in Tauri');
+    return 'Not running in Tauri';
+  }
+  return invoke<string>('uninstall_aurora_context_menu');
 };
 
 export interface AuroraWebSearchRequest {

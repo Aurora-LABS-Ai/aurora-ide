@@ -30,6 +30,7 @@ import { ChevronRight } from 'lucide-react';
 import clsx from 'clsx';
 import { FileIcon, FolderIcon } from '../FileIcons';
 import { useDragStore } from '../../../store/useDragStore';
+import { setDragFilePath } from '../../../lib/file-utils';
 
 interface TreeNodeRowProps {
     name: string;
@@ -78,6 +79,15 @@ export const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
         onClick();
     }, [onClick]);
 
+    const handleDragStart = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+        if (isFolder) {
+            e.preventDefault();
+            return;
+        }
+
+        setDragFilePath(e, path);
+    }, [isFolder, path]);
+
     // Calculate indent guides
     const indentGuides = [];
     for (let i = 0; i < level; i++) {
@@ -97,7 +107,7 @@ export const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
     return (
         <div
             className={clsx(
-                "group relative flex items-center gap-1.5 py-[3px] pr-2 cursor-pointer select-none transition-all duration-150",
+                "group relative mx-1 my-[1px] flex items-center gap-1.5 rounded-[10px] py-[4px] pr-2.5 cursor-pointer select-none transition-all duration-150",
                 // Drag states
                 isDropTarget && "ring-1 ring-[var(--aurora-common-primary)] z-10",
                 isBeingDragged && "opacity-50 grayscale"
@@ -105,7 +115,10 @@ export const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
             style={{
                 paddingLeft: `${level * 12 + 12}px`,
                 backgroundColor: isSelected
-                    ? 'var(--aurora-sidebar-item-selected)'
+                    ? 'color-mix(in srgb, var(--aurora-common-primary) 10%, var(--aurora-sidebar-item-selected))'
+                    : undefined,
+                boxShadow: isSelected
+                    ? 'inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 5%, transparent), inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 10%, transparent)'
                     : undefined,
                 // Add hover effect manually to avoid conflict with selected state
                 cursor: 'pointer'
@@ -113,21 +126,23 @@ export const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
             // Hover effect via style injection on events to support complex gradients if needed, 
             // or rely on CSS classes if tokens support it. Here we use inline styles for strict token adherence.
             onMouseEnter={(e) => {
-                if (!isSelected) e.currentTarget.style.backgroundColor = 'var(--aurora-sidebar-item-hover)';
+                if (!isSelected) e.currentTarget.style.backgroundColor = 'color-mix(in srgb, var(--aurora-sidebar-item-hover) 78%, transparent)';
             }}
             onMouseLeave={(e) => {
                 if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent';
             }}
             onClick={handleClick}
             onMouseDown={handleMouseDown}
+            onDragStart={handleDragStart}
             onContextMenu={onContextMenu}
+            draggable={!isFolder}
             data-file-path={path}
             {...(isFolder ? { 'data-folder-path': path } : {})}
         >
             {/* Active Border Accent - Absolute positioned to avoid layout shift */}
             {isSelected && (
                 <div
-                    className="absolute left-0 top-0 bottom-0 w-[2px] shadow-[0_0_8px_rgba(var(--primary-rgb),0.5)]"
+                    className="absolute bottom-[5px] left-0.5 top-[5px] w-[2px] rounded-full"
                     style={{ backgroundColor: 'var(--aurora-common-primary)' }}
                 />
             )}
@@ -137,7 +152,7 @@ export const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
 
             {/* Chevron / Spacer */}
             <span className={clsx(
-                "flex items-center justify-center w-4 h-4 transition-transform duration-200 z-10",
+                "z-10 flex h-4 w-4 items-center justify-center transition-transform duration-200",
                 isFolder && isExpanded && "rotate-90"
             )} style={{ color: 'var(--aurora-sidebar-foreground)', opacity: 0.7 }}>
                 {isFolder && <ChevronRight className="w-3.5 h-3.5" />}
@@ -154,18 +169,13 @@ export const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
 
             {/* Filename */}
             <span className={clsx(
-                "text-[13px] truncate ml-1.5 z-10 relative transition-colors"
+                "relative z-10 ml-1 truncate text-[12px] transition-colors"
             )} style={{
                 color: isSelected ? 'var(--aurora-common-primary-foreground)' : 'var(--aurora-sidebar-foreground)',
                 fontWeight: isSelected ? 500 : 400
             }}>
                 {name}
             </span>
-
-            {/* Hover Highlight Overlay (Optional Premium Effect) */}
-            <div className="absolute inset-0 pointer-events-none opacity-0 group-hover:opacity-10 transition-opacity duration-300"
-                style={{ background: 'linear-gradient(to right, var(--aurora-common-primary), transparent)' }}
-            />
         </div>
     );
 };

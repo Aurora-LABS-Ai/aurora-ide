@@ -82,6 +82,10 @@ single-instance = "0.3"
 # Note: Undo/Redo uses a simple custom stack implementation
 # (the undo crate's API was not a good fit for our per-file use case)
 
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
 [features]
 # Default: Enable CUDA for NVIDIA GPUs (most common GPU acceleration)
 # For Windows without CUDA: use --features directml instead
@@ -114,4 +118,3 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
-

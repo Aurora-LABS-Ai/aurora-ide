@@ -333,8 +333,8 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({
           <div
             className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-colors"
             style={{
-              backgroundColor: 'var(--aurora-chat-input-background)',
-              borderColor: 'var(--aurora-chat-input-border)',
+              backgroundColor: 'color-mix(in srgb, var(--aurora-common-secondary) 82%, var(--aurora-common-muted) 18%)',
+              borderColor: 'var(--aurora-common-border)',
             }}
           >
             {currentUrl ? (

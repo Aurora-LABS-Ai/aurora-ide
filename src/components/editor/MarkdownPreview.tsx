@@ -20,12 +20,13 @@
  * See: src/services/theme-service.ts for theme utilities
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { oneLight, vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import mermaid from 'mermaid';
+import { useThemeStore } from '../../store/useThemeStore';
 
 interface MarkdownPreviewProps {
   content: string;
@@ -34,23 +35,23 @@ interface MarkdownPreviewProps {
 
 export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, className = '' }) => {
   const mermaidContainerRef = useRef<HTMLDivElement>(null);
-  const [mermaidInitialized, setMermaidInitialized] = useState(false);
+  const activeThemeType = useThemeStore((state) =>
+    state.themes.find((theme) => theme.id === state.activeThemeId)?.type ?? 'dark'
+  );
+  const syntaxTheme = activeThemeType === 'light' ? oneLight : vscDarkPlus;
 
   // Initialize Mermaid
   useEffect(() => {
-    if (!mermaidInitialized) {
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: 'dark',
-        securityLevel: 'loose',
-      });
-      setMermaidInitialized(true);
-    }
-  }, [mermaidInitialized]);
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: activeThemeType === 'light' ? 'default' : 'dark',
+      securityLevel: 'loose',
+    });
+  }, [activeThemeType]);
 
   // Render Mermaid diagrams
   useEffect(() => {
-    if (!mermaidInitialized || !mermaidContainerRef.current) return;
+    if (!mermaidContainerRef.current) return;
 
     const container = mermaidContainerRef.current;
     const mermaidBlocks = container.querySelectorAll('.mermaid');
@@ -68,10 +69,10 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
         block.innerHTML = `<div class="text-error text-xs p-2">Error rendering diagram</div>`;
       }
     });
-  }, [content, mermaidInitialized]);
+  }, [activeThemeType, content]);
 
   return (
-    <div className={`markdown-preview max-w-none ${className}`} ref={mermaidContainerRef} style={{ color: 'var(--aurora-text-secondary)' }}>
+    <div className={`markdown-preview max-w-none ${className}`} ref={mermaidContainerRef} style={{ color: 'var(--aurora-common-text-secondary)' }}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -84,7 +85,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
               return (
                 <SyntaxHighlighter
                   language={language}
-                  style={vscDarkPlus}
+                  style={syntaxTheme}
                   customStyle={{
                     background: 'var(--aurora-editor-background)',
                     margin: '0',
@@ -93,7 +94,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
                   }}
                   codeTagProps={{
                     style: {
-                      color: 'var(--aurora-text-primary)',
+                      color: 'var(--aurora-common-text-primary)',
                       fontFamily: "'JetBrains Mono', monospace",
                     },
                   }}
@@ -107,7 +108,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
               return (
                 <code
                   className="px-1.5 py-0.5 rounded bg-input text-[13px]"
-                  style={{ color: 'var(--aurora-text-primary)', fontFamily: "'JetBrains Mono', monospace" }}
+                  style={{ color: 'var(--aurora-common-text-primary)', fontFamily: "'JetBrains Mono', monospace" }}
                 >
                   {children}
                 </code>
@@ -117,7 +118,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
             return (
               <code
                 className="block p-3 bg-input rounded text-[13px]"
-                style={{ color: 'var(--aurora-text-primary)', fontFamily: "'JetBrains Mono', monospace" }}
+                style={{ color: 'var(--aurora-common-text-primary)', fontFamily: "'JetBrains Mono', monospace" }}
               >
                 {children}
               </code>
@@ -128,7 +129,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
           h1: ({ children }: any) => (
             <h1
               className="text-2xl font-bold mt-6 mb-3 pb-2 border-b"
-              style={{ color: 'var(--aurora-text-primary)', borderColor: 'var(--aurora-border)' }}
+              style={{ color: 'var(--aurora-common-text-primary)', borderColor: 'var(--aurora-common-border)' }}
             >
               {children}
             </h1>
@@ -136,7 +137,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
           h2: ({ children }: any) => (
             <h2
               className="text-xl font-bold mt-5 mb-3 pb-1 border-b"
-              style={{ color: 'var(--aurora-text-primary)', borderColor: 'var(--aurora-border)' }}
+              style={{ color: 'var(--aurora-common-text-primary)', borderColor: 'var(--aurora-common-border)' }}
             >
               {children}
             </h2>
@@ -144,7 +145,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
           h3: ({ children }: any) => (
             <h3
               className="text-lg font-semibold mt-4 mb-2"
-              style={{ color: 'var(--aurora-text-primary)' }}
+              style={{ color: 'var(--aurora-common-text-primary)' }}
             >
               {children}
             </h3>
@@ -152,7 +153,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
           h4: ({ children }: any) => (
             <h4
               className="text-base font-semibold mt-3 mb-2"
-              style={{ color: 'var(--aurora-text-primary)' }}
+              style={{ color: 'var(--aurora-common-text-primary)' }}
             >
               {children}
             </h4>
@@ -160,7 +161,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
           h5: ({ children }: any) => (
             <h5
               className="text-sm font-semibold mt-2 mb-1"
-              style={{ color: 'var(--aurora-text-primary)' }}
+              style={{ color: 'var(--aurora-common-text-primary)' }}
             >
               {children}
             </h5>
@@ -168,7 +169,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
           h6: ({ children }: any) => (
             <h6
               className="text-xs font-medium mt-2 mb-1"
-              style={{ color: 'var(--aurora-text-muted)' }}
+              style={{ color: 'var(--aurora-common-muted-foreground)' }}
             >
               {children}
             </h6>
@@ -184,7 +185,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
             <a
               href={href}
               className="underline hover:text-primary transition-colors"
-              style={{ color: 'var(--aurora-primary)' }}
+              style={{ color: 'var(--aurora-common-primary)' }}
             >
               {children}
             </a>
@@ -205,7 +206,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
           blockquote: ({ children }: any) => (
             <blockquote
               className="border-l-4 pl-4 py-1 mb-4 text-sm"
-              style={{ borderColor: 'var(--aurora-border)', color: 'var(--aurora-text-muted)' }}
+              style={{ borderColor: 'var(--aurora-common-border)', color: 'var(--aurora-common-muted-foreground)' }}
             >
               {children}
             </blockquote>
@@ -222,14 +223,14 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
           thead: ({ children }: any) => (
             <thead
               className="border-b-2 font-medium"
-              style={{ borderColor: 'var(--aurora-border)', color: 'var(--aurora-text-primary)' }}
+              style={{ borderColor: 'var(--aurora-common-border)', color: 'var(--aurora-common-text-primary)' }}
             >
               {children}
             </thead>
           ),
           tbody: ({ children }: any) => <tbody>{children}</tbody>,
           tr: ({ children }: any) => (
-            <tr className="border-b" style={{ borderColor: 'var(--aurora-border)' }}>
+            <tr className="border-b" style={{ borderColor: 'var(--aurora-common-border)' }}>
               {children}
             </tr>
           ),
@@ -244,7 +245,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
           hr: () => (
             <hr
               className="my-6"
-              style={{ borderColor: 'var(--aurora-border)' }}
+              style={{ borderColor: 'var(--aurora-common-border)' }}
             />
           ),
           
@@ -255,7 +256,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
           
           // Strong/Bold
           strong: ({ children, ...props }: any) => (
-            <strong className="font-semibold" style={{ color: 'var(--aurora-text-primary)' }} {...props}>
+            <strong className="font-semibold" style={{ color: 'var(--aurora-common-text-primary)' }} {...props}>
               {children}
             </strong>
           ),

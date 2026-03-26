@@ -29,6 +29,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import { isTauri } from '../../lib/tauri';
 import { useThemeImportDrag } from '../../hooks/useThemeImportDrag';
+import { settingsCardStyle, settingsDangerPanelStyle, settingsPrimaryButtonStyle, settingsSubtlePanelStyle } from './settings-shared';
 
 export const ThemeSettingsTab: React.FC = () => {
     const {
@@ -162,7 +163,7 @@ export const ThemeSettingsTab: React.FC = () => {
             onDrop={handleDrop}
         >
             {isDragging && (
-                <div className="absolute inset-0 z-50 bg-primary/10 border-2 border-dashed border-primary rounded-lg flex items-center justify-center backdrop-blur-sm transition-all pointer-events-none">
+                <div className="absolute inset-0 z-50 flex items-center justify-center rounded-[24px] border-2 border-dashed border-primary bg-primary/10 backdrop-blur-sm transition-all pointer-events-none">
                     <div className="flex flex-col items-center gap-2 text-primary font-medium animate-bounce">
                         <Upload size={24} />
                         <span>Drop JSON theme to import</span>
@@ -172,9 +173,12 @@ export const ThemeSettingsTab: React.FC = () => {
 
             {/* Header Section - Fixed */}
             <div className="flex-none space-y-4 pb-4">
-                <div className="flex items-center justify-between">
-                    <div className="text-xs text-text-secondary">
-                        Customize the IDE appearance. Select a theme or drag & drop a JSON file.
+                <div className="flex items-center justify-between rounded-[20px] px-4 py-4" style={settingsCardStyle}>
+                    <div>
+                        <p className="text-sm font-semibold text-text-primary">Theme Library</p>
+                        <p className="mt-1 text-[11px] leading-relaxed text-text-secondary">
+                            Pick a theme or import a JSON file. Hover states and previews now live in the same settings material language.
+                        </p>
                     </div>
                     <div>
                         <input
@@ -186,7 +190,8 @@ export const ThemeSettingsTab: React.FC = () => {
                         />
                         <button
                             onClick={handleImportClick}
-                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors"
+                            className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold text-primary-foreground transition-colors"
+                            style={settingsPrimaryButtonStyle}
                         >
                             <Upload size={12} />
                             Import Theme
@@ -195,7 +200,7 @@ export const ThemeSettingsTab: React.FC = () => {
                 </div>
 
                 {error && (
-                    <div className="p-3 rounded bg-danger/10 border border-danger/20 text-danger text-xs">
+                    <div className="rounded-[18px] p-3 text-xs text-danger" style={settingsDangerPanelStyle}>
                         {error}
                     </div>
                 )}
@@ -237,11 +242,12 @@ const ThemeCard: React.FC<ThemeCardProps> = ({ theme, isActive, onSelect, onDele
         <div
             onClick={onSelect}
             className={clsx(
-                "group relative p-3 rounded-lg border cursor-pointer transition-all",
+                "group relative cursor-pointer rounded-[20px] border p-4 transition-all",
                 isActive
-                    ? "bg-input/50 border-primary ring-1 ring-primary"
-                    : "bg-input/20 border-border hover:border-primary/50 hover:bg-input/40"
+                    ? "border-primary ring-1 ring-primary"
+                    : "border-border hover:border-primary/50"
             )}
+            style={settingsCardStyle}
         >
             <div className="flex justify-between items-start mb-2">
                 <div>
@@ -257,7 +263,8 @@ const ThemeCard: React.FC<ThemeCardProps> = ({ theme, isActive, onSelect, onDele
                             e.stopPropagation();
                             onDelete();
                         }}
-                        className="p-1.5 rounded opacity-0 group-hover:opacity-100 hover:bg-danger/10 text-text-disabled hover:text-danger transition-all"
+                        className="rounded-xl p-2 opacity-0 transition-all group-hover:opacity-100 hover:text-danger"
+                        style={settingsSubtlePanelStyle}
                         title="Delete theme"
                     >
                         <Trash2 size={12} />
@@ -266,7 +273,7 @@ const ThemeCard: React.FC<ThemeCardProps> = ({ theme, isActive, onSelect, onDele
             </div>
 
             {/* Preview */}
-            <div className="h-16 w-full rounded border border-border overflow-hidden flex shadow-sm">
+            <div className="mt-3 flex h-16 w-full overflow-hidden rounded-[16px]" style={settingsSubtlePanelStyle}>
                 {/* Sidebar strip */}
                 <div style={{ backgroundColor: sidebar }} className="w-8 flex flex-col items-center py-2 gap-1.5">
                     <div className="w-4 h-4 rounded-sm" style={{ backgroundColor: activity }}></div>

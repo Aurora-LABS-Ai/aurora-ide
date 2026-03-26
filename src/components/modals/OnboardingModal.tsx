@@ -25,6 +25,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   ArrowRight,
   Check,
+  CheckCircle2,
   FolderOpen,
   Keyboard,
   Settings,
@@ -35,7 +36,8 @@ import { clsx } from 'clsx';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useUiStore } from '../../store/useUiStore';
-import { isTauri, openFileDialog } from '../../lib/tauri';
+import { installAuroraContextMenu, isAuroraContextMenuInstalled, isTauri, openFileDialog } from '../../lib/tauri';
+import { TogglePill } from '../ui/TogglePill';
 
 type StepId = 'welcome' | 'setup' | 'shortcuts';
 
@@ -72,6 +74,12 @@ export const OnboardingModal: React.FC = () => {
   const [currentStep, setCurrentStep] = useState(0);
   const [isOpeningWorkspace, setIsOpeningWorkspace] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [shouldInstallContextMenu, setShouldInstallContextMenu] = useState(() => isTauri() && typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows'));
+  const [contextMenuInstalled, setContextMenuInstalled] = useState(false);
+  const [contextMenuMessage, setContextMenuMessage] = useState<string | null>(null);
+  const [isApplyingIntegrations, setIsApplyingIntegrations] = useState(false);
+  const isWindowsDesktop =
+    isTauri() && typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
 
   const activeStep = STEPS[currentStep];
   const workspaceReady = Boolean(rootPath);
@@ -88,7 +96,26 @@ export const OnboardingModal: React.FC = () => {
     });
   }, [providers]);
 
-  const handleComplete = () => {
+  const handleComplete = async () => {
+    if (isWindowsDesktop && shouldInstallContextMenu && !contextMenuInstalled) {
+      setIsApplyingIntegrations(true);
+      setContextMenuMessage('Adding Aurora to the Windows Explorer context menu...');
+      try {
+        await installAuroraContextMenu();
+        setContextMenuInstalled(true);
+        setContextMenuMessage('Aurora was added to the Windows Explorer context menu.');
+      } catch (error) {
+        setContextMenuMessage(error instanceof Error ? error.message : 'Could not add Aurora to the Explorer context menu.');
+        setIsApplyingIntegrations(false);
+        return;
+      }
+      setIsApplyingIntegrations(false);
+    }
+
+    setHasSeenOnboarding(true);
+  };
+
+  const handleSkip = () => {
     setHasSeenOnboarding(true);
   };
 
@@ -120,6 +147,32 @@ export const OnboardingModal: React.FC = () => {
       setIsOpeningWorkspace(false);
     }
   };
+
+  React.useEffect(() => {
+    if (!isWindowsDesktop) {
+      return;
+    }
+
+    let active = true;
+    isAuroraContextMenuInstalled()
+      .then((installed) => {
+        if (active) {
+          setContextMenuInstalled(installed);
+          if (installed) {
+            setShouldInstallContextMenu(true);
+          }
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setContextMenuInstalled(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [isWindowsDesktop]);
 
   if (hasSeenOnboarding) return null;
 
@@ -282,6 +335,40 @@ export const OnboardingModal: React.FC = () => {
                           Settings
                         </button>
                       </div>
+
+                      {isWindowsDesktop && (
+                        <div className="rounded-xl border border-border bg-editor p-4 flex items-start justify-between gap-4">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold mb-1">Windows Explorer context menu</p>
+                            <p className="text-xs text-text-secondary">
+                              Add <span className="font-medium text-text-primary">Open with Aurora</span> to folder and directory right-click menus.
+                            </p>
+                            {contextMenuMessage && (
+                              <p className={clsx(
+                                'mt-2 text-xs',
+                                contextMenuInstalled ? 'text-success' : 'text-warning'
+                              )}>
+                                {contextMenuMessage}
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex flex-col items-end gap-2 shrink-0">
+                            {contextMenuInstalled && (
+                              <div className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-success">
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                Installed
+                              </div>
+                            )}
+                            <TogglePill
+                              checked={shouldInstallContextMenu}
+                              onChange={setShouldInstallContextMenu}
+                              ariaLabel="Toggle Aurora Explorer context menu installation"
+                              variant="success"
+                              size="sm"
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -316,12 +403,13 @@ export const OnboardingModal: React.FC = () => {
             </AnimatePresence>
 
             <div className="mt-6 pt-4 border-t border-border flex items-center justify-between">
-              <button
-                onClick={handleComplete}
-                className="text-sm text-text-secondary hover:text-text-primary transition-colors"
-              >
-                Skip for now
-              </button>
+                <button
+                  onClick={handleSkip}
+                  disabled={isApplyingIntegrations}
+                  className="text-sm text-text-secondary hover:text-text-primary transition-colors"
+                >
+                  {isApplyingIntegrations ? 'Applying setup...' : 'Skip for now'}
+                </button>
 
               <div className="flex items-center gap-2">
                 <button
@@ -334,14 +422,17 @@ export const OnboardingModal: React.FC = () => {
                 <button
                   onClick={() => {
                     if (currentStep === STEPS.length - 1) {
-                      handleComplete();
+                      void handleComplete();
                       return;
                     }
                     setCurrentStep((prev) => Math.min(STEPS.length - 1, prev + 1));
                   }}
+                  disabled={isApplyingIntegrations}
                   className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary-hover transition-colors flex items-center gap-2"
                 >
-                  {currentStep === STEPS.length - 1 ? 'Launch Aurora' : 'Continue'}
+                  {currentStep === STEPS.length - 1
+                    ? (isApplyingIntegrations ? 'Installing...' : 'Launch Aurora')
+                    : 'Continue'}
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </div>

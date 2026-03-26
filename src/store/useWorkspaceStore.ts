@@ -87,9 +87,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setRootPath: (path) => {
     // CRITICAL: Strip Windows \\?\ prefix that causes shell command failures
     const cleanPath = stripExtendedPathPrefix(path);
+    const currentRootPath = get().rootPath;
     
     // Guard against duplicate setRootPath calls (React Strict Mode, etc.)
-    if (lastSetRootPath === cleanPath) {
+    if (currentRootPath === cleanPath && lastSetRootPath === cleanPath) {
       return;
     }
     lastSetRootPath = cleanPath;
@@ -434,12 +435,24 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setFiles: (files) => set({ files }),
 
   clearWorkspace: () => {
+    lastSetRootPath = null;
+    pendingLoadPath = null;
+    isLoadingDirectory = false;
+
+    if (fsChangedDebounceTimer) {
+      clearTimeout(fsChangedDebounceTimer);
+      fsChangedDebounceTimer = null;
+    }
+
     set({
       rootPath: '',
       files: [],
       expandedFolders: new Set(),
-      selectedFileId: null
+      selectedFileId: null,
+      isLoading: false,
     }, false);
+
+    useEditorStore.getState().setWorkspacePath('');
 
     if (fsUnlisten) {
       fsUnlisten();

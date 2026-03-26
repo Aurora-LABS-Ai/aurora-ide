@@ -18,6 +18,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
     "@babel/parser": "^7.28.5",
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/manrope": "^5.2.8",
     "@monaco-editor/react": "^4.7.0",
     "@tauri-apps/api": "^2.9.1",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",

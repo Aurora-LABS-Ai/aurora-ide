@@ -32,7 +32,6 @@ interface AgentChangesTreeProps {
 
 export const AgentChangesTree: React.FC<AgentChangesTreeProps> = ({ className }) => {
   const { entries } = useAuditStore();
-  const { rootPath: _rootPath } = useWorkspaceStore();
   const { openFile } = useEditorStore();
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['modified', 'created']));
 
@@ -151,12 +150,17 @@ export const AgentChangesTree: React.FC<AgentChangesTreeProps> = ({ className })
   return (
     <div
       className={`h-full flex flex-col ${className || ''}`}
-      style={{ background: 'var(--aurora-sidebar-background)' }}
+      style={{
+        background: 'color-mix(in srgb, var(--aurora-sidebar-background) 88%, var(--aurora-editor-background) 12%)',
+      }}
     >
       {/* Header */}
       <div
-        className="h-9 px-3 flex items-center justify-between border-b shrink-0"
-        style={{ borderColor: 'var(--aurora-common-border)' }}
+        className="flex h-10 shrink-0 items-center justify-between border-b px-3"
+        style={{
+          background: 'color-mix(in srgb, var(--aurora-title-bar-background) 76%, var(--aurora-sidebar-background) 24%)',
+          borderColor: 'color-mix(in srgb, var(--aurora-common-border) 72%, transparent)',
+        }}
       >
         <div className="flex items-center gap-2">
           <span
@@ -179,9 +183,13 @@ export const AgentChangesTree: React.FC<AgentChangesTreeProps> = ({ className })
         </div>
         <div className="flex items-center gap-1">
           <button
-            className="p-1.5 rounded hover:bg-input/50 transition-colors"
+            className="flex h-7 w-7 items-center justify-center rounded-[10px] transition-colors hover:bg-input/50"
+            style={{
+              color: 'var(--aurora-sidebar-foreground)',
+              background: 'color-mix(in srgb, var(--aurora-common-secondary) 74%, var(--aurora-title-bar-background) 26%)',
+              border: '1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)',
+            }}
             title="Refresh"
-            style={{ color: 'var(--aurora-sidebar-foreground)' }}
           >
             <RefreshCw className="w-3.5 h-3.5" />
           </button>

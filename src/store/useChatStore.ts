@@ -17,6 +17,7 @@ interface ChatState {
 
   // For external components to set/append content to the chat input
   pendingInputContent: string | null;
+  pendingInputNonce: number;
   // Whether pending input should replace existing content (true) or append (false)
   pendingInputReplace: boolean;
   setLoading: (loading: boolean) => void;
@@ -34,6 +35,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isLoading: false,
   pendingApproval: null,
   pendingInputContent: null,
+  pendingInputNonce: 0,
   pendingInputReplace: false,
 
   addMessage: (message) => set((state) => ({
@@ -69,7 +71,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (msg && msg.tools) {
       const tool = msg.tools.find(t => t.id === toolId);
       if (tool && tool.name === 'todo_write') {
-        const mergedArgs = { ...tool.args, ...((updates.args || {}) as any) };
+        const mergedArgs = {
+          ...(typeof tool.args === 'object' && tool.args !== null ? tool.args : {}),
+          ...(typeof updates.args === 'object' && updates.args !== null ? updates.args : {}),
+        };
         if (mergedArgs.todos) {
           import('./useTaskStore').then(({ useTaskStore }) => {
             useTaskStore.getState().setTasks(mergedArgs.todos);
@@ -105,11 +110,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   appendToInput: (content: string) => {
     const current = get().pendingInputContent;
-    set({ pendingInputContent: current ? `${current}\n${content}` : content, pendingInputReplace: false });
+    set((state) => ({
+      pendingInputContent: current ? `${current}\n${content}` : content,
+      pendingInputReplace: false,
+      pendingInputNonce: state.pendingInputNonce + 1,
+    }));
   },
 
   setInputContent: (content: string) => {
-    set({ pendingInputContent: content, pendingInputReplace: true });
+    set((state) => ({
+      pendingInputContent: content,
+      pendingInputReplace: true,
+      pendingInputNonce: state.pendingInputNonce + 1,
+    }));
   },
 
   consumePendingInput: () => {

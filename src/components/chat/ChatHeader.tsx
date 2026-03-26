@@ -23,13 +23,14 @@ const getContextColors = () => ({
 });
 
 // Agent Mode Toggle Button
-const AgentModeToggle: React.FC = () => {
+const AgentModeToggle: React.FC<{ buttonStyle: React.CSSProperties }> = ({ buttonStyle }) => {
   const { toggleAgentMode } = useUiStore();
 
   return (
     <button
       onClick={toggleAgentMode}
-      className="flex items-center justify-center w-7 h-7 rounded-md text-text-secondary hover:text-primary hover:bg-primary/10 border border-transparent hover:border-primary/20 transition-all duration-200"
+      className="flex h-7 w-7 items-center justify-center rounded-[10px] text-text-secondary transition-all duration-200 hover:text-primary hover:bg-primary/10"
+      style={buttonStyle}
       title="Agent Mode - Full Screen Chat"
     >
       <Maximize2 className="w-3.5 h-3.5" />
@@ -74,14 +75,38 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory
     return n.toLocaleString();
   };
 
+  const headerButtonStyle: React.CSSProperties = {
+    backgroundColor: 'color-mix(in srgb, var(--aurora-common-secondary) 74%, var(--aurora-title-bar-background) 26%)',
+    border: '1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)',
+    boxShadow: `
+      inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent),
+      inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 8%, transparent)
+    `,
+  };
+
   return (
     <div className="relative shrink-0 z-10">
-      <div className="relative flex items-center justify-between gap-3 px-4 py-3 bg-gradient-to-b from-sidebar to-transparent backdrop-blur-sm">
+      <div
+        className="relative flex items-center justify-between gap-3 border-b px-4 py-2.5 backdrop-blur-md"
+        style={{
+          background: `linear-gradient(
+            to bottom,
+            color-mix(in srgb, var(--aurora-title-bar-background) 82%, var(--aurora-chat-background) 18%) 0%,
+            color-mix(in srgb, var(--aurora-title-bar-background) 62%, transparent) 58%,
+            color-mix(in srgb, var(--aurora-chat-background) 18%, transparent) 100%
+          )`,
+          borderColor: 'color-mix(in srgb, var(--aurora-common-border) 72%, transparent)',
+          boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent)',
+        }}
+      >
 
         {/* Left side - Title & Info */}
         <div className="relative flex items-center gap-2.5 min-w-0 flex-1">
           {/* Icon */}
-          <div className="relative flex items-center justify-center w-7 h-7 rounded-md bg-gradient-to-br from-primary/10 to-transparent border border-border/50 shrink-0">
+          <div
+            className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px]"
+            style={headerButtonStyle}
+          >
             {isLoading ? (
               <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />
             ) : hasMessages ? (
@@ -142,19 +167,25 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory
         <div className="relative flex items-center gap-1 shrink-0">
           <button
             onClick={onOpenHistory}
-            className="flex items-center justify-center w-7 h-7 rounded-md text-text-secondary hover:text-text-primary hover:bg-input/50 border border-transparent hover:border-border/50 transition-all duration-200"
+            className="flex h-7 w-7 items-center justify-center rounded-[10px] text-text-secondary transition-all duration-200 hover:text-text-primary hover:bg-input/50"
+            style={headerButtonStyle}
             title="Chat History (Ctrl+H)"
           >
             <History className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={onNewChat}
-            className="flex items-center justify-center w-7 h-7 rounded-md text-primary bg-primary/10 hover:bg-primary/20 border border-border/50 hover:border-border transition-all duration-200"
+            className="flex h-7 w-7 items-center justify-center rounded-[10px] text-primary transition-all duration-200 hover:bg-primary/20"
+            style={{
+              ...headerButtonStyle,
+              backgroundColor: 'color-mix(in srgb, var(--aurora-common-primary) 10%, var(--aurora-common-secondary))',
+              border: '1px solid color-mix(in srgb, var(--aurora-common-primary) 18%, transparent)',
+            }}
             title="New Chat"
           >
             <Plus className="w-4 h-4" />
           </button>
-          <AgentModeToggle />
+          <AgentModeToggle buttonStyle={headerButtonStyle} />
         </div>
       </div>
     </div>

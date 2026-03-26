@@ -19,6 +19,10 @@ export type {
   AgentResponse
 } from './agent-service';
 
+export * from './agent-prompt';
+export * from './prompt-assets';
+export * from './skills';
+
 // Multi-File Service
 export { multiFileService, MultiFileService } from './multi-file-service';
 

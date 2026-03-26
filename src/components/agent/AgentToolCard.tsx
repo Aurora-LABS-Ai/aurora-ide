@@ -61,7 +61,7 @@ export const AgentToolCard: React.FC<AgentToolCardProps> = ({ action }) => {
           </span>
           <span
             className="font-mono text-[12px] font-semibold truncate"
-            style={{ color: 'var(--aurora-chat-foreground, var(--aurora-editor-foreground))' }}
+            style={{ color: 'var(--aurora-common-text-primary)' }}
           >
             {action.toolName}
           </span>

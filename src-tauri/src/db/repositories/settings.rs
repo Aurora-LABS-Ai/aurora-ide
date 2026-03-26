@@ -105,6 +105,8 @@ impl<'a> SettingsRepository<'a> {
                 "autoSave" => settings.auto_save = serde_json::from_str(&setting.value).unwrap_or(settings.auto_save),
                 "autoSaveDelay" => settings.auto_save_delay = serde_json::from_str(&setting.value).unwrap_or(settings.auto_save_delay),
                 "maxToolCallsPerRequest" => settings.max_tool_calls_per_request = serde_json::from_str(&setting.value).unwrap_or(settings.max_tool_calls_per_request),
+                "skillsEnabled" => settings.skills_enabled = serde_json::from_str(&setting.value).unwrap_or(settings.skills_enabled),
+                "skillToggles" => settings.skill_toggles = serde_json::from_str(&setting.value).unwrap_or(settings.skill_toggles.clone()),
                 _ => {}
             }
 
@@ -132,6 +134,8 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting("autoSave", &serde_json::to_string(&settings.auto_save).unwrap_or_default())?;
         self.set_setting("autoSaveDelay", &serde_json::to_string(&settings.auto_save_delay).unwrap_or_default())?;
         self.set_setting("maxToolCallsPerRequest", &serde_json::to_string(&settings.max_tool_calls_per_request).unwrap_or_default())?;
+        self.set_setting("skillsEnabled", &serde_json::to_string(&settings.skills_enabled).unwrap_or_default())?;
+        self.set_setting("skillToggles", &serde_json::to_string(&settings.skill_toggles).unwrap_or_default())?;
         Ok(())
 
     }

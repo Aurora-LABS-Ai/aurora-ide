@@ -29,11 +29,13 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { TogglePill } from '../ui/TogglePill';
+import { SettingsSelect } from '../ui/SettingsSelect';
 import { useSemanticStore } from '../../store/useSemanticStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { open } from '@tauri-apps/plugin-dialog';
 import { semanticService } from '../../services/semantic';
 import { readDirectory, type FileEntry } from '../../lib/tauri';
+import { settingsCardStyle, settingsSubtlePanelStyle } from './settings-shared';
 
 export const SemanticSettingsTab: React.FC = () => {
   const {
@@ -367,11 +369,11 @@ export const SemanticSettingsTab: React.FC = () => {
   return (
     <div className="space-y-4">
       {/* Enable/Disable Toggle */}
-      <div className="p-3 border border-border rounded-lg bg-titlebar">
+      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <Database className="w-4 h-4 text-primary" />
-            <div>
+            <div className="min-w-0">
               <h3 className="text-xs font-medium text-text-primary">Semantic Search</h3>
               <p className="text-[9px] text-text-disabled">AI-powered code search using embeddings</p>
             </div>
@@ -387,7 +389,7 @@ export const SemanticSettingsTab: React.FC = () => {
       </div>
 
       {/* Model Configuration */}
-      <div className="p-3 border border-border rounded-lg bg-titlebar">
+      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
         <div className="flex items-center gap-2 mb-3">
           <Cpu className="w-4 h-4 text-primary" />
           <h3 className="text-xs font-medium text-text-primary">Embedding Model</h3>
@@ -442,7 +444,7 @@ export const SemanticSettingsTab: React.FC = () => {
 
           {/* Model Status - simple indicator, actual validation happens on Index */}
           {localModelPath && !modelPathDirty && (
-            <div className="flex items-center gap-2 p-2 rounded bg-input text-[10px] text-text-secondary">
+            <div className="flex items-center gap-2 rounded-[16px] px-3 py-2 text-[10px] text-text-secondary" style={settingsSubtlePanelStyle}>
               <Database className="w-3.5 h-3.5" />
               <span>Model path set - will be loaded when indexing</span>
             </div>
@@ -450,7 +452,14 @@ export const SemanticSettingsTab: React.FC = () => {
 
           {/* No model info */}
           {!localModelPath && (
-            <div className="flex items-start gap-2 p-2 rounded bg-info/10 text-[10px] text-info">
+            <div
+              className="flex items-start gap-2 rounded-[16px] px-3 py-2 text-[10px] text-info"
+              style={{
+                ...settingsSubtlePanelStyle,
+                backgroundColor: 'color-mix(in srgb, var(--aurora-common-info) 10%, var(--aurora-common-muted))',
+                border: '1px solid color-mix(in srgb, var(--aurora-common-info) 18%, transparent)',
+              }}
+            >
               <Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
               <div>
                 <p className="font-medium">No model configured</p>
@@ -465,9 +474,9 @@ export const SemanticSettingsTab: React.FC = () => {
       </div>
 
       {/* Current Workspace Index */}
-      <div className="p-3 border border-border rounded-lg bg-titlebar">
+      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
         <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <FileCode className="w-4 h-4 text-primary" />
             <h3 className="text-xs font-medium text-text-primary">Current Workspace Index</h3>
           </div>
@@ -498,15 +507,15 @@ export const SemanticSettingsTab: React.FC = () => {
             {/* Stats */}
             {currentIndex.status === 'ready' && (
               <div className="grid grid-cols-3 gap-2 text-[10px]">
-                <div className="p-2 rounded bg-input">
+                <div className="rounded-[16px] px-3 py-2" style={settingsSubtlePanelStyle}>
                   <p className="text-text-disabled">Documents</p>
                   <p className="text-text-primary font-medium">{currentIndex.documentCount.toLocaleString()}</p>
                 </div>
-                <div className="p-2 rounded bg-input">
+                <div className="rounded-[16px] px-3 py-2" style={settingsSubtlePanelStyle}>
                   <p className="text-text-disabled">Chunks</p>
                   <p className="text-text-primary font-medium">{currentIndex.chunkCount.toLocaleString()}</p>
                 </div>
-                <div className="p-2 rounded bg-input">
+                <div className="rounded-[16px] px-3 py-2" style={settingsSubtlePanelStyle}>
                   <p className="text-text-disabled">Size</p>
                   <p className="text-text-primary font-medium">{formatBytes(currentIndex.totalBytes)}</p>
                 </div>
@@ -579,7 +588,7 @@ export const SemanticSettingsTab: React.FC = () => {
       </div>
 
       {/* Search Settings */}
-      <div className="p-3 border border-border rounded-lg bg-titlebar">
+      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
         <div className="flex items-center gap-2 mb-3">
           <Search className="w-4 h-4 text-primary" />
           <h3 className="text-xs font-medium text-text-primary">Search Settings</h3>
@@ -589,15 +598,16 @@ export const SemanticSettingsTab: React.FC = () => {
           {/* Search Mode */}
           <div>
             <label className="text-[10px] text-text-secondary block mb-1">Search Mode</label>
-            <select
+            <SettingsSelect
+              ariaLabel="Select semantic search mode"
+              options={[
+                { label: 'Hybrid (Recommended)', value: 'hybrid' },
+                { label: 'Lexical Only (Keywords)', value: 'lexical' },
+                { label: 'Semantic Only (Meaning)', value: 'semantic' },
+              ]}
+              onChange={(nextValue) => saveSettings({ searchMode: String(nextValue) as 'lexical' | 'semantic' | 'hybrid' })}
               value={settings?.searchMode || 'hybrid'}
-              onChange={(e) => saveSettings({ searchMode: e.target.value as 'lexical' | 'semantic' | 'hybrid' })}
-              className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-primary"
-            >
-              <option value="hybrid">Hybrid (Recommended)</option>
-              <option value="lexical">Lexical Only (Keywords)</option>
-              <option value="semantic">Semantic Only (Meaning)</option>
-            </select>
+            />
           </div>
 
           {/* Weights (only for hybrid mode) */}
@@ -635,25 +645,25 @@ export const SemanticSettingsTab: React.FC = () => {
       </div>
 
       {/* Advanced Settings (Collapsible) */}
-      <div className="border border-border rounded-lg bg-titlebar overflow-hidden">
+      <div className="overflow-hidden rounded-[20px]" style={settingsCardStyle}>
         <button
           onClick={() => setShowAdvanced(!showAdvanced)}
-          className="w-full flex items-center justify-between p-3 hover:bg-input/30 transition-colors"
+          className="w-full flex items-center justify-between p-4 transition-colors hover:bg-input/30"
         >
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
             <HardDrive className="w-4 h-4 text-primary" />
-            <h3 className="text-xs font-medium text-text-primary">Advanced Settings</h3>
+            <h3 className="truncate text-xs font-medium text-text-primary">Advanced Settings</h3>
           </div>
-          <span className={clsx(
-            "text-[10px] text-text-disabled transition-transform",
-            showAdvanced && "rotate-180"
-          )}>
-            v
-          </span>
+          <ChevronDown
+            className={clsx(
+              'ml-3 h-4 w-4 shrink-0 text-text-disabled transition-transform',
+              showAdvanced && 'rotate-180',
+            )}
+          />
         </button>
 
         {showAdvanced && (
-          <div className="p-3 pt-0 space-y-3 border-t border-border">
+          <div className="space-y-3 border-t border-border px-4 pb-4 pt-4">
             {/* Auto Index */}
             <div className="flex items-center justify-between">
               <div>
@@ -674,16 +684,17 @@ export const SemanticSettingsTab: React.FC = () => {
               <label className="text-[10px] text-text-secondary block mb-1">
                 Max File Size ({formatBytes(settings?.maxFileSize || 1048576)})
               </label>
-              <select
+              <SettingsSelect
+                ariaLabel="Select semantic max file size"
+                options={[
+                  { label: '512 KB', value: 524288 },
+                  { label: '1 MB', value: 1048576 },
+                  { label: '2 MB', value: 2097152 },
+                  { label: '5 MB', value: 5242880 },
+                ]}
+                onChange={(nextValue) => saveSettings({ maxFileSize: Number(nextValue) })}
                 value={settings?.maxFileSize || 1048576}
-                onChange={(e) => saveSettings({ maxFileSize: parseInt(e.target.value) })}
-                className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-primary"
-              >
-                <option value={524288}>512 KB</option>
-                <option value={1048576}>1 MB</option>
-                <option value={2097152}>2 MB</option>
-                <option value={5242880}>5 MB</option>
-              </select>
+              />
             </div>
 
             {/* Ignored Directories */}
@@ -764,7 +775,8 @@ export const SemanticSettingsTab: React.FC = () => {
                       {localExcludedDirs.map((dir) => (
                         <span
                           key={dir}
-                          className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] bg-input border border-border rounded font-mono text-text-secondary"
+                          className="flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-mono text-text-secondary"
+                          style={settingsSubtlePanelStyle}
                         >
                           <Folder className="w-2.5 h-2.5 text-text-disabled" />
                           {dir}
@@ -782,7 +794,7 @@ export const SemanticSettingsTab: React.FC = () => {
                   {/* Directory Picker Modal */}
                   {showDirPicker && (
                     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60]">
-                      <div className="bg-editor border border-border rounded-lg shadow-xl w-[400px] max-h-[500px] flex flex-col">
+                      <div className="flex max-h-[500px] w-[420px] flex-col rounded-[22px] shadow-xl" style={settingsCardStyle}>
                         <div className="flex items-center justify-between px-3 py-2 border-b border-border">
                           <span className="text-xs font-medium text-text-primary">Select Directories to Exclude</span>
                           <button
@@ -837,7 +849,10 @@ export const SemanticSettingsTab: React.FC = () => {
               <div>
                 <label className="text-[10px] text-text-secondary block mb-1">Index Storage Location</label>
                 <div className="flex items-center gap-1">
-                  <code className="flex-1 bg-input border border-input-border rounded px-2 py-1.5 text-[10px] text-text-disabled font-mono truncate">
+                  <code
+                    className="flex-1 rounded-[16px] px-3 py-2 text-[10px] text-text-disabled font-mono truncate"
+                    style={settingsSubtlePanelStyle}
+                  >
                     {semanticDataDir}
                   </code>
                   <button
@@ -864,13 +879,14 @@ export const SemanticSettingsTab: React.FC = () => {
 
       {/* All Indexed Workspaces */}
       {allIndexes.length > 0 && (
-        <div className="p-3 border border-border rounded-lg bg-titlebar">
+        <div className="rounded-[20px] p-4" style={settingsCardStyle}>
           <h3 className="text-xs font-medium text-text-primary mb-2">All Indexed Workspaces</h3>
           <div className="space-y-1 max-h-32 overflow-y-auto">
             {allIndexes.map((idx) => (
               <div
                 key={idx.id}
-                className="flex items-center justify-between p-2 rounded bg-input text-[10px]"
+                className="flex items-center justify-between rounded-[16px] px-3 py-2 text-[10px]"
+                style={settingsSubtlePanelStyle}
               >
                 <div className="flex items-center gap-2 min-w-0">
                   {getStatusIcon(idx.status)}

@@ -127,6 +127,9 @@ export const MainLayout: React.FC = () => {
                 minSize={12}
                 maxSize={25}
                 className="bg-sidebar"
+                style={{
+                  background: 'color-mix(in srgb, var(--aurora-sidebar-background) 88%, var(--aurora-editor-background) 12%)',
+                }}
               >
                 {activePanel === 'explorer' && <FileExplorer />}
                 {activePanel === 'git' && <GitPanel />}

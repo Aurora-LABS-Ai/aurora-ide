@@ -7,7 +7,7 @@ import type { LLMProviderConfig } from "../services/llm-types";
 import type { AppSettings as DbAppSettings, DbLLMProvider } from "../types/database";
 
 const UI_FONT_FAMILIES: Record<string, string> = {
-  system: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif",
+  system: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif",
   inter: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
   segoe: "'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif",
   roboto: "'Roboto', -apple-system, BlinkMacSystemFont, sans-serif",
@@ -77,6 +77,8 @@ interface SettingsState {
   // Tool Settings
   maxToolCallsPerRequest: number;
   projectLayoutEnabled: boolean; // Include file tree in first message
+  skillToggles: Record<string, boolean>;
+  skillsEnabled: boolean;
 
   // Providers
   providers: LLMProvider[];
@@ -92,6 +94,8 @@ interface SettingsState {
   setMaxToolCallsPerRequest: (max: number) => void;
   setProjectLayoutEnabled: (value: boolean) => void;
   setSelectedModel: (model: string) => void;
+  setSkillEnabled: (storageKey: string, enabled: boolean) => void;
+  setSkillsEnabled: (enabled: boolean) => void;
   setSyntaxValidationEnabled: (value: boolean) => void;
   setTemperature: (temp: number) => void;
   setTheme: (theme: "dark" | "light") => void;
@@ -414,6 +418,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // Tool Settings
   maxToolCallsPerRequest: 25,
   toolApprovalSettings: { ...DEFAULT_TOOL_APPROVAL_SETTINGS },
+  skillsEnabled: true,
+  skillToggles: {},
 
   // ============================================
   // DATABASE OPERATIONS
@@ -478,6 +484,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           autoAcceptChanges: appSettings.autoAcceptChanges ?? false,
           syntaxValidationEnabled: appSettings.syntaxValidationEnabled ?? true,
           projectLayoutEnabled: appSettings.projectLayoutEnabled ?? true,
+          skillsEnabled: appSettings.skillsEnabled ?? true,
+          skillToggles: appSettings.skillToggles ?? {},
           fontSize: appSettings.fontSize ?? 14,
           wrapMode: appSettings.wrapMode ?? true,
           theme: (appSettings.theme as 'dark' | 'light') || "dark",
@@ -531,6 +539,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         autoAcceptChanges: state.autoAcceptChanges,
         syntaxValidationEnabled: state.syntaxValidationEnabled,
         projectLayoutEnabled: state.projectLayoutEnabled,
+        skillsEnabled: state.skillsEnabled,
+        skillToggles: state.skillToggles,
         fontSize: state.fontSize,
         wrapMode: state.wrapMode,
         theme: state.theme,
@@ -650,9 +660,9 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       for (const model of providerModels) {
         models.push({
           providerId: provider.id,
-          providerName: provider.name,
+          providerName: model,
           model,
-          label: model,
+          label: providerModels.length > 1 ? `${provider.name} · ${model}` : provider.name,
         });
       }
     }
@@ -687,6 +697,21 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setProjectLayoutEnabled: (value: boolean) => {
     set({ projectLayoutEnabled: value });
+    get().saveToDatabase();
+  },
+
+  setSkillsEnabled: (enabled: boolean) => {
+    set({ skillsEnabled: enabled });
+    get().saveToDatabase();
+  },
+
+  setSkillEnabled: (storageKey: string, enabled: boolean) => {
+    set((state) => ({
+      skillToggles: {
+        ...state.skillToggles,
+        [storageKey]: enabled,
+      },
+    }));
     get().saveToDatabase();
   },
 

@@ -84,13 +84,23 @@ export const TabBar: React.FC = () => {
 
   return (
     <>
-      <div className="flex h-[28px] bg-tabs overflow-hidden">
+      <div
+        className="flex h-[34px] overflow-hidden border-b"
+        style={{
+          background: 'color-mix(in srgb, var(--aurora-title-bar-background) 78%, var(--aurora-editor-background) 22%)',
+          borderColor: 'color-mix(in srgb, var(--aurora-common-border) 72%, transparent)',
+        }}
+      >
       {/* Undo/Redo buttons - at the start where editor begins */}
-      <div className="flex items-center gap-0.5 px-1 border-r border-border shrink-0">
+      <div className="flex shrink-0 items-center gap-1 border-r border-border px-2">
         <button
           onMouseDown={(e) => e.preventDefault()}
           onClick={triggerMonacoUndo}
-          className="p-1 rounded text-text-secondary hover:text-text-primary hover:bg-tabs-active transition-colors"
+          className="flex h-7 w-7 items-center justify-center rounded-[10px] text-text-secondary transition-colors hover:text-text-primary hover:bg-tabs-active"
+          style={{
+            background: 'color-mix(in srgb, var(--aurora-common-secondary) 72%, var(--aurora-title-bar-background) 28%)',
+            border: '1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)',
+          }}
           title="Undo (Ctrl+Z)"
         >
           <Undo2 className="w-3.5 h-3.5" />
@@ -98,7 +108,11 @@ export const TabBar: React.FC = () => {
         <button
           onMouseDown={(e) => e.preventDefault()}
           onClick={triggerMonacoRedo}
-          className="p-1 rounded text-text-secondary hover:text-text-primary hover:bg-tabs-active transition-colors"
+          className="flex h-7 w-7 items-center justify-center rounded-[10px] text-text-secondary transition-colors hover:text-text-primary hover:bg-tabs-active"
+          style={{
+            background: 'color-mix(in srgb, var(--aurora-common-secondary) 72%, var(--aurora-title-bar-background) 28%)',
+            border: '1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)',
+          }}
           title="Redo (Ctrl+Y)"
         >
           <Redo2 className="w-3.5 h-3.5" />
@@ -111,14 +125,28 @@ export const TabBar: React.FC = () => {
           <div
             key={tab.id}
             className={clsx(
-              "flex items-center gap-1.5 px-2.5 cursor-pointer select-none group border-r border-border shrink-0",
+              "group relative flex h-full shrink-0 items-center gap-1.5 border-r border-border px-3 cursor-pointer select-none",
               activeTabId === tab.id
-                ? "bg-tabs-active text-text-primary"
-                : "bg-tabs text-text-secondary hover:text-text-primary"
+                ? "text-text-primary"
+                : "text-text-secondary hover:text-text-primary"
             )}
+            style={{
+              background: activeTabId === tab.id
+                ? 'color-mix(in srgb, var(--aurora-editor-background) 86%, var(--aurora-common-primary) 14%)'
+                : 'transparent',
+              boxShadow: activeTabId === tab.id
+                ? 'inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent)'
+                : 'none',
+            }}
             onClick={() => setActiveTab(tab.id)}
             title={tab.isDeleted ? `${tab.filename} (deleted)` : tab.filename}
           >
+            {activeTabId === tab.id && (
+              <span
+                className="absolute inset-x-2 top-0 h-[2px] rounded-full"
+                style={{ background: 'var(--aurora-common-primary)' }}
+              />
+            )}
             {tab.type === 'browser' ? (
               <Globe className="w-3 h-3 text-info" />
             ) : (
@@ -136,7 +164,7 @@ export const TabBar: React.FC = () => {
             {tab.isDirty && !tab.isDeleted && <div className="w-1.5 h-1.5 rounded-full bg-text-secondary group-hover:hidden" />}
             <button
               className={clsx(
-                "p-0.5 rounded hover:bg-border opacity-0 group-hover:opacity-100 transition-opacity",
+                "rounded p-0.5 opacity-0 transition-opacity hover:bg-border group-hover:opacity-100",
                 tab.isDirty && "group-hover:block"
               )}
               onClick={(e) => {
@@ -152,7 +180,7 @@ export const TabBar: React.FC = () => {
         {/* New Browser Tab Button */}
         <button
           onClick={() => openBrowserTab()}
-          className="flex items-center justify-center w-7 h-full hover:bg-tabs-active transition-colors shrink-0"
+          className="flex h-full w-9 shrink-0 items-center justify-center transition-colors hover:bg-tabs-active"
           title="Open Browser Tab (Preview localhost)"
         >
           <Plus className="w-3.5 h-3.5 text-text-secondary hover:text-text-primary" />
@@ -166,7 +194,7 @@ export const TabBar: React.FC = () => {
           onClick={handleCancelUnsavedClose}
         >
           <div
-            className="w-[min(440px,92vw)] rounded-xl border border-border bg-sidebar shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+            className="w-[min(440px,92vw)] overflow-hidden rounded-xl border border-border bg-sidebar shadow-2xl animate-in fade-in zoom-in-95 duration-150"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="p-4 flex items-start gap-3">

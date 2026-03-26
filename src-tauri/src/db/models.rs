@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use time::OffsetDateTime;
 
 // ============================================================
@@ -238,6 +239,8 @@ pub struct AppSettings {
     
     // Tool settings
     pub max_tool_calls_per_request: i32,
+    pub skills_enabled: bool,
+    pub skill_toggles: HashMap<String, bool>,
 }
 
 
@@ -261,6 +264,8 @@ impl Default for AppSettings {
             auto_save: "off".to_string(),
             auto_save_delay: 1000,
             max_tool_calls_per_request: 25,
+            skills_enabled: true,
+            skill_toggles: HashMap::new(),
         }
 
     }

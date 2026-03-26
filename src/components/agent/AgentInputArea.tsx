@@ -13,9 +13,14 @@ import { createPortal } from 'react-dom';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useUiStore } from '../../store/useUiStore';
 import { useChatStore } from '../../store/useChatStore';
-import { loadFileContent } from '../../store/useWorkspaceStore';
+import { loadFileContent, useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useEditorStore } from '../../store/useEditorStore';
+import {
+  loadPromptAttachments,
+  type PromptAttachment,
+} from '../../services/prompt-assets';
 import { FileIcon } from '../explorer/FileIcons';
+import { PromptAttachmentPopup } from '../chat/PromptAttachmentPopup';
 import { getDragFilePath, getFilename, getLanguageFromExtension } from '../../lib/file-utils';
 import { resolveThinkingModelPair } from '../../lib/thinking-models';
 import clsx from 'clsx';
@@ -26,7 +31,11 @@ export interface AttachedFile {
 }
 
 interface AgentInputAreaProps {
-  onSend: (content: string, attachedFiles?: AttachedFile[]) => void;
+  onSend: (
+    content: string,
+    attachedFiles?: AttachedFile[],
+    promptAttachments?: PromptAttachment[]
+  ) => void;
   disabled?: boolean;
 }
 
@@ -37,16 +46,26 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0 });
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+  const [attachedPromptAssets, setAttachedPromptAssets] = useState<PromptAttachment[]>([]);
+  const [slashQuery, setSlashQuery] = useState<string | null>(null);
+  const [slashIndex, setSlashIndex] = useState<number>(-1);
+  const [slashSearchQuery, setSlashSearchQuery] = useState('');
+  const [slashPopupPosition, setSlashPopupPosition] = useState<{ bottom: number; left: number } | null>(null);
+  const [selectedPromptAssetIndex, setSelectedPromptAssetIndex] = useState(0);
+  const [promptAssetCatalog, setPromptAssetCatalog] = useState<PromptAttachment[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
-  const { isLoading, stopGeneration } = useChatStore();
+  const { isLoading, stopGeneration, consumePendingInput, pendingInputNonce } = useChatStore();
   const { setSettingsOpen } = useUiStore();
+  const rootPath = useWorkspaceStore((state) => state.rootPath);
   const {
     selectedModel,
     setSelectedModel,
     getAvailableModels,
     getLLMConfig,
+    skillToggles,
+    skillsEnabled,
     thinkingEnabled,
     setThinkingEnabled,
   } = useSettingsStore();
@@ -68,8 +87,69 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
   );
   const showThinkingToggle = providerSupportsThinking && !!thinkingPair;
   const effectiveThinkingEnabled = thinkingPair ? thinkingPair.currentModelIsThinking : thinkingEnabled;
-  const currentModel = llmConfig?.model || selectedModelName || 'Select Model';
-  const currentModelLabel = availableModels.length > 0 ? currentModel : 'No Models';
+  const selectedModelOption = useMemo(
+    () => availableModels.find(({ providerId, model }) => `${providerId}:${model}` === selectedModel),
+    [availableModels, selectedModel]
+  );
+  const currentModelLabel = selectedModelOption?.label || (availableModels.length > 0 ? 'Select Model' : 'No Models');
+  const filteredPromptAssets = useMemo(() => {
+    const activeQuery = (slashSearchQuery || slashQuery || '').trim().toLowerCase();
+
+    return promptAssetCatalog
+      .filter((asset) => {
+        if (attachedPromptAssets.some((attached) => attached.key === asset.key)) {
+          return false;
+        }
+
+        if (!activeQuery) {
+          return true;
+        }
+
+        return [
+          asset.title,
+          asset.subtitle,
+          asset.description,
+          asset.sourceLabel,
+        ].some((value) => value.toLowerCase().includes(activeQuery));
+      })
+      .slice(0, 20);
+  }, [attachedPromptAssets, promptAssetCatalog, slashQuery, slashSearchQuery]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadCatalog = async () => {
+      const attachments = await loadPromptAttachments(rootPath, {
+        enabledSkillToggles: skillToggles,
+        skillsEnabled,
+      });
+      if (!isCancelled) {
+        setPromptAssetCatalog(attachments);
+      }
+    };
+
+    void loadCatalog();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [rootPath, skillToggles, skillsEnabled]);
+
+  useEffect(() => {
+    const { content: pending, replace } = consumePendingInput();
+    if (pending) {
+      const rafId = window.requestAnimationFrame(() => {
+        if (replace) {
+          setContent(pending);
+        } else {
+          setContent((prev) => (prev ? `${prev}\n\n${pending}` : pending));
+        }
+        textareaRef.current?.focus();
+      });
+
+      return () => window.cancelAnimationFrame(rafId);
+    }
+  }, [pendingInputNonce, consumePendingInput]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -97,17 +177,27 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
         if (dropdown && dropdown.contains(e.target as Node)) return;
         setShowModelDropdown(false);
       }
+
+      if (slashQuery !== null && !document.getElementById('agent-prompt-attachment-popup')?.contains(e.target as Node)) {
+        setSlashQuery(null);
+        setSlashSearchQuery('');
+      }
     };
 
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  }, [slashQuery]);
 
   const handleSubmit = () => {
-    if ((!content.trim() && attachedFiles.length === 0) || disabled) return;
-    onSend(content, attachedFiles.length > 0 ? attachedFiles : undefined);
+    if ((!content.trim() && attachedFiles.length === 0 && attachedPromptAssets.length === 0) || disabled) return;
+    onSend(
+      content,
+      attachedFiles.length > 0 ? attachedFiles : undefined,
+      attachedPromptAssets.length > 0 ? attachedPromptAssets : undefined
+    );
     setContent('');
     setAttachedFiles([]);
+    setAttachedPromptAssets([]);
   };
 
   const handleStopOrSend = () => {
@@ -119,9 +209,54 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (slashQuery !== null) {
+      if (filteredPromptAssets.length > 0 && e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedPromptAssetIndex((index) => (index + 1) % filteredPromptAssets.length);
+        return;
+      }
+      if (filteredPromptAssets.length > 0 && e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedPromptAssetIndex((index) => (index - 1 + filteredPromptAssets.length) % filteredPromptAssets.length);
+        return;
+      }
+      if (filteredPromptAssets.length > 0 && (e.key === 'Enter' || e.key === 'Tab')) {
+        e.preventDefault();
+        const attachment = filteredPromptAssets[selectedPromptAssetIndex];
+        if (attachment) {
+          setAttachedPromptAssets((prev) => [...prev, attachment]);
+          if (slashIndex !== -1) {
+            const before = content.slice(0, slashIndex);
+            const after = content.slice(slashIndex + (slashQuery?.length ?? 0) + 1);
+            setContent(`${before}${after} `);
+          }
+          setSlashQuery(null);
+          setSlashSearchQuery('');
+        }
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setSlashQuery(null);
+        setSlashSearchQuery('');
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey && !isLoading) {
       e.preventDefault();
       handleSubmit();
+      return;
+    }
+
+    if (
+      e.key === 'Backspace' &&
+      !content &&
+      attachedPromptAssets.length > 0 &&
+      textareaRef.current?.selectionStart === 0
+    ) {
+      e.preventDefault();
+      setAttachedPromptAssets((items) => items.slice(0, -1));
     }
   };
 
@@ -155,6 +290,10 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
     setAttachedFiles(prev => prev.filter(f => f.path !== path));
   };
 
+  const removePromptAttachment = (key: string) => {
+    setAttachedPromptAssets((items) => items.filter((item) => item.key !== key));
+  };
+
   const handleFileClick = async (file: AttachedFile) => {
     try {
       const content = await loadFileContent(file.path);
@@ -168,6 +307,61 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
   const handleModelSelect = (providerId: string, model: string) => {
     setSelectedModel(`${providerId}:${model}`);
     setShowModelDropdown(false);
+  };
+
+  const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newValue = event.target.value;
+    setContent(newValue);
+
+    const cursorPos = event.target.selectionStart;
+    const textBeforeCursor = newValue.slice(0, cursorPos);
+
+    let slashHandled = false;
+    const lastSlash = textBeforeCursor.lastIndexOf('/');
+    if (lastSlash !== -1) {
+      const isValidSlashStart = lastSlash === 0 || /\s/.test(textBeforeCursor[lastSlash - 1]);
+      if (isValidSlashStart) {
+        const query = textBeforeCursor.slice(lastSlash + 1);
+        if (!query.includes('\n')) {
+          slashHandled = true;
+          setSlashQuery(query);
+          setSlashIndex(lastSlash);
+          setSelectedPromptAssetIndex(0);
+          if (textareaRef.current) {
+            const inputRect = textareaRef.current.getBoundingClientRect();
+            setSlashPopupPosition({
+              bottom: window.innerHeight - inputRect.top + 10,
+              left: inputRect.left + 20,
+            });
+          }
+        }
+      }
+    }
+
+    if (!slashHandled) {
+      setSlashQuery(null);
+      setSlashPopupPosition(null);
+      setSlashSearchQuery('');
+    }
+  };
+
+  const selectPromptAttachment = (attachment: PromptAttachment) => {
+    setAttachedPromptAssets((prev) => {
+      if (prev.some((item) => item.key === attachment.key)) {
+        return prev;
+      }
+      return [...prev, attachment];
+    });
+
+    if (slashQuery !== null && slashIndex !== -1) {
+      const before = content.slice(0, slashIndex);
+      const after = content.slice(slashIndex + slashQuery.length + 1);
+      setContent(`${before}${after} `);
+    }
+
+    setSlashQuery(null);
+    setSlashPopupPosition(null);
+    setSlashSearchQuery('');
   };
 
   const handleThinkingToggle = useCallback(() => {
@@ -252,6 +446,20 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
     return createPortal(dropdown, document.body);
   };
 
+  const renderPromptAttachmentPopup = () => (
+    <PromptAttachmentPopup
+      id="agent-prompt-attachment-popup"
+      isOpen={slashQuery !== null}
+      items={filteredPromptAssets}
+      onHoverIndex={setSelectedPromptAssetIndex}
+      onQueryChange={setSlashSearchQuery}
+      onSelect={selectPromptAttachment}
+      position={slashPopupPosition}
+      query={slashSearchQuery || slashQuery || ''}
+      selectedIndex={selectedPromptAssetIndex}
+    />
+  );
+
   return (
     <div
       className="w-full max-w-4xl mx-auto"
@@ -270,17 +478,37 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
       {/* Main Input Box */}
       <div
         className={clsx(
-          "rounded-xl transition-all duration-300 cursor-text"
+          "rounded-[22px] transition-all duration-300 cursor-text relative overflow-hidden"
         )}
         style={{
-          backgroundColor: 'var(--aurora-chat-input-background)',
+          backgroundColor: 'color-mix(in srgb, var(--aurora-chat-input-background) 88%, var(--aurora-chat-surface) 12%)',
           border: isFocused
-            ? '1px solid color-mix(in srgb, var(--aurora-common-primary) 12%, transparent)'
-            : '1px solid var(--aurora-chat-input-border)',
-          boxShadow: 'none',
+            ? '1px solid color-mix(in srgb, var(--aurora-common-primary) 22%, var(--aurora-chat-input-border) 78%)'
+            : '1px solid color-mix(in srgb, var(--aurora-chat-input-border) 82%, transparent)',
+          boxShadow: isFocused
+            ? `
+                0 6px 14px color-mix(in srgb, var(--aurora-common-shadow) 8%, transparent),
+                inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 8%, transparent),
+                inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 18%, transparent),
+                inset 0 10px 28px color-mix(in srgb, var(--aurora-common-shadow) 7%, transparent)
+              `
+            : `
+                0 4px 10px color-mix(in srgb, var(--aurora-common-shadow) 6%, transparent),
+                inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 8%, transparent),
+                inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 14%, transparent),
+                inset 0 8px 22px color-mix(in srgb, var(--aurora-common-shadow) 6%, transparent)
+              `,
+          backdropFilter: 'blur(10px)',
         }}
         onClick={() => textareaRef.current?.focus()}
       >
+        <div
+          className="pointer-events-none absolute inset-x-0 top-0 h-14"
+          style={{
+            background: 'linear-gradient(180deg, color-mix(in srgb, var(--aurora-common-primary-foreground) 10%, transparent) 0%, transparent 100%)',
+            opacity: isFocused ? 1 : 0.8,
+          }}
+        />
         {/* Top Control Bar */}
         <div className="flex items-center justify-between px-3 pt-1.5 pb-0.5">
           {/* Model Pill */}
@@ -289,13 +517,16 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
             onClick={() => setShowModelDropdown(!showModelDropdown)}
             className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium text-text-primary transition-colors"
             style={{
-              backgroundColor: 'var(--aurora-chat-surface)',
+              backgroundColor: 'color-mix(in srgb, var(--aurora-chat-surface) 82%, transparent)',
               border: '1px solid transparent',
-              boxShadow: '0 0 0 1px var(--aurora-chat-surface-border)',
+              boxShadow: `
+                0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 10%, transparent),
+                0 0 0 1px var(--aurora-chat-surface-border)
+              `,
             }}
           >
             <Sparkles size={10} className="text-primary" />
-            <span className="truncate max-w-[120px]">{currentModelLabel}</span>
+            <span className="truncate max-w-[160px]">{currentModelLabel}</span>
             <ChevronDown size={10} className={clsx("text-muted-foreground transition-transform", showModelDropdown && "rotate-180")} />
           </button>
 
@@ -314,7 +545,13 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
                   : "bg-transparent text-muted-foreground hover:text-text-primary"
               )}
               style={{
-                boxShadow: '0 0 0 1px var(--aurora-chat-surface-border)',
+                boxShadow: `
+                  0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 10%, transparent),
+                  0 0 0 1px var(--aurora-chat-surface-border)
+                `,
+                backgroundColor: effectiveThinkingEnabled
+                  ? 'color-mix(in srgb, var(--aurora-chat-surface) 70%, var(--aurora-common-primary) 10%)'
+                  : 'color-mix(in srgb, var(--aurora-chat-surface) 82%, transparent)',
               }}
             >
               <Brain size={12} className={effectiveThinkingEnabled ? "animate-pulse" : ""} />
@@ -323,8 +560,8 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
           )}
         </div>
 
-        {/* Attached Files */}
-        {attachedFiles.length > 0 && (
+        {/* Attached Files / Prompt Assets */}
+        {(attachedFiles.length > 0 || attachedPromptAssets.length > 0) && (
           <div className="px-3 py-2 flex flex-wrap gap-2">
             {attachedFiles.map(file => (
               <div
@@ -345,6 +582,31 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
                 </button>
               </div>
             ))}
+            {attachedPromptAssets.map((asset) => (
+              <div
+                key={asset.key}
+                className="group flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] transition-colors"
+                style={{
+                  backgroundColor: 'var(--aurora-chat-surface)',
+                  borderColor: 'var(--aurora-chat-surface-border)',
+                  color: 'var(--aurora-common-text-secondary)',
+                }}
+              >
+                <span className="rounded bg-sidebar px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-text-secondary">
+                  {asset.type}
+                </span>
+                <span className="truncate max-w-[180px] font-medium text-text-primary">{asset.title}</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removePromptAttachment(asset.key);
+                  }}
+                  className="p-0.5 rounded-sm hover:bg-input/50 hover:text-error transition-colors"
+                >
+                  <X size={10} />
+                </button>
+              </div>
+            ))}
           </div>
         )}
 
@@ -355,11 +617,15 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
             value={content}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
-            onChange={(e) => setContent(e.target.value)}
+            onChange={handleInputChange}
             onKeyDown={handleKeyDown}
             disabled={disabled || isLoading}
-            placeholder={attachedFiles.length > 0 ? "Ask about these files..." : "Message Aurora (Type @ to add files)..."}
-            className="w-full bg-transparent text-[13px] text-text-primary resize-none border-0 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0 focus-visible:border-0 focus-visible:outline-none min-h-[28px] max-h-[140px] placeholder:text-text-disabled font-light leading-relaxed"
+            placeholder={
+              attachedFiles.length > 0 || attachedPromptAssets.length > 0
+                ? "Ask Aurora with your attached files, skills, or rules..."
+                : "Message Aurora (Type @ for files, / for skills and rules)..."
+            }
+            className="w-full bg-transparent text-[14px] font-normal tracking-[0.01em] text-text-primary resize-none border-0 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0 focus-visible:border-0 focus-visible:outline-none min-h-[28px] max-h-[140px] placeholder:text-text-disabled leading-[1.55]"
             rows={1}
           />
         </div>
@@ -368,7 +634,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
         <div className="px-2 pb-1 flex items-center justify-end">
           <button
             onClick={handleStopOrSend}
-            disabled={!isLoading && ((!content.trim() && attachedFiles.length === 0) || disabled)}
+            disabled={!isLoading && ((!content.trim() && attachedFiles.length === 0 && attachedPromptAssets.length === 0) || disabled)}
             className={clsx(
               "p-1 rounded-full transition-all duration-200 flex items-center justify-center",
               isLoading
@@ -406,6 +672,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({ onSend, disabled
       </div>
 
       {renderDropdown()}
+      {renderPromptAttachmentPopup()}
     </div>
   );
 };

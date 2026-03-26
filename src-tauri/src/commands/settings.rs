@@ -28,6 +28,11 @@ pub fn save_app_settings(
         .map_err(|e| format!("Failed to save settings: {:?}", e))
 }
 
+#[tauri::command]
+pub fn get_global_skills_path() -> Result<Option<String>, String> {
+    Ok(dirs::home_dir().map(|home| home.join(".agent").join("skills").to_string_lossy().to_string()))
+}
+
 /// Get a single setting by key
 #[tauri::command]
 pub fn get_setting(key: String, db: State<'_, Mutex<Database>>) -> Result<Option<String>, String> {

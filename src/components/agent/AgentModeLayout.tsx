@@ -23,10 +23,21 @@ import { useCheckpointStore } from '../../store/useCheckpointStore';
 import { useTaskStore } from '../../store/useTaskStore';
 import { useMcpStore } from '../../store/useMcpStore';
 import { getAgentService, type ProviderConfig } from '../../services';
+import type { AgentPromptContext } from '../../services/agent-prompt';
+import {
+  filterProjectRulesByAttachment,
+  getPromptAttachmentSelection,
+  type PromptAttachment,
+} from '../../services/prompt-assets';
 import { tokenService } from '../../services/token-service';
 import { toolRegistry } from '../../tools';
 import { registerAllExecutors } from '../../tools';
-import { buildQueryContext, getIDEContext, getIDEContextLight } from '../../services/context-builder';
+import {
+  buildQueryContext,
+  getIDEContext,
+  getIDEContextLight,
+  loadProjectRules,
+} from '../../services/context-builder';
 import { chatSyncBroadcast } from '../../hooks/useRustChatSync';
 import { parseToolArguments, parseToolArgumentsForDisplay } from '../../lib/tool-arguments';
 import { AgentChangesTree } from './AgentChangesTree';
@@ -222,7 +233,11 @@ export const AgentModeLayout: React.FC = () => {
 
   // Handle send (reusing ChatPanel logic)
   const handleSend = useCallback(
-    async (content: string, attachedFiles?: AttachedFile[]) => {
+    async (
+      content: string,
+      attachedFiles?: AttachedFile[],
+      promptAttachments?: PromptAttachment[]
+    ) => {
       timelineRef.current = [];
       let threadId = currentThreadId;
       let isNewThread = false;
@@ -255,12 +270,28 @@ export const AgentModeLayout: React.FC = () => {
       const projectLayoutEnabled = useSettingsStore.getState().projectLayoutEnabled;
       const shouldIncludeLayout = isFirstMessage && projectLayoutEnabled;
       const ideContext = shouldIncludeLayout ? getIDEContext(true) : getIDEContextLight();
+      const promptSelection = getPromptAttachmentSelection(promptAttachments ?? []);
+      const selectedRules =
+        rootPath && promptSelection.ruleFilenames.length > 0
+          ? filterProjectRulesByAttachment(
+              await loadProjectRules(rootPath),
+              promptAttachments ?? []
+            )
+          : undefined;
 
       const { formattedContext } = await buildQueryContext(
         content,
         attachedFiles,
-        ideContext
+        {
+          ...ideContext,
+          projectRules: selectedRules,
+        }
       );
+      const promptContext: AgentPromptContext = {
+        explicitSkillKeys: promptSelection.explicitSkillKeys,
+        userMessage: content,
+        workspacePath: rootPath || undefined,
+      };
 
       setLoading(true);
       chatSyncBroadcast.setLoading(true);
@@ -468,6 +499,33 @@ export const AgentModeLayout: React.FC = () => {
               setTimeout(() => refreshFileExplorer(), 100);
             }
           },
+          onToolExecutionError: (toolCall, error) => {
+            const auditId = auditEntryIds.get(toolCall.id);
+            if (auditId) {
+              const entry = auditStore.entries.find((e) => e.id === auditId);
+              const duration = entry ? Date.now() - entry.timestamp : undefined;
+              auditStore.updateEntry(auditId, {
+                status: 'failed',
+                result: error.substring(0, 500),
+                duration,
+              });
+            }
+
+            const toolEvent = timelineRef.current.find(
+              (e) => e.type === 'tool' && e.tool?.id === toolCall.id
+            );
+            if (toolEvent) {
+              updateTimelineEvent(toolEvent.id, { tool: { ...toolEvent.tool!, status: 'failed', error } }, true);
+            }
+          },
+          onToolRejected: (toolCall, reason) => {
+            const toolEvent = timelineRef.current.find(
+              (e) => e.type === 'tool' && e.tool?.id === toolCall.id
+            );
+            if (toolEvent) {
+              updateTimelineEvent(toolEvent.id, { tool: { ...toolEvent.tool!, status: 'rejected', result: reason } }, true);
+            }
+          },
           onUsage: (usage) => {
             usageReceivedFromAPI = true;
             const contextStore = useContextStore.getState();
@@ -561,7 +619,7 @@ export const AgentModeLayout: React.FC = () => {
               updateTimelineEvent(currentThinkingEventId, { isThinking: false });
             }
           },
-        });
+        }, undefined, undefined, promptContext);
       } catch (error) {
         const isCancelled =
           error instanceof Error &&
@@ -571,13 +629,6 @@ export const AgentModeLayout: React.FC = () => {
         if (currentThinkingEventId) {
           updateTimelineEvent(currentThinkingEventId, { isThinking: false });
         }
-        if (isCancelled) {
-          for (const event of timelineRef.current) {
-            if (event.type === 'tool' && event.tool?.status === 'executing') {
-              updateTimelineEvent(event.id, { tool: { ...event.tool, status: 'cancelled' as any } });
-            }
-          }
-        }
         if (!isCancelled) {
           console.error('Chat error:', error);
           addTimelineEvent({
@@ -586,6 +637,16 @@ export const AgentModeLayout: React.FC = () => {
           });
         }
       } finally {
+        // Sweep: mark any tools still in pending/executing as failed.
+        for (const event of timelineRef.current) {
+          if (event.type === 'tool' && event.tool &&
+              (event.tool.status === 'pending' || event.tool.status === 'executing')) {
+            updateTimelineEvent(event.id, {
+              tool: { ...event.tool, status: 'failed', error: event.tool.error || 'Request ended before tool completed' },
+            }, true);
+          }
+        }
+
         flushTimelineUpdate();
         if (threadId) {
           useContextStore.getState().syncFromRust(threadId);
@@ -678,6 +739,22 @@ export const AgentModeLayout: React.FC = () => {
   };
 
   const isEmpty = messages.length === 0;
+  const headerButtonStyle: React.CSSProperties = {
+    backgroundColor: 'color-mix(in srgb, var(--aurora-common-secondary) 74%, var(--aurora-title-bar-background) 26%)',
+    border: '1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)',
+    boxShadow: `
+      inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 5%, transparent),
+      inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 8%, transparent)
+    `,
+  };
+  const primaryHeaderButtonStyle: React.CSSProperties = {
+    backgroundColor: 'color-mix(in srgb, var(--aurora-common-primary) 12%, var(--aurora-common-secondary))',
+    border: '1px solid color-mix(in srgb, var(--aurora-common-primary) 22%, transparent)',
+    boxShadow: `
+      inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 7%, transparent),
+      inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 10%, transparent)
+    `,
+  };
 
   return (
     <div
@@ -686,10 +763,11 @@ export const AgentModeLayout: React.FC = () => {
     >
       {/* Header */}
       <div
-        className="h-10 px-4 flex items-center justify-between border-b shrink-0"
+        className="flex h-11 items-center justify-between border-b px-4 shrink-0"
         style={{
-          background: 'var(--aurora-title-bar-background)',
-          borderColor: 'var(--aurora-common-border)',
+          background: 'color-mix(in srgb, var(--aurora-title-bar-background) 78%, var(--aurora-editor-background) 22%)',
+          borderColor: 'color-mix(in srgb, var(--aurora-common-border) 72%, transparent)',
+          boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent)',
         }}
       >
         {/* Left - Title */}
@@ -738,21 +816,21 @@ export const AgentModeLayout: React.FC = () => {
         </div>
 
         {/* Right - Actions */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
           <button
             onClick={() => setIsHistoryOpen(true)}
-            className="w-7 h-7 rounded-md flex items-center justify-center transition-all duration-200 hover:bg-input/50"
+            className="flex h-8 w-8 items-center justify-center rounded-[10px] transition-all duration-200"
             style={{ 
               color: 'var(--aurora-common-muted-foreground)',
-              border: '1px solid transparent',
+              ...headerButtonStyle,
             }}
             onMouseEnter={(e) => {
               e.currentTarget.style.color = 'var(--aurora-title-bar-foreground)';
-              e.currentTarget.style.borderColor = 'var(--aurora-common-border)';
+              e.currentTarget.style.backgroundColor = 'color-mix(in srgb, var(--aurora-common-secondary) 88%, var(--aurora-common-primary) 12%)';
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.color = 'var(--aurora-common-muted-foreground)';
-              e.currentTarget.style.borderColor = 'transparent';
+              e.currentTarget.style.backgroundColor = 'color-mix(in srgb, var(--aurora-common-secondary) 74%, var(--aurora-title-bar-background) 26%)';
             }}
             title="Chat History (Ctrl+H)"
           >
@@ -760,19 +838,16 @@ export const AgentModeLayout: React.FC = () => {
           </button>
           <button
             onClick={handleNewChat}
-            className="w-7 h-7 rounded-md flex items-center justify-center transition-all duration-200"
+            className="flex h-8 w-8 items-center justify-center rounded-[10px] transition-all duration-200"
             style={{
-              background: 'rgba(var(--aurora-common-primary-rgb, 6, 182, 212), 0.1)',
               color: 'var(--aurora-common-primary)',
-              border: '1px solid var(--aurora-common-border)',
+              ...primaryHeaderButtonStyle,
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(var(--aurora-common-primary-rgb, 6, 182, 212), 0.2)';
-              e.currentTarget.style.borderColor = 'var(--aurora-common-border-hover)';
+              e.currentTarget.style.backgroundColor = 'color-mix(in srgb, var(--aurora-common-primary) 18%, var(--aurora-common-secondary))';
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(var(--aurora-common-primary-rgb, 6, 182, 212), 0.1)';
-              e.currentTarget.style.borderColor = 'var(--aurora-common-border)';
+              e.currentTarget.style.backgroundColor = 'color-mix(in srgb, var(--aurora-common-primary) 12%, var(--aurora-common-secondary))';
             }}
             title="New Chat"
           >
@@ -780,20 +855,18 @@ export const AgentModeLayout: React.FC = () => {
           </button>
           <button
             onClick={toggleAgentMode}
-            className="w-7 h-7 rounded-md flex items-center justify-center transition-all duration-200 hover:bg-input/50"
+            className="flex h-8 w-8 items-center justify-center rounded-[10px] transition-all duration-200"
             style={{ 
               color: 'var(--aurora-common-muted-foreground)',
-              border: '1px solid transparent',
+              ...headerButtonStyle,
             }}
             onMouseEnter={(e) => {
               e.currentTarget.style.color = 'var(--aurora-common-primary)';
-              e.currentTarget.style.borderColor = 'rgba(var(--aurora-common-primary-rgb, 6, 182, 212), 0.2)';
-              e.currentTarget.style.background = 'rgba(var(--aurora-common-primary-rgb, 6, 182, 212), 0.1)';
+              e.currentTarget.style.backgroundColor = 'color-mix(in srgb, var(--aurora-common-primary) 12%, var(--aurora-common-secondary))';
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.color = 'var(--aurora-common-muted-foreground)';
-              e.currentTarget.style.borderColor = 'transparent';
-              e.currentTarget.style.background = 'transparent';
+              e.currentTarget.style.backgroundColor = 'color-mix(in srgb, var(--aurora-common-secondary) 74%, var(--aurora-title-bar-background) 26%)';
             }}
             title="Exit Agent Mode (Esc)"
           >
@@ -803,12 +876,12 @@ export const AgentModeLayout: React.FC = () => {
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
         <PanelGroup direction="horizontal" id="agent-mode-panel-group">
           {/* Center - Chat */}
           <Panel id="agent-chat-panel" order={1} defaultSize={75} minSize={50}>
             <div
-              className="h-full flex flex-col"
+              className="h-full min-w-0 overflow-hidden flex flex-col"
               style={{ background: 'var(--aurora-chat-background)' }}
             >
               {/* Messages Area */}
@@ -837,7 +910,7 @@ export const AgentModeLayout: React.FC = () => {
                   </div>
                 </div>
               ) : (
-                <div className="flex-1 min-h-0 overflow-y-auto px-4 md:px-8 lg:px-16 xl:px-24 scrollbar-thin">
+                <div className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden px-4 md:px-8 lg:px-16 xl:px-24 scrollbar-thin">
                   <div className="max-w-4xl mx-auto py-6">
                     {messages.map((msg, index) => (
                       <ChatMessage
@@ -845,7 +918,7 @@ export const AgentModeLayout: React.FC = () => {
                         message={msg}
                         isStreaming={isLoading}
                         isLastMessage={index === messages.length - 1}
-                        toolVariant="cards"
+                        toolVariant="timeline"
                         pendingApproval={pendingApproval}
                         onApprovePending={handleApprove}
                         onRejectPending={handleReject}
@@ -859,7 +932,7 @@ export const AgentModeLayout: React.FC = () => {
 
               {/* Input - Fixed at bottom, centered */}
               <div 
-                className="shrink-0 px-4 md:px-8 lg:px-16 py-4"
+                className="shrink-0 min-w-0 overflow-x-hidden px-4 md:px-8 lg:px-16 py-4"
                 style={{ background: 'var(--aurora-chat-background)' }}
               >
                 <AgentInputArea onSend={handleSend} disabled={isLoading} />

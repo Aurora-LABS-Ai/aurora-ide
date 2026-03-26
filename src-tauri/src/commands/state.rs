@@ -32,6 +32,27 @@ pub fn get_workspace_state(
     }
 }
 
+/// Get recently opened workspaces ordered by last_opened_at desc
+#[tauri::command]
+pub fn list_recent_workspaces(
+    limit: Option<usize>,
+    db: State<'_, Mutex<Database>>,
+) -> Result<Vec<WorkspaceState>, String> {
+    let db = db.lock().map_err(|e| e.to_string())?;
+    let max_items = limit.unwrap_or(3);
+
+    db.workspace()
+        .get_all()
+        .map(|states| {
+            states
+                .into_iter()
+                .filter(|state| state.workspace_path.is_some())
+                .take(max_items)
+                .collect()
+        })
+        .map_err(|e| format!("Failed to list recent workspaces: {:?}", e))
+}
+
 /// Save editor state for a file
 #[tauri::command]
 pub fn save_editor_state(

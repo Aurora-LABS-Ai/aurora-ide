@@ -23,6 +23,7 @@
 import React, { memo, useState, useCallback, useRef, useEffect } from 'react';
 import { Streamdown } from 'streamdown';
 import { Copy, Check, FileCode, Terminal, FileJson, FileText, Database, Globe, Braces, Hash } from 'lucide-react';
+import { useThemeStore } from '../../store/useThemeStore';
 
 interface MarkdownRendererProps {
   content: string;
@@ -303,9 +304,9 @@ const components = {
 
   // Paragraphs
   p: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
-    <p 
-      className="text-[13px] leading-relaxed my-2"
-      style={{ color: 'var(--aurora-chat-foreground)' }}
+    <p
+      className="my-2 text-[14px] leading-[1.65] tracking-[0.01em]"
+      style={{ color: 'var(--aurora-common-text-primary)' }}
       {...props}
     >
       {children}
@@ -314,10 +315,10 @@ const components = {
 
   // Headers with accent styling
   h1: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
-    <h1 
+    <h1
       className="text-lg font-bold mt-4 mb-2 pb-1 border-b"
-      style={{ 
-        color: 'var(--aurora-chat-foreground)',
+      style={{
+        color: 'var(--aurora-common-text-primary)',
         borderColor: 'var(--aurora-common-border)',
       }}
       {...props}
@@ -326,27 +327,27 @@ const components = {
     </h1>
   ),
   h2: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
-    <h2 
+    <h2
       className="text-base font-bold mt-4 mb-2"
-      style={{ color: 'var(--aurora-chat-foreground)' }}
+      style={{ color: 'var(--aurora-common-text-primary)' }}
       {...props}
     >
       {children}
     </h2>
   ),
   h3: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
-    <h3 
+    <h3
       className="text-sm font-semibold mt-3 mb-1.5"
-      style={{ color: 'var(--aurora-chat-foreground)' }}
+      style={{ color: 'var(--aurora-common-text-primary)' }}
       {...props}
     >
       {children}
     </h3>
   ),
   h4: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
-    <h4 
-      className="text-[13px] font-semibold mt-2 mb-1"
-      style={{ color: 'var(--aurora-chat-foreground)' }}
+    <h4
+      className="mt-2 mb-1 text-[14px] font-semibold"
+      style={{ color: 'var(--aurora-common-text-primary)' }}
       {...props}
     >
       {children}
@@ -355,12 +356,12 @@ const components = {
 
   // Lists with better styling
   ul: ({ children, style, className, ...props }: React.HTMLAttributes<HTMLUListElement>) => (
-    <ul 
-      className={["my-2 space-y-1 text-[13px]", className].filter(Boolean).join(" ")}
+    <ul
+      className={["my-2 space-y-1 text-[14px]", className].filter(Boolean).join(" ")}
       {...props}
       style={{
         ...(style || {}),
-        color: 'var(--aurora-chat-foreground)',
+        color: 'var(--aurora-common-text-primary)',
         listStyleType: 'disc',
         paddingLeft: '1.25rem',
         listStylePosition: 'outside',
@@ -370,12 +371,12 @@ const components = {
     </ul>
   ),
   ol: ({ children, style, className, ...props }: React.HTMLAttributes<HTMLOListElement>) => (
-    <ol 
-      className={["my-2 space-y-1 text-[13px]", className].filter(Boolean).join(" ")}
+    <ol
+      className={["my-2 space-y-1 text-[14px]", className].filter(Boolean).join(" ")}
       {...props}
       style={{
         ...(style || {}),
-        color: 'var(--aurora-chat-foreground)',
+        color: 'var(--aurora-common-text-primary)',
         listStyleType: 'decimal',
         paddingLeft: '1.25rem',
         listStylePosition: 'outside',
@@ -385,12 +386,12 @@ const components = {
     </ol>
   ),
   li: ({ children, style, className, ...props }: React.HTMLAttributes<HTMLLIElement>) => (
-    <li 
-      className={["text-[13px] leading-relaxed", className].filter(Boolean).join(" ")}
+    <li
+      className={["text-[14px] leading-[1.65]", className].filter(Boolean).join(" ")}
       {...props}
-      style={{ 
+      style={{
         ...(style || {}),
-        color: 'var(--aurora-chat-foreground)',
+        color: 'var(--aurora-common-text-primary)',
       }}
     >
       {children}
@@ -413,16 +414,16 @@ const components = {
 
   // Blockquotes with accent border
   blockquote: ({ children, ...props }: React.HTMLAttributes<HTMLQuoteElement>) => (
-    <blockquote 
+    <blockquote
       className="border-l-3 pl-4 my-3 py-1 rounded-r"
-      style={{ 
+      style={{
         borderLeftWidth: '3px',
         borderColor: 'var(--aurora-common-primary)',
-        background: 'rgba(var(--aurora-common-primary-rgb, 96, 165, 250), 0.05)',
+        background: 'color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)',
       }}
       {...props}
     >
-      <div style={{ color: 'var(--aurora-chat-foreground)', opacity: 0.85 }}>
+      <div style={{ color: 'var(--aurora-common-text-primary)', opacity: 0.85 }}>
         {children}
       </div>
     </blockquote>
@@ -439,9 +440,9 @@ const components = {
 
   // Strong/Bold
   strong: ({ children, ...props }: React.HTMLAttributes<HTMLElement>) => (
-    <strong 
+    <strong
       className="font-semibold"
-      style={{ color: 'var(--aurora-chat-foreground)' }}
+      style={{ color: 'var(--aurora-common-text-primary)' }}
       {...props}
     >
       {children}
@@ -450,9 +451,9 @@ const components = {
 
   // Emphasis/Italic
   em: ({ children, ...props }: React.HTMLAttributes<HTMLElement>) => (
-    <em 
+    <em
       className="italic"
-      style={{ color: 'var(--aurora-chat-foreground)' }}
+      style={{ color: 'var(--aurora-common-text-primary)' }}
       {...props}
     >
       {children}
@@ -498,10 +499,10 @@ const components = {
     </tr>
   ),
   th: ({ children, ...props }: React.HTMLAttributes<HTMLTableCellElement>) => (
-    <th 
+    <th
       className="px-4 py-2.5 text-left font-semibold text-[11px] uppercase tracking-wider"
-      style={{ 
-        color: 'var(--aurora-chat-foreground)',
+      style={{
+        color: 'var(--aurora-common-text-primary)',
         borderBottom: '2px solid var(--aurora-common-border)',
       }}
       {...props}
@@ -510,12 +511,12 @@ const components = {
     </th>
   ),
   td: ({ children, ...props }: React.HTMLAttributes<HTMLTableCellElement>) => (
-    <td 
+    <td
       className="px-4 py-2.5"
-      style={{ 
-        color: 'var(--aurora-chat-foreground)',
+      style={{
+        color: 'var(--aurora-common-text-primary)',
         opacity: 0.9,
-        borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
+        borderBottom: '1px solid color-mix(in srgb, var(--aurora-common-text-primary) 6%, transparent)',
       }}
       {...props}
     >
@@ -525,9 +526,9 @@ const components = {
 
   // Delete/Strikethrough
   del: ({ children, ...props }: React.HTMLAttributes<HTMLElement>) => (
-    <del 
+    <del
       className="line-through"
-      style={{ color: 'var(--aurora-chat-foreground)', opacity: 0.5 }}
+      style={{ color: 'var(--aurora-common-text-primary)', opacity: 0.5 }}
       {...props}
     >
       {children}
@@ -549,7 +550,7 @@ const components = {
 // Streaming cursor component - slim white blinking cursor
 const StreamingCursor: React.FC = () => (
   <span 
-    className="inline-block animate-cursor-blink ml-px align-baseline text-[11px] font-light"
+    className="inline-block animate-cursor-blink ml-px align-baseline text-[11px] font-normal"
     style={{ color: 'var(--aurora-common-primary)' }}
     aria-hidden="true"
   >
@@ -558,6 +559,14 @@ const StreamingCursor: React.FC = () => (
 );
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ content, isStreaming = false }) => {
+  const activeThemeType = useThemeStore((state) =>
+    state.themes.find((theme) => theme.id === state.activeThemeId)?.type ?? 'dark'
+  );
+  const shikiTheme: ['github-light', 'github-light'] | ['github-dark', 'github-dark'] =
+    activeThemeType === 'light'
+      ? ['github-light', 'github-light']
+      : ['github-dark', 'github-dark'];
+
   if (!content) return null;
 
   return (
@@ -565,7 +574,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ content
       <Streamdown
         isAnimating={isStreaming}
         components={components}
-        shikiTheme={['github-dark', 'github-dark']}
+        shikiTheme={shikiTheme}
         controls={{
           code: true,
           table: true,

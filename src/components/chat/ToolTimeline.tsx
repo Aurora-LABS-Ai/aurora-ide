@@ -44,6 +44,11 @@ function cn(...inputs: (string | undefined | null | false)[]) {
   return twMerge(clsx(inputs));
 }
 
+const summarizeShellCommand = (command: string): string => {
+  const compact = command.replace(/\s+/g, ' ').trim();
+  return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
+};
+
 const formatApprovalValue = (value: unknown): string => {
   if (value === null || value === undefined) return 'null';
   if (typeof value === 'string') {
@@ -526,6 +531,7 @@ interface ToolItemProps {
   tool: ToolCall;
   isLast: boolean;
   index: number;
+  isActivelyStreaming?: boolean;
   pendingApproval?: ToolProposal | null;
   onApprovePending?: () => void;
   onRejectPending?: () => void;
@@ -535,6 +541,7 @@ interface ToolItemProps {
 const ToolItem: React.FC<ToolItemProps> = React.memo(({
   tool,
   isLast,
+  isActivelyStreaming = false,
   pendingApproval,
   onApprovePending,
   onRejectPending,
@@ -545,16 +552,20 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({
   const [isOpen, setIsOpen] = useState(false);
   const [showApprovalDetails, setShowApprovalDetails] = useState(false);
 
-  // Auto-expand errors
+  // If the tool claims to be running but we're NOT actively streaming,
+  // it's a stale/stuck tool from a previous session - treat as failed.
+  const isStale = (tool.status === 'executing' || tool.status === 'pending') && !isActivelyStreaming;
+  const effectiveStatus = isStale ? 'failed' : tool.status;
+
+  // Auto-expand errors (including stale stuck tools)
   useEffect(() => {
-    if (tool.status === 'failed' || tool.status === 'rejected') {
+    if (tool.status === 'failed' || tool.status === 'rejected' || isStale) {
       setIsOpen(true);
     }
-  }, [tool.status]);
+  }, [tool.status, isStale]);
 
-  // Derived status logic - simple: show running spinner while pending/executing, red X only for actual failures
-  const isRunning = tool.status === 'executing' || tool.status === 'pending';
-  const isError = tool.status === 'failed' || tool.status === 'rejected';
+  const isRunning = (effectiveStatus === 'executing' || effectiveStatus === 'pending');
+  const isError = effectiveStatus === 'failed' || effectiveStatus === 'rejected';
   const isAwaitingApproval = Boolean(
     pendingApproval &&
     pendingApproval.id === tool.id &&
@@ -677,7 +688,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({
           isFileChangePending = true;
           // Don't show "Pending approval" - tools auto-approve
         } else if (tool.name === 'shell_execute') {
-          const cmd = parsed.command || tool.args?.command || 'cmd';
+          const cmd = summarizeShellCommand(String(parsed.command || tool.args?.command || 'cmd'));
           if (parsed.success) {
             msg = `Ran: ${cmd}`;
             const out = [];
@@ -756,59 +767,57 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({
         <div className="flex items-start gap-2">
           <button
             onClick={() => setIsOpen(!isOpen)}
-            className="flex-1 text-left flex items-center gap-2 group/header outline-none"
+            className="group/header flex min-w-0 flex-1 flex-col items-start gap-1 text-left outline-none"
           >
-            {/* Tool Icon */}
-            <span className="flex-shrink-0">
-              {getToolIcon(tool.name, 14)}
-            </span>
-            
-            {/* Tool Name */}
-            {isError ? (
-              <span className="text-[11px] font-medium tracking-tight text-error">
-                {getToolDisplayName(tool.name)}
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="flex-shrink-0">
+                {getToolIcon(tool.name, 14)}
               </span>
-            ) : isRunning ? (
-              <ShimmerText className="text-[11px] font-medium tracking-tight text-task-progress">
-                {getToolDisplayName(tool.name)}
-              </ShimmerText>
-            ) : (
-              <span className="text-[11px] font-medium tracking-tight text-text-primary">
-                {getToolDisplayName(tool.name)}
-              </span>
-            )}
 
-            {/* Compact Filename/Folder Pill if applicable */}
-            {(fileName || isFolderTool) && (
-              <span
-                onClick={fileName ? handleFileClick : undefined}
-                role={fileName ? "button" : undefined}
-                tabIndex={fileName ? 0 : undefined}
-                className={cn(
-                  "flex items-center gap-1.5 text-[10px] text-text-secondary px-1.5 py-0.5 rounded-sm bg-input/40 border border-border",
-                  fileName && "hover:bg-input/70 hover:border-border-hover transition-all cursor-pointer"
-                )}
-              >
-                {isFolderTool ? (
-                  <Folder size={12} className="text-info/80 fill-info/10 flex-shrink-0" />
-                ) : (
-                  <img
-                    src={getIconUrl(getIconName(fileName, false))}
-                    alt=""
-                    className="w-3 h-3 flex-shrink-0"
-                  />
-                )}
-                <span className={cn(
-                  "opacity-80",
-                  fileName && "hover:opacity-100 underline decoration-transparent hover:decoration-border/50 underline-offset-2"
-                )}>
-                  {fileName || (filePath ? filePath.split(/[/\\]/).pop() : 'directory')}
+              {isError ? (
+                <span className="text-[11px] font-medium tracking-tight text-error">
+                  {getToolDisplayName(tool.name)}
                 </span>
-              </span>
-            )}
+              ) : isRunning ? (
+                <ShimmerText className="text-[11px] font-medium tracking-tight text-task-progress">
+                  {getToolDisplayName(tool.name)}
+                </ShimmerText>
+              ) : (
+                <span className="text-[11px] font-medium tracking-tight text-text-primary">
+                  {getToolDisplayName(tool.name)}
+                </span>
+              )}
 
-            {/* Status Message + Line Diff Stats */}
-            <span className="text-[10px] text-text-disabled truncate opacity-70 group-hover/header:opacity-100 transition-opacity flex items-center gap-1.5">
+              {(fileName || isFolderTool) && (
+                <span
+                  onClick={fileName ? handleFileClick : undefined}
+                  role={fileName ? "button" : undefined}
+                  tabIndex={fileName ? 0 : undefined}
+                  className={cn(
+                    "inline-flex max-w-full items-center gap-1.5 rounded-sm border border-border bg-input/40 px-1.5 py-0.5 text-[10px] text-text-secondary",
+                    fileName && "cursor-pointer transition-all hover:border-border-hover hover:bg-input/70"
+                  )}
+                >
+                  {isFolderTool ? (
+                    <Folder size={12} className="text-info/80 fill-info/10 flex-shrink-0" />
+                  ) : (
+                    <img
+                      src={getIconUrl(getIconName(fileName, false))}
+                      alt=""
+                      className="w-3 h-3 flex-shrink-0"
+                    />
+                  )}
+                  <span className={cn(
+                    "truncate opacity-80",
+                    fileName && "underline decoration-transparent underline-offset-2 hover:opacity-100 hover:decoration-border/50"
+                  )}>
+                    {fileName || (filePath ? filePath.split(/[/\\]/).pop() : 'directory')}
+                  </span>
+                </span>
+              )}
+            </div>
+
+            <span className="flex max-w-full flex-wrap items-center gap-1.5 text-[10px] leading-[1.45] text-text-disabled opacity-80 transition-opacity group-hover/header:opacity-100 whitespace-pre-wrap break-words">
               {/* Line diff stats for search_replace */}
               {(linesAdded !== null || linesRemoved !== null) && (
                 <span className="flex items-center gap-1 font-mono">
@@ -1047,6 +1056,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(({
 interface ToolTimelineProps {
   tools: ToolCall[];
   variant?: 'timeline' | 'cards';
+  isActivelyStreaming?: boolean;
   pendingApproval?: ToolProposal | null;
   onApprovePending?: () => void;
   onRejectPending?: () => void;
@@ -1055,7 +1065,8 @@ interface ToolTimelineProps {
 
 export const ToolTimeline: React.FC<ToolTimelineProps> = ({
   tools,
-  variant = 'timeline',
+  variant: _variant = 'timeline',
+  isActivelyStreaming = false,
   pendingApproval = null,
   onApprovePending,
   onRejectPending,
@@ -1063,37 +1074,6 @@ export const ToolTimeline: React.FC<ToolTimelineProps> = ({
 }) => {
   if (!tools || tools.length === 0) return null;
 
-  // Card variant - wrap each tool in a card-style container
-  if (variant === 'cards') {
-    return (
-      <div className="w-full mt-2 space-y-2">
-        {tools.map((tool, idx) => (
-          <div
-            key={tool.id}
-            className="rounded-xl border transition-all duration-200 overflow-hidden"
-            style={{
-              background: 'var(--aurora-chat-surface)',
-              borderColor: 'var(--aurora-common-border)',
-            }}
-          >
-            <div className="px-1">
-              <ToolItem
-                tool={tool}
-                isLast={true}
-                index={idx}
-                pendingApproval={pendingApproval}
-                onApprovePending={onApprovePending}
-                onRejectPending={onRejectPending}
-                onApprovePendingRemember={onApprovePendingRemember}
-              />
-            </div>
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  // Default timeline variant
   return (
     <div className="w-full mt-2 pl-2">
       {tools.map((tool, idx) => (
@@ -1102,6 +1082,7 @@ export const ToolTimeline: React.FC<ToolTimelineProps> = ({
           tool={tool}
           isLast={idx === tools.length - 1}
           index={idx}
+          isActivelyStreaming={isActivelyStreaming}
           pendingApproval={pendingApproval}
           onApprovePending={onApprovePending}
           onRejectPending={onRejectPending}

@@ -34,10 +34,21 @@ import { useContextStore } from "../../store/useContextStore";
 import { useAuditStore } from "../../store/useAuditStore";
 import { useCheckpointStore } from "../../store/useCheckpointStore";
 import { getAgentService, type ProviderConfig, type ToolCallRequest } from "../../services";
+import type { AgentPromptContext } from "../../services/agent-prompt";
+import {
+  filterProjectRulesByAttachment,
+  getPromptAttachmentSelection,
+  type PromptAttachment,
+} from "../../services/prompt-assets";
 import { tokenService } from "../../services/token-service";
 import { toolRegistry } from "../../tools";
 import { registerAllExecutors } from "../../tools";
-import { buildQueryContext, getIDEContext, getIDEContextLight } from "../../services/context-builder";
+import {
+  buildQueryContext,
+  getIDEContext,
+  getIDEContextLight,
+  loadProjectRules,
+} from "../../services/context-builder";
 import { chatSyncBroadcast } from "../../hooks/useRustChatSync";
 import { useTaskStore } from "../../store/useTaskStore";
 import { useMcpStore } from "../../store/useMcpStore";
@@ -237,7 +248,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
   }, [rootPath, refreshDirectory]);
 
   const handleSend = useCallback(
-    async (content: string, attachedFiles?: AttachedFile[]) => {
+    async (
+      content: string,
+      attachedFiles?: AttachedFile[],
+      promptAttachments?: PromptAttachment[]
+    ) => {
       // Reset timeline
       timelineRef.current = [];
 
@@ -285,12 +300,28 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       const projectLayoutEnabled = useSettingsStore.getState().projectLayoutEnabled;
       const shouldIncludeLayout = isFirstMessage && projectLayoutEnabled;
       const ideContext = shouldIncludeLayout ? getIDEContext(true) : getIDEContextLight();
+      const promptSelection = getPromptAttachmentSelection(promptAttachments ?? []);
+      const selectedRules =
+        rootPath && promptSelection.ruleFilenames.length > 0
+          ? filterProjectRulesByAttachment(
+              await loadProjectRules(rootPath),
+              promptAttachments ?? []
+            )
+          : undefined;
 
       const { formattedContext, filesWithContent, filesAsPathsOnly } = await buildQueryContext(
         content,
         attachedFiles,
-        ideContext
+        {
+          ...ideContext,
+          projectRules: selectedRules,
+        }
       );
+      const promptContext: AgentPromptContext = {
+        explicitSkillKeys: promptSelection.explicitSkillKeys,
+        userMessage: content,
+        workspacePath: rootPath || undefined,
+      };
 
       // Log when project layout is included
       if (shouldIncludeLayout && ideContext.projectLayout) {
@@ -573,7 +604,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
               const duration = entry ? Date.now() - entry.timestamp : undefined;
               auditStore.updateEntry(auditId, {
                 status: 'executed',
-                result: result.substring(0, 500), // Truncate for storage
+                result: result.substring(0, 500),
                 duration,
               });
             }
@@ -585,12 +616,43 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             if (toolEvent) {
               updateTimelineEvent(toolEvent.id, {
                 tool: { ...toolEvent.tool!, status: "complete", result },
-              }, true); // immediate: show completion status right away
+              }, true);
             }
 
             // Refresh file explorer after file operations
             if (hasFileOperation) {
               setTimeout(() => refreshFileExplorer(), 100);
+            }
+          },
+          onToolExecutionError: (toolCall, error) => {
+            const auditId = auditEntryIds.get(toolCall.id);
+            if (auditId) {
+              const entry = auditStore.entries.find(e => e.id === auditId);
+              const duration = entry ? Date.now() - entry.timestamp : undefined;
+              auditStore.updateEntry(auditId, {
+                status: 'failed',
+                result: error.substring(0, 500),
+                duration,
+              });
+            }
+
+            const toolEvent = timelineRef.current.find(
+              (e) => e.type === "tool" && e.tool?.id === toolCall.id,
+            );
+            if (toolEvent) {
+              updateTimelineEvent(toolEvent.id, {
+                tool: { ...toolEvent.tool!, status: "failed", error },
+              }, true);
+            }
+          },
+          onToolRejected: (toolCall, reason) => {
+            const toolEvent = timelineRef.current.find(
+              (e) => e.type === "tool" && e.tool?.id === toolCall.id,
+            );
+            if (toolEvent) {
+              updateTimelineEvent(toolEvent.id, {
+                tool: { ...toolEvent.tool!, status: "rejected", result: reason },
+              }, true);
             }
           },
           onUsage: (usage) => {
@@ -740,7 +802,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
               });
             }
           },
-        });
+        }, undefined, undefined, promptContext);
       } catch (error) {
         // Don't show error if request was cancelled by user
         const isCancelled = error instanceof Error && (
@@ -756,17 +818,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           });
         }
 
-        // If cancelled, mark any executing tools as cancelled
-        if (isCancelled) {
-          for (const event of timelineRef.current) {
-            if (event.type === 'tool' && event.tool?.status === 'executing') {
-              updateTimelineEvent(event.id, {
-                tool: { ...event.tool, status: 'failed' },
-              });
-            }
-          }
-        }
-
         if (!isCancelled) {
           console.error("Chat error:", error);
           addTimelineEvent({
@@ -777,8 +828,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           console.log("[ChatPanel] Request cancelled by user");
         }
       } finally {
+        // Sweep: mark any tools still in pending/executing as failed.
+        // This is the safety net that prevents tools from being stuck forever,
+        // regardless of how/why the request ended (normal, error, cancel, timeout).
+        for (const event of timelineRef.current) {
+          if (event.type === 'tool' && event.tool &&
+              (event.tool.status === 'pending' || event.tool.status === 'executing')) {
+            updateTimelineEvent(event.id, {
+              tool: { ...event.tool, status: 'failed', error: event.tool.error || 'Request ended before tool completed' },
+            }, true);
+          }
+        }
+
         // CRITICAL: Flush any pending timeline updates BEFORE clearing the message ID
-        // This ensures all debounced token updates make it to the store
         flushTimelineUpdate();
 
         // Sync context state from Rust engine (accurate tiktoken counting)

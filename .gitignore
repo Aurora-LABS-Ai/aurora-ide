@@ -37,7 +37,11 @@ build
 target
 # AI/ML tool directories
 .claude/
+.codex/
 .cursor/
+
+# Local scratch / pasted snippets (not app source)
+example.txt
 
 # OS files
 .DS_Store

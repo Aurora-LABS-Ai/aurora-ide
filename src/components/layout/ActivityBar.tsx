@@ -40,21 +40,28 @@ const ActivityBarItem: React.FC<ActivityBarItemProps> = ({
       onClick={onClick}
       title={title}
       className={clsx(
-        "relative w-12 h-12 flex items-center justify-center transition-all duration-150",
+        "relative mx-auto my-0.5 flex h-10 w-10 items-center justify-center rounded-[12px] transition-all duration-150",
         "hover:text-text-primary",
         isActive
           ? "text-text-primary"
           : "text-text-disabled"
       )}
       style={{
-        borderLeft: isActive ? '2px solid var(--aurora-common-primary)' : '2px solid transparent',
-        background: isActive ? 'var(--aurora-sidebar-item-selected)' : 'transparent',
+        background: isActive
+          ? 'color-mix(in srgb, var(--aurora-sidebar-item-selected) 84%, transparent)'
+          : 'transparent',
       }}
     >
+      {isActive && (
+        <span
+          className="absolute left-[-8px] top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full"
+          style={{ background: 'var(--aurora-common-primary)' }}
+        />
+      )}
       {icon}
       {badgeCount !== undefined && badgeCount > 0 && (
         <span
-          className="absolute top-2 right-2 min-w-[16px] h-4 px-1 text-[10px] font-medium rounded-full flex items-center justify-center"
+          className="absolute right-0.5 top-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-medium"
           style={{
             background: 'var(--aurora-common-primary)',
             color: 'var(--aurora-common-primary-foreground)',
@@ -75,9 +82,9 @@ export const ActivityBar: React.FC<ActivityBarProps> = ({
 }) => {
   return (
     <div
-      className="flex flex-col h-full w-12 border-r"
+      className="flex h-full w-[54px] flex-col border-r px-1 py-2"
       style={{
-        background: 'var(--aurora-title-bar-background)',
+        background: 'color-mix(in srgb, var(--aurora-title-bar-background) 78%, var(--aurora-sidebar-background) 22%)',
         borderColor: 'var(--aurora-common-border)',
       }}
     >
@@ -114,7 +121,7 @@ export const ActivityBar: React.FC<ActivityBarProps> = ({
       <div className="flex-1" />
 
       {/* Bottom Icons */}
-      <div className="flex flex-col mb-2">
+      <div className="mb-1 flex flex-col">
         <ActivityBarItem
           icon={<Settings className="w-5 h-5" />}
           isActive={false}

@@ -35,7 +35,9 @@ import {
 
 import clsx from 'clsx';
 import { TogglePill } from '../ui/TogglePill';
+import { SettingsSelect } from '../ui/SettingsSelect';
 import { DeleteConfirmDialog } from '../chat/DeleteConfirmDialog';
+import { settingsCardStyle, settingsPrimaryButtonStyle, settingsSubtlePanelStyle } from './settings-shared';
 
 // ============================================
 // MARKETPLACE DATA
@@ -168,18 +170,20 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ initialConfig, onSave, on
   // If initialConfig provided, switch to form mode by default
   useEffect(() => {
     if (initialConfig) {
-      setMode('form');
-      if (initialConfig.name) setName(initialConfig.name);
-      if (initialConfig.transport) setTransport(initialConfig.transport);
-      if (initialConfig.command) setCommand(initialConfig.command);
-      if (initialConfig.args) setArgs(initialConfig.args.join(' '));
-      if (initialConfig.url) setUrl(initialConfig.url);
-      if (initialConfig.env) {
-        setEnvVars(Object.entries(initialConfig.env).map(([k, v]) => `${k}=${v}`).join('\n'));
-      }
-      if (initialConfig.headers) {
-        setHeaderVars(Object.entries(initialConfig.headers).map(([k, v]) => `${k}=${v}`).join('\n'));
-      }
+      queueMicrotask(() => {
+        setMode('form');
+        if (initialConfig.name) setName(initialConfig.name);
+        if (initialConfig.transport) setTransport(initialConfig.transport);
+        if (initialConfig.command) setCommand(initialConfig.command);
+        if (initialConfig.args) setArgs(initialConfig.args.join(' '));
+        if (initialConfig.url) setUrl(initialConfig.url);
+        if (initialConfig.env) {
+          setEnvVars(Object.entries(initialConfig.env).map(([k, v]) => `${k}=${v}`).join('\n'));
+        }
+        if (initialConfig.headers) {
+          setHeaderVars(Object.entries(initialConfig.headers).map(([k, v]) => `${k}=${v}`).join('\n'));
+        }
+      });
     }
   }, [initialConfig]);
 
@@ -311,15 +315,15 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ initialConfig, onSave, on
   };
 
   return (
-    <div className="p-3 border border-primary/30 rounded-lg bg-primary/5 space-y-3">
+    <div className="space-y-3 rounded-[22px] p-4" style={settingsCardStyle}>
       <div className="flex items-center justify-between">
         <h3 className="text-xs font-medium text-text-primary">Add MCP Server</h3>
         {/* Mode toggle */}
-        <div className="flex items-center gap-1 bg-input rounded-md p-0.5">
+        <div className="flex items-center gap-1 rounded-2xl p-1" style={settingsSubtlePanelStyle}>
           <button
             onClick={() => setMode('form')}
             className={clsx(
-              'px-2 py-0.5 text-[10px] rounded transition-colors',
+              'rounded-xl px-3 py-1.5 text-[10px] transition-colors',
               mode === 'form'
                 ? 'bg-primary text-primary-foreground'
                 : 'text-text-secondary hover:text-text-primary'
@@ -330,7 +334,7 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ initialConfig, onSave, on
           <button
             onClick={() => setMode('json')}
             className={clsx(
-              'px-2 py-0.5 text-[10px] rounded transition-colors',
+              'rounded-xl px-3 py-1.5 text-[10px] transition-colors',
               mode === 'json'
                 ? 'bg-primary text-primary-foreground'
                 : 'text-text-secondary hover:text-text-primary'
@@ -357,14 +361,15 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ initialConfig, onSave, on
             </div>
             <div>
               <label className="text-[10px] text-text-secondary block mb-0.5">Transport *</label>
-              <select
+              <SettingsSelect
+                ariaLabel="Select MCP transport"
+                options={[
+                  { label: 'Stdio (Local Process)', value: 'stdio' },
+                  { label: 'SSE (HTTP Server)', value: 'sse' },
+                ]}
+                onChange={(nextValue) => setTransport(String(nextValue) as McpTransportType)}
                 value={transport}
-                onChange={(e) => setTransport(e.target.value as McpTransportType)}
-                className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-primary"
-              >
-                <option value="stdio">Stdio (Local Process)</option>
-                <option value="sse">SSE (HTTP Server)</option>
-              </select>
+              />
             </div>
           </div>
 
@@ -460,13 +465,14 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ initialConfig, onSave, on
           </div>
 
           <div className="flex justify-end gap-2 pt-1">
-            <button onClick={onCancel} className="px-3 py-1 text-xs text-text-secondary hover:text-text-primary">
+            <button onClick={onCancel} className="rounded-xl px-3 py-2 text-xs text-text-secondary hover:text-text-primary" style={settingsSubtlePanelStyle}>
               Cancel
             </button>
             <button
               onClick={handleFormSubmit}
               disabled={!name.trim() || (transport === 'stdio' ? !command.trim() : !url.trim())}
-              className="px-3 py-1 text-xs font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors disabled:opacity-50"
+              className="rounded-xl px-3 py-2 text-xs font-semibold text-primary-foreground transition-colors disabled:opacity-50"
+              style={settingsPrimaryButtonStyle}
             >
               Add Server
             </button>
@@ -507,13 +513,14 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ initialConfig, onSave, on
           </div>
 
           <div className="flex justify-end gap-2 pt-1">
-            <button onClick={onCancel} className="px-3 py-1 text-xs text-text-secondary hover:text-text-primary">
+            <button onClick={onCancel} className="rounded-xl px-3 py-2 text-xs text-text-secondary hover:text-text-primary" style={settingsSubtlePanelStyle}>
               Cancel
             </button>
             <button
               onClick={handleJsonSubmit}
               disabled={!jsonInput.trim()}
-              className="px-3 py-1 text-xs font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors disabled:opacity-50"
+              className="rounded-xl px-3 py-2 text-xs font-semibold text-primary-foreground transition-colors disabled:opacity-50"
+              style={settingsPrimaryButtonStyle}
             >
               Add Server
             </button>
@@ -556,22 +563,26 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
 
   useEffect(() => {
     if (!isExpanded) {
-      setIsEditing(false);
+      queueMicrotask(() => {
+        setIsEditing(false);
+      });
       return;
     }
 
-    setEditName(server.config.name);
-    setEditTransport(server.config.transport);
-    setEditCommand(server.config.command || '');
-    setEditArgs(server.config.args.join(' '));
-    setEditUrl(server.config.url || '');
-    setEditEnv(
-      Object.entries(server.config.env)
-        .map(([key, value]) => `${key}=${value}`)
-        .join('\n')
-    );
-    setEditAutoStart(server.config.autoStart);
-    setEditAutoApprove(server.config.autoApprove);
+    queueMicrotask(() => {
+      setEditName(server.config.name);
+      setEditTransport(server.config.transport);
+      setEditCommand(server.config.command || '');
+      setEditArgs(server.config.args.join(' '));
+      setEditUrl(server.config.url || '');
+      setEditEnv(
+        Object.entries(server.config.env)
+          .map(([key, value]) => `${key}=${value}`)
+          .join('\n')
+      );
+      setEditAutoStart(server.config.autoStart);
+      setEditAutoApprove(server.config.autoApprove);
+    });
   }, [isExpanded, server.config]);
 
   const handleConnect = async () => {
@@ -668,10 +679,10 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
   };
 
   return (
-    <div className="border border-border rounded-lg bg-titlebar overflow-hidden">
+    <div className="overflow-hidden rounded-[20px]" style={settingsCardStyle}>
       {/* Header */}
       <div
-        className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-input/30"
+        className="flex cursor-pointer items-center justify-between px-4 py-3 hover:bg-input/30"
         onClick={onToggleExpand}
       >
         <div className="flex items-center gap-2">
@@ -821,14 +832,15 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
               </div>
               <div>
                 <label className="text-[10px] text-text-disabled block mb-0.5">Transport</label>
-                <select
+                <SettingsSelect
+                  ariaLabel="Select MCP edit transport"
+                  options={[
+                    { label: 'Stdio', value: 'stdio' },
+                    { label: 'SSE (HTTP Server)', value: 'sse' },
+                  ]}
+                  onChange={(nextValue) => setEditTransport(String(nextValue) as McpTransportType)}
                   value={editTransport}
-                  onChange={(e) => setEditTransport(e.target.value as McpTransportType)}
-                  className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-primary"
-                >
-                  <option value="stdio">Stdio</option>
-                  <option value="sse">SSE (HTTP Server)</option>
-                </select>
+                />
               </div>
               {editTransport === 'stdio' ? (
                 <>
@@ -1018,7 +1030,7 @@ interface MarketplaceCardProps {
 
 const MarketplaceCard: React.FC<MarketplaceCardProps> = ({ item, isInstalled, onInstall }) => {
   return (
-    <div className="border border-border rounded-lg bg-titlebar p-3 flex flex-col justify-between h-full">
+    <div className="flex h-full flex-col justify-between rounded-[20px] p-4" style={settingsCardStyle}>
       <div>
         <div className="flex items-start justify-between mb-2">
           <div className="flex items-center gap-2">
@@ -1305,4 +1317,3 @@ export const McpSettingsTab: React.FC = () => {
     </div>
   );
 };
-

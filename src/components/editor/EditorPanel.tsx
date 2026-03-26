@@ -114,6 +114,9 @@ export const EditorPanel: React.FC = () => {
     <div
       className={`h-full flex flex-col ${isDropTarget ? 'ring-2 ring-primary/50 ring-inset' : ''}`}
       data-editor-panel
+      style={{
+        background: 'var(--aurora-editor-background)',
+      }}
     >
       <TabBar />
       <CodeEditor />

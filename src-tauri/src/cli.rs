@@ -208,8 +208,151 @@ impl From<&CliArgs> for CliOpenRequest {
 
 #[cfg(windows)]
 pub mod install {
+    use std::io::ErrorKind;
     use std::path::PathBuf;
-    use std::process::Command;
+    use windows_sys::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE};
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+    use winreg::RegKey;
+
+    const DIRECTORY_CONTEXT_MENU_KEY: &str = r"Software\Classes\Directory\shell\Aurora";
+    const DIRECTORY_BACKGROUND_CONTEXT_MENU_KEY: &str =
+        r"Software\Classes\Directory\Background\shell\Aurora";
+    const DRIVE_CONTEXT_MENU_KEY: &str = r"Software\Classes\Drive\shell\Aurora";
+    const USER_ENVIRONMENT_KEY: &str = "Environment";
+
+    fn get_hkcu() -> RegKey {
+        RegKey::predef(HKEY_CURRENT_USER)
+    }
+
+    fn normalize_windows_path_for_compare(path: &str) -> String {
+        path.trim()
+            .trim_end_matches('\\')
+            .trim_end_matches('/')
+            .to_ascii_lowercase()
+    }
+
+    fn split_user_path(path_value: &str) -> Vec<String> {
+        path_value
+            .split(';')
+            .filter_map(|entry| {
+                let trimmed = entry.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+            .collect()
+    }
+
+    fn path_contains_dir(path_value: &str, dir: &str) -> bool {
+        let normalized_dir = normalize_windows_path_for_compare(dir);
+        split_user_path(path_value)
+            .into_iter()
+            .any(|entry| normalize_windows_path_for_compare(&entry) == normalized_dir)
+    }
+
+    fn read_user_path() -> Result<String, String> {
+        let hkcu = get_hkcu();
+        let env_key = match hkcu.open_subkey_with_flags(USER_ENVIRONMENT_KEY, KEY_READ) {
+            Ok(key) => key,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(String::new()),
+            Err(error) => {
+                return Err(format!("Failed to open HKCU\\Environment: {}", error));
+            }
+        };
+
+        match env_key.get_value::<String, _>("Path") {
+            Ok(value) => Ok(value),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(String::new()),
+            Err(error) => Err(format!("Failed to read user PATH: {}", error)),
+        }
+    }
+
+    fn write_user_path_segments(segments: &[String]) -> Result<(), String> {
+        let hkcu = get_hkcu();
+        let (env_key, _) = hkcu
+            .create_subkey(USER_ENVIRONMENT_KEY)
+            .map_err(|error| format!("Failed to open HKCU\\Environment for write: {}", error))?;
+
+        if segments.is_empty() {
+            match env_key.delete_value("Path") {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("Failed to clear user PATH: {}", error)),
+            }
+        } else {
+            env_key
+                .set_value("Path", &segments.join(";"))
+                .map_err(|error| format!("Failed to update user PATH: {}", error))?;
+        }
+
+        broadcast_environment_change();
+        Ok(())
+    }
+
+    fn set_registry_value(key_path: &str, value_name: Option<&str>, value: &str) -> Result<(), String> {
+        let hkcu = get_hkcu();
+        let (key, _) = hkcu
+            .create_subkey(key_path)
+            .map_err(|error| format!("Failed to open registry key {}: {}", key_path, error))?;
+
+        match value_name {
+            Some(name) => key
+                .set_value(name, &value)
+                .map_err(|error| format!("Failed to write registry value {}\\{}: {}", key_path, name, error)),
+            None => key
+                .set_value("", &value)
+                .map_err(|error| format!("Failed to write registry value {}: {}", key_path, error)),
+        }
+    }
+
+    fn registry_key_exists(key_path: &str) -> Result<bool, String> {
+        let hkcu = get_hkcu();
+        match hkcu.open_subkey_with_flags(key_path, KEY_READ) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(format!("Failed to query registry key {}: {}", key_path, error)),
+        }
+    }
+
+    fn delete_registry_tree(key_path: &str) -> Result<(), String> {
+        let hkcu = get_hkcu();
+        match hkcu.delete_subkey_all(key_path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("Failed to delete registry key {}: {}", key_path, error)),
+        }
+    }
+
+    fn broadcast_environment_change() {
+        let payload: Vec<u16> = "Environment\0".encode_utf16().collect();
+        let mut result: usize = 0;
+
+        unsafe {
+            let _ = SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                payload.as_ptr() as isize,
+                SMTO_ABORTIFHUNG,
+                5000,
+                &mut result as *mut usize,
+            );
+        }
+    }
+
+    fn notify_shell_association_change() {
+        unsafe {
+            SHChangeNotify(
+                SHCNE_ASSOCCHANGED as i32,
+                SHCNF_IDLIST,
+                std::ptr::null(),
+                std::ptr::null(),
+            );
+        }
+    }
 
     /// Get the path where Aurora CLI should be installed
     pub fn get_cli_install_path() -> PathBuf {
@@ -250,35 +393,15 @@ pub mod install {
                 .map_err(|e| format!("Failed to remove stale aurora.exe: {}", e))?;
         }
 
-        // Add to user PATH using PowerShell
         let install_dir_str = install_dir.to_str()
             .ok_or("Invalid install path")?;
-        
-        let ps_script = format!(
-            r#"
-            $path = [Environment]::GetEnvironmentVariable('Path', 'User')
-            if ($path -notlike '*{dir}*') {{
-                [Environment]::SetEnvironmentVariable('Path', "$path;{dir}", 'User')
-                Write-Host 'Aurora CLI added to PATH. Restart your terminal to use "aurora ." command.'
-            }} else {{
-                Write-Host 'Aurora CLI is already in PATH.'
-            }}
-            "#,
-            dir = install_dir_str
-        );
 
-        let output = Command::new("powershell")
-            .args(["-NoProfile", "-Command", &ps_script])
-            .output()
-            .map_err(|e| format!("Failed to run PowerShell: {}", e))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Failed to add to PATH: {}", stderr));
+        let existing_path = read_user_path()?;
+        let mut segments = split_user_path(&existing_path);
+        if !path_contains_dir(&existing_path, install_dir_str) {
+            segments.push(install_dir_str.to_string());
+            write_user_path_segments(&segments)?;
         }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        println!("{}", stdout);
         println!("\nAurora CLI installed successfully!");
         println!("Location: {}", install_dir.display());
         println!("\nUsage:");
@@ -293,7 +416,70 @@ pub mod install {
     pub fn is_cli_installed() -> Result<bool, String> {
         let install_dir = get_cli_install_path();
         let cmd_path = install_dir.join("aurora.cmd");
-        Ok(cmd_path.exists())
+        let install_dir_str = install_dir.to_str()
+            .ok_or("Invalid install path")?;
+        let path_value = read_user_path()?;
+        Ok(cmd_path.exists() && path_contains_dir(&path_value, install_dir_str))
+    }
+
+    /// Install Aurora into Windows Explorer context menu for folders and directory backgrounds.
+    pub fn install_context_menu() -> Result<(), String> {
+        let current_exe = std::env::current_exe()
+            .map_err(|e| format!("Failed to get current executable: {}", e))?;
+        let exe = current_exe.to_string_lossy().to_string();
+        let icon_value = exe.clone();
+        let folder_command = format!(r#""{}" "%1""#, exe);
+        let background_command = format!(r#""{}" "%V""#, exe);
+
+        for key in [
+            DIRECTORY_CONTEXT_MENU_KEY,
+            DIRECTORY_BACKGROUND_CONTEXT_MENU_KEY,
+            DRIVE_CONTEXT_MENU_KEY,
+        ] {
+            set_registry_value(key, None, "Open with Aurora")?;
+            set_registry_value(key, Some("Icon"), &icon_value)?;
+        }
+
+        set_registry_value(
+            &format!(r"{}\command", DIRECTORY_CONTEXT_MENU_KEY),
+            None,
+            &folder_command,
+        )?;
+        set_registry_value(
+            &format!(r"{}\command", DIRECTORY_BACKGROUND_CONTEXT_MENU_KEY),
+            None,
+            &background_command,
+        )?;
+        set_registry_value(
+            &format!(r"{}\command", DRIVE_CONTEXT_MENU_KEY),
+            None,
+            &folder_command,
+        )?;
+
+        notify_shell_association_change();
+
+        Ok(())
+    }
+
+    /// Check whether Aurora context menu registration exists.
+    pub fn is_context_menu_installed() -> Result<bool, String> {
+        Ok(
+            registry_key_exists(DIRECTORY_CONTEXT_MENU_KEY)?
+                && registry_key_exists(&format!(r"{}\command", DIRECTORY_CONTEXT_MENU_KEY))?
+                && registry_key_exists(DIRECTORY_BACKGROUND_CONTEXT_MENU_KEY)?
+                && registry_key_exists(&format!(r"{}\command", DIRECTORY_BACKGROUND_CONTEXT_MENU_KEY))?
+                && registry_key_exists(DRIVE_CONTEXT_MENU_KEY)?
+                && registry_key_exists(&format!(r"{}\command", DRIVE_CONTEXT_MENU_KEY))?,
+        )
+    }
+
+    /// Remove Aurora from Windows Explorer context menus.
+    pub fn uninstall_context_menu() -> Result<(), String> {
+        delete_registry_tree(DIRECTORY_CONTEXT_MENU_KEY)?;
+        delete_registry_tree(DIRECTORY_BACKGROUND_CONTEXT_MENU_KEY)?;
+        delete_registry_tree(DRIVE_CONTEXT_MENU_KEY)?;
+        notify_shell_association_change();
+        Ok(())
     }
 
     /// Uninstall the CLI command from PATH
@@ -302,22 +488,13 @@ pub mod install {
 
         let install_dir_str = install_dir.to_str()
             .ok_or("Invalid install path")?;
-
-        // Remove from PATH
-        let ps_script = format!(
-            r#"
-            $path = [Environment]::GetEnvironmentVariable('Path', 'User')
-            $newPath = ($path -split ';' | Where-Object {{ $_ -ne '{dir}' }}) -join ';'
-            [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-            Write-Host 'Aurora CLI removed from PATH.'
-            "#,
-            dir = install_dir_str
-        );
-
-        Command::new("powershell")
-            .args(["-NoProfile", "-Command", &ps_script])
-            .output()
-            .map_err(|e| format!("Failed to run PowerShell: {}", e))?;
+        let normalized_dir = normalize_windows_path_for_compare(install_dir_str);
+        let existing_path = read_user_path()?;
+        let filtered_segments = split_user_path(&existing_path)
+            .into_iter()
+            .filter(|segment| normalize_windows_path_for_compare(segment) != normalized_dir)
+            .collect::<Vec<_>>();
+        write_user_path_segments(&filtered_segments)?;
 
         // Remove files
         if install_dir.exists() {
@@ -385,6 +562,18 @@ pub mod install {
     pub fn is_cli_installed() -> Result<bool, String> {
         let symlink_path = get_cli_install_path().join("aurora");
         Ok(symlink_path.exists() || symlink_path.is_symlink())
+    }
+
+    pub fn install_context_menu() -> Result<(), String> {
+        Err("Windows Explorer context menus are only supported on Windows.".to_string())
+    }
+
+    pub fn is_context_menu_installed() -> Result<bool, String> {
+        Ok(false)
+    }
+
+    pub fn uninstall_context_menu() -> Result<(), String> {
+        Err("Windows Explorer context menus are only supported on Windows.".to_string())
     }
 
     /// Uninstall the CLI command

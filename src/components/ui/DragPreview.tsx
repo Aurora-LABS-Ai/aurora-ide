@@ -39,10 +39,13 @@ export const DragPreview: React.FC = () => {
 
   return (
     <div
-      className="fixed pointer-events-none z-[9999] flex items-center gap-2 px-2 py-1 bg-[#2d2d2d] border border-primary/50 rounded shadow-lg text-[13px] text-text-primary"
+      className="fixed pointer-events-none z-[9999] flex items-center gap-2 rounded px-2 py-1 text-[13px] text-text-primary"
       style={{
         left: mouseX + 12,
         top: mouseY + 12,
+        background: 'color-mix(in srgb, var(--aurora-sidebar-background) 86%, var(--aurora-chat-surface) 14%)',
+        border: '1px solid color-mix(in srgb, var(--aurora-common-primary) 28%, var(--aurora-common-border) 72%)',
+        boxShadow: '0 12px 28px color-mix(in srgb, var(--aurora-common-shadow) 26%, transparent)',
       }}
     >
       {isFolder ? (

@@ -14,6 +14,8 @@ export interface AppSettings {
   maxToolCallsPerRequest: number;
   projectLayoutEnabled?: boolean; // Include file tree in first message
   selectedModel: string;
+  skillToggles?: Record<string, boolean>;
+  skillsEnabled?: boolean;
   syntaxValidationEnabled?: boolean; // Pre-save syntax validation
   temperature: number;
   theme: string;

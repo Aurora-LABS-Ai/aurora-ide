@@ -59,6 +59,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             // State persistence commands
             commands::state::save_workspace_state,
             commands::state::get_workspace_state,
+            commands::state::list_recent_workspaces,
             commands::state::save_editor_state,
             commands::state::get_editor_state,
             commands::state::save_explorer_state,
@@ -66,6 +67,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             // Settings commands
             commands::settings::get_app_settings,
             commands::settings::save_app_settings,
+            commands::settings::get_global_skills_path,
             commands::settings::get_setting,
             commands::settings::set_setting,
             commands::settings::get_all_providers,
@@ -191,6 +193,9 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::install_aurora_cli,
             commands::is_aurora_cli_installed,
             commands::uninstall_aurora_cli,
+            commands::install_aurora_context_menu,
+            commands::is_aurora_context_menu_installed,
+            commands::uninstall_aurora_context_menu,
             commands::aurora_websearch,
 
 

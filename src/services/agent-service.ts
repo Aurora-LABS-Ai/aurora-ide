@@ -7,6 +7,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { parseToolArguments } from "../lib/tool-arguments";
 import { getToolsForModel, toolRegistry } from "../tools";
 import type { ToolDefinition as LegacyToolDefinition } from "../tools/types";
+import { BASE_AGENT_SYSTEM_PROMPT, composeAgentSystemPrompt, type AgentPromptContext } from "./agent-prompt";
 import { executeMcpTool, getMcpToolDefinitions, getMcpToolsSummary, isMcpTool, shouldAutoApproveMcpTool } from "./mcp-tools";
 import { type IProvider, type ProviderConfig, createProvider } from "./providers";
 import type { AssistantMessage, Message, StreamCallbacks as ProviderStreamCallbacks, ToolCallRequest, ToolDefinition } from "./providers/types";
@@ -15,7 +16,9 @@ export interface AgentCallbacks extends ProviderStreamCallbacks {
   onIterationComplete?: (iteration: number) => void;
   onToolApprovalRequired?: (toolCall: ToolCallRequest) => Promise<boolean>;
   onToolExecutionComplete?: (toolCall: ToolCallRequest, result: string) => void;
+  onToolExecutionError?: (toolCall: ToolCallRequest, error: string) => void;
   onToolExecutionStart?: (toolCall: ToolCallRequest) => void;
+  onToolRejected?: (toolCall: ToolCallRequest, reason: string) => void;
 }
 
 // ============================================
@@ -83,7 +86,7 @@ export class AgentService {
 
   constructor(config?: AgentConfig) {
     this.config = {
-      systemPrompt: DEFAULT_SYSTEM_PROMPT,
+      systemPrompt: BASE_AGENT_SYSTEM_PROMPT,
       thinkingEnabled: true,
       autoApproveTools: false,
       maxToolIterations: 25,
@@ -105,7 +108,8 @@ export class AgentService {
     userMessage: string,
     callbacks: AgentCallbacks,
     tools?: LegacyToolDefinition[],
-    ideContext?: string | null
+    ideContext?: string | null,
+    promptContext?: AgentPromptContext
   ): Promise<AgentResponse> {
     this.isRunning = true;
     const provider = this.getProvider();
@@ -129,11 +133,23 @@ export class AgentService {
       maxOutput,
     });
 
-    // Build enhanced system prompt with MCP tools summary
+    // Build layered system prompt with active skills and MCP tools summary
     const mcpSummary = getMcpToolsSummary();
-    const enhancedSystemPrompt = mcpSummary
-      ? `${this.config.systemPrompt!}\n${mcpSummary}`
-      : this.config.systemPrompt!;
+    const composedPrompt = await composeAgentSystemPrompt({
+      basePrompt: this.config.systemPrompt,
+      mcpSummary,
+      promptContext: promptContext ?? {
+        userMessage,
+      },
+    });
+    const enhancedSystemPrompt = composedPrompt.systemPrompt;
+
+    if (composedPrompt.activeSkills.length > 0) {
+      console.log(
+        "[AgentService] Active skills:",
+        composedPrompt.activeSkills.map((skill) => skill.id)
+      );
+    }
 
     // Build messages from Rust context engine
     const tokenBudget = contextWindow - maxOutput;
@@ -251,7 +267,10 @@ export class AgentService {
 
           // Execute tools in parallel
           const toolPromises = response.tool_calls.map(async (toolCall) => {
-            if (!this.isRunning) return null;
+            if (!this.isRunning) {
+              callbacks.onToolRejected?.(toolCall, 'Agent stopped');
+              return null;
+            }
 
             const toolName = toolCall.function.name;
             const toolSetting = this.config.getToolApproval?.(toolName) ?? 'always_ask';
@@ -275,13 +294,18 @@ export class AgentService {
               }
             }
 
+            if (shouldAutoDeny) {
+              callbacks.onToolRejected?.(toolCall, 'Tool is set to deny');
+            }
+
             const parsedArgsResult = parseToolArguments(toolCall.function.arguments);
             if (parsedArgsResult.status === 'invalid') {
               console.error(`[AgentService] Failed to parse tool arguments:`, parsedArgsResult.error);
 
               const errorResult = `Error: Invalid JSON in tool arguments (malformed or incomplete).`;
 
-              // Add error result to context engine
+              callbacks.onToolExecutionError?.(toolCall, errorResult);
+
               await invoke('context_add_tool_result', {
                 threadId,
                 toolCallId: toolCall.id,
@@ -326,17 +350,20 @@ export class AgentService {
               try {
                 let resultContent: string;
 
-                if (isMcpTool(toolName)) {
-                  resultContent = await executeMcpTool(toolName, parsedArgs);
-                } else {
-                  const result = await toolRegistry.executeToolCall(toolCall, parsedArgs);
-                  resultContent = result.content;
-                }
+                const TOOL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+                const toolExecution = isMcpTool(toolName)
+                  ? executeMcpTool(toolName, parsedArgs)
+                  : toolRegistry.executeToolCall(toolCall, parsedArgs).then(r => r.content);
+
+                const timeoutPromise = new Promise<never>((_, reject) =>
+                  setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after 5 minutes`)), TOOL_TIMEOUT_MS)
+                );
+
+                resultContent = await Promise.race([toolExecution, timeoutPromise]);
 
                 toolResult.result = resultContent;
                 toolResult.status = 'executed';
 
-                // Add result to context engine
                 await invoke('context_add_tool_result', {
                   threadId,
                   toolCallId: toolCall.id,
@@ -359,13 +386,14 @@ export class AgentService {
                 toolResult.result = errorMsg;
                 toolResult.status = 'failed';
 
-                // Add error to context engine
                 await invoke('context_add_tool_result', {
                   threadId,
                   toolCallId: toolCall.id,
                   content: JSON.stringify({ error: errorMsg }),
                   isError: true,
                 });
+
+                callbacks.onToolExecutionError?.(toolCall, errorMsg);
 
                 return {
                   toolResult,
@@ -377,9 +405,13 @@ export class AgentService {
                 };
               }
             } else {
-              const rejectMsg = JSON.stringify({ error: 'Tool execution rejected by user', tool: toolName });
+              const reason = shouldAutoDeny ? 'Tool denied by settings' : 'Tool execution rejected by user';
+              const rejectMsg = JSON.stringify({ error: reason, tool: toolName });
+
+              if (!shouldAutoDeny) {
+                callbacks.onToolRejected?.(toolCall, reason);
+              }
               
-              // Add rejection to context engine
               await invoke('context_add_tool_result', {
                 threadId,
                 toolCallId: toolCall.id,
@@ -531,110 +563,6 @@ export const initAgentService = (config?: AgentConfig): AgentService => {
   agentInstance = new AgentService(config);
   return agentInstance;
 };
-
-// ============================================
-// DEFAULT SYSTEM PROMPT
-// ============================================
-const DEFAULT_SYSTEM_PROMPT = `You are Aurora, an advanced AI coding assistant built into Aurora IDE.
-
-You are pair programming with a USER to solve their coding task. Each time the USER sends a message, contextual information may be attached about their current state, such as what files they have open, cursor position, recently viewed files, and workspace structure. This information may or may not be relevant to the coding task - it is up to you to decide.
-
-Your main goal is to follow the USER's instructions at each message.
-
-## Core Identity
-- You are Aurora, a language model trained to be an AI coding assistant
-- You operate exclusively in Aurora IDE as the built-in AI assistant
-- You have access to a workspace with file operations, shell commands, and editor integration
-- The editor has a built-in terminal panel, file explorer, and tabbed code editor
-
-## Communication Guidelines
-
-1. Format responses in markdown. Use backticks for file, directory, function, and class names.
-2. Be direct and concise. Avoid verbose LLM-style phrases.
-3. NEVER mention tool names to the user. Say "I'll edit the file" not "I'll use search_replace".
-4. Only call tools when necessary. If you already know the answer, just respond.
-
-## Code Change Guidelines
-
-1. ALWAYS read the file first before editing (unless creating a new file).
-2. After editing, use read_lints to check for errors. Fix them if clear how to (max 3 loops).
-3. Add all necessary imports, dependencies, and endpoints.
-4. For new web apps, create beautiful modern UI with best UX practices.
-5. PREFER editing existing files. Don't create new files unless required.
-6. Preserve exact indentation (tabs/spaces) when editing.
-
-## Tool Usage Guidelines
-
-### Search Tools (Use These First!)
-
-**aurora_search** - AI-powered semantic code search
-- Finds code by MEANING, not just text patterns
-- Use for understanding: "how does authentication work", "where is database connection"
-- Returns file paths, line numbers, code snippets, and relevance scores
-- If returns "disabled/not_indexed", tell user to enable in Settings > Semantic Search
-
-**auroro_websearch** - Native web search and page fetch
-- Use for live web research or fetching a specific URL
-- Supports search queries and page extraction with optional CSS selectors
-
-**grep** - Pattern-based search for exact matches
-
-- Use for exact symbol/string searches: function names, variable names, imports
-- Supports regex and case-insensitive search
-- Use 'glob' parameter to filter by file type (e.g., glob="*.ts")
-
-### File Operations
-
-**file_read** - Read file contents. Always read before editing.
-
-**multi_file_read** - Read multiple files in parallel (10-100x faster). USE THIS for 2+ files.
-
-**file_create** - Create a NEW file that doesn't exist. Fails if file exists.
-
-**file_write** - OVERWRITE entire file content. Use when:
-- Creating a new file with content
-- Rewriting an entire file from scratch
-- Changes are so extensive that replacing the whole file is cleaner
-
-**search_replace** - Find and replace exact text. PREFERRED for single targeted edits.
-
-**multi_search_replace** - Make MULTIPLE find-and-replace edits in ONE call.
-
-**file_delete** - Delete a file (requires confirmation).
-
-### Workspace Tools
-- **workspace_tree** - Get project directory structure. Use FIRST on new projects.
-- **folder_create** - Create a new folder.
-- **folder_delete** - Delete a folder and contents.
-
-### Editor Integration
-- **editor_open_file** - Open file in editor tab. Use to show files to user.
-- **read_lints** - Get linter/diagnostic errors from files. Use AFTER editing to check for errors.
-
-### Shell Commands
-- **shell_execute** - Run command, get output. Shows in built-in terminal.
-- **shell_spawn** - Start background/long-running process.
-- **shell_list_processes** - List running background processes.
-- **shell_kill** - Terminate a background process.
-
-### Task Management
-- **todo_write** - Create/update task list for multi-step tasks.
-
-### MCP (Model Context Protocol)
-- MCP servers provide external tools (databases, APIs, etc.) that extend your capabilities.
-- If MCP servers are connected, their tools will be listed below with the server name prefix.
-
-## Behavioral Guidelines
-
-1. **Understand First** - On new projects: use workspace_tree then aurora_search.
-2. **Be Direct** - Complete tasks without unnecessary explanation.
-3. **Parallel Tool Calls** - Call multiple tools at once when possible (10-100x faster).
-4. **Don't Reinvent** - Terminal, file explorer already exist. Use editor_open_file for files.
-5. **Stay Focused** - Complete the task, then stop. Don't add unrequested features.
-6. **Actions Over Words** - Use tools, don't just describe what you would do.
-7. **Read Before Edit** - Always read file contents before modifying.
-8. **Fix Mistakes** - If edit introduces errors, fix them. Max 3 loops.
-9. **Correct Paths** - Workspace root is current directory. Use full paths for editor_open_file.`;
 
 // Singleton instance
 let agentInstance: AgentService | null = null;

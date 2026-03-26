@@ -1247,3 +1247,23 @@ pub async fn uninstall_aurora_cli() -> Result<String, String> {
     crate::cli::install::uninstall_cli()
         .map(|_| "Aurora CLI uninstalled successfully".to_string())
 }
+
+/// Install Aurora into the Windows Explorer context menu
+#[tauri::command]
+pub async fn install_aurora_context_menu() -> Result<String, String> {
+    crate::cli::install::install_context_menu()
+        .map(|_| "Aurora context menu installed successfully".to_string())
+}
+
+/// Check whether the Aurora context menu is installed
+#[tauri::command]
+pub async fn is_aurora_context_menu_installed() -> Result<bool, String> {
+    crate::cli::install::is_context_menu_installed()
+}
+
+/// Remove Aurora from the Windows Explorer context menu
+#[tauri::command]
+pub async fn uninstall_aurora_context_menu() -> Result<String, String> {
+    crate::cli::install::uninstall_context_menu()
+        .map(|_| "Aurora context menu removed successfully".to_string())
+}

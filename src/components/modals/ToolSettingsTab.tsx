@@ -30,6 +30,8 @@ import { useSettingsStore } from '../../store/useSettingsStore';
 import { Terminal, FileText, FolderOpen, Code, AlertTriangle, Shield, Map } from 'lucide-react';
 import clsx from 'clsx';
 import { TogglePill } from '../ui/TogglePill';
+import { SettingsSelect } from '../ui/SettingsSelect';
+import { settingsCardStyle, settingsDangerPanelStyle, settingsPrimaryButtonStyle, settingsSubtlePanelStyle } from './settings-shared';
 
 // Group tools by category for better organization
 const TOOL_CATEGORIES = {
@@ -101,27 +103,29 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
 };
 
 interface ApprovalSelectProps {
-  toolName: string;
   value: 'auto' | 'always_ask' | 'deny';
   onChange: (value: 'auto' | 'always_ask' | 'deny') => void;
 }
 
 const ApprovalSelect: React.FC<ApprovalSelectProps> = ({ value, onChange }) => {
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value as 'auto' | 'always_ask' | 'deny')}
+    <SettingsSelect
+      align="end"
+      ariaLabel="Select tool approval mode"
       className={clsx(
-        "px-2 py-0.5 text-[10px] rounded border border-input-border bg-input text-text-secondary focus:outline-none",
-        value === 'auto' && 'border-success/50 text-success',
-        value === 'always_ask' && 'border-warning/50 text-warning',
-        value === 'deny' && 'border-danger/50 text-danger'
+        'w-[96px] px-2 py-1 text-[10px]',
+        value === 'auto' && 'text-success',
+        value === 'always_ask' && 'text-warning',
+        value === 'deny' && 'text-danger',
       )}
-    >
-      <option value="auto">Auto</option>
-      <option value="always_ask">Ask</option>
-      <option value="deny">Deny</option>
-    </select>
+      options={[
+        { label: 'Auto', value: 'auto', tone: 'success' },
+        { label: 'Ask', value: 'always_ask', tone: 'warning' },
+        { label: 'Deny', value: 'deny', tone: 'danger' },
+      ]}
+      onChange={(nextValue) => onChange(String(nextValue) as 'auto' | 'always_ask' | 'deny')}
+      value={value}
+    />
   );
 };
 
@@ -149,7 +153,7 @@ export const ToolSettingsTab: React.FC = () => {
   return (
     <div className="space-y-4">
       {/* Global Auto-approve Toggle */}
-      <div className="p-3 border border-border rounded-lg bg-titlebar">
+      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-xs font-medium text-text-primary">Auto-approve Tools</h3>
@@ -166,7 +170,7 @@ export const ToolSettingsTab: React.FC = () => {
       </div>
 
       {/* Auto-accept File Changes Toggle */}
-      <div className="p-3 border border-border rounded-lg bg-titlebar">
+      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-xs font-medium text-text-primary">Auto-accept File Changes</h3>
@@ -198,7 +202,7 @@ export const ToolSettingsTab: React.FC = () => {
         </p>
 
         {/* Syntax Validation Toggle */}
-        <div className="p-3 border border-border rounded-lg bg-titlebar">
+        <div className="rounded-[20px] p-4" style={settingsCardStyle}>
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-xs font-medium text-text-primary">Pre-save Syntax Validation</h3>
@@ -220,7 +224,7 @@ export const ToolSettingsTab: React.FC = () => {
         </div>
 
         {/* Project Layout Toggle */}
-        <div className="p-3 border border-border rounded-lg bg-titlebar">
+        <div className="rounded-[20px] p-4" style={settingsCardStyle}>
           <div className="flex items-center justify-between">
             <div className="flex items-start gap-2">
               <Map className="w-3.5 h-3.5 text-text-secondary mt-0.5" />
@@ -246,7 +250,7 @@ export const ToolSettingsTab: React.FC = () => {
       </div>
 
       {/* Max Tool Calls */}
-      <div className="p-3 border border-border rounded-lg bg-titlebar">
+      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
         <div className="flex items-center justify-between mb-2">
           <div>
             <h3 className="text-xs font-medium text-text-primary">Max Tool Calls per Request</h3>
@@ -267,7 +271,7 @@ export const ToolSettingsTab: React.FC = () => {
 
       {/* Warning */}
       {autoApproveTools && (
-        <div className="p-3 border border-warning/30 rounded-lg bg-warning/5">
+        <div className="rounded-[20px] p-4" style={settingsDangerPanelStyle}>
           <div className="flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 text-warning shrink-0 mt-0.5" />
             <p className="text-[10px] text-text-secondary">
@@ -292,9 +296,10 @@ export const ToolSettingsTab: React.FC = () => {
             <div 
               key={categoryKey} 
               className={clsx(
-                "p-3 border rounded-lg",
-                isDangerous ? "border-warning/30 bg-warning/5" : "border-border bg-titlebar"
+                "rounded-[20px] p-4",
+                isDangerous ? "" : ""
               )}
+              style={isDangerous ? settingsDangerPanelStyle : settingsCardStyle}
             >
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
@@ -307,13 +312,15 @@ export const ToolSettingsTab: React.FC = () => {
                 <div className="flex gap-1">
                   <button
                     onClick={() => setCategoryApproval(categoryKey as keyof typeof TOOL_CATEGORIES, 'auto')}
-                    className="px-2 py-0.5 text-[9px] rounded bg-success/20 text-success hover:bg-success/30"
+                    className="rounded-full px-2.5 py-1 text-[9px] font-semibold text-primary-foreground"
+                    style={settingsPrimaryButtonStyle}
                   >
                     All Auto
                   </button>
                   <button
                     onClick={() => setCategoryApproval(categoryKey as keyof typeof TOOL_CATEGORIES, 'always_ask')}
-                    className="px-2 py-0.5 text-[9px] rounded bg-warning/20 text-warning hover:bg-warning/30"
+                    className="rounded-full px-2.5 py-1 text-[9px] font-semibold text-warning"
+                    style={settingsSubtlePanelStyle}
                   >
                     All Ask
                   </button>
@@ -322,12 +329,11 @@ export const ToolSettingsTab: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-1.5">
                 {category.tools.map((tool) => (
-                  <div key={tool} className="flex items-center justify-between px-2 py-1 rounded bg-input/50">
+                  <div key={tool} className="flex items-center justify-between rounded-[16px] px-3 py-2" style={settingsSubtlePanelStyle}>
                     <span className="text-[10px] text-text-secondary truncate">
                       {TOOL_DISPLAY_NAMES[tool] || tool}
                     </span>
                     <ApprovalSelect
-                      toolName={tool}
                       value={toolApprovalSettings[tool] || 'always_ask'}
                       onChange={(value) => setToolApproval(tool, value)}
                     />
@@ -340,7 +346,7 @@ export const ToolSettingsTab: React.FC = () => {
       </div>
 
       {/* Legend */}
-      <div className="p-2 border border-border rounded bg-titlebar">
+      <div className="rounded-[18px] p-3" style={settingsCardStyle}>
         <div className="flex items-center gap-4 text-[10px]">
           <span className="flex items-center gap-1">
             <span className="w-2 h-2 rounded-full bg-success"></span>

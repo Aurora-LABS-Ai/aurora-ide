@@ -4,6 +4,18 @@ import { create } from "zustand";
 
 import { themeService } from "../services/theme-service";
 import type { ThemeDefinition, ThemeFile, ThemeStore } from "../types/theme";
+import darkThemeFile from "../themes/dark.json";
+import lightThemeFile from "../themes/light.json";
+
+interface StoredThemeRow {
+    id: string;
+    name: string;
+    author: string;
+    version: string;
+    type: 'dark' | 'light';
+    colors: string;
+    tokenColors: string;
+}
 
 /**
  * Generate a stable theme ID from name and author
@@ -93,7 +105,7 @@ export const useThemeStore = create<ThemeStore>((set, get) => ({
             await invoke('save_custom_theme', { theme: payload });
 
             // Reload all themes from database to get clean state
-            const customThemesRaw = await invoke<any[]>('get_custom_themes');
+            const customThemesRaw = await invoke<StoredThemeRow[]>('get_custom_themes');
             const customThemes: ThemeDefinition[] = customThemesRaw
                 .map(t => {
                     try {
@@ -171,34 +183,13 @@ export const useThemeStore = create<ThemeStore>((set, get) => ({
         try {
             set({ isLoading: true });
 
-            // Load built-in themes
-            const darkTokens = themeService.getBaseTokens('dark');
-            const lightTokens = themeService.getBaseTokens('light');
-
-            const darkTheme: ThemeDefinition = {
-                id: 'dark',
-                name: 'Aurora Dark',
-                author: 'Aurora Team',
-                version: '1.0.0',
-                type: 'dark',
-                isBuiltIn: true,
-                colors: darkTokens,
-                tokenColors: []
-            };
-
-            const lightTheme: ThemeDefinition = {
-                id: 'light',
-                name: 'Aurora Light',
-                author: 'Aurora Team',
-                version: '1.0.0',
-                type: 'light',
-                isBuiltIn: true,
-                colors: lightTokens,
-                tokenColors: []
-            };
+            // Load built-in themes from the bundled JSON sources so the
+            // runtime default matches the authored theme files exactly.
+            const darkTheme = themeService.createThemeDefinition(darkThemeFile as ThemeFile, 'dark', true);
+            const lightTheme = themeService.createThemeDefinition(lightThemeFile as ThemeFile, 'light', true);
 
             // Load custom themes from DB (backend handles deduplication)
-            const customThemesRaw = await invoke<any[]>('get_custom_themes');
+            const customThemesRaw = await invoke<StoredThemeRow[]>('get_custom_themes');
             const customThemes: ThemeDefinition[] = customThemesRaw
                 .map(t => {
                     try {

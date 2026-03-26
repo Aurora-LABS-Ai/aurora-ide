@@ -1,0 +1,46 @@
+name: Release
+
+# Windows-only release. Tag first: git tag v1.0.0 && git push origin v1.0.0
+# App version in tauri.conf.json / Cargo.toml must match (v__VERSION__ → 1.0.0).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish-tauri:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "Aurora v__VERSION__"
+          releaseBody: "Windows installer (CPU-only semantic search). Download the bundle below."
+          releaseDraft: true
+          prerelease: false
+          args: "-- --no-default-features --features cpu-only"

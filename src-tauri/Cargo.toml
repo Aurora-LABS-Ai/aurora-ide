@@ -1,6 +1,6 @@
 [package]
 name = "aurora"
-version = "0.1.0"
+version = "1.0.0"
 description = "Aurora - AI-Powered Agentic Code Editor"
 authors = ["Aurora Team"]
 edition = "2021"
@@ -43,12 +43,11 @@ chrono = { version = "0.4", features = ["serde"] }
 # Diff library for comparing file changes
 similar = "2"
 
-# Semantic search engine for code indexing
-# Path is relative to src-tauri directory, pointing to the external aurora-semantic crate
-aurora-semantic = { version = "1.2.1", features = ["cuda"] }
+# Semantic search engine — CUDA via `default`/ `cuda` feature; CI uses `--no-default-features --features cpu-only`
+aurora-semantic = { version = "1.2.1", default-features = false }
 
-# Aurora Web Search SDK (our own implementation)
-aurora_websearch = { path = "../../aurora_websearch" }
+# https://crates.io/crates/aurora_websearch
+aurora_websearch = "0.1.0"
 
 # Lazy static for singleton patterns
 lazy_static = "1.4"

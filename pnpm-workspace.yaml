@@ -1,2 +1,6 @@
+# Required by pnpm when this file exists (single-package repo = root only).
+packages:
+  - "."
+
 ignoredBuiltDependencies:
   - esbuild

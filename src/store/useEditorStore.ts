@@ -52,9 +52,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const existingTab = tabs.find(t => t.id === fileId);
 
     if (existingTab) {
-      // Update content if it changed (e.g., from agent edits)
-      if (existingTab.content !== content) {
-        reloadTabContent(fileId, content);
+      // Empty files can legitimately resolve to '' after a loading placeholder,
+      // so clear the loading state even when the content itself did not change.
+      if (existingTab.content !== content || existingTab.isLoading !== isLoading) {
+        reloadTabContent(fileId, content, isLoading);
       }
       setActiveTab(fileId);
       return;

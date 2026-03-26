@@ -323,8 +323,8 @@ export const OnboardingModal: React.FC = () => {
                           <p className="text-sm font-semibold mb-1">AI Provider</p>
                           <p className="text-xs text-text-secondary">
                             {providerReady
-                              ? 'A provider is configured. You can start prompting immediately.'
-                              : 'Add or verify model credentials to enable chat and agent actions.'}
+                              ? 'A provider is configured. Fireworks AI is the recommended Aurora path, and you can start prompting immediately.'
+                              : 'Fireworks AI is preconfigured for Aurora. Paste a Fireworks API key in Settings to enable chat and agent actions immediately.'}
                           </p>
                         </div>
                         <button

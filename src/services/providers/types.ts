@@ -247,6 +247,7 @@ export type ContentBlock =
 
 export type ProviderType =
   | 'openai'      // OpenAI and compatible APIs
+  | 'fireworks'   // Fireworks AI (OpenAI-compatible with reasoning_content)
   | 'anthropic'   // Native Anthropic Claude API
   | 'deepseek'    // DeepSeek (OpenAI-compatible with extensions)
   | 'glm'         // GLM/Z.AI (OpenAI-compatible with thinking)

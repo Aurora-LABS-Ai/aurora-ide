@@ -175,6 +175,7 @@ pub struct AppSetting {
 pub struct LLMProvider {
     pub id: String,
     pub name: String,
+    pub nickname: Option<String>,
     pub base_url: String,
     pub api_key: String,
     pub model: String,
@@ -185,6 +186,7 @@ pub struct LLMProvider {
     pub enabled: bool,
     pub is_custom: bool,
     pub custom_models: Option<Vec<String>>,
+    pub model_aliases: Option<HashMap<String, String>>,
     pub custom_headers: Option<serde_json::Value>,
     pub custom_params: Option<serde_json::Value>,
     pub provider_type: Option<String>,
@@ -241,13 +243,15 @@ pub struct AppSettings {
     pub max_tool_calls_per_request: i32,
     pub skills_enabled: bool,
     pub skill_toggles: HashMap<String, bool>,
+    pub fireworks_tab_enabled: bool,
+    pub fireworks_account_id: String,
 }
 
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            selected_model: "glm:glm-4.7".to_string(),
+            selected_model: "fireworks:accounts/fireworks/models/kimi-k2-instruct-0905".to_string(),
             auto_approve_tools: false,
             auto_accept_changes: false,
             font_size: 14,
@@ -266,8 +270,9 @@ impl Default for AppSettings {
             max_tool_calls_per_request: 25,
             skills_enabled: true,
             skill_toggles: HashMap::new(),
+            fireworks_tab_enabled: false,
+            fireworks_account_id: String::new(),
         }
-
     }
 }
 

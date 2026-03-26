@@ -1,6 +1,10 @@
 import { v4 as uuidv4 } from "uuid";
 import { create } from "zustand";
 
+import {
+  formatModelDisplayName,
+  formatProviderNickname,
+} from "../lib/provider-display";
 import { resolveThinkingModelPair } from "../lib/thinking-models";
 import { databaseService } from "../services/database";
 import type { LLMProviderConfig } from "../services/llm-types";
@@ -51,6 +55,8 @@ interface SettingsState {
 
   // Editor Settings
   fontSize: number;
+  fireworksAccountId: string;
+  fireworksTabEnabled: boolean;
   getAvailableModels: () => Array<{
     providerId: string;
     providerName: string;
@@ -89,6 +95,8 @@ interface SettingsState {
   setAutoSave: (mode: 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange') => void;
   setAutoSaveDelay: (delay: number) => void;
   setFontSize: (size: number) => void;
+  setFireworksAccountId: (accountId: string) => void;
+  setFireworksTabEnabled: (enabled: boolean) => void;
   setHasSeenOnboarding: (seen: boolean) => void;
   setMaxTokens: (tokens: number) => void;
   setMaxToolCallsPerRequest: (max: number) => void;
@@ -147,8 +155,10 @@ export interface LLMProvider {
   isCustom?: boolean; // User-added provider
   maxOutputTokens: number;
   model: string;
+  modelAliases?: Record<string, string>;
   name: string;
-  providerType?: "openai" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "custom"; // Explicit provider type
+  nickname?: string;
+  providerType?: "openai" | "fireworks" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "custom"; // Explicit provider type
   requiresApiKey?: boolean; // Whether API key is required (false for local)
   supportsThinking: boolean;
   supportsToolStream?: boolean;
@@ -169,6 +179,79 @@ const createDefaultProviders = (): LLMProvider[] => {
 const getProviderModelList = (provider: LLMProvider): string[] => {
   const models = provider.customModels?.length ? provider.customModels : [provider.model];
   return Array.from(new Set(models.filter(Boolean)));
+};
+
+const getProviderNickname = (provider: Pick<LLMProvider, "name" | "nickname">): string =>
+  formatProviderNickname(provider.name, provider.nickname);
+
+const getModelAliasesForProvider = (
+  provider: Pick<LLMProvider, "customModels" | "model" | "modelAliases">,
+): Record<string, string> | undefined => {
+  const supportedModels = new Set(getProviderModelList(provider as LLMProvider));
+  const normalizedEntries = Object.entries(provider.modelAliases || {})
+    .map(([modelId, alias]) => [modelId, alias.trim()] as const)
+    .filter(([modelId, alias]) => supportedModels.has(modelId) && alias.length > 0);
+
+  if (normalizedEntries.length === 0) return undefined;
+  return Object.fromEntries(normalizedEntries);
+};
+
+const isProviderReady = (provider: LLMProvider): boolean => {
+  if (!provider.enabled) return false;
+
+  const normalizedBaseUrl = provider.baseUrl.toLowerCase();
+  const isLocal =
+    normalizedBaseUrl.includes("localhost") ||
+    normalizedBaseUrl.includes("127.0.0.1");
+
+  return isLocal || provider.requiresApiKey === false || provider.apiKey.trim().length > 0;
+};
+
+const buildAvailableModelOptions = (providers: LLMProvider[]) => {
+  const models: Array<{
+    providerId: string;
+    providerName: string;
+    model: string;
+    label: string;
+  }> = [];
+
+  for (const provider of providers) {
+    if (!isProviderReady(provider)) continue;
+
+    const providerName = getProviderNickname(provider);
+    const modelAliases = provider.modelAliases || {};
+
+    for (const model of getProviderModelList(provider)) {
+      models.push({
+        providerId: provider.id,
+        providerName,
+        model,
+        label: formatModelDisplayName(model, modelAliases[model]),
+      });
+    }
+  }
+
+  return models;
+};
+
+const resolveSelectedModel = (
+  preferredModel: string,
+  providers: LLMProvider[],
+): string => {
+  const availableModels = buildAvailableModelOptions(providers);
+
+  if (
+    availableModels.some(
+      ({ providerId, model }) => `${providerId}:${model}` === preferredModel,
+    )
+  ) {
+    return preferredModel;
+  }
+
+  const firstAvailable = availableModels[0];
+  if (!firstAvailable) return preferredModel;
+
+  return `${firstAvailable.providerId}:${firstAvailable.model}`;
 };
 
 const syncThinkingForSelectedModel = (
@@ -202,8 +285,10 @@ function dbToProvider(db: DbLLMProvider): LLMProvider {
     enabled: db.enabled,
     isCustom: db.isCustom,
     customModels: db.customModels || undefined,
+    modelAliases: db.modelAliases || undefined,
     customHeaders: db.customHeaders || undefined,
     customParams: db.customParams || undefined,
+    nickname: db.nickname || undefined,
     providerType: db.providerType as LLMProvider['providerType'],
     defaultTemperature: db.defaultTemperature || undefined,
     defaultMaxTokens: db.defaultMaxTokens || undefined,
@@ -229,8 +314,10 @@ function providerToDb(provider: LLMProvider, sortOrder: number): DbLLMProvider {
     enabled: provider.enabled,
     isCustom: provider.isCustom || false,
     customModels: provider.customModels || null,
+    modelAliases: getModelAliasesForProvider(provider) || null,
     customHeaders: provider.customHeaders || null,
     customParams: provider.customParams || null,
+    nickname: provider.nickname?.trim() || null,
     providerType: provider.providerType || null,
     defaultTemperature: provider.defaultTemperature || null,
     defaultMaxTokens: provider.defaultMaxTokens || null,
@@ -246,8 +333,38 @@ function providerToDb(provider: LLMProvider, sortOrder: number): DbLLMProvider {
 // ============================================
 export const PRESET_PROVIDERS: Omit<LLMProvider, "apiKey" | "enabled">[] = [
   {
+    id: "fireworks",
+    name: "Fireworks AI",
+    nickname: "Fireworks",
+    baseUrl: "https://api.fireworks.ai/inference/v1",
+    model: "accounts/fireworks/models/kimi-k2-instruct-0905",
+    contextWindow: 200000,
+    maxOutputTokens: 32768,
+    supportsThinking: true,
+    customModels: [
+      "accounts/fireworks/models/kimi-k2-instruct-0905",
+      "accounts/fireworks/models/kimi-k2-thinking",
+      "accounts/fireworks/models/kimi-k2p5",
+      "accounts/fireworks/models/deepseek-v3p2",
+      "accounts/fireworks/models/glm-5",
+      "accounts/fireworks/models/qwen2p5-coder-32b-instruct",
+    ],
+    modelAliases: {
+      "accounts/fireworks/models/deepseek-v3p2": "DeepSeek V3.2",
+      "accounts/fireworks/models/glm-5": "GLM 5",
+      "accounts/fireworks/models/kimi-k2-instruct-0905": "Kimi K2",
+      "accounts/fireworks/models/kimi-k2-thinking": "Kimi K2 Thinking",
+      "accounts/fireworks/models/kimi-k2p5": "Kimi K2.5",
+      "accounts/fireworks/models/qwen2p5-coder-32b-instruct": "Qwen 2.5 Coder 32B",
+    },
+    providerType: "fireworks",
+    defaultTemperature: 1.0,
+    requiresApiKey: true,
+  },
+  {
     id: "glm",
     name: "GLM-4.7 (Z.AI)",
+    nickname: "GLM",
     baseUrl: "https://api.z.ai/api/coding/paas/v4",
     model: "glm-4.7",
     contextWindow: 200000,
@@ -261,6 +378,7 @@ export const PRESET_PROVIDERS: Omit<LLMProvider, "apiKey" | "enabled">[] = [
   {
     id: "anthropic",
     name: "Anthropic",
+    nickname: "Claude",
     baseUrl: "https://api.anthropic.com/v1",
     model: "claude-sonnet-4-20250514",
     contextWindow: 200000,
@@ -274,6 +392,7 @@ export const PRESET_PROVIDERS: Omit<LLMProvider, "apiKey" | "enabled">[] = [
   {
     id: "minimax",
     name: "MiniMax M2.1",
+    nickname: "MiniMax",
     baseUrl: "https://api.minimax.io/anthropic/v1", // Correct path: baseURL + /messages
     model: "MiniMax-M2.1",
     contextWindow: 200000, // 200k context
@@ -378,7 +497,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   // Providers
   providers: createDefaultProviders(),
-  selectedModel: "glm:glm-4.7",
+  selectedModel: "fireworks:accounts/fireworks/models/kimi-k2-instruct-0905",
 
   // Tool Approval
   autoApproveTools: false,
@@ -397,6 +516,9 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // UI Settings
   uiFontFamily: "system",
   uiTextScale: 1,
+
+  fireworksTabEnabled: false,
+  fireworksAccountId: "",
 
 
   // Theme
@@ -445,7 +567,16 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           const dbProvider = providers.find(p => p.id === preset.id);
           if (dbProvider) {
             // Keep the stored API key and settings, but update with any new preset fields
-            return { ...preset, ...dbProvider, isCustom: false };
+            return {
+              ...preset,
+              ...dbProvider,
+              isCustom: false,
+              modelAliases: {
+                ...(preset.modelAliases || {}),
+                ...(dbProvider.modelAliases || {}),
+              },
+              nickname: dbProvider.nickname || preset.nickname,
+            };
           }
           return { ...preset, apiKey: "", enabled: true, isCustom: false };
         });
@@ -470,7 +601,10 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       if (appSettings) {
         const uiFontFamily = appSettings.uiFontFamily ?? "system";
         const uiTextScale = appSettings.uiTextScale ?? 1;
-        const selectedModel = appSettings.selectedModel || "glm:glm-4.7";
+        const selectedModel = resolveSelectedModel(
+          appSettings.selectedModel || "fireworks:accounts/fireworks/models/kimi-k2-instruct-0905",
+          get().providers,
+        );
         const persistedThinkingEnabled = appSettings.thinkingEnabled ?? true;
         const syncedThinkingEnabled = syncThinkingForSelectedModel(
           selectedModel,
@@ -486,6 +620,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           projectLayoutEnabled: appSettings.projectLayoutEnabled ?? true,
           skillsEnabled: appSettings.skillsEnabled ?? true,
           skillToggles: appSettings.skillToggles ?? {},
+          fireworksTabEnabled: appSettings.fireworksTabEnabled ?? false,
+          fireworksAccountId: appSettings.fireworksAccountId ?? "",
           fontSize: appSettings.fontSize ?? 14,
           wrapMode: appSettings.wrapMode ?? true,
           theme: (appSettings.theme as 'dark' | 'light') || "dark",
@@ -541,6 +677,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         projectLayoutEnabled: state.projectLayoutEnabled,
         skillsEnabled: state.skillsEnabled,
         skillToggles: state.skillToggles,
+        fireworksTabEnabled: state.fireworksTabEnabled,
+        fireworksAccountId: state.fireworksAccountId,
         fontSize: state.fontSize,
         wrapMode: state.wrapMode,
         theme: state.theme,
@@ -586,11 +724,33 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // ============================================
 
   updateProvider: (id: string, updates: Partial<LLMProvider>) => {
-    set((state: SettingsState) => ({
-      providers: state.providers.map((p: LLMProvider) =>
-        p.id === id ? { ...p, ...updates } : p,
-      ),
-    }));
+    set((state: SettingsState) => {
+      const providers = state.providers.map((provider: LLMProvider) => {
+        if (provider.id !== id) return provider;
+
+        const nextProvider = {
+          ...provider,
+          ...updates,
+        };
+
+        return {
+          ...nextProvider,
+          modelAliases: getModelAliasesForProvider(nextProvider),
+          nickname: nextProvider.nickname?.trim() || undefined,
+        };
+      });
+      const selectedModel = resolveSelectedModel(state.selectedModel, providers);
+
+      return {
+        providers,
+        selectedModel,
+        thinkingEnabled: syncThinkingForSelectedModel(
+          selectedModel,
+          providers,
+          state.thinkingEnabled,
+        ),
+      };
+    });
     // Debounced save to database
     setTimeout(() => get().saveToDatabase(), 500);
   },
@@ -601,6 +761,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       ...provider,
       id,
       isCustom: true,
+      modelAliases: getModelAliasesForProvider(provider as LLMProvider),
+      nickname: provider.nickname?.trim() || undefined,
     };
     set((state: SettingsState) => ({
       providers: [...state.providers, newProvider],
@@ -618,7 +780,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         providers: state.providers.filter((p: LLMProvider) => p.id !== id),
         // Reset selected model if it was from deleted provider
         selectedModel: state.selectedModel.startsWith(id + ":")
-          ? "glm:glm-4.7"
+          ? "fireworks:accounts/fireworks/models/kimi-k2-instruct-0905"
           : state.selectedModel,
       }));
       // Delete from database
@@ -636,38 +798,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   },
 
   getAvailableModels: () => {
-    const state = get();
-    const models: Array<{
-      providerId: string;
-      providerName: string;
-      model: string;
-      label: string;
-    }> = [];
-
-    for (const provider of state.providers) {
-      // Only include if enabled and has API key (or is local)
-      const isLocal =
-        provider.baseUrl.includes("localhost") ||
-        provider.baseUrl.includes("127.0.0.1");
-      if (!provider.enabled) continue;
-      if (!isLocal && !provider.apiKey) continue;
-
-      // Add all models for this provider
-      const providerModels = provider.customModels?.length
-        ? provider.customModels
-        : [provider.model];
-
-      for (const model of providerModels) {
-        models.push({
-          providerId: provider.id,
-          providerName: model,
-          model,
-          label: providerModels.length > 1 ? `${provider.name} · ${model}` : provider.name,
-        });
-      }
-    }
-
-    return models;
+    return buildAvailableModelOptions(get().providers);
   },
 
   getSelectedProvider: () => {
@@ -717,6 +848,16 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setFontSize: (size: number) => {
     set({ fontSize: size });
+    get().saveToDatabase();
+  },
+
+  setFireworksTabEnabled: (enabled: boolean) => {
+    set({ fireworksTabEnabled: enabled });
+    get().saveToDatabase();
+  },
+
+  setFireworksAccountId: (accountId: string) => {
+    set({ fireworksAccountId: accountId });
     get().saveToDatabase();
   },
 

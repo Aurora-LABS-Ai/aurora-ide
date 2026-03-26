@@ -10,6 +10,8 @@ export interface AppSettings {
   autoSave: string;
   autoSaveDelay: number;
   fontSize: number;
+  fireworksAccountId?: string;
+  fireworksTabEnabled?: boolean;
   maxTokens: number;
   maxToolCallsPerRequest: number;
   projectLayoutEnabled?: boolean; // Include file tree in first message
@@ -24,7 +26,6 @@ export interface AppSettings {
   uiScale?: number;
   uiTextScale?: number;
   wrapMode: boolean;
-
 }
 
 // ============================================================
@@ -36,6 +37,7 @@ export interface DbLLMProvider {
   contextWindow: number;
   createdAt: string;
   customHeaders: Record<string, string> | null;
+  modelAliases: Record<string, string> | null;
   customModels: string[] | null;
   customParams: Record<string, unknown> | null;
   defaultMaxTokens: number | null;
@@ -46,6 +48,7 @@ export interface DbLLMProvider {
   maxOutputTokens: number;
   model: string;
   name: string;
+  nickname: string | null;
   providerType: string | null;
   requiresApiKey: boolean;
   sortOrder: number;

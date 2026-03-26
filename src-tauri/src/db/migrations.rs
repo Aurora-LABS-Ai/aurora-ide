@@ -110,6 +110,13 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [10])?;
             Ok(())
         }
+        11 => {
+            // Migration from v10 to v11: Add provider nicknames and model aliases
+            migration_v11(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [11])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -134,6 +141,7 @@ fn migration_v2(conn: &Connection) -> DbResult<()> {
         "CREATE TABLE IF NOT EXISTS llm_providers (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
+            nickname TEXT,
             base_url TEXT NOT NULL,
             api_key TEXT NOT NULL DEFAULT '',
             model TEXT NOT NULL,
@@ -144,6 +152,7 @@ fn migration_v2(conn: &Connection) -> DbResult<()> {
             enabled INTEGER NOT NULL DEFAULT 1,
             is_custom INTEGER NOT NULL DEFAULT 0,
             custom_models TEXT,
+            model_aliases TEXT,
             custom_headers TEXT,
             custom_params TEXT,
             provider_type TEXT,
@@ -385,6 +394,21 @@ fn migration_v10(conn: &Connection) -> DbResult<()> {
     // Add checkpoint_enabled column to workspace_state (default true = enabled)
     conn.execute(
         "ALTER TABLE workspace_state ADD COLUMN checkpoint_enabled INTEGER NOT NULL DEFAULT 1",
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Migration v11: Add provider nicknames and model alias metadata
+fn migration_v11(conn: &Connection) -> DbResult<()> {
+    conn.execute(
+        "ALTER TABLE llm_providers ADD COLUMN nickname TEXT",
+        [],
+    )?;
+
+    conn.execute(
+        "ALTER TABLE llm_providers ADD COLUMN model_aliases TEXT",
         [],
     )?;
 

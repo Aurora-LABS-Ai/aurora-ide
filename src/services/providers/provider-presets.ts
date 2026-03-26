@@ -134,6 +134,11 @@ export function detectProviderType(baseUrl: string, model: string): string {
     return 'deepseek';
   }
 
+  // Fireworks
+  if (url.includes('fireworks.ai')) {
+    return 'fireworks';
+  }
+
   // GLM / Z.AI
   if (url.includes('z.ai') || url.includes('zhipuai') || modelLower.includes('glm')) {
     return 'glm';
@@ -255,6 +260,25 @@ export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
     includeStreamOptions: true,
     defaultContextWindow: 128000,
     defaultMaxOutput: 16384,
+  },
+
+  // ============================================
+  // Fireworks AI
+  // ============================================
+  fireworks: {
+    id: 'fireworks',
+    name: 'Fireworks AI',
+    baseFormat: 'openai',
+    chatEndpoint: '/chat/completions',
+    authType: 'bearer',
+    authHeader: 'Authorization',
+    thinkingConfig: {
+      requestParam: { reasoning_effort: 'medium' },
+      responseField: 'reasoning_content',
+    },
+    includeStreamOptions: false,
+    defaultContextWindow: 200000,
+    defaultMaxOutput: 32768,
   },
 
   // ============================================

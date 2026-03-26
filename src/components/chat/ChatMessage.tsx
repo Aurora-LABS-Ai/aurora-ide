@@ -145,7 +145,7 @@ interface ChatMessageProps {
   onApprovePendingRemember?: () => void;
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = ({
+const ChatMessageComponent: React.FC<ChatMessageProps> = ({
   message,
   isStreaming = false,
   isLastMessage = false,
@@ -304,3 +304,19 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
     </motion.div>
   );
 };
+
+const areChatMessagePropsEqual = (
+  prev: ChatMessageProps,
+  next: ChatMessageProps,
+): boolean =>
+  prev.message === next.message &&
+  prev.isStreaming === next.isStreaming &&
+  prev.isLastMessage === next.isLastMessage &&
+  prev.toolVariant === next.toolVariant &&
+  prev.pendingApproval === next.pendingApproval &&
+  prev.onApprovePending === next.onApprovePending &&
+  prev.onRejectPending === next.onRejectPending &&
+  prev.onApprovePendingRemember === next.onApprovePendingRemember;
+
+export const ChatMessage = React.memo(ChatMessageComponent, areChatMessagePropsEqual);
+ChatMessage.displayName = 'ChatMessage';

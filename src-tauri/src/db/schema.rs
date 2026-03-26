@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 10;
+pub const SCHEMA_VERSION: i32 = 11;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -179,6 +179,7 @@ fn create_llm_providers_table(conn: &Connection) -> DbResult<()> {
         "CREATE TABLE IF NOT EXISTS llm_providers (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
+            nickname TEXT,
             base_url TEXT NOT NULL,
             api_key TEXT NOT NULL DEFAULT '',
             model TEXT NOT NULL,
@@ -189,6 +190,7 @@ fn create_llm_providers_table(conn: &Connection) -> DbResult<()> {
             enabled INTEGER NOT NULL DEFAULT 1,
             is_custom INTEGER NOT NULL DEFAULT 0,
             custom_models TEXT,           -- JSON array of model names
+            model_aliases TEXT,          -- JSON object of modelId -> display name
             custom_headers TEXT,          -- JSON object
             custom_params TEXT,           -- JSON object
             provider_type TEXT,           -- 'openai' | 'deepseek' | 'glm' | 'anthropic' | 'custom'

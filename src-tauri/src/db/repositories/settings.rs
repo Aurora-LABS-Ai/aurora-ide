@@ -107,6 +107,8 @@ impl<'a> SettingsRepository<'a> {
                 "maxToolCallsPerRequest" => settings.max_tool_calls_per_request = serde_json::from_str(&setting.value).unwrap_or(settings.max_tool_calls_per_request),
                 "skillsEnabled" => settings.skills_enabled = serde_json::from_str(&setting.value).unwrap_or(settings.skills_enabled),
                 "skillToggles" => settings.skill_toggles = serde_json::from_str(&setting.value).unwrap_or(settings.skill_toggles.clone()),
+                "fireworksTabEnabled" => settings.fireworks_tab_enabled = serde_json::from_str(&setting.value).unwrap_or(settings.fireworks_tab_enabled),
+                "fireworksAccountId" => settings.fireworks_account_id = serde_json::from_str(&setting.value).unwrap_or(settings.fireworks_account_id.clone()),
                 _ => {}
             }
 
@@ -136,8 +138,9 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting("maxToolCallsPerRequest", &serde_json::to_string(&settings.max_tool_calls_per_request).unwrap_or_default())?;
         self.set_setting("skillsEnabled", &serde_json::to_string(&settings.skills_enabled).unwrap_or_default())?;
         self.set_setting("skillToggles", &serde_json::to_string(&settings.skill_toggles).unwrap_or_default())?;
+        self.set_setting("fireworksTabEnabled", &serde_json::to_string(&settings.fireworks_tab_enabled).unwrap_or_default())?;
+        self.set_setting("fireworksAccountId", &serde_json::to_string(&settings.fireworks_account_id).unwrap_or_default())?;
         Ok(())
-
     }
 
     // ============================================================
@@ -147,41 +150,44 @@ impl<'a> SettingsRepository<'a> {
     /// Get all LLM providers
     pub fn get_all_providers(&self) -> DbResult<Vec<LLMProvider>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, base_url, api_key, model, context_window, max_output_tokens,
+            "SELECT id, name, nickname, base_url, api_key, model, context_window, max_output_tokens,
                     supports_thinking, supports_tool_stream, enabled, is_custom, custom_models,
-                    custom_headers, custom_params, provider_type, default_temperature,
+                    model_aliases, custom_headers, custom_params, provider_type, default_temperature,
                     default_max_tokens, requires_api_key, sort_order, created_at, updated_at
              FROM llm_providers
              ORDER BY sort_order ASC"
         )?;
 
         let providers = stmt.query_map([], |row| {
-            let custom_models: Option<String> = row.get(11)?;
-            let custom_headers: Option<String> = row.get(12)?;
-            let custom_params: Option<String> = row.get(13)?;
+            let custom_models: Option<String> = row.get(12)?;
+            let model_aliases: Option<String> = row.get(13)?;
+            let custom_headers: Option<String> = row.get(14)?;
+            let custom_params: Option<String> = row.get(15)?;
 
             Ok(LLMProvider {
                 id: row.get(0)?,
                 name: row.get(1)?,
-                base_url: row.get(2)?,
-                api_key: row.get(3)?,
-                model: row.get(4)?,
-                context_window: row.get(5)?,
-                max_output_tokens: row.get(6)?,
-                supports_thinking: row.get::<_, i32>(7)? != 0,
-                supports_tool_stream: row.get::<_, i32>(8)? != 0,
-                enabled: row.get::<_, i32>(9)? != 0,
-                is_custom: row.get::<_, i32>(10)? != 0,
+                nickname: row.get(2)?,
+                base_url: row.get(3)?,
+                api_key: row.get(4)?,
+                model: row.get(5)?,
+                context_window: row.get(6)?,
+                max_output_tokens: row.get(7)?,
+                supports_thinking: row.get::<_, i32>(8)? != 0,
+                supports_tool_stream: row.get::<_, i32>(9)? != 0,
+                enabled: row.get::<_, i32>(10)? != 0,
+                is_custom: row.get::<_, i32>(11)? != 0,
                 custom_models: custom_models.and_then(|s| serde_json::from_str(&s).ok()),
+                model_aliases: model_aliases.and_then(|s| serde_json::from_str(&s).ok()),
                 custom_headers: custom_headers.and_then(|s| serde_json::from_str(&s).ok()),
                 custom_params: custom_params.and_then(|s| serde_json::from_str(&s).ok()),
-                provider_type: row.get(14)?,
-                default_temperature: row.get(15)?,
-                default_max_tokens: row.get(16)?,
-                requires_api_key: row.get::<_, i32>(17)? != 0,
-                sort_order: row.get(18)?,
-                created_at: row.get(19)?,
-                updated_at: row.get(20)?,
+                provider_type: row.get(16)?,
+                default_temperature: row.get(17)?,
+                default_max_tokens: row.get(18)?,
+                requires_api_key: row.get::<_, i32>(19)? != 0,
+                sort_order: row.get(20)?,
+                created_at: row.get(21)?,
+                updated_at: row.get(22)?,
             })
         })?;
 
@@ -195,41 +201,44 @@ impl<'a> SettingsRepository<'a> {
     /// Get a provider by ID
     pub fn get_provider(&self, id: &str) -> DbResult<Option<LLMProvider>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, base_url, api_key, model, context_window, max_output_tokens,
+            "SELECT id, name, nickname, base_url, api_key, model, context_window, max_output_tokens,
                     supports_thinking, supports_tool_stream, enabled, is_custom, custom_models,
-                    custom_headers, custom_params, provider_type, default_temperature,
+                    model_aliases, custom_headers, custom_params, provider_type, default_temperature,
                     default_max_tokens, requires_api_key, sort_order, created_at, updated_at
              FROM llm_providers
              WHERE id = ?1"
         )?;
 
         let result = stmt.query_row(params![id], |row| {
-            let custom_models: Option<String> = row.get(11)?;
-            let custom_headers: Option<String> = row.get(12)?;
-            let custom_params: Option<String> = row.get(13)?;
+            let custom_models: Option<String> = row.get(12)?;
+            let model_aliases: Option<String> = row.get(13)?;
+            let custom_headers: Option<String> = row.get(14)?;
+            let custom_params: Option<String> = row.get(15)?;
 
             Ok(LLMProvider {
                 id: row.get(0)?,
                 name: row.get(1)?,
-                base_url: row.get(2)?,
-                api_key: row.get(3)?,
-                model: row.get(4)?,
-                context_window: row.get(5)?,
-                max_output_tokens: row.get(6)?,
-                supports_thinking: row.get::<_, i32>(7)? != 0,
-                supports_tool_stream: row.get::<_, i32>(8)? != 0,
-                enabled: row.get::<_, i32>(9)? != 0,
-                is_custom: row.get::<_, i32>(10)? != 0,
+                nickname: row.get(2)?,
+                base_url: row.get(3)?,
+                api_key: row.get(4)?,
+                model: row.get(5)?,
+                context_window: row.get(6)?,
+                max_output_tokens: row.get(7)?,
+                supports_thinking: row.get::<_, i32>(8)? != 0,
+                supports_tool_stream: row.get::<_, i32>(9)? != 0,
+                enabled: row.get::<_, i32>(10)? != 0,
+                is_custom: row.get::<_, i32>(11)? != 0,
                 custom_models: custom_models.and_then(|s| serde_json::from_str(&s).ok()),
+                model_aliases: model_aliases.and_then(|s| serde_json::from_str(&s).ok()),
                 custom_headers: custom_headers.and_then(|s| serde_json::from_str(&s).ok()),
                 custom_params: custom_params.and_then(|s| serde_json::from_str(&s).ok()),
-                provider_type: row.get(14)?,
-                default_temperature: row.get(15)?,
-                default_max_tokens: row.get(16)?,
-                requires_api_key: row.get::<_, i32>(17)? != 0,
-                sort_order: row.get(18)?,
-                created_at: row.get(19)?,
-                updated_at: row.get(20)?,
+                provider_type: row.get(16)?,
+                default_temperature: row.get(17)?,
+                default_max_tokens: row.get(18)?,
+                requires_api_key: row.get::<_, i32>(19)? != 0,
+                sort_order: row.get(20)?,
+                created_at: row.get(21)?,
+                updated_at: row.get(22)?,
             })
         });
 
@@ -245,6 +254,8 @@ impl<'a> SettingsRepository<'a> {
         let now = chrono::Utc::now().to_rfc3339();
         let custom_models = provider.custom_models.as_ref()
             .map(|m| serde_json::to_string(m).unwrap_or_default());
+        let model_aliases = provider.model_aliases.as_ref()
+            .map(|m| serde_json::to_string(m).unwrap_or_default());
         let custom_headers = provider.custom_headers.as_ref()
             .map(|h| serde_json::to_string(h).unwrap_or_default());
         let custom_params = provider.custom_params.as_ref()
@@ -252,20 +263,21 @@ impl<'a> SettingsRepository<'a> {
 
         self.conn.execute(
             "INSERT INTO llm_providers (
-                id, name, base_url, api_key, model, context_window, max_output_tokens,
+                id, name, nickname, base_url, api_key, model, context_window, max_output_tokens,
                 supports_thinking, supports_tool_stream, enabled, is_custom, custom_models,
-                custom_headers, custom_params, provider_type, default_temperature,
+                model_aliases, custom_headers, custom_params, provider_type, default_temperature,
                 default_max_tokens, requires_api_key, sort_order, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
             ON CONFLICT(id) DO UPDATE SET
-                name = ?2, base_url = ?3, api_key = ?4, model = ?5, context_window = ?6,
-                max_output_tokens = ?7, supports_thinking = ?8, supports_tool_stream = ?9,
-                enabled = ?10, is_custom = ?11, custom_models = ?12, custom_headers = ?13,
-                custom_params = ?14, provider_type = ?15, default_temperature = ?16,
-                default_max_tokens = ?17, requires_api_key = ?18, sort_order = ?19, updated_at = ?21",
+                name = ?2, nickname = ?3, base_url = ?4, api_key = ?5, model = ?6, context_window = ?7,
+                max_output_tokens = ?8, supports_thinking = ?9, supports_tool_stream = ?10,
+                enabled = ?11, is_custom = ?12, custom_models = ?13, model_aliases = ?14, custom_headers = ?15,
+                custom_params = ?16, provider_type = ?17, default_temperature = ?18,
+                default_max_tokens = ?19, requires_api_key = ?20, sort_order = ?21, updated_at = ?23",
             params![
                 provider.id,
                 provider.name,
+                provider.nickname,
                 provider.base_url,
                 provider.api_key,
                 provider.model,
@@ -276,6 +288,7 @@ impl<'a> SettingsRepository<'a> {
                 provider.enabled as i32,
                 provider.is_custom as i32,
                 custom_models,
+                model_aliases,
                 custom_headers,
                 custom_params,
                 provider.provider_type,

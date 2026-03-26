@@ -23,7 +23,8 @@
 import React, { useState } from 'react';
 import { useUiStore } from '../../store/useUiStore';
 import { useSettingsStore, type LLMProvider } from '../../store/useSettingsStore';
-import { X, Server, Layout, Shield, Eye, EyeOff, Plus, Trash2, ChevronDown, Palette, Database, Plug, Info, Sparkles } from 'lucide-react';
+import { formatModelDisplayName, formatProviderNickname } from '../../lib/provider-display';
+import { X, Server, Layout, Shield, Eye, EyeOff, Plus, Trash2, ChevronDown, Palette, Database, Plug, Info, Sparkles, Flame } from 'lucide-react';
 import clsx from 'clsx';
 import { ToolSettingsTab } from './ToolSettingsTab';
 import { ThemeSettingsTab } from './ThemeSettingsTab';
@@ -32,6 +33,7 @@ import { McpSettingsTab } from './McpSettingsTab';
 import { SkillsSettingsTab } from './SkillsSettingsTab';
 import { GeneralSettingsTab } from './GeneralSettingsTab';
 import { AboutSettingsTab } from './AboutSettingsTab';
+import { FireworksSettingsTab } from './FireworksSettingsTab';
 import { TogglePill } from '../ui/TogglePill';
 import { SettingsSelect } from '../ui/SettingsSelect';
 import { settingsCardStyle, settingsInputStyle, settingsPaneStyle, settingsShellStyle } from './settings-shared';
@@ -47,6 +49,7 @@ interface AddProviderFormProps {
 
 const AddProviderForm: React.FC<AddProviderFormProps> = ({ onSave, onCancel }) => {
   const [name, setName] = useState('');
+  const [nickname, setNickname] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
@@ -61,6 +64,7 @@ const AddProviderForm: React.FC<AddProviderFormProps> = ({ onSave, onCancel }) =
 
     onSave({
       name: name.trim(),
+      nickname: nickname.trim() || name.trim(),
       baseUrl: baseUrl.trim().replace(/\/$/, ''),
       apiKey: apiKey.trim(),
       model: model.trim(),
@@ -100,6 +104,20 @@ const AddProviderForm: React.FC<AddProviderFormProps> = ({ onSave, onCancel }) =
           />
         </div>
         <div>
+          <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-text-secondary">Selector Name</label>
+          <input
+            type="text"
+            value={nickname}
+            onChange={(e) => setNickname(e.target.value)}
+            placeholder="Local"
+            className="w-full rounded-xl px-3 py-2 text-xs font-medium text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary"
+            style={settingsInputStyle}
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div>
           <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-text-secondary">API Format *</label>
           <SettingsSelect
             ariaLabel="Select provider API format"
@@ -112,9 +130,6 @@ const AddProviderForm: React.FC<AddProviderFormProps> = ({ onSave, onCancel }) =
             value={providerType}
           />
         </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-2">
         <div>
           <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-text-secondary">Model *</label>
           <input
@@ -245,6 +260,8 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
   const isLocal = provider.baseUrl.includes('localhost') || provider.baseUrl.includes('127.0.0.1');
   const hasKey = !!provider.apiKey;
   const isReady = isLocal || hasKey;
+  const isRecommendedProvider = provider.id === 'fireworks';
+  const selectorName = formatProviderNickname(provider.name, provider.nickname);
 
   const handleAddModel = () => {
     if (!newModelId.trim()) return;
@@ -270,6 +287,21 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
     });
   };
 
+  const handleModelAliasChange = (modelId: string, alias: string) => {
+    const nextAliases = { ...(provider.modelAliases || {}) };
+    const trimmedAlias = alias.trim();
+
+    if (trimmedAlias) {
+      nextAliases[modelId] = trimmedAlias;
+    } else {
+      delete nextAliases[modelId];
+    }
+
+    updateProvider(provider.id, {
+      modelAliases: Object.keys(nextAliases).length > 0 ? nextAliases : undefined,
+    });
+  };
+
   return (
     <div className="overflow-hidden rounded-[20px]" style={settingsCardStyle}>
       {/* Header */}
@@ -282,10 +314,15 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
           <ChevronDown className={clsx("w-3.5 h-3.5 text-text-disabled transition-transform", isExpanded && "rotate-180")} />
           <div className="flex flex-col">
             <span className="text-sm font-semibold text-text-primary">{provider.name}</span>
-            <span className="text-[11px] text-text-secondary">{provider.baseUrl.replace(/^https?:\/\//, '')}</span>
+            <span className="text-[11px] text-text-secondary">
+              {selectorName} · {provider.baseUrl.replace(/^https?:\/\//, '')}
+            </span>
           </div>
           {provider.isCustom && (
             <span className="rounded-full bg-primary/15 px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-primary">Custom</span>
+          )}
+          {isRecommendedProvider && (
+            <span className="rounded-full bg-primary/15 px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-primary">Recommended</span>
           )}
           {isReady && provider.enabled && (
             <span className="rounded-full bg-success/15 px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-success">Ready</span>
@@ -317,6 +354,18 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
       {/* Expanded Content */}
       {isExpanded && (
         <div className="space-y-3 border-t border-border px-4 pb-4 pt-3">
+          {isRecommendedProvider && (
+            <div
+              className="rounded-xl px-3 py-2 text-[11px] leading-relaxed"
+              style={{
+                backgroundColor: 'color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)',
+                color: 'var(--aurora-common-text-secondary)',
+              }}
+            >
+              Fireworks is preconfigured as Aurora&apos;s recommended provider. Paste a Fireworks API key below and you can start using agent mode immediately.
+            </div>
+          )}
+
           {/* API Format (only for custom providers) */}
           {provider.isCustom && (
             <div>
@@ -335,6 +384,31 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
           )}
 
           {/* Base URL */}
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-text-secondary">Provider Name</label>
+              <input
+                type="text"
+                value={provider.name}
+                onChange={(e) => updateProvider(provider.id, { name: e.target.value })}
+                disabled={!provider.isCustom}
+                className="w-full rounded-xl px-3 py-2 text-xs font-medium text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-70"
+                style={settingsInputStyle}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-text-secondary">Selector Name</label>
+              <input
+                type="text"
+                value={provider.nickname || ''}
+                onChange={(e) => updateProvider(provider.id, { nickname: e.target.value })}
+                placeholder={provider.name}
+                className="w-full rounded-xl px-3 py-2 text-xs font-medium text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary"
+                style={settingsInputStyle}
+              />
+            </div>
+          </div>
+
           <div>
             <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-text-secondary">Base URL</label>
             <input
@@ -438,23 +512,39 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
           {/* Models List */}
           <div>
             <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-text-secondary">Available Models</label>
-            <div className="flex flex-wrap gap-1">
+            <div className="space-y-2">
               {(provider.customModels || [provider.model]).map((model) => (
-                <span
+                <div
                   key={model}
-                  className="group flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium text-text-secondary font-mono"
+                  className="grid grid-cols-[minmax(0,1.3fr)_minmax(180px,0.8fr)_auto] items-center gap-2 rounded-2xl px-3 py-2"
                   style={settingsInputStyle}
                 >
-                  {model}
+                  <div className="min-w-0">
+                    <div className="truncate text-[11px] font-medium text-text-primary">
+                      {formatModelDisplayName(model, provider.modelAliases?.[model])}
+                    </div>
+                    <div className="truncate font-mono text-[10px] text-text-secondary">
+                      {model}
+                    </div>
+                  </div>
+                  <input
+                    type="text"
+                    value={provider.modelAliases?.[model] || ''}
+                    onChange={(e) => handleModelAliasChange(model, e.target.value)}
+                    placeholder={formatModelDisplayName(model)}
+                    className="w-full rounded-xl px-3 py-2 text-xs font-medium text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary"
+                    style={settingsInputStyle}
+                  />
                   {(provider.customModels?.length || 1) > 1 && (
                     <button
                       onClick={() => handleRemoveModel(model)}
-                      className="opacity-0 group-hover:opacity-100 text-text-disabled hover:text-danger transition-opacity"
+                      className="rounded-xl p-2 text-text-disabled hover:text-danger transition-colors"
+                      title="Remove model"
                     >
-                      <X className="w-2.5 h-2.5" />
+                      <X className="w-3 h-3" />
                     </button>
                   )}
-                </span>
+                </div>
               ))}
             </div>
           </div>
@@ -471,8 +561,10 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
 export const SettingsPanel: React.FC = () => {
   const { isSettingsOpen, setSettingsOpen } = useUiStore();
   const {
+    fireworksTabEnabled,
     fontSize,
     setFontSize,
+    setFireworksTabEnabled,
     wrapMode,
     setWrapMode,
     providers,
@@ -490,9 +582,9 @@ export const SettingsPanel: React.FC = () => {
 
   // Each provider has its own supportsThinking, defaultTemperature, and defaultMaxTokens
 
-  const [activeTab, setActiveTab] = useState<'providers' | 'tools' | 'general' | 'themes' | 'semantic' | 'mcp' | 'skills' | 'about'>('providers');
+  const [activeTab, setActiveTab] = useState<'providers' | 'fireworks' | 'tools' | 'general' | 'themes' | 'semantic' | 'mcp' | 'skills' | 'about'>('providers');
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
-  const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
+  const [expandedProvider, setExpandedProvider] = useState<string | null>('fireworks');
   const [isAddingProvider, setIsAddingProvider] = useState(false);
 
   if (!isSettingsOpen) return null;
@@ -525,8 +617,9 @@ export const SettingsPanel: React.FC = () => {
             </p>
           </div>
 
-          {[
+          {[ 
             { id: 'providers', label: 'Providers', icon: Server },
+            ...(fireworksTabEnabled ? [{ id: 'fireworks', label: 'Fireworks', icon: Flame }] : []),
             { id: 'mcp', label: 'MCP Servers', icon: Plug },
             { id: 'skills', label: 'Skills', icon: Sparkles },
             { id: 'semantic', label: 'Semantic Search', icon: Database },
@@ -581,6 +674,7 @@ export const SettingsPanel: React.FC = () => {
               <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-disabled">Workspace Settings</div>
               <h2 className="mt-1 text-base font-semibold text-text-primary">
               {activeTab === 'providers' ? 'LLM Providers' :
+                activeTab === 'fireworks' ? 'Fireworks Control Center' :
                 activeTab === 'mcp' ? 'MCP Servers' :
                   activeTab === 'skills' ? 'Skills' :
                   activeTab === 'semantic' ? 'Semantic Search' :
@@ -610,7 +704,7 @@ export const SettingsPanel: React.FC = () => {
                   <div>
                     <p className="text-sm font-semibold text-text-primary">Provider Stack</p>
                     <p className="mt-1 text-[11px] leading-relaxed text-text-secondary">
-                      Expand a provider to edit endpoint, credentials, models, and output limits.
+                      Fireworks AI is preconfigured as the recommended Aurora path. Paste a Fireworks API key, or expand any provider to edit endpoint, credentials, models, and output limits.
                     </p>
                   </div>
                   <button
@@ -624,6 +718,27 @@ export const SettingsPanel: React.FC = () => {
                     <Plus className="w-3 h-3" />
                     Add Provider
                   </button>
+                </div>
+
+                <div className="flex items-start justify-between gap-4 rounded-[20px] px-4 py-4" style={settingsCardStyle}>
+                  <div className="max-w-2xl">
+                    <p className="text-sm font-semibold text-text-primary">Fireworks Control Center</p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-text-secondary">
+                      One switch controls the dedicated Fireworks tab. Turn it on to expose the richer Fireworks overview and model catalog inside Settings. Turn it off to keep the modal lean.
+                    </p>
+                  </div>
+                  <TogglePill
+                    checked={fireworksTabEnabled}
+                    onChange={(next) => {
+                      setFireworksTabEnabled(next);
+                      if (!next) {
+                        setActiveTab('providers');
+                      }
+                    }}
+                    ariaLabel="Toggle Fireworks Control Center"
+                    variant="primary"
+                    size="sm"
+                  />
                 </div>
 
                 {isAddingProvider && (
@@ -649,6 +764,9 @@ export const SettingsPanel: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {/* FIREWORKS TAB */}
+            {activeTab === 'fireworks' && fireworksTabEnabled && <FireworksSettingsTab />}
 
             {/* MCP SERVERS TAB */}
             {activeTab === 'mcp' && <McpSettingsTab />}

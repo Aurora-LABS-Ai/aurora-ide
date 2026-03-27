@@ -266,7 +266,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (buttonRef.current && !buttonRef.current.contains(e.target as Node)) {
-        const dropdown = document.getElementById("agent-model-dropdown");
+        const dropdown = document.getElementById("model-dropdown-portal");
         if (dropdown && dropdown.contains(e.target as Node)) return;
         setShowModelDropdown(false);
       }

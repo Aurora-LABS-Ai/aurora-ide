@@ -1,0 +1,65 @@
+Aurora Source-Available License
+
+Copyright (c) 2026 Aurora contributors. All rights reserved.
+
+1. GRANT (NON-COMMERCIAL USE)
+
+   Permission is granted, free of charge, to any person to use, copy, modify,
+   merge, and distribute the Software and its documentation for **personal,
+   educational, non-commercial research, and good-faith open-source
+   contribution** to this project, provided that:
+
+   (a) The copyright notice and this license appear in all copies or
+       substantial portions of the Software; and
+   (b) You do not use the Software in any way described in Section 2 without
+       prior written permission from the copyright holders.
+
+2. COMMERCIAL AND ENTERPRISE USE — PERMISSION REQUIRED
+
+   **You may not**, without **prior written permission** from the copyright
+   holders:
+
+   (a) Sell, rent, lease, sublicense, or otherwise charge for the Software,
+       modified versions, or derivative works;
+
+   (b) Use the Software primarily for the benefit of any **commercial
+       enterprise** — including but not limited to corporations, partnerships,
+       government agencies acting in a commercial capacity, or other
+       organizations whose activities are primarily intended for profit or
+       monetary gain — except where such use is solely by individuals for
+       personal learning and not in the course of employment for commercial
+       purposes;
+
+   (c) Offer the Software or a service substantially based on it (including
+       hosted or “as-a-service” offerings) for a fee or as part of a paid
+       product or service;
+
+   (d) Use the Software in production systems, internal tools, or workflows
+       of a for-profit entity **except** as authorized under a separate
+       commercial license from the copyright holders.
+
+   Requests for commercial, enterprise, or redistribution rights may be made
+   via the project’s public issue tracker or other channels the maintainers
+   designate.
+
+3. NO TRADEMARK GRANT
+
+   This license does not grant permission to use the trade names, trademarks,
+   service marks, or product names of the copyright holders, except as
+   required for reasonable and customary use in describing the origin of the
+   Software.
+
+4. DISCLAIMER OF WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+   THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+   OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+   ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE.
+
+5. TERMINATION
+
+   Any use outside the scope of Section 1 without permission under Section 2
+   terminates your rights under this license automatically.

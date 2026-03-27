@@ -1,6 +1,11 @@
 import { create } from "zustand";
 
-import { type GitBranch, type GitCommit, type GitStatus, gitService } from "../services/git";
+import {
+  type GitBranch,
+  type GitCommit,
+  type GitStatus,
+  gitService,
+} from "../services/git";
 
 interface GitState {
   branches: GitBranch[];
@@ -48,6 +53,7 @@ interface GitState {
 }
 
 let currentWorkspacePath: string | null = null;
+let gitRequestToken = 0;
 
 export const useGitStore = create<GitState>((set, get) => ({
   // Initial state
@@ -56,34 +62,91 @@ export const useGitStore = create<GitState>((set, get) => ({
   isGitRepo: false,
   status: null,
   branches: [],
-  currentBranch: '',
+  currentBranch: "",
   commits: [],
-  expandedSections: new Set(['staged', 'changes']),
+  expandedSections: new Set(["staged", "changes"]),
   selectedFiles: new Set(),
-  commitMessage: '',
+  commitMessage: "",
 
   initialize: async (workspacePath: string) => {
     currentWorkspacePath = workspacePath;
-    set({ isLoading: true });
+    const requestToken = ++gitRequestToken;
+
+    set({
+      isLoading: true,
+      isInitialized: false,
+      isGitRepo: false,
+      status: null,
+      branches: [],
+      currentBranch: "",
+      commits: [],
+      selectedFiles: new Set(),
+      commitMessage: "",
+    });
 
     try {
       const isRepo = await gitService.isGitRepository(workspacePath);
-      set({ isGitRepo: isRepo, isInitialized: true });
+
+      if (
+        requestToken !== gitRequestToken ||
+        currentWorkspacePath !== workspacePath
+      ) {
+        return;
+      }
+
+      set({
+        isGitRepo: isRepo,
+        isInitialized: true,
+        status: null,
+        branches: isRepo ? get().branches : [],
+        currentBranch: isRepo ? get().currentBranch : "",
+        commits: isRepo ? get().commits : [],
+      });
 
       if (isRepo) {
         await get().refresh();
+      } else {
+        set({
+          status: null,
+          branches: [],
+          currentBranch: "",
+          commits: [],
+          selectedFiles: new Set(),
+        });
       }
     } catch (error) {
-      console.error('Failed to initialize git:', error);
-      set({ isGitRepo: false, isInitialized: true });
+      if (
+        requestToken !== gitRequestToken ||
+        currentWorkspacePath !== workspacePath
+      ) {
+        return;
+      }
+
+      console.error("Failed to initialize git:", error);
+      set({
+        isGitRepo: false,
+        isInitialized: true,
+        status: null,
+        branches: [],
+        currentBranch: "",
+        commits: [],
+        selectedFiles: new Set(),
+      });
     } finally {
-      set({ isLoading: false });
+      if (
+        requestToken === gitRequestToken &&
+        currentWorkspacePath === workspacePath
+      ) {
+        set({ isLoading: false });
+      }
     }
   },
 
   refresh: async () => {
-    if (!currentWorkspacePath || !get().isGitRepo) return;
+    const workspacePath = currentWorkspacePath;
+    if (!workspacePath || !get().isGitRepo) return;
 
+    const requestToken = gitRequestToken;
     set({ isLoading: true });
     try {
       await Promise.all([
@@ -92,40 +155,96 @@ export const useGitStore = create<GitState>((set, get) => ({
         get().loadCommits(50),
       ]);
     } finally {
-      set({ isLoading: false });
+      if (
+        requestToken === gitRequestToken &&
+        currentWorkspacePath === workspacePath
+      ) {
+        set({ isLoading: false });
+      }
     }
   },
 
   loadStatus: async () => {
-    if (!currentWorkspacePath) return;
+    const workspacePath = currentWorkspacePath;
+    const requestToken = gitRequestToken;
+    if (!workspacePath) return;
+
     try {
-      const status = await gitService.getStatus(currentWorkspacePath);
+      const status = await gitService.getStatus(workspacePath);
+      if (
+        requestToken !== gitRequestToken ||
+        currentWorkspacePath !== workspacePath
+      ) {
+        return;
+      }
       set({ status });
     } catch (error) {
-      console.error('Failed to load git status:', error);
+      if (
+        requestToken !== gitRequestToken ||
+        currentWorkspacePath !== workspacePath
+      ) {
+        return;
+      }
+      console.error("Failed to load git status:", error);
+      set({ status: null });
     }
   },
 
   loadBranches: async () => {
-    if (!currentWorkspacePath) return;
+    const workspacePath = currentWorkspacePath;
+    const requestToken = gitRequestToken;
+    if (!workspacePath) return;
+
     try {
-      const result = await gitService.getBranches(currentWorkspacePath);
+      const result = await gitService.getBranches(workspacePath);
+      if (
+        requestToken !== gitRequestToken ||
+        currentWorkspacePath !== workspacePath
+      ) {
+        return;
+      }
       set({
         branches: result.branches,
         currentBranch: result.current,
       });
     } catch (error) {
-      console.error('Failed to load branches:', error);
+      if (
+        requestToken !== gitRequestToken ||
+        currentWorkspacePath !== workspacePath
+      ) {
+        return;
+      }
+      console.error("Failed to load branches:", error);
+      set({
+        branches: [],
+        currentBranch: "",
+      });
     }
   },
 
   loadCommits: async (limit = 50) => {
-    if (!currentWorkspacePath) return;
+    const workspacePath = currentWorkspacePath;
+    const requestToken = gitRequestToken;
+    if (!workspacePath) return;
+
     try {
-      const commits = await gitService.getCommits(currentWorkspacePath, limit);
+      const commits = await gitService.getCommits(workspacePath, limit);
+      if (
+        requestToken !== gitRequestToken ||
+        currentWorkspacePath !== workspacePath
+      ) {
+        return;
+      }
       set({ commits });
     } catch (error) {
-      console.error('Failed to load commits:', error);
+      if (
+        requestToken !== gitRequestToken ||
+        currentWorkspacePath !== workspacePath
+      ) {
+        return;
+      }
+      console.error("Failed to load commits:", error);
+      set({ commits: [] });
     }
   },
 
@@ -135,7 +254,7 @@ export const useGitStore = create<GitState>((set, get) => ({
       await gitService.stageFile(currentWorkspacePath, filePath);
       await get().loadStatus();
     } catch (error) {
-      console.error('Failed to stage file:', error);
+      console.error("Failed to stage file:", error);
       throw error;
     }
   },
@@ -146,7 +265,7 @@ export const useGitStore = create<GitState>((set, get) => ({
       await gitService.unstageFile(currentWorkspacePath, filePath);
       await get().loadStatus();
     } catch (error) {
-      console.error('Failed to unstage file:', error);
+      console.error("Failed to unstage file:", error);
       throw error;
     }
   },
@@ -157,7 +276,7 @@ export const useGitStore = create<GitState>((set, get) => ({
       await gitService.stageAll(currentWorkspacePath);
       await get().loadStatus();
     } catch (error) {
-      console.error('Failed to stage all:', error);
+      console.error("Failed to stage all:", error);
       throw error;
     }
   },
@@ -168,7 +287,7 @@ export const useGitStore = create<GitState>((set, get) => ({
       await gitService.unstageAll(currentWorkspacePath);
       await get().loadStatus();
     } catch (error) {
-      console.error('Failed to unstage all:', error);
+      console.error("Failed to unstage all:", error);
       throw error;
     }
   },
@@ -179,7 +298,7 @@ export const useGitStore = create<GitState>((set, get) => ({
       await gitService.discardChanges(currentWorkspacePath, filePath);
       await get().loadStatus();
     } catch (error) {
-      console.error('Failed to discard changes:', error);
+      console.error("Failed to discard changes:", error);
       throw error;
     }
   },
@@ -188,10 +307,10 @@ export const useGitStore = create<GitState>((set, get) => ({
     if (!currentWorkspacePath || !message.trim()) return;
     try {
       await gitService.commit(currentWorkspacePath, message);
-      set({ commitMessage: '' });
+      set({ commitMessage: "" });
       await get().refresh();
     } catch (error) {
-      console.error('Failed to commit:', error);
+      console.error("Failed to commit:", error);
       throw error;
     }
   },
@@ -202,7 +321,7 @@ export const useGitStore = create<GitState>((set, get) => ({
       await gitService.checkout(currentWorkspacePath, branch);
       await get().refresh();
     } catch (error) {
-      console.error('Failed to checkout:', error);
+      console.error("Failed to checkout:", error);
       throw error;
     }
   },
@@ -213,7 +332,7 @@ export const useGitStore = create<GitState>((set, get) => ({
       await gitService.createBranch(currentWorkspacePath, name);
       await get().loadBranches();
     } catch (error) {
-      console.error('Failed to create branch:', error);
+      console.error("Failed to create branch:", error);
       throw error;
     }
   },
@@ -224,7 +343,7 @@ export const useGitStore = create<GitState>((set, get) => ({
       await gitService.pull(currentWorkspacePath);
       await get().refresh();
     } catch (error) {
-      console.error('Failed to pull:', error);
+      console.error("Failed to pull:", error);
       throw error;
     }
   },
@@ -235,7 +354,7 @@ export const useGitStore = create<GitState>((set, get) => ({
       await gitService.push(currentWorkspacePath);
       await get().refresh();
     } catch (error) {
-      console.error('Failed to push:', error);
+      console.error("Failed to push:", error);
       throw error;
     }
   },
@@ -274,17 +393,18 @@ export const useGitStore = create<GitState>((set, get) => ({
 
   reset: () => {
     currentWorkspacePath = null;
+    gitRequestToken += 1;
     set({
       isLoading: false,
       isInitialized: false,
       isGitRepo: false,
       status: null,
       branches: [],
-      currentBranch: '',
+      currentBranch: "",
       commits: [],
-      expandedSections: new Set(['staged', 'changes']),
+      expandedSections: new Set(["staged", "changes"]),
       selectedFiles: new Set(),
-      commitMessage: '',
+      commitMessage: "",
     });
   },
 }));

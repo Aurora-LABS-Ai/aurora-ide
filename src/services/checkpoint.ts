@@ -10,7 +10,7 @@
  * 3. All checkpoints after that point are deleted
  */
 
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from "@tauri-apps/api/core";
 
 /**
  * Checkpoint data representing a point-in-time snapshot
@@ -55,9 +55,9 @@ class CheckpointService {
    */
   async init(): Promise<void> {
     try {
-      await invoke('checkpoint_init');
+      await invoke("checkpoint_init");
     } catch (error) {
-      console.error('[CheckpointService] Failed to initialize:', error);
+      console.error("[CheckpointService] Failed to initialize:", error);
     }
   }
 
@@ -68,17 +68,17 @@ class CheckpointService {
   async createCheckpoint(
     workspacePath: string,
     threadId: string,
-    messageId: string
+    messageId: string,
   ): Promise<CheckpointResponse> {
     try {
-      const response = await invoke<CheckpointResponse>('checkpoint_create', {
+      const response = await invoke<CheckpointResponse>("checkpoint_create", {
         workspacePath,
         threadId,
         messageId,
       });
       return response;
     } catch (error) {
-      console.error('[CheckpointService] Failed to create checkpoint:', error);
+      console.error("[CheckpointService] Failed to create checkpoint:", error);
       return {
         success: false,
         error: String(error),
@@ -93,17 +93,17 @@ class CheckpointService {
   async restoreCheckpoint(
     workspacePath: string,
     threadId: string,
-    checkpointId: string
+    checkpointId: string,
   ): Promise<RestoreResponse> {
     try {
-      const response = await invoke<RestoreResponse>('checkpoint_restore', {
+      const response = await invoke<RestoreResponse>("checkpoint_restore", {
         workspacePath,
         threadId,
         checkpointId,
       });
       return response;
     } catch (error) {
-      console.error('[CheckpointService] Failed to restore checkpoint:', error);
+      console.error("[CheckpointService] Failed to restore checkpoint:", error);
       return {
         success: false,
         deletedMessageIds: [],
@@ -117,9 +117,9 @@ class CheckpointService {
    */
   async listCheckpoints(threadId: string): Promise<Checkpoint[]> {
     try {
-      return await invoke<Checkpoint[]>('checkpoint_list', { threadId });
+      return await invoke<Checkpoint[]>("checkpoint_list", { threadId });
     } catch (error) {
-      console.error('[CheckpointService] Failed to list checkpoints:', error);
+      console.error("[CheckpointService] Failed to list checkpoints:", error);
       return [];
     }
   }
@@ -129,9 +129,11 @@ class CheckpointService {
    */
   async getCheckpointByMessage(messageId: string): Promise<Checkpoint | null> {
     try {
-      return await invoke<Checkpoint | null>('checkpoint_get_by_message', { messageId });
+      return await invoke<Checkpoint | null>("checkpoint_get_by_message", {
+        messageId,
+      });
     } catch (error) {
-      console.error('[CheckpointService] Failed to get checkpoint:', error);
+      console.error("[CheckpointService] Failed to get checkpoint:", error);
       return null;
     }
   }
@@ -139,11 +141,31 @@ class CheckpointService {
   /**
    * Delete all checkpoints for a thread
    */
-  async deleteThreadCheckpoints(threadId: string, workspacePath?: string): Promise<void> {
+  async deleteThreadCheckpoints(
+    threadId: string,
+    workspacePath?: string,
+  ): Promise<void> {
     try {
-      await invoke('checkpoint_delete_thread', { threadId, workspacePath });
+      await invoke("checkpoint_delete_thread", { threadId, workspacePath });
     } catch (error) {
-      console.error('[CheckpointService] Failed to delete thread checkpoints:', error);
+      console.error(
+        "[CheckpointService] Failed to delete thread checkpoints:",
+        error,
+      );
+    }
+  }
+
+  /**
+   * Delete all checkpoints for a workspace
+   */
+  async deleteWorkspaceCheckpoints(workspacePath: string): Promise<void> {
+    try {
+      await invoke("checkpoint_delete_workspace", { workspacePath });
+    } catch (error) {
+      console.error(
+        "[CheckpointService] Failed to delete workspace checkpoints:",
+        error,
+      );
     }
   }
 
@@ -152,9 +174,14 @@ class CheckpointService {
    */
   async isInitialized(workspacePath: string): Promise<boolean> {
     try {
-      return await invoke<boolean>('checkpoint_is_initialized', { workspacePath });
+      return await invoke<boolean>("checkpoint_is_initialized", {
+        workspacePath,
+      });
     } catch (error) {
-      console.error('[CheckpointService] Failed to check initialization:', error);
+      console.error(
+        "[CheckpointService] Failed to check initialization:",
+        error,
+      );
       return false;
     }
   }
@@ -165,9 +192,12 @@ class CheckpointService {
    */
   async isEnabled(workspacePath: string): Promise<boolean> {
     try {
-      return await invoke<boolean>('checkpoint_get_enabled', { workspacePath });
+      return await invoke<boolean>("checkpoint_get_enabled", { workspacePath });
     } catch (error) {
-      console.error('[CheckpointService] Failed to get enabled setting:', error);
+      console.error(
+        "[CheckpointService] Failed to get enabled setting:",
+        error,
+      );
       return true; // Default to enabled
     }
   }
@@ -177,9 +207,12 @@ class CheckpointService {
    */
   async setEnabled(workspacePath: string, enabled: boolean): Promise<void> {
     try {
-      await invoke('checkpoint_set_enabled', { workspacePath, enabled });
+      await invoke("checkpoint_set_enabled", { workspacePath, enabled });
     } catch (error) {
-      console.error('[CheckpointService] Failed to set enabled setting:', error);
+      console.error(
+        "[CheckpointService] Failed to set enabled setting:",
+        error,
+      );
     }
   }
 }

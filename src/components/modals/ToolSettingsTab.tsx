@@ -1,20 +1,20 @@
 /**
  * THEME ARCHITECTURE NOTICE:
- * 
+ *
  * This project uses a centralized theme system. DO NOT use hardcoded colors.
- * 
+ *
  * Instead of:
  *   - Hardcoded hex values: #ff0000, #1a1a1a
  *   - Hardcoded RGB values: rgb(255, 0, 0)
  *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
- * 
+ *
  * Use theme tokens via CSS variables:
  *   - CSS: var(--aurora-{category}-{token})
  *   - Tailwind: bg-[var(--aurora-editor-background)]
  *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
- * 
+ *
  * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
- * 
+ *
  * See: DOCS/theme-dev.md for full token reference
  * See: src/types/theme.ts for TypeScript interfaces
  * See: src/services/theme-service.ts for theme utilities
@@ -25,86 +25,119 @@
  * Manages tool approval settings and max tool calls
  */
 
-import React from 'react';
-import { useSettingsStore } from '../../store/useSettingsStore';
-import { Terminal, FileText, FolderOpen, Code, AlertTriangle, Shield, Map } from 'lucide-react';
-import clsx from 'clsx';
-import { TogglePill } from '../ui/TogglePill';
-import { SettingsSelect } from '../ui/SettingsSelect';
-import { settingsCardStyle, settingsDangerPanelStyle, settingsPrimaryButtonStyle, settingsSubtlePanelStyle } from './settings-shared';
+import React from "react";
+import { useSettingsStore } from "../../store/useSettingsStore";
+import {
+  Terminal,
+  FileText,
+  FolderOpen,
+  Code,
+  AlertTriangle,
+  Shield,
+  Map,
+} from "lucide-react";
+import clsx from "clsx";
+import { TogglePill } from "../ui/TogglePill";
+import { SettingsSelect } from "../ui/SettingsSelect";
+import {
+  settingsCardStyle,
+  settingsDangerPanelStyle,
+  settingsPrimaryButtonStyle,
+  settingsSubtlePanelStyle,
+} from "./settings-shared";
 
 // Group tools by category for better organization
 const TOOL_CATEGORIES = {
   shell: {
-    label: 'Shell Commands',
+    label: "Shell Commands",
     icon: Terminal,
-    description: 'Command execution tools',
-    tools: ['shell_execute', 'shell_spawn', 'shell_kill', 'shell_list_processes'],
+    description: "Command execution and background process tools",
+    tools: [
+      "shell_execute",
+      "shell_spawn",
+      "shell_kill",
+      "shell_list_processes",
+    ],
   },
   fileWrite: {
-    label: 'File Modifications',
+    label: "File Modifications",
     icon: FileText,
-    description: 'Tools that modify files',
-    tools: ['file_write', 'file_create', 'file_delete', 'file_patch'],
+    description: "Tools that create, update, patch, or delete files",
+    tools: [
+      "file_write",
+      "file_create",
+      "file_delete",
+      "file_patch",
+      "search_replace",
+      "multi_search_replace",
+    ],
   },
   folderOps: {
-    label: 'Folder Operations',
+    label: "Folder Operations",
     icon: FolderOpen,
-    description: 'Tools that modify folders',
-    tools: ['folder_create', 'folder_delete'],
+    description: "Tools that create or delete folders",
+    tools: ["folder_create", "folder_delete"],
   },
   fileRead: {
-    label: 'File Reading',
+    label: "File Reading",
     icon: FileText,
-    description: 'Safe read operations',
-    tools: ['file_read', 'file_read_lines', 'file_exists', 'file_search'],
+    description: "Safe read and search operations",
+    tools: ["file_read", "multi_file_read", "grep"],
   },
   workspace: {
-    label: 'Workspace',
+    label: "Workspace",
     icon: FolderOpen,
-    description: 'Workspace navigation',
-    tools: ['workspace_info', 'workspace_list_files', 'workspace_tree', 'workspace_find_files', 'workspace_grep'],
+    description: "Workspace navigation and structure inspection",
+    tools: ["workspace_tree"],
   },
   editor: {
-    label: 'Editor',
+    label: "Editor",
     icon: Code,
-    description: 'Editor interactions',
-    tools: ['editor_open_file', 'editor_get_active_file', 'editor_get_selection', 'editor_get_open_tabs', 'editor_insert_text', 'editor_close_tab'],
+    description: "Editor interactions and diagnostics",
+    tools: ["editor_open_file", "read_lints"],
+  },
+  search: {
+    label: "Search",
+    icon: FolderOpen,
+    description: "Semantic and web search tools",
+    tools: ["aurora_search", "auroro_websearch"],
+  },
+  task: {
+    label: "Task Management",
+    icon: FileText,
+    description: "Task tracking tools used during multi-step work",
+    tools: ["todo_write"],
   },
 };
 
 // Tool display names
 const TOOL_DISPLAY_NAMES: Record<string, string> = {
-  shell_execute: 'Execute Command',
-  shell_spawn: 'Spawn Background Process',
-  shell_kill: 'Kill Process',
-  shell_list_processes: 'List Processes',
-  file_write: 'Write File',
-  file_create: 'Create File',
-  file_delete: 'Delete File',
-  file_patch: 'Patch File',
-  file_read: 'Read File',
-  file_read_lines: 'Read Lines',
-  file_exists: 'Check Exists',
-  file_search: 'Search in File',
-  folder_create: 'Create Folder',
-  folder_delete: 'Delete Folder',
-  workspace_info: 'Get Info',
-  workspace_list_files: 'List Files',
-  workspace_tree: 'Directory Tree',
-  workspace_find_files: 'Find Files',
-  workspace_grep: 'Search/Grep',
-  editor_open_file: 'Open File',
-  editor_get_active_file: 'Get Active File',
-  editor_get_selection: 'Get Selection',
-  editor_get_open_tabs: 'Get Open Tabs',
-  editor_insert_text: 'Insert Text',
-  editor_close_tab: 'Close Tab',
+  shell_execute: "Run Command",
+  shell_spawn: "Start Background Process",
+  shell_kill: "Stop Background Process",
+  shell_list_processes: "List Background Processes",
+  file_write: "Write File",
+  file_create: "Create File",
+  file_delete: "Delete File",
+  file_patch: "Patch File",
+  file_read: "Read File",
+  multi_file_read: "Read Multiple Files",
+  grep: "Search File Contents",
+  search_replace: "Replace Text",
+  multi_search_replace: "Apply Multiple Replacements",
+  folder_create: "Create Folder",
+  folder_delete: "Delete Folder",
+  workspace_tree: "Inspect Workspace Tree",
+  editor_open_file: "Open File in Editor",
+  read_lints: "Read Diagnostics",
+  aurora_search: "Search Workspace",
+  auroro_websearch: "Search the Web",
+  todo_write: "Update Task List",
 };
 
 interface ApprovalSelectProps {
-  value: 'auto' | 'always_ask' | 'deny';
-  onChange: (value: 'auto' | 'always_ask' | 'deny') => void;
+  value: "auto" | "always_ask" | "deny";
+  onChange: (value: "auto" | "always_ask" | "deny") => void;
 }
 
 const ApprovalSelect: React.FC<ApprovalSelectProps> = ({ value, onChange }) => {
@@ -113,17 +146,19 @@ const ApprovalSelect: React.FC<ApprovalSelectProps> = ({ value, onChange }) => {
       align="end"
       ariaLabel="Select tool approval mode"
       className={clsx(
-        'w-[96px] px-2 py-1 text-[10px]',
-        value === 'auto' && 'text-success',
-        value === 'always_ask' && 'text-warning',
-        value === 'deny' && 'text-danger',
+        "w-[96px] px-2 py-1 text-[10px]",
+        value === "auto" && "text-success",
+        value === "always_ask" && "text-warning",
+        value === "deny" && "text-danger",
       )}
       options={[
-        { label: 'Auto', value: 'auto', tone: 'success' },
-        { label: 'Ask', value: 'always_ask', tone: 'warning' },
-        { label: 'Deny', value: 'deny', tone: 'danger' },
+        { label: "Auto", value: "auto", tone: "success" },
+        { label: "Ask", value: "always_ask", tone: "warning" },
+        { label: "Deny", value: "deny", tone: "danger" },
       ]}
-      onChange={(nextValue) => onChange(String(nextValue) as 'auto' | 'always_ask' | 'deny')}
+      onChange={(nextValue) =>
+        onChange(String(nextValue) as "auto" | "always_ask" | "deny")
+      }
       value={value}
     />
   );
@@ -145,9 +180,12 @@ export const ToolSettingsTab: React.FC = () => {
     setToolApproval,
   } = useSettingsStore();
 
-  const setCategoryApproval = (category: keyof typeof TOOL_CATEGORIES, setting: 'auto' | 'always_ask' | 'deny') => {
+  const setCategoryApproval = (
+    category: keyof typeof TOOL_CATEGORIES,
+    setting: "auto" | "always_ask" | "deny",
+  ) => {
     const tools = TOOL_CATEGORIES[category].tools;
-    tools.forEach(tool => setToolApproval(tool, setting));
+    tools.forEach((tool) => setToolApproval(tool, setting));
   };
 
   return (
@@ -156,8 +194,12 @@ export const ToolSettingsTab: React.FC = () => {
       <div className="rounded-[20px] p-4" style={settingsCardStyle}>
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-xs font-medium text-text-primary">Auto-approve Tools</h3>
-            <p className="text-[10px] text-text-secondary">Execute all tools without asking</p>
+            <h3 className="text-xs font-medium text-text-primary">
+              Auto-approve Tools
+            </h3>
+            <p className="text-[10px] text-text-secondary">
+              Execute all tools without asking
+            </p>
           </div>
           <TogglePill
             checked={autoApproveTools}
@@ -173,8 +215,12 @@ export const ToolSettingsTab: React.FC = () => {
       <div className="rounded-[20px] p-4" style={settingsCardStyle}>
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-xs font-medium text-text-primary">Auto-accept File Changes</h3>
-            <p className="text-[10px] text-text-secondary">Skip diff review, accept all file modifications immediately</p>
+            <h3 className="text-xs font-medium text-text-primary">
+              Auto-accept File Changes
+            </h3>
+            <p className="text-[10px] text-text-secondary">
+              Skip diff review, accept all file modifications immediately
+            </p>
           </div>
           <TogglePill
             checked={autoAcceptChanges}
@@ -186,7 +232,8 @@ export const ToolSettingsTab: React.FC = () => {
         </div>
         {autoAcceptChanges && (
           <p className="text-[10px] text-warning mt-2">
-            File changes will be applied directly without showing the diff viewer.
+            File changes will be applied directly without showing the diff
+            viewer.
           </p>
         )}
       </div>
@@ -205,20 +252,25 @@ export const ToolSettingsTab: React.FC = () => {
         <div className="rounded-[20px] p-4" style={settingsCardStyle}>
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-xs font-medium text-text-primary">Pre-save Syntax Validation</h3>
-              <p className="text-[10px] text-text-secondary">Check syntax before writing files (JSON, JS, TS, JSX, TSX, CSS)</p>
+              <h3 className="text-xs font-medium text-text-primary">
+                Pre-save Syntax Validation
+              </h3>
+              <p className="text-[10px] text-text-secondary">
+                Check syntax before writing files (JSON, JS, TS, JSX, TSX, CSS)
+              </p>
             </div>
-          <TogglePill
-            checked={syntaxValidationEnabled}
-            onChange={setSyntaxValidationEnabled}
-            ariaLabel="Toggle pre-save syntax validation"
-            variant="success"
-            size="sm"
-          />
+            <TogglePill
+              checked={syntaxValidationEnabled}
+              onChange={setSyntaxValidationEnabled}
+              ariaLabel="Toggle pre-save syntax validation"
+              variant="success"
+              size="sm"
+            />
           </div>
           {syntaxValidationEnabled && (
             <p className="text-[10px] text-success mt-2">
-              Files with syntax errors will be rejected, forcing the agent to fix them.
+              Files with syntax errors will be rejected, forcing the agent to
+              fix them.
             </p>
           )}
         </div>
@@ -229,21 +281,27 @@ export const ToolSettingsTab: React.FC = () => {
             <div className="flex items-start gap-2">
               <Map className="w-3.5 h-3.5 text-text-secondary mt-0.5" />
               <div>
-                <h3 className="text-xs font-medium text-text-primary">Project File Map</h3>
-                <p className="text-[10px] text-text-secondary">Include file tree in first message to help agent understand project structure</p>
+                <h3 className="text-xs font-medium text-text-primary">
+                  Project File Map
+                </h3>
+                <p className="text-[10px] text-text-secondary">
+                  Include file tree in first message to help agent understand
+                  project structure
+                </p>
               </div>
             </div>
-          <TogglePill
-            checked={projectLayoutEnabled}
-            onChange={setProjectLayoutEnabled}
-            ariaLabel="Toggle project file map"
-            variant="success"
-            size="sm"
-          />
+            <TogglePill
+              checked={projectLayoutEnabled}
+              onChange={setProjectLayoutEnabled}
+              ariaLabel="Toggle project file map"
+              variant="success"
+              size="sm"
+            />
           </div>
           {projectLayoutEnabled && (
             <p className="text-[10px] text-success mt-2">
-              Agent will receive a file tree snapshot at conversation start for better path awareness.
+              Agent will receive a file tree snapshot at conversation start for
+              better path awareness.
             </p>
           )}
         </div>
@@ -253,10 +311,16 @@ export const ToolSettingsTab: React.FC = () => {
       <div className="rounded-[20px] p-4" style={settingsCardStyle}>
         <div className="flex items-center justify-between mb-2">
           <div>
-            <h3 className="text-xs font-medium text-text-primary">Max Tool Calls per Request</h3>
-            <p className="text-[10px] text-text-secondary">Limit iterations per conversation turn</p>
+            <h3 className="text-xs font-medium text-text-primary">
+              Max Tool Calls per Request
+            </h3>
+            <p className="text-[10px] text-text-secondary">
+              Limit iterations per conversation turn
+            </p>
           </div>
-          <span className="text-xs font-mono text-primary">{maxToolCallsPerRequest}</span>
+          <span className="text-xs font-mono text-primary">
+            {maxToolCallsPerRequest}
+          </span>
         </div>
         <input
           type="range"
@@ -275,7 +339,8 @@ export const ToolSettingsTab: React.FC = () => {
           <div className="flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 text-warning shrink-0 mt-0.5" />
             <p className="text-[10px] text-text-secondary">
-              Global auto-approve is enabled. Individual tool settings below are ignored.
+              Global auto-approve is enabled. Individual tool settings below are
+              ignored.
             </p>
           </div>
         </div>
@@ -283,42 +348,62 @@ export const ToolSettingsTab: React.FC = () => {
 
       {/* Per-Tool Settings */}
       <div className="space-y-2">
-        <h3 className="text-xs font-medium text-text-primary">Per-Tool Approval</h3>
+        <h3 className="text-xs font-medium text-text-primary">
+          Per-Tool Approval
+        </h3>
         <p className="text-[10px] text-text-secondary mb-2">
           Configure approval requirements for each tool category
         </p>
 
         {Object.entries(TOOL_CATEGORIES).map(([categoryKey, category]) => {
           const Icon = category.icon;
-          const isDangerous = ['shell', 'fileWrite', 'folderOps'].includes(categoryKey);
-          
+          const isDangerous = ["shell", "fileWrite", "folderOps"].includes(
+            categoryKey,
+          );
+
           return (
-            <div 
-              key={categoryKey} 
-              className={clsx(
-                "rounded-[20px] p-4",
-                isDangerous ? "" : ""
-              )}
+            <div
+              key={categoryKey}
+              className={clsx("rounded-[20px] p-4", isDangerous ? "" : "")}
               style={isDangerous ? settingsDangerPanelStyle : settingsCardStyle}
             >
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
-                  <Icon className={clsx("w-4 h-4", isDangerous ? "text-warning" : "text-text-secondary")} />
+                  <Icon
+                    className={clsx(
+                      "w-4 h-4",
+                      isDangerous ? "text-warning" : "text-text-secondary",
+                    )}
+                  />
                   <div>
-                    <h4 className="text-xs font-medium text-text-primary">{category.label}</h4>
-                    <p className="text-[10px] text-text-disabled">{category.description}</p>
+                    <h4 className="text-xs font-medium text-text-primary">
+                      {category.label}
+                    </h4>
+                    <p className="text-[10px] text-text-disabled">
+                      {category.description}
+                    </p>
                   </div>
                 </div>
                 <div className="flex gap-1">
                   <button
-                    onClick={() => setCategoryApproval(categoryKey as keyof typeof TOOL_CATEGORIES, 'auto')}
+                    onClick={() =>
+                      setCategoryApproval(
+                        categoryKey as keyof typeof TOOL_CATEGORIES,
+                        "auto",
+                      )
+                    }
                     className="rounded-full px-2.5 py-1 text-[9px] font-semibold text-primary-foreground"
                     style={settingsPrimaryButtonStyle}
                   >
                     All Auto
                   </button>
                   <button
-                    onClick={() => setCategoryApproval(categoryKey as keyof typeof TOOL_CATEGORIES, 'always_ask')}
+                    onClick={() =>
+                      setCategoryApproval(
+                        categoryKey as keyof typeof TOOL_CATEGORIES,
+                        "always_ask",
+                      )
+                    }
                     className="rounded-full px-2.5 py-1 text-[9px] font-semibold text-warning"
                     style={settingsSubtlePanelStyle}
                   >
@@ -329,12 +414,16 @@ export const ToolSettingsTab: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-1.5">
                 {category.tools.map((tool) => (
-                  <div key={tool} className="flex items-center justify-between rounded-[16px] px-3 py-2" style={settingsSubtlePanelStyle}>
+                  <div
+                    key={tool}
+                    className="flex items-center justify-between rounded-[16px] px-3 py-2"
+                    style={settingsSubtlePanelStyle}
+                  >
                     <span className="text-[10px] text-text-secondary truncate">
                       {TOOL_DISPLAY_NAMES[tool] || tool}
                     </span>
                     <ApprovalSelect
-                      value={toolApprovalSettings[tool] || 'always_ask'}
+                      value={toolApprovalSettings[tool] || "always_ask"}
                       onChange={(value) => setToolApproval(tool, value)}
                     />
                   </div>
@@ -350,7 +439,9 @@ export const ToolSettingsTab: React.FC = () => {
         <div className="flex items-center gap-4 text-[10px]">
           <span className="flex items-center gap-1">
             <span className="w-2 h-2 rounded-full bg-success"></span>
-            <span className="text-text-secondary">Auto: Execute immediately</span>
+            <span className="text-text-secondary">
+              Auto: Execute immediately
+            </span>
           </span>
           <span className="flex items-center gap-1">
             <span className="w-2 h-2 rounded-full bg-warning"></span>
@@ -365,4 +456,3 @@ export const ToolSettingsTab: React.FC = () => {
     </div>
   );
 };
-

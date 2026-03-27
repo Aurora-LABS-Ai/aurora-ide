@@ -1,10 +1,32 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-import { deletePath, isTauri, readDirectory, readFileContent, writeFileContent } from "../lib/tauri";
-import { threadService, type DbMessage, type DbThread } from "../services/thread-service";
+import {
+  deletePath,
+  isTauri,
+  readDirectory,
+  readFileContent,
+  writeFileContent,
+} from "../lib/tauri";
+import {
+  threadService,
+  type DbMessage,
+  type DbThread,
+  type ThreadSummary as ServiceThreadSummary,
+} from "../services/thread-service";
 import type { Message } from "../types";
 import { useContextStore } from "./useContextStore";
+
+type PersistedMessageShape = {
+  isThinking?: boolean;
+  role?: string;
+  sender?: Message["sender"] | string;
+  thinking?: string;
+  timeline?: Message["timeline"];
+  tool_calls?: Message["tools"];
+  toolProposal?: Message["toolProposal"];
+  tools?: Message["tools"];
+};
 
 interface ThreadState {
   // Message actions
@@ -34,7 +56,10 @@ interface ThreadState {
   updateThreadTitle: (threadId: string, title: string) => void;
 
   // Token/Context usage tracking
-  updateThreadUsage: (tokenUsage: TokenUsage, contextUsage: ContextUsage) => void;
+  updateThreadUsage: (
+    tokenUsage: TokenUsage,
+    contextUsage: ContextUsage,
+  ) => void;
 }
 
 export interface ContextUsage {
@@ -78,34 +103,57 @@ const fromDbThread = (dbThread: DbThread): Thread => ({
   title: dbThread.title,
   createdAt: Date.parse(dbThread.created_at) || Date.now(),
   updatedAt: Date.parse(dbThread.updated_at) || Date.now(),
-  messages: (dbThread.messages || []).map((m: DbMessage) => ({
-    id: m.id,
-    sender: (m as any).sender || (m as any).role || 'assistant',
-    content: m.content,
-    timestamp: Date.parse(m.timestamp) || Date.now(),
-    thinking: (m as any).thinking,
-    isThinking: (m as any).isThinking,
-    tools: (m as any).tools || (m as any).tool_calls,
-    timeline: (m as any).timeline,
-    toolProposal: (m as any).toolProposal,
-  })),
-  tokenUsage: dbThread.token_usage ? {
-    promptTokens: dbThread.token_usage.promptTokens,
-    completionTokens: dbThread.token_usage.completionTokens,
-    totalTokens: dbThread.token_usage.totalTokens,
-  } : undefined,
-  contextUsage: dbThread.context_usage ? {
-    usedTokens: dbThread.context_usage.usedTokens,
-    contextWindow: dbThread.context_usage.contextWindow,
-    percentage: dbThread.context_usage.percentage,
-  } : undefined,
+  messages: (dbThread.messages || []).map((m: DbMessage) => {
+    const persisted = m as unknown as PersistedMessageShape;
+    const sender =
+      persisted.sender === "user" || persisted.role === "user"
+        ? "user"
+        : "assistant";
+
+    return {
+      id: m.id,
+      sender,
+      content: m.content,
+      timestamp: Date.parse(m.timestamp) || Date.now(),
+      thinking: persisted.thinking,
+      isThinking: persisted.isThinking,
+      tools: persisted.tools || persisted.tool_calls,
+      timeline: persisted.timeline,
+      toolProposal: persisted.toolProposal,
+    };
+  }),
+  tokenUsage: dbThread.token_usage
+    ? {
+        promptTokens: dbThread.token_usage.promptTokens,
+        completionTokens: dbThread.token_usage.completionTokens,
+        totalTokens: dbThread.token_usage.totalTokens,
+      }
+    : undefined,
+  contextUsage: dbThread.context_usage
+    ? {
+        usedTokens: dbThread.context_usage.usedTokens,
+        contextWindow: dbThread.context_usage.contextWindow,
+        percentage: dbThread.context_usage.percentage,
+      }
+    : undefined,
+});
+
+export const fromServiceThreadSummary = (
+  summary: ServiceThreadSummary,
+): ThreadSummary => ({
+  id: summary.id,
+  title: summary.title,
+  createdAt: Date.parse(summary.createdAt) || Date.now(),
+  updatedAt: Date.parse(summary.updatedAt) || Date.now(),
+  messageCount: summary.messageCount,
+  preview: summary.preview,
 });
 
 // Generate UUID
 const generateUUID = (): string => {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = Math.random() * 16 | 0;
-    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
 };
@@ -117,41 +165,184 @@ const getThreadFilePath = (threadId: string): string => {
 
 // Get threads directory path
 const getThreadsDir = (): string => {
-  return '.aurora/threads';
+  return ".aurora/threads";
 };
 const isDevMode = (): boolean => {
-  if (typeof import.meta !== 'undefined' && (import.meta as any).env?.MODE) {
-    return (import.meta as any).env.MODE === 'development';
-  }
-  return false;
+  const env =
+    typeof import.meta !== "undefined"
+      ? (import.meta as ImportMeta & { env?: { MODE?: string } }).env
+      : undefined;
+
+  return env?.MODE === "development";
 };
-const toDbMessage = (message: Message): DbMessage => ({
-  id: message.id,
-  role: (message as any).role || (message as any).sender || 'assistant',
-  content: message.content,
-  timestamp: new Date(message.timestamp).toISOString(),
-  tool_calls: (message as any).tool_calls,
-  thinking: message.thinking,
-  isThinking: (message as any).isThinking,
-  tools: (message as any).tools,
-  timeline: (message as any).timeline,
-  toolProposal: (message as any).toolProposal,
-});
+
+/**
+ * DevPersistenceManager - Centralized file-based persistence for development
+ *
+ * This consolidates all dev-mode file operations into a single controlled mechanism.
+ * All file-based persistence goes through this manager to avoid dual persistence issues.
+ */
+class DevPersistenceManager {
+  private enabled: boolean;
+
+  constructor() {
+    // File persistence only enabled in dev mode
+    this.enabled = isDevMode();
+  }
+
+  /**
+   * Check if file-based persistence is enabled
+   */
+  isEnabled(): boolean {
+    return this.enabled;
+  }
+
+  /**
+   * Enable/disable file persistence at runtime (for testing/debugging)
+   */
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled;
+  }
+
+  /**
+   * Save thread to file (dev mode only)
+   */
+  async saveThread(thread: Thread): Promise<void> {
+    if (!this.enabled) return;
+
+    try {
+      const filePath = getThreadFilePath(thread.id);
+      const content = JSON.stringify(thread, null, 2);
+      await writeFileContent(filePath, content);
+      console.log(`[DevPersistence] Saved thread ${thread.id} to file`);
+    } catch (error) {
+      console.error("[DevPersistence] Failed to save thread to file:", error);
+    }
+  }
+
+  /**
+   * Load thread from file (dev mode only, fallback)
+   */
+  async loadThread(threadId: string): Promise<Thread | null> {
+    if (!this.enabled) return null;
+
+    try {
+      const filePath = getThreadFilePath(threadId);
+      const content = await readFileContent(filePath);
+      const thread: Thread = JSON.parse(content);
+      return thread;
+    } catch (error) {
+      console.error("[DevPersistence] Failed to load thread from file:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Delete thread file (dev mode only)
+   */
+  async deleteThread(threadId: string): Promise<void> {
+    if (!this.enabled) return;
+
+    try {
+      const filePath = getThreadFilePath(threadId);
+      await deletePath(filePath);
+      console.log(`[DevPersistence] Deleted thread file ${threadId}`);
+    } catch (error) {
+      console.error("[DevPersistence] Failed to delete thread file:", error);
+    }
+  }
+
+  /**
+   * Load all threads from files (dev mode only, as supplementary source)
+   * Returns threads not already found in the database
+   */
+  async loadAllThreads(
+    existingThreadIds: Set<string>,
+  ): Promise<{ threads: Thread[]; summaries: ThreadSummary[] }> {
+    if (!this.enabled) {
+      return { threads: [], summaries: [] };
+    }
+
+    const threads: Thread[] = [];
+    const summaries: ThreadSummary[] = [];
+
+    try {
+      const threadsDir = getThreadsDir();
+      const entries = await readDirectory(threadsDir);
+
+      for (const entry of entries) {
+        if (!entry.is_dir && entry.name.endsWith(".json")) {
+          try {
+            const content = await readFileContent(entry.path);
+            const thread: Thread = JSON.parse(content);
+
+            // Only add threads not already in database
+            if (!existingThreadIds.has(thread.id)) {
+              threads.push(thread);
+              const lastMessage = thread.messages[thread.messages.length - 1];
+              summaries.push({
+                id: thread.id,
+                title: thread.title,
+                createdAt: thread.createdAt,
+                updatedAt: thread.updatedAt,
+                messageCount: thread.messages.length,
+                preview: lastMessage?.content?.slice(0, 100) || "",
+              });
+            }
+          } catch (err) {
+            console.error(
+              "[DevPersistence] Failed to load thread file:",
+              entry.path,
+              err,
+            );
+          }
+        }
+      }
+    } catch {
+      // Directory may not exist yet - that's okay
+    }
+
+    return { threads, summaries };
+  }
+}
+
+// Singleton instance
+const devPersistence = new DevPersistenceManager();
+const toDbMessage = (message: Message): DbMessage => {
+  const persisted = message as PersistedMessageShape;
+
+  return {
+    id: message.id,
+    role: persisted.role || persisted.sender || "assistant",
+    content: message.content,
+    timestamp: new Date(message.timestamp).toISOString(),
+    tool_calls: persisted.tool_calls as DbMessage["tool_calls"],
+    thinking: message.thinking,
+    isThinking: persisted.isThinking,
+    tools: persisted.tools as DbMessage["tools"],
+    timeline: persisted.timeline,
+    toolProposal: persisted.toolProposal,
+  };
+};
 const toDbThread = (thread: Thread): DbThread => ({
   id: thread.id,
   title: thread.title,
   summary: null,
   messages: thread.messages.map(toDbMessage),
-  token_usage: thread.tokenUsage ? {
-    promptTokens: thread.tokenUsage.promptTokens,
-    completionTokens: thread.tokenUsage.completionTokens,
-    totalTokens: thread.tokenUsage.totalTokens,
-  } : null,
-  context_usage: thread.contextUsage ? {
-    usedTokens: thread.contextUsage.usedTokens,
-    contextWindow: thread.contextUsage.contextWindow,
-    percentage: thread.contextUsage.percentage,
-  } : null,
+  token_usage: thread.tokenUsage
+    ? {
+        promptTokens: thread.tokenUsage.promptTokens,
+        completionTokens: thread.tokenUsage.completionTokens,
+        totalTokens: thread.tokenUsage.totalTokens,
+      }
+    : null,
+  context_usage: thread.contextUsage
+    ? {
+        usedTokens: thread.contextUsage.usedTokens,
+        contextWindow: thread.contextUsage.contextWindow,
+        percentage: thread.contextUsage.percentage,
+      }
+    : null,
   created_at: new Date(thread.createdAt).toISOString(),
   updated_at: new Date(thread.updatedAt).toISOString(),
 });
@@ -160,7 +351,7 @@ export const getStreamingState = () => isCurrentlyStreaming;
 export const setStreamingState = (streaming: boolean) => {
   const wasStreaming = isCurrentlyStreaming;
   isCurrentlyStreaming = streaming;
-  
+
   // When streaming ends, save the thread ONCE
   if (wasStreaming && !streaming) {
     useThreadStore.getState().saveCurrentThread();
@@ -189,25 +380,30 @@ let isCurrentlyStreaming = false;
 // Threads are now stored in SQLite, not localStorage
 // Clear old localStorage data to free up space
 try {
-  const oldData = localStorage.getItem('aurora-threads');
+  const oldData = localStorage.getItem("aurora-threads");
   if (oldData) {
     const parsed = JSON.parse(oldData);
     // If old data has threads/threadList, it's the old format - clear it
     if (parsed.state?.threads || parsed.state?.threadList) {
       // Keep only currentThreadId
       const currentThreadId = parsed.state?.currentThreadId || null;
-      localStorage.setItem('aurora-threads', JSON.stringify({
-        state: { currentThreadId },
-        version: parsed.version || 0,
-      }));
-      console.log('[ThreadStore] Cleaned up old localStorage data - threads now stored in database');
+      localStorage.setItem(
+        "aurora-threads",
+        JSON.stringify({
+          state: { currentThreadId },
+          version: parsed.version || 0,
+        }),
+      );
+      console.log(
+        "[ThreadStore] Cleaned up old localStorage data - threads now stored in database",
+      );
     }
   }
-} catch (e) {
+} catch {
   // If localStorage is corrupted, just clear it
   try {
-    localStorage.removeItem('aurora-threads');
-    console.log('[ThreadStore] Cleared corrupted localStorage data');
+    localStorage.removeItem("aurora-threads");
+    console.log("[ThreadStore] Cleared corrupted localStorage data");
   } catch {
     // Ignore - localStorage might be completely full
   }
@@ -230,7 +426,7 @@ export const useThreadStore = create<ThreadState>()(
 
         const newThread: Thread = {
           id: threadId,
-          title: 'New Chat',
+          title: "New Chat",
           createdAt: now,
           updatedAt: now,
           messages: [],
@@ -245,11 +441,11 @@ export const useThreadStore = create<ThreadState>()(
           threadList: [
             {
               id: threadId,
-              title: 'New Chat',
+              title: "New Chat",
               createdAt: now,
               updatedAt: now,
               messageCount: 0,
-              preview: '',
+              preview: "",
             },
             ...state.threadList,
           ],
@@ -258,16 +454,23 @@ export const useThreadStore = create<ThreadState>()(
         // Save to Rust immediately so it exists in DB
         // This is fire-and-forget but ensures thread exists for API history
         if (isTauri()) {
-          threadService.saveThread({
-            id: threadId,
-            title: 'New Chat',
-            summary: null,
-            messages: [],
-            token_usage: null,
-            context_usage: null,
-            created_at: new Date(now).toISOString(),
-            updated_at: new Date(now).toISOString(),
-          }).catch(err => console.error('[ThreadStore] Failed to save new thread to Rust:', err));
+          threadService
+            .saveThread({
+              id: threadId,
+              title: "New Chat",
+              summary: null,
+              messages: [],
+              token_usage: null,
+              context_usage: null,
+              created_at: new Date(now).toISOString(),
+              updated_at: new Date(now).toISOString(),
+            })
+            .catch((err) =>
+              console.error(
+                "[ThreadStore] Failed to save new thread to Rust:",
+                err,
+              ),
+            );
         }
 
         return threadId;
@@ -279,8 +482,12 @@ export const useThreadStore = create<ThreadState>()(
           set({ currentThreadId: threadId });
           // CRITICAL: Restore context usage from thread when switching
           // This prevents the context indicator from resetting to 0
-          useContextStore.getState().restoreFromThread(existingThread.contextUsage);
-          console.log(`[ThreadStore] Loaded thread ${threadId} from memory (${existingThread.messages.length} messages)`);
+          useContextStore
+            .getState()
+            .restoreFromThread(existingThread.contextUsage);
+          console.log(
+            `[ThreadStore] Loaded thread ${threadId} from memory (${existingThread.messages.length} messages)`,
+          );
           return existingThread;
         } else {
           // Must wait for file load to complete before returning
@@ -295,8 +502,12 @@ export const useThreadStore = create<ThreadState>()(
             }));
             // CRITICAL: Restore context usage from thread when switching
             // This prevents the context indicator from resetting to 0
-            useContextStore.getState().restoreFromThread(loadedThread.contextUsage);
-            console.log(`[ThreadStore] Loaded thread ${threadId} from file (${loadedThread.messages.length} messages)`);
+            useContextStore
+              .getState()
+              .restoreFromThread(loadedThread.contextUsage);
+            console.log(
+              `[ThreadStore] Loaded thread ${threadId} from file (${loadedThread.messages.length} messages)`,
+            );
             return loadedThread;
           }
           console.warn(`[ThreadStore] Failed to load thread ${threadId}`);
@@ -305,37 +516,35 @@ export const useThreadStore = create<ThreadState>()(
       },
 
       deleteThread: async (threadId) => {
-        // Use Rust thread service
+        // Use Rust thread service (primary persistence)
         if (isTauri()) {
           try {
             await threadService.deleteThread(threadId);
           } catch (error) {
-            console.error('Failed to delete thread via Rust:', error);
+            console.error("Failed to delete thread via Rust:", error);
           }
         }
 
-        // Also delete file in dev mode
-        if (isDevMode()) {
-          try {
-            const filePath = getThreadFilePath(threadId);
-            await deletePath(filePath);
-          } catch (error) {
-            console.error('Failed to delete thread file (dev):', error);
-          }
-        }
+        // Dev mode file cleanup (centralized through DevPersistenceManager)
+        await devPersistence.deleteThread(threadId);
 
         set((state) => {
-          const { [threadId]: _, ...remainingThreads } = state.threads;
+          const remainingThreads = Object.fromEntries(
+            Object.entries(state.threads).filter(([id]) => id !== threadId),
+          ) as Record<string, Thread>;
+
           return {
             threads: remainingThreads,
             threadList: state.threadList.filter((t) => t.id !== threadId),
-            currentThreadId: state.currentThreadId === threadId ? null : state.currentThreadId,
+            currentThreadId:
+              state.currentThreadId === threadId ? null : state.currentThreadId,
           };
         });
       },
 
       deleteThreadFile: async (_threadId) => {
         // Legacy - now handled by deleteThread
+        void _threadId;
         return true;
       },
 
@@ -350,7 +559,7 @@ export const useThreadStore = create<ThreadState>()(
               [threadId]: { ...thread, title, updatedAt: Date.now() },
             },
             threadList: state.threadList.map((t) =>
-              t.id === threadId ? { ...t, title, updatedAt: Date.now() } : t
+              t.id === threadId ? { ...t, title, updatedAt: Date.now() } : t,
             ),
           };
         });
@@ -369,8 +578,10 @@ export const useThreadStore = create<ThreadState>()(
           updatedAt: Date.now(),
         };
 
-        if (message.sender === 'user' && thread.messages.length === 0) {
-          updatedThread.title = message.content.slice(0, 50) + (message.content.length > 50 ? '...' : '');
+        if (message.sender === "user" && thread.messages.length === 0) {
+          updatedThread.title =
+            message.content.slice(0, 50) +
+            (message.content.length > 50 ? "..." : "");
         }
 
         set((state) => ({
@@ -381,18 +592,18 @@ export const useThreadStore = create<ThreadState>()(
           threadList: state.threadList.map((t) =>
             t.id === currentThreadId
               ? {
-                ...t,
-                title: updatedThread.title,
-                updatedAt: updatedThread.updatedAt,
-                messageCount: updatedThread.messages.length,
-                preview: message.content.slice(0, 100),
-              }
-              : t
+                  ...t,
+                  title: updatedThread.title,
+                  updatedAt: updatedThread.updatedAt,
+                  messageCount: updatedThread.messages.length,
+                  preview: message.content.slice(0, 100),
+                }
+              : t,
           ),
         }));
 
         // Save when user sends message - force save even during streaming setup
-        if (message.sender === 'user') {
+        if (message.sender === "user") {
           get().saveCurrentThread(true);
         }
       },
@@ -405,7 +616,7 @@ export const useThreadStore = create<ThreadState>()(
         if (!thread) return;
 
         const updatedMessages = thread.messages.map((msg) =>
-          msg.id === messageId ? { ...msg, ...updates } : msg
+          msg.id === messageId ? { ...msg, ...updates } : msg,
         );
 
         set((state) => ({
@@ -430,7 +641,9 @@ export const useThreadStore = create<ThreadState>()(
         if (!thread) return;
 
         // Find the index of the message
-        const messageIndex = thread.messages.findIndex(msg => msg.id === messageId);
+        const messageIndex = thread.messages.findIndex(
+          (msg) => msg.id === messageId,
+        );
         if (messageIndex === -1) return;
 
         // If includeMessage is true, remove this message too (for checkpoint restore)
@@ -453,11 +666,11 @@ export const useThreadStore = create<ThreadState>()(
           threadList: state.threadList.map((t) =>
             t.id === currentThreadId
               ? {
-                ...t,
-                updatedAt: updatedThread.updatedAt,
-                messageCount: updatedMessages.length,
-              }
-              : t
+                  ...t,
+                  updatedAt: updatedThread.updatedAt,
+                  messageCount: updatedMessages.length,
+                }
+              : t,
           ),
         }));
 
@@ -493,7 +706,7 @@ export const useThreadStore = create<ThreadState>()(
         if (isCurrentlyStreaming && !force) {
           return;
         }
-        
+
         const { currentThreadId, threads } = get();
         if (!currentThreadId) return;
 
@@ -507,15 +720,14 @@ export const useThreadStore = create<ThreadState>()(
         try {
           // Use Rust thread service for persistence
           await threadService.saveThread(toDbThread(thread));
-          console.log(`[ThreadStore] Saved thread ${currentThreadId} (${thread.messages.length} messages)`);
-          
-          if (isDevMode()) {
-            const filePath = getThreadFilePath(currentThreadId);
-            const content = JSON.stringify(thread, null, 2);
-            await writeFileContent(filePath, content);
-          }
+          console.log(
+            `[ThreadStore] Saved thread ${currentThreadId} (${thread.messages.length} messages)`,
+          );
+
+          // File persistence in dev mode (centralized through DevPersistenceManager)
+          await devPersistence.saveThread(thread);
         } catch (error) {
-          console.error('Failed to save thread:', error);
+          console.error("Failed to save thread:", error);
         }
       },
 
@@ -526,26 +738,16 @@ export const useThreadStore = create<ThreadState>()(
 
         try {
           // Use Rust thread service
-          const dbThread = await threadService.getThread(threadId);
+          const dbThread = await threadService.loadThread(threadId);
           if (dbThread) {
             return fromDbThread(dbThread);
           }
         } catch (error) {
-          console.error('Failed to load thread from Rust service:', error);
+          console.error("Failed to load thread from Rust service:", error);
         }
 
-        if (isDevMode()) {
-          try {
-            const filePath = getThreadFilePath(threadId);
-            const content = await readFileContent(filePath);
-            const thread: Thread = JSON.parse(content);
-            return thread;
-          } catch (error) {
-            console.error('Failed to load thread from file:', error);
-          }
-        }
-
-        return null;
+        // Dev mode fallback to files
+        return await devPersistence.loadThread(threadId);
       },
 
       loadAllThreadsFromFiles: async () => {
@@ -556,65 +758,32 @@ export const useThreadStore = create<ThreadState>()(
         set({ isLoading: true });
 
         try {
+          const loadedThreadList = (await threadService.listThreads()).map(
+            fromServiceThreadSummary,
+          );
+
+          // Dev mode: Load any threads from files not in database
+          const existingIds = new Set(
+            loadedThreadList.map((thread) => thread.id),
+          );
+          const { threads: fileThreads, summaries: fileSummaries } =
+            await devPersistence.loadAllThreads(existingIds);
+
           const loadedThreads: Record<string, Thread> = {};
-          const loadedThreadList: ThreadSummary[] = [];
-
-          // Use Rust thread service to list all threads
-          const dbThreads = await threadService.listFullThreads();
-          for (const dbThread of dbThreads) {
-            const thread = fromDbThread(dbThread);
+          for (const thread of fileThreads) {
             loadedThreads[thread.id] = thread;
-            const lastMessage = thread.messages[thread.messages.length - 1];
-            loadedThreadList.push({
-              id: thread.id,
-              title: thread.title,
-              createdAt: thread.createdAt,
-              updatedAt: thread.updatedAt,
-              messageCount: thread.messages.length,
-              preview: lastMessage?.content?.slice(0, 100) || '',
-            });
           }
 
-          if (isDevMode()) {
-            const threadsDir = getThreadsDir();
-            try {
-              const entries = await readDirectory(threadsDir);
-              for (const entry of entries) {
-                if (!entry.is_dir && entry.name.endsWith('.json')) {
-                  try {
-                    const content = await readFileContent(entry.path);
-                    const thread: Thread = JSON.parse(content);
-                    if (!loadedThreads[thread.id]) {
-                      loadedThreads[thread.id] = thread;
-                      const lastMessage = thread.messages[thread.messages.length - 1];
-                      loadedThreadList.push({
-                        id: thread.id,
-                        title: thread.title,
-                        createdAt: thread.createdAt,
-                        updatedAt: thread.updatedAt,
-                        messageCount: thread.messages.length,
-                        preview: lastMessage?.content?.slice(0, 100) || '',
-                      });
-                    }
-                  } catch (err) {
-                    console.error('Failed to load thread file:', entry.path, err);
-                  }
-                }
-              }
-            } catch {
-              // Directory may not exist yet
-            }
-          }
-
-          loadedThreadList.sort((a, b) => b.updatedAt - a.updatedAt);
+          const mergedThreadList = [...loadedThreadList, ...fileSummaries];
+          mergedThreadList.sort((a, b) => b.updatedAt - a.updatedAt);
 
           set((state) => ({
             threads: { ...state.threads, ...loadedThreads },
-            threadList: loadedThreadList,
+            threadList: mergedThreadList,
             isLoading: false,
           }));
         } catch (error) {
-          console.error('Failed to load threads:', error);
+          console.error("Failed to load threads:", error);
           set({ isLoading: false });
         }
       },
@@ -628,7 +797,7 @@ export const useThreadStore = create<ThreadState>()(
       },
     }),
     {
-      name: 'aurora-threads',
+      name: "aurora-threads",
       // Only persist currentThreadId - threads are stored in SQLite database
       // This prevents localStorage quota exceeded errors
       partialize: (state) => ({
@@ -639,36 +808,54 @@ export const useThreadStore = create<ThreadState>()(
       // we need to either load it from DB or clear the ID
       onRehydrateStorage: () => (state) => {
         if (state?.currentThreadId) {
-          console.log('[ThreadStore] Rehydrated with currentThreadId:', state.currentThreadId);
+          console.log(
+            "[ThreadStore] Rehydrated with currentThreadId:",
+            state.currentThreadId,
+          );
           // Thread won't exist in memory on fresh load - this is expected
           // ChatPanel will handle creating a new thread if needed
           // But we should clear stale IDs that don't exist in DB
           if (isTauri()) {
-            threadService.getThread(state.currentThreadId).then(dbThread => {
-              if (dbThread) {
-                // Thread exists in DB - load it into memory
-                const thread = fromDbThread(dbThread);
-                useThreadStore.setState((s) => ({
-                  threads: { ...s.threads, [thread.id]: thread },
-                }));
-                // CRITICAL: Restore context usage from thread on app startup
-                // This ensures the context indicator shows correct usage after restart
-                useContextStore.getState().restoreFromThread(thread.contextUsage);
-                console.log('[ThreadStore] Loaded persisted thread from DB:', thread.id, 
-                  thread.contextUsage ? `(context: ${thread.contextUsage.usedTokens} tokens)` : '(no context data)');
-              } else {
-                // Thread doesn't exist in DB - clear the stale ID
-                console.log('[ThreadStore] Persisted thread not found in DB, clearing');
+            threadService
+              .loadThread(state.currentThreadId)
+              .then((dbThread) => {
+                if (dbThread) {
+                  // Thread exists in DB - load it into memory
+                  const thread = fromDbThread(dbThread);
+                  useThreadStore.setState((s) => ({
+                    threads: { ...s.threads, [thread.id]: thread },
+                  }));
+                  // CRITICAL: Restore context usage from thread on app startup
+                  // This ensures the context indicator shows correct usage after restart
+                  useContextStore
+                    .getState()
+                    .restoreFromThread(thread.contextUsage);
+                  console.log(
+                    "[ThreadStore] Loaded persisted thread from DB:",
+                    thread.id,
+                    thread.contextUsage
+                      ? `(context: ${thread.contextUsage.usedTokens} tokens)`
+                      : "(no context data)",
+                  );
+                } else {
+                  // Thread doesn't exist in DB - clear the stale ID
+                  console.log(
+                    "[ThreadStore] Persisted thread not found in DB, clearing",
+                  );
+                  useThreadStore.setState({ currentThreadId: null });
+                }
+              })
+              .catch((err) => {
+                console.error(
+                  "[ThreadStore] Failed to verify persisted thread:",
+                  err,
+                );
+                // On error, clear to be safe
                 useThreadStore.setState({ currentThreadId: null });
-              }
-            }).catch(err => {
-              console.error('[ThreadStore] Failed to verify persisted thread:', err);
-              // On error, clear to be safe
-              useThreadStore.setState({ currentThreadId: null });
-            });
+              });
           }
         }
       },
-    }
-  )
+    },
+  ),
 );

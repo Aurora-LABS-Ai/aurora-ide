@@ -1,20 +1,20 @@
 /**
  * THEME ARCHITECTURE NOTICE:
- * 
+ *
  * This project uses a centralized theme system. DO NOT use hardcoded colors.
- * 
+ *
  * Instead of:
  *   - Hardcoded hex values: #ff0000, #1a1a1a
  *   - Hardcoded RGB values: rgb(255, 0, 0)
  *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
- * 
+ *
  * Use theme tokens via CSS variables:
  *   - CSS: var(--aurora-{category}-{token})
  *   - Tailwind: bg-[var(--aurora-editor-background)]
  *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
- * 
+ *
  * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
- * 
+ *
  * See: DOCS/theme-dev.md for full token reference
  * See: src/types/theme.ts for TypeScript interfaces
  * See: src/services/theme-service.ts for theme utilities
@@ -38,12 +38,20 @@ import { ThemePanel } from "../theme/ThemePanel";
 import { AgentModeLayout } from "../agent";
 import { useUiStore } from "../../store/useUiStore";
 import { useRustChatSync } from "../../hooks/useRustChatSync";
+import { useWorkspaceSessionReset } from "../../hooks/useWorkspaceSessionReset";
 import { useTerminalStore } from "../../store/useTerminalStore";
 import { useGitStore } from "../../store/useGitStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 
 export const MainLayout: React.FC = () => {
-  const { isChatOpen, detachedChat, setSettingsOpen, isSidebarOpen, toggleSidebar, isAgentMode } = useUiStore();
+  const {
+    isChatOpen,
+    detachedChat,
+    setSettingsOpen,
+    isSidebarOpen,
+    toggleSidebar,
+    isAgentMode,
+  } = useUiStore();
   const { isOpen: isTerminalOpen } = useTerminalStore();
   const status = useGitStore((state) => state.status);
   const initializeGit = useGitStore((state) => state.initialize);
@@ -51,21 +59,24 @@ export const MainLayout: React.FC = () => {
   const rootPath = useWorkspaceStore((state) => state.rootPath);
 
   // Sidebar panel state
-  const [activePanel, setActivePanel] = useState<SidebarPanel>('explorer');
+  const [activePanel, setActivePanel] = useState<SidebarPanel>("explorer");
 
   // Initialize Rust-based cross-window state sync (bulletproof)
   useRustChatSync();
 
+  // Reset active chat session when switching workspaces
+  useWorkspaceSessionReset();
+
   // Global Shortcut for Sidebar Toggle
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
         e.preventDefault();
         toggleSidebar();
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, [toggleSidebar]);
 
   // Initialize git state as soon as a workspace is available.
@@ -128,13 +139,14 @@ export const MainLayout: React.FC = () => {
                 maxSize={25}
                 className="bg-sidebar"
                 style={{
-                  background: 'color-mix(in srgb, var(--aurora-sidebar-background) 88%, var(--aurora-editor-background) 12%)',
+                  background:
+                    "color-mix(in srgb, var(--aurora-sidebar-background) 88%, var(--aurora-editor-background) 12%)",
                 }}
               >
-                {activePanel === 'explorer' && <FileExplorer />}
-                {activePanel === 'git' && <GitPanel />}
-                {activePanel === 'search' && <SearchPanel />}
-                {activePanel === 'theme' && <ThemePanel />}
+                {activePanel === "explorer" && <FileExplorer />}
+                {activePanel === "git" && <GitPanel />}
+                {activePanel === "search" && <SearchPanel />}
+                {activePanel === "theme" && <ThemePanel />}
               </Panel>
 
               <PanelResizeHandle className="w-[1px] bg-border hover:bg-primary transition-colors" />
@@ -151,11 +163,7 @@ export const MainLayout: React.FC = () => {
             <div className="h-full flex flex-col">
               {/* Main content area */}
               <div className="flex-1 min-h-0 overflow-hidden">
-                {isAgentMode ? (
-                  <AgentModeLayout />
-                ) : (
-                  <EditorPanel />
-                )}
+                {isAgentMode ? <AgentModeLayout /> : <EditorPanel />}
               </div>
 
               {/* Terminal at bottom - works in both modes */}

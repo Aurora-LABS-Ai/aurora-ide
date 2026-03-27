@@ -1,11 +1,12 @@
 /**
  * Built-in Theme Exports
  * 
- * Provides access to Aurora's built-in themes: Dark, Light, and High Contrast.
+ * Provides access to Aurora's built-in themes: Dark, Light, High Contrast, variants, and Alvan Aurora Dark.
  * Requirement 7.4: Include at least 3 built-in themes
  */
 import { themeFileToDefinition } from "../services/theme-service";
 import type { ThemeDefinition, ThemeFile } from "../types/theme";
+import alvanAuroraDarkTheme from "./alvan-aurora-dark.json";
 import darkNeutralTheme from "./dark-neutral.json";
 // Import theme JSON files
 import darkTheme from "./dark.json";
@@ -29,6 +30,7 @@ export function getBuiltInThemeFiles(): ThemeFile[] {
     lightTheme as ThemeFile,
     highContrastTheme as ThemeFile,
     darkNeutralTheme as ThemeFile,
+    alvanAuroraDarkTheme as ThemeFile,
   ];
 }
 
@@ -41,6 +43,7 @@ export function getBuiltInThemes(): ThemeDefinition[] {
     themeFileToDefinition(lightTheme as ThemeFile, BUILT_IN_THEME_IDS.LIGHT, true),
     themeFileToDefinition(highContrastTheme as ThemeFile, BUILT_IN_THEME_IDS.HIGH_CONTRAST, true),
     themeFileToDefinition(darkNeutralTheme as ThemeFile, BUILT_IN_THEME_IDS.DARK_NEUTRAL, true),
+    themeFileToDefinition(alvanAuroraDarkTheme as ThemeFile, BUILT_IN_THEME_IDS.ALVAN_AURORA_DARK, true),
   ];
 }
 
@@ -59,6 +62,7 @@ export const BUILT_IN_THEME_IDS = {
   LIGHT: 'aurora-light',
   HIGH_CONTRAST: 'aurora-high-contrast',
   DARK_NEUTRAL: 'aurora-dark-neutral',
+  ALVAN_AURORA_DARK: 'alvan-aurora-dark',
 } as const;
 
 /**

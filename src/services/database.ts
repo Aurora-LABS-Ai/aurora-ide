@@ -110,19 +110,6 @@ class DatabaseService {
   }
 
   /**
-   * Get a single setting by key
-   */
-  public async getSetting(key: string): Promise<string | null> {
-    try {
-      const result = await invoke<string | null>('get_setting', { key });
-      return result;
-    } catch (error) {
-      console.error(`Failed to get setting ${key}:`, error);
-      return null;
-    }
-  }
-
-  /**
    * Get workspace state for a specific workspace
    * If no path provided, returns the most recently opened workspace
    */
@@ -225,13 +212,6 @@ class DatabaseService {
    */
   public async saveWorkspaceState(state: WorkspaceState): Promise<void> {
     await invoke('save_workspace_state', { state });
-  }
-
-  /**
-   * Set a single setting
-   */
-  public async setSetting(key: string, value: string): Promise<void> {
-    await invoke('set_setting', { key, value });
   }
 
   /**

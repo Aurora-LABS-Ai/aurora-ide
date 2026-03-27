@@ -1,9 +1,9 @@
 use std::sync::Mutex;
-use tauri::{Manager, Emitter};
+use tauri::{Emitter, Manager};
 
-mod commands;
 mod checkpoints;
 pub mod cli;
+mod commands;
 mod context;
 mod db;
 mod file_cache;
@@ -24,7 +24,7 @@ pub fn run() {
 pub fn run_with_args(cli_args: CliArgs) {
     // Convert CLI args to open request
     let open_request: CliOpenRequest = (&cli_args).into();
-    
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
@@ -197,8 +197,6 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::is_aurora_context_menu_installed,
             commands::uninstall_aurora_context_menu,
             commands::aurora_websearch,
-
-
             // Context Engine commands (turn-based context management)
             context::commands::context_add_user_message,
             context::commands::context_add_assistant_response,
@@ -224,6 +222,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::checkpoints::checkpoint_list,
             commands::checkpoints::checkpoint_get_by_message,
             commands::checkpoints::checkpoint_delete_thread,
+            commands::checkpoints::checkpoint_delete_workspace,
             commands::checkpoints::checkpoint_is_initialized,
             commands::checkpoints::checkpoint_get_enabled,
             commands::checkpoints::checkpoint_set_enabled,
@@ -247,8 +246,7 @@ pub fn run_with_args(cli_args: CliArgs) {
 
             // Initialize database
             let handle = app.handle();
-            let db = db::Database::init(&handle)
-                .expect("Failed to initialize database");
+            let db = db::Database::init(&handle).expect("Failed to initialize database");
 
             // Store database in app state (wrapped in Mutex for thread safety)
             app.manage(Mutex::new(db));
@@ -261,7 +259,10 @@ pub fn run_with_args(cli_args: CliArgs) {
 
             // Store checkpoint state for file state snapshots
             let checkpoint_state = commands::checkpoints::CheckpointState::new();
-            let app_data_dir = handle.path().app_data_dir().expect("Failed to get app data dir");
+            let app_data_dir = handle
+                .path()
+                .app_data_dir()
+                .expect("Failed to get app data dir");
             checkpoint_state.init(app_data_dir);
             app.manage(checkpoint_state);
 

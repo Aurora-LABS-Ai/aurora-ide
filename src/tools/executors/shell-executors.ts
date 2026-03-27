@@ -3,7 +3,11 @@
  * Implementations for shell command tools using Tauri commands
  * Uses standard executeCommand for agent tool calls (simpler, no PTY needed)
  */
-import { cancelCommandStream, executeCommandStream, isTauri } from "../../lib/tauri";
+import {
+  cancelCommandStream,
+  executeCommandStream,
+  isTauri,
+} from "../../lib/tauri";
 import { listen } from "@tauri-apps/api/event";
 import { useTerminalStore } from "../../store/useTerminalStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
@@ -17,10 +21,10 @@ interface BackgroundProcess {
   output: string[];
   requestId?: string;
   startedAt: number;
-  status: 'running' | 'completed' | 'failed';
+  status: "running" | "completed" | "failed";
 }
 
-type ShellStreamName = 'stdout' | 'stderr';
+type ShellStreamName = "stdout" | "stderr";
 
 interface ShellStreamChunk {
   data: string;
@@ -30,28 +34,60 @@ interface ShellStreamChunk {
   success?: boolean;
 }
 
+type ShellExecuteMode = "inline" | "terminal";
+
 const getRequestId = (): string => {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
   }
   return `req-${Math.random().toString(36).slice(2)}-${Date.now()}`;
 };
 
-// ============================================
-// SHELL EXECUTE EXECUTOR
-// ============================================
-const shellExecuteExecutor = async (args: Record<string, unknown>): Promise<string> => {
-  if (!isTauri()) {
-    return JSON.stringify({ success: false, error: 'Shell operations require desktop app' });
+const getShellExecuteMode = (value: unknown): ShellExecuteMode =>
+  value === "terminal" ? "terminal" : "inline";
+
+const executeInlineShellCommand = async (
+  command: string,
+  cwd: string | undefined,
+  timeoutMs: number,
+): Promise<string> => {
+  try {
+    const result = await executeCommandStream(
+      getRequestId(),
+      command,
+      cwd,
+      undefined,
+      timeoutMs,
+    );
+
+    return JSON.stringify({
+      success: result.success,
+      type: "inline",
+      command,
+      cwd,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: result.exit_code,
+    });
+  } catch (error) {
+    console.error("[shell_execute:inline] Error:", error);
+    const errorMsg = error instanceof Error ? error.message : String(error);
+
+    return JSON.stringify({
+      success: false,
+      type: "inline",
+      command,
+      cwd,
+      error: errorMsg,
+    });
   }
+};
 
-  const command = args.command as string;
-  const rootPath = useWorkspaceStore.getState().rootPath;
-  const cwd = (args.cwd as string) || rootPath || undefined;
-  const timeoutMs = typeof args.timeout === 'number' ? (args.timeout as number) : 30000;
-
-  console.log('[shell_execute] Running command:', command, 'in:', cwd);
-
+const executeTerminalShellCommand = async (
+  command: string,
+  cwd: string | undefined,
+  timeoutMs: number,
+): Promise<string> => {
   // Open terminal to show activity
   const terminal = useTerminalStore.getState();
   if (!terminal.isOpen) {
@@ -60,9 +96,15 @@ const shellExecuteExecutor = async (args: Record<string, unknown>): Promise<stri
 
   const targetSessionId = useTerminalStore.getState().activeSessionId;
   if (!targetSessionId) {
-    return JSON.stringify({ success: false, error: 'No active terminal session available' });
+    return JSON.stringify({
+      success: false,
+      type: "terminal",
+      command,
+      cwd,
+      error: "No active terminal session available",
+    });
   }
-  
+
   const pendingWrites: string[] = [];
 
   const writeOutput = (data: string) => {
@@ -97,29 +139,28 @@ const shellExecuteExecutor = async (args: Record<string, unknown>): Promise<stri
     const startTime = Date.now();
     while (Date.now() - startTime < maxWaitMs) {
       const state = useTerminalStore.getState();
-      
+
       if (state.sessionHandlers.has(targetSessionId)) {
         return true;
       }
-      
-      // Wait a bit before checking again
-      await new Promise(resolve => setTimeout(resolve, 150));
+
+      await new Promise((resolve) => setTimeout(resolve, 150));
     }
     return false;
   };
-  
+
   await waitForSessionHandler();
   flushPending();
 
-  // formatted output with colors
-  const green = '\x1b[32m';
-  const reset = '\x1b[0m';
-  const dim = '\x1b[2m';
-  const red = '\x1b[31m';
-  const yellow = '\x1b[33m';
+  const green = "\x1b[32m";
+  const reset = "\x1b[0m";
+  const dim = "\x1b[2m";
+  const red = "\x1b[31m";
+  const yellow = "\x1b[33m";
 
-  // Echo command
-  writeOutput(`\r\n${green}[Aurora]${reset} ${command} ${dim}(in ${cwd || 'root'})${reset}\r\n`);
+  writeOutput(
+    `\r\n${green}[Aurora]${reset} ${command} ${dim}(in ${cwd || "root"})${reset}\r\n`,
+  );
 
   const requestId = getRequestId();
   const streamEvent = `shell-stream-${requestId}`;
@@ -132,7 +173,7 @@ const shellExecuteExecutor = async (args: Record<string, unknown>): Promise<stri
       const payload = event.payload;
       if (!payload || payload.done) return;
 
-      if (payload.stream === 'stderr') {
+      if (payload.stream === "stderr") {
         writeOutput(`${yellow}${payload.data}${reset}`);
       } else {
         writeOutput(payload.data);
@@ -145,17 +186,25 @@ const shellExecuteExecutor = async (args: Record<string, unknown>): Promise<stri
       writeOutput(`${red}${msg}${reset}\r\n`);
     });
 
-    const result = await executeCommandStream(requestId, command, cwd, undefined, timeoutMs);
+    const result = await executeCommandStream(
+      requestId,
+      command,
+      cwd,
+      undefined,
+      timeoutMs,
+    );
 
     if (result.exit_code !== 0) {
-      writeOutput(`${red}Command failed with exit code ${result.exit_code}${reset}\r\n`);
+      writeOutput(
+        `${red}Command failed with exit code ${result.exit_code}${reset}\r\n`,
+      );
     }
-    
-    // Add a completion marker
+
     writeOutput(`${dim}[Done]${reset}\r\n`);
 
     return JSON.stringify({
       success: result.success,
+      type: "terminal",
       command,
       cwd,
       stdout: result.stdout,
@@ -163,45 +212,93 @@ const shellExecuteExecutor = async (args: Record<string, unknown>): Promise<stri
       exitCode: result.exit_code,
     });
   } catch (error) {
-    console.error('[shell_execute] Error:', error);
+    console.error("[shell_execute:terminal] Error:", error);
     const errorMsg = error instanceof Error ? error.message : String(error);
 
     writeOutput(`${red}Execution Error: ${errorMsg}${reset}\r\n`);
 
     return JSON.stringify({
       success: false,
+      type: "terminal",
+      command,
+      cwd,
       error: errorMsg,
     });
-  }
-  finally {
+  } finally {
     if (unlisten) {
       try {
         unlisten();
       } catch (e) {
-        console.warn('[shell_execute] Failed to remove shell stream listener', e);
+        console.warn(
+          "[shell_execute] Failed to remove shell stream listener",
+          e,
+        );
       }
     }
     if (unlistenError) {
       try {
         unlistenError();
       } catch (e) {
-        console.warn('[shell_execute] Failed to remove shell stream error listener', e);
+        console.warn(
+          "[shell_execute] Failed to remove shell stream error listener",
+          e,
+        );
       }
     }
   }
 };
 
 // ============================================
+// SHELL EXECUTE EXECUTOR
+// ============================================
+const shellExecuteExecutor = async (
+  args: Record<string, unknown>,
+): Promise<string> => {
+  if (!isTauri()) {
+    return JSON.stringify({
+      success: false,
+      error: "Shell operations require desktop app",
+    });
+  }
+
+  const command = args.command as string;
+  const rootPath = useWorkspaceStore.getState().rootPath;
+  const cwd = (args.cwd as string) || rootPath || undefined;
+  const timeoutMs =
+    typeof args.timeout === "number" ? (args.timeout as number) : 30000;
+  const mode = getShellExecuteMode(args.type);
+
+  console.log(
+    "[shell_execute] Running command:",
+    command,
+    "in:",
+    cwd,
+    "mode:",
+    mode,
+  );
+
+  if (mode === "terminal") {
+    return executeTerminalShellCommand(command, cwd, timeoutMs);
+  }
+
+  return executeInlineShellCommand(command, cwd, timeoutMs);
+};
+
+// ============================================
 // SHELL KILL EXECUTOR
 // ============================================
-const shellKillExecutor = async (args: Record<string, unknown>): Promise<string> => {
-  const processId = (args.processId as string) || (args.pid !== undefined ? String(args.pid) : undefined);
+const shellKillExecutor = async (
+  args: Record<string, unknown>,
+): Promise<string> => {
+  const processId =
+    (args.processId as string) ||
+    (args.pid !== undefined ? String(args.pid) : undefined);
   const processName = args.name as string | undefined;
 
   if (!processId && !processName) {
     return JSON.stringify({
       success: false,
-      error: 'Either processId or name is required'
+      error: "Either processId or name is required",
     });
   }
 
@@ -240,16 +337,16 @@ const shellKillExecutor = async (args: Record<string, unknown>): Promise<string>
     });
   }
 
-  if (targetProcess.status === 'running' && targetProcess.requestId) {
+  if (targetProcess.status === "running" && targetProcess.requestId) {
     try {
       await cancelCommandStream(targetProcess.requestId);
     } catch (e) {
-      console.warn('[shell_kill] Failed to cancel command stream', e);
+      console.warn("[shell_kill] Failed to cancel command stream", e);
     }
   }
 
-  targetProcess.status = 'completed';
-  targetProcess.output.push('[terminated by user]');
+  targetProcess.status = "completed";
+  targetProcess.output.push("[terminated by user]");
 
   return JSON.stringify({
     success: true,
@@ -262,7 +359,7 @@ const shellKillExecutor = async (args: Record<string, unknown>): Promise<string>
 // SHELL LIST PROCESSES EXECUTOR
 // ============================================
 const shellListProcessesExecutor = async (): Promise<string> => {
-  const processes = Array.from(backgroundProcesses.values()).map(proc => ({
+  const processes = Array.from(backgroundProcesses.values()).map((proc) => ({
     id: proc.id,
     command: proc.command,
     cwd: proc.cwd,
@@ -281,18 +378,23 @@ const shellListProcessesExecutor = async (): Promise<string> => {
 // ============================================
 // SHELL SPAWN EXECUTOR (Background Process)
 // ============================================
-const shellSpawnExecutor = async (args: Record<string, unknown>): Promise<string> => {
+const shellSpawnExecutor = async (
+  args: Record<string, unknown>,
+): Promise<string> => {
   if (!isTauri()) {
-    return JSON.stringify({ success: false, error: 'Shell operations require desktop app' });
+    return JSON.stringify({
+      success: false,
+      error: "Shell operations require desktop app",
+    });
   }
 
   const command = args.command as string;
   const argCwd = args.cwd as string | undefined;
   const rootPath = useWorkspaceStore.getState().rootPath;
-  const cwd = argCwd || rootPath || '';
+  const cwd = argCwd || rootPath || "";
 
   if (!command) {
-    return JSON.stringify({ success: false, error: 'Command is required' });
+    return JSON.stringify({ success: false, error: "Command is required" });
   }
 
   try {
@@ -306,7 +408,7 @@ const shellSpawnExecutor = async (args: Record<string, unknown>): Promise<string
       command,
       cwd,
       startedAt: Date.now(),
-      status: 'running',
+      status: "running",
       output: [],
       requestId,
     };
@@ -314,22 +416,24 @@ const shellSpawnExecutor = async (args: Record<string, unknown>): Promise<string
     backgroundProcesses.set(processId, process);
 
     // Execute in background
-    executeCommandStream(requestId, command, cwd).then(result => {
-      const proc = backgroundProcesses.get(processId);
-      if (proc) {
-        proc.status = result.success ? 'completed' : 'failed';
-        proc.output.push(result.stdout || '');
-        if (result.stderr) {
-          proc.output.push(`[stderr] ${result.stderr}`);
+    executeCommandStream(requestId, command, cwd)
+      .then((result) => {
+        const proc = backgroundProcesses.get(processId);
+        if (proc) {
+          proc.status = result.success ? "completed" : "failed";
+          proc.output.push(result.stdout || "");
+          if (result.stderr) {
+            proc.output.push(`[stderr] ${result.stderr}`);
+          }
         }
-      }
-    }).catch(error => {
-      const proc = backgroundProcesses.get(processId);
-      if (proc) {
-        proc.status = 'failed';
-        proc.output.push(`[error] ${error.message || String(error)}`);
-      }
-    });
+      })
+      .catch((error) => {
+        const proc = backgroundProcesses.get(processId);
+        if (proc) {
+          proc.status = "failed";
+          proc.output.push(`[error] ${error.message || String(error)}`);
+        }
+      });
 
     return JSON.stringify({
       success: true,
@@ -339,7 +443,7 @@ const shellSpawnExecutor = async (args: Record<string, unknown>): Promise<string
       message: `Background process started with ID: ${processId}`,
     });
   } catch (error) {
-    console.error('[shell_spawn] Error:', error);
+    console.error("[shell_spawn] Error:", error);
     return JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : String(error),
@@ -351,10 +455,13 @@ const shellSpawnExecutor = async (args: Record<string, unknown>): Promise<string
 // REGISTER ALL SHELL EXECUTORS
 // ============================================
 export const registerShellExecutors = (): void => {
-  toolRegistry.registerExecutor('shell_execute', shellExecuteExecutor);
-  toolRegistry.registerExecutor('shell_spawn', shellSpawnExecutor);
-  toolRegistry.registerExecutor('shell_kill', shellKillExecutor);
-  toolRegistry.registerExecutor('shell_list_processes', shellListProcessesExecutor);
+  toolRegistry.registerExecutor("shell_execute", shellExecuteExecutor);
+  toolRegistry.registerExecutor("shell_spawn", shellSpawnExecutor);
+  toolRegistry.registerExecutor("shell_kill", shellKillExecutor);
+  toolRegistry.registerExecutor(
+    "shell_list_processes",
+    shellListProcessesExecutor,
+  );
 };
 
 const backgroundProcesses: Map<string, BackgroundProcess> = new Map();

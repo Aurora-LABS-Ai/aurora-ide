@@ -9,9 +9,12 @@ use crate::services::api_converter::ApiMessage;
 
 // ============================================================
 // Legacy commands (backward compatible with TypeScript frontend)
+// DEPRECATED: Use new service-based commands below instead
 // ============================================================
 
+/// DEPRECATED: Use `thread_create` instead
 #[tauri::command]
+#[deprecated(since = "0.1.3", note = "Use thread_create command instead")]
 pub fn save_thread(thread: ThreadState, db: State<'_, Mutex<Database>>) -> Result<(), String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.threads()
@@ -19,7 +22,9 @@ pub fn save_thread(thread: ThreadState, db: State<'_, Mutex<Database>>) -> Resul
         .map_err(|e| format!("Failed to save thread: {:?}", e))
 }
 
+/// DEPRECATED: Use `thread_load` instead  
 #[tauri::command]
+#[deprecated(since = "0.1.3", note = "Use thread_load command instead")]
 pub fn get_thread(id: String, db: State<'_, Mutex<Database>>) -> Result<Option<ThreadState>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.threads()
@@ -27,7 +32,9 @@ pub fn get_thread(id: String, db: State<'_, Mutex<Database>>) -> Result<Option<T
         .map_err(|e| format!("Failed to get thread: {:?}", e))
 }
 
+/// DEPRECATED: Use `thread_list_summaries` instead
 #[tauri::command]
+#[deprecated(since = "0.1.3", note = "Use thread_list_summaries command instead")]
 pub fn list_threads(db: State<'_, Mutex<Database>>) -> Result<Vec<ThreadState>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.threads()
@@ -35,7 +42,9 @@ pub fn list_threads(db: State<'_, Mutex<Database>>) -> Result<Vec<ThreadState>, 
         .map_err(|e| format!("Failed to list threads: {:?}", e))
 }
 
+/// DEPRECATED: Use `thread_delete` instead
 #[tauri::command]
+#[deprecated(since = "0.1.3", note = "Use thread_delete command instead")]
 pub fn delete_thread(id: String, db: State<'_, Mutex<Database>>) -> Result<(), String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.threads()

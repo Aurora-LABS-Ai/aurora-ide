@@ -3,8 +3,8 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::db::error::DbResult;
 use crate::checkpoints::Checkpoint;
+use crate::db::error::DbResult;
 
 /// Repository for checkpoint database operations
 pub struct CheckpointRepository<'a> {
@@ -109,25 +109,43 @@ impl<'a> CheckpointRepository<'a> {
 
     /// Delete a checkpoint by ID
     pub fn delete(&self, id: &str) -> DbResult<()> {
-        self.conn.execute("DELETE FROM checkpoints WHERE id = ?1", [id])?;
+        self.conn
+            .execute("DELETE FROM checkpoints WHERE id = ?1", [id])?;
         Ok(())
     }
 
     /// Delete all checkpoints for a thread
     pub fn delete_by_thread(&self, thread_id: &str) -> DbResult<()> {
-        self.conn.execute("DELETE FROM checkpoints WHERE thread_id = ?1", [thread_id])?;
+        self.conn
+            .execute("DELETE FROM checkpoints WHERE thread_id = ?1", [thread_id])?;
+        Ok(())
+    }
+
+    /// Delete all checkpoints for a workspace
+    pub fn delete_by_workspace(&self, workspace_path: &str) -> DbResult<()> {
+        self.conn.execute(
+            "DELETE FROM checkpoints WHERE workspace_path = ?1",
+            [workspace_path],
+        )?;
         Ok(())
     }
 
     /// Delete checkpoints after a specific message (for restore operation)
     /// This deletes all checkpoints that were created after the specified checkpoint
-    pub fn delete_after_checkpoint(&self, thread_id: &str, checkpoint_id: &str) -> DbResult<Vec<String>> {
+    pub fn delete_after_checkpoint(
+        &self,
+        thread_id: &str,
+        checkpoint_id: &str,
+    ) -> DbResult<Vec<String>> {
         // First get the checkpoint's created_at time
-        let created_at: Option<String> = self.conn.query_row(
-            "SELECT created_at FROM checkpoints WHERE id = ?1 AND thread_id = ?2",
-            params![checkpoint_id, thread_id],
-            |row| row.get(0),
-        ).optional()?;
+        let created_at: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT created_at FROM checkpoints WHERE id = ?1 AND thread_id = ?2",
+                params![checkpoint_id, thread_id],
+                |row| row.get(0),
+            )
+            .optional()?;
 
         if let Some(timestamp) = created_at {
             // Get the message IDs that will be deleted
@@ -136,9 +154,8 @@ impl<'a> CheckpointRepository<'a> {
                  WHERE thread_id = ?1 AND created_at > ?2",
             )?;
 
-            let rows = stmt.query_map(params![thread_id, timestamp], |row| {
-                row.get::<_, String>(0)
-            })?;
+            let rows =
+                stmt.query_map(params![thread_id, timestamp], |row| row.get::<_, String>(0))?;
 
             let mut deleted_message_ids = Vec::new();
             for row in rows {
@@ -160,7 +177,10 @@ impl<'a> CheckpointRepository<'a> {
 
     /// Delete checkpoint by message ID
     pub fn delete_by_message_id(&self, message_id: &str) -> DbResult<()> {
-        self.conn.execute("DELETE FROM checkpoints WHERE message_id = ?1", [message_id])?;
+        self.conn.execute(
+            "DELETE FROM checkpoints WHERE message_id = ?1",
+            [message_id],
+        )?;
         Ok(())
     }
 }

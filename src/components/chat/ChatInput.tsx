@@ -1,47 +1,69 @@
 /**
  * THEME ARCHITECTURE NOTICE:
- * 
+ *
  * This project uses a centralized theme system. DO NOT use hardcoded colors.
- * 
+ *
  * Instead of:
  *   - Hardcoded hex values: #ff0000, #1a1a1a
  *   - Hardcoded RGB values: rgb(255, 0, 0)
  *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
- * 
+ *
  * Use theme tokens via CSS variables:
  *   - CSS: var(--aurora-{category}-{token})
  *   - Tailwind: bg-[var(--aurora-editor-background)]
  *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
- * 
+ *
  * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
- * 
+ *
  * See: DOCS/theme-dev.md for full token reference
  * See: src/types/theme.ts for TypeScript interfaces
  * See: src/services/theme-service.ts for theme utilities
  */
 
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Square, Brain, ChevronDown, Settings, X, Paperclip, Sparkles, ArrowUp } from 'lucide-react';
-import { useSettingsStore } from '../../store/useSettingsStore';
-import { useUiStore } from '../../store/useUiStore';
-import { useChatStore } from '../../store/useChatStore';
-import { useWorkspaceStore, loadFileContent } from '../../store/useWorkspaceStore';
-import { useEditorStore } from '../../store/useEditorStore';
-import { useTaskStore } from '../../store/useTaskStore';
+import React, {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useMemo,
+} from "react";
+import {
+  Square,
+  Brain,
+  ChevronDown,
+  Settings,
+  X,
+  Paperclip,
+  Sparkles,
+  ArrowUp,
+} from "lucide-react";
+import { useSettingsStore } from "../../store/useSettingsStore";
+import { useUiStore } from "../../store/useUiStore";
+import { useChatStore } from "../../store/useChatStore";
+import {
+  useWorkspaceStore,
+  loadFileContent,
+} from "../../store/useWorkspaceStore";
+import { useEditorStore } from "../../store/useEditorStore";
+import { useTaskStore } from "../../store/useTaskStore";
 import {
   loadPromptAttachments,
   type PromptAttachment,
-} from '../../services/prompt-assets';
-import type { FileNode } from '../../types';
-import clsx from 'clsx';
-import { createPortal } from 'react-dom';
-import { getDragFilePath, getFilename, getLanguageFromExtension } from '../../lib/file-utils';
-import { resolveThinkingModelPair } from '../../lib/thinking-models';
-import { FileIcon } from '../explorer/FileIcons';
-import { CompactTaskList } from './TaskView';
-import { ContextUsageIndicator } from './ContextUsageIndicator';
-import { PromptAttachmentPopup } from './PromptAttachmentPopup';
-import { ShimmerText } from '../ui/ShimmerText';
+} from "../../services/prompt-assets";
+import type { FileNode } from "../../types";
+import clsx from "clsx";
+import { createPortal } from "react-dom";
+import {
+  getDragFilePath,
+  getFilename,
+  getLanguageFromExtension,
+} from "../../lib/file-utils";
+import { resolveThinkingModelPair } from "../../lib/thinking-models";
+import { FileIcon } from "../explorer/FileIcons";
+import { CompactTaskList } from "./TaskView";
+import { ContextUsageIndicator } from "./ContextUsageIndicator";
+import { PromptAttachmentPopup } from "./PromptAttachmentPopup";
+import { ShimmerText } from "../ui/ShimmerText";
 
 // Rotating status messages for AI generation
 const GENERATING_MESSAGES = [
@@ -62,7 +84,7 @@ interface ChatInputProps {
   onSend: (
     content: string,
     attachedFiles?: AttachedFile[],
-    promptAttachments?: PromptAttachment[]
+    promptAttachments?: PromptAttachment[],
   ) => void;
   disabled?: boolean;
 }
@@ -70,7 +92,7 @@ interface ChatInputProps {
 const flattenFiles = (nodes: FileNode[]): FileNode[] => {
   let result: FileNode[] = [];
   for (const node of nodes) {
-    if (node.type === 'file') {
+    if (node.type === "file") {
       result.push(node);
     } else if (node.children) {
       result = [...result, ...flattenFiles(node.children)];
@@ -112,12 +134,18 @@ const GeneratingStatus: React.FC = () => {
 };
 
 export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
-  const [content, setContent] = useState('');
+  const [content, setContent] = useState("");
   const [showModelDropdown, setShowModelDropdown] = useState(false);
-  const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0 });
+  const [dropdownPosition, setDropdownPosition] = useState({
+    top: 0,
+    left: 0,
+    placement: "above" as "above" | "below",
+  });
   const [isDragOver, setIsDragOver] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
-  const [attachedPromptAssets, setAttachedPromptAssets] = useState<PromptAttachment[]>([]);
+  const [attachedPromptAssets, setAttachedPromptAssets] = useState<
+    PromptAttachment[]
+  >([]);
   const [hasInteracted, setHasInteracted] = useState(false);
 
   // Focus state for theming
@@ -126,20 +154,29 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   // Mention Logic State
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionIndex, setMentionIndex] = useState<number>(-1);
-  const [mentionPopupPosition, setMentionPopupPosition] = useState<{ bottom: number; left: number } | null>(null);
+  const [mentionPopupPosition, setMentionPopupPosition] = useState<{
+    bottom: number;
+    left: number;
+  } | null>(null);
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [slashIndex, setSlashIndex] = useState<number>(-1);
-  const [slashPopupPosition, setSlashPopupPosition] = useState<{ bottom: number; left: number } | null>(null);
-  const [slashSearchQuery, setSlashSearchQuery] = useState('');
+  const [slashPopupPosition, setSlashPopupPosition] = useState<{
+    bottom: number;
+    left: number;
+  } | null>(null);
+  const [slashSearchQuery, setSlashSearchQuery] = useState("");
   const [selectedPromptAssetIndex, setSelectedPromptAssetIndex] = useState(0);
-  const [promptAssetCatalog, setPromptAssetCatalog] = useState<PromptAttachment[]>([]);
+  const [promptAssetCatalog, setPromptAssetCatalog] = useState<
+    PromptAttachment[]
+  >([]);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   const { setSettingsOpen } = useUiStore();
-  const { isLoading, stopGeneration, consumePendingInput, pendingInputNonce } = useChatStore();
+  const { isLoading, stopGeneration, consumePendingInput, pendingInputNonce } =
+    useChatStore();
   const { files: workspaceFiles, rootPath } = useWorkspaceStore();
   const { openFile } = useEditorStore();
   const { tasks, isVisible } = useTaskStore();
@@ -160,33 +197,45 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
 
   // Re-compute available models when providers change
   const availableModels = getAvailableModels();
-  const [selectedProviderId = '', currentModel = ''] = selectedModel.split(':');
+  const [selectedProviderId = "", currentModel = ""] = selectedModel.split(":");
   const providerModels = useMemo(
     () =>
       availableModels
         .filter((item) => item.providerId === selectedProviderId)
         .map((item) => item.model),
-    [availableModels, selectedProviderId]
+    [availableModels, selectedProviderId],
   );
   const thinkingPair = useMemo(
     () => resolveThinkingModelPair(currentModel, providerModels),
-    [currentModel, providerModels]
+    [currentModel, providerModels],
   );
   const showThinkingToggle = providerSupportsThinking && !!thinkingPair;
-  const effectiveThinkingEnabled = thinkingPair ? thinkingPair.currentModelIsThinking : thinkingEnabled;
+  const effectiveThinkingEnabled = thinkingPair
+    ? thinkingPair.currentModelIsThinking
+    : thinkingEnabled;
   const selectedModelOption = useMemo(
-    () => availableModels.find(({ providerId, model }) => `${providerId}:${model}` === selectedModel),
-    [availableModels, selectedModel]
+    () =>
+      availableModels.find(
+        ({ providerId, model }) => `${providerId}:${model}` === selectedModel,
+      ),
+    [availableModels, selectedModel],
   );
 
   // Flatten files for searching
-  const allFiles = useMemo(() => flattenFiles(workspaceFiles), [workspaceFiles]);
+  const allFiles = useMemo(
+    () => flattenFiles(workspaceFiles),
+    [workspaceFiles],
+  );
   const filteredPromptAssets = useMemo(() => {
-    const activeQuery = (slashSearchQuery || slashQuery || '').trim().toLowerCase();
+    const activeQuery = (slashSearchQuery || slashQuery || "")
+      .trim()
+      .toLowerCase();
 
     return promptAssetCatalog
       .filter((asset) => {
-        if (attachedPromptAssets.some((attached) => attached.key === asset.key)) {
+        if (
+          attachedPromptAssets.some((attached) => attached.key === asset.key)
+        ) {
           return false;
         }
 
@@ -249,12 +298,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     const textBeforeCursor = newVal.slice(0, cursorPos);
 
     let slashHandled = false;
-    const lastSlash = textBeforeCursor.lastIndexOf('/');
+    const lastSlash = textBeforeCursor.lastIndexOf("/");
     if (lastSlash !== -1) {
-      const isValidSlashStart = lastSlash === 0 || /\s/.test(textBeforeCursor[lastSlash - 1]);
+      const isValidSlashStart =
+        lastSlash === 0 || /\s/.test(textBeforeCursor[lastSlash - 1]);
       if (isValidSlashStart) {
         const query = textBeforeCursor.slice(lastSlash + 1);
-        if (!query.includes('\n')) {
+        if (!query.includes("\n")) {
           slashHandled = true;
           setSlashQuery(query);
           setSlashIndex(lastSlash);
@@ -273,17 +323,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     if (!slashHandled) {
       setSlashQuery(null);
       setSlashPopupPosition(null);
-      setSlashSearchQuery('');
+      setSlashSearchQuery("");
     }
 
-    const lastAtSymbol = textBeforeCursor.lastIndexOf('@');
+    const lastAtSymbol = textBeforeCursor.lastIndexOf("@");
 
     if (lastAtSymbol !== -1) {
-      const isValidStart = lastAtSymbol === 0 || /\s/.test(textBeforeCursor[lastAtSymbol - 1]);
+      const isValidStart =
+        lastAtSymbol === 0 || /\s/.test(textBeforeCursor[lastAtSymbol - 1]);
 
       if (isValidStart) {
         const query = textBeforeCursor.slice(lastAtSymbol + 1);
-        if (!query.includes('\n')) {
+        if (!query.includes("\n")) {
           setMentionQuery(query);
           setMentionIndex(lastAtSymbol);
           setSelectedFileIndex(0);
@@ -316,8 +367,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     // Add to attached (ensure path exists)
     if (!file.path) return;
     const filePath = file.path;
-    setAttachedFiles(prev => {
-      if (prev.some(f => f.path === filePath)) return prev;
+    setAttachedFiles((prev) => {
+      if (prev.some((f) => f.path === filePath)) return prev;
       return [...prev, { path: filePath, name: file.name }];
     });
 
@@ -347,7 +398,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
 
     setSlashQuery(null);
     setSlashPopupPosition(null);
-    setSlashSearchQuery('');
+    setSlashSearchQuery("");
   };
 
   const handleFileClick = async (file: AttachedFile) => {
@@ -357,50 +408,94 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
       const language = getLanguageFromExtension(file.name);
       openFile(file.path, file.name, content, language);
     } catch (err) {
-      console.error('Failed to open attached file:', err);
+      console.error("Failed to open attached file:", err);
     }
   };
 
   // Update dropdown position when showing
+  const positionModelDropdown = useCallback(() => {
+    if (!buttonRef.current) return;
+
+    const rect = buttonRef.current.getBoundingClientRect();
+    const dropdownWidth = 256;
+    const estimatedDropdownHeight = Math.min(
+      320,
+      44 + Math.max(availableModels.length, 1) * 56,
+    );
+    const viewportPadding = 12;
+    const gap = 8;
+
+    const clampedLeft = Math.min(
+      Math.max(rect.left, viewportPadding),
+      window.innerWidth - dropdownWidth - viewportPadding,
+    );
+
+    const preferredTop = rect.top - gap - estimatedDropdownHeight;
+    const canPlaceAbove = preferredTop >= viewportPadding;
+
+    const top = canPlaceAbove
+      ? Math.max(viewportPadding, preferredTop)
+      : Math.min(
+          rect.bottom + gap,
+          window.innerHeight - estimatedDropdownHeight - viewportPadding,
+        );
+
+    setDropdownPosition({
+      top,
+      left: clampedLeft,
+      placement: canPlaceAbove ? "above" : "below",
+    });
+  }, [availableModels.length]);
+
   useEffect(() => {
-    if (showModelDropdown && buttonRef.current) {
-      const rect = buttonRef.current.getBoundingClientRect();
-      setDropdownPosition({
-        top: rect.top - 8, // Position above button with small gap
-        left: rect.left,
-      });
+    if (showModelDropdown) {
+      positionModelDropdown();
     }
-  }, [showModelDropdown]);
+  }, [positionModelDropdown, showModelDropdown]);
 
   // Close dropdowns on outside click
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (buttonRef.current && !buttonRef.current.contains(e.target as Node)) {
         // Check if click is inside dropdown portal
-        const dropdown = document.getElementById('model-dropdown-portal');
+        const dropdown = document.getElementById("model-dropdown-portal");
         if (dropdown && dropdown.contains(e.target as Node)) return;
         setShowModelDropdown(false);
       }
-      if (mentionQuery !== null && !document.getElementById('mention-popup')?.contains(e.target as Node)) {
+      if (
+        mentionQuery !== null &&
+        !document.getElementById("mention-popup")?.contains(e.target as Node)
+      ) {
         setMentionQuery(null);
       }
-      if (slashQuery !== null && !document.getElementById('prompt-attachment-popup')?.contains(e.target as Node)) {
+      if (
+        slashQuery !== null &&
+        !document
+          .getElementById("prompt-attachment-popup")
+          ?.contains(e.target as Node)
+      ) {
         setSlashQuery(null);
-        setSlashSearchQuery('');
+        setSlashSearchQuery("");
       }
     };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [mentionQuery, slashQuery]);
 
   const handleSubmit = () => {
-    if ((!content.trim() && attachedFiles.length === 0 && attachedPromptAssets.length === 0) || disabled) return;
+    if (
+      (!content.trim() &&
+        attachedFiles.length === 0 &&
+        attachedPromptAssets.length === 0) ||
+      disabled
+    )
+      return;
     onSend(
       content,
       attachedFiles.length > 0 ? attachedFiles : undefined,
-      attachedPromptAssets.length > 0 ? attachedPromptAssets : undefined
+      attachedPromptAssets.length > 0 ? attachedPromptAssets : undefined,
     );
-    setContent('');
+    setContent("");
     setAttachedFiles([]);
     setAttachedPromptAssets([]);
     setHasInteracted(true);
@@ -411,7 +506,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
       e.preventDefault();
       e.stopPropagation();
     }
-    
+
     if (isLoading) {
       stopGeneration();
     } else {
@@ -420,69 +515,82 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   };
 
   const removeAttachedFile = (path: string) => {
-    setAttachedFiles(files => files.filter(f => f.path !== path));
+    setAttachedFiles((files) => files.filter((f) => f.path !== path));
   };
 
   const removePromptAttachment = (key: string) => {
-    setAttachedPromptAssets((items) => items.filter((item) => item.key !== key));
+    setAttachedPromptAssets((items) =>
+      items.filter((item) => item.key !== key),
+    );
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (slashQuery !== null) {
-      if (filteredPromptAssets.length > 0 && e.key === 'ArrowDown') {
+      if (filteredPromptAssets.length > 0 && e.key === "ArrowDown") {
         e.preventDefault();
-        setSelectedPromptAssetIndex((index) => (index + 1) % filteredPromptAssets.length);
+        setSelectedPromptAssetIndex(
+          (index) => (index + 1) % filteredPromptAssets.length,
+        );
         return;
       }
-      if (filteredPromptAssets.length > 0 && e.key === 'ArrowUp') {
+      if (filteredPromptAssets.length > 0 && e.key === "ArrowUp") {
         e.preventDefault();
-        setSelectedPromptAssetIndex((index) => (index - 1 + filteredPromptAssets.length) % filteredPromptAssets.length);
+        setSelectedPromptAssetIndex(
+          (index) =>
+            (index - 1 + filteredPromptAssets.length) %
+            filteredPromptAssets.length,
+        );
         return;
       }
-      if (filteredPromptAssets.length > 0 && (e.key === 'Enter' || e.key === 'Tab')) {
+      if (
+        filteredPromptAssets.length > 0 &&
+        (e.key === "Enter" || e.key === "Tab")
+      ) {
         e.preventDefault();
         selectPromptAttachment(filteredPromptAssets[selectedPromptAssetIndex]);
         return;
       }
-      if (e.key === 'Escape') {
+      if (e.key === "Escape") {
         e.preventDefault();
         setSlashQuery(null);
-        setSlashSearchQuery('');
+        setSlashSearchQuery("");
         return;
       }
     }
 
     // Handle Mention Navigation
     if (mentionQuery !== null && filteredFiles.length > 0) {
-      if (e.key === 'ArrowDown') {
+      if (e.key === "ArrowDown") {
         e.preventDefault();
-        setSelectedFileIndex(i => (i + 1) % filteredFiles.length);
+        setSelectedFileIndex((i) => (i + 1) % filteredFiles.length);
         return;
       }
-      if (e.key === 'ArrowUp') {
+      if (e.key === "ArrowUp") {
         e.preventDefault();
-        setSelectedFileIndex(i => (i - 1 + filteredFiles.length) % filteredFiles.length);
+        setSelectedFileIndex(
+          (i) => (i - 1 + filteredFiles.length) % filteredFiles.length,
+        );
         return;
       }
-      if (e.key === 'Enter' || e.key === 'Tab') {
+      if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
         selectFile(filteredFiles[selectedFileIndex]);
         return;
       }
-      if (e.key === 'Escape') {
+      if (e.key === "Escape") {
         setMentionQuery(null);
         return;
       }
     }
 
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
       return;
     }
 
     if (
-      e.key === 'Backspace' &&
+      e.key === "Backspace" &&
       !content &&
       attachedPromptAssets.length > 0 &&
       textareaRef.current?.selectionStart === 0
@@ -494,8 +602,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
 
   useEffect(() => {
     if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 120) + 'px';
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height =
+        Math.min(textareaRef.current.scrollHeight, 120) + "px";
     }
   }, [content]);
 
@@ -540,51 +649,100 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     const popupStyle = {
       bottom: mentionPopupPosition.bottom,
       left: mentionPopupPosition.left, // Align with typical text start
-      maxHeight: '300px',
+      maxHeight: "300px",
     };
 
-    console.log(`[MentionPopup] Rendering with ${filteredFiles.length} files. Query: "${mentionQuery}"`);
+    console.log(
+      `[MentionPopup] Rendering with ${filteredFiles.length} files. Query: "${mentionQuery}"`,
+    );
 
     return createPortal(
       <div
         id="mention-popup"
-        className="fixed z-[10000] w-64 ring-1 ring-border rounded-lg shadow-2xl overflow-hidden flex flex-col"
-        style={{ ...popupStyle, backgroundColor: 'var(--aurora-chat-surface)' }}
+        className="fixed z-[10000] w-72 overflow-hidden rounded-2xl border border-border/70 shadow-2xl backdrop-blur-xl animate-in zoom-in-95 duration-100 flex flex-col"
+        style={{
+          ...popupStyle,
+          background:
+            "color-mix(in srgb, var(--aurora-chat-surface) 92%, var(--aurora-sidebar-background) 8%)",
+          boxShadow: `
+            0 18px 40px color-mix(in srgb, var(--aurora-common-shadow) 28%, transparent),
+            0 2px 10px color-mix(in srgb, var(--aurora-common-shadow) 18%, transparent),
+            inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 8%, transparent)
+          `,
+        }}
       >
-        <div className="px-2 py-1.5 border-b border-border text-[10px] items-center flex justify-between" style={{ backgroundColor: 'var(--aurora-chat-surface)', color: 'var(--aurora-common-text-secondary)' }}>
-          <span className="font-semibold uppercase tracking-wider">Suggested Files</span>
-          <span className="text-[10px]">{filteredFiles.length} found</span>
+        <div
+          className="px-3 py-2 border-b border-border/70 text-[10px] items-center flex justify-between"
+          style={{
+            background:
+              "linear-gradient(180deg, color-mix(in srgb, var(--aurora-title-bar-background) 82%, transparent) 0%, color-mix(in srgb, var(--aurora-chat-surface) 92%, transparent) 100%)",
+            color: "var(--aurora-common-text-secondary)",
+          }}
+        >
+          <span className="font-semibold uppercase tracking-[0.18em]">
+            Suggested Files
+          </span>
+          <span
+            className="rounded-md px-1.5 py-0.5 text-[9px] font-medium"
+            style={{
+              background:
+                "color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)",
+              color: "var(--aurora-common-primary)",
+            }}
+          >
+            {filteredFiles.length}
+          </span>
         </div>
 
         {filteredFiles.length === 0 ? (
-          <div className="p-3 text-center text-[11px] italic" style={{ color: 'var(--aurora-common-text-disabled)' }}>
-            {allFiles.length === 0 ? "No files in workspace" : "No matching files found"}
+          <div
+            className="p-4 text-center text-[11px] italic"
+            style={{ color: "var(--aurora-common-text-disabled)" }}
+          >
+            {allFiles.length === 0
+              ? "No files in workspace"
+              : "No matching files found"}
           </div>
         ) : (
-          <div className="max-h-48 overflow-y-auto p-1">
+          <div className="max-h-56 overflow-y-auto p-1.5 scrollbar-thin">
             {filteredFiles.map((file, idx) => (
               <button
                 key={file.id}
                 onClick={() => selectFile(file)}
                 onMouseEnter={() => setSelectedFileIndex(idx)}
                 className={clsx(
-                  "w-full text-left flex items-center gap-2 px-2 py-1.5 rounded text-[11px] transition-colors",
+                  "w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-xl transition-all duration-150",
                   idx === selectedFileIndex
                     ? "text-primary"
-                    : "hover:bg-sidebar-item-hover"
+                    : "hover:bg-sidebar-item-hover",
                 )}
                 style={{
-                  color: idx === selectedFileIndex ? 'var(--aurora-common-primary)' : 'var(--aurora-common-text-secondary)'
+                  color:
+                    idx === selectedFileIndex
+                      ? "var(--aurora-common-primary)"
+                      : "var(--aurora-common-text-secondary)",
+                  background:
+                    idx === selectedFileIndex
+                      ? "color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)"
+                      : "transparent",
+                  boxShadow:
+                    idx === selectedFileIndex
+                      ? "inset 0 0 0 1px color-mix(in srgb, var(--aurora-common-primary) 18%, transparent)"
+                      : "none",
                 }}
               >
-                <FileIcon name={file.name} path={file.path} className="w-4 h-4 min-w-4" />
+                <FileIcon
+                  name={file.name}
+                  path={file.path}
+                  className="w-4 h-4 min-w-4"
+                />
                 <span className="truncate">{file.name}</span>
               </button>
             ))}
           </div>
         )}
       </div>,
-      document.body
+      document.body,
     );
   };
 
@@ -597,7 +755,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
       onQueryChange={setSlashSearchQuery}
       onSelect={selectPromptAttachment}
       position={slashPopupPosition}
-      query={slashSearchQuery || slashQuery || ''}
+      query={slashSearchQuery || slashQuery || ""}
       selectedIndex={selectedPromptAssetIndex}
     />
   );
@@ -609,22 +767,40 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     const dropdown = (
       <div
         id="model-dropdown-portal"
-        className="fixed w-60 bg-sidebar ring-1 ring-border rounded-xl shadow-xl overflow-hidden z-[9999]"
+        className="fixed w-64 overflow-hidden rounded-2xl border border-border/70 shadow-2xl backdrop-blur-xl animate-in zoom-in-95 duration-100 z-[9999]"
         style={{
           top: dropdownPosition.top,
           left: dropdownPosition.left,
-          transform: 'translateY(-100%)',
-          backgroundColor: 'var(--aurora-sidebar-background)',
-          boxShadow: 'var(--aurora-common-shadow)'
+          transform:
+            dropdownPosition.placement === "above"
+              ? "translateY(0)"
+              : "translateY(0)",
+          background:
+            "color-mix(in srgb, var(--aurora-sidebar-background) 92%, var(--aurora-chat-surface) 8%)",
+          boxShadow: `
+            0 18px 40px color-mix(in srgb, var(--aurora-common-shadow) 28%, transparent),
+            0 2px 10px color-mix(in srgb, var(--aurora-common-shadow) 18%, transparent),
+            inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 8%, transparent)
+          `,
         }}
       >
-        <div className="px-3 py-2 border-b border-border" style={{ backgroundColor: 'var(--aurora-title-bar-background)' }}>
-          <span className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Select Model</span>
+        <div
+          className="px-3 py-2 border-b border-border/70"
+          style={{
+            background:
+              "linear-gradient(180deg, color-mix(in srgb, var(--aurora-title-bar-background) 82%, transparent) 0%, color-mix(in srgb, var(--aurora-sidebar-background) 96%, transparent) 100%)",
+          }}
+        >
+          <span className="text-[10px] font-semibold text-text-secondary uppercase tracking-[0.18em]">
+            Select Model
+          </span>
         </div>
 
         {availableModels.length === 0 ? (
           <div className="p-4 text-center">
-            <p className="text-[11px] text-muted-foreground mb-2">No models found</p>
+            <p className="text-[11px] text-muted-foreground mb-2">
+              No models found
+            </p>
             <button
               onClick={() => {
                 setShowModelDropdown(false);
@@ -637,23 +813,56 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
             </button>
           </div>
         ) : (
-          <div className="max-h-64 overflow-y-auto scrollbar-thin py-1">
-            {availableModels.map(({ providerId, providerName, model, label }) => (
-              <button
-                key={`${providerId}:${model}`}
-                onClick={() => handleModelSelect(providerId, model)}
-                className={clsx(
-                  "w-full px-3 py-2 text-left text-[12px] hover:bg-sidebar-item-hover transition-colors flex items-center justify-between group",
-                  selectedModel === `${providerId}:${model}` && "bg-sidebar-item-selected text-primary hover:bg-sidebar-item-selected/80"
-                )}
-              >
-                <div className="flex flex-col">
-                  <span className={clsx("font-medium", selectedModel !== `${providerId}:${model}` && "text-text-primary")}>{label}</span>
-                  <span className="text-[10px] text-text-disabled group-hover:text-text-secondary transition-colors">{providerName}</span>
-                </div>
-                {selectedModel === `${providerId}:${model}` && <div className="w-1.5 h-1.5 rounded-full bg-primary" />}
-              </button>
-            ))}
+          <div className="max-h-64 overflow-y-auto scrollbar-thin p-1.5">
+            {availableModels.map(
+              ({ providerId, providerName, model, label }) => (
+                <button
+                  key={`${providerId}:${model}`}
+                  onClick={() => handleModelSelect(providerId, model)}
+                  className={clsx(
+                    "w-full px-3 py-2.5 text-left text-[12px] transition-all duration-150 flex items-center justify-between group rounded-xl",
+                    selectedModel === `${providerId}:${model}`
+                      ? "text-primary"
+                      : "hover:bg-sidebar-item-hover",
+                  )}
+                  style={{
+                    background:
+                      selectedModel === `${providerId}:${model}`
+                        ? "color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)"
+                        : "transparent",
+                    boxShadow:
+                      selectedModel === `${providerId}:${model}`
+                        ? "inset 0 0 0 1px color-mix(in srgb, var(--aurora-common-primary) 18%, transparent)"
+                        : "none",
+                  }}
+                >
+                  <div className="flex flex-col">
+                    <span
+                      className={clsx(
+                        "font-medium",
+                        selectedModel !== `${providerId}:${model}` &&
+                          "text-text-primary",
+                      )}
+                    >
+                      {label}
+                    </span>
+                    <span className="text-[10px] text-text-disabled group-hover:text-text-secondary transition-colors">
+                      {providerName}
+                    </span>
+                  </div>
+                  {selectedModel === `${providerId}:${model}` && (
+                    <div
+                      className="w-1.5 h-1.5 rounded-full"
+                      style={{
+                        background: "var(--aurora-common-primary)",
+                        boxShadow:
+                          "0 0 10px color-mix(in srgb, var(--aurora-common-primary) 28%, transparent)",
+                      }}
+                    />
+                  )}
+                </button>
+              ),
+            )}
           </div>
         )}
       </div>
@@ -665,7 +874,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   // --- DRAG DROP HANDLERS ---
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'link';
+    e.dataTransfer.dropEffect = "link";
     setIsDragOver(true);
   }, []);
 
@@ -683,8 +892,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
 
     const filename = getFilename(filePath);
     // Add file to attached files (avoid duplicates)
-    setAttachedFiles(prev => {
-      if (prev.some(f => f.path === filePath)) return prev;
+    setAttachedFiles((prev) => {
+      if (prev.some((f) => f.path === filePath)) return prev;
       return [...prev, { path: filePath, name: filename }];
     });
     textareaRef.current?.focus();
@@ -693,14 +902,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   // Handle clicking anywhere in container to focus input
   const handleContainerClick = (e: React.MouseEvent) => {
     // Don't focus if clicking on a button or interactive element
-    if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('[role="button"]')) return;
+    if (
+      (e.target as HTMLElement).closest("button") ||
+      (e.target as HTMLElement).closest('[role="button"]')
+    )
+      return;
     textareaRef.current?.focus();
   };
 
   return (
     <div
       className="p-4 transition-colors relative"
-      style={{ backgroundColor: 'var(--aurora-chat-background)' }}
+      style={{ backgroundColor: "var(--aurora-chat-background)" }}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -717,13 +930,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
       <div
         onClick={handleContainerClick}
         className={clsx(
-          "rounded-[22px] transition-all duration-500 cursor-text relative overflow-hidden"
+          "rounded-[22px] transition-all duration-500 cursor-text relative overflow-hidden",
         )}
         style={{
-          backgroundColor: 'color-mix(in srgb, var(--aurora-chat-input-background) 88%, var(--aurora-chat-surface) 12%)',
+          backgroundColor:
+            "color-mix(in srgb, var(--aurora-chat-input-background) 88%, var(--aurora-chat-surface) 12%)",
           border: isFocused
-            ? '1px solid color-mix(in srgb, var(--aurora-common-primary) 22%, var(--aurora-chat-input-border) 78%)'
-            : '1px solid color-mix(in srgb, var(--aurora-chat-input-border) 82%, transparent)',
+            ? "1px solid color-mix(in srgb, var(--aurora-common-primary) 22%, var(--aurora-chat-input-border) 78%)"
+            : "1px solid color-mix(in srgb, var(--aurora-chat-input-border) 82%, transparent)",
           boxShadow: isFocused
             ? `
               0 6px 14px color-mix(in srgb, var(--aurora-common-shadow) 8%, transparent),
@@ -737,26 +951,39 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
               inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 14%, transparent),
               inset 0 8px 22px color-mix(in srgb, var(--aurora-common-shadow) 6%, transparent)
             `,
-          backdropFilter: 'blur(10px)',
+          backdropFilter: "blur(10px)",
         }}
       >
         <div
           className="pointer-events-none absolute inset-x-0 top-0 h-14"
           style={{
-            background: 'linear-gradient(180deg, color-mix(in srgb, var(--aurora-common-primary-foreground) 10%, transparent) 0%, transparent 100%)',
+            background:
+              "linear-gradient(180deg, color-mix(in srgb, var(--aurora-common-primary-foreground) 10%, transparent) 0%, transparent 100%)",
             opacity: isFocused ? 1 : 0.8,
           }}
         />
         {/* Top Control Bar */}
-        <div className="flex items-center justify-between px-3 pt-2.5 pb-1" style={{ backgroundColor: 'transparent' }}>
+        <div
+          className="flex items-center justify-between px-3 pt-2.5 pb-1"
+          style={{ backgroundColor: "transparent" }}
+        >
           {/* Model Pill */}
           <button
             ref={buttonRef}
-            onClick={() => setShowModelDropdown(!showModelDropdown)}
+            onClick={() => {
+              if (showModelDropdown) {
+                setShowModelDropdown(false);
+                return;
+              }
+
+              positionModelDropdown();
+              setShowModelDropdown(true);
+            }}
             className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium text-text-primary transition-colors"
             style={{
-              backgroundColor: 'color-mix(in srgb, var(--aurora-chat-surface) 82%, transparent)',
-              border: '1px solid transparent',
+              backgroundColor:
+                "color-mix(in srgb, var(--aurora-chat-surface) 82%, transparent)",
+              border: "1px solid transparent",
               boxShadow: `
                 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 10%, transparent),
                 0 0 0 1px var(--aurora-chat-surface-border)
@@ -765,27 +992,35 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
           >
             <Sparkles size={10} className="text-primary" />
             <span className="truncate max-w-[160px]">
-              {selectedModelOption?.label || (availableModels.length > 0 ? 'Select Model' : 'No Models')}
+              {selectedModelOption?.label ||
+                (availableModels.length > 0 ? "Select Model" : "No Models")}
             </span>
-            <ChevronDown size={10} className={clsx("text-muted-foreground transition-transform", showModelDropdown && "rotate-180")} />
+            <ChevronDown
+              size={10}
+              className={clsx(
+                "text-muted-foreground transition-transform",
+                showModelDropdown && "rotate-180",
+              )}
+            />
           </button>
 
           {/* Thinking toggle only appears when provider exposes model pairs (think/non-think). */}
           {showThinkingToggle && (
             <button
               onClick={handleThinkingToggle}
-              title={effectiveThinkingEnabled
-                ? `Switch to ${thinkingPair?.nonThinkModel}`
-                : `Switch to ${thinkingPair?.thinkModel}`
+              title={
+                effectiveThinkingEnabled
+                  ? `Switch to ${thinkingPair?.nonThinkModel}`
+                  : `Switch to ${thinkingPair?.thinkModel}`
               }
               className={clsx(
                 "flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all",
                 effectiveThinkingEnabled
                   ? "bg-primary/10 text-primary"
-                  : "bg-transparent text-muted-foreground hover:text-text-primary"
+                  : "bg-transparent text-muted-foreground hover:text-text-primary",
               )}
               style={{
-                border: '1px solid transparent',
+                border: "1px solid transparent",
                 boxShadow: effectiveThinkingEnabled
                   ? `
                       0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 10%, transparent),
@@ -796,11 +1031,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                       0 0 0 1px var(--aurora-chat-surface-border)
                     `,
                 backgroundColor: effectiveThinkingEnabled
-                  ? 'color-mix(in srgb, var(--aurora-chat-surface) 70%, var(--aurora-common-primary) 10%)'
-                  : 'var(--aurora-chat-surface)',
+                  ? "color-mix(in srgb, var(--aurora-chat-surface) 70%, var(--aurora-common-primary) 10%)"
+                  : "var(--aurora-chat-surface)",
               }}
             >
-              <Brain size={12} className={effectiveThinkingEnabled ? "animate-pulse" : ""} />
+              <Brain
+                size={12}
+                className={effectiveThinkingEnabled ? "animate-pulse" : ""}
+              />
               <span>Thinking</span>
             </button>
           )}
@@ -809,15 +1047,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
         {/* Attached Files / Prompt Assets */}
         {(attachedFiles.length > 0 || attachedPromptAssets.length > 0) && (
           <div className="px-3 py-2 flex flex-wrap gap-2 text-text-primary">
-            {attachedFiles.map(file => (
+            {attachedFiles.map((file) => (
               <div
                 key={file.path}
                 onClick={() => handleFileClick(file)}
                 className="group flex items-center gap-1.5 pl-2 pr-1 py-1 bg-accent/10 text-accent rounded-md border border-accent/20 text-[10px] cursor-pointer hover:bg-accent/20 transition-colors"
                 title="Click to open file"
               >
-                <FileIcon name={file.name} path={file.path} className="w-3 h-3 min-w-3" />
-                <span className="truncate max-w-[150px] font-medium">{file.name}</span>
+                <FileIcon
+                  name={file.name}
+                  path={file.path}
+                  className="w-3 h-3 min-w-3"
+                />
+                <span className="truncate max-w-[150px] font-medium">
+                  {file.name}
+                </span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -835,15 +1079,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                 key={asset.key}
                 className="group flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] transition-colors"
                 style={{
-                  backgroundColor: 'var(--aurora-chat-surface)',
-                  borderColor: 'var(--aurora-chat-surface-border)',
-                  color: 'var(--aurora-common-text-secondary)',
+                  backgroundColor: "var(--aurora-chat-surface)",
+                  borderColor: "var(--aurora-chat-surface-border)",
+                  color: "var(--aurora-common-text-secondary)",
                 }}
               >
                 <span className="rounded bg-sidebar px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-text-secondary">
                   {asset.type}
                 </span>
-                <span className="truncate max-w-[180px] font-medium text-text-primary">{asset.title}</span>
+                <span className="truncate max-w-[180px] font-medium text-text-primary">
+                  {asset.title}
+                </span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -886,29 +1132,40 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
           </div>
           <button
             onClick={handleStopOrSend}
-            disabled={!isLoading && ((!content.trim() && attachedFiles.length === 0 && attachedPromptAssets.length === 0) || disabled || availableModels.length === 0)}
+            disabled={
+              !isLoading &&
+              ((!content.trim() &&
+                attachedFiles.length === 0 &&
+                attachedPromptAssets.length === 0) ||
+                disabled ||
+                availableModels.length === 0)
+            }
             className={clsx(
               "p-1 rounded-full transition-all duration-200 flex items-center justify-center tap-highlight-transparent outline-none focus:outline-none",
               isLoading
                 ? "bg-error/10 text-error hover:bg-error/20"
-                : "hover:bg-transparent"
+                : "hover:bg-transparent",
             )}
-            title={isLoading ? 'Stop generation' : 'Send message'}
+            title={isLoading ? "Stop generation" : "Send message"}
           >
             {isLoading ? (
               <Square size={14} fill="currentColor" />
             ) : (
-              <div className={clsx(
-                "w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300",
-                (content.trim() || attachedFiles.length > 0)
-                  ? "bg-gradient-to-br from-primary to-primary/80 hover:scale-105 active:scale-95"
-                  : "bg-muted text-muted-foreground"
-              )}>
+              <div
+                className={clsx(
+                  "w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300",
+                  content.trim() || attachedFiles.length > 0
+                    ? "bg-gradient-to-br from-primary to-primary/80 hover:scale-105 active:scale-95"
+                    : "bg-muted text-muted-foreground",
+                )}
+              >
                 <ArrowUp
                   size={16}
                   className={clsx(
                     "transition-all duration-300",
-                    (content.trim() || attachedFiles.length > 0) ? "text-primary-foreground stroke-[2.5px]" : "opacity-50"
+                    content.trim() || attachedFiles.length > 0
+                      ? "text-primary-foreground stroke-[2.5px]"
+                      : "opacity-50",
                   )}
                 />
               </div>

@@ -2,28 +2,40 @@
  * Chat Header - Thread title bar with context info
  */
 
-import React from 'react';
-import { Plus, History, Loader2, Sparkles, MessageSquare, Zap, Maximize2 } from 'lucide-react';
-import { useThreadStore } from '../../store/useThreadStore';
-import { useChatStore } from '../../store/useChatStore';
-import { useContextStore } from '../../store/useContextStore';
-import { useUiStore } from '../../store/useUiStore';
+import React from "react";
+import {
+  Plus,
+  History,
+  Sparkles,
+  MessageSquare,
+  Zap,
+  Maximize2,
+} from "lucide-react";
+import { StreamingDotMatrix } from "../ui/StreamingDotMatrix";
+import { useThreadStore } from "../../store/useThreadStore";
+import { useChatStore } from "../../store/useChatStore";
+import { useContextStore } from "../../store/useContextStore";
+import { useUiStore } from "../../store/useUiStore";
 
 // Get theme colors at runtime from CSS variables
 const getContextColor = (varName: string, fallback: string): string => {
-  if (typeof window === 'undefined') return fallback;
-  const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+  if (typeof window === "undefined") return fallback;
+  const value = getComputedStyle(document.documentElement)
+    .getPropertyValue(varName)
+    .trim();
   return value || fallback;
 };
 
 const getContextColors = () => ({
-  low: getContextColor('--aurora-chat-usage-low', '#22d3ee'),
-  medium: getContextColor('--aurora-chat-usage-medium', '#facc15'),
-  high: getContextColor('--aurora-chat-usage-high', '#ef4444'),
+  low: getContextColor("--aurora-chat-usage-low", "#22d3ee"),
+  medium: getContextColor("--aurora-chat-usage-medium", "#facc15"),
+  high: getContextColor("--aurora-chat-usage-high", "#ef4444"),
 });
 
 // Agent Mode Toggle Button
-const AgentModeToggle: React.FC<{ buttonStyle: React.CSSProperties }> = ({ buttonStyle }) => {
+const AgentModeToggle: React.FC<{ buttonStyle: React.CSSProperties }> = ({
+  buttonStyle,
+}) => {
   const { toggleAgentMode } = useUiStore();
 
   return (
@@ -43,7 +55,10 @@ interface ChatHeaderProps {
   onOpenHistory: () => void;
 }
 
-export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory }) => {
+export const ChatHeader: React.FC<ChatHeaderProps> = ({
+  onNewChat,
+  onOpenHistory,
+}) => {
   const { currentThreadId, threads } = useThreadStore();
   const { isLoading } = useChatStore();
   const {
@@ -61,7 +76,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory
 
   const currentThread = currentThreadId ? threads[currentThreadId] : null;
   const hasMessages = currentThread && currentThread.messages.length > 0;
-  const title = hasMessages ? currentThread.title : 'New Chat';
+  const title = hasMessages ? currentThread.title : "New Chat";
 
   const getUsageColor = () => {
     if (isOverLimit || usagePercentage >= 80) return contextColors.high;
@@ -76,8 +91,10 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory
   };
 
   const headerButtonStyle: React.CSSProperties = {
-    backgroundColor: 'color-mix(in srgb, var(--aurora-common-secondary) 74%, var(--aurora-title-bar-background) 26%)',
-    border: '1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)',
+    backgroundColor:
+      "color-mix(in srgb, var(--aurora-common-secondary) 74%, var(--aurora-title-bar-background) 26%)",
+    border:
+      "1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)",
     boxShadow: `
       inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent),
       inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 8%, transparent)
@@ -95,11 +112,12 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory
             color-mix(in srgb, var(--aurora-title-bar-background) 62%, transparent) 58%,
             color-mix(in srgb, var(--aurora-chat-background) 18%, transparent) 100%
           )`,
-          borderColor: 'color-mix(in srgb, var(--aurora-common-border) 72%, transparent)',
-          boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent)',
+          borderColor:
+            "color-mix(in srgb, var(--aurora-common-border) 72%, transparent)",
+          boxShadow:
+            "inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent)",
         }}
       >
-
         {/* Left side - Title & Info */}
         <div className="relative flex items-center gap-2.5 min-w-0 flex-1">
           {/* Icon */}
@@ -108,7 +126,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory
             style={headerButtonStyle}
           >
             {isLoading ? (
-              <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />
+              <StreamingDotMatrix className="text-primary" size={14} />
             ) : hasMessages ? (
               <MessageSquare className="w-3.5 h-3.5 text-primary" />
             ) : (
@@ -126,15 +144,15 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory
                 {/* Turn count */}
                 {totalTurns > 0 && (
                   <span className="text-[9px] text-text-disabled">
-                    {totalTurns} turn{totalTurns !== 1 ? 's' : ''}
+                    {totalTurns} turn{totalTurns !== 1 ? "s" : ""}
                   </span>
                 )}
-                
+
                 {/* Summarized indicator */}
                 {summarizedTurns > 0 && (
                   <>
                     <span className="text-[9px] text-text-disabled">|</span>
-                    <span 
+                    <span
                       className="flex items-center gap-0.5 text-[9px]"
                       style={{ color: contextColors.low }}
                       title={`${summarizedTurns} turn(s) summarized to save context`}
@@ -149,12 +167,17 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory
                 {usedContextTokens > 0 && (
                   <>
                     <span className="text-[9px] text-text-disabled">|</span>
-                    <span 
+                    <span
                       className="text-[9px] font-mono"
                       style={{ color: getUsageColor() }}
-                      title={needsSummarization ? 'Summarization recommended' : `${usagePercentage}% of context used`}
+                      title={
+                        needsSummarization
+                          ? "Summarization recommended"
+                          : `${usagePercentage}% of context used`
+                      }
                     >
-                      {formatTokens(usedContextTokens)}/{formatTokens(contextWindow)}
+                      {formatTokens(usedContextTokens)}/
+                      {formatTokens(contextWindow)}
                     </span>
                   </>
                 )}
@@ -178,8 +201,10 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ onNewChat, onOpenHistory
             className="flex h-7 w-7 items-center justify-center rounded-[10px] text-primary transition-all duration-200 hover:bg-primary/20"
             style={{
               ...headerButtonStyle,
-              backgroundColor: 'color-mix(in srgb, var(--aurora-common-primary) 10%, var(--aurora-common-secondary))',
-              border: '1px solid color-mix(in srgb, var(--aurora-common-primary) 18%, transparent)',
+              backgroundColor:
+                "color-mix(in srgb, var(--aurora-common-primary) 10%, var(--aurora-common-secondary))",
+              border:
+                "1px solid color-mix(in srgb, var(--aurora-common-primary) 18%, transparent)",
             }}
             title="New Chat"
           >

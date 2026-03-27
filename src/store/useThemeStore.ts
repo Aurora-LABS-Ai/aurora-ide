@@ -4,6 +4,7 @@ import { create } from "zustand";
 
 import { themeService } from "../services/theme-service";
 import type { ThemeDefinition, ThemeFile, ThemeStore } from "../types/theme";
+import alvanAuroraDarkThemeFile from "../themes/alvan-aurora-dark.json";
 import darkThemeFile from "../themes/dark.json";
 import lightThemeFile from "../themes/light.json";
 
@@ -34,7 +35,7 @@ function isBuiltInThemeName(name: string): boolean {
 }
 
 // Built-in themes - these cannot be overwritten
-const BUILT_IN_THEME_NAMES = ['aurora dark', 'aurora light'];
+const BUILT_IN_THEME_NAMES = ['aurora dark', 'aurora light', 'alvan aurora dark'];
 
 export const useThemeStore = create<ThemeStore>((set, get) => ({
     activeThemeId: 'dark',
@@ -187,6 +188,11 @@ export const useThemeStore = create<ThemeStore>((set, get) => ({
             // runtime default matches the authored theme files exactly.
             const darkTheme = themeService.createThemeDefinition(darkThemeFile as ThemeFile, 'dark', true);
             const lightTheme = themeService.createThemeDefinition(lightThemeFile as ThemeFile, 'light', true);
+            const alvanAuroraDarkTheme = themeService.createThemeDefinition(
+                alvanAuroraDarkThemeFile as ThemeFile,
+                'alvan-aurora-dark',
+                true
+            );
 
             // Load custom themes from DB (backend handles deduplication)
             const customThemesRaw = await invoke<StoredThemeRow[]>('get_custom_themes');
@@ -210,7 +216,7 @@ export const useThemeStore = create<ThemeStore>((set, get) => ({
                 })
                 .filter((t): t is ThemeDefinition => t !== null);
 
-            const allThemes = [darkTheme, lightTheme, ...customThemes];
+            const allThemes = [darkTheme, lightTheme, alvanAuroraDarkTheme, ...customThemes];
 
             set({
                 themes: allThemes,

@@ -1,19 +1,19 @@
 /**
  * THEME ARCHITECTURE NOTICE:
- * 
+ *
  * This project uses a centralized theme system. DO NOT use hardcoded colors.
- * 
+ *
  * Instead of:
  *   - Hardcoded hex values: #ff0000, #1a1a1a
  *   - Hardcoded RGB values: rgb(255, 0, 0)
- * 
+ *
  * Use theme tokens via CSS variables:
  *   - var(--aurora-{category}-{token})
  *   - Example: var(--aurora-editor-background)
  *   - Example: var(--aurora-common-primary)
- * 
+ *
  * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
- * 
+ *
  * See: DOCS/theme-dev.md for full token reference
  */
 
@@ -22,492 +22,544 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: dark;
-  --aurora-ui-scale: 1;
-  --aurora-ui-text-scale: 1;
-  --aurora-ui-font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    color-scheme: dark;
+    --aurora-ui-scale: 1;
+    --aurora-ui-text-scale: 1;
+    --aurora-ui-font-family:
+        "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
+        Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
 }
 
-html, body, #root {
-  margin: 0;
-  padding: 0;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
+html,
+body,
+#root {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
 }
 
 body {
-  background-color: var(--aurora-editor-background, #1e1e1e);
-  color: var(--aurora-editor-foreground, #d4d4d4);
-  font-family: var(--aurora-ui-font-family);
-  font-size: calc(14px * var(--aurora-ui-text-scale));
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  /* Disable default context menu */
-  -webkit-user-select: none;
-  user-select: none;
+    background-color: var(--aurora-editor-background, #1e1e1e);
+    color: var(--aurora-editor-foreground, #d4d4d4);
+    font-family: var(--aurora-ui-font-family);
+    font-size: calc(14px * var(--aurora-ui-text-scale));
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Disable default context menu */
+    -webkit-user-select: none;
+    user-select: none;
 }
 
 /* Override Tailwind preflight's light default border color for bare `border` */
 *,
 ::before,
 ::after {
-  border-color: var(--aurora-common-border, #3a3a3a);
+    border-color: var(--aurora-common-border, #3a3a3a);
 }
 
 /* Use themed custom select appearance instead of OS default white control chrome */
 select {
-  appearance: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7' fill='none'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23949aa8' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 0.5rem center;
-  background-size: 10px 7px;
-  padding-right: 1.5rem;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7' fill='none'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23949aa8' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    background-size: 10px 7px;
+    padding-right: 1.5rem;
 }
 
 /* Keep native text inputs borderless; component wrappers own focus visuals */
 input:focus,
 textarea:focus {
-  outline: none;
-  box-shadow: none;
+    outline: none;
+    box-shadow: none;
 }
 
 input:focus-visible,
 textarea:focus-visible {
-  outline: none;
-  box-shadow: none;
+    outline: none;
+    box-shadow: none;
 }
 
 /* Use themed focus states for controls that keep visible focus rings */
 select:focus,
 button:focus {
-  outline: none;
+    outline: none;
 }
 
 select:focus-visible,
 button:focus-visible {
-  outline: 1px solid var(--aurora-common-primary, #0ea5e9);
-  outline-offset: 0;
+    outline: 1px solid var(--aurora-common-primary, #0ea5e9);
+    outline-offset: 0;
 }
 
 /* Allow text selection in specific areas */
 .select-text,
 .select-text * {
-  -webkit-user-select: text !important;
-  user-select: text !important;
+    -webkit-user-select: text !important;
+    user-select: text !important;
 }
 
 /* Markdown content should always be selectable */
 .markdown-content,
 .markdown-content * {
-  -webkit-user-select: text !important;
-  user-select: text !important;
+    -webkit-user-select: text !important;
+    user-select: text !important;
 }
 
 /* VS Code style scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+    width: 8px;
+    height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: transparent;
+    background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--aurora-common-scrollbar, #424242);
-  border-radius: 0;
+    background: var(--aurora-common-scrollbar, #424242);
+    border-radius: 0;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--aurora-common-scrollbar-hover, #555555);
+    background: var(--aurora-common-scrollbar-hover, #555555);
 }
 
 ::-webkit-scrollbar-corner {
-  background: transparent;
+    background: transparent;
 }
 
 /* Hide scrollbar utility */
 .scrollbar-none {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
+    -ms-overflow-style: none;
+    scrollbar-width: none;
 }
 
 .scrollbar-none::-webkit-scrollbar {
-  display: none;
+    display: none;
 }
 
 /* Thin scrollbar utility */
 .scrollbar-thin::-webkit-scrollbar {
-  width: 4px;
+    width: 4px;
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background: var(--aurora-common-scrollbar, #3a3a3a);
-  border-radius: 2px;
+    background: var(--aurora-common-scrollbar, #3a3a3a);
+    border-radius: 2px;
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background: var(--aurora-common-scrollbar-hover, #4a4a4a);
+    background: var(--aurora-common-scrollbar-hover, #4a4a4a);
 }
 
 /* Animation utilities */
 @keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
+    from {
+        opacity: 0;
+    }
 
-  to {
-    opacity: 1;
-  }
+    to {
+        opacity: 1;
+    }
 }
 
 @keyframes zoomIn {
-  from {
-    opacity: 0;
-    transform: scale(0.95);
-  }
+    from {
+        opacity: 0;
+        transform: scale(0.95);
+    }
 
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
 }
 
 /* Aurora text shimmer - shine moves left to right */
 @keyframes aurora-shine {
-  0% {
-    background-position: 100% 0;
-  }
+    0% {
+        background-position: 100% 0;
+    }
 
-  100% {
-    background-position: -100% 0;
-  }
+    100% {
+        background-position: -100% 0;
+    }
+}
+
+@keyframes aurora-dot-matrix {
+    0%,
+    100% {
+        opacity: 0.24;
+        transform: scale(0.78);
+        filter: brightness(0.92);
+    }
+
+    35% {
+        opacity: 0.55;
+        transform: scale(0.92);
+        filter: brightness(1);
+    }
+
+    50% {
+        opacity: 1;
+        transform: scale(1.18);
+        filter: brightness(1.18);
+    }
+
+    65% {
+        opacity: 0.62;
+        transform: scale(0.96);
+        filter: brightness(1.02);
+    }
 }
 
 /* Shimmer sweep - light passes over text without changing color */
 @keyframes shimmer-sweep {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
-  }
+    0% {
+        background-position: 200% 0;
+    }
+    100% {
+        background-position: -200% 0;
+    }
 }
 
 /* === PREMIUM ENTRANCE ANIMATIONS === */
 @keyframes slideInRight {
-  from {
-    opacity: 0;
-    transform: translateX(12px);
-  }
+    from {
+        opacity: 0;
+        transform: translateX(12px);
+    }
 
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
 }
 
 @keyframes slideInBottom {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
 
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 @keyframes scaleIn {
-  from {
-    opacity: 0;
-    transform: scale(0.96);
-  }
+    from {
+        opacity: 0;
+        transform: scale(0.96);
+    }
 
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
 }
 
 /* === PREMIUM GLOW EFFECTS (using theme primary) === */
 @keyframes pulseGlow {
+    0%,
+    100% {
+        opacity: 0.8;
+    }
 
-  0%,
-  100% {
-    opacity: 0.8;
-  }
-
-  50% {
-    opacity: 1;
-  }
+    50% {
+        opacity: 1;
+    }
 }
 
 @keyframes breathe {
+    0%,
+    100% {
+        opacity: 0.5;
+    }
 
-  0%,
-  100% {
-    opacity: 0.5;
-  }
-
-  50% {
-    opacity: 0.9;
-  }
+    50% {
+        opacity: 0.9;
+    }
 }
 
 @keyframes orbitSlow {
-  from {
-    transform: rotate(0deg);
-  }
+    from {
+        transform: rotate(0deg);
+    }
 
-  to {
-    transform: rotate(360deg);
-  }
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 .animate-in {
-  animation-duration: 150ms;
-  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
-  animation-fill-mode: forwards;
+    animation-duration: 150ms;
+    animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+    animation-fill-mode: forwards;
 }
 
 .fade-in {
-  animation-name: fadeIn;
+    animation-name: fadeIn;
 }
 
 .zoom-in-95 {
-  animation-name: zoomIn;
+    animation-name: zoomIn;
 }
 
 .duration-100 {
-  animation-duration: 100ms;
+    animation-duration: 100ms;
 }
 
 /* === PREMIUM GLASSMORPHISM === */
 .glass-light {
-  backdrop-filter: blur(8px) saturate(150%);
-  -webkit-backdrop-filter: blur(8px) saturate(150%);
+    backdrop-filter: blur(8px) saturate(150%);
+    -webkit-backdrop-filter: blur(8px) saturate(150%);
 }
 
 .glass-medium {
-  backdrop-filter: blur(12px) saturate(170%);
-  -webkit-backdrop-filter: blur(12px) saturate(170%);
+    backdrop-filter: blur(12px) saturate(170%);
+    -webkit-backdrop-filter: blur(12px) saturate(170%);
 }
 
 .glass-heavy {
-  backdrop-filter: blur(20px) saturate(200%);
-  -webkit-backdrop-filter: blur(20px) saturate(200%);
+    backdrop-filter: blur(20px) saturate(200%);
+    -webkit-backdrop-filter: blur(20px) saturate(200%);
 }
 
 /* === PREMIUM SHADOWS (using theme shadow) === */
 .shadow-premium {
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.03),
-    0 4px 12px -2px var(--aurora-common-shadow),
-    0 2px 6px -1px rgba(0, 0, 0, 0.15);
+    box-shadow:
+        0 0 0 1px rgba(255, 255, 255, 0.03),
+        0 4px 12px -2px var(--aurora-common-shadow),
+        0 2px 6px -1px rgba(0, 0, 0, 0.15);
 }
 
 .shadow-premium-lg {
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.04),
-    0 10px 24px -4px var(--aurora-common-shadow),
-    0 4px 8px -2px rgba(0, 0, 0, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    box-shadow:
+        0 0 0 1px rgba(255, 255, 255, 0.04),
+        0 10px 24px -4px var(--aurora-common-shadow),
+        0 4px 8px -2px rgba(0, 0, 0, 0.2),
+        inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
 .shadow-premium-glow {
-  box-shadow:
-    0 0 0 1px var(--aurora-common-border),
-    0 8px 20px -3px var(--aurora-common-primary),
-    0 0 48px -12px var(--aurora-common-primary),
-    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    box-shadow:
+        0 0 0 1px var(--aurora-common-border),
+        0 8px 20px -3px var(--aurora-common-primary),
+        0 0 48px -12px var(--aurora-common-primary),
+        inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 /* === UTILITY ANIMATION CLASSES === */
 .animate-slide-in-right {
-  animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .animate-slide-in-bottom {
-  animation: slideInBottom 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: slideInBottom 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .animate-scale-in {
-  animation: scaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: scaleIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .animate-pulse-glow {
-  animation: pulseGlow 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    animation: pulseGlow 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
 .animate-breathe {
-  animation: breathe 3s ease-in-out infinite;
+    animation: breathe 3s ease-in-out infinite;
 }
 
 .animate-orbit-slow {
-  animation: orbitSlow 4s linear infinite;
+    animation: orbitSlow 4s linear infinite;
 }
 
 /* Streaming cursor blink animation */
 .animate-cursor-blink {
-  animation: cursorBlink 1s steps(2, start) infinite;
+    animation: cursorBlink 1s steps(2, start) infinite;
 }
 
 @keyframes cursorBlink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0;
+    }
 }
 
 /* Smooth content appearance for streaming */
 .markdown-content {
-  /* Ensure smooth reflow as content grows */
-  transition: height 0.1s ease-out;
+    /* Ensure smooth reflow as content grows */
+    transition: height 0.1s ease-out;
 }
 
 .markdown-content > * {
-  /* Subtle fade-in for new elements */
-  animation: contentFadeIn 0.15s ease-out;
+    /* Subtle fade-in for new elements */
+    animation: contentFadeIn 0.15s ease-out;
 }
 
 @keyframes contentFadeIn {
-  from {
-    opacity: 0.7;
-  }
-  to {
-    opacity: 1;
-  }
+    from {
+        opacity: 0.7;
+    }
+    to {
+        opacity: 1;
+    }
 }
 
 /* === MARKDOWN CONTENT STYLING === */
 
 /* Code block container - CodeBlockWrapper styles */
 .markdown-content .group\/code {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
 .markdown-content .group\/code:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
 /* Code blocks with syntax highlighting */
 .markdown-content pre {
-  background: transparent;
-  margin: 0;
-  overflow-x: auto;
-  font-family: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Monaco, 'Andale Mono', monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  tab-size: 2;
+    background: transparent;
+    margin: 0;
+    overflow-x: auto;
+    font-family:
+        "Fira Code", "JetBrains Mono", "Cascadia Code", "SF Mono", Monaco,
+        "Andale Mono", monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    tab-size: 2;
 }
 
 .markdown-content pre code {
-  background: transparent;
-  padding: 0;
-  border: none;
-  font-size: inherit;
-  color: var(--aurora-editor-foreground, #d4d4d4);
+    background: transparent;
+    padding: 0;
+    border: none;
+    font-size: inherit;
+    color: var(--aurora-editor-foreground, #d4d4d4);
 }
 
 /* Inline code styling */
 .markdown-content code:not(pre code) {
-  background: var(--aurora-chat-code-block, var(--aurora-editor-background, #1a1a1a));
-  color: var(--aurora-common-primary, #60a5fa);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace;
-  font-size: 11px;
-  border: 1px solid var(--aurora-common-border, #333);
+    background: var(
+        --aurora-chat-code-block,
+        var(--aurora-editor-background, #1a1a1a)
+    );
+    color: var(--aurora-common-primary, #60a5fa);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: "Fira Code", "JetBrains Mono", "Cascadia Code", monospace;
+    font-size: 11px;
+    border: 1px solid var(--aurora-common-border, #333);
 }
 
 /* Table styling - professional grid rendering */
 .markdown-content table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-  background: var(--aurora-sidebar-background, #1e1e1e);
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    background: var(--aurora-sidebar-background, #1e1e1e);
 }
 
 .markdown-content thead {
-  background: var(--aurora-chat-surface, rgba(255, 255, 255, 0.05));
+    background: var(--aurora-chat-surface, rgba(255, 255, 255, 0.05));
 }
 
 .markdown-content th {
-  padding: 10px 16px;
-  text-align: left;
-  font-weight: 600;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--aurora-common-text-primary, #e0e0e0);
-  border-bottom: 2px solid var(--aurora-common-border, #333);
+    padding: 10px 16px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--aurora-common-text-primary, #e0e0e0);
+    border-bottom: 2px solid var(--aurora-common-border, #333);
 }
 
 .markdown-content td {
-  padding: 10px 16px;
-  color: var(--aurora-common-text-primary, #d4d4d4);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    padding: 10px 16px;
+    color: var(--aurora-common-text-primary, #d4d4d4);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .markdown-content tbody tr:last-child td {
-  border-bottom: none;
+    border-bottom: none;
 }
 
 .markdown-content tbody tr:nth-child(even) {
-  background: color-mix(in srgb, var(--aurora-common-text-primary) 2%, transparent);
+    background: color-mix(
+        in srgb,
+        var(--aurora-common-text-primary) 2%,
+        transparent
+    );
 }
 
 .markdown-content tbody tr:hover {
-  background: color-mix(in srgb, var(--aurora-common-text-primary) 4%, transparent);
+    background: color-mix(
+        in srgb,
+        var(--aurora-common-text-primary) 4%,
+        transparent
+    );
 }
 
 /* Blockquote styling */
 .markdown-content blockquote {
-  border-left: 3px solid var(--aurora-common-primary, #60a5fa);
-  margin: 12px 0;
-  padding: 8px 16px;
-  background: rgba(96, 165, 250, 0.05);
-  border-radius: 0 8px 8px 0;
+    border-left: 3px solid var(--aurora-common-primary, #60a5fa);
+    margin: 12px 0;
+    padding: 8px 16px;
+    background: rgba(96, 165, 250, 0.05);
+    border-radius: 0 8px 8px 0;
 }
 
 .markdown-content blockquote p {
-  margin: 0;
-  color: var(--aurora-common-text-secondary, #b0b0b0);
+    margin: 0;
+    color: var(--aurora-common-text-secondary, #b0b0b0);
 }
 
 /* Horizontal rule */
 .markdown-content hr {
-  border: none;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--aurora-common-border, #333), transparent);
-  margin: 20px 0;
+    border: none;
+    height: 1px;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        var(--aurora-common-border, #333),
+        transparent
+    );
+    margin: 20px 0;
 }
 
 /* List styling */
 .markdown-content ul {
-  list-style: disc;
-  margin: 8px 0;
-  padding-left: 20px;
-  list-style-position: outside;
+    list-style: disc;
+    margin: 8px 0;
+    padding-left: 20px;
+    list-style-position: outside;
 }
 
 .markdown-content ol {
-  list-style: decimal;
-  margin: 8px 0;
-  padding-left: 20px;
-  list-style-position: outside;
+    list-style: decimal;
+    margin: 8px 0;
+    padding-left: 20px;
+    list-style-position: outside;
 }
 
 .markdown-content li {
-  margin: 6px 0;
-  line-height: 1.6;
+    margin: 6px 0;
+    line-height: 1.6;
 }
 
 .markdown-content li::marker {
-  color: var(--aurora-common-text-secondary, #d4d4d4);
+    color: var(--aurora-common-text-secondary, #d4d4d4);
 }
 
 /* Headers */
@@ -515,82 +567,82 @@ button:focus-visible {
 .markdown-content h2,
 .markdown-content h3,
 .markdown-content h4 {
-  color: var(--aurora-common-text-primary, #e0e0e0);
-  font-weight: 600;
+    color: var(--aurora-common-text-primary, #e0e0e0);
+    font-weight: 600;
 }
 
 .markdown-content h1 {
-  font-size: 18px;
-  margin-top: 20px;
-  margin-bottom: 10px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--aurora-common-border, #333);
+    font-size: 18px;
+    margin-top: 20px;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--aurora-common-border, #333);
 }
 
 .markdown-content h2 {
-  font-size: 16px;
-  margin-top: 18px;
-  margin-bottom: 8px;
+    font-size: 16px;
+    margin-top: 18px;
+    margin-bottom: 8px;
 }
 
 .markdown-content h3 {
-  font-size: 14px;
-  margin-top: 14px;
-  margin-bottom: 6px;
+    font-size: 14px;
+    margin-top: 14px;
+    margin-bottom: 6px;
 }
 
 .markdown-content h4 {
-  font-size: 13px;
-  margin-top: 12px;
-  margin-bottom: 4px;
+    font-size: 13px;
+    margin-top: 12px;
+    margin-bottom: 4px;
 }
 
 /* Links */
 .markdown-content a {
-  color: var(--aurora-common-primary, #60a5fa);
-  text-decoration: none;
-  transition: opacity 0.2s ease;
+    color: var(--aurora-common-primary, #60a5fa);
+    text-decoration: none;
+    transition: opacity 0.2s ease;
 }
 
 .markdown-content a:hover {
-  text-decoration: underline;
-  opacity: 0.85;
+    text-decoration: underline;
+    opacity: 0.85;
 }
 
 /* Shiki code block theme overrides */
 .markdown-content .shiki,
 .markdown-content [data-shiki] {
-  background: transparent !important;
-  padding: 0;
-  margin: 0;
-  overflow-x: auto;
+    background: transparent !important;
+    padding: 0;
+    margin: 0;
+    overflow-x: auto;
 }
 
 .markdown-content .shiki code,
 .markdown-content [data-shiki] code {
-  background: transparent !important;
-  font-family: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace;
-  font-size: 12px;
-  line-height: 1.6;
+    background: transparent !important;
+    font-family: "Fira Code", "JetBrains Mono", "Cascadia Code", monospace;
+    font-size: 12px;
+    line-height: 1.6;
 }
 
 /* Line numbers for code blocks (if present) */
 .markdown-content pre .line-number {
-  color: var(--aurora-editor-line-numbers, #666);
-  margin-right: 16px;
-  user-select: none;
-  opacity: 0.5;
+    color: var(--aurora-editor-line-numbers, #666);
+    margin-right: 16px;
+    user-select: none;
+    opacity: 0.5;
 }
 
 /* Selection styling in code blocks */
 .markdown-content pre ::selection {
-  background: var(--aurora-editor-selection, rgba(96, 165, 250, 0.3));
+    background: var(--aurora-editor-selection, rgba(96, 165, 250, 0.3));
 }
 
 /* Tauri drag region for touch/pen input on Windows */
 [data-tauri-drag-region] {
-  -webkit-app-region: drag;
-  app-region: drag;
+    -webkit-app-region: drag;
+    app-region: drag;
 }
 
 /* Ensure buttons and interactive elements are not draggable */
@@ -598,6 +650,6 @@ button:focus-visible {
 [data-tauri-drag-region] input,
 [data-tauri-drag-region] a,
 [data-tauri-drag-region] [data-no-drag] {
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
 }

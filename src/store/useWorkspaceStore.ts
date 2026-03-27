@@ -3,17 +3,24 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 
 import { getLanguageFromExtension } from "../lib/file-utils";
-import { isTauri, readDirectory, readFileContent, startFsWatcher, stopFsWatcher } from "../lib/tauri";
+import {
+  isTauri,
+  readDirectory,
+  readFileContent,
+  startFsWatcher,
+  stopFsWatcher,
+} from "../lib/tauri";
 import { databaseService } from "../services/database";
 import type { FileNode } from "../types";
 import { useEditorStore } from "./useEditorStore";
+import { useGitStore } from "./useGitStore";
 
 /**
  * Strip Windows extended-length path prefix (\\?\)
  * This prefix causes issues with shell commands and display
  */
 function stripExtendedPathPrefix(path: string): string {
-  if (path.startsWith('\\\\?\\')) {
+  if (path.startsWith("\\\\?\\")) {
     return path.slice(4);
   }
   return path;
@@ -50,18 +57,17 @@ interface FsChangedPayload {
 // Helper to load file content
 export const loadFileContent = async (path: string): Promise<string> => {
   if (!isTauri()) {
-    return '// File content (desktop app only)';
+    return "// File content (desktop app only)";
   }
 
   try {
     return await readFileContent(path);
   } catch (err) {
-    console.error('Failed to load file:', err);
+    console.error("Failed to load file:", err);
     const message = err instanceof Error ? err.message : String(err);
     return `// Failed to load file: ${message}`;
   }
 };
-
 
 // Global watcher cleanup
 let fsUnlisten: (() => void) | null = null;
@@ -73,12 +79,14 @@ let isLoadingDirectory = false;
 let lastSetRootPath: string | null = null;
 let pendingLoadPath: string | null = null;
 
-// Debounce timer for fs-changed events to prevent excessive refreshes
+// Debounce timers for fs-changed events to prevent excessive refreshes
 let fsChangedDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let gitRefreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 const FS_CHANGED_DEBOUNCE_MS = 50; // 50ms debounce - fast but prevents rapid-fire
+const GIT_REFRESH_DEBOUNCE_MS = 150; // Slightly slower to coalesce file bursts before refreshing git state
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
-  rootPath: '',
+  rootPath: "",
   files: [],
   expandedFolders: new Set(),
   selectedFileId: null,
@@ -88,13 +96,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     // CRITICAL: Strip Windows \\?\ prefix that causes shell command failures
     const cleanPath = stripExtendedPathPrefix(path);
     const currentRootPath = get().rootPath;
-    
+
     // Guard against duplicate setRootPath calls (React Strict Mode, etc.)
     if (currentRootPath === cleanPath && lastSetRootPath === cleanPath) {
       return;
     }
     lastSetRootPath = cleanPath;
-    
+
     set({ rootPath: cleanPath });
 
     // Update editor store with workspace path
@@ -103,10 +111,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     // IMMEDIATELY save workspace state to database when workspace is opened
     // This ensures the workspace is persisted even if close event fails
     if (isTauri() && cleanPath) {
-      console.log('[WorkspaceStore] Saving workspace path immediately:', cleanPath);
-      useEditorStore.getState().saveWorkspace().catch(err => {
-        console.error('[WorkspaceStore] Failed to save workspace:', err);
-      });
+      console.log(
+        "[WorkspaceStore] Saving workspace path immediately:",
+        cleanPath,
+      );
+      useEditorStore
+        .getState()
+        .saveWorkspace()
+        .catch((err) => {
+          console.error("[WorkspaceStore] Failed to save workspace:", err);
+        });
     }
 
     get().loadDirectory(cleanPath);
@@ -121,60 +135,84 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             fsUnlisten = null;
           }
           await startFsWatcher(path);
-          fsUnlisten = await listen<FsChangedPayload>('fs-changed', async (event) => {
-            const { rootPath } = get();
-            if (!rootPath) return;
-            const paths: string[] = event.payload?.paths || [];
-            const kind: string = event.payload?.kind || 'any';
-            const hasMatch = paths.some(p => p.startsWith(rootPath));
+          fsUnlisten = await listen<FsChangedPayload>(
+            "fs-changed",
+            async (event) => {
+              const { rootPath } = get();
+              if (!rootPath) return;
+              const paths: string[] = event.payload?.paths || [];
+              const kind: string = event.payload?.kind || "any";
+              const hasMatch = paths.some((p) => p.startsWith(rootPath));
 
-            if (hasMatch) {
-              // Debounce directory refresh to prevent rapid-fire updates
-              // This coalesces multiple rapid fs events into a single refresh
-              if (fsChangedDebounceTimer) {
-                clearTimeout(fsChangedDebounceTimer);
-              }
-              fsChangedDebounceTimer = setTimeout(async () => {
-                fsChangedDebounceTimer = null;
-                await get().refreshDirectory();
-              }, FS_CHANGED_DEBOUNCE_MS);
+              if (hasMatch) {
+                // Debounce directory refresh to prevent rapid-fire updates
+                // This coalesces multiple rapid fs events into a single refresh
+                if (fsChangedDebounceTimer) {
+                  clearTimeout(fsChangedDebounceTimer);
+                }
+                fsChangedDebounceTimer = setTimeout(async () => {
+                  fsChangedDebounceTimer = null;
+                  await get().refreshDirectory();
+                }, FS_CHANGED_DEBOUNCE_MS);
 
-              // Refresh any open editor tabs that were modified (immediate, no debounce)
-              if (kind === 'modify' || kind === 'create') {
-                const editorStore = useEditorStore.getState();
-                const openTabs = editorStore.tabs;
+                if (gitRefreshDebounceTimer) {
+                  clearTimeout(gitRefreshDebounceTimer);
+                }
+                gitRefreshDebounceTimer = setTimeout(async () => {
+                  gitRefreshDebounceTimer = null;
+                  const gitStore = useGitStore.getState();
+                  if (gitStore.isInitialized && gitStore.isGitRepo) {
+                    await gitStore.loadStatus();
+                  }
+                }, GIT_REFRESH_DEBOUNCE_MS);
 
-                for (const changedPath of paths) {
-                  const matchingTab = openTabs.find(tab => tab.path === changedPath);
-                  if (matchingTab && !matchingTab.isDirty) {
-                    try {
-                      const newContent = await readFileContent(changedPath);
-                      editorStore.reloadTabContent(matchingTab.id, newContent);
-                    } catch (err) {
-                      console.warn(`[fs-changed] Failed to refresh tab ${changedPath}:`, err);
+                // Refresh any open editor tabs that were modified (immediate, no debounce)
+                if (kind === "modify" || kind === "create") {
+                  const editorStore = useEditorStore.getState();
+                  const openTabs = editorStore.tabs;
+
+                  for (const changedPath of paths) {
+                    const matchingTab = openTabs.find(
+                      (tab) => tab.path === changedPath,
+                    );
+                    if (matchingTab && !matchingTab.isDirty) {
+                      try {
+                        const newContent = await readFileContent(changedPath);
+                        editorStore.reloadTabContent(
+                          matchingTab.id,
+                          newContent,
+                        );
+                      } catch (err) {
+                        console.warn(
+                          `[fs-changed] Failed to refresh tab ${changedPath}:`,
+                          err,
+                        );
+                      }
+                    }
+                  }
+                }
+
+                // Handle deleted files - mark corresponding tabs as deleted
+                if (kind === "remove") {
+                  const editorStore = useEditorStore.getState();
+                  const openTabs = editorStore.tabs;
+
+                  for (const deletedPath of paths) {
+                    const matchingTab = openTabs.find(
+                      (tab) => tab.path === deletedPath,
+                    );
+                    if (matchingTab) {
+                      // If tab has unsaved changes, keep it open but mark as deleted
+                      // If tab is clean, user can decide to close it
+                      editorStore.markTabAsDeleted(matchingTab.id);
                     }
                   }
                 }
               }
-
-              // Handle deleted files - mark corresponding tabs as deleted
-              if (kind === 'remove') {
-                const editorStore = useEditorStore.getState();
-                const openTabs = editorStore.tabs;
-
-                for (const deletedPath of paths) {
-                  const matchingTab = openTabs.find(tab => tab.path === deletedPath);
-                  if (matchingTab) {
-                    // If tab has unsaved changes, keep it open but mark as deleted
-                    // If tab is clean, user can decide to close it
-                    editorStore.markTabAsDeleted(matchingTab.id);
-                  }
-                }
-              }
-            }
-          });
+            },
+          );
         } catch (err) {
-          console.error('Failed to start fs watcher:', err);
+          console.error("Failed to start fs watcher:", err);
         }
       };
       startWatch();
@@ -191,7 +229,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       pendingLoadPath = path;
       return;
     }
-    
+
     isLoadingDirectory = true;
 
     // Restore explorer state first (only on initial load)
@@ -205,9 +243,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     try {
       const entries = await readDirectory(path);
-      
+
       // Only load 1 level deep eagerly, rest on-demand
-      const buildTree = async (_dirPath: string, entries: Awaited<ReturnType<typeof readDirectory>>, depth: number = 0): Promise<FileNode[]> => {
+      const buildTree = async (
+        _dirPath: string,
+        entries: Awaited<ReturnType<typeof readDirectory>>,
+        depth: number = 0,
+      ): Promise<FileNode[]> => {
         const nodes: FileNode[] = [];
         const maxEagerDepth = 1;
 
@@ -216,7 +258,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             let children: FileNode[] = [];
             const isExpanded = currentExpanded.has(entry.path);
             const shouldLoadChildren = depth < maxEagerDepth || isExpanded;
-            
+
             if (shouldLoadChildren) {
               try {
                 const childEntries = await readDirectory(entry.path);
@@ -229,7 +271,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             nodes.push({
               id: entry.path,
               name: entry.name,
-              type: 'folder',
+              type: "folder",
               children,
               path: entry.path,
             });
@@ -237,7 +279,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             nodes.push({
               id: entry.path,
               name: entry.name,
-              type: 'file',
+              type: "file",
               language: getLanguageFromExtension(entry.name),
               path: entry.path,
             });
@@ -253,14 +295,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       set({
         files: children,
         expandedFolders: newExpanded,
-        isLoading: false
+        isLoading: false,
       });
     } catch (err) {
-      console.error('Failed to load directory:', err);
+      console.error("Failed to load directory:", err);
       set({ isLoading: false });
     } finally {
       isLoadingDirectory = false;
-      
+
       if (pendingLoadPath && pendingLoadPath !== path) {
         const nextPath = pendingLoadPath;
         pendingLoadPath = null;
@@ -282,16 +324,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const state = get();
     const newExpanded = new Set(state.expandedFolders);
     const isExpanding = !newExpanded.has(folderId);
-    
+
     if (isExpanding) {
       newExpanded.add(folderId);
     } else {
       newExpanded.delete(folderId);
     }
-    
+
     set({ expandedFolders: newExpanded });
     // NO saveExplorer() here - save only on window close
-    
+
     // If expanding, load children on-demand
     if (isExpanding) {
       const findFolder = (nodes: FileNode[]): FileNode | null => {
@@ -304,22 +346,28 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         }
         return null;
       };
-      
+
       const folder = findFolder(state.files);
-      if (folder && folder.type === 'folder' && (!folder.children || folder.children.length === 0)) {
+      if (
+        folder &&
+        folder.type === "folder" &&
+        (!folder.children || folder.children.length === 0)
+      ) {
         try {
           const childEntries = await readDirectory(folderId);
-          const children: FileNode[] = childEntries.map(entry => ({
+          const children: FileNode[] = childEntries.map((entry) => ({
             id: entry.path,
             name: entry.name,
-            type: entry.is_dir ? 'folder' as const : 'file' as const,
+            type: entry.is_dir ? ("folder" as const) : ("file" as const),
             path: entry.path,
             children: entry.is_dir ? [] : undefined,
-            language: entry.is_file ? getLanguageFromExtension(entry.name) : undefined,
+            language: entry.is_file
+              ? getLanguageFromExtension(entry.name)
+              : undefined,
           }));
-          
+
           const updateTree = (nodes: FileNode[]): FileNode[] => {
-            return nodes.map(node => {
+            return nodes.map((node) => {
               if (node.id === folderId) {
                 return { ...node, children };
               }
@@ -329,10 +377,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
               return node;
             });
           };
-          
+
           set({ files: updateTree(get().files) });
         } catch (err) {
-          console.error('Failed to load folder children:', err);
+          console.error("Failed to load folder children:", err);
         }
       }
     }
@@ -343,10 +391,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const newExpanded = new Set(state.expandedFolders);
     const wasExpanded = newExpanded.has(folderId);
     newExpanded.add(folderId);
-    
+
     set({ expandedFolders: newExpanded });
     // NO saveExplorer() here - save only on window close
-    
+
     if (!wasExpanded) {
       const findFolder = (nodes: FileNode[]): FileNode | null => {
         for (const node of nodes) {
@@ -358,22 +406,28 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         }
         return null;
       };
-      
+
       const folder = findFolder(state.files);
-      if (folder && folder.type === 'folder' && (!folder.children || folder.children.length === 0)) {
+      if (
+        folder &&
+        folder.type === "folder" &&
+        (!folder.children || folder.children.length === 0)
+      ) {
         try {
           const childEntries = await readDirectory(folderId);
-          const children: FileNode[] = childEntries.map(entry => ({
+          const children: FileNode[] = childEntries.map((entry) => ({
             id: entry.path,
             name: entry.name,
-            type: entry.is_dir ? 'folder' as const : 'file' as const,
+            type: entry.is_dir ? ("folder" as const) : ("file" as const),
             path: entry.path,
             children: entry.is_dir ? [] : undefined,
-            language: entry.is_file ? getLanguageFromExtension(entry.name) : undefined,
+            language: entry.is_file
+              ? getLanguageFromExtension(entry.name)
+              : undefined,
           }));
-          
+
           const updateTree = (nodes: FileNode[]): FileNode[] => {
-            return nodes.map(node => {
+            return nodes.map((node) => {
               if (node.id === folderId) {
                 return { ...node, children };
               }
@@ -383,10 +437,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
               return node;
             });
           };
-          
+
           set({ files: updateTree(get().files) });
         } catch (err) {
-          console.error('Failed to load folder children:', err);
+          console.error("Failed to load folder children:", err);
         }
       }
     }
@@ -403,8 +457,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     if (!filePath || !rootPath) return;
 
     // Detect the separator used in the file path (preserve original format)
-    const separator = filePath.includes('\\') ? '\\' : '/';
-    
+    const separator = filePath.includes("\\") ? "\\" : "/";
+
     // Normalize both paths to the same separator for comparison
     const normalizedPath = filePath.replace(/[\\/]/g, separator);
     const normalizedRoot = rootPath.replace(/[\\/]/g, separator);
@@ -415,20 +469,20 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     // Get the relative path and extract parent folders
     const relativePath = normalizedPath.slice(normalizedRoot.length);
     const parts = relativePath.split(separator).filter(Boolean);
-    
+
     // Build list of parent folder paths to expand
     const newExpanded = new Set(expandedFolders);
     let currentPath = normalizedRoot;
-    
+
     // Expand each parent folder (excluding the file itself)
     for (let i = 0; i < parts.length - 1; i++) {
       currentPath = currentPath + separator + parts[i];
       newExpanded.add(currentPath);
     }
 
-    set({ 
+    set({
       expandedFolders: newExpanded,
-      selectedFileId: filePath 
+      selectedFileId: filePath,
     });
   },
 
@@ -444,22 +498,30 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       fsChangedDebounceTimer = null;
     }
 
-    set({
-      rootPath: '',
-      files: [],
-      expandedFolders: new Set(),
-      selectedFileId: null,
-      isLoading: false,
-    }, false);
+    if (gitRefreshDebounceTimer) {
+      clearTimeout(gitRefreshDebounceTimer);
+      gitRefreshDebounceTimer = null;
+    }
 
-    useEditorStore.getState().setWorkspacePath('');
+    set(
+      {
+        rootPath: "",
+        files: [],
+        expandedFolders: new Set(),
+        selectedFileId: null,
+        isLoading: false,
+      },
+      false,
+    );
+
+    useEditorStore.getState().setWorkspacePath("");
 
     if (fsUnlisten) {
       fsUnlisten();
       fsUnlisten = null;
     }
     if (isTauri()) {
-      stopFsWatcher().catch(() => { });
+      stopFsWatcher().catch(() => {});
     }
   },
 
@@ -479,7 +541,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         });
       }
     } catch (error) {
-      console.error('Failed to restore explorer state:', error);
+      console.error("Failed to restore explorer state:", error);
     }
   },
 
@@ -499,7 +561,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
       await databaseService.saveExplorerState(explorerState);
     } catch (error) {
-      console.error('Failed to save explorer state:', error);
+      console.error("Failed to save explorer state:", error);
     }
   },
 }));

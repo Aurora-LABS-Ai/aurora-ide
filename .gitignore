@@ -18,11 +18,12 @@ void-main
 # Tauri build artifacts
 src-tauri/target/
 # Note: Cargo.lock should be committed for applications
+AGENTS.md
 
 # Tauri generated files (keep schemas, ignore other generated files)
 src-tauri/gen/
 !src-tauri/gen/schemas/
-
+PROJECT_ANALYSIS.md
 # Database files
 *.db
 *.db-shm
@@ -30,7 +31,7 @@ src-tauri/gen/
 *.sqlite
 *.sqlite3
 build
-
+CLAUDE.md
 # App data directories
 .aurora/
 *.aurora

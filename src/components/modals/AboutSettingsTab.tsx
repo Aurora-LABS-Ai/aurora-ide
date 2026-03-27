@@ -1,8 +1,7 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { BookOpen, Bot, GitBranch, HeartHandshake, Package2, Sparkles, Wrench } from 'lucide-react';
+import { getAppVersion, PACKAGE_VERSION } from '../../lib/app-version';
 import { settingsCardStyle } from './settings-shared';
-
-const APP_VERSION = '0.1.2';
 
 const featureItems = [
   {
@@ -29,6 +28,12 @@ const principleItems = [
 ] as const;
 
 export const AboutSettingsTab: React.FC = () => {
+  const [appVersion, setAppVersion] = useState(PACKAGE_VERSION);
+
+  useEffect(() => {
+    void getAppVersion().then(setAppVersion);
+  }, []);
+
   return (
     <div className="space-y-4">
       <div
@@ -53,7 +58,7 @@ export const AboutSettingsTab: React.FC = () => {
           <div className="mt-5 flex flex-wrap gap-2">
             <div className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary">
               <Package2 className="h-3.5 w-3.5" />
-              Version {APP_VERSION}
+              Version {appVersion}
             </div>
             <div className="inline-flex items-center gap-2 rounded-full bg-success/10 px-3 py-1.5 text-xs font-semibold text-success">
               <BookOpen className="h-3.5 w-3.5" />
@@ -158,7 +163,7 @@ export const AboutSettingsTab: React.FC = () => {
               <div className="flex items-center justify-between">
                 <span className="text-xs text-text-secondary">Release</span>
                 <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
-                  {APP_VERSION}
+                  {appVersion}
                 </span>
               </div>
               <div className="flex items-center justify-between">

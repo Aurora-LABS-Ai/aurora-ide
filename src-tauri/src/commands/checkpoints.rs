@@ -20,7 +20,10 @@ impl CheckpointState {
 
     pub fn init(&self, app_data_dir: std::path::PathBuf) {
         // Use unwrap_or_else to recover from poisoned mutex (previous panic)
-        let mut guard = self.service.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut guard = self
+            .service
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if guard.is_none() {
             *guard = Some(Arc::new(CheckpointService::new(app_data_dir)));
         }
@@ -73,7 +76,8 @@ pub async fn checkpoint_create(
     // First check if checkpoints are enabled for this workspace
     {
         let db_guard = db.lock().map_err(|e| e.to_string())?;
-        let enabled = db_guard.workspace()
+        let enabled = db_guard
+            .workspace()
             .get_checkpoint_enabled(&workspace_path)
             .map_err(|e| format!("Failed to check checkpoint enabled: {}", e))?;
 
@@ -173,7 +177,10 @@ pub async fn checkpoint_restore(
 
     // Delete checkpoints after this one and get the message IDs
     let db_guard = db.lock().map_err(|e| e.to_string())?;
-    let deleted_message_ids = match db_guard.checkpoints().delete_after_checkpoint(&thread_id, &checkpoint_id) {
+    let deleted_message_ids = match db_guard
+        .checkpoints()
+        .delete_after_checkpoint(&thread_id, &checkpoint_id)
+    {
         Ok(ids) => ids,
         Err(e) => {
             return Ok(RestoreResponse {
@@ -198,7 +205,8 @@ pub async fn checkpoint_list(
     db: State<'_, Mutex<Database>>,
 ) -> Result<Vec<Checkpoint>, String> {
     let db_guard = db.lock().map_err(|e| e.to_string())?;
-    db_guard.checkpoints()
+    db_guard
+        .checkpoints()
         .list_by_thread(&thread_id)
         .map_err(|e| format!("Failed to list checkpoints: {}", e))
 }
@@ -210,7 +218,8 @@ pub async fn checkpoint_get_by_message(
     db: State<'_, Mutex<Database>>,
 ) -> Result<Option<Checkpoint>, String> {
     let db_guard = db.lock().map_err(|e| e.to_string())?;
-    db_guard.checkpoints()
+    db_guard
+        .checkpoints()
         .get_by_message_id(&message_id)
         .map_err(|e| format!("Failed to get checkpoint: {}", e))
 }
@@ -226,7 +235,8 @@ pub async fn checkpoint_delete_thread(
     // Delete from database
     {
         let db_guard = db.lock().map_err(|e| e.to_string())?;
-        db_guard.checkpoints()
+        db_guard
+            .checkpoints()
             .delete_by_thread(&thread_id)
             .map_err(|e| format!("Failed to delete checkpoints from database: {}", e))?;
     }
@@ -243,8 +253,52 @@ pub async fn checkpoint_delete_thread(
 
         if let Some(service) = service {
             let ws_path_clone = ws_path.clone();
-            let _ = tokio::task::spawn_blocking(move || service.delete_workspace_checkpoints(&ws_path_clone)).await;
+            let _ = tokio::task::spawn_blocking(move || {
+                service.delete_workspace_checkpoints(&ws_path_clone)
+            })
+            .await;
         }
+    }
+
+    Ok(())
+}
+
+/// Delete all checkpoints for a workspace
+#[tauri::command]
+pub async fn checkpoint_delete_workspace(
+    workspace_path: String,
+    checkpoint_state: State<'_, CheckpointState>,
+    db: State<'_, Mutex<Database>>,
+) -> Result<(), String> {
+    // Delete workspace checkpoints from database
+    {
+        let db_guard = db.lock().map_err(|e| e.to_string())?;
+        db_guard
+            .checkpoints()
+            .delete_by_workspace(&workspace_path)
+            .map_err(|e| {
+                format!(
+                    "Failed to delete workspace checkpoints from database: {}",
+                    e
+                )
+            })?;
+    }
+
+    // Delete workspace checkpoint repo state
+    let service = {
+        let guard = checkpoint_state
+            .service
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))?;
+        guard.as_ref().cloned()
+    };
+
+    if let Some(service) = service {
+        let ws_path_clone = workspace_path.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            service.delete_workspace_checkpoints(&ws_path_clone)
+        })
+        .await;
     }
 
     Ok(())
@@ -282,7 +336,8 @@ pub async fn checkpoint_get_enabled(
     db: State<'_, Mutex<Database>>,
 ) -> Result<bool, String> {
     let db_guard = db.lock().map_err(|e| e.to_string())?;
-    db_guard.workspace()
+    db_guard
+        .workspace()
         .get_checkpoint_enabled(&workspace_path)
         .map_err(|e| format!("Failed to get checkpoint enabled: {}", e))
 }
@@ -295,7 +350,8 @@ pub async fn checkpoint_set_enabled(
     db: State<'_, Mutex<Database>>,
 ) -> Result<(), String> {
     let db_guard = db.lock().map_err(|e| e.to_string())?;
-    db_guard.workspace()
+    db_guard
+        .workspace()
         .set_checkpoint_enabled(&workspace_path, enabled)
         .map_err(|e| format!("Failed to set checkpoint enabled: {}", e))
 }

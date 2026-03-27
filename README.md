@@ -4,7 +4,7 @@
 
 **A next-generation AI-powered code editor built with Tauri**
 
-[![Version](https://img.shields.io/badge/version-0.1.2-blue)](https://github.com/yourusername/aurora)
+[![Version](https://img.shields.io/badge/version-0.1.2-blue)](https://github.com/Aurora-LABS-Ai/aurora-ide)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tauri](https://img.shields.io/badge/Tauri-2.x-orange)](https://tauri.app)
 [![React](https://img.shields.io/badge/React-18.3.1-cyan)](https://reactjs.org)
@@ -19,18 +19,18 @@
 
 ### Key Features
 
-- 🤖 **AI Agent Assistant** - Integrated AI that can execute 25+ tools to help you code
-- 🎨 **Advanced Theming** - 50+ theme tokens across 7 categories with VS Code-style themes
-- 🔄 **MCP Protocol Support** - Extensible tool system via Model Context Protocol servers
-- 📚 **Git Integration** - Full Git operations within the editor
-- 💾 **Checkpoint/Restore** - Workspace state snapshots and restoration
-- 🔍 **Semantic Search** - AI-powered code search using embeddings
-- ⏪ **Undo/Redo System** - Full undo/redo support with keyboard shortcuts
-- 🪟 **Detachable Chat** - Chat can open in separate window with state sync
-- 🎯 **Multi-Provider LLM** - Support for OpenAI, DeepSeek, GLM, Anthropic, and custom providers
-- 🗄️ **Persistent State** - SQLite-based state persistence across sessions
-- 🧵 **Rust-Backed Services** - High-performance thread persistence and token counting
-- 🖥️ **Cross-Platform** - Windows, macOS, and Linux support
+- **AI Agent Assistant** - Integrated AI that can execute 25+ tools to help you code
+- **Advanced Theming** - 50+ theme tokens across 7 categories with VS Code-style themes
+- **MCP Protocol Support** - Extensible tool system via Model Context Protocol servers
+- **Git Integration** - Full Git operations within the editor
+- **Checkpoint/Restore** - Workspace state snapshots and restoration
+- **Semantic Search** - AI-powered code search using embeddings
+- **Undo/Redo System** - Full undo/redo support with keyboard shortcuts
+- **Detachable Chat** - Chat can open in separate window with state sync
+- **Multi-Provider LLM** - Support for OpenAI, DeepSeek, GLM, Anthropic, and custom providers
+- **Persistent State** - SQLite-based state persistence across sessions
+- **Rust-Backed Services** - High-performance thread persistence and token counting
+- **Cross-Platform** - Windows, macOS, and Linux support
 
 ---
 
@@ -76,7 +76,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/aurora.git
+git clone https://github.com/Aurora-LABS-Ai/aurora-ide.git
 cd aurora
 
 # Install dependencies
@@ -447,6 +447,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **Built with ❤️ by the Aurora Team**
 
-[Website](https://aurora.dev) • [Documentation](DOCS/) • [Issues](https://github.com/yourusername/aurora/issues)
+[Website](https://aurora.dev) • [Documentation](DOCS/) • [Issues](https://github.com/Aurora-LABS-Ai/aurora-ide/issues)
 
 </div>

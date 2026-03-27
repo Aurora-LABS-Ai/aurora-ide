@@ -27,6 +27,7 @@ import {
   Folder, FolderClosed, ChevronsDownUp, Copy
 } from 'lucide-react';
 import { FileTree } from './FileTree';
+import { TreeNodeCreateInput } from './tree-node';
 import { ContextMenu } from '../ui/ContextMenu';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useDragStore } from '../../store/useDragStore';
@@ -421,26 +422,45 @@ export const FileExplorer: React.FC = () => {
                     : 'The folder is open, but there are no files or folders yet. Create something to get started.'}
                 </p>
                 {!isLoading && (
-                  <div className="flex flex-wrap items-center justify-center gap-2">
-                    <button
-                      onClick={handleNewFileAtRoot}
-                      className="flex items-center gap-2 rounded-[14px] border px-4 py-2 text-[12px] font-medium text-primary transition-all duration-200"
-                      style={{
-                        background: 'color-mix(in srgb, var(--aurora-common-primary) 10%, var(--aurora-sidebar-background))',
-                        borderColor: 'color-mix(in srgb, var(--aurora-common-primary) 24%, transparent)',
-                      }}
-                    >
-                      <FilePlus className="h-4 w-4" />
-                      New File
-                    </button>
-                    <button
-                      onClick={handleNewFolderAtRoot}
-                      className="flex items-center gap-2 rounded-[14px] border px-4 py-2 text-[12px] font-medium text-text-secondary transition-all duration-200 hover:text-text-primary"
-                      style={slimSurfaceStyle}
-                    >
-                      <FolderPlus className="h-4 w-4" />
-                      New Folder
-                    </button>
+                  <div className="w-full max-w-[280px]">
+                    {isCreating ? (
+                      <div className="rounded-[16px] border px-2 py-2" style={slimSurfaceStyle}>
+                        <TreeNodeCreateInput
+                          type={isCreating.type}
+                          value={createInputValue}
+                          level={0}
+                          parentPath={rootPath || undefined}
+                          onChange={setCreateInputValue}
+                          onSubmit={handleCreateSubmit}
+                          onCancel={() => {
+                            setIsCreating(null);
+                            setCreateInputValue('');
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center justify-center gap-2">
+                        <button
+                          onClick={handleNewFileAtRoot}
+                          className="flex items-center gap-2 rounded-[14px] border px-4 py-2 text-[12px] font-medium text-primary transition-all duration-200"
+                          style={{
+                            background: 'color-mix(in srgb, var(--aurora-common-primary) 10%, var(--aurora-sidebar-background))',
+                            borderColor: 'color-mix(in srgb, var(--aurora-common-primary) 24%, transparent)',
+                          }}
+                        >
+                          <FilePlus className="h-4 w-4" />
+                          New File
+                        </button>
+                        <button
+                          onClick={handleNewFolderAtRoot}
+                          className="flex items-center gap-2 rounded-[14px] border px-4 py-2 text-[12px] font-medium text-text-secondary transition-all duration-200 hover:text-text-primary"
+                          style={slimSurfaceStyle}
+                        >
+                          <FolderPlus className="h-4 w-4" />
+                          New Folder
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

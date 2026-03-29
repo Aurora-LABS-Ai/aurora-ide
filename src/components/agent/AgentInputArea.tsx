@@ -65,7 +65,16 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
   onSend,
   disabled,
 }) => {
-  const [content, setContent] = useState("");
+  // Initialize from shared draft state (persists across layout switches)
+  const draftInput = useChatStore((s) => s.draftInput);
+  const draftAttachedFiles = useChatStore((s) => s.draftAttachedFiles);
+  const draftAttachedPromptAssets = useChatStore((s) => s.draftAttachedPromptAssets);
+  const setDraftInput = useChatStore((s) => s.setDraftInput);
+  const setDraftAttachedFiles = useChatStore((s) => s.setDraftAttachedFiles);
+  const setDraftAttachedPromptAssets = useChatStore((s) => s.setDraftAttachedPromptAssets);
+  const clearDraft = useChatStore((s) => s.clearDraft);
+
+  const [content, setContentLocal] = useState(draftInput);
   const [isFocused, setIsFocused] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
@@ -74,10 +83,12 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     left: 0,
     placement: "above" as "above" | "below",
   });
-  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
-  const [attachedPromptAssets, setAttachedPromptAssets] = useState<
+  const [attachedFiles, setAttachedFilesLocal] = useState<AttachedFile[]>(
+    () => draftAttachedFiles.map(f => ({ path: f.path, name: f.name }))
+  );
+  const [attachedPromptAssets, setAttachedPromptAssetsLocal] = useState<
     PromptAttachment[]
-  >([]);
+  >(() => [...draftAttachedPromptAssets]);
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [slashIndex, setSlashIndex] = useState<number>(-1);
   const [slashSearchQuery, setSlashSearchQuery] = useState("");
@@ -96,6 +107,31 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     useChatStore();
   const { setSettingsOpen } = useUiStore();
   const rootPath = useWorkspaceStore((state) => state.rootPath);
+
+  // Wrapped setters that also sync to draft store
+  const setContent = useCallback((valOrUpdater: string | ((prev: string) => string)) => {
+    setContentLocal((prev) => {
+      const next = typeof valOrUpdater === 'function' ? valOrUpdater(prev) : valOrUpdater;
+      setDraftInput(next);
+      return next;
+    });
+  }, [setDraftInput]);
+
+  const setAttachedFiles = useCallback((valOrUpdater: AttachedFile[] | ((prev: AttachedFile[]) => AttachedFile[])) => {
+    setAttachedFilesLocal((prev) => {
+      const next = typeof valOrUpdater === 'function' ? valOrUpdater(prev) : valOrUpdater;
+      setDraftAttachedFiles(next.map(f => ({ path: f.path, name: f.name })));
+      return next;
+    });
+  }, [setDraftAttachedFiles]);
+
+  const setAttachedPromptAssets = useCallback((valOrUpdater: PromptAttachment[] | ((prev: PromptAttachment[]) => PromptAttachment[])) => {
+    setAttachedPromptAssetsLocal((prev) => {
+      const next = typeof valOrUpdater === 'function' ? valOrUpdater(prev) : valOrUpdater;
+      setDraftAttachedPromptAssets(next);
+      return next;
+    });
+  }, [setDraftAttachedPromptAssets]);
   const {
     selectedModel,
     setSelectedModel,
@@ -302,6 +338,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     setContent("");
     setAttachedFiles([]);
     setAttachedPromptAssets([]);
+    clearDraft();
   };
 
   const handleStopOrSend = () => {

@@ -28,6 +28,10 @@ export interface Message {
   timestamp: number;
   toolProposal?: ToolProposal;
   tools?: ToolCall[];
+
+  // Attachments displayed on user message bubbles
+  attachedFiles?: { path: string; name: string }[];
+  attachedPromptAssets?: { key: string; type: string; title: string }[];
 }
 
 export interface ProviderConfig {

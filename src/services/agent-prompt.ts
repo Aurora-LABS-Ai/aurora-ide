@@ -1,6 +1,4 @@
 import {
-  formatActiveSkills,
-  formatSkillCatalog,
   resolveSkillsForPrompt,
   type SkillDefinition,
 } from "./skills";
@@ -8,6 +6,7 @@ import { useSettingsStore } from "../store/useSettingsStore";
 
 export interface AgentPromptContext {
   explicitSkillKeys?: string[];
+  isFirstMessage?: boolean;
   userMessage: string;
   workspacePath?: string | null;
 }
@@ -62,13 +61,48 @@ Your main goal is to follow the USER's instructions at each message.
 
 const SKILL_SYSTEM_INSTRUCTIONS = `## Skill System
 - Skills are modular instruction overlays that extend your behavior for specific task types.
-- Review the available skill catalog for this request.
-- Required skills are mandatory when present. Do not ignore them.
-- Auto-matched skills supplement required skills. They do not replace them.
-- Activate and follow the active skills strictly when they are relevant.
-- If the user explicitly names or attaches a skill, that skill takes priority.
-- If no active skill applies, continue with the base Aurora behavior.
-- Use skills to improve planning, implementation quality, and tool choice. Do not treat them as user-visible UI features unless the user asks.`;
+- The available skill catalog is included in the first message of each conversation (not repeated).
+- When a skill is relevant, use file_read to load the skill file from its path to get detailed instructions.
+- If the user explicitly attaches a skill, its name and path are noted in the user message. Read and follow it.
+- Auto-matched skills may also be noted. Read them if the task benefits from their guidance.
+- If no skill applies, continue with base Aurora behavior.`;
+
+/**
+ * Format skill catalog for embedding in the first user message context.
+ * Only includes name, description, and file path - NOT full content.
+ * The agent reads skill files on demand via file_read.
+ */
+export function formatSkillCatalogForContext(skills: SkillDefinition[]): string {
+  if (skills.length === 0) return '';
+
+  const lines = skills.map((skill) => {
+    const pathNote = skill.sourcePath ? ` (path: ${skill.sourcePath})` : ' (built-in)';
+    return `- \`${skill.id}\`: ${skill.description}${pathNote}`;
+  });
+
+  return `<agent_skills description="Available skills. Use file_read on the path to load full instructions when relevant.">
+${lines.join('\n')}
+</agent_skills>`;
+}
+
+/**
+ * Format explicitly attached or auto-matched skills as lightweight references.
+ * Only name + path, no full content. Agent reads via file_read.
+ */
+export function formatSkillReferences(skills: SkillDefinition[], label: string): string {
+  if (skills.length === 0) return '';
+
+  const refs = skills.map((skill) => {
+    if (skill.sourcePath) {
+      return `- \`${skill.name}\` — read from: ${skill.sourcePath}`;
+    }
+    return `- \`${skill.name}\` (built-in): ${skill.content}`;
+  });
+
+  return `<${label} count="${skills.length}">
+${refs.join('\n')}
+</${label}>`;
+}
 
 export async function composeAgentSystemPrompt(options: {
   basePrompt?: string;
@@ -88,15 +122,6 @@ export async function composeAgentSystemPrompt(options: {
   const sections = [
     basePrompt?.trim() || BASE_AGENT_SYSTEM_PROMPT,
     SKILL_SYSTEM_INSTRUCTIONS,
-    `<available_skills>
-${formatSkillCatalog(allSkills)}
-</available_skills>`,
-    `<required_skills count="${explicitSkills.length}">
-${formatActiveSkills(explicitSkills)}
-</required_skills>`,
-    `<active_skills count="${activeSkills.length}">
-${formatActiveSkills(activeSkills)}
-</active_skills>`,
   ];
 
   if (mcpSummary?.trim()) {

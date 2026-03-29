@@ -44,6 +44,7 @@ import { toolRegistry } from "../../tools";
 import { registerAllExecutors } from "../../tools";
 import {
   buildQueryContext,
+  enrichUserQueryWithAttachments,
   getIDEContext,
   getIDEContextLight,
   loadProjectRules,
@@ -288,6 +289,8 @@ export const AgentModeLayout: React.FC = () => {
         sender: "user",
         content: displayContent,
         timestamp: Date.now(),
+        attachedFiles: attachedFiles?.map(f => ({ path: f.path, name: f.name })),
+        attachedPromptAssets: promptAttachments?.map(a => ({ key: a.key, type: a.type, title: a.title })),
       };
       addMessageToThread(userMessage);
 
@@ -318,8 +321,15 @@ export const AgentModeLayout: React.FC = () => {
             )
           : undefined;
 
-      const { formattedContext } = await buildQueryContext(
+      // Enrich user query with explicit skill/rule attachment annotations
+      // so the LLM knows which assets the user specifically referenced
+      const enrichedContent = enrichUserQueryWithAttachments(
         content,
+        promptAttachments?.map(a => ({ type: a.type, title: a.title, key: a.key })),
+      );
+
+      const { formattedContext } = await buildQueryContext(
+        enrichedContent,
         attachedFiles,
         {
           ...ideContext,

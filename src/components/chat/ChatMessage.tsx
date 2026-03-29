@@ -28,7 +28,11 @@ import { ToolTimeline } from './ToolTimeline';
 import { ToolProposalCard } from './ToolProposalCard';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { CheckpointIndicator } from './CheckpointIndicator';
-import { User, Copy, Check } from 'lucide-react';
+import { useEditorStore } from '../../store/useEditorStore';
+import { loadFileContent } from '../../store/useWorkspaceStore';
+import { getLanguageFromExtension } from '../../lib/file-utils';
+import { FileIcon } from '../explorer/FileIcons';
+import { User, Copy, Check, BookOpen, Zap } from 'lucide-react';
 
 // Copy button component with feedback
 const CopyButton: React.FC<{ text: string; className?: string }> = ({ text, className = '' }) => {
@@ -158,6 +162,20 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
   const isUser = message.sender === 'user';
 
   if (isUser) {
+    const hasAttachedFiles = message.attachedFiles && message.attachedFiles.length > 0;
+    const hasAttachedAssets = message.attachedPromptAssets && message.attachedPromptAssets.length > 0;
+    const hasAttachments = hasAttachedFiles || hasAttachedAssets;
+
+    const handleAttachedFileClick = async (file: { path: string; name: string }) => {
+      try {
+        const content = await loadFileContent(file.path);
+        const language = getLanguageFromExtension(file.name);
+        useEditorStore.getState().openFile(file.path, file.name, content, language);
+      } catch (err) {
+        console.error('Failed to open attached file:', err);
+      }
+    };
+
     return (
       <motion.div 
         initial={{ opacity: 0, y: 10 }}
@@ -172,6 +190,56 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
             </div>
 
             <div className="bg-input text-text-primary rounded-2xl rounded-tr-sm px-4 py-2.5 border border-border shadow-sm min-w-0 max-w-full overflow-hidden">
+              {/* Attachment chips */}
+              {hasAttachments && (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {message.attachedFiles?.map((file) => (
+                    <button
+                      key={file.path}
+                      onClick={() => handleAttachedFileClick(file)}
+                      className="group/chip flex items-center gap-1.5 pl-2 pr-2.5 py-1 rounded-lg text-[11px] font-medium transition-all duration-150 cursor-pointer"
+                      style={{
+                        background: 'color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)',
+                        border: '1px solid color-mix(in srgb, var(--aurora-common-primary) 20%, transparent)',
+                        color: 'var(--aurora-common-primary)',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'color-mix(in srgb, var(--aurora-common-primary) 18%, transparent)';
+                        e.currentTarget.style.borderColor = 'color-mix(in srgb, var(--aurora-common-primary) 35%, transparent)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)';
+                        e.currentTarget.style.borderColor = 'color-mix(in srgb, var(--aurora-common-primary) 20%, transparent)';
+                      }}
+                      title={`Open ${file.path}`}
+                    >
+                      <FileIcon name={file.name} path={file.path} className="w-3.5 h-3.5 min-w-[14px]" />
+                      <span className="truncate max-w-[140px]">{file.name}</span>
+                    </button>
+                  ))}
+                  {message.attachedPromptAssets?.map((asset) => (
+                    <span
+                      key={asset.key}
+                      className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-medium"
+                      style={{
+                        background: asset.type === 'skill'
+                          ? 'color-mix(in srgb, var(--aurora-common-warning) 10%, transparent)'
+                          : 'color-mix(in srgb, var(--aurora-common-info, var(--aurora-common-primary)) 10%, transparent)',
+                        border: asset.type === 'skill'
+                          ? '1px solid color-mix(in srgb, var(--aurora-common-warning) 22%, transparent)'
+                          : '1px solid color-mix(in srgb, var(--aurora-common-info, var(--aurora-common-primary)) 22%, transparent)',
+                        color: asset.type === 'skill'
+                          ? 'var(--aurora-common-warning)'
+                          : 'var(--aurora-common-info, var(--aurora-common-primary))',
+                      }}
+                    >
+                      {asset.type === 'skill' ? <Zap className="w-3 h-3" /> : <BookOpen className="w-3 h-3" />}
+                      <span className="uppercase text-[9px] font-bold tracking-wider opacity-70">{asset.type}</span>
+                      <span className="truncate max-w-[140px]">{asset.title}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
               <p className="whitespace-pre-wrap break-words text-[14px] leading-[1.6] font-normal tracking-[0.01em] text-text-primary select-text cursor-text overflow-wrap-anywhere" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                 {message.content}
               </p>

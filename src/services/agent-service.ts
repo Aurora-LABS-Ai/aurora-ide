@@ -83,7 +83,7 @@ export class AgentService {
     userMessage: string,
     callbacks: AgentCallbacks,
     tools?: LegacyToolDefinition[],
-    ideContext?: string | null,
+    _ideContext?: string | null,
     promptContext?: AgentPromptContext,
   ): Promise<AgentResponse> {
     this.isRunning = true;
@@ -91,7 +91,7 @@ export class AgentService {
     const preparedContext = await this.prepareAgentContext(
       userMessage,
       tools,
-      ideContext,
+      null,
       promptContext,
     );
 
@@ -160,15 +160,7 @@ export class AgentService {
 
       await invoke("context_finalize_turn", { threadId });
 
-      const needsSummarization = await invoke<boolean>(
-        "context_needs_summarization",
-        { threadId },
-      );
-      if (needsSummarization) {
-        console.log(
-          "[AgentService] Context at 80%+ - summarization recommended",
-        );
-      }
+      await this.runSummarizationIfNeeded(threadId);
 
       if (stoppedByIterationLimit && !finalContent) {
         finalContent = `Stopped after ${this.config.maxToolIterations} tool iterations.`;
@@ -238,7 +230,7 @@ export class AgentService {
   private async prepareAgentContext(
     userMessage: string,
     tools: LegacyToolDefinition[] | undefined,
-    ideContext: string | null | undefined,
+    _ideContext: string | null | undefined,
     promptContext: AgentPromptContext | undefined,
   ): Promise<PreparedAgentContext> {
     const threadId = this.requireThreadId();
@@ -247,7 +239,7 @@ export class AgentService {
     await invoke("context_add_user_message", {
       threadId,
       content: userMessage,
-      ideContext: ideContext || null,
+      ideContext: null,
       contextWindow,
       maxOutput,
     });
@@ -273,10 +265,21 @@ export class AgentService {
       );
     }
 
+    const availableTools = this.buildAvailableTools(tools);
+
+    // Estimate tokens consumed by tool definitions (~20 tokens per tool on average)
+    // Tool schemas are sent as a separate API field but still count against context window
+    const estimatedToolTokens = availableTools.length * 80;
+    const tokenBudget = contextWindow - maxOutput - estimatedToolTokens;
+
+    console.log(
+      `[AgentService] Token budget: ${contextWindow} context - ${maxOutput} output - ${estimatedToolTokens} tools = ${tokenBudget} available`,
+    );
+
     const contextMessages = await invoke<ApiMessage[]>("context_build_messages", {
       threadId,
       systemPrompt: composedPrompt.systemPrompt,
-      tokenBudget: contextWindow - maxOutput,
+      tokenBudget,
     });
 
     return {
@@ -284,7 +287,7 @@ export class AgentService {
       messages: contextMessages.map((message) =>
         this.mapContextMessageToProviderMessage(message),
       ),
-      availableTools: this.buildAvailableTools(tools),
+      availableTools,
     };
   }
 
@@ -374,6 +377,66 @@ export class AgentService {
     }
 
     return threadId;
+  }
+
+  /**
+   * Run summarization on oldest unsummarized turn if context usage is at 80%+.
+   * Uses the same provider to generate a concise summary, then stores it in the
+   * Rust context engine so future message builds use the summary instead of full content.
+   */
+  private async runSummarizationIfNeeded(threadId: string): Promise<void> {
+    try {
+      const needsSummarization = await invoke<boolean>(
+        "context_needs_summarization",
+        { threadId },
+      );
+
+      if (!needsSummarization) return;
+
+      const request = await invoke<{
+        turn_id: string;
+        turn_content: string;
+      } | null>("context_get_turn_to_summarize", { threadId });
+
+      if (!request) return;
+
+      const summarizationPrompt = await invoke<string>(
+        "context_get_summarization_prompt",
+      );
+
+      const provider = this.getProvider();
+
+      console.log(
+        `[AgentService] Summarizing turn ${request.turn_id} (context at 80%+)`,
+      );
+
+      const response = await provider.chat({
+        messages: [
+          { role: "system", content: summarizationPrompt } as Message,
+          { role: "user", content: request.turn_content } as Message,
+        ],
+        tools: [],
+        stream: false,
+        temperature: 0.3,
+        maxTokens: 300,
+        thinkingEnabled: false,
+      });
+
+      const summary = this.normalizeAssistantContent(response.message);
+
+      if (summary) {
+        await invoke("context_set_turn_summary", {
+          threadId,
+          turnId: request.turn_id,
+          summary,
+        });
+        console.log(
+          `[AgentService] Turn summarized: "${summary.substring(0, 80)}..."`,
+        );
+      }
+    } catch (error) {
+      console.warn("[AgentService] Summarization failed (non-fatal):", error);
+    }
   }
 }
 

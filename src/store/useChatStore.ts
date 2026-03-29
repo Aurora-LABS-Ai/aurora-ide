@@ -1,7 +1,13 @@
 import { create } from "zustand";
 
 import { getAgentService } from "../services/agent-service";
+import type { PromptAttachment } from "../services/prompt-assets";
 import type { Message, ToolCall, ToolProposal } from "../types";
+
+export interface DraftAttachedFile {
+  path: string;
+  name: string;
+}
 
 interface ChatState {
   // Actions
@@ -28,6 +34,15 @@ interface ChatState {
   updateMessage: (id: string, updates: Partial<Message>) => void;
   updateToolCall: (messageId: string, toolId: string, updates: Partial<ToolCall>) => void;
   updateToolStatus: (messageId: string, status: ToolProposal['status']) => void;
+
+  // Draft state — persists input across Chat ↔ Agent layout switches
+  draftInput: string;
+  draftAttachedFiles: DraftAttachedFile[];
+  draftAttachedPromptAssets: PromptAttachment[];
+  setDraftInput: (content: string) => void;
+  setDraftAttachedFiles: (files: DraftAttachedFile[]) => void;
+  setDraftAttachedPromptAssets: (assets: PromptAttachment[]) => void;
+  clearDraft: () => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -37,6 +52,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingInputContent: null,
   pendingInputNonce: 0,
   pendingInputReplace: false,
+
+  // Draft state
+  draftInput: "",
+  draftAttachedFiles: [],
+  draftAttachedPromptAssets: [],
 
   addMessage: (message) => set((state) => ({
     messages: [
@@ -131,4 +151,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ pendingInputContent: null, pendingInputReplace: false });
     return { content, replace };
   },
+
+  setDraftInput: (content: string) => set({ draftInput: content }),
+  setDraftAttachedFiles: (files: DraftAttachedFile[]) => set({ draftAttachedFiles: files }),
+  setDraftAttachedPromptAssets: (assets: PromptAttachment[]) => set({ draftAttachedPromptAssets: assets }),
+  clearDraft: () => set({ draftInput: "", draftAttachedFiles: [], draftAttachedPromptAssets: [] }),
 }));

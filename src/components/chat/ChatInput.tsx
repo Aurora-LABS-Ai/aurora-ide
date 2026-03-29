@@ -134,7 +134,16 @@ const GeneratingStatus: React.FC = () => {
 };
 
 export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
-  const [content, setContent] = useState("");
+  // Initialize from shared draft state (persists across layout switches)
+  const draftInput = useChatStore((s) => s.draftInput);
+  const draftAttachedFiles = useChatStore((s) => s.draftAttachedFiles);
+  const draftAttachedPromptAssets = useChatStore((s) => s.draftAttachedPromptAssets);
+  const setDraftInput = useChatStore((s) => s.setDraftInput);
+  const setDraftAttachedFiles = useChatStore((s) => s.setDraftAttachedFiles);
+  const setDraftAttachedPromptAssets = useChatStore((s) => s.setDraftAttachedPromptAssets);
+  const clearDraft = useChatStore((s) => s.clearDraft);
+
+  const [content, setContentLocal] = useState(draftInput);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [dropdownPosition, setDropdownPosition] = useState({
     top: 0,
@@ -142,10 +151,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     placement: "above" as "above" | "below",
   });
   const [isDragOver, setIsDragOver] = useState(false);
-  const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
-  const [attachedPromptAssets, setAttachedPromptAssets] = useState<
+  const [attachedFiles, setAttachedFilesLocal] = useState<AttachedFile[]>(
+    () => draftAttachedFiles.map(f => ({ path: f.path, name: f.name }))
+  );
+  const [attachedPromptAssets, setAttachedPromptAssetsLocal] = useState<
     PromptAttachment[]
-  >([]);
+  >(() => [...draftAttachedPromptAssets]);
   const [hasInteracted, setHasInteracted] = useState(false);
 
   // Focus state for theming
@@ -180,6 +191,31 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   const { files: workspaceFiles, rootPath } = useWorkspaceStore();
   const { openFile } = useEditorStore();
   const { tasks, isVisible } = useTaskStore();
+
+  // Wrapped setters that also sync to draft store
+  const setContent = useCallback((valOrUpdater: string | ((prev: string) => string)) => {
+    setContentLocal((prev) => {
+      const next = typeof valOrUpdater === 'function' ? valOrUpdater(prev) : valOrUpdater;
+      setDraftInput(next);
+      return next;
+    });
+  }, [setDraftInput]);
+
+  const setAttachedFiles = useCallback((valOrUpdater: AttachedFile[] | ((prev: AttachedFile[]) => AttachedFile[])) => {
+    setAttachedFilesLocal((prev) => {
+      const next = typeof valOrUpdater === 'function' ? valOrUpdater(prev) : valOrUpdater;
+      setDraftAttachedFiles(next.map(f => ({ path: f.path, name: f.name })));
+      return next;
+    });
+  }, [setDraftAttachedFiles]);
+
+  const setAttachedPromptAssets = useCallback((valOrUpdater: PromptAttachment[] | ((prev: PromptAttachment[]) => PromptAttachment[])) => {
+    setAttachedPromptAssetsLocal((prev) => {
+      const next = typeof valOrUpdater === 'function' ? valOrUpdater(prev) : valOrUpdater;
+      setDraftAttachedPromptAssets(next);
+      return next;
+    });
+  }, [setDraftAttachedPromptAssets]);
   const {
     thinkingEnabled,
     setThinkingEnabled,
@@ -498,6 +534,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     setContent("");
     setAttachedFiles([]);
     setAttachedPromptAssets([]);
+    clearDraft();
     setHasInteracted(true);
   };
 

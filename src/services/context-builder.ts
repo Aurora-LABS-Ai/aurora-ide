@@ -4,18 +4,28 @@
  * Includes user info, workspace state, attached files, IDE context, project rules, and project layout
  * 
  * Implements the Cursor format structure:
- * - <user_info> - OS, Shell, Workspace Path
+ * - <user_info> - OS, Shell, Workspace Path (first message only)
+ * - <git_status> - Current git status snapshot (first message only)
  * - <project_rules> - Rules from .aurora/*.md files
- * - <project_layout> - Static snapshot of file tree (persistent file map)
- * - <ide_context> - Open files, recent files
+ * - <project_layout> - Static snapshot of file tree (persistent file map, first message only)
+ * - <open_and_recently_viewed_files> - Open/recent files (every message)
  * - <attached_files> - Files attached with @ syntax
+ * 
+ * Follow-up messages are lightweight: only changed state + user query.
  */
+import { invoke } from "@tauri-apps/api/core";
 import type { AttachedFile } from "../components/chat/ChatInput";
 import { getSystemInfo, readDirectory, readFileContent } from "../lib/tauri";
 import { useEditorStore } from "../store/useEditorStore";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import type { FileNode } from "../types";
 import type { Tab } from "../types";
+
+interface GitFileStatus {
+  path: string;
+  status: string;
+  staged: boolean;
+}
 
 export interface BuiltContext {
   filesAsPathsOnly: string[];
@@ -24,6 +34,7 @@ export interface BuiltContext {
 }
 
 export interface ContextConfig {
+  includeFullContext?: boolean; // true for first message, false for follow-ups
   includeProjectLayout?: boolean; // Whether to include project layout (default: true for first message)
   openFiles?: Array<{ path: string; isActive: boolean; cursorLine?: number; totalLines?: number }>;
   osInfo?: string; // Full OS info like "win32 10.0.26200"
@@ -31,6 +42,8 @@ export interface ContextConfig {
   projectRules?: ProjectRule[]; // Rules from .aurora/*.md
   recentFiles?: string[];
   shellPath?: string; // Default shell path
+  skillCatalog?: string; // Pre-formatted skill catalog (first message only)
+  skillReferences?: string; // Pre-formatted active/required skill references (when skills are attached)
   systemInfo?: {             // Cached system info from Tauri
     os: string;
     os_version: string;
@@ -130,37 +143,87 @@ ${fileSections.join('\n\n')}
 }
 
 /**
- * Build open/recent files section
+ * Build open/recent files section (Cursor-style lightweight format)
+ * This is sent with EVERY message (it reflects current IDE state that may change)
  */
-function buildFileContext(config: ContextConfig): string {
-  const sections: string[] = [];
+function buildOpenAndRecentFiles(config: ContextConfig): string {
+  const lines: string[] = [];
 
   if (config.openFiles && config.openFiles.length > 0) {
-    const openFilesStr = config.openFiles
-      .map(f => {
-        let info = f.path;
-        if (f.isActive) {
-          info += f.cursorLine ? ` (active, cursor at line ${f.cursorLine})` : ' (active)';
-        }
-        return `- ${info}`;
-      })
-      .join('\n');
-    sections.push(`Open files in editor:\n${openFilesStr}`);
+    for (const f of config.openFiles) {
+      let info = f.path;
+      if (f.isActive) {
+        info += f.cursorLine ? ` (active, cursor at line ${f.cursorLine})` : ' (active)';
+      }
+      lines.push(`- ${info}`);
+    }
   }
 
   if (config.recentFiles && config.recentFiles.length > 0) {
-    const recentStr = config.recentFiles
-      .slice(0, 5) // Limit to 5 recent files
-      .map(f => `- ${f}`)
-      .join('\n');
-    sections.push(`Recently viewed:\n${recentStr}`);
+    if (lines.length > 0) lines.push('');
+    lines.push('Recently viewed:');
+    for (const f of config.recentFiles.slice(0, 5)) {
+      lines.push(`- ${f}`);
+    }
   }
 
-  if (sections.length === 0) return '';
+  if (lines.length === 0) {
+    return `<open_and_recently_viewed_files>
+User currently doesn't have any open files in their IDE.
 
-  return `<ide_context>
-${sections.join('\n\n')}
-</ide_context>`;
+Note: these files may or may not be relevant to the current conversation.
+</open_and_recently_viewed_files>`;
+  }
+
+  return `<open_and_recently_viewed_files>
+${lines.join('\n')}
+
+Note: these files may or may not be relevant to the current conversation.
+</open_and_recently_viewed_files>`;
+}
+
+/**
+ * Build git status section (snapshot at conversation start)
+ * Only included in first message - doesn't change conceptually during a conversation turn
+ */
+async function buildGitStatus(workspacePath: string): Promise<string> {
+  try {
+    const isRepo = await invoke<boolean>('git_is_repository', { path: workspacePath });
+    if (!isRepo) return '';
+
+    const statusFiles = await invoke<GitFileStatus[]>('git_get_status', { path: workspacePath });
+    let currentBranch = '';
+    try {
+      currentBranch = await invoke<string>('git_current_branch', { path: workspacePath });
+    } catch {
+      currentBranch = 'unknown';
+    }
+
+    if (!statusFiles || statusFiles.length === 0) {
+      return `<git_status>
+Git repo: ${workspacePath}
+Branch: ${currentBranch}
+Working tree clean.
+</git_status>`;
+    }
+
+    const statusLines = statusFiles.map(f => {
+      const prefix = f.staged ? ' ' : '';
+      const statusChar = f.status === 'modified' ? 'M' : f.status === 'added' ? 'A' : f.status === 'deleted' ? 'D' : f.status === 'untracked' ? '?' : f.status.charAt(0).toUpperCase();
+      return `${prefix}${statusChar} ${f.path}`;
+    });
+
+    return `<git_status>
+This is the git status at conversation start. This snapshot does NOT update during the conversation.
+
+Git repo: ${workspacePath}
+Branch: ${currentBranch}
+${statusLines.join('\n')}
+</git_status>`;
+  } catch (error) {
+    console.warn('[ContextBuilder] Failed to get git status:', error);
+    return '';
+  }
 }
 
 /**
@@ -273,6 +336,9 @@ async function getCachedSystemInfo(): Promise<{ os: string; os_version: string; 
 /**
  * Build complete context for a user query
  * Follows Cursor-style format structure
+ * 
+ * First message: heavy context (user_info, git_status, rules, project_layout, open_files, attached_files)
+ * Follow-up messages: lightweight (open_files + user_query only)
  */
 export async function buildQueryContext(
   userQuery: string,
@@ -281,34 +347,57 @@ export async function buildQueryContext(
   includeRules: boolean = true
 ): Promise<BuiltContext> {
   const sections: string[] = [];
+  const isFirstMessage = config?.includeFullContext !== false;
 
-  // 1. User/Workspace Info (Cursor: <user_info>)
+  // === FIRST MESSAGE ONLY: Heavy context ===
+  if (isFirstMessage) {
+    // 1. User/Workspace Info (Cursor: <user_info>) - only first message
+    if (config) {
+      const userInfo = buildUserInfo(config);
+      if (userInfo) sections.push(userInfo);
+    }
+
+    // 2. Git Status snapshot (Cursor: <git_status>) - only first message
+    if (config?.workspacePath) {
+      const gitStatus = await buildGitStatus(config.workspacePath);
+      if (gitStatus) sections.push(gitStatus);
+    }
+
+    // 3. Project Rules (from .aurora/*.md) - Similar to Cursor's <always_applied_workspace_rules>
+    if (includeRules && config?.workspacePath) {
+      const rules = config.projectRules || await loadProjectRules(config.workspacePath);
+      const rulesSection = buildProjectRules(rules);
+      if (rulesSection) sections.push(rulesSection);
+    }
+
+    // 4. Project Layout (Cursor: <project_layout>) - Persistent file map, first message only
+    if (config?.includeProjectLayout !== false && config?.projectLayout) {
+      const layoutSection = buildProjectLayout(config);
+      if (layoutSection) sections.push(layoutSection);
+    }
+
+    // 5. Skill Catalog (Cursor: <agent_skills>) - descriptions + paths, first message only
+    // Agent reads full skill content on demand via file_read
+    if (config?.skillCatalog) {
+      sections.push(config.skillCatalog);
+    }
+  }
+
+  // === EVERY MESSAGE: Lightweight context ===
+
+  // 6. Open/Recent Files (Cursor: <open_and_recently_viewed_files>) - every message
   if (config) {
-    const userInfo = buildUserInfo(config);
-    if (userInfo) sections.push(userInfo);
+    const openFiles = buildOpenAndRecentFiles(config);
+    if (openFiles) sections.push(openFiles);
   }
 
-  // 2. Project Rules (from .aurora/*.md) - Similar to Cursor's <always_applied_workspace_rules>
-  if (includeRules && config?.workspacePath) {
-    const rules = config.projectRules || await loadProjectRules(config.workspacePath);
-    const rulesSection = buildProjectRules(rules);
-    if (rulesSection) sections.push(rulesSection);
+  // 7. Skill references - only when user attaches skills or skills are auto-matched
+  // Sends name + path only, agent reads full content via file_read
+  if (config?.skillReferences) {
+    sections.push(config.skillReferences);
   }
 
-  // 3. Project Layout (Cursor: <project_layout>) - Persistent file map
-  // This is CRITICAL for helping the agent understand project structure and use correct paths
-  if (config?.includeProjectLayout !== false && config?.projectLayout) {
-    const layoutSection = buildProjectLayout(config);
-    if (layoutSection) sections.push(layoutSection);
-  }
-
-  // 4. IDE Context (open files, recent files) - Similar to Cursor's <additional_data>
-  if (config) {
-    const fileContext = buildFileContext(config);
-    if (fileContext) sections.push(fileContext);
-  }
-
-  // 5. Attached Files (Cursor: <attached_files>)
+  // 8. Attached Files (Cursor: <attached_files>) - whenever present
   let filesWithContent: FileContent[] = [];
   let filesAsPathsOnly: string[] = [];
 
@@ -319,7 +408,7 @@ export async function buildQueryContext(
     filesAsPathsOnly = result.filesAsPathsOnly;
   }
 
-  // 6. Build final context with user query at the end
+  // 7. Build final context with user query at the end
   let formattedContext: string;
 
   if (sections.length > 0) {
@@ -445,37 +534,32 @@ export function generateProjectLayout(files: FileNode[], workspacePath: string, 
 }
 
 /**
- * Get current IDE context from stores
- * Includes project layout for first message in conversation
+ * Get full IDE context for first message in conversation
+ * Includes: user_info, git_status, project_layout, project_rules, open_files
  */
 export function getIDEContext(includeProjectLayout: boolean = true): ContextConfig {
   const workspaceState = useWorkspaceStore.getState();
   const editorState = useEditorStore.getState();
 
-  // Get open tabs with more detail
   const openFiles = editorState.tabs.map((tab: Tab) => ({
     path: tab.path,
     isActive: tab.id === editorState.activeTabId,
-    cursorLine: undefined, // Could add cursor tracking later
+    cursorLine: undefined,
     totalLines: tab.content ? tab.content.split('\n').length : undefined,
   }));
 
-  // Generate project layout from workspace files
   let projectLayout: string | undefined;
   if (includeProjectLayout && workspaceState.rootPath && workspaceState.files.length > 0) {
     projectLayout = generateProjectLayout(workspaceState.files, workspaceState.rootPath);
   }
 
-  // Use cached system info if available, otherwise use basic detection
   let osInfo = 'unknown';
   let shellPath: string | undefined;
   
   if (cachedSystemInfo) {
-    // Format like Cursor: "win32 10.0.26200"
     osInfo = `${cachedSystemInfo.os} ${cachedSystemInfo.os_version}`;
     shellPath = cachedSystemInfo.shell || undefined;
   } else if (typeof navigator !== 'undefined') {
-    // Fallback to basic detection
     const platform = navigator.platform || '';
     const userAgent = navigator.userAgent || '';
     
@@ -490,8 +574,8 @@ export function getIDEContext(includeProjectLayout: boolean = true): ContextConf
     }
   }
 
-  // Build config
-  const config: ContextConfig = {
+  return {
+    includeFullContext: true,
     osInfo,
     shellPath,
     workspacePath: workspaceState.rootPath || undefined,
@@ -500,16 +584,29 @@ export function getIDEContext(includeProjectLayout: boolean = true): ContextConf
     includeProjectLayout,
     systemInfo: cachedSystemInfo || undefined,
   };
-
-  return config;
 }
 
 /**
- * Get IDE context without project layout (for follow-up messages)
- * The project layout is static and only needs to be sent once at conversation start
+ * Get lightweight IDE context for follow-up messages
+ * Only includes: open_files (what may have changed)
+ * Does NOT re-send: user_info, git_status, project_layout, rules (already in Turn 1)
  */
 export function getIDEContextLight(): ContextConfig {
-  return getIDEContext(false);
+  const workspaceState = useWorkspaceStore.getState();
+  const editorState = useEditorStore.getState();
+
+  const openFiles = editorState.tabs.map((tab: Tab) => ({
+    path: tab.path,
+    isActive: tab.id === editorState.activeTabId,
+    cursorLine: undefined,
+    totalLines: tab.content ? tab.content.split('\n').length : undefined,
+  }));
+
+  return {
+    includeFullContext: false,
+    workspacePath: workspaceState.rootPath || undefined,
+    openFiles: openFiles.length > 0 ? openFiles : undefined,
+  };
 }
 
 /**
@@ -561,6 +658,43 @@ export async function loadProjectRules(workspacePath: string): Promise<ProjectRu
   }
 
   return rules;
+}
+
+/**
+ * Enrich user query with annotations about which skills/rules the user explicitly attached.
+ * This ensures the LLM knows the user specifically referenced these assets in their message,
+ * since the skill content is embedded in the system prompt but the user message would
+ * otherwise contain no reference to which skills/rules were selected.
+ */
+export function enrichUserQueryWithAttachments(
+  userQuery: string,
+  promptAttachments?: Array<{ type: string; title: string; key: string }>,
+): string {
+  if (!promptAttachments || promptAttachments.length === 0) {
+    return userQuery;
+  }
+
+  const skills = promptAttachments.filter((a) => a.type === 'skill');
+  const rules = promptAttachments.filter((a) => a.type === 'rule');
+
+  if (skills.length === 0 && rules.length === 0) {
+    return userQuery;
+  }
+
+  const lines: string[] = [];
+  lines.push('<attached_context description="The user explicitly attached the following skills/rules to this message. Refer to them by name and use the corresponding required_skills/project_rules content.">');
+
+  if (skills.length > 0) {
+    lines.push(`  Skills: ${skills.map((s) => s.title).join(', ')}`);
+  }
+
+  if (rules.length > 0) {
+    lines.push(`  Rules: ${rules.map((r) => r.title).join(', ')}`);
+  }
+
+  lines.push('</attached_context>');
+
+  return `${lines.join('\n')}\n\n${userQuery}`;
 }
 
 // Configuration
@@ -899,6 +1033,7 @@ export default {
   initializeSystemInfo,
   loadProjectRules,
   generateProjectLayout,
+  buildGitStatus,
   MAX_FULL_CONTENT_FILES,
   MAX_FILE_LINES,
   RULES_FOLDER,

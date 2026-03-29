@@ -34,7 +34,11 @@ import { useContextStore } from "../../store/useContextStore";
 import { useAuditStore } from "../../store/useAuditStore";
 import { useCheckpointStore } from "../../store/useCheckpointStore";
 import { getAgentService, type ProviderConfig, type ToolCallRequest } from "../../services";
-import type { AgentPromptContext } from "../../services/agent-prompt";
+import {
+  type AgentPromptContext,
+  formatSkillCatalogForContext,
+  formatSkillReferences,
+} from "../../services/agent-prompt";
 import {
   filterProjectRulesByAttachment,
   getPromptAttachmentSelection,
@@ -45,6 +49,7 @@ import { toolRegistry } from "../../tools";
 import { registerAllExecutors } from "../../tools";
 import {
   buildQueryContext,
+  enrichUserQueryWithAttachments,
   getIDEContext,
   getIDEContextLight,
   loadProjectRules,
@@ -283,6 +288,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
         sender: "user",
         content: displayContent,
         timestamp: Date.now(),
+        attachedFiles: attachedFiles?.map(f => ({ path: f.path, name: f.name })),
+        attachedPromptAssets: promptAttachments?.map(a => ({ key: a.key, type: a.type, title: a.title })),
       };
       addMessageToThread(userMessage);
 
@@ -293,9 +300,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       }
 
       // Build Cursor-style context with IDE state and attached files
-      // Include project layout (file tree) only for first message in thread (if enabled)
-      // This gives the agent a persistent mental map of the project structure
-      // Note: Use isNewThread flag instead of checking currentThread which may be stale
+      // First message: heavy (user_info, git_status, rules, layout, skills catalog)
+      // Follow-up: lightweight (open_files + user_query only)
       const isFirstMessage = isNewThread || !currentThread?.messages || currentThread.messages.length === 0;
       const projectLayoutEnabled = useSettingsStore.getState().projectLayoutEnabled;
       const shouldIncludeLayout = isFirstMessage && projectLayoutEnabled;
@@ -309,19 +315,57 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             )
           : undefined;
 
-      const { formattedContext, filesWithContent, filesAsPathsOnly } = await buildQueryContext(
+      // Enrich user query with explicit skill/rule attachment annotations
+      const enrichedContent = enrichUserQueryWithAttachments(
         content,
+        promptAttachments?.map(a => ({ type: a.type, title: a.title, key: a.key })),
+      );
+
+      // Resolve skills for context (catalog for first message, references for attached skills)
+      const promptContext: AgentPromptContext = {
+        explicitSkillKeys: promptSelection.explicitSkillKeys,
+        isFirstMessage,
+        userMessage: content,
+        workspacePath: rootPath || undefined,
+      };
+
+      // Build skill catalog (first message only) and references (when skills attached)
+      // Skills are sent as name+path references, agent reads full content via file_read
+      const settings = useSettingsStore.getState();
+      let skillCatalog: string | undefined;
+      let skillReferences: string | undefined;
+
+      if (settings.skillsEnabled) {
+        const { resolveSkillsForPrompt: resolveSkills } = await import("../../services/skills");
+        const resolved = await resolveSkills({
+          enabledSkillToggles: settings.skillToggles,
+          explicitSkillKeys: promptSelection.explicitSkillKeys,
+          skillsEnabled: settings.skillsEnabled,
+          userMessage: content,
+          workspacePath: rootPath || undefined,
+        });
+
+        if (isFirstMessage && resolved.allSkills.length > 0) {
+          skillCatalog = formatSkillCatalogForContext(resolved.allSkills);
+        }
+
+        if (resolved.explicitSkills.length > 0) {
+          skillReferences = formatSkillReferences(resolved.explicitSkills, 'required_skills');
+        } else if (resolved.activeSkills.length > 0) {
+          skillReferences = formatSkillReferences(resolved.activeSkills, 'matched_skills');
+        }
+      }
+
+      const { formattedContext, filesWithContent, filesAsPathsOnly } = await buildQueryContext(
+        enrichedContent,
         attachedFiles,
         {
           ...ideContext,
           projectRules: selectedRules,
+          skillCatalog,
+          skillReferences,
         }
       );
-      const promptContext: AgentPromptContext = {
-        explicitSkillKeys: promptSelection.explicitSkillKeys,
-        userMessage: content,
-        workspacePath: rootPath || undefined,
-      };
 
       // Log when project layout is included
       if (shouldIncludeLayout && ideContext.projectLayout) {

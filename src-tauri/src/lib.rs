@@ -79,12 +79,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::settings::get_all_tool_settings,
             commands::settings::set_tool_approval,
             commands::settings::save_all_tool_settings,
-            // Threads (chat history) commands - Legacy
-            commands::threads::save_thread,
-            commands::threads::get_thread,
-            commands::threads::list_threads,
-            commands::threads::delete_thread,
-            // Threads (new service-based with events)
+            // Threads (chat history) commands
+            commands::threads::thread_save,
             commands::threads::thread_create,
             commands::threads::thread_load,
             commands::threads::thread_delete,

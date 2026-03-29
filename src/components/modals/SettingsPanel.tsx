@@ -24,7 +24,7 @@ import React, { useState } from 'react';
 import { useUiStore } from '../../store/useUiStore';
 import { useSettingsStore, type LLMProvider } from '../../store/useSettingsStore';
 import { formatModelDisplayName, formatProviderNickname } from '../../lib/provider-display';
-import { X, Server, Layout, Shield, Eye, EyeOff, Plus, Trash2, ChevronDown, Palette, Database, Plug, Info, Sparkles, Flame } from 'lucide-react';
+import { X, Server, Layout, Shield, Eye, EyeOff, Plus, Trash2, ChevronDown, Palette, Database, Plug, Info, Sparkles, Flame, HardDrive } from 'lucide-react';
 import clsx from 'clsx';
 import { ToolSettingsTab } from './ToolSettingsTab';
 import { ThemeSettingsTab } from './ThemeSettingsTab';
@@ -36,6 +36,7 @@ import { AboutSettingsTab } from './AboutSettingsTab';
 import { FireworksSettingsTab } from './FireworksSettingsTab';
 import { TogglePill } from '../ui/TogglePill';
 import { SettingsSelect } from '../ui/SettingsSelect';
+import { LocalProviderPanel } from '../settings/LocalProviderPanel';
 import { settingsCardStyle, settingsInputStyle, settingsPaneStyle, settingsShellStyle } from './settings-shared';
 
 // ============================================
@@ -582,7 +583,7 @@ export const SettingsPanel: React.FC = () => {
 
   // Each provider has its own supportsThinking, defaultTemperature, and defaultMaxTokens
 
-  const [activeTab, setActiveTab] = useState<'providers' | 'fireworks' | 'tools' | 'general' | 'themes' | 'semantic' | 'mcp' | 'skills' | 'about'>('providers');
+  const [activeTab, setActiveTab] = useState<'providers' | 'local' | 'fireworks' | 'tools' | 'general' | 'themes' | 'semantic' | 'mcp' | 'skills' | 'about'>('providers');
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   const [expandedProvider, setExpandedProvider] = useState<string | null>('fireworks');
   const [isAddingProvider, setIsAddingProvider] = useState(false);
@@ -619,6 +620,7 @@ export const SettingsPanel: React.FC = () => {
 
           {[ 
             { id: 'providers', label: 'Providers', icon: Server },
+            { id: 'local', label: 'Local Models', icon: HardDrive },
             ...(fireworksTabEnabled ? [{ id: 'fireworks', label: 'Fireworks', icon: Flame }] : []),
             { id: 'mcp', label: 'MCP Servers', icon: Plug },
             { id: 'skills', label: 'Skills', icon: Sparkles },
@@ -674,6 +676,7 @@ export const SettingsPanel: React.FC = () => {
               <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-disabled">Workspace Settings</div>
               <h2 className="mt-1 text-base font-semibold text-text-primary">
               {activeTab === 'providers' ? 'LLM Providers' :
+                activeTab === 'local' ? 'Local AI Models' :
                 activeTab === 'fireworks' ? 'Fireworks Control Center' :
                 activeTab === 'mcp' ? 'MCP Servers' :
                   activeTab === 'skills' ? 'Skills' :
@@ -764,6 +767,9 @@ export const SettingsPanel: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {/* LOCAL MODELS TAB */}
+            {activeTab === 'local' && <LocalProviderPanel />}
 
             {/* FIREWORKS TAB */}
             {activeTab === 'fireworks' && fireworksTabEnabled && <FireworksSettingsTab />}

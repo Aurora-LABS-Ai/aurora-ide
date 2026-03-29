@@ -11,6 +11,8 @@ use std::os::windows::process::CommandExt;
 // Windows creation flags
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+#[cfg(target_os = "windows")]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 
 use notify::{recommended_watcher, Config, Event, EventKind, RecursiveMode, Watcher};
 use tauri::Emitter;
@@ -152,7 +154,7 @@ fn build_shell_command(
     }
 
     #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
 
     (shell_exe, cmd)
 }
@@ -419,7 +421,7 @@ pub async fn execute_command(
                 }
                 fallback.stdout(Stdio::piped());
                 fallback.stderr(Stdio::piped());
-                fallback.creation_flags(CREATE_NO_WINDOW);
+                fallback.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
 
                 match fallback.spawn() {
                     Ok(c) => c,
@@ -463,12 +465,17 @@ pub async fn execute_command(
 
 #[tauri::command]
 pub fn cancel_command_stream(request_id: String) -> Result<(), String> {
-    let mut streams = ACTIVE_COMMAND_STREAMS.write();
-    if let Some(stream) = streams.get_mut(&request_id) {
-        stream.cancelled = true;
-        if let Some(pid) = stream.pid {
-            let _ = try_kill_pid(pid);
+    let pid_to_kill = {
+        let mut streams = ACTIVE_COMMAND_STREAMS.write();
+        if let Some(stream) = streams.get_mut(&request_id) {
+            stream.cancelled = true;
+            stream.pid
+        } else {
+            None
         }
+    };
+    if let Some(pid) = pid_to_kill {
+        let _ = try_kill_pid(pid);
     }
     Ok(())
 }

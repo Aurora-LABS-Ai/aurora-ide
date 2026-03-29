@@ -10,6 +10,9 @@ lerna-debug.log*
 .cursor
 node_modules
 fireworks-docs
+local-llm-docs/
+ollama-rs.md
+raw-output.md
 # Build outputs
 dist
 dist-ssr
@@ -19,7 +22,7 @@ void-main
 src-tauri/target/
 # Note: Cargo.lock should be committed for applications
 AGENTS.md
-
+docs-lm-studio
 # Tauri generated files (keep schemas, ignore other generated files)
 src-tauri/gen/
 !src-tauri/gen/schemas/

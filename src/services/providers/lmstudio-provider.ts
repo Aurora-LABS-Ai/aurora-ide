@@ -41,6 +41,7 @@ interface OpenAINativeRequest {
   messages: Array<{
     role: string;
     content?: string;
+    reasoning_content?: string;
     tool_calls?: Array<{
       id: string;
       type?: string;
@@ -64,6 +65,8 @@ interface OpenAINativeRequest {
   stream: boolean;
   /** Extra body parameters for thinking models (e.g., reasoning_effort) */
   extra_body?: Record<string, unknown>;
+  /** Whether to include stream_options for usage tracking (Ollama doesn't support this) */
+  include_stream_options?: boolean;
 }
 
 export class LMStudioProvider extends BaseProvider {
@@ -314,7 +317,7 @@ export class LMStudioProvider extends BaseProvider {
             : '';
       }
 
-      // Handle tool calls for assistant messages
+      // Handle assistant messages: tool_calls + reasoning_content
       if (msg.role === 'assistant') {
         const assistantMsg = msg as AssistantMessage;
         if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
@@ -328,6 +331,9 @@ export class LMStudioProvider extends BaseProvider {
                 : JSON.stringify(tc.function.arguments),
             },
           }));
+        }
+        if (assistantMsg.reasoning_content) {
+          result.reasoning_content = assistantMsg.reasoning_content;
         }
       }
 
@@ -369,7 +375,7 @@ export class LMStudioProvider extends BaseProvider {
 
     return {
       base_url: this._config.baseUrl,
-      api_key: this._config.apiKey || 'lm-studio', // LM Studio doesn't require a real API key
+      api_key: this._config.apiKey || 'lm-studio',
       model: this._config.model,
       messages,
       tools: tools && tools.length > 0 ? tools : undefined,
@@ -377,6 +383,7 @@ export class LMStudioProvider extends BaseProvider {
       max_tokens: this.getMaxTokens(request.maxTokens),
       stream,
       extra_body,
+      include_stream_options: this.preset.includeStreamOptions ?? false,
     };
   }
 }

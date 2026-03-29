@@ -65,6 +65,7 @@ impl MessageBuilder {
                 });
                 messages.push(ApiMessage::Assistant {
                     content: format!("[Summary] {}", summary),
+                    reasoning_content: None,
                     tool_calls: None,
                 });
             } else {
@@ -137,6 +138,7 @@ impl MessageBuilder {
             
             messages.push(ApiMessage::Assistant {
                 content: round.response.clone(),
+                reasoning_content: round.thinking.clone(),
                 tool_calls: Some(tool_calls),
             });
             
@@ -153,6 +155,7 @@ impl MessageBuilder {
             // Just assistant response (no tools)
             messages.push(ApiMessage::Assistant {
                 content: round.response.clone(),
+                reasoning_content: round.thinking.clone(),
                 tool_calls: None,
             });
         }
@@ -166,8 +169,11 @@ impl MessageBuilder {
             match msg {
                 ApiMessage::System { content } => total_chars += content.len(),
                 ApiMessage::User { content } => total_chars += content.len(),
-                ApiMessage::Assistant { content, tool_calls } => {
+                ApiMessage::Assistant { content, reasoning_content, tool_calls } => {
                     total_chars += content.len();
+                    if let Some(rc) = reasoning_content {
+                        total_chars += rc.len();
+                    }
                     if let Some(calls) = tool_calls {
                         for call in calls {
                             total_chars += call.function.name.len();

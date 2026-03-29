@@ -22,6 +22,7 @@
 
 import React, { useRef, useCallback, useState, useEffect } from "react";
 import { Search, Bug, Sparkles, TestTube } from 'lucide-react';
+import { classifyError } from '../../lib/error-classifier';
 import { ChatMessages } from "./ChatMessages";
 import { ChatInput, type AttachedFile } from "./ChatInput";
 import { ChatHeader } from "./ChatHeader";
@@ -828,15 +829,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             }
           },
           onError: (error) => {
-            // Don't show error if request was cancelled by user
             const isCancelled = error.message === 'Request cancelled' ||
               error.name === 'AbortError' ||
               error.message.includes('aborted');
 
             if (!isCancelled) {
+              const classified = classifyError(error);
+              const errorContent = `**${classified.title}**\n\n${classified.message}\n\n💡 ${classified.suggestion}`;
               addTimelineEvent({
                 type: "content",
-                content: `Error: ${error.message}`,
+                content: errorContent,
               });
             }
 
@@ -864,9 +866,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
         if (!isCancelled) {
           console.error("Chat error:", error);
+          const classified = classifyError(error instanceof Error ? error : new Error(String(error)));
           addTimelineEvent({
             type: "content",
-            content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+            content: `**${classified.title}**\n\n${classified.message}\n\n💡 ${classified.suggestion}`,
           });
         } else {
           console.log("[ChatPanel] Request cancelled by user");

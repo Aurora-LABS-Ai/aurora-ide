@@ -7,49 +7,14 @@ use crate::db::{ContextUsage, Database, Message, ThreadState, TokenUsage};
 use crate::services::thread_service::{ThreadService, ThreadSummary};
 use crate::services::api_converter::ApiMessage;
 
-// ============================================================
-// Legacy commands (backward compatible with TypeScript frontend)
-// DEPRECATED: Use new service-based commands below instead
-// ============================================================
-
-/// DEPRECATED: Use `thread_create` instead
+/// Save/update a full thread state to the database.
+/// Used for bulk-persisting thread state (e.g., after streaming completes).
 #[tauri::command]
-#[deprecated(since = "0.1.3", note = "Use thread_create command instead")]
-pub fn save_thread(thread: ThreadState, db: State<'_, Mutex<Database>>) -> Result<(), String> {
+pub fn thread_save(thread: ThreadState, db: State<'_, Mutex<Database>>) -> Result<(), String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.threads()
         .save(&thread)
         .map_err(|e| format!("Failed to save thread: {:?}", e))
-}
-
-/// DEPRECATED: Use `thread_load` instead  
-#[tauri::command]
-#[deprecated(since = "0.1.3", note = "Use thread_load command instead")]
-pub fn get_thread(id: String, db: State<'_, Mutex<Database>>) -> Result<Option<ThreadState>, String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.threads()
-        .get(&id)
-        .map_err(|e| format!("Failed to get thread: {:?}", e))
-}
-
-/// DEPRECATED: Use `thread_list_summaries` instead
-#[tauri::command]
-#[deprecated(since = "0.1.3", note = "Use thread_list_summaries command instead")]
-pub fn list_threads(db: State<'_, Mutex<Database>>) -> Result<Vec<ThreadState>, String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.threads()
-        .list()
-        .map_err(|e| format!("Failed to list threads: {:?}", e))
-}
-
-/// DEPRECATED: Use `thread_delete` instead
-#[tauri::command]
-#[deprecated(since = "0.1.3", note = "Use thread_delete command instead")]
-pub fn delete_thread(id: String, db: State<'_, Mutex<Database>>) -> Result<(), String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.threads()
-        .delete(&id)
-        .map_err(|e| format!("Failed to delete thread: {:?}", e))
 }
 
 // ============================================================

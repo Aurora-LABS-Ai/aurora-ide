@@ -36,6 +36,7 @@ import {
   Paperclip,
   Sparkles,
   ArrowUp,
+  AlertCircle,
 } from "lucide-react";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
@@ -192,29 +193,44 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   const { openFile } = useEditorStore();
   const { tasks, isVisible } = useTaskStore();
 
-  // Wrapped setters that also sync to draft store
+  // Wrapped setters -- sync to draft store via separate calls (not inside updaters)
   const setContent = useCallback((valOrUpdater: string | ((prev: string) => string)) => {
-    setContentLocal((prev) => {
-      const next = typeof valOrUpdater === 'function' ? valOrUpdater(prev) : valOrUpdater;
-      setDraftInput(next);
-      return next;
-    });
+    if (typeof valOrUpdater === 'function') {
+      setContentLocal((prev) => {
+        const next = valOrUpdater(prev);
+        queueMicrotask(() => setDraftInput(next));
+        return next;
+      });
+    } else {
+      setContentLocal(valOrUpdater);
+      setDraftInput(valOrUpdater);
+    }
   }, [setDraftInput]);
 
   const setAttachedFiles = useCallback((valOrUpdater: AttachedFile[] | ((prev: AttachedFile[]) => AttachedFile[])) => {
-    setAttachedFilesLocal((prev) => {
-      const next = typeof valOrUpdater === 'function' ? valOrUpdater(prev) : valOrUpdater;
-      setDraftAttachedFiles(next.map(f => ({ path: f.path, name: f.name })));
-      return next;
-    });
+    if (typeof valOrUpdater === 'function') {
+      setAttachedFilesLocal((prev) => {
+        const next = valOrUpdater(prev);
+        queueMicrotask(() => setDraftAttachedFiles(next.map(f => ({ path: f.path, name: f.name }))));
+        return next;
+      });
+    } else {
+      setAttachedFilesLocal(valOrUpdater);
+      setDraftAttachedFiles(valOrUpdater.map(f => ({ path: f.path, name: f.name })));
+    }
   }, [setDraftAttachedFiles]);
 
   const setAttachedPromptAssets = useCallback((valOrUpdater: PromptAttachment[] | ((prev: PromptAttachment[]) => PromptAttachment[])) => {
-    setAttachedPromptAssetsLocal((prev) => {
-      const next = typeof valOrUpdater === 'function' ? valOrUpdater(prev) : valOrUpdater;
-      setDraftAttachedPromptAssets(next);
-      return next;
-    });
+    if (typeof valOrUpdater === 'function') {
+      setAttachedPromptAssetsLocal((prev) => {
+        const next = valOrUpdater(prev);
+        queueMicrotask(() => setDraftAttachedPromptAssets(next));
+        return next;
+      });
+    } else {
+      setAttachedPromptAssetsLocal(valOrUpdater);
+      setDraftAttachedPromptAssets(valOrUpdater);
+    }
   }, [setDraftAttachedPromptAssets]);
   const {
     thinkingEnabled,
@@ -227,8 +243,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     skillsEnabled,
   } = useSettingsStore();
 
-  // Check if current provider supports thinking mode
   const llmConfig = getLLMConfig();
+  const providerReady = llmConfig !== null;
   const providerSupportsThinking = llmConfig?.supportsThinking ?? false;
 
   // Re-compute available models when providers change
@@ -1142,6 +1158,27 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
           </div>
         )}
 
+        {/* Setup nudge when no provider is configured */}
+        {!providerReady && !isLoading && (
+          <div className="mx-3 mb-2 mt-1 flex items-center gap-2.5 rounded-lg border px-3 py-2.5"
+            style={{
+              backgroundColor: 'color-mix(in srgb, var(--aurora-common-warning) 8%, var(--aurora-chat-surface))',
+              borderColor: 'color-mix(in srgb, var(--aurora-common-warning) 25%, transparent)',
+            }}
+          >
+            <AlertCircle size={14} className="text-warning shrink-0" />
+            <span className="text-xs text-text-secondary flex-1">
+              Connect an AI provider to start chatting.
+            </span>
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="text-[10px] font-semibold px-2.5 py-1 rounded-md bg-primary text-primary-foreground hover:bg-primary-hover transition-colors shrink-0"
+            >
+              Open Settings
+            </button>
+          </div>
+        )}
+
         {/* Text Input */}
         <div className="px-3 pb-3 pt-2">
           <textarea
@@ -1151,11 +1188,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
             onBlur={() => setIsFocused(false)}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            disabled={disabled || isLoading}
+            disabled={disabled || isLoading || !providerReady}
             placeholder={
-              attachedFiles.length > 0 || attachedPromptAssets.length > 0
-                ? "Ask Aurora with your attached files, skills, or rules..."
-                : "Message Aurora (Type @ for files, / for skills and rules)..."
+              !providerReady
+                ? "Add an API key in Settings to get started..."
+                : attachedFiles.length > 0 || attachedPromptAssets.length > 0
+                  ? "Ask Aurora with your attached files, skills, or rules..."
+                  : "Message Aurora (Type @ for files, / for skills and rules)..."
             }
             className="w-full bg-transparent text-[14px] font-normal tracking-[0.01em] text-text-primary resize-none border-0 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0 focus-visible:border-0 focus-visible:outline-none min-h-[40px] max-h-[200px] placeholder:text-text-disabled leading-[1.55]"
             rows={1}
@@ -1175,6 +1214,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                 attachedFiles.length === 0 &&
                 attachedPromptAssets.length === 0) ||
                 disabled ||
+                !providerReady ||
                 availableModels.length === 0)
             }
             className={clsx(

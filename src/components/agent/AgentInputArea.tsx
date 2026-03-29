@@ -23,6 +23,7 @@ import {
   Paperclip,
   ChevronDown,
   Settings,
+  AlertCircle,
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useSettingsStore } from "../../store/useSettingsStore";
@@ -144,6 +145,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
   } = useSettingsStore();
 
   const llmConfig = getLLMConfig();
+  const providerReady = llmConfig !== null;
   const providerSupportsThinking = llmConfig?.supportsThinking ?? false;
   const availableModels = getAvailableModels();
   const [selectedProviderId = "", selectedModelName = ""] =
@@ -852,6 +854,27 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
           </div>
         )}
 
+        {/* Setup nudge when no provider is configured */}
+        {!providerReady && !isLoading && (
+          <div className="mx-3 mb-2 mt-1 flex items-center gap-2.5 rounded-lg border px-3 py-2.5"
+            style={{
+              backgroundColor: 'color-mix(in srgb, var(--aurora-common-warning) 8%, var(--aurora-chat-surface))',
+              borderColor: 'color-mix(in srgb, var(--aurora-common-warning) 25%, transparent)',
+            }}
+          >
+            <AlertCircle size={14} className="text-warning shrink-0" />
+            <span className="text-xs text-text-secondary flex-1">
+              Connect an AI provider to start chatting.
+            </span>
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="text-[10px] font-semibold px-2.5 py-1 rounded-md bg-primary text-primary-foreground hover:bg-primary-hover transition-colors shrink-0"
+            >
+              Open Settings
+            </button>
+          </div>
+        )}
+
         {/* Text Input */}
         <div className="px-3 pb-1.75 pt-1">
           <textarea
@@ -861,11 +884,13 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
             onBlur={() => setIsFocused(false)}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            disabled={disabled || isLoading}
+            disabled={disabled || isLoading || !providerReady}
             placeholder={
-              attachedFiles.length > 0 || attachedPromptAssets.length > 0
-                ? "Ask Aurora with your attached files, skills, or rules..."
-                : "Message Aurora (Type @ for files, / for skills and rules)..."
+              !providerReady
+                ? "Add an API key in Settings to get started..."
+                : attachedFiles.length > 0 || attachedPromptAssets.length > 0
+                  ? "Ask Aurora with your attached files, skills, or rules..."
+                  : "Message Aurora (Type @ for files, / for skills and rules)..."
             }
             className="w-full bg-transparent text-[14px] font-normal tracking-[0.01em] text-text-primary resize-none border-0 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0 focus-visible:border-0 focus-visible:outline-none min-h-[28px] max-h-[140px] placeholder:text-text-disabled leading-[1.55]"
             rows={1}
@@ -881,7 +906,8 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
               ((!content.trim() &&
                 attachedFiles.length === 0 &&
                 attachedPromptAssets.length === 0) ||
-                disabled)
+                disabled ||
+                !providerReady)
             }
             className={clsx(
               "p-1 rounded-full transition-all duration-200 flex items-center justify-center",

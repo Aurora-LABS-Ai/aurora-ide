@@ -339,9 +339,11 @@ pub enum ApiMessage {
         content: String,
     },
     
-    /// Assistant message (with optional tool calls)
+    /// Assistant message (with optional tool calls and reasoning)
     Assistant {
         content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_content: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_calls: Option<Vec<ApiToolCall>>,
     },

@@ -18,7 +18,12 @@ import {
   Sparkles,
   MessageSquare,
   Zap,
+  Search,
+  Bug,
+  TestTube,
+  FolderOpen,
 } from "lucide-react";
+import { classifyError } from '../../lib/error-classifier';
 import { StreamingDotMatrix } from "../ui/StreamingDotMatrix";
 import { useUiStore } from "../../store/useUiStore";
 import { useThreadStore, setStreamingState } from "../../store/useThreadStore";
@@ -58,6 +63,7 @@ import { AgentChangesTree } from "./AgentChangesTree";
 import { AgentInputArea, type AttachedFile } from "./AgentInputArea";
 import { ChatMessage } from "../chat/ChatMessage";
 import { ThreadHistory } from "../chat/ThreadHistory";
+import { scanWorkspace, type WorkspaceSummary } from "../../services/workspace-summary";
 import type {
   ToolProposal,
   ToolCall,
@@ -95,7 +101,7 @@ const getContextColors = () => ({
 
 export const AgentModeLayout: React.FC = () => {
   const { toggleAgentMode } = useUiStore();
-  const { setLoading, isLoading, pendingApproval, setPendingApproval } =
+  const { setLoading, isLoading, pendingApproval, setPendingApproval, setInputContent } =
     useChatStore();
   const {
     currentThreadId,
@@ -124,6 +130,7 @@ export const AgentModeLayout: React.FC = () => {
     llmConfig?.defaultMaxTokens ?? llmConfig?.maxOutputTokens ?? 8192;
 
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [workspaceSummary, setWorkspaceSummary] = useState<WorkspaceSummary | null>(null);
   const currentMessageIdRef = useRef<string | null>(null);
   const pendingToolCallRef = useRef<{
     resolve: ((approved: boolean) => void) | null;
@@ -159,6 +166,14 @@ export const AgentModeLayout: React.FC = () => {
   useEffect(() => {
     initExecutors();
   }, []);
+
+  // Scan workspace for summary (used in empty state)
+  useEffect(() => {
+    if (rootPath && !workspaceSummary) {
+      scanWorkspace(rootPath).then(setWorkspaceSummary);
+    }
+    if (!rootPath) setWorkspaceSummary(null);
+  }, [rootPath]);
 
   // Initialize checkpoint store
   useEffect(() => {
@@ -752,9 +767,10 @@ export const AgentModeLayout: React.FC = () => {
                 error.name === "AbortError" ||
                 error.message.includes("aborted");
               if (!isCancelled) {
+                const classified = classifyError(error);
                 addTimelineEvent({
                   type: "content",
-                  content: `Error: ${error.message}`,
+                  content: `**${classified.title}**\n\n${classified.message}\n\n💡 ${classified.suggestion}`,
                 });
               }
               if (currentThinkingEventId) {
@@ -779,9 +795,10 @@ export const AgentModeLayout: React.FC = () => {
         }
         if (!isCancelled) {
           console.error("Chat error:", error);
+          const classified = classifyError(error instanceof Error ? error : new Error(String(error)));
           addTimelineEvent({
             type: "content",
-            content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+            content: `**${classified.title}**\n\n${classified.message}\n\n💡 ${classified.suggestion}`,
           });
         }
       } finally {
@@ -1094,7 +1111,7 @@ export const AgentModeLayout: React.FC = () => {
               {isEmpty ? (
                 <div className="flex-1 flex flex-col items-center justify-center px-6">
                   <div className="flex flex-col items-center max-w-lg w-full">
-                    <div className="w-20 h-20 mb-6">
+                    <div className="w-16 h-16 mb-5">
                       <img
                         src="/aurora_icon.png"
                         alt="Agent empty state"
@@ -1108,11 +1125,70 @@ export const AgentModeLayout: React.FC = () => {
                       Aurora Agent
                     </h1>
                     <p
-                      className="text-sm text-center leading-relaxed max-w-[320px]"
+                      className="text-sm text-center leading-relaxed max-w-[340px] mb-4"
                       style={{ color: "var(--aurora-common-muted-foreground)" }}
                     >
-                      Your advanced AI engineering companion for complex tasks.
+                      {rootPath
+                        ? "Your workspace is loaded. Try one of these to get started:"
+                        : "Open a workspace folder to unlock full capabilities, or ask anything below."}
                     </p>
+
+                    {/* Workspace summary card */}
+                    {workspaceSummary && (
+                      <div
+                        className="w-full max-w-md rounded-lg border px-4 py-3 mb-6"
+                        style={{
+                          backgroundColor: 'var(--aurora-chat-surface)',
+                          borderColor: 'var(--aurora-chat-surface-border)',
+                        }}
+                      >
+                        <div className="flex items-center gap-2 mb-2">
+                          <FolderOpen className="w-3.5 h-3.5 text-primary" />
+                          <span className="text-xs font-semibold text-text-primary">{workspaceSummary.name}</span>
+                          {workspaceSummary.framework && (
+                            <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-primary/10 text-primary">{workspaceSummary.framework}</span>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-text-secondary">
+                          <span>{workspaceSummary.fileCount} files</span>
+                          {workspaceSummary.languages.length > 0 && (
+                            <span>{workspaceSummary.languages.join(', ')}</span>
+                          )}
+                          {workspaceSummary.hasGit && <span>Git repo</span>}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Suggested prompts */}
+                    <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-w-md">
+                      {(rootPath ? [
+                        { Icon: Search, label: "Analyze Codebase", prompt: "Explain the architecture of this project and how the main components are connected.", color: "text-action-analyze" },
+                        { Icon: Bug, label: "Find Issues", prompt: "Scan the codebase for potential bugs, anti-patterns, or areas that need improvement.", color: "text-action-debug" },
+                        { Icon: Sparkles, label: "Generate Feature", prompt: "Help me create a new feature for this project. Let's start by discussing what to build.", color: "text-action-generate" },
+                        { Icon: TestTube, label: "Write Tests", prompt: "Write unit tests for the most critical parts of this project.", color: "text-action-test" },
+                      ] : [
+                        { Icon: FolderOpen, label: "Open Workspace", prompt: "I'd like to open a project folder. Can you guide me through getting started?", color: "text-info" },
+                        { Icon: Sparkles, label: "What Can You Do?", prompt: "What are your capabilities? Show me what Aurora Agent can help with.", color: "text-action-generate" },
+                        { Icon: Search, label: "Explain Concept", prompt: "Explain how React hooks work with practical examples.", color: "text-action-analyze" },
+                        { Icon: Zap, label: "Quick Task", prompt: "Help me write a utility function that validates email addresses in TypeScript.", color: "text-warning" },
+                      ]).map(({ Icon, label, prompt, color }, i) => (
+                        <button
+                          key={i}
+                          onClick={() => setInputContent(prompt)}
+                          className="group flex items-center gap-3 px-3 py-2.5 text-left rounded-xl transition-all duration-200"
+                          style={{
+                            backgroundColor: 'var(--aurora-chat-surface)',
+                            border: '1px solid var(--aurora-chat-surface-border)',
+                          }}
+                        >
+                          <Icon className={`w-4 h-4 ${color} shrink-0 group-hover:scale-110 transition-transform`} />
+                          <div className="min-w-0">
+                            <span className="text-xs font-medium text-text-primary block">{label}</span>
+                            <span className="text-[10px] text-text-secondary line-clamp-1">{prompt}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               ) : (

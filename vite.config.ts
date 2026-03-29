@@ -86,6 +86,22 @@ export default defineConfig({
     ]
   },
   
+  // Dev server config
+  server: {
+    proxy: {
+      '/proxy/ollama': {
+        target: 'http://localhost:11434',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/proxy\/ollama/, ''),
+      },
+      '/proxy/lmstudio': {
+        target: 'http://localhost:1234',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/proxy\/lmstudio/, ''),
+      },
+    },
+  },
+
   // Reduce console output
   logLevel: 'warn'
 })

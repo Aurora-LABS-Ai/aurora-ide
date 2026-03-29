@@ -67,9 +67,25 @@ Themes are data-driven (`src/themes/`, imported JSON). The settings UI includes 
 
 ---
 
-## Development
+## Quick Start
 
-**Prerequisites:** Node 18+, **pnpm**, Rust stable, Tauri prerequisites for your OS.
+**New to Aurora?** See the full [Getting Started Guide](DOCS/GETTING-STARTED.md) for a walkthrough with screenshots.
+
+### One-Command Setup
+
+The setup script detects your OS/GPU and builds with the correct flags:
+
+```bash
+# macOS / Linux
+./scripts/setup.sh
+
+# Windows PowerShell
+.\scripts\setup.ps1
+```
+
+### Manual Development
+
+**Prerequisites:** Node 18+, **pnpm**, Rust stable, [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
 
 ```bash
 pnpm install
@@ -85,6 +101,15 @@ pnpm tauri:build    # desktop installers
 pnpm test
 pnpm lint
 ```
+
+### Platform Build Matrix
+
+| Platform | Default | GPU Acceleration |
+|----------|---------|------------------|
+| **All** | `pnpm tauri:dev` (CPU-only) | — |
+| **NVIDIA** | — | `--features cuda` |
+| **Windows** | — | `--features directml` |
+| **macOS** | — | `--features coreml` |
 
 See **`CLAUDE.md`** / **`AGENTS.md`** and **`DOCS/`** for architecture, stores, and conventions.
 
@@ -103,6 +128,7 @@ See **`CLAUDE.md`** / **`AGENTS.md`** and **`DOCS/`** for architecture, stores, 
 
 | Doc | Purpose |
 |-----|---------|
+| [DOCS/GETTING-STARTED.md](DOCS/GETTING-STARTED.md) | **Quick start & first launch** |
 | [DOCS/01-ARCHITECTURE.md](DOCS/01-ARCHITECTURE.md) | Architecture |
 | [DOCS/03-EXPANSION-GUIDE.md](DOCS/03-EXPANSION-GUIDE.md) | Contributing / extending |
 | [DOCS/theme-dev.md](DOCS/theme-dev.md) | Theme tokens |

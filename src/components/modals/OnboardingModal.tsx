@@ -26,8 +26,14 @@ import {
   ArrowRight,
   Check,
   CheckCircle2,
+  Cloud,
+  Eye,
+  EyeOff,
+  ExternalLink,
   FolderOpen,
+  HardDrive,
   Keyboard,
+  Loader2,
   Settings,
   Terminal,
   Zap
@@ -38,6 +44,7 @@ import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useUiStore } from '../../store/useUiStore';
 import { installAuroraContextMenu, isAuroraContextMenuInstalled, isTauri, openFileDialog } from '../../lib/tauri';
 import { TogglePill } from '../ui/TogglePill';
+import { LocalProviderPanel } from '../settings/LocalProviderPanel';
 
 type StepId = 'welcome' | 'setup' | 'shortcuts';
 
@@ -67,6 +74,7 @@ export const OnboardingModal: React.FC = () => {
   const hasSeenOnboarding = useSettingsStore((state) => state.hasSeenOnboarding);
   const setHasSeenOnboarding = useSettingsStore((state) => state.setHasSeenOnboarding);
   const providers = useSettingsStore((state) => state.providers);
+  const updateProvider = useSettingsStore((state) => state.updateProvider);
   const rootPath = useWorkspaceStore((state) => state.rootPath);
   const setRootPath = useWorkspaceStore((state) => state.setRootPath);
   const setSettingsOpen = useUiStore((state) => state.setSettingsOpen);
@@ -74,6 +82,12 @@ export const OnboardingModal: React.FC = () => {
   const [currentStep, setCurrentStep] = useState(0);
   const [isOpeningWorkspace, setIsOpeningWorkspace] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [isTestingKey, setIsTestingKey] = useState(false);
+  const [keyTestResult, setKeyTestResult] = useState<'success' | 'error' | null>(null);
+  const [keyTestMessage, setKeyTestMessage] = useState<string | null>(null);
+  const [providerMode, setProviderMode] = useState<'cloud' | 'local'>('cloud');
   const [shouldInstallContextMenu, setShouldInstallContextMenu] = useState(() => isTauri() && typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows'));
   const [contextMenuInstalled, setContextMenuInstalled] = useState(false);
   const [contextMenuMessage, setContextMenuMessage] = useState<string | null>(null);
@@ -95,6 +109,52 @@ export const OnboardingModal: React.FC = () => {
       return needsApiKey ? hasApiKey : true;
     });
   }, [providers]);
+
+  const handleSaveApiKey = async () => {
+    const trimmedKey = apiKeyInput.trim();
+    if (!trimmedKey) return;
+
+    setIsTestingKey(true);
+    setKeyTestResult(null);
+    setKeyTestMessage(null);
+
+    try {
+      const fireworksProvider = providers.find(p => p.id === 'fireworks');
+      if (!fireworksProvider) {
+        setKeyTestResult('error');
+        setKeyTestMessage('Fireworks provider not found in configuration.');
+        return;
+      }
+
+      const response = await fetch(`${fireworksProvider.baseUrl}/models`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${trimmedKey}`,
+          'Content-Type': 'application/json',
+        },
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (response.ok || response.status === 200) {
+        updateProvider('fireworks', { apiKey: trimmedKey });
+        setKeyTestResult('success');
+        setKeyTestMessage('Connected successfully! You\'re ready to chat.');
+      } else if (response.status === 401 || response.status === 403) {
+        setKeyTestResult('error');
+        setKeyTestMessage('Invalid API key. Please check and try again.');
+      } else {
+        updateProvider('fireworks', { apiKey: trimmedKey });
+        setKeyTestResult('success');
+        setKeyTestMessage('API key saved. Connection will be verified on first use.');
+      }
+    } catch {
+      updateProvider('fireworks', { apiKey: trimmedKey });
+      setKeyTestResult('success');
+      setKeyTestMessage('API key saved. Connection will be verified on first use.');
+    } finally {
+      setIsTestingKey(false);
+    }
+  };
 
   const handleComplete = async () => {
     if (isWindowsDesktop && shouldInstallContextMenu && !contextMenuInstalled) {
@@ -318,22 +378,135 @@ export const OnboardingModal: React.FC = () => {
                         </button>
                       </div>
 
-                      <div className="rounded-xl border border-border bg-editor p-4 flex items-start justify-between gap-4">
-                        <div>
-                          <p className="text-sm font-semibold mb-1">AI Provider</p>
-                          <p className="text-xs text-text-secondary">
-                            {providerReady
-                              ? 'A provider is configured. Fireworks AI is the recommended Aurora path, and you can start prompting immediately.'
-                              : 'Fireworks AI is preconfigured for Aurora. Paste a Fireworks API key in Settings to enable chat and agent actions immediately.'}
-                          </p>
+                      <div className="rounded-xl border border-border bg-editor p-4">
+                        <div className="flex items-start justify-between gap-4 mb-3">
+                          <div>
+                            <p className="text-sm font-semibold mb-1">AI Provider</p>
+                            <p className="text-xs text-text-secondary">
+                              {providerReady
+                                ? 'Connected and ready. You can start prompting immediately.'
+                                : 'Connect a cloud API or use a local model running on your machine.'}
+                            </p>
+                          </div>
+                          <button
+                            onClick={handleOpenSettings}
+                            className="px-2.5 py-1.5 rounded-lg text-[10px] font-medium text-text-secondary hover:text-text-primary hover:bg-sidebar-item-hover transition-colors flex items-center gap-1.5 border border-border shrink-0"
+                            title="Open full settings for other providers"
+                          >
+                            <Settings className="w-3 h-3" />
+                            All Providers
+                          </button>
                         </div>
-                        <button
-                          onClick={handleOpenSettings}
-                          className="px-3 py-2 rounded-lg bg-secondary text-secondary-foreground text-xs font-semibold hover:bg-secondary-hover transition-colors flex items-center gap-1.5"
-                        >
-                          <Settings className="w-3.5 h-3.5" />
-                          Settings
-                        </button>
+
+                        {providerReady && (
+                          <div className="flex items-center gap-2 rounded-lg bg-success/10 px-3 py-2 mb-3">
+                            <CheckCircle2 className="w-4 h-4 text-success shrink-0" />
+                            <span className="text-xs text-success font-medium">Provider connected</span>
+                          </div>
+                        )}
+
+                        {!providerReady && (
+                          <>
+                            <div className="flex rounded-lg border border-border bg-sidebar p-0.5 mb-4">
+                              <button
+                                onClick={() => setProviderMode('cloud')}
+                                className={clsx(
+                                  'flex-1 flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+                                  providerMode === 'cloud'
+                                    ? 'bg-primary text-primary-foreground'
+                                    : 'text-text-secondary hover:text-text-primary'
+                                )}
+                              >
+                                <Cloud size={12} />
+                                Cloud API
+                              </button>
+                              <button
+                                onClick={() => setProviderMode('local')}
+                                className={clsx(
+                                  'flex-1 flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+                                  providerMode === 'local'
+                                    ? 'bg-primary text-primary-foreground'
+                                    : 'text-text-secondary hover:text-text-primary'
+                                )}
+                              >
+                                <HardDrive size={12} />
+                                Local Model
+                              </button>
+                            </div>
+
+                            {providerMode === 'cloud' && (
+                              <div className="space-y-2.5">
+                                <p className="text-[11px] text-text-secondary font-medium">Fireworks AI (recommended)</p>
+                                <div className="flex gap-2">
+                                  <div className="flex-1 relative">
+                                    <input
+                                      type={showApiKey ? 'text' : 'password'}
+                                      value={apiKeyInput}
+                                      onChange={(e) => {
+                                        setApiKeyInput(e.target.value);
+                                        setKeyTestResult(null);
+                                        setKeyTestMessage(null);
+                                      }}
+                                      placeholder="fw_..."
+                                      className="w-full rounded-lg border border-border bg-sidebar px-3 py-2 pr-9 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary/50 transition-colors"
+                                    />
+                                    <button
+                                      onClick={() => setShowApiKey(!showApiKey)}
+                                      className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-text-secondary hover:text-text-primary transition-colors"
+                                      type="button"
+                                    >
+                                      {showApiKey ? <EyeOff size={12} /> : <Eye size={12} />}
+                                    </button>
+                                  </div>
+                                  <button
+                                    onClick={handleSaveApiKey}
+                                    disabled={!apiKeyInput.trim() || isTestingKey}
+                                    className="px-3 py-2 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary-hover transition-colors disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+                                  >
+                                    {isTestingKey ? (
+                                      <>
+                                        <Loader2 size={12} className="animate-spin" />
+                                        Testing...
+                                      </>
+                                    ) : 'Connect'}
+                                  </button>
+                                </div>
+
+                                {keyTestMessage && (
+                                  <p className={clsx(
+                                    'text-xs',
+                                    keyTestResult === 'success' ? 'text-success' : 'text-error'
+                                  )}>
+                                    {keyTestResult === 'success' && <CheckCircle2 className="w-3 h-3 inline mr-1 -mt-0.5" />}
+                                    {keyTestMessage}
+                                  </p>
+                                )}
+
+                                <div className="flex items-center gap-3 pt-1">
+                                  <a
+                                    href="https://fireworks.ai/api-keys"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-[10px] text-primary hover:text-primary-hover transition-colors flex items-center gap-1"
+                                  >
+                                    Get a Fireworks API key <ExternalLink size={9} />
+                                  </a>
+                                  <span className="text-[10px] text-text-disabled">|</span>
+                                  <button
+                                    onClick={handleOpenSettings}
+                                    className="text-[10px] text-text-secondary hover:text-text-primary transition-colors"
+                                  >
+                                    Use a different provider
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+
+                            {providerMode === 'local' && (
+                              <LocalProviderPanel compact />
+                            )}
+                          </>
+                        )}
                       </div>
 
                       {isWindowsDesktop && (

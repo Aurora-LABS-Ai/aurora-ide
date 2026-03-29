@@ -18,6 +18,8 @@ use tauri::Emitter;
 pub struct ChatMessage {
     pub role: String,
     pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     pub tool_calls: Option<Vec<ToolCallInfo>>,
     pub tool_call_id: Option<String>,
 }
@@ -64,6 +66,8 @@ pub struct OpenAINativeRequest {
     pub stream: bool,
     /// Extra body parameters (e.g., reasoning_effort for thinking models)
     pub extra_body: Option<HashMap<String, Value>>,
+    /// Whether to include stream_options for usage tracking (some providers like Ollama don't support this)
+    pub include_stream_options: Option<bool>,
 }
 
 /// Stream chunk payload
@@ -167,8 +171,8 @@ fn build_request_body(request: &OpenAINativeRequest) -> Value {
         }
     }
 
-    // Add stream_options for usage tracking
-    if request.stream {
+    // Add stream_options for usage tracking (only if provider supports it)
+    if request.stream && request.include_stream_options.unwrap_or(true) {
         body["stream_options"] = serde_json::json!({
             "include_usage": true
         });

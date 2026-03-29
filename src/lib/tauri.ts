@@ -119,14 +119,6 @@ export const deletePath = async (path: string): Promise<void> => {
   }
   return invoke<void>('delete_path', { path });
 };
-export const deleteThreadFromDb = async (id: string): Promise<void> => {
-  if (!isTauri()) {
-    console.warn('deleteThreadFromDb: Not running in Tauri');
-    return;
-  }
-  return invoke<void>('delete_thread', { id });
-};
-
 // Shell Operations
 export const executeCommand = async (command: string, cwd?: string, shell?: 'powershell' | 'bash'): Promise<CommandOutput> => {
   if (!isTauri()) {
@@ -180,14 +172,6 @@ export const getGlobalSkillsPath = async (): Promise<string | null> => {
   }
   return invoke<string | null>('get_global_skills_path');
 };
-export const getThreadFromDb = async (id: string): Promise<DbThread | null> => {
-  if (!isTauri()) {
-    console.warn('getThreadFromDb: Not running in Tauri');
-    return null;
-  }
-  return invoke<DbThread | null>('get_thread', { id });
-};
-
 // Workspace helpers
 export const getWorkspaceRoot = async (): Promise<string | null> => {
   if (!isTauri()) {
@@ -206,14 +190,6 @@ export const getWorkspaceRoot = async (): Promise<string | null> => {
 export const isTauri = (): boolean => {
   return typeof window !== 'undefined' && '__TAURI__' in window;
 };
-export const listThreadsFromDb = async (): Promise<DbThread[]> => {
-  if (!isTauri()) {
-    console.warn('listThreadsFromDb: Not running in Tauri');
-    return [];
-  }
-  return invoke<DbThread[]>('list_threads');
-};
-
 // Dialog Operations (using Tauri plugin)
 export const openFileDialog = async (options?: {
   multiple?: boolean;
@@ -302,7 +278,7 @@ export const saveThreadToDb = async (thread: DbThread): Promise<void> => {
     console.warn('saveThreadToDb: Not running in Tauri');
     return;
   }
-  return invoke<void>('save_thread', { thread });
+  return invoke<void>('thread_save', { thread });
 };
 
 // Start filesystem watcher

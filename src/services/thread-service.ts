@@ -292,29 +292,12 @@ class ThreadServiceClass {
     await invoke('thread_update_title', { threadId, title });
   }
 
-  // ============================================================
-  // Legacy operations (backward compatible with existing DB)
-  // ============================================================
-
   /**
-   * Save a full thread (legacy - use per-message methods for new code)
+   * Save/update a full thread state to the database.
+   * Useful for bulk-persisting thread state after streaming completes.
    */
   async saveThread(thread: DbThread): Promise<void> {
-    await invoke('save_thread', { thread });
-  }
-
-  /**
-   * Get a thread by ID (legacy)
-   */
-  async getThread(threadId: string): Promise<DbThread | null> {
-    return await invoke<DbThread | null>('get_thread', { id: threadId });
-  }
-
-  /**
-   * List all threads (full objects - legacy)
-   */
-  async listFullThreads(): Promise<DbThread[]> {
-    return await invoke<DbThread[]>('list_threads');
+    await invoke('thread_save', { thread });
   }
 
   // ============================================================

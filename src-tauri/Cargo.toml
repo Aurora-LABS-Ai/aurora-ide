@@ -86,19 +86,20 @@ winreg = "0.55"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [features]
-# Default: Enable CUDA for NVIDIA GPUs (most common GPU acceleration)
-# For Windows without CUDA: use --features directml instead
-# For macOS: use --features coreml instead
-default = ["cuda"]
+# Default: CPU-only for maximum compatibility out of the box.
+# Opt in to GPU acceleration for semantic search if available:
+#   NVIDIA GPU:  cargo build --features cuda
+#   Windows GPU: cargo build --features directml
+#   macOS GPU:   cargo build --features coreml
+default = ["cpu-only"]
 
 # GPU acceleration features (pass through to aurora-semantic)
-# Priority: CUDA > DirectML > CoreML > CPU
 cuda = ["aurora-semantic/cuda"]
 tensorrt = ["aurora-semantic/tensorrt"]
 directml = ["aurora-semantic/directml"]
 coreml = ["aurora-semantic/coreml"]
 
-# CPU-only build (no GPU acceleration)
+# CPU-only build (no GPU acceleration) — safest default
 cpu-only = []
 
 # CLI mode - enables console window for CLI commands on Windows

@@ -38,6 +38,7 @@ import { OnboardingModal } from "./components/modals/OnboardingModal";
 import { QuickOpenModal } from "./components/modals/QuickOpenModal";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { initializeSystemInfo } from "./services/context-builder";
+import { useLocalProviderDetection } from "./hooks/useLocalProviderDetection";
 
 // Global handler to suppress Tauri stream cancellation errors
 // These are expected when user clicks stop during AI streaming
@@ -130,6 +131,9 @@ function App() {
     document.addEventListener("contextmenu", handleContextMenu);
     return () => document.removeEventListener("contextmenu", handleContextMenu);
   }, []);
+
+  // Background-probe for local AI servers (Ollama, LM Studio)
+  useLocalProviderDetection();
 
   // Handle global shortcuts - MUST be called before any conditional returns (React hooks rule)
   useGlobalShortcuts(() => setIsQuickOpenOpen(prev => !prev));

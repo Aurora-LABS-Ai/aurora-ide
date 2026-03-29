@@ -26,12 +26,14 @@ import {
 import type {
   AssistantMessage,
   Message,
+  ToolCallRequest,
   ToolDefinition,
 } from "./providers/types";
 
 interface ApiMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
+  reasoning_content?: string;
   tool_calls?: Array<{
     id: string;
     type: string;
@@ -143,8 +145,25 @@ export class AgentService {
           finalThinking = `${finalThinking}${response.reasoning_content}`;
         }
 
-        if (response.tool_calls && response.tool_calls.length > 0) {
-          const toolBatch = await toolRunner.executeToolCalls(response.tool_calls);
+        // Check structured tool_calls first, then fallback to text extraction
+        let effectiveToolCalls = response.tool_calls;
+        if ((!effectiveToolCalls || effectiveToolCalls.length === 0) && responseContent) {
+          const extracted = extractToolCallsFromContent(responseContent);
+          if (extracted) {
+            console.log(`[AgentService] Extracted ${extracted.length} tool call(s) from content text`);
+            effectiveToolCalls = extracted;
+            // Patch the response so the message history contains proper tool_calls
+            response.tool_calls = extracted;
+            // Strip the raw tool call text from content so it doesn't echo to the user
+            response.content = responseContent
+              .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
+              .replace(/```(?:json)?\s*\n?\s*\{[\s\S]*?"name"[\s\S]*?\}\s*\n?\s*```/gi, '')
+              .trim();
+          }
+        }
+
+        if (effectiveToolCalls && effectiveToolCalls.length > 0) {
+          const toolBatch = await toolRunner.executeToolCalls(effectiveToolCalls);
           messages.push(...toolBatch.messages);
           executedToolCalls.push(...toolBatch.toolCalls);
           callbacks.onIterationComplete?.(iteration);
@@ -334,16 +353,18 @@ export class AgentService {
       } as Message;
     }
 
-    if (message.role === "assistant" && message.tool_calls) {
-      return {
-        role: "assistant",
+    if (message.role === "assistant") {
+      const mapped = {
+        role: "assistant" as const,
         content: message.content,
         tool_calls: message.tool_calls,
-      } as Message;
+        reasoning_content: message.reasoning_content,
+      };
+      return mapped as unknown as Message;
     }
 
     return {
-      role: message.role as "system" | "user" | "assistant",
+      role: message.role as "system" | "user",
       content: message.content,
     };
   }
@@ -453,5 +474,60 @@ export const initAgentService = (config?: AgentConfig): AgentService => {
 };
 
 let agentInstance: AgentService | null = null;
+
+/**
+ * Extract tool calls that local models emit as plain text instead of structured
+ * `tool_calls`. Supports `<tool_call>...</tool_call>` and fenced JSON blocks
+ * with a recognisable `"name"` + `"arguments"` shape.
+ */
+function extractToolCallsFromContent(content: string): ToolCallRequest[] | null {
+  const calls: ToolCallRequest[] = [];
+  let idCounter = 0;
+
+  // Pattern 1: <tool_call>{ "name": "...", "arguments": {...} }</tool_call>
+  const tagRe = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = tagRe.exec(content)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1]);
+      if (parsed.name) {
+        calls.push({
+          id: `text_tc_${Date.now()}_${idCounter++}`,
+          type: 'function',
+          function: {
+            name: parsed.name,
+            arguments: typeof parsed.arguments === 'string'
+              ? parsed.arguments
+              : JSON.stringify(parsed.arguments ?? {}),
+          },
+        });
+      }
+    } catch { /* malformed JSON, skip */ }
+  }
+
+  // Pattern 2: ```json { "name": "...", "arguments": {...} } ``` (fenced blocks)
+  if (calls.length === 0) {
+    const fenceRe = /```(?:json)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?\s*```/gi;
+    while ((match = fenceRe.exec(content)) !== null) {
+      try {
+        const parsed = JSON.parse(match[1]);
+        if (parsed.name && parsed.arguments !== undefined) {
+          calls.push({
+            id: `text_tc_${Date.now()}_${idCounter++}`,
+            type: 'function',
+            function: {
+              name: parsed.name,
+              arguments: typeof parsed.arguments === 'string'
+                ? parsed.arguments
+                : JSON.stringify(parsed.arguments ?? {}),
+            },
+          });
+        }
+      } catch { /* skip */ }
+    }
+  }
+
+  return calls.length > 0 ? calls : null;
+}
 
 export default AgentService;

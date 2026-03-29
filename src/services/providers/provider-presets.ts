@@ -356,6 +356,9 @@ export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
 
   // ============================================
   // Ollama (Local OpenAI-compatible server)
+  // Supports thinking via Ollama's `think` parameter for models like
+  // qwen3, qwq, deepseek-r1 etc. Ollama returns thinking content in
+  // the `reasoning_content` field of the OpenAI-compatible response.
   // ============================================
   ollama: {
     id: 'ollama',
@@ -364,7 +367,9 @@ export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
     chatEndpoint: '/chat/completions',
     authType: 'bearer',
     authHeader: 'Authorization',
-    thinkingConfig: undefined,
+    thinkingConfig: {
+      responseField: 'reasoning_content',
+    },
     includeStreamOptions: false,
     defaultContextWindow: 128000,
     defaultMaxOutput: 8192,

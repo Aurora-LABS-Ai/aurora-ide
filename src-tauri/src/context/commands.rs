@@ -230,11 +230,17 @@ pub async fn context_estimate_request_tokens(
                     .unwrap_or(0);
                 total_tokens += tokens;
             }
-            ApiMessage::Assistant { content, tool_calls } => {
+            ApiMessage::Assistant { content, reasoning_content, tool_calls } => {
                 let tokens = TokenService::count_tokens(content, EncodingType::Cl100k)
                     .map(|c| c.tokens as u32)
                     .unwrap_or(0);
                 total_tokens += tokens;
+                
+                if let Some(rc) = reasoning_content {
+                    total_tokens += TokenService::count_tokens(rc, EncodingType::Cl100k)
+                        .map(|c| c.tokens as u32)
+                        .unwrap_or(0);
+                }
                 
                 // Count tool calls if present
                 if let Some(calls) = tool_calls {

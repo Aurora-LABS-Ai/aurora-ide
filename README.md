@@ -130,6 +130,7 @@ See **`CLAUDE.md`** / **`AGENTS.md`** and **`DOCS/`** for architecture, stores, 
 |-----|---------|
 | [DOCS/GETTING-STARTED.md](DOCS/GETTING-STARTED.md) | **Quick start & first launch** |
 | [DOCS/01-ARCHITECTURE.md](DOCS/01-ARCHITECTURE.md) | Architecture |
+| [DOCS/04-PROVIDER-KERNEL.md](DOCS/04-PROVIDER-KERNEL.md) | Provider contract blueprint |
 | [DOCS/03-EXPANSION-GUIDE.md](DOCS/03-EXPANSION-GUIDE.md) | Contributing / extending |
 | [DOCS/theme-dev.md](DOCS/theme-dev.md) | Theme tokens |
 

@@ -1,683 +1,310 @@
-# Architecture Overview
+# Architecture
 
-## Project Overview
+AI-powered agentic code editor built with Tauri (Rust backend + React frontend). Provides a VS Code-like interface with an AI assistant that executes tools to manipulate files, run commands, navigate workspaces, perform semantic code search, integrate MCP servers, and manage Git repositories.
 
-**Aurora** is an AI-powered agentic code editor built with Tauri, providing a VS Code-like interface with an integrated AI assistant that can execute tools to manipulate files, run commands, and navigate workspaces.
+**Version:** 1.5.0
 
-The application combines a modern React frontend with a Rust backend, offering a desktop-native experience with web technologies.
+---
 
-## Tech Stack
+## Table of Contents
 
-### Frontend
-- **React 18.3.1** + **TypeScript** - Component-based UI framework
-- **Vite 7.2.4** - Fast build tool and development server
-- **Monaco Editor** - Code editing component (same as VS Code)
-- **Zustand 5.0.9** - Lightweight state management
-- **Tailwind CSS** - Utility-first CSS framework with VS Code-inspired theming
-- **react-resizable-panels** - Layout management for resizable panels
+- [1. Project Overview](#1-project-overview)
+- [2. Tech Stack](#2-tech-stack)
+- [3. Directory Tree](#3-directory-tree)
+- [4. Core Classes & Modules](#4-core-classes--modules)
+- [5. Dependency Graph](#5-dependency-graph)
+- [6. Data Flow](#6-data-flow)
+- [7. External Integrations](#7-external-integrations)
 
-### Backend (Rust)
-- **Tauri 2.x** - Desktop application framework
-- **rusqlite** - SQLite database for state persistence
-- **Tokio** - Async runtime
-- **Tauri plugins**: fs, shell, dialog, process, os, clipboard-manager, pty
+---
 
-### Key Dependencies
-- **@anthropic-ai/sdk** - Anthropic API integration
-- **@monaco-editor/react** - Monaco editor React wrapper
-- **@tauri-apps/api** - Tauri frontend API
-- **date-fns** - Date/time utilities
-- **framer-motion** - UI animations
-- **lucide-react** - Icon library
-- **react-syntax-highlighter** - Code syntax highlighting
-- **uuid** - Unique identifier generation
+## 1. Project Overview
 
-## Theming Architecture
+Aurora is a desktop IDE that combines traditional code editing with AI assistance. It features a Monaco-based editor, multi-turn AI conversations with tool calling, semantic code search using ONNX embeddings, MCP server integration, Git integration, and a terminal. The architecture uses a Rust backend for heavy operations (file I/O, AI streaming, database) and a React frontend for UI.
 
-### Comprehensive Theme System Overview
-Aurora implements a sophisticated VS Code-style theme system that enforces theme token usage across all components. **All components must use theme tokens - hardcoded colors, styles, or Tailwind classes are strictly prohibited.** The system supports 50+ color tokens across 7 categories with full runtime theme switching, Monaco editor integration, and cross-window synchronization.
+---
 
-### Theme Token Categories (7 Categories, 50+ Tokens)
+## 2. Tech Stack
 
-#### 1. Editor Tokens (`editor.*`)
-Code editing area colors including background, foreground, syntax highlighting, selection, cursor, line numbers, and advanced features like bracket matching and find highlighting.
+| Layer | Technology | Version | Purpose |
+|-------|------------|---------|---------|
+| Language | TypeScript | 5.9.3 | Frontend code |
+| Language | Rust | 1.85+ | Backend code |
+| Framework | React | 18.3.1 | UI framework |
+| Runtime | Tauri | 2.9.x | Desktop app shell |
+| Build Tool | Vite | 7.2.4 | Frontend bundler |
+| Editor | Monaco Editor | 0.55.1 | Code editing |
+| State | Zustand | 5.0.9 | State management |
+| Styling | Tailwind CSS | 3.4.17 | CSS framework |
+| Database | SQLite | rusqlite | State persistence |
+| Terminal | xterm.js | 6.0.0 | Integrated terminal |
+| Icons | Lucide React | 0.562.0 | Icon library |
 
-#### 2. Sidebar Tokens (`sidebar.*`)
-File explorer and panel colors including background, foreground, borders, hover states, selection, and section headers.
+### Provider Presets
 
-#### 3. Chat Tokens (`chat.*`)
-Chat interface colors for user/assistant messages, input fields, thinking states, tool calls, and code blocks.
+| Provider | ID | Auth | Format | Features |
+|----------|-----|------|--------|----------|
+| OpenAI | `openai` | Bearer | OpenAI | Standard |
+| Anthropic | `anthropic` | x-api-key | Anthropic | Thinking mode |
+| **Fireworks** | `fireworks` | Bearer | OpenAI | Account sync, CLI integration, usage tracking |
+| GLM / Z.AI | `glm` | Bearer | OpenAI | Preserved thinking (200k context) |
+| DeepSeek | `deepseek` | Bearer | OpenAI | Reasoner mode (64k context) |
+| MiniMax M2.1 | `minimax` | x-api-key | Anthropic | Native thinking blocks (200k context) |
+| Ollama | `ollama` | None | OpenAI | Local inference |
+| LM Studio | `lmstudio` | None | OpenAI | Local inference |
 
-#### 4. Terminal Tokens (`terminal.*`)
-Integrated terminal colors including ANSI color palette (16 standard + 16 bright colors) and terminal-specific UI elements.
+---
 
-#### 5. Status Bar Tokens (`statusBar.*`)
-Bottom status bar colors for background, foreground, borders, and interactive elements.
-
-#### 6. Title Bar Tokens (`titleBar.*`)
-Window title bar colors including background, foreground, borders, and button hover states.
-
-#### 7. Common Tokens (`common.*`)
-Shared semantic colors for primary, secondary, success, warning, error, info, borders, shadows, overlays, and scrollbars.
-
-### Theme File Structure
-Themes are defined as JSON files with comprehensive validation and partial definition support:
-
-```json
-{
-  "name": "Aurora Dark",
-  "author": "Aurora Team",
-  "version": "1.0.0",
-  "type": "dark",
-  "description": "Default dark theme",
-  "colors": {
-    "editor": {
-      "background": "#0d0d0d",
-      "foreground": "#e4e4e7",
-      "cursor": "#10b981"
-    },
-    "sidebar": {
-      "background": "#111111",
-      "foreground": "#a1a1aa"
-    },
-    "common": {
-      "primary": "#10b981",
-      "error": "#ef4444"
-    }
-  },
-  "tokenColors": [
-    {
-      "scope": "comment",
-      "settings": { "foreground": "#6A9955" }
-    },
-    {
-      "scope": ["keyword", "storage"],
-      "settings": { "foreground": "#569CD6", "fontStyle": "bold" }
-    }
-  ]
-}
-```
-
-### Theme Service (`src/services/theme-service.ts`)
-A comprehensive singleton service handling:
-
-#### Validation Engine
-- **Color validation**: Supports hex (#RGB, #RRGGBB, #RGBA, #RRGGBBAA), rgb(), rgba() formats
-- **Theme file validation**: Required metadata fields, color format validation, semantic versioning
-- **Token color rule validation**: TextMate scope validation and color format checking
-
-#### Base Theme System
-- **Built-in dark/light themes** with complete 50+ token definitions
-- **Partial theme support**: Theme files can define only changed tokens, falling back to base themes
-- **Deep merging**: Recursive merging of partial theme definitions with base themes
-
-#### CSS Variable Injection
-- **CSS variable generation**: Converts tokens to `--aurora-{category}-{token}` format
-- **Runtime injection**: Dynamically updates document root CSS variables
-- **CamelCase to kebab-case conversion**: `primaryHover` → `--aurora-common-primary-hover`
-
-#### Monaco Editor Integration
-- **Theme conversion**: Transforms Aurora themes to Monaco editor theme format
-- **Syntax highlighting**: Applies token color rules for code colorization
-- **Theme registration**: Registers themes with Monaco for immediate application
-
-### Theme Store (`src/store/useThemeStore.ts`)
-Zustand-based state management for theme operations:
-
-#### Theme Management
-- **Theme loading**: Initializes built-in and custom themes from database
-- **Theme switching**: Runtime theme changes with CSS variable injection
-- **Theme import/export**: JSON theme file handling with validation
-- **Theme persistence**: SQLite database storage for custom themes
-
-#### Cross-Window Synchronization
-- **localStorage sync**: Fast theme switching across open windows
-- **Database persistence**: Settings storage for theme preferences
-- **Storage event listeners**: Automatic theme updates when other windows change themes
-
-### Critical Rules for Component Development
-❌ **NEVER use hardcoded colors or styles:**
-```typescript
-// FORBIDDEN - Hardcoded values
-<div style={{ backgroundColor: '#1e1e1e', color: '#ffffff' }} />
-<div className="bg-gray-800 text-white hover:bg-gray-700" />
-const styles = { container: { background: '#252526' } };
-```
-
-✅ **ALWAYS use theme tokens via CSS variables:**
-```typescript
-// CORRECT - CSS variable usage (recommended)
-<div className="bg-[var(--aurora-editor-background)] text-[var(--aurora-editor-foreground)]" />
-
-// CORRECT - JavaScript access
-import { useTheme } from '../hooks/useTheme';
-const theme = useTheme();
-<div style={{
-  backgroundColor: theme.colors.editor.background,
-  color: theme.colors.editor.foreground
-}} />
-```
-
-### Theme Hook (`src/hooks/useTheme.ts`)
-```typescript
-export function useTheme() {
-  const activeTheme = useThemeStore(state => state.getActiveTheme());
-  return {
-    colors: activeTheme.colors,
-    tokenColors: activeTheme.tokenColors,
-    // Helper methods for common patterns
-    getEditorTokens: () => activeTheme.colors.editor,
-    getCommonTokens: () => activeTheme.colors.common,
-  };
-}
-```
-
-### Theme Persistence Architecture
-- **SQLite database**: Custom themes stored with JSON serialization
-- **Built-in themes**: Hardcoded in theme service, always available
-- **Theme versioning**: Semantic versioning support for compatibility
-- **Duplicate handling**: Name/author-based theme updates instead of creation
-
-### Theme Development Workflow
-1. **Define theme JSON** with required metadata and partial color definitions
-2. **Validate theme** using theme service validation (automatic in import)
-3. **Test theme** via Settings → Appearance → Import Theme
-4. **Verify components** render correctly across all UI elements
-5. **Check accessibility** with multiple contrast ratios
-6. **Document token usage** for any new color categories
-
-### Runtime Theme Application
-When a theme is applied:
-1. **CSS variables injected** into document root (`:root`)
-2. **Monaco theme registered** and applied to all editors
-3. **Data attributes set** for CSS selector targeting (`data-theme`, `data-theme-id`)
-4. **Tailwind compatibility** via `.dark` class toggle
-5. **Cross-window sync** via localStorage events
-
-### Theme Testing Requirements
-- **Multi-theme testing**: Validate with dark, light, and custom themes
-- **Component isolation**: Test components independently with theme switching
-- **Accessibility validation**: Ensure sufficient contrast ratios
-- **Cross-window sync**: Verify theme changes propagate correctly
-- **Performance testing**: Theme switching should be instantaneous
-
-## Directory Structure
+## 3. Directory Tree
 
 ```
-aurora-agent-frontend/
-├── .aurora/              # Application data directory
-├── DOCS/                 # Project documentation
-├── dist/                 # Build output
-├── example-themes/       # Theme examples
-├── models-provider-docs/ # LLM provider documentation
-├── node_modules/         # Dependencies
-├── public/               # Static assets
-├── src/                  # Frontend source code
-│   ├── assets/           # Frontend assets
-│   ├── components/       # React components
-│   ├── hooks/            # Custom React hooks
-│   ├── lib/              # Utility libraries
-│   ├── services/         # Business logic services
-│   ├── store/            # Zustand state stores
-│   ├── themes/           # Theme definitions
-│   ├── tools/            # AI tool definitions and executors
-│   ├── types/            # TypeScript type definitions
-│   ├── App.tsx           # Main application component
-│   └── main.tsx          # Application entry point
-├── src-tauri/            # Tauri/Rust backend
-│   ├── src/
-│   │   ├── commands/     # Tauri command handlers
-│   │   ├── db/           # Database layer
-│   │   └── lib.rs        # Tauri application setup
-│   ├── tauri.conf.json   # Tauri configuration
-│   └── Cargo.toml        # Rust dependencies
-└── package.json          # Node.js dependencies and scripts
+src/                          # Frontend React code
+├── components/               # React components
+│   ├── agent/               # AI agent UI components
+│   ├── chat/                # Chat panel components
+│   ├── editor/              # Monaco editor wrapper
+│   ├── explorer/            # File explorer
+│   ├── git/                 # Git integration UI
+│   ├── layout/              # Layout components
+│   ├── modals/              # Modal dialogs
+│   └── ui/                  # Shared UI primitives
+├── hooks/                   # Custom React hooks
+├── services/                # Business logic services
+│   ├── providers/           # LLM provider implementations
+│   ├── agent-service.ts     # AI agent orchestration
+│   └── thread-service.ts    # Message persistence
+├── store/                   # Zustand state stores
+├── tools/                   # AI tool system
+│   ├── definitions/         # Tool schemas
+│   └── executors/           # Tool implementations
+├── types/                   # TypeScript type definitions
+└── themes/                  # Built-in theme files
+
+src-tauri/src/               # Rust backend code
+├── commands/                # Tauri command handlers
+├── context/                 # Turn-based context engine
+├── db/                      # Database layer
+│   ├── migrations/          # Schema migrations
+│   └── repositories/        # Data access
+├── mcp/                     # MCP client implementation
+├── services/                # Rust services
+├── checkpoints/             # File state snapshots
+└── undo_redo/               # Per-file undo/redo
 ```
 
-## Core Components
+---
 
-### Frontend Architecture
+## 4. Core Classes & Modules
 
-#### State Management (Zustand Stores)
-The application uses 18 specialized Zustand stores located in `src/store/`:
+### AgentService (`src/services/agent-service.ts`)
 
-1. **useSettingsStore** (`src/store/useSettingsStore.ts`)
-   - Global app settings and LLM provider configurations
-   - Persists to localStorage with versioning
-   - Manages provider selection, tool approval settings, editor preferences
-   - UI preferences (font scale, font family)
-   - Autosave settings
+**Exports:** Named: `AgentService`, `getAgentService`, `initAgentService`
 
-2. **useChatStore** (`src/store/useChatStore.ts`)
-   - Chat messages and loading states
-   - Tool approval workflow state management
-   - Message CRUD operations
+**Depends on:** `IProvider`, `AgentToolRunner`, `toolRegistry`, `getMcpToolDefinitions`
 
-3. **useThreadStore** (`src/store/useThreadStore.ts`)
-   - Conversation thread management and persistence
-   - Rust-backed per-message persistence via thread-service
-   - Thread summaries for history
-   - Auto-saves on message changes
+**Constructor:** `new AgentService(config?: AgentConfig)`
 
-4. **useEditorStore** (`src/store/useEditorStore.ts`)
-   - Code editor tabs and file content management
-   - Cursor position, scroll offset, and folding state tracking
-   - Workspace restoration from database
+**Key Methods:**
 
-5. **useWorkspaceStore** (`src/store/useWorkspaceStore.ts`)
-   - File explorer tree structure and navigation
-   - Workspace root path management
-   - Folder expansion state
+| Method | Signature | Purpose |
+|--------|-----------|---------|
+| `chat` | `(message: string, callbacks: AgentCallbacks, tools?: ToolDefinition[]): Promise<AgentResponse>` | Main chat method with tool loop |
+| `getContextState` | `(): Promise<ContextState \| null>` | Get current context usage |
+| `clearContext` | `(): Promise<void>` | Clear thread context |
+| `setProvider` | `(config: ProviderConfig): void` | Update LLM provider |
+| `updateConfig` | `(config: Partial<AgentConfig>): void` | Update service configuration |
+| `isActive` | `(): boolean` | Check if agent is running |
+| `setThreadId` | `(threadId: string): void` | Set current thread ID |
 
-6. **useUiStore** (`src/store/useUiStore.ts`)
-   - UI state management (themes, modals, panel visibility)
-   - Detached chat window state synchronization
+### ProviderRegistry (`src/services/providers/index.ts`)
 
-7. **useThemeStore** (`src/store/useThemeStore.ts`)
-   - Theme loading and management
-   - Built-in and custom theme support
-   - Theme import/export with validation
-   - Cross-window theme synchronization
+**Exports:** Named: `providerRegistry`, `createProvider`, `initProvider`
 
-8. **useGitStore** (`src/store/useGitStore.ts`)
-   - Git repository state management
-   - Branch operations (checkout, create, pull, push)
-   - Commit and staging operations
-   - Git status tracking
+**Key Methods:**
 
-9. **useMcpStore** (`src/store/useMcpStore.ts`)
-   - MCP (Model Context Protocol) server state
-   - Server configuration and connection management
-   - Tool discovery and execution
-   - Server lifecycle management
+| Method | Signature | Purpose |
+|--------|-----------|---------|
+| `register` | `(config: ProviderConfig): IProvider` | Register new provider |
+| `get` | `(id: string): IProvider \| undefined` | Get provider by ID |
+| `getCurrent` | `(): IProvider \| null` | Get active provider |
+| `getIds` | `(): string[]` | Get all registered provider IDs |
+| `has` | `(id: string): boolean` | Check if provider exists |
+| `remove` | `(id: string): boolean` | Remove a provider |
+| `setCurrent` | `(id: string): boolean` | Set active provider |
+| `clear` | `(): void` | Clear all providers |
 
-10. **useCheckpointStore** (`src/store/useCheckpointStore.ts`)
-    - Checkpoint creation and restoration
-    - Message-to-checkpoint mapping
-    - Workspace checkpoint management
+**Additional Exports:** `createProvider()`, `getProvider()`, `initProvider()`, `isProviderInitialized()`, `updateProvider()`, `DEFAULT_CONTEXT_WINDOWS`, `getDefaultContextWindow()`, `getPresetContextWindow()`, `getPresetMaxOutput()`
 
-11. **useSemanticStore** (`src/store/useSemanticStore.ts`)
-    - Semantic search state
-    - Context management for AI
-    - Vector search operations
+### useEditorStore (`src/store/useEditorStore.ts`)
 
-12. **useContextStore** (`src/store/useContextStore.ts`)
-    - Context building and management
-    - System info caching
-    - Token usage tracking
+**Exports:** Named: `useEditorStore`
 
-13. **useTerminalStore** (`src/store/useTerminalStore.ts`)
-    - Terminal state management
-    - Process tracking
-    - Command history
+**State:**
 
-14. **useTaskStore** (`src/store/useTaskStore.ts`)
-    - Task and todo management
-    - Task status tracking
+| Property | Type | Purpose |
+|----------|------|---------|
+| `tabs` | `Tab[]` | Open editor tabs |
+| `activeTabId` | `string \| null` | Currently active tab |
+| `fontSize` | `number` | Editor font size |
 
-15. **useAuditStore** (`src/store/useAuditStore.ts`)
-    - Audit logging
-    - Operation tracking
+**Tab Properties:** `id`, `path`, `filename`, `content`, `isDirty`, `isLargeFile` (>100KB), `isMediumFile` (>50KB), `isLoading`, `isDeleted`, `language`, `type` ('file' | 'browser')
 
-16. **usePendingChangesStore** (`src/store/usePendingChangesStore.ts`)
-    - Pending file changes tracking
-    - Change approval workflow
+**Actions:** `openFile`, `closeTab`, `setActiveTab`, `updateTabContent`, `saveTabToDisk`, `restoreWorkspace`, `saveWorkspace`, `openBrowserTab`, `updateBrowserTab`, `reloadTabContent`, `markTabAsDeleted`, `setFontSize`, `setPanelSizes`, `setWorkspacePath`
 
-17. **useUndoRedoStore** (`src/store/useUndoRedoStore.ts`)
-    - Undo/redo history
-    - State snapshot management
+### Context Engine (`src-tauri/src/context/`)
 
-18. **useDragStore** (`src/store/useDragStore.ts`)
-    - Drag and drop state
-    - File drag operations
+**Module:** Rust-based turn-based conversation management
 
-#### Component Architecture
-Located in `src/components/`:
+**Types:** `Turn`, `ToolCallRound`, `ContextState`
 
-**Layout Components** (`src/components/layout/`):
-- `MainLayout.tsx` - Three-panel layout (Explorer | Editor | Chat)
-- `TitleBar.tsx` - Custom title bar with window controls
-- `ResizablePanels.tsx` - Panel resizing logic
+**Tauri Commands:** `context_add_user_message`, `context_add_assistant_response`, `context_build_messages`, `context_build_request_messages`, `context_finalize_turn`, `context_add_tool_call`, `context_add_tool_result`, `context_get_state`, `context_needs_summarization`, `context_clear_thread`, `context_estimate_request_tokens`, `context_get_turns`, `context_init_from_thread`, `context_update_settings`
 
-**Chat Components** (`src/components/chat/`):
-- `ChatPanel.tsx` - Main chat interface
-- `MessageList.tsx` - Message display with timeline events
-- `ChatInput.tsx` - Input field with tool suggestions
-- `DetachedChatWindow.tsx` - Detachable chat window
-- `ThreadSidebar.tsx` - Thread history sidebar
-- `ThinkingIndicator.tsx` - AI thinking animation
-- `ToolCallBlock.tsx` - Tool execution display
+### AgentToolRunner (`src/services/agent-tool-runner.ts`)
 
-**Editor Components** (`src/components/editor/`):
-- `EditorPanel.tsx` - Monaco editor with tab management
-- `TabBar.tsx` - File tabs with close buttons
-- `Editor.tsx` - Monaco editor wrapper
+**Exports:** Named: `AgentToolRunner`
 
-**Explorer Components** (`src/components/explorer/`):
-- `FileExplorer.tsx` - File tree with expand/collapse
-- `FileTreeItem.tsx` - Individual file/folder item
-- `FileContextMenu.tsx` - Right-click context menu
+**Constructor:** `new AgentToolRunner(options: AgentToolRunnerOptions)`
 
-**Git Components** (`src/components/git/`):
-- `GitPanel.tsx` - Git operations panel
-- `BranchSelector.tsx` - Branch selection dropdown
-- `CommitPanel.tsx` - Commit interface
-- `DiffViewer.tsx` - File diff display
+**Key Methods:**
 
-**Agent Components** (`src/components/agent/`):
-- `AgentStatus.tsx` - Agent activity indicator
-- `ToolApprovalModal.tsx` - Tool approval dialog
+| Method | Signature | Purpose |
+|--------|-----------|---------|
+| `executeToolCalls` | `(toolCalls: ToolCallRequest[]): Promise<ToolExecutionBatch>` | Execute multiple tool calls |
 
-**Terminal Components** (`src/components/terminal/`):
-- `TerminalPanel.tsx` - Integrated terminal with xterm.js
+### ToolRegistry (`src/tools/registry.ts`)
 
-**UI Components** (`src/components/ui/`):
-- `Button.tsx` - Styled button component
-- `Modal.tsx` - Modal dialog wrapper
-- `Input.tsx` - Text input component
-- `Select.tsx` - Dropdown select component
-- `DragPreview.tsx` - Drag preview overlay
+**Exports:** Named: `toolRegistry` (singleton), `ToolRegistry` (class)
 
-**Modal Components** (`src/components/modals/`):
-- `SettingsPanel.tsx` - Settings modal
-- `OnboardingModal.tsx` - First-time setup
-- `QuickOpenModal.tsx` - Command palette
-- `ThemeImportModal.tsx` - Theme import dialog
+**Key Methods:**
 
-**Search Components** (`src/components/search/`):
-- `SearchPanel.tsx` - File search interface
-- `SearchResults.tsx` - Search results display
+| Method | Signature | Purpose |
+|--------|-----------|---------|
+| `registerDefinition` | `(definition: ToolDefinition): void` | Register tool schema |
+| `registerExecutor` | `(name: string, executor: ToolExecutor): void` | Register implementation |
+| `executeToolCall` | `(toolCall: ToolCallRequest, preParsedArgs?): Promise<ToolCallResult>` | Execute a tool |
+| `getToolDefinitions` | `(): ToolDefinition[]` | Get all tool schemas |
+| `requiresApproval` | `(name: string): boolean` | Check if tool needs approval |
+| `getRiskLevel` | `(name: string): 'low' \| 'medium' \| 'high'` | Get tool risk level |
 
-**Theme Components** (`src/components/theme/`):
-- `ThemeSelector.tsx` - Theme selection dropdown
+### databaseService (`src/services/database.ts`)
 
-**Icons** (`src/components/icons/`):
-- Icon library and icon components
+**Exports:** Named: `databaseService` (singleton), `DatabaseService` (class)
 
-### Backend Architecture (Rust/Tauri)
+**Purpose:** SQLite persistence layer via Tauri commands
 
-#### Database Persistence System
-Located in `src-tauri/src/db/`:
+**Key Methods:** Provider CRUD, tool settings, workspace state, editor state, explorer state
+
+### FireworksService (`src/services/fireworks.ts`)
+
+**Exports:** Named functions: `detectFireworksCli`, `exportFireworksUsage`, `fetchFireworksOverview`
+
+**Types:** `FireworksCliStatus`, `FireworksOverview`, `FireworksUsageSummary`
+
+**Purpose:** Fireworks API integration and CLI usage export
+
+### Zustand State Stores
+
+| Store | File | Purpose |
+|-------|------|---------|
+| `useSettingsStore` | `src/store/useSettingsStore.ts` | LLM providers, UI settings |
+| `useChatStore` | `src/store/useChatStore.ts` | Chat messages, loading state |
+| `useThreadStore` | `src/store/useThreadStore.ts` | Thread persistence |
+| `useEditorStore` | `src/store/useEditorStore.ts` | Tabs, workspace |
+| `useWorkspaceStore` | `src/store/useWorkspaceStore.ts` | File explorer |
+| `useMcpStore` | `src/store/useMcpStore.ts` | MCP server connections |
+| `useCheckpointStore` | `src/store/useCheckpointStore.ts` | File snapshots |
+| `useContextStore` | `src/store/useContextStore.ts` | Token usage tracking |
+| `useGitStore` | `src/store/useGitStore.ts` | Git integration |
+| `useTaskStore` | `src/store/useTaskStore.ts` | Todo/task management |
+| `useSemanticStore` | `src/store/useSemanticStore.ts` | Semantic search |
+| `useAuditStore` | `src/store/useAuditStore.ts` | Audit timeline |
+| `usePendingChangesStore` | `src/store/usePendingChangesStore.ts` | Pending file changes |
+| `useUndoRedoStore` | `src/store/useUndoRedoStore.ts` | Per-file undo/redo |
+| `useTerminalStore` | `src/store/useTerminalStore.ts` | Terminal state |
+| `useUiStore` | `src/store/useUiStore.ts` | UI state |
+| `useDragStore` | `src/store/useDragStore.ts` | Drag/drop operations |
+
+### FireworksSettingsTab (`src/components/modals/FireworksSettingsTab.tsx`)
+
+**Exports:** Named: `FireworksSettingsTab`
+
+**Purpose:** Fireworks provider configuration panel with account sync and usage tracking
+
+**Features:** API key management, account ID config, account metadata sync, CLI (`firectl`) detection, 30-day usage metrics, model catalog management
+
+**Key State:** `overview` (account metadata), `usageSummary` (30-day usage), `cliStatus` (CLI availability)
+
+---
+
+## 5. Dependency Graph
 
 ```
-db/
-├── mod.rs              # Database manager and repository access
-├── connection.rs       # SQLite connection with WAL mode and performance tuning
-├── error.rs            # DbError enum for error handling
-├── schema.rs           # Table definitions and schema versioning
-├── migrations.rs       # Version-based migration system
-├── models.rs           # Rust structs for data models
-└── repositories/       # Repository pattern implementation
-    ├── workspace.rs    # WorkspaceRepository (CRUD for workspace state)
-    ├── editor.rs       # EditorRepository (CRUD for editor state per file)
-    └── explorer.rs     # ExplorerRepository (CRUD for file explorer state)
+┌─────────────────────────────────────────────────────────────────┐
+│                    Frontend (React/TS)                          │
+│  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐             │
+│  │ Agent Mode  │  │ Editor Panel │  │ Chat Panel   │             │
+│  │ (Full-chat) │  │ (Monaco)     │  │ (Timeline)   │             │
+│  └─────────────┘  └──────────────┘  └──────────────┘             │
+│         │                 │                 │                   │
+│         └─────────────────┴─────────────────┘                   │
+│                           │                                     │
+│                  ┌────────▼────────┐                           │
+│                  │  State Stores   │                           │
+│                  │   (Zustand)     │                           │
+│                  └────────┬────────┘                           │
+└───────────────────────────┼─────────────────────────────────────┘
+                            │ Tauri IPC
+                            │
+┌───────────────────────────▼─────────────────────────────────────┐
+│                  Rust Backend (Tauri)                           │
+│  ┌──────────────┐  ┌─────────────┐  ┌──────────────┐           │
+│  │Context Engine│  │   MCP       │  │ Checkpoint   │           │
+│  │(Turn-based)  │  │  Manager    │  │ Service      │           │
+│  └──────────────┘  └─────────────┘  └──────────────┘           │
+│  ┌──────────────┐  ┌─────────────┐  ┌──────────────┐           │
+│  │Undo/Redo     │  │  Services   │  │ Database     │           │
+│  │(Per-file)    │  │  (Thread,   │  │ (SQLite)     │           │
+│  │              │  │   Token)    │  │              │           │
+│  └──────────────┘  └─────────────┘  └──────────────┘           │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Database Tables:**
-- `workspace_state` - Open tabs, panel sizes per workspace
-- `editor_state` - Cursor position, scroll offset, folded regions per file
-- `explorer_state` - Expanded folders, selected file per workspace
-- `threads` - Chat threads with messages (future use)
-- `settings` - Key-value settings storage
-- `schema_version` - Database version tracking
+---
 
-**Database Location:**
-- Windows: `%APPDATA%\com.aurora.agent\aurora.db`
-- macOS: `~/Library/Application Support/com.aurora.agent/aurora.db`
-- Linux: `~/.config/com.aurora.agent/aurora.db`
+## 6. Data Flow
 
-#### Tauri Commands
-Located in `src-tauri/src/commands/`:
+### AI Chat Request Flow
 
-**File System Commands** (`commands/mod.rs`):
-- `read_directory` - List directory contents (filters node_modules, target, dist)
-- `read_file_content` - Read file to string
-- `write_file_content` - Write string to file (creates parent directories)
-- `execute_command` - Execute shell command
-- `create_file` / `create_folder` / `delete_path` / `rename_path`
+1. **User sends message** → `AgentService.chat()`
+2. **Add user message** → `invoke("context_add_user_message")`
+3. **Build context** → `invoke("context_build_messages")` returns message history
+4. **Stream from LLM** → `provider.streamChat()` with callbacks
+5. **Record assistant response** → `invoke("context_add_assistant_response")`
+6. **Execute tools** → `AgentToolRunner.executeToolCalls()`
+7. **Finalize turn** → `invoke("context_finalize_turn")`
 
-**State Persistence Commands** (`commands/state.rs`):
-- `save_workspace_state` / `get_workspace_state`
-- `save_editor_state` / `get_editor_state`
-- `save_explorer_state` / `get_explorer_state`
+### File Save Flow
 
-### Tool System Architecture
+1. **User presses Ctrl+S** → `useEditorStore.saveTabToDisk()`
+2. **Write to disk** → `writeFileContent()` Tauri command
+3. **Mark clean** → Update `isDirty: false` in store
+4. **Record checkpoint** → `invoke("checkpoint_create")` (async)
 
-Located in `src/tools/`:
+---
 
-#### Tool Definitions (`definitions/`)
-- `file-tools.ts` - File operations (read, write, create, delete)
-- `shell-tools.ts` - Shell command execution
-- `workspace-tools.ts` - Workspace navigation and search
-- `editor-tools.ts` - Editor operations (open files, tabs)
-- `mcp-tools.ts` - MCP tool definitions
-- `git-tools.ts` - Git operations
-- `semantic-tools.ts` - Semantic search operations
-- `agent-tools.ts` - Agent-specific tools
-
-#### Tool Executors (`executors/`)
-- Each tool has a risk level: low (auto-approve), medium/high (requires approval)
-- Tools are executed via Tauri commands
-- MCP tool execution support
-
-#### Tool Registry (`registry.ts`)
-- Central tool registry and management
-- Tool discovery and validation
-- MCP server tool registration
-
-#### Tool Utilities
-- `operation-log.ts` - Tool execution logging
-- `types.ts` - Tool type definitions
-- `utils/` - Tool utility functions
-
-### MCP (Model Context Protocol) System
-
-Located in `src/services/mcp-tools.ts` and `src/store/useMcpStore.ts`:
-
-#### MCP Features
-- **Server Management**: Add, remove, connect, disconnect MCP servers
-- **Tool Discovery**: Automatic tool discovery from connected servers
-- **Tool Execution**: Call MCP tools through unified interface
-- **Resource Access**: Access MCP resources (files, databases)
-- **Configuration**: JSON-based server configuration
-
-#### MCP Store Operations
-- `loadServers` - Load servers from configuration
-- `addServer` - Add new MCP server configuration
-- `connectServer` - Connect to MCP server
-- `callTool` - Execute MCP tool
-- `getAllTools` - Get all available tools from all servers
-
-### Git Integration System
-
-Located in `src/services/git.ts` and `src/store/useGitStore.ts`:
-
-#### Git Features
-- **Repository Detection**: Auto-detect Git repositories
-- **Branch Management**: List, create, checkout, switch branches
-- **Commit Operations**: Stage files, create commits, view diff
-- **Remote Operations**: Pull, push to remotes
-- **Status Tracking**: Track modified, staged, untracked files
-- **Commit History**: View recent commits
-
-#### Git Store Operations
-- `initialize` - Initialize Git tracking for workspace
-- `loadStatus` - Load current Git status
-- `loadBranches` - Load all branches
-- `loadCommits` - Load commit history
-- `stageFile/unstageFile` - Stage/unstage files
-- `commit` - Create new commit
-- `checkout` - Switch branches
-- `pull/push` - Sync with remote
-
-### Checkpoint/Restore System
-
-Located in `src/services/checkpoint.ts` and `src/store/useCheckpointStore.ts`:
-
-#### Checkpoint Features
-- **Checkpoint Creation**: Automatic checkpoints on user messages
-- **Restore Operations**: Restore to any previous checkpoint
-- **Workspace Checkpoints**: Per-workspace checkpoint management
-- **Thread Association**: Checkpoints linked to specific threads
-
-#### Checkpoint Store Operations
-- `createCheckpoint` - Create checkpoint for message
-- `restoreToCheckpoint` - Restore workspace state
-- `loadCheckpointsForThread` - Load checkpoints for thread
-- `setEnabled` - Enable/disable checkpoints for workspace
-
-### Semantic Search System
-
-Located in `src/services/semantic.ts` and `src/store/useSemanticStore.ts`:
-
-#### Semantic Features
-- **Vector Search**: Semantic code search using embeddings
-- **Context Building**: Build context for AI from workspace
-- **Code Understanding**: Understand code structure and relationships
-- **Smart Suggestions**: Provide relevant code suggestions
-
-### Context Building System
-
-Located in `src/services/context-builder.ts` and `src/store/useContextStore.ts`:
-
-#### Context Features
-- **System Info**: OS, architecture, hostname detection
-- **Token Counting**: Accurate token counting for context
-- **Context Optimization**: Optimize context for LLM
-- **Usage Tracking**: Track context usage across requests
-
-### Thread Persistence System
-
-Located in `src/services/thread-service.ts`:
-
-#### Thread Features
-- **Rust-Backed Persistence**: Per-message Rust storage
-- **Thread Summaries**: Automatic summary generation
-- **Metadata Tracking**: Track tokens, context usage
-- **Efficient Storage**: Binary format for efficiency
-
-### Token Counting System
-
-Located in `src/services/token-service.ts`:
-
-#### Token Features
-- **Rust-Backed tiktoken**: Fast token counting
-- **Multi-Model Support**: Support for various tokenizers
-- **Accurate Counting**: Precise token counting for billing
-
-### Undo/Redo System
-
-Located in `src/services/undo-redo.ts` and `src/store/useUndoRedoStore.ts`:
-
-#### Undo/Redo Features
-- **State Snapshots**: Capture application state
-- **Undo/Redo Stack**: Manage undo/redo history
-- **Keyboard Shortcuts**: Ctrl+Z/Ctrl+Shift+Z support
-
-### Service Layer Architecture
-
-Located in `src/services/`:
-
-**Core Services**:
-- `agent-service.ts` - AI agent orchestration and conversation management
-- `llm-provider.ts` - LLM provider abstraction and API calls
-- `database.ts` - Database service for state persistence
-- `theme-service.ts` - Theme validation and management
-
-**Feature Services**:
-- `git.ts` - Git operations service
-- `checkpoint.ts` - Checkpoint/restore operations
-- `mcp-tools.ts` - MCP server and tool management
-- `semantic.ts` - Semantic search operations
-- `context-builder.ts` - Context building for AI
-- `thread-service.ts` - Thread persistence (Rust-backed)
-- `token-service.ts` - Token counting (Rust-backed tiktoken)
-- `undo-redo.ts` - Undo/redo operations
-- `multi-file-service.ts` - Multi-file reading operations
-- `syntax-validator.ts` - Syntax validation
-
-**Provider Services** (`providers/`):
-- Enterprise provider implementations
-- Custom provider support
-
-### Custom Hooks
-
-Located in `src/hooks/`:
-- `useWorkspaceBootstrap.ts` - Workspace initialization
-- `useAutoSave.ts` - Auto-save functionality
-- `useWindowClose.ts` - Window close handling
-- `useTauriDragDrop.ts` - External file drag-drop
-- `useInternalDrag.ts` - Internal drag-drop
-- `useCliOpen.ts` - CLI open command handling
-- `useGlobalShortcuts.ts` - Global keyboard shortcuts
-- `useUndoRedoShortcuts.ts` - Undo/redo shortcuts
-- `useDetachedChatWindow.ts` - Detached chat window management
-- `useRustChatSync.ts` - Rust chat state synchronization
-- `useWindowStateSync.ts` - Window state sync
-- `useThemeImportDrag.ts` - Theme file drag import
-- `useExplorerKeyboard.ts` - Explorer keyboard navigation
-
-## Data Flow
-
-```
-User Action → Component Event Handler → Zustand Store Action → Tauri Command → Rust Backend → Result → Store Update → Component Re-render
-```
-
-### Application Flow Examples
-
-1. **File Opening:**
-   ```
-   FileExplorer Click → useWorkspaceStore.openFile → Tauri read_file_content → File Content → useEditorStore.addTab → EditorPanel Update
-   ```
-
-2. **AI Tool Execution:**
-   ```
-   Chat Input → AgentService.processMessage → LLM API Call → Tool Calls → Tool Approval Modal → Tauri Command → Tool Result → Chat Update
-   ```
-
-3. **Settings Change:**
-   ```
-   Settings Modal → useSettingsStore.updateProvider → DatabaseService.save → SQLite Update → UI Re-render
-   ```
-
-## External Dependencies and Integrations
+## 7. External Integrations
 
 ### LLM Providers
-- **GLM (Z.AI)** - Primary provider with thinking mode support
-- **DeepSeek** - Cost-effective alternative with reasoning content
-- **OpenAI** - Standard OpenAI API compatibility
-- **Anthropic** - Claude API integration
-- **Custom Providers** - Extensible provider system
 
-### Third-Party Services
-- **SQLite** - Local state persistence
-- **Monaco Editor** - Code editing engine
-- **Tauri Plugins** - Desktop integration (file system, shell, dialogs)
+| Provider | Auth | Endpoint | Notes |
+|----------|------|----------|-------|
+| OpenAI | `Authorization: Bearer {key}` | `https://api.openai.com/v1/chat/completions` | Standard OpenAI API |
+| Anthropic | `x-api-key: {key}` | `https://api.anthropic.com/v1/messages` | Thinking mode via `thinking` blocks |
+| **Fireworks** | `Authorization: Bearer {key}` | `https://api.fireworks.ai/inference/v1/chat/completions` | Account sync, CLI (`firectl`) usage export, model catalog |
+| GLM / Z.AI | `Authorization: Bearer {key}` | `https://api.z.ai/api/coding/paas/v4/chat/completions` | Preserved thinking with `clear_thinking: false` |
+| DeepSeek | `Authorization: Bearer {key}` | `https://api.deepseek.com/v1/chat/completions` | Reasoner mode, 64k context |
+| MiniMax | `x-api-key: {key}` | `https://api.minimax.io/anthropic/v1/messages` | Native thinking blocks, Anthropic-compatible |
+| Ollama | None | `http://localhost:11434/v1/chat/completions` | Local inference |
+| LM Studio | None | `http://localhost:1234/v1/chat/completions` | Local inference |
 
-## Entry Points
-
-### Frontend
-- **Main Application**: `src/main.tsx` → `src/App.tsx` → `MainLayout`
-- **Detached Chat Window**: `/chat-detached` route → `DetachedChatWindow`
-
-### Backend
-- **Tauri Application**: `src-tauri/src/lib.rs` → Tauri app setup with plugins
-- **Database Initialization**: SQLite database setup and migration on app start
-
-## Unique Features
-
-1. **Detachable Chat Window** - Chat can open in separate Tauri window with cross-window state sync
-2. **Timeline Event System** - Sequential tracking of AI response components for granular display
-3. **Multi-Provider LLM Support** - Preset + custom providers with explicit provider type handling
-4. **Thinking Mode** - Provider-specific thinking content handling
-5. **VS Code-Inspired Design** - Color hierarchy and familiar interface patterns
-6. **Tool Approval System** - Granular control over AI tool execution with per-tool settings
-7. **MCP (Model Context Protocol)** - Extensible tool system via MCP servers
-8. **Git Integration** - Full Git operations within the editor
-9. **Checkpoint/Restore** - Workspace state snapshots and restoration
-10. **Semantic Search** - AI-powered code search using embeddings
-11. **Rust-Backed Services** - Thread persistence, token counting, and more via Rust
-12. **Undo/Redo System** - Full undo/redo support with keyboard shortcuts
-13. **Auto-Save** - Configurable auto-save with multiple triggers
-14. **Context Building** - Smart context optimization for AI
-15. **Multi-File Operations** - Batch file reading and analysis
+### MCP Servers

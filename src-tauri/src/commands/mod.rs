@@ -26,13 +26,15 @@ pub mod state;
 pub mod settings;
 pub mod threads;
 pub mod tokens;
-pub mod llm;
+pub mod local_providers;
+pub mod provider_catalog;
 pub mod chat;
 pub mod themes;
 pub mod semantic;
 pub mod git;
 pub mod browser;
 pub mod openai_native;
+pub mod provider_kernel;
 pub mod checkpoints;
 pub mod undo_redo;
 

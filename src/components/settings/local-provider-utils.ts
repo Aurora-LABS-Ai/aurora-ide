@@ -60,6 +60,9 @@ export function setCachedDetection(
 // ---------------------------------------------------------------------------
 
 export function isThinkingModel(model: LocalModel): boolean {
+  if (typeof model.supportsThinking === "boolean") {
+    return model.supportsThinking;
+  }
   const lower = model.id.toLowerCase();
   return THINKING_PATTERNS.some((p) => lower.includes(p));
 }

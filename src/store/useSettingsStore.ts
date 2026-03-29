@@ -7,7 +7,8 @@ import {
 } from "../lib/provider-display";
 import { resolveThinkingModelPair } from "../lib/thinking-models";
 import { databaseService } from "../services/database";
-import type { LLMProviderConfig } from "../services/llm-types";
+import { providerCatalogService, type ProviderCatalogPreset } from "../services/provider-catalog";
+import type { ProviderConfig } from "../services/providers/types";
 import type { AppSettings as DbAppSettings, DbLLMProvider } from "../types/database";
 
 const UI_FONT_FAMILIES: Record<string, string> = {
@@ -63,7 +64,7 @@ interface SettingsState {
     model: string;
     label: string;
   }>;
-  getLLMConfig: () => LLMProviderConfig | null;
+  getLLMConfig: () => ProviderConfig | null;
   getSelectedProvider: () => LLMProvider | undefined;
   getToolApproval: (toolName: string) => 'auto' | 'always_ask' | 'deny';
 
@@ -167,13 +168,31 @@ export interface LLMProvider {
 // ============================================
 // DEFAULT VALUES
 // ============================================
-const createDefaultProviders = (): LLMProvider[] => {
-  return PRESET_PROVIDERS.map((preset) => ({
-    ...preset,
-    apiKey: "",
-    enabled: true,
-    isCustom: false,
-  }));
+const DEFAULT_SELECTED_MODEL = "fireworks:accounts/fireworks/models/kimi-k2-instruct-0905";
+
+const presetToProvider = (preset: ProviderCatalogPreset): LLMProvider => ({
+  id: preset.id,
+  name: preset.name,
+  nickname: preset.nickname,
+  baseUrl: preset.baseUrl,
+  model: preset.model,
+  contextWindow: preset.contextWindow,
+  maxOutputTokens: preset.maxOutputTokens,
+  supportsThinking: preset.supportsThinking,
+  supportsToolStream: preset.supportsToolStream,
+  customModels: preset.customModels,
+  modelAliases: preset.modelAliases,
+  providerType: preset.providerType as LLMProvider["providerType"],
+  defaultTemperature: preset.defaultTemperature,
+  defaultMaxTokens: preset.defaultMaxTokens,
+  requiresApiKey: preset.requiresApiKey,
+  apiKey: "",
+  enabled: true,
+  isCustom: false,
+});
+
+const createDefaultProviders = (presets: ProviderCatalogPreset[]): LLMProvider[] => {
+  return presets.map((preset) => presetToProvider(preset));
 };
 
 const getProviderModelList = (provider: LLMProvider): string[] => {
@@ -328,135 +347,6 @@ function providerToDb(provider: LLMProvider, sortOrder: number): DbLLMProvider {
   };
 }
 
-// ============================================
-// PRESET PROVIDERS (built-in, can't be deleted)
-// ============================================
-export const PRESET_PROVIDERS: Omit<LLMProvider, "apiKey" | "enabled">[] = [
-  {
-    id: "fireworks",
-    name: "Fireworks AI",
-    nickname: "Fireworks",
-    baseUrl: "https://api.fireworks.ai/inference/v1",
-    model: "accounts/fireworks/models/kimi-k2-instruct-0905",
-    contextWindow: 200000,
-    maxOutputTokens: 32768,
-    supportsThinking: true,
-    customModels: [
-      "accounts/fireworks/models/kimi-k2-instruct-0905",
-      "accounts/fireworks/models/kimi-k2-thinking",
-      "accounts/fireworks/models/kimi-k2p5",
-      "accounts/fireworks/models/deepseek-v3p2",
-      "accounts/fireworks/models/glm-5",
-      "accounts/fireworks/models/qwen2p5-coder-32b-instruct",
-    ],
-    modelAliases: {
-      "accounts/fireworks/models/deepseek-v3p2": "DeepSeek V3.2",
-      "accounts/fireworks/models/glm-5": "GLM 5",
-      "accounts/fireworks/models/kimi-k2-instruct-0905": "Kimi K2",
-      "accounts/fireworks/models/kimi-k2-thinking": "Kimi K2 Thinking",
-      "accounts/fireworks/models/kimi-k2p5": "Kimi K2.5",
-      "accounts/fireworks/models/qwen2p5-coder-32b-instruct": "Qwen 2.5 Coder 32B",
-    },
-    providerType: "fireworks",
-    defaultTemperature: 1.0,
-    requiresApiKey: true,
-  },
-  {
-    id: "glm",
-    name: "GLM-4.7 (Z.AI)",
-    nickname: "GLM",
-    baseUrl: "https://api.z.ai/api/coding/paas/v4",
-    model: "glm-4.7",
-    contextWindow: 200000,
-    maxOutputTokens: 128000,
-    supportsThinking: true,
-    customModels: ["glm-4.7", "glm-4.6", "glm-4.5", "glm-4.5-flash"],
-    providerType: "glm",
-    defaultTemperature: 1.0,
-    requiresApiKey: true,
-  },
-  {
-    id: "anthropic",
-    name: "Anthropic",
-    nickname: "Claude",
-    baseUrl: "https://api.anthropic.com/v1",
-    model: "claude-sonnet-4-20250514",
-    contextWindow: 200000,
-    maxOutputTokens: 8192,
-    supportsThinking: true,
-    customModels: ["claude-opus-4-5-20251101", "claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"],
-    providerType: "anthropic",
-    defaultTemperature: 1.0,
-    requiresApiKey: true,
-  },
-  {
-    id: "minimax",
-    name: "MiniMax M2.1",
-    nickname: "MiniMax",
-    baseUrl: "https://api.minimax.io/anthropic/v1", // Correct path: baseURL + /messages
-    model: "MiniMax-M2.1",
-    contextWindow: 200000, // 200k context
-    maxOutputTokens: 128000,
-    supportsThinking: true, // Native thinking blocks (better than OpenAI format)
-    customModels: ["MiniMax-M2.1"],
-    providerType: "anthropic", // ✅ Use Anthropic provider (official recommendation)
-    defaultTemperature: 1.0,
-    requiresApiKey: true,
-    // No customParams needed - thinking mode is native in Anthropic format
-  },
-  {
-    id: "deepseek",
-    name: "DeepSeek",
-    baseUrl: "https://api.deepseek.com/v1",
-    model: "deepseek-chat",
-    contextWindow: 64000,
-    maxOutputTokens: 64000,
-    supportsThinking: true,
-    customModels: ["deepseek-chat", "deepseek-reasoner"],
-    providerType: "deepseek",
-    defaultTemperature: 1.0,
-    requiresApiKey: true,
-  },
-  {
-    id: "openai",
-    name: "OpenAI",
-    baseUrl: "https://api.openai.com/v1",
-    model: "gpt-4o",
-    contextWindow: 128000,
-    maxOutputTokens: 16384,
-    supportsThinking: false,
-    customModels: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo", "o1", "o1-mini"],
-    providerType: "openai",
-    defaultTemperature: 1.0,
-    requiresApiKey: true,
-  },
-  {
-    id: "lmstudio",
-    name: "LM Studio",
-    baseUrl: "http://localhost:1234/v1",
-    model: "local-model",
-    contextWindow: 128000,
-    maxOutputTokens: 8192,
-    supportsThinking: false,
-    customModels: [],
-    providerType: "lmstudio",
-    defaultTemperature: 1.0,
-    requiresApiKey: false, // LM Studio doesn't require API key
-  },
-  {
-    id: "ollama",
-    name: "Ollama",
-    baseUrl: "http://localhost:11434/v1",
-    model: "llama3",
-    contextWindow: 128000,
-    maxOutputTokens: 8192,
-    supportsThinking: false,
-    customModels: [],
-    providerType: "ollama",
-    defaultTemperature: 1.0,
-    requiresApiKey: false, // Ollama doesn't require API key
-  },
-];
 const DEFAULT_TOOL_APPROVAL_SETTINGS: Record<string, 'auto' | 'always_ask' | 'deny'> = {
   // Shell commands require approval
   shell_execute: 'always_ask',
@@ -496,8 +386,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   isLoading: false,
 
   // Providers
-  providers: createDefaultProviders(),
-  selectedModel: "fireworks:accounts/fireworks/models/kimi-k2-instruct-0905",
+  providers: [],
+  selectedModel: DEFAULT_SELECTED_MODEL,
 
   // Tool Approval
   autoApproveTools: false,
@@ -554,6 +444,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     set({ isLoading: true });
 
     try {
+      const presetProviders = await providerCatalogService.getPresets();
+
       // Check if we have providers in the database
       const hasProviders = await databaseService.hasProviders();
 
@@ -563,22 +455,23 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         const providers = dbProviders.map(dbToProvider);
 
         // Merge with preset providers (in case new presets were added)
-        const mergedProviders = PRESET_PROVIDERS.map(preset => {
+        const mergedProviders = presetProviders.map((preset) => {
+          const presetProvider = presetToProvider(preset);
           const dbProvider = providers.find(p => p.id === preset.id);
           if (dbProvider) {
             // Keep the stored API key and settings, but update with any new preset fields
             return {
-              ...preset,
+              ...presetProvider,
               ...dbProvider,
               isCustom: false,
               modelAliases: {
-                ...(preset.modelAliases || {}),
+                ...(presetProvider.modelAliases || {}),
                 ...(dbProvider.modelAliases || {}),
               },
-              nickname: dbProvider.nickname || preset.nickname,
+              nickname: dbProvider.nickname || presetProvider.nickname,
             };
           }
-          return { ...preset, apiKey: "", enabled: true, isCustom: false };
+          return presetProvider;
         });
 
         // Add any custom providers (ensure isCustom is set)
@@ -590,7 +483,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         set({ providers: mergedProviders });
       } else {
         // First time: save default providers to database
-        const defaultProviders = createDefaultProviders();
+        const defaultProviders = createDefaultProviders(presetProviders);
         const dbProviders = defaultProviders.map((p, i) => providerToDb(p, i));
         await databaseService.saveAllProviders(dbProviders);
         set({ providers: defaultProviders });
@@ -602,7 +495,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         const uiFontFamily = appSettings.uiFontFamily ?? "system";
         const uiTextScale = appSettings.uiTextScale ?? 1;
         const selectedModel = resolveSelectedModel(
-          appSettings.selectedModel || "fireworks:accounts/fireworks/models/kimi-k2-instruct-0905",
+          appSettings.selectedModel || DEFAULT_SELECTED_MODEL,
           get().providers,
         );
         const persistedThinkingEnabled = appSettings.thinkingEnabled ?? true;
@@ -780,7 +673,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         providers: state.providers.filter((p: LLMProvider) => p.id !== id),
         // Reset selected model if it was from deleted provider
         selectedModel: state.selectedModel.startsWith(id + ":")
-          ? "fireworks:accounts/fireworks/models/kimi-k2-instruct-0905"
+          ? DEFAULT_SELECTED_MODEL
           : state.selectedModel,
       }));
       // Delete from database
@@ -949,8 +842,9 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         maxOutputTokens: provider.maxOutputTokens,
         contextWindow: provider.contextWindow,
         supportsThinking: provider.supportsThinking,
-        supportsToolStream: provider.supportsToolStream,
-        providerType: provider.providerType,
+        supportsToolStream: provider.supportsToolStream ?? false,
+        supportsVision: false,
+        providerType: provider.providerType ?? "custom",
         customHeaders: provider.customHeaders,
         customParams: provider.customParams,
         defaultTemperature: provider.defaultTemperature,
@@ -973,8 +867,9 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         maxOutputTokens: fallback.maxOutputTokens,
         contextWindow: fallback.contextWindow,
         supportsThinking: fallback.supportsThinking,
-        supportsToolStream: fallback.supportsToolStream,
-        providerType: fallback.providerType,
+        supportsToolStream: fallback.supportsToolStream ?? false,
+        supportsVision: false,
+        providerType: fallback.providerType ?? "custom",
         customHeaders: fallback.customHeaders,
         customParams: fallback.customParams,
         defaultTemperature: fallback.defaultTemperature,

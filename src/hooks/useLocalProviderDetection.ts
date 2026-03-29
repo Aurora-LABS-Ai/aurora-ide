@@ -2,8 +2,6 @@ import { useEffect, useRef } from 'react';
 import { detectLocalProviders } from '../services/local-model-detector';
 import { useSettingsStore } from '../store/useSettingsStore';
 
-const THINKING_PATTERNS = ['qwen3', 'qwq', 'deepseek-r1', 'phi-4-reasoning'];
-
 /**
  * Background hook that probes for local AI servers (Ollama / LM Studio)
  * once after app startup. If no cloud provider has an API key configured,
@@ -58,16 +56,12 @@ export function useLocalProviderDetection() {
         const bestModel = localProvider.models[0];
         if (!bestModel) continue;
 
-        const thinking = THINKING_PATTERNS.some((pat) =>
-          bestModel.id.toLowerCase().includes(pat),
-        );
-
         updateProvider(providerId, {
           baseUrl: localProvider.baseUrl,
           model: bestModel.id,
           enabled: true,
           customModels: allModelIds,
-          supportsThinking: thinking,
+          supportsThinking: bestModel.supportsThinking ?? false,
         });
 
         if (!hasCloudProvider) {

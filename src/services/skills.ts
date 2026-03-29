@@ -26,6 +26,8 @@ export interface ResolveSkillsOptions {
 export interface ResolvedSkills {
   activeSkills: SkillDefinition[];
   allSkills: SkillDefinition[];
+  explicitSkills: SkillDefinition[];
+  matchedSkills: SkillDefinition[];
 }
 
 interface ParsedFrontmatter {
@@ -190,6 +192,9 @@ const BUILTIN_SKILLS: SkillDefinition[] = BUILTIN_SKILL_BASE.map((skill) => ({
 }));
 
 const normalize = (value: string): string => value.trim().toLowerCase();
+
+const normalizeStorageKey = (value: string): string =>
+  value.trim().replace(/\\/g, "/").toLowerCase();
 
 const uniqueStrings = (values: string[]): string[] => {
   const seen = new Set<string>();
@@ -442,11 +447,22 @@ function scoreSkill(skill: SkillDefinition, normalizedMessage: string): number {
   let score = 0;
   const normalizedName = normalize(skill.name);
 
-  if (
-    normalizedMessage.includes(`$${skill.id}`) ||
-    normalizedMessage.includes(`skill ${skill.id}`) ||
-    normalizedMessage.includes(`$${normalizedName}`)
-  ) {
+  const explicitMentions = [
+    `$${skill.id}`,
+    `$${normalizedName}`,
+    `skill ${skill.id}`,
+    `skill ${normalizedName}`,
+    `use ${skill.id}`,
+    `use ${normalizedName}`,
+    `activate ${skill.id}`,
+    `activate ${normalizedName}`,
+    `enable ${skill.id}`,
+    `enable ${normalizedName}`,
+    `apply ${skill.id}`,
+    `apply ${normalizedName}`,
+  ];
+
+  if (explicitMentions.some((mention) => normalizedMessage.includes(mention))) {
     score += 100;
   }
 
@@ -490,27 +506,37 @@ export async function resolveSkillsForPrompt(
     skillsEnabled,
   });
   const normalizedMessage = normalize(userMessage);
-  const normalizedExplicitKeys = new Set((explicitSkillKeys ?? []).map((key) => key.trim()).filter(Boolean));
+  const normalizedExplicitKeys = new Set(
+    (explicitSkillKeys ?? [])
+      .map((key) => normalizeStorageKey(key))
+      .filter(Boolean)
+  );
+  const explicitSkills =
+    normalizedExplicitKeys.size === 0
+      ? []
+      : allSkills.filter((skill) =>
+          normalizedExplicitKeys.has(normalizeStorageKey(skill.storageKey))
+        );
 
-  if (normalizedExplicitKeys.size > 0) {
-    const activeSkills = allSkills.filter((skill) => normalizedExplicitKeys.has(skill.storageKey));
-
-    return {
-      allSkills,
-      activeSkills,
-    };
-  }
-
-  const activeSkills = allSkills
+  const matchedSkills = allSkills
     .map((skill) => ({ score: scoreSkill(skill, normalizedMessage), skill }))
     .filter((entry) => entry.score > 0)
     .sort((left, right) => right.score - left.score || left.skill.name.localeCompare(right.skill.name))
-    .slice(0, maxActiveSkills)
     .map((entry) => entry.skill);
+
+  const explicitSkillKeysSet = new Set(
+    explicitSkills.map((skill) => normalizeStorageKey(skill.storageKey))
+  );
+  const supplementalSkills = matchedSkills
+    .filter((skill) => !explicitSkillKeysSet.has(normalizeStorageKey(skill.storageKey)))
+    .slice(0, Math.max(maxActiveSkills - explicitSkills.length, 0));
+  const activeSkills = [...explicitSkills, ...supplementalSkills];
 
   return {
     allSkills,
     activeSkills,
+    explicitSkills,
+    matchedSkills,
   };
 }
 

@@ -122,7 +122,11 @@ Check changed files first.`);
       userMessage: "Use the typescript skill to fix typing and MCP work together.",
     });
 
-    expect(resolved.activeSkills.map((skill) => skill.id)).toEqual(["mcp-integration"]);
+    expect(resolved.explicitSkills.map((skill) => skill.id)).toEqual(["mcp-integration"]);
+    expect(resolved.activeSkills.map((skill) => skill.id)).toEqual([
+      "mcp-integration",
+      "typescript",
+    ]);
   });
 
   it("composes a layered system prompt with catalog and active skills", async () => {
@@ -134,6 +138,7 @@ Check changed files first.`);
     });
 
     expect(composed.systemPrompt).toContain("<available_skills>");
+    expect(composed.systemPrompt).toContain("<required_skills");
     expect(composed.systemPrompt).toContain("<active_skills");
     expect(composed.systemPrompt).toContain("Connected server summary");
     expect(composed.activeSkills.some((skill) => skill.id === "mcp-integration")).toBe(true);

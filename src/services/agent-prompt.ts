@@ -15,6 +15,8 @@ export interface AgentPromptContext {
 export interface ComposedAgentPrompt {
   activeSkills: SkillDefinition[];
   allSkills: SkillDefinition[];
+  explicitSkills: SkillDefinition[];
+  matchedSkills: SkillDefinition[];
   systemPrompt: string;
 }
 
@@ -61,8 +63,10 @@ Your main goal is to follow the USER's instructions at each message.
 const SKILL_SYSTEM_INSTRUCTIONS = `## Skill System
 - Skills are modular instruction overlays that extend your behavior for specific task types.
 - Review the available skill catalog for this request.
+- Required skills are mandatory when present. Do not ignore them.
+- Auto-matched skills supplement required skills. They do not replace them.
 - Activate and follow the active skills strictly when they are relevant.
-- If the user explicitly names a skill, that skill takes priority.
+- If the user explicitly names or attaches a skill, that skill takes priority.
 - If no active skill applies, continue with the base Aurora behavior.
 - Use skills to improve planning, implementation quality, and tool choice. Do not treat them as user-visible UI features unless the user asks.`;
 
@@ -73,7 +77,7 @@ export async function composeAgentSystemPrompt(options: {
 }): Promise<ComposedAgentPrompt> {
   const { basePrompt, mcpSummary, promptContext } = options;
   const settings = useSettingsStore.getState();
-  const { allSkills, activeSkills } = await resolveSkillsForPrompt({
+  const { allSkills, activeSkills, explicitSkills, matchedSkills } = await resolveSkillsForPrompt({
     enabledSkillToggles: settings.skillToggles,
     explicitSkillKeys: promptContext.explicitSkillKeys,
     skillsEnabled: settings.skillsEnabled,
@@ -87,6 +91,9 @@ export async function composeAgentSystemPrompt(options: {
     `<available_skills>
 ${formatSkillCatalog(allSkills)}
 </available_skills>`,
+    `<required_skills count="${explicitSkills.length}">
+${formatActiveSkills(explicitSkills)}
+</required_skills>`,
     `<active_skills count="${activeSkills.length}">
 ${formatActiveSkills(activeSkills)}
 </active_skills>`,
@@ -100,5 +107,7 @@ ${formatActiveSkills(activeSkills)}
     systemPrompt: sections.join("\n\n"),
     allSkills,
     activeSkills,
+    explicitSkills,
+    matchedSkills,
   };
 }

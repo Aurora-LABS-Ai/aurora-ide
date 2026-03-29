@@ -4,21 +4,20 @@
  * Uses Rust Context Engine for turn-based message management
  */
 import { invoke } from "@tauri-apps/api/core";
-import { parseToolArguments } from "../lib/tool-arguments";
-import { getToolsForModel, toolRegistry } from "../tools";
+import { getToolsForModel } from "../tools";
 import type { ToolDefinition as LegacyToolDefinition } from "../tools/types";
 import {
   BASE_AGENT_SYSTEM_PROMPT,
   composeAgentSystemPrompt,
   type AgentPromptContext,
 } from "./agent-prompt";
-import {
-  executeMcpTool,
-  getMcpToolDefinitions,
-  getMcpToolsSummary,
-  isMcpTool,
-  shouldAutoApproveMcpTool,
-} from "./mcp-tools";
+import type {
+  AgentCallbacks,
+  AgentConfig,
+  AgentResponse,
+} from "./agent-service.types";
+import { AgentToolRunner } from "./agent-tool-runner";
+import { getMcpToolDefinitions, getMcpToolsSummary } from "./mcp-tools";
 import {
   type IProvider,
   type ProviderConfig,
@@ -27,52 +26,9 @@ import {
 import type {
   AssistantMessage,
   Message,
-  StreamCallbacks as ProviderStreamCallbacks,
-  ToolCallRequest,
   ToolDefinition,
 } from "./providers/types";
 
-export interface AgentCallbacks extends ProviderStreamCallbacks {
-  onIterationComplete?: (iteration: number) => void;
-  onToolApprovalRequired?: (toolCall: ToolCallRequest) => Promise<boolean>;
-  onToolExecutionComplete?: (toolCall: ToolCallRequest, result: string) => void;
-  onToolExecutionError?: (toolCall: ToolCallRequest, error: string) => void;
-  onToolExecutionStart?: (toolCall: ToolCallRequest) => void;
-  onToolRejected?: (toolCall: ToolCallRequest, reason: string) => void;
-}
-
-// ============================================
-// AGENT TYPES
-// ============================================
-export interface AgentConfig {
-  autoApproveTools?: boolean;
-  getToolApproval?: (toolName: string) => "auto" | "always_ask" | "deny";
-  maxTokens?: number;
-  maxToolIterations?: number;
-  providerConfig?: ProviderConfig;
-  systemPrompt?: string;
-  temperature?: number;
-  thinkingEnabled?: boolean;
-  /** Thread ID for context engine */
-  threadId?: string;
-}
-
-export interface AgentResponse {
-  content: string;
-  iterations: number;
-  thinking?: string;
-  toolCalls?: Array<{
-    id: string;
-    name: string;
-    args: Record<string, unknown>;
-    result: string;
-    status: "approved" | "rejected" | "executed" | "failed";
-  }>;
-}
-
-// ============================================
-// RUST CONTEXT ENGINE TYPES
-// ============================================
 interface ApiMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
@@ -96,9 +52,12 @@ interface ContextState {
   recentTurnsCount: number;
 }
 
-// ============================================
-// AGENT SERVICE CLASS
-// ============================================
+interface PreparedAgentContext {
+  availableTools: ToolDefinition[];
+  messages: Message[];
+  threadId: string;
+}
+
 export class AgentService {
   private config: AgentConfig;
   private isRunning = false;
@@ -120,10 +79,6 @@ export class AgentService {
     }
   }
 
-  /**
-   * Send a message and get a response with tool execution
-   * Uses Rust Context Engine for message building
-   */
   public async chat(
     userMessage: string,
     callbacks: AgentCallbacks,
@@ -133,102 +88,30 @@ export class AgentService {
   ): Promise<AgentResponse> {
     this.isRunning = true;
     const provider = this.getProvider();
-    const threadId = this.config.threadId;
-
-    if (!threadId) {
-      throw new Error("Thread ID required for context engine");
-    }
-
-    // Get provider config for context window
-    const providerConfig = this.config.providerConfig;
-    const contextWindow = providerConfig?.contextWindow || 128000;
-    const maxOutput = providerConfig?.maxOutputTokens || 8192;
-
-    // Add user message to Rust context engine
-    await invoke("context_add_user_message", {
-      threadId,
-      content: userMessage,
-      ideContext: ideContext || null,
-      contextWindow,
-      maxOutput,
-    });
-
-    // Build layered system prompt with active skills and MCP tools summary
-    const mcpSummary = getMcpToolsSummary();
-    const composedPrompt = await composeAgentSystemPrompt({
-      basePrompt: this.config.systemPrompt,
-      mcpSummary,
-      promptContext: promptContext ?? {
-        userMessage,
-      },
-    });
-    const enhancedSystemPrompt = composedPrompt.systemPrompt;
-
-    if (composedPrompt.activeSkills.length > 0) {
-      console.log(
-        "[AgentService] Active skills:",
-        composedPrompt.activeSkills.map((skill) => skill.id),
-      );
-    }
-
-    // Build messages from Rust context engine
-    const tokenBudget = contextWindow - maxOutput;
-    const contextMessages = await invoke<ApiMessage[]>(
-      "context_build_messages",
-      {
-        threadId,
-        systemPrompt: enhancedSystemPrompt,
-        tokenBudget,
-      },
+    const preparedContext = await this.prepareAgentContext(
+      userMessage,
+      tools,
+      ideContext,
+      promptContext,
     );
-
-    // Convert to provider message format
-    const messages: Message[] = contextMessages.map((msg) => {
-      if (msg.role === "tool") {
-        return {
-          role: "tool" as const,
-          tool_call_id: msg.tool_call_id!,
-          content: msg.content,
-        };
-      }
-      if (msg.role === "assistant" && msg.tool_calls) {
-        return {
-          role: "assistant" as const,
-          content: msg.content,
-          tool_calls: msg.tool_calls,
-        };
-      }
-      return {
-        role: msg.role as "system" | "user" | "assistant",
-        content: msg.content,
-      };
-    });
-
-    // Get available tools
-    const builtInTools: ToolDefinition[] = (tools || getToolsForModel()).map(
-      (t) => ({
-        type: "function" as const,
-        function: {
-          name: t.function.name,
-          description: t.function.description,
-          parameters: t.function.parameters,
-        },
-      }),
-    );
-
-    const mcpTools = getMcpToolDefinitions();
-    const availableTools: ToolDefinition[] = [...builtInTools, ...mcpTools];
 
     let iteration = 0;
     let finalContent = "";
     let finalThinking = "";
-    const executedToolCalls: AgentResponse["toolCalls"] = [];
+    let stoppedByIterationLimit = false;
+    const executedToolCalls: NonNullable<AgentResponse["toolCalls"]> = [];
+    const { availableTools, messages, threadId } = preparedContext;
+    const toolRunner = new AgentToolRunner({
+      callbacks,
+      config: this.config,
+      isRunning: () => this.isRunning,
+      threadId,
+    });
 
     try {
       while (this.isRunning && iteration < this.config.maxToolIterations!) {
         iteration++;
 
-        // Stream the response
         const response = await provider.streamChat(
           {
             messages,
@@ -240,296 +123,43 @@ export class AgentService {
           },
           {
             onStart: callbacks.onStart,
-            onToken: (token) => {
-              finalContent += token;
-              callbacks.onToken?.(token);
-            },
-            onThinking: (thinking) => {
-              finalThinking += thinking;
-              callbacks.onThinking?.(thinking);
-            },
+            onToken: callbacks.onToken,
+            onThinking: callbacks.onThinking,
             onToolCall: callbacks.onToolCall,
             onUsage: callbacks.onUsage,
             onError: callbacks.onError,
           },
         );
 
-        // Add assistant response to context engine
-        const responseContent = Array.isArray(response.content)
-          ? response.content
-              .map((block) => (block.type === "text" ? block.text : ""))
-              .join("")
-          : response.content;
-
-        await invoke("context_add_assistant_response", {
-          threadId,
-          content: responseContent || "",
-          thinking: response.reasoning_content || null,
-        });
-
-        // Add to local messages for continuation
+        const responseContent = this.normalizeAssistantContent(response);
+        await this.recordAssistantResponse(threadId, responseContent, response);
         messages.push(response);
 
-        if (response.content) {
-          finalContent = responseContent || "";
+        if (responseContent) {
+          finalContent = responseContent;
         }
 
         if (response.reasoning_content) {
-          finalThinking += response.reasoning_content;
+          finalThinking = `${finalThinking}${response.reasoning_content}`;
         }
 
-        // Handle tool calls
         if (response.tool_calls && response.tool_calls.length > 0) {
-          console.log(
-            `[AgentService] Executing ${response.tool_calls.length} tool calls...`,
-          );
-
-          // Add tool calls to context engine
-          for (const toolCall of response.tool_calls) {
-            await invoke("context_add_tool_call", {
-              threadId,
-              toolCallId: toolCall.id,
-              name: toolCall.function.name,
-              arguments: toolCall.function.arguments,
-            });
-          }
-
-          // Execute tools in parallel
-          const toolPromises = response.tool_calls.map(async (toolCall) => {
-            if (!this.isRunning) {
-              callbacks.onToolRejected?.(toolCall, "Agent stopped");
-              return null;
-            }
-
-            const toolName = toolCall.function.name;
-            const toolSetting =
-              this.config.getToolApproval?.(toolName) ?? "always_ask";
-
-            // Determine approval requirements
-            const isMcp = isMcpTool(toolName);
-            const mcpAutoApprove = isMcp && shouldAutoApproveMcpTool(toolName);
-
-            // Auto-deny takes precedence
-            if (toolSetting === "deny") {
-              const rejectMsg = JSON.stringify({
-                error: "Tool denied by settings",
-                tool: toolName,
-              });
-
-              callbacks.onToolRejected?.(toolCall, "Tool is set to deny");
-
-              await invoke("context_add_tool_result", {
-                threadId,
-                toolCallId: toolCall.id,
-                content: rejectMsg,
-                isError: true,
-              });
-
-              return {
-                toolResult: {
-                  id: toolCall.id,
-                  name: toolName,
-                  args: { raw: toolCall.function.arguments },
-                  result: rejectMsg,
-                  status: "rejected" as const,
-                },
-                message: {
-                  role: "tool" as const,
-                  tool_call_id: toolCall.id,
-                  content: rejectMsg,
-                } as Message,
-              };
-            }
-
-            // Check if auto-approved (either via MCP setting or global auto-approve + tool registry)
-            const isAutoApproved =
-              mcpAutoApprove ||
-              (this.config.autoApproveTools &&
-                !toolRegistry.requiresApproval(toolName));
-
-            // Determine if user confirmation is needed
-            let approved = true;
-            if (!isAutoApproved) {
-              // User preference takes precedence over auto-approve
-              if (toolSetting === "always_ask") {
-                approved = callbacks.onToolApprovalRequired
-                  ? await callbacks.onToolApprovalRequired(toolCall)
-                  : false;
-              } else if (toolSetting === "auto") {
-                approved = true; // Explicitly set to auto
-              }
-            }
-
-            const parsedArgsResult = parseToolArguments(
-              toolCall.function.arguments,
-            );
-            if (parsedArgsResult.status === "invalid") {
-              console.error(
-                `[AgentService] Failed to parse tool arguments:`,
-                parsedArgsResult.error,
-              );
-
-              const errorResult = `Error: Invalid JSON in tool arguments (malformed or incomplete).`;
-
-              callbacks.onToolExecutionError?.(toolCall, errorResult);
-
-              await invoke("context_add_tool_result", {
-                threadId,
-                toolCallId: toolCall.id,
-                content: errorResult,
-                isError: true,
-              });
-
-              return {
-                toolResult: {
-                  id: toolCall.id,
-                  name: toolName,
-                  args: { raw: toolCall.function.arguments },
-                  result: errorResult,
-                  status: "failed" as const,
-                },
-                message: {
-                  role: "tool" as const,
-                  tool_call_id: toolCall.id,
-                  content: errorResult,
-                } as Message,
-              };
-            }
-
-            if (parsedArgsResult.status === "repaired") {
-              console.warn(
-                `[AgentService] Repaired malformed tool arguments for ${toolName}`,
-              );
-            }
-            const parsedArgs = parsedArgsResult.args;
-
-            const toolResult: NonNullable<AgentResponse["toolCalls"]>[0] = {
-              id: toolCall.id,
-              name: toolName,
-              args: parsedArgs,
-              result: "",
-              status: approved ? "approved" : "rejected",
-            };
-
-            if (approved) {
-              callbacks.onToolExecutionStart?.(toolCall);
-
-              try {
-                const TOOL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-                const toolExecution = isMcpTool(toolName)
-                  ? executeMcpTool(toolName, parsedArgs)
-                  : toolRegistry
-                      .executeToolCall(toolCall, parsedArgs)
-                      .then((r) => r.content);
-
-                const timeoutPromise = new Promise<never>((_, reject) =>
-                  setTimeout(
-                    () =>
-                      reject(
-                        new Error(
-                          `Tool "${toolName}" timed out after 5 minutes`,
-                        ),
-                      ),
-                    TOOL_TIMEOUT_MS,
-                  ),
-                );
-
-                const resultContent = await Promise.race([
-                  toolExecution,
-                  timeoutPromise,
-                ]);
-
-                toolResult.result = resultContent;
-                toolResult.status = "executed";
-
-                await invoke("context_add_tool_result", {
-                  threadId,
-                  toolCallId: toolCall.id,
-                  content: resultContent,
-                  isError: false,
-                });
-
-                callbacks.onToolExecutionComplete?.(toolCall, resultContent);
-
-                return {
-                  toolResult,
-                  message: {
-                    role: "tool" as const,
-                    tool_call_id: toolCall.id,
-                    content: resultContent,
-                  } as Message,
-                };
-              } catch (error) {
-                const errorMsg =
-                  error instanceof Error ? error.message : String(error);
-                toolResult.result = errorMsg;
-                toolResult.status = "failed";
-
-                await invoke("context_add_tool_result", {
-                  threadId,
-                  toolCallId: toolCall.id,
-                  content: JSON.stringify({ error: errorMsg }),
-                  isError: true,
-                });
-
-                callbacks.onToolExecutionError?.(toolCall, errorMsg);
-
-                return {
-                  toolResult,
-                  message: {
-                    role: "tool" as const,
-                    tool_call_id: toolCall.id,
-                    content: JSON.stringify({ error: errorMsg }),
-                  } as Message,
-                };
-              }
-            } else {
-              // Tool was rejected by user
-              const reason = "Tool execution rejected by user";
-              const rejectMsg = JSON.stringify({
-                error: reason,
-                tool: toolName,
-              });
-
-              callbacks.onToolRejected?.(toolCall, reason);
-
-              await invoke("context_add_tool_result", {
-                threadId,
-                toolCallId: toolCall.id,
-                content: rejectMsg,
-                isError: true,
-              });
-
-              return {
-                toolResult,
-                message: {
-                  role: "tool" as const,
-                  tool_call_id: toolCall.id,
-                  content: rejectMsg,
-                } as Message,
-              };
-            }
-          });
-
-          const toolResults = await Promise.all(toolPromises);
-
-          for (const result of toolResults) {
-            if (result) {
-              messages.push(result.message);
-              executedToolCalls.push(result.toolResult);
-            }
-          }
-
+          const toolBatch = await toolRunner.executeToolCalls(response.tool_calls);
+          messages.push(...toolBatch.messages);
+          executedToolCalls.push(...toolBatch.toolCalls);
           callbacks.onIterationComplete?.(iteration);
-        } else {
-          break;
+          continue;
         }
+
+        break;
       }
 
-      // Finalize the turn in context engine
+      if (iteration >= this.config.maxToolIterations! && this.isRunning) {
+        stoppedByIterationLimit = true;
+      }
+
       await invoke("context_finalize_turn", { threadId });
 
-      // Check if summarization is needed
       const needsSummarization = await invoke<boolean>(
         "context_needs_summarization",
         { threadId },
@@ -538,7 +168,10 @@ export class AgentService {
         console.log(
           "[AgentService] Context at 80%+ - summarization recommended",
         );
-        // Summarization will be triggered separately
+      }
+
+      if (stoppedByIterationLimit && !finalContent) {
+        finalContent = `Stopped after ${this.config.maxToolIterations} tool iterations.`;
       }
 
       callbacks.onComplete?.({
@@ -558,9 +191,6 @@ export class AgentService {
     }
   }
 
-  /**
-   * Get context state from Rust engine
-   */
   public async getContextState(): Promise<ContextState | null> {
     const threadId = this.config.threadId;
     if (!threadId) return null;
@@ -576,9 +206,6 @@ export class AgentService {
     });
   }
 
-  /**
-   * Clear context for current thread
-   */
   public async clearContext(): Promise<void> {
     const threadId = this.config.threadId;
     if (!threadId) return;
@@ -586,54 +213,170 @@ export class AgentService {
     await invoke("context_clear_thread", { threadId });
   }
 
-  /**
-   * Check if agent is currently running
-   */
   public isActive(): boolean {
     return this.isRunning;
   }
 
-  /**
-   * Set thread ID for context engine
-   */
   public setThreadId(threadId: string): void {
     this.config.threadId = threadId;
   }
 
-  /**
-   * Set provider configuration
-   */
   public setProvider(config: ProviderConfig): void {
     this.provider = createProvider(config);
     this.config.providerConfig = config;
   }
 
-  /**
-   * Stop the current agent run
-   */
   public stop(): void {
     this.isRunning = false;
     this.provider?.cancelRequest();
   }
 
-  /**
-   * Update agent configuration
-   */
   public updateConfig(config: Partial<AgentConfig>): void {
     this.config = { ...this.config, ...config };
+  }
+
+  private async prepareAgentContext(
+    userMessage: string,
+    tools: LegacyToolDefinition[] | undefined,
+    ideContext: string | null | undefined,
+    promptContext: AgentPromptContext | undefined,
+  ): Promise<PreparedAgentContext> {
+    const threadId = this.requireThreadId();
+    const { contextWindow, maxOutput } = this.getProviderLimits();
+
+    await invoke("context_add_user_message", {
+      threadId,
+      content: userMessage,
+      ideContext: ideContext || null,
+      contextWindow,
+      maxOutput,
+    });
+
+    const composedPrompt = await composeAgentSystemPrompt({
+      basePrompt: this.config.systemPrompt,
+      mcpSummary: getMcpToolsSummary(),
+      promptContext: promptContext ?? {
+        userMessage,
+      },
+    });
+
+    if (composedPrompt.explicitSkills.length > 0) {
+      console.log(
+        "[AgentService] Required skills:",
+        composedPrompt.explicitSkills.map((skill) => skill.id),
+      );
+    }
+    if (composedPrompt.activeSkills.length > 0) {
+      console.log(
+        "[AgentService] Active skills:",
+        composedPrompt.activeSkills.map((skill) => skill.id),
+      );
+    }
+
+    const contextMessages = await invoke<ApiMessage[]>("context_build_messages", {
+      threadId,
+      systemPrompt: composedPrompt.systemPrompt,
+      tokenBudget: contextWindow - maxOutput,
+    });
+
+    return {
+      threadId,
+      messages: contextMessages.map((message) =>
+        this.mapContextMessageToProviderMessage(message),
+      ),
+      availableTools: this.buildAvailableTools(tools),
+    };
+  }
+
+  private buildAvailableTools(
+    tools: LegacyToolDefinition[] | undefined,
+  ): ToolDefinition[] {
+    const builtInTools: ToolDefinition[] = (tools || getToolsForModel()).map(
+      (tool) => ({
+        type: "function",
+        function: {
+          name: tool.function.name,
+          description: tool.function.description,
+          parameters: tool.function.parameters,
+        },
+      }),
+    );
+
+    return [...builtInTools, ...getMcpToolDefinitions()];
   }
 
   private getProvider(): IProvider {
     if (!this.provider) {
       throw new Error("Provider not initialized. Call setProvider first.");
     }
+
     return this.provider;
+  }
+
+  private getProviderLimits(): { contextWindow: number; maxOutput: number } {
+    const providerConfig = this.config.providerConfig;
+
+    return {
+      contextWindow: providerConfig?.contextWindow || 128000,
+      maxOutput: providerConfig?.maxOutputTokens || 8192,
+    };
+  }
+
+  private mapContextMessageToProviderMessage(message: ApiMessage): Message {
+    if (message.role === "tool") {
+      return {
+        role: "tool",
+        tool_call_id: message.tool_call_id!,
+        content: message.content,
+      } as Message;
+    }
+
+    if (message.role === "assistant" && message.tool_calls) {
+      return {
+        role: "assistant",
+        content: message.content,
+        tool_calls: message.tool_calls,
+      } as Message;
+    }
+
+    return {
+      role: message.role as "system" | "user" | "assistant",
+      content: message.content,
+    };
+  }
+
+  private normalizeAssistantContent(message: AssistantMessage): string {
+    if (Array.isArray(message.content)) {
+      return message.content
+        .map((block) => (block.type === "text" ? block.text : ""))
+        .join("");
+    }
+
+    return message.content || "";
+  }
+
+  private async recordAssistantResponse(
+    threadId: string,
+    content: string,
+    response: AssistantMessage,
+  ): Promise<void> {
+    await invoke("context_add_assistant_response", {
+      threadId,
+      content,
+      thinking: response.reasoning_content || null,
+    });
+  }
+
+  private requireThreadId(): string {
+    const threadId = this.config.threadId;
+    if (!threadId) {
+      throw new Error("Thread ID required for context engine");
+    }
+
+    return threadId;
   }
 }
 
-/**
- * Get the agent service instance
- */
 export const getAgentService = (): AgentService => {
   if (!agentInstance) {
     agentInstance = new AgentService();
@@ -641,15 +384,11 @@ export const getAgentService = (): AgentService => {
   return agentInstance;
 };
 
-/**
- * Initialize agent service with config
- */
 export const initAgentService = (config?: AgentConfig): AgentService => {
   agentInstance = new AgentService(config);
   return agentInstance;
 };
 
-// Singleton instance
 let agentInstance: AgentService | null = null;
 
 export default AgentService;

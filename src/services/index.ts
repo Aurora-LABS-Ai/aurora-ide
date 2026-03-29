@@ -17,7 +17,7 @@ export type {
   AgentConfig,
   AgentCallbacks,
   AgentResponse
-} from './agent-service';
+} from './agent-service.types';
 
 export * from './agent-prompt';
 export * from './prompt-assets';

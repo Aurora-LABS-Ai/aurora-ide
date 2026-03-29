@@ -1,310 +1,227 @@
 # Architecture
 
-AI-powered agentic code editor built with Tauri (Rust backend + React frontend). Provides a VS Code-like interface with an AI assistant that executes tools to manipulate files, run commands, navigate workspaces, perform semantic code search, integrate MCP servers, and manage Git repositories.
+Aurora is a Tauri desktop IDE with a React/TypeScript frontend and a Rust backend. The current architecture is centered on a Rust-owned provider pipeline: frontend chat code talks to one provider bridge, and Rust owns provider catalog data, request shaping, streaming, cancellation, and local-provider detection.
 
-**Version:** 1.5.0
+**Version:** 1.5.0  
+**Validated against branch state:** 2026-03-29
 
----
+## 1. System Overview
 
-## Table of Contents
+Aurora combines:
 
-- [1. Project Overview](#1-project-overview)
-- [2. Tech Stack](#2-tech-stack)
-- [3. Directory Tree](#3-directory-tree)
-- [4. Core Classes & Modules](#4-core-classes--modules)
-- [5. Dependency Graph](#5-dependency-graph)
-- [6. Data Flow](#6-data-flow)
-- [7. External Integrations](#7-external-integrations)
+- Monaco-based editing
+- multi-turn AI chat with tool execution
+- a Rust context engine for turn management and summarization
+- MCP integration
+- Git integration
+- semantic code search
+- local model support through LM Studio and Ollama
 
----
-
-## 1. Project Overview
-
-Aurora is a desktop IDE that combines traditional code editing with AI assistance. It features a Monaco-based editor, multi-turn AI conversations with tool calling, semantic code search using ONNX embeddings, MCP server integration, Git integration, and a terminal. The architecture uses a Rust backend for heavy operations (file I/O, AI streaming, database) and a React frontend for UI.
-
----
+The frontend is responsible for UI, state orchestration, and prompt/context assembly. The backend is responsible for persistence, heavy filesystem/process work, and now the full LLM provider kernel.
 
 ## 2. Tech Stack
 
-| Layer | Technology | Version | Purpose |
-|-------|------------|---------|---------|
-| Language | TypeScript | 5.9.3 | Frontend code |
-| Language | Rust | 1.85+ | Backend code |
-| Framework | React | 18.3.1 | UI framework |
-| Runtime | Tauri | 2.9.x | Desktop app shell |
-| Build Tool | Vite | 7.2.4 | Frontend bundler |
-| Editor | Monaco Editor | 0.55.1 | Code editing |
-| State | Zustand | 5.0.9 | State management |
-| Styling | Tailwind CSS | 3.4.17 | CSS framework |
-| Database | SQLite | rusqlite | State persistence |
-| Terminal | xterm.js | 6.0.0 | Integrated terminal |
-| Icons | Lucide React | 0.562.0 | Icon library |
+| Layer | Technology | Purpose |
+|-------|------------|---------|
+| Frontend | React 18 + TypeScript 5.9 | UI and orchestration |
+| Desktop shell | Tauri 2 | Desktop runtime and IPC |
+| Backend | Rust | Provider kernel, context engine, persistence, local integrations |
+| State | Zustand | Frontend app state |
+| Editor | Monaco | Code editing |
+| Database | SQLite via `rusqlite` | Providers, threads, themes, settings, workspace state |
+| Transport | `reqwest` | Provider HTTP and streaming |
+| Search | `aurora-semantic` | Semantic indexing and retrieval |
 
-### Provider Presets
+## 3. Current Directory Shape
 
-| Provider | ID | Auth | Format | Features |
-|----------|-----|------|--------|----------|
-| OpenAI | `openai` | Bearer | OpenAI | Standard |
-| Anthropic | `anthropic` | x-api-key | Anthropic | Thinking mode |
-| **Fireworks** | `fireworks` | Bearer | OpenAI | Account sync, CLI integration, usage tracking |
-| GLM / Z.AI | `glm` | Bearer | OpenAI | Preserved thinking (200k context) |
-| DeepSeek | `deepseek` | Bearer | OpenAI | Reasoner mode (64k context) |
-| MiniMax M2.1 | `minimax` | x-api-key | Anthropic | Native thinking blocks (200k context) |
-| Ollama | `ollama` | None | OpenAI | Local inference |
-| LM Studio | `lmstudio` | None | OpenAI | Local inference |
+```text
+src/
+├── components/
+├── hooks/
+├── lib/
+├── services/
+│   ├── providers/
+│   │   ├── base-provider.ts
+│   │   ├── index.ts
+│   │   ├── provider-defaults.ts
+│   │   ├── rust-contract.ts
+│   │   ├── rust-message-mapper.ts
+│   │   ├── rust-provider.ts
+│   │   ├── rust-stream-state.ts
+│   │   └── types.ts
+│   ├── agent-prompt.ts
+│   ├── agent-service.ts
+│   ├── local-model-detector.ts
+│   └── provider-catalog.ts
+├── store/
+├── tools/
+├── themes/
+└── types/
 
----
-
-## 3. Directory Tree
-
-```
-src/                          # Frontend React code
-├── components/               # React components
-│   ├── agent/               # AI agent UI components
-│   ├── chat/                # Chat panel components
-│   ├── editor/              # Monaco editor wrapper
-│   ├── explorer/            # File explorer
-│   ├── git/                 # Git integration UI
-│   ├── layout/              # Layout components
-│   ├── modals/              # Modal dialogs
-│   └── ui/                  # Shared UI primitives
-├── hooks/                   # Custom React hooks
-├── services/                # Business logic services
-│   ├── providers/           # LLM provider implementations
-│   ├── agent-service.ts     # AI agent orchestration
-│   └── thread-service.ts    # Message persistence
-├── store/                   # Zustand state stores
-├── tools/                   # AI tool system
-│   ├── definitions/         # Tool schemas
-│   └── executors/           # Tool implementations
-├── types/                   # TypeScript type definitions
-└── themes/                  # Built-in theme files
-
-src-tauri/src/               # Rust backend code
-├── commands/                # Tauri command handlers
-├── context/                 # Turn-based context engine
-├── db/                      # Database layer
-│   ├── migrations/          # Schema migrations
-│   └── repositories/        # Data access
-├── mcp/                     # MCP client implementation
-├── services/                # Rust services
-├── checkpoints/             # File state snapshots
-└── undo_redo/               # Per-file undo/redo
+src-tauri/src/
+├── commands/
+│   ├── local_providers/
+│   ├── provider_catalog/
+│   └── provider_kernel/
+├── context/
+├── db/
+├── mcp/
+├── checkpoints/
+└── undo_redo/
 ```
 
----
+## 4. Provider Architecture
 
-## 4. Core Classes & Modules
+### Frontend side
 
-### AgentService (`src/services/agent-service.ts`)
+The frontend no longer owns per-provider implementations.
 
-**Exports:** Named: `AgentService`, `getAgentService`, `initAgentService`
+- `src/services/providers/index.ts`
+  Creates and registers a single `RustProvider`.
+- `src/services/providers/rust-provider.ts`
+  Thin provider bridge that calls Tauri commands:
+  - `aurora_provider_chat`
+  - `aurora_provider_stream`
+  - `cancel_aurora_provider_stream`
+- `src/services/providers/rust-contract.ts`
+  Defines the payload contract the frontend sends to Rust.
+- `src/services/providers/rust-message-mapper.ts`
+  Maps Aurora frontend message shapes to the Rust provider request contract and maps responses back.
+- `src/services/providers/rust-stream-state.ts`
+  Reassembles streamed content, reasoning text, and tool call deltas from backend events.
 
-**Depends on:** `IProvider`, `AgentToolRunner`, `toolRegistry`, `getMcpToolDefinitions`
+### Backend side
 
-**Constructor:** `new AgentService(config?: AgentConfig)`
+Rust owns the provider kernel in `src-tauri/src/commands/provider_kernel/`.
 
-**Key Methods:**
+- `types.rs`
+  Canonical Aurora provider request/response types
+- `presets.rs`
+  Provider format detection and endpoint behavior
+- `builders.rs`
+  Header construction and request body shaping
+- `parsers.rs`
+  Non-streaming response parsing
+- `streaming.rs`
+  SSE parsing, chunk emission, usage emission, cancellation tracking
+- `commands.rs`
+  Tauri entry points
 
-| Method | Signature | Purpose |
-|--------|-----------|---------|
-| `chat` | `(message: string, callbacks: AgentCallbacks, tools?: ToolDefinition[]): Promise<AgentResponse>` | Main chat method with tool loop |
-| `getContextState` | `(): Promise<ContextState \| null>` | Get current context usage |
-| `clearContext` | `(): Promise<void>` | Clear thread context |
-| `setProvider` | `(config: ProviderConfig): void` | Update LLM provider |
-| `updateConfig` | `(config: Partial<AgentConfig>): void` | Update service configuration |
-| `isActive` | `(): boolean` | Check if agent is running |
-| `setThreadId` | `(threadId: string): void` | Set current thread ID |
+### Supported provider formats
 
-### ProviderRegistry (`src/services/providers/index.ts`)
+The Rust kernel currently normalizes:
 
-**Exports:** Named: `providerRegistry`, `createProvider`, `initProvider`
+- OpenAI-compatible APIs
+- Anthropic-compatible APIs
+- local OpenAI-compatible servers with Aurora-specific quirks
 
-**Key Methods:**
+Frontend code does not branch on provider implementation anymore. It passes provider config and request data into the Rust kernel.
 
-| Method | Signature | Purpose |
-|--------|-----------|---------|
-| `register` | `(config: ProviderConfig): IProvider` | Register new provider |
-| `get` | `(id: string): IProvider \| undefined` | Get provider by ID |
-| `getCurrent` | `(): IProvider \| null` | Get active provider |
-| `getIds` | `(): string[]` | Get all registered provider IDs |
-| `has` | `(id: string): boolean` | Check if provider exists |
-| `remove` | `(id: string): boolean` | Remove a provider |
-| `setCurrent` | `(id: string): boolean` | Set active provider |
-| `clear` | `(): void` | Clear all providers |
+## 5. Provider Catalog
 
-**Additional Exports:** `createProvider()`, `getProvider()`, `initProvider()`, `isProviderInitialized()`, `updateProvider()`, `DEFAULT_CONTEXT_WINDOWS`, `getDefaultContextWindow()`, `getPresetContextWindow()`, `getPresetMaxOutput()`
+Built-in provider presets now live in Rust, not in the settings store.
 
-### useEditorStore (`src/store/useEditorStore.ts`)
+- Rust module: `src-tauri/src/commands/provider_catalog/`
+- Frontend bridge: `src/services/provider-catalog.ts`
+- Store hydration: `src/store/useSettingsStore.ts`
 
-**Exports:** Named: `useEditorStore`
+Current built-in catalog entries:
 
-**State:**
+| ID | Name | Base URL | Requires API Key |
+|----|------|----------|------------------|
+| `fireworks` | Fireworks AI | `https://api.fireworks.ai/inference/v1` | Yes |
+| `glm` | GLM-4.7 (Z.AI) | `https://api.z.ai/api/coding/paas/v4` | Yes |
+| `anthropic` | Anthropic | `https://api.anthropic.com/v1` | Yes |
+| `minimax` | MiniMax M2.1 | `https://api.minimax.io/anthropic/v1` | Yes |
+| `deepseek` | DeepSeek | `https://api.deepseek.com/v1` | Yes |
+| `openai` | OpenAI | `https://api.openai.com/v1` | Yes |
+| `lmstudio` | LM Studio | `http://localhost:1234/v1` | No |
+| `ollama` | Ollama | `http://localhost:11434/v1` | No |
 
-| Property | Type | Purpose |
-|----------|------|---------|
-| `tabs` | `Tab[]` | Open editor tabs |
-| `activeTabId` | `string \| null` | Currently active tab |
-| `fontSize` | `number` | Editor font size |
+## 6. Local Provider Stack
 
-**Tab Properties:** `id`, `path`, `filename`, `content`, `isDirty`, `isLargeFile` (>100KB), `isMediumFile` (>50KB), `isLoading`, `isDeleted`, `language`, `type` ('file' | 'browser')
+Local provider detection and Ollama management are Rust-owned.
 
-**Actions:** `openFile`, `closeTab`, `setActiveTab`, `updateTabContent`, `saveTabToDisk`, `restoreWorkspace`, `saveWorkspace`, `openBrowserTab`, `updateBrowserTab`, `reloadTabContent`, `markTabAsDeleted`, `setFontSize`, `setPanelSizes`, `setWorkspacePath`
+- Rust module: `src-tauri/src/commands/local_providers/`
+- Frontend service: `src/services/local-model-detector.ts`
 
-### Context Engine (`src-tauri/src/context/`)
+Rust commands exposed:
 
-**Module:** Rust-based turn-based conversation management
+- `local_provider_detect`
+- `local_provider_probe_custom`
+- `local_provider_show_ollama_model`
+- `local_provider_get_running_models`
+- `local_provider_load_ollama_model`
+- `local_provider_unload_ollama_model`
+- `local_provider_delete_ollama_model`
+- `local_provider_pull_ollama_model`
+- `cancel_local_provider_pull`
 
-**Types:** `Turn`, `ToolCallRound`, `ContextState`
+This means browser `fetch` is no longer the source of truth for LM Studio and Ollama behavior.
 
-**Tauri Commands:** `context_add_user_message`, `context_add_assistant_response`, `context_build_messages`, `context_build_request_messages`, `context_finalize_turn`, `context_add_tool_call`, `context_add_tool_result`, `context_get_state`, `context_needs_summarization`, `context_clear_thread`, `context_estimate_request_tokens`, `context_get_turns`, `context_init_from_thread`, `context_update_settings`
+## 7. Core Runtime Flow
 
-### AgentToolRunner (`src/services/agent-tool-runner.ts`)
+### Chat request flow
 
-**Exports:** Named: `AgentToolRunner`
+1. User sends a message in `ChatPanel` or `AgentModeLayout`.
+2. `AgentService` writes the user turn into the Rust context engine.
+3. `composeAgentSystemPrompt()` resolves skills and MCP summary.
+4. `context_build_messages` returns the final request message set.
+5. `AgentService` calls `provider.streamChat()` on the frontend `RustProvider`.
+6. `RustProvider` invokes `aurora_provider_stream`.
+7. Rust emits:
+   - content chunks
+   - reasoning chunks
+   - tool call deltas
+   - usage
+   - error
+8. `AgentService` executes tool calls and appends tool results into the context engine.
+9. Rust context finalizes the turn and may trigger summarization.
 
-**Constructor:** `new AgentToolRunner(options: AgentToolRunnerOptions)`
+### Local detection flow
 
-**Key Methods:**
+1. Settings or startup logic calls `detectLocalProviders()`.
+2. Frontend invokes `local_provider_detect`.
+3. Rust probes LM Studio and Ollama endpoints.
+4. Rust returns normalized provider/model capability data.
+5. Settings state updates provider config and capability flags.
 
-| Method | Signature | Purpose |
-|--------|-----------|---------|
-| `executeToolCalls` | `(toolCalls: ToolCallRequest[]): Promise<ToolExecutionBatch>` | Execute multiple tool calls |
+## 8. Key Frontend Modules
 
-### ToolRegistry (`src/tools/registry.ts`)
+| Module | File | Responsibility |
+|--------|------|----------------|
+| Agent orchestration | `src/services/agent-service.ts` | Tool loop, context engine integration, provider calls |
+| Provider bridge | `src/services/providers/rust-provider.ts` | Single active provider path |
+| Settings state | `src/store/useSettingsStore.ts` | Provider list, selected model, thinking and skills toggles |
+| Local model service | `src/services/local-model-detector.ts` | Rust bridge for LM Studio and Ollama |
+| Provider catalog bridge | `src/services/provider-catalog.ts` | Loads built-in provider presets from Rust |
+| Context builder | `src/services/context-builder.ts` | User info, project layout, rules, skill references |
 
-**Exports:** Named: `toolRegistry` (singleton), `ToolRegistry` (class)
+## 9. Key Backend Modules
 
-**Key Methods:**
+| Module | Directory | Responsibility |
+|--------|-----------|----------------|
+| Provider kernel | `src-tauri/src/commands/provider_kernel/` | Provider request/response normalization |
+| Provider catalog | `src-tauri/src/commands/provider_catalog/` | Built-in provider presets |
+| Local providers | `src-tauri/src/commands/local_providers/` | Detection and Ollama operations |
+| Context engine | `src-tauri/src/context/` | Turn storage, token budgeting, summarization |
+| MCP | `src-tauri/src/mcp/` | Server lifecycle and tool calls |
+| DB | `src-tauri/src/db/` | SQLite repositories |
 
-| Method | Signature | Purpose |
-|--------|-----------|---------|
-| `registerDefinition` | `(definition: ToolDefinition): void` | Register tool schema |
-| `registerExecutor` | `(name: string, executor: ToolExecutor): void` | Register implementation |
-| `executeToolCall` | `(toolCall: ToolCallRequest, preParsedArgs?): Promise<ToolCallResult>` | Execute a tool |
-| `getToolDefinitions` | `(): ToolDefinition[]` | Get all tool schemas |
-| `requiresApproval` | `(name: string): boolean` | Check if tool needs approval |
-| `getRiskLevel` | `(name: string): 'low' \| 'medium' \| 'high'` | Get tool risk level |
+## 10. Current Architectural Rules
 
-### databaseService (`src/services/database.ts`)
+- Provider-specific transport logic belongs in Rust.
+- Frontend provider code stays thin and generic.
+- Built-in provider metadata is loaded from Rust, not hardcoded in the store.
+- Local provider capability detection is Rust-owned.
+- New provider work should extend the Rust kernel, not reintroduce per-provider TypeScript clients.
 
-**Exports:** Named: `databaseService` (singleton), `DatabaseService` (class)
+## 11. Verification State
 
-**Purpose:** SQLite persistence layer via Tauri commands
+As of this documentation update:
 
-**Key Methods:** Provider CRUD, tool settings, workspace state, editor state, explorer state
+- `pnpm test` passes
+- `pnpm build` passes
+- the active provider path is Rust-only
+- old TypeScript provider classes are removed
 
-### FireworksService (`src/services/fireworks.ts`)
-
-**Exports:** Named functions: `detectFireworksCli`, `exportFireworksUsage`, `fetchFireworksOverview`
-
-**Types:** `FireworksCliStatus`, `FireworksOverview`, `FireworksUsageSummary`
-
-**Purpose:** Fireworks API integration and CLI usage export
-
-### Zustand State Stores
-
-| Store | File | Purpose |
-|-------|------|---------|
-| `useSettingsStore` | `src/store/useSettingsStore.ts` | LLM providers, UI settings |
-| `useChatStore` | `src/store/useChatStore.ts` | Chat messages, loading state |
-| `useThreadStore` | `src/store/useThreadStore.ts` | Thread persistence |
-| `useEditorStore` | `src/store/useEditorStore.ts` | Tabs, workspace |
-| `useWorkspaceStore` | `src/store/useWorkspaceStore.ts` | File explorer |
-| `useMcpStore` | `src/store/useMcpStore.ts` | MCP server connections |
-| `useCheckpointStore` | `src/store/useCheckpointStore.ts` | File snapshots |
-| `useContextStore` | `src/store/useContextStore.ts` | Token usage tracking |
-| `useGitStore` | `src/store/useGitStore.ts` | Git integration |
-| `useTaskStore` | `src/store/useTaskStore.ts` | Todo/task management |
-| `useSemanticStore` | `src/store/useSemanticStore.ts` | Semantic search |
-| `useAuditStore` | `src/store/useAuditStore.ts` | Audit timeline |
-| `usePendingChangesStore` | `src/store/usePendingChangesStore.ts` | Pending file changes |
-| `useUndoRedoStore` | `src/store/useUndoRedoStore.ts` | Per-file undo/redo |
-| `useTerminalStore` | `src/store/useTerminalStore.ts` | Terminal state |
-| `useUiStore` | `src/store/useUiStore.ts` | UI state |
-| `useDragStore` | `src/store/useDragStore.ts` | Drag/drop operations |
-
-### FireworksSettingsTab (`src/components/modals/FireworksSettingsTab.tsx`)
-
-**Exports:** Named: `FireworksSettingsTab`
-
-**Purpose:** Fireworks provider configuration panel with account sync and usage tracking
-
-**Features:** API key management, account ID config, account metadata sync, CLI (`firectl`) detection, 30-day usage metrics, model catalog management
-
-**Key State:** `overview` (account metadata), `usageSummary` (30-day usage), `cliStatus` (CLI availability)
-
----
-
-## 5. Dependency Graph
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Frontend (React/TS)                          │
-│  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐             │
-│  │ Agent Mode  │  │ Editor Panel │  │ Chat Panel   │             │
-│  │ (Full-chat) │  │ (Monaco)     │  │ (Timeline)   │             │
-│  └─────────────┘  └──────────────┘  └──────────────┘             │
-│         │                 │                 │                   │
-│         └─────────────────┴─────────────────┘                   │
-│                           │                                     │
-│                  ┌────────▼────────┐                           │
-│                  │  State Stores   │                           │
-│                  │   (Zustand)     │                           │
-│                  └────────┬────────┘                           │
-└───────────────────────────┼─────────────────────────────────────┘
-                            │ Tauri IPC
-                            │
-┌───────────────────────────▼─────────────────────────────────────┐
-│                  Rust Backend (Tauri)                           │
-│  ┌──────────────┐  ┌─────────────┐  ┌──────────────┐           │
-│  │Context Engine│  │   MCP       │  │ Checkpoint   │           │
-│  │(Turn-based)  │  │  Manager    │  │ Service      │           │
-│  └──────────────┘  └─────────────┘  └──────────────┘           │
-│  ┌──────────────┐  ┌─────────────┐  ┌──────────────┐           │
-│  │Undo/Redo     │  │  Services   │  │ Database     │           │
-│  │(Per-file)    │  │  (Thread,   │  │ (SQLite)     │           │
-│  │              │  │   Token)    │  │              │           │
-│  └──────────────┘  └─────────────┘  └──────────────┘           │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 6. Data Flow
-
-### AI Chat Request Flow
-
-1. **User sends message** → `AgentService.chat()`
-2. **Add user message** → `invoke("context_add_user_message")`
-3. **Build context** → `invoke("context_build_messages")` returns message history
-4. **Stream from LLM** → `provider.streamChat()` with callbacks
-5. **Record assistant response** → `invoke("context_add_assistant_response")`
-6. **Execute tools** → `AgentToolRunner.executeToolCalls()`
-7. **Finalize turn** → `invoke("context_finalize_turn")`
-
-### File Save Flow
-
-1. **User presses Ctrl+S** → `useEditorStore.saveTabToDisk()`
-2. **Write to disk** → `writeFileContent()` Tauri command
-3. **Mark clean** → Update `isDirty: false` in store
-4. **Record checkpoint** → `invoke("checkpoint_create")` (async)
-
----
-
-## 7. External Integrations
-
-### LLM Providers
-
-| Provider | Auth | Endpoint | Notes |
-|----------|------|----------|-------|
-| OpenAI | `Authorization: Bearer {key}` | `https://api.openai.com/v1/chat/completions` | Standard OpenAI API |
-| Anthropic | `x-api-key: {key}` | `https://api.anthropic.com/v1/messages` | Thinking mode via `thinking` blocks |
-| **Fireworks** | `Authorization: Bearer {key}` | `https://api.fireworks.ai/inference/v1/chat/completions` | Account sync, CLI (`firectl`) usage export, model catalog |
-| GLM / Z.AI | `Authorization: Bearer {key}` | `https://api.z.ai/api/coding/paas/v4/chat/completions` | Preserved thinking with `clear_thinking: false` |
-| DeepSeek | `Authorization: Bearer {key}` | `https://api.deepseek.com/v1/chat/completions` | Reasoner mode, 64k context |
-| MiniMax | `x-api-key: {key}` | `https://api.minimax.io/anthropic/v1/messages` | Native thinking blocks, Anthropic-compatible |
-| Ollama | None | `http://localhost:11434/v1/chat/completions` | Local inference |
-| LM Studio | None | `http://localhost:1234/v1/chat/completions` | Local inference |
-
-### MCP Servers

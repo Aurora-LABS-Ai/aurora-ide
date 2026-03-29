@@ -1,23 +1,40 @@
 # Documentation Index
 
-Aurora IDE technical documentation.
+Aurora technical documentation for the current Rust-provider-kernel architecture.
 
-**Last validated:** 2026-03-29 22:00 UTC
-
-**Last validation result:** ✅ 5 critical fixes, 6 stale additions, 0 drift warnings applied
+**Last updated:** 2026-03-29  
+**Current branch baseline:** `codex/aurora-provider-kernel`
 
 ## Files
 
-- **[01-ARCHITECTURE.md](./01-ARCHITECTURE.md)** — System overview, tech stack, core classes, data flow
-- **[02-CODE-STYLE-PATTERNS.md](./02-CODE-STYLE-PATTERNS.md)** — Naming conventions, patterns, imports, error handling
-- **[03-EXPANSION-GUIDE.md](./03-EXPANSION-GUIDE.md)** — Dev setup, adding features, providers, tools
+- [01-ARCHITECTURE.md](./01-ARCHITECTURE.md)  
+  Current system overview, module map, provider kernel placement, runtime flow.
 
-## Quick Reference
+- [02-CODE-STYLE-PATTERNS.md](./02-CODE-STYLE-PATTERNS.md)  
+  Implementation patterns for modular files, Tauri boundaries, stores, and provider work.
 
-| Command | Purpose |
-|---------|---------|
-| `pnpm tauri:dev` | Start development |
-| `pnpm test` | Run tests |
-| `pnpm tauri:build` | Build release |
+- [03-EXPANSION-GUIDE.md](./03-EXPANSION-GUIDE.md)  
+  How to add features, Tauri command domains, tools, and new providers in the Rust-first architecture.
 
-See root `README.md` for user documentation.
+- [04-PROVIDER-KERNEL.md](./04-PROVIDER-KERNEL.md)  
+  Current provider-kernel design and implementation status.
+
+- [GETTING-STARTED.md](./GETTING-STARTED.md)  
+  Setup, run, local model notes, and first-provider guidance.
+
+## Current Reality Check
+
+These docs are aligned to the current implementation where:
+
+- provider execution is Rust-owned
+- provider presets are loaded from Rust catalog data
+- local provider detection is Rust-owned
+- frontend provider code is a thin bridge
+
+## Verification Reference
+
+At the time of this doc refresh:
+
+- `pnpm test` passes
+- `pnpm build` passes
+

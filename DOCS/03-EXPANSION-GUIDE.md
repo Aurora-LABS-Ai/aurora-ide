@@ -1,255 +1,162 @@
 # Expansion Guide
 
----
+This guide reflects the current architecture. The important change is that provider expansion is now Rust-first.
 
-## Table of Contents
+## 1. Daily Commands
 
-- [1. Dev Environment Setup](#1-dev-environment-setup)
-- [2. Project Scripts Reference](#2-project-scripts-reference)
-- [3. Adding a New Feature — Checklist](#3-adding-a-new-feature--checklist)
-- [4. Adding a New LLM Provider](#4-adding-a-new-llm-provider)
-- [5. Adding a New AI Tool](#5-adding-a-new-ai-tool)
-- [6. Module Creation Checklist](#6-module-creation-checklist)
-- [7. Adding Tauri Commands](#7-adding-tauri-commands)
-- [8. Adding a Zustand Store](#8-adding-a-zustand-store)
+| Command | Purpose |
+|---------|---------|
+| `pnpm tauri:dev` | Run desktop app with Tauri + Vite |
+| `pnpm dev` | Frontend-only dev server |
+| `pnpm test` | Run Vitest |
+| `pnpm build` | Frontend production build |
+| `pnpm tauri:build` | Build desktop installer |
 
----
+## 2. General Feature Checklist
 
-## 1. Dev Environment Setup
+- add or update frontend UI under `src/components/`
+- add or update state in the relevant store under `src/store/`
+- add a frontend service under `src/services/` if the feature needs orchestration
+- add Rust commands under `src-tauri/src/commands/` if desktop capabilities or backend ownership are needed
+- register new commands in `src-tauri/src/lib.rs`
+- add tests if the feature changes behavior at a service or store boundary
+- update `DOCS/` when architecture or extension steps change
 
-```bash
-# Clone the repository
-git clone <repo-url> aurora-ide
-cd aurora-ide
+## 3. Adding a New Provider
 
-# Install dependencies
-pnpm install
+Do not add a new TypeScript provider class.
 
-# Run development server (Tauri + Vite)
-pnpm tauri:dev
+### Backend steps
 
-# Or frontend only (runs on http://localhost:5173)
-pnpm dev
+1. Add or extend the preset/config logic in:
+   - `src-tauri/src/commands/provider_catalog/types.rs`
+   - `src-tauri/src/commands/provider_kernel/presets.rs`
+
+2. If the provider is OpenAI-compatible or Anthropic-compatible:
+   - extend existing request shaping in `builders.rs`
+   - extend parsing/streaming behavior in `parsers.rs` and `streaming.rs`
+
+3. If the provider has unique quirks:
+   - add a focused helper module or helper function in `provider_kernel/`
+   - do not bloat `commands.rs`
+
+4. If the provider should appear in Settings by default:
+   - add it to `built_in_provider_presets()` in `provider_catalog/types.rs`
+
+### Frontend steps
+
+Usually no new provider class is needed.
+
+Only update frontend if required:
+
+- `src/services/provider-catalog.ts` types if new fields are added
+- `src/store/useSettingsStore.ts` if preset hydration rules change
+- provider settings UI if the provider introduces new user-visible config
+
+## 4. Adding a New Local Provider
+
+If the provider is local-model related, treat it as a first-class local adapter.
+
+Use:
+
+- `src-tauri/src/commands/local_providers/detect.rs`
+- `src-tauri/src/commands/local_providers/http.rs`
+- `src-tauri/src/commands/local_providers/types.rs`
+
+If it supports lifecycle actions like Ollama:
+
+- add a dedicated file similar to `ollama.rs`
+- expose commands through `commands.rs`
+- wrap them in `src/services/local-model-detector.ts`
+
+Do not hide local-provider logic inside generic provider code if it needs detection, probing, or model management.
+
+## 5. Adding a New Tauri Command Domain
+
+Preferred structure:
+
+```text
+src-tauri/src/commands/my_domain/
+├── commands.rs
+├── mod.rs
+├── types.rs
+└── helpers.rs
 ```
 
----
+Pattern:
 
-## 2. Project Scripts Reference
+- `commands.rs` for Tauri entry points
+- `types.rs` for payloads
+- helper files for real logic
+- `mod.rs` for exports
 
-| Script | Command | Purpose |
-|--------|---------|---------|
-| `dev` | `vite` | Frontend dev server only |
-| `build` | `tsc -b && vite build` | Production build |
-| `preview` | `vite preview` | Preview production build |
-| `tauri:dev` | `tauri dev` | Full Tauri dev (Rust rebuilds) |
-| `tauri:build` | `tauri build` | Build desktop app installer |
-| `test` | `vitest --run` | Run tests once |
-| `test:watch` | `vitest` | Run tests in watch mode |
-| `test:coverage` | `vitest --run --coverage` | Run tests with coverage |
-| `lint` | `eslint .` | Lint code |
-| `tauri` | `tauri` | Tauri CLI access |
+Then register in `src-tauri/src/lib.rs`.
 
----
+## 6. Adding a Frontend Service
 
-## 3. Adding a New Feature — Checklist
+Good service responsibilities:
 
-- [ ] Create feature directory under `src/components/<feature>/`
-- [ ] Add barrel `index.ts` exporting public API
-- [ ] Create Zustand store in `src/store/use<Feature>Store.ts` if state needed
-- [ ] Add Tauri commands in `src-tauri/src/commands/<feature>.rs` if backend needed
-- [ ] Register commands in `src-tauri/src/lib.rs` invoke handler
-- [ ] Add types to `src/types/` if shared
-- [ ] Update `App.tsx` or `MainLayout.tsx` to integrate
-- [ ] Test with `pnpm tauri:dev`
+- bridge to Tauri
+- request/response mapping
+- stream-state assembly
+- domain-specific orchestration
 
----
+Bad service responsibilities:
 
-## 4. Adding a New LLM Provider
+- giant mixed UI and protocol logic
+- hardcoded provider presets duplicated from Rust
+- hidden persistence logic that belongs in stores or Rust
 
-**Files to modify/create:**
+## 7. Adding a Tool
 
-1. **Add preset** in `src/services/providers/provider-presets.ts`:
+1. Define the schema under `src/tools/definitions/`
+2. Implement the executor under `src/tools/executors/`
+3. Register it through the tool registry
+4. Verify risk level and approval behavior
+5. Test agent execution flow if the tool materially changes chat behavior
 
-```typescript
-export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
-  myprovider: {
-    id: 'myprovider',
-    name: 'MyProvider',
-    baseFormat: 'openai',
-    chatEndpoint: '/chat/completions',
-    authType: 'bearer',
-    authHeader: 'Authorization',
-    defaultContextWindow: 128000,
-    defaultMaxOutput: 8192,
-  },
-};
-```
+## 8. Adding Settings
 
-2. **Create provider class** `src/services/providers/myprovider-provider.ts`:
+Use the existing persistence pattern:
 
-```typescript
-import { OpenAIProvider } from './openai-provider';
-export class MyProvider extends OpenAIProvider {
-  // Override methods as needed
-}
-```
+- add frontend type/state in `useSettingsStore.ts`
+- ensure DB persistence paths exist
+- if the setting is backend-owned, keep the source of truth in Rust and only hydrate/use it in the store
 
-3. **Register in factory** `src/services/providers/index.ts`:
+Provider-related settings should prefer Rust ownership whenever they affect provider behavior.
 
-```typescript
-import { MyProvider } from './myprovider-provider';
-// In createProvider():
-if (type === 'myprovider') {
-  return new MyProvider({ ...config, providerType: type });
-}
-```
+## 9. Files to Touch for Current Provider Work
 
----
+### Frontend
 
-## 5. Adding a New AI Tool
+- `src/services/providers/rust-provider.ts`
+- `src/services/providers/rust-message-mapper.ts`
+- `src/services/providers/rust-stream-state.ts`
+- `src/services/provider-catalog.ts`
+- `src/services/local-model-detector.ts`
+- `src/store/useSettingsStore.ts`
 
-**Files to modify/create:**
+### Rust
 
-1. **Define tool** in `src/tools/definitions/<category>/my-tool.ts`:
+- `src-tauri/src/commands/provider_kernel/`
+- `src-tauri/src/commands/provider_catalog/`
+- `src-tauri/src/commands/local_providers/`
 
-```typescript
-import type { ToolDefinition } from '../../types';
+## 10. Verification Checklist
 
-export const myToolDefinition: ToolDefinition = {
-  type: 'function',
-  function: {
-    name: 'my_tool',
-    description: 'Does something useful',
-    parameters: {
-      type: 'object',
-      properties: {
-        arg1: { type: 'string', description: 'First argument' },
-      },
-      required: ['arg1'],
-    },
-  },
-  riskLevel: 'low',
-  category: 'filesystem',
-};
-```
+Before you claim a provider-related change is done:
 
-2. **Register in barrel** `src/tools/definitions/<category>/index.ts`:
+- run `pnpm test`
+- run `pnpm build`
+- if Rust changed, run `cargo check --manifest-path src-tauri/Cargo.toml`
+- verify at least one real provider path if the change touched live provider behavior
 
-```typescript
-export { myToolDefinition } from './my-tool';
-```
+## 11. Current Anti-Patterns
 
-3. **Add to registry** in `src/tools/definitions/index.ts`:
+Avoid reintroducing:
 
-```typescript
-import { myToolDefinition } from './<category>';
-export const allTools = [/* ... */, myToolDefinition];
-```
+- per-provider TypeScript clients
+- store-owned provider preset catalogs
+- browser-side local provider probing
+- one-file Rust command modules that mix types, HTTP, parsing, and command handlers
 
-4. **Create executor** in `src/tools/executors/my-tool.ts`:
-
-```typescript
-export async function executeMyTool(args: { arg1: string }): Promise<string> {
-  // Implementation
-  return 'Result';
-}
-```
-
-5. **Register executor** in `src/tools/executors/index.ts`:
-
-```typescript
-import { executeMyTool } from './my-tool';
-// In registerAllExecutors():
-registry.registerExecutor('my_tool', executeMyTool);
-```
-
----
-
-## 6. Module Creation Checklist
-
-- [ ] File name in kebab-case: `my-module.ts`
-- [ ] Main export is the primary class/function
-- [ ] Types exported separately with `export type`
-- [ ] Barrel file updated if in a folder
-- [ ] No `any` types used
-- [ ] Async functions return `Promise<T>`
-- [ ] Error handling with typed errors
-- [ ] Comments for public API methods
-- [ ] **Keep files under 300 lines** — split if needed
-
----
-
-## 7. Adding Tauri Commands
-
-**Files to modify/create:**
-
-1. **Create command file** `src-tauri/src/commands/my_feature.rs`:
-
-```rust
-use tauri::State;
-use crate::db::Database;
-use std::sync::Mutex;
-
-#[tauri::command]
-pub async fn my_command(
-    arg: String,
-    db: State<'_, Mutex<Database>>,
-) -> Result<String, String> {
-    // Implementation
-    Ok(result)
-}
-```
-
-2. **Export in mod.rs** `src-tauri/src/commands/mod.rs`:
-
-```rust
-pub mod my_feature;
-pub use my_feature::*;
-```
-
-3. **Register in lib.rs** `src-tauri/src/lib.rs`:
-
-```rust
-.invoke_handler(tauri::generate_handler![
-    // ... existing commands
-    commands::my_command,
-])
-```
-
----
-
-## 8. Adding a Zustand Store
-
-**Create file** `src/store/useMyFeatureStore.ts`:
-
-```typescript
-import { create } from "zustand";
-import { databaseService } from "../services/database";
-
-interface MyFeatureState {
-  // State
-  data: string[];
-  isLoading: boolean;
-  
-  // Actions
-  setData: (data: string[]) => void;
-  initializeFromDatabase: () => Promise<void>;
-  saveToDatabase: () => Promise<void>;
-}
-
-export const useMyFeatureStore = create<MyFeatureState>((set, get) => ({
-  data: [],
-  isLoading: false,
-  
-  setData: (data) => set({ data }),
-  
-  initializeFromDatabase: async () => {
-    const data = await databaseService.getMyData();
-    set({ data });
-  },
-  
-  saveToDatabase: async () => {
-    await databaseService.saveMyData(get().data);
-  },
-}));
-```

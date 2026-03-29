@@ -1,229 +1,187 @@
-# Provider Kernel Blueprint
+# Provider Kernel
 
-## Purpose
+This document now describes the implemented Aurora provider kernel, not just the target idea.
 
-Aurora should own its provider contract instead of letting any SDK or wire format define app behavior.
+## 1. Goal
 
-This document defines the target architecture for a bulletproof provider layer that supports:
+Aurora owns its provider contract.
 
-- OpenAI-compatible providers
-- Anthropic-compatible providers
-- local providers like LM Studio and Ollama
-- custom providers with odd compatibility edges
-- tool calling
-- reasoning streams
-- cancellation
-- future backend adapters without frontend rewrites
+The frontend should not care whether the request goes to OpenAI, Anthropic, Fireworks, DeepSeek, GLM, MiniMax, LM Studio, Ollama, or a custom-compatible endpoint. It should talk to one provider bridge and receive one normalized stream shape back.
 
-## Design Rule
+## 2. Current Implemented Shape
 
-Aurora owns the canonical model.
+### Frontend contract
 
-Providers are adapters.
+The frontend uses:
 
-SDKs are optional implementation details.
+- `src/services/providers/rust-provider.ts`
+- `src/services/providers/rust-contract.ts`
+- `src/services/providers/rust-message-mapper.ts`
+- `src/services/providers/rust-stream-state.ts`
 
-## Current Problem
-
-Right now provider behavior is spread across:
-
-- TypeScript request builders
-- TypeScript stream parsers
-- Rust proxy commands
-- Rust local-provider normalization
-- settings-driven branching
-
-That makes migration risky because transport, message shape, and provider quirks are coupled together.
-
-## Target Shape
-
-Split the provider stack into four layers.
-
-### 1. Aurora Contract Layer
-
-Aurora-owned types that never depend on vendor SDKs:
-
-- `AuroraProviderConfig`
-- `AuroraMessage`
-- `AuroraAssistantMessage`
-- `AuroraToolDefinition`
-- `AuroraToolCall`
-- `AuroraToolResult`
-- `AuroraUsage`
-- `AuroraStreamEvent`
-- `AuroraProviderCapabilities`
-
-This layer should match what `AgentService` already needs, not what a provider SDK happens to expose.
-
-### 2. Message Mapping Layer
-
-Aurora-owned request and response mappers:
-
-- Aurora -> OpenAI-compatible
-- Aurora -> Anthropic-compatible
-- OpenAI-compatible -> Aurora
-- Anthropic-compatible -> Aurora
-
-This layer owns:
-
-- assistant `tool_calls`
-- `tool_call_id`
-- `reasoning_content`
-- Anthropic `tool_use`
-- Anthropic `tool_result`
-- empty/null assistant content edge cases
-- local reasoning field aliases
-
-### 3. Transport Layer
-
-A minimal runtime interface:
-
-- `send_chat`
-- `stream_chat`
-- `cancel_stream`
-
-This layer does not know about UI.
-
-It only knows:
-
-- URL construction
-- headers
-- body
-- retries and timeouts
-- streaming bytes or SDK chunks
-
-### 4. Event Normalization Layer
-
-Everything emitted to the frontend should be normalized before it leaves the backend:
-
-- `token`
-- `reasoning`
-- `tool_call_delta`
-- `usage`
-- `error`
-- `done`
-
-The frontend should not care whether a provider used SSE, JSON lines, SDK streams, or custom event blocks.
-
-## Canonical Capabilities
-
-Do not branch on provider name unless unavoidable.
-
-Branch on capabilities:
-
-- `uses_openai_tool_messages`
-- `uses_anthropic_content_blocks`
-- `supports_reasoning_stream`
-- `supports_usage_in_stream`
-- `supports_tool_call_stream`
-- `supports_custom_headers`
-- `supports_custom_body_params`
-- `supports_local_reasoning_aliases`
-- `requires_api_key`
-
-That gives Aurora one policy model even when provider names change.
-
-## Local Providers Are First-Class
-
-LM Studio and Ollama should not be treated as generic custom providers.
-
-They need their own compatibility guarantees because Aurora already depends on:
-
-- local model discovery
-- API-key optional flows
-- toggled thinking support
-- varying reasoning field names
-- streaming quirks
-
-Keep them inside the provider kernel as first-class adapters.
-
-## Frontend Contract Rules
-
-`AgentService` should continue to rely on one stable interface:
+The active surface is still:
 
 - `streamChat(request, callbacks)`
 - `chat(request)`
 - `cancelRequest()`
 
-The provider kernel can move to Rust internally, but those semantics should stay stable until a later intentional redesign.
+### Backend contract
 
-## Rollout Strategy
+Rust owns:
 
-### Step 1
+- canonical provider request types
+- provider format selection
+- request body shaping
+- header construction
+- streaming byte parsing
+- non-streaming response parsing
+- cancellation
+- usage emission
 
-Freeze the Aurora contract in code and docs before changing transport.
+Implementation lives in:
 
-### Step 2
+- `src-tauri/src/commands/provider_kernel/types.rs`
+- `src-tauri/src/commands/provider_kernel/presets.rs`
+- `src-tauri/src/commands/provider_kernel/builders.rs`
+- `src-tauri/src/commands/provider_kernel/parsers.rs`
+- `src-tauri/src/commands/provider_kernel/streaming.rs`
+- `src-tauri/src/commands/provider_kernel/commands.rs`
 
-Move transport behind a backend adapter while keeping current frontend provider semantics.
+## 3. Command Surface
 
-### Step 3
+Current Tauri commands:
 
-Migrate one provider at a time behind feature routing.
+- `aurora_provider_chat`
+- `aurora_provider_stream`
+- `cancel_aurora_provider_stream`
 
-### Step 4
+These are the only active provider-execution commands the frontend should rely on.
 
-Delete old provider implementations only after transcript-level parity tests pass.
+## 4. Aurora Contract Types
 
-## Required Tests
+Key Rust-side contract types:
 
-### Message-shape fixtures
+- `AuroraProviderConfig`
+- `AuroraProviderRequest`
+- `AuroraMessage`
+- `AuroraToolDefinition`
+- `AuroraToolCall`
+- `AuroraProviderResponse`
+- `AuroraAssistantMessage`
+- `AuroraUsage`
+- `AuroraStreamChunk`
 
-Golden fixtures for:
+These are defined in `types.rs` and mirrored by the frontend rust-contract mapper.
 
-- assistant text only
-- assistant reasoning plus text
-- assistant tool call
-- tool result follow-up
-- Anthropic tool blocks
-- LM Studio reasoning alias handling
+## 5. Supported Normalization Paths
 
-### Transcript tests
+The kernel currently handles:
 
-Full turn sequences:
+- OpenAI-compatible request/response flow
+- Anthropic-compatible request/response flow
+- reasoning text from `reasoning` and `reasoning_content`
+- assistant `tool_calls`
+- tool call deltas while streaming
+- tool usage emission
+- finish reasons and stream completion
 
-1. user -> assistant tool call
-2. tool result -> assistant follow-up
-3. long thread -> summarization path
-4. cancel during stream
+This is the critical shift from the previous architecture: normalization happens in Rust before the frontend sees the stream.
 
-### Settings tests
+## 6. Presets and Catalog
 
-Verify that these fields still affect runtime behavior:
+Provider metadata is split cleanly:
 
-- `providerType`
-- `customHeaders`
-- `customParams`
-- `defaultTemperature`
-- `defaultMaxTokens`
-- `supportsThinking`
-- `supportsToolStream`
-- `requiresApiKey`
+- runtime/provider-format behavior:
+  `src-tauri/src/commands/provider_kernel/presets.rs`
+- built-in catalog shown to users:
+  `src-tauri/src/commands/provider_catalog/types.rs`
 
-## Permanent Fallback Rule
+That separation matters:
 
-Aurora should keep a raw transport fallback path for providers that do not fit a higher-level adapter cleanly.
+- the kernel decides how to talk to a provider
+- the catalog decides what appears in Settings by default
 
-This is especially important for:
+## 7. Local Providers
 
-- `custom`
-- LM Studio
-- Ollama
-- future self-hosted or partially compatible endpoints
+Local providers are not treated as random custom endpoints.
 
-## Success Condition
+Dedicated Rust module:
 
-The provider kernel is successful when:
+- `src-tauri/src/commands/local_providers/`
 
-- the frontend does not care which backend adapter is used
-- transcripts remain stable across providers
-- cancellation works reliably
-- tool-call chains survive round trips
-- local providers remain first-class
-- adding a new provider means writing an adapter, not editing app-wide logic
+Current supported local flows:
 
-## Non-Goal
+- detect LM Studio
+- detect Ollama
+- probe custom local URLs
+- list running Ollama models
+- pull Ollama models with progress events
+- load and unload Ollama models
+- delete Ollama models
 
-The goal is not to eliminate every provider-specific file.
+Frontend wrapper:
 
-The goal is to isolate provider-specific code so it stops leaking into the rest of Aurora.
+- `src/services/local-model-detector.ts`
+
+## 8. Current Event Model
+
+The frontend receives normalized events through `RustProvider` listeners.
+
+Current event families:
+
+- chunk events
+- usage events
+- error events
+
+Chunk payloads can contain:
+
+- content
+- reasoning content
+- tool call deltas
+- done flag
+- finish reason
+
+`rust-stream-state.ts` is responsible for assembling the final assistant message from those normalized pieces.
+
+## 9. What Was Removed
+
+This provider kernel replaced the previous duplicated structure.
+
+Removed old paths include:
+
+- TypeScript provider-specific classes
+- TypeScript provider preset catalog as the runtime source of truth
+- old generic Rust `llm.rs` proxy path
+- browser-owned local provider probing
+
+The frontend still has provider-related files, but they are generic kernel-bridge files now, not vendor clients.
+
+## 10. Design Rules Going Forward
+
+- add provider-specific logic in Rust
+- keep frontend provider code thin
+- keep local-provider logic first-class
+- split Rust modules by concern
+- avoid bloated one-file kernels
+- update both provider catalog and runtime presets when built-in provider metadata changes
+
+## 11. Current Gaps and Boundaries
+
+The kernel is implemented, but this is still the practical boundary:
+
+- frontend stores still decide selected model/provider state
+- prompt/context assembly remains frontend-owned
+- tool execution remains frontend-orchestrated through `AgentService`
+
+That is intentional. The provider kernel owns transport and normalization, not the entire chat application.
+
+## 12. Verification Status
+
+Current branch status at the time of this doc update:
+
+- Rust provider pipeline is the active path
+- local provider detection is Rust-owned
+- built-in provider catalog is Rust-owned
+- `pnpm test` passes
+- `pnpm build` passes
+

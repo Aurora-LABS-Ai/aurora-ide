@@ -1,252 +1,182 @@
 # Code Style & Patterns
 
----
+This document describes the current implementation patterns that matter in this repo after the Rust provider-kernel migration.
 
-## Table of Contents
-
-- [1. Naming Conventions](#1-naming-conventions)
-- [2. File & Module Organization](#2-file--module-organization)
-- [3. Design Patterns in Use](#3-design-patterns-in-use)
-- [4. Import Order & Style](#4-import-order--style)
-- [5. Error Handling Strategy](#5-error-handling-strategy)
-- [6. Async Patterns](#6-async-patterns)
-- [7. Type System Usage](#7-type-system-usage)
-- [8. Configuration Management](#8-configuration-management)
-
----
-
-## 1. Naming Conventions
+## 1. Naming
 
 | Entity | Convention | Example |
 |--------|------------|---------|
-| Files | kebab-case | `agent-service.ts`, `use-editor-store.ts` |
-| Components | PascalCase | `MainLayout.tsx`, `ChatPanel.tsx` |
-| Classes | PascalCase | `AgentService`, `ProviderRegistry` |
-| Interfaces | PascalCase | `IProvider`, `AgentConfig` |
-| Type aliases | PascalCase | `ToolDefinition`, `Message` |
-| Functions | camelCase | `createProvider`, `getAgentService` |
-| Variables | camelCase | `activeTabId`, `isLoading` |
-| Constants | UPPER_SNAKE_CASE | `LARGE_FILE_THRESHOLD`, `DEFAULT_CONTEXT_WINDOWS` |
-| Zustand stores | camelCase prefix `use` | `useEditorStore`, `useSettingsStore` |
-| React hooks | camelCase prefix `use` | `useAutoSave`, `useWorkspaceBootstrap` |
-| Enum members | UPPER_SNAKE_CASE | `BUILT_IN_THEME_IDS.DARK` |
+| TypeScript files | kebab-case | `agent-service.ts` |
+| Rust modules | snake_case | `provider_kernel`, `local_providers` |
+| React components | PascalCase | `ChatPanel.tsx` |
+| Zustand stores | `use` prefix | `useSettingsStore.ts` |
+| Services | noun or domain service | `provider-catalog.ts`, `local-model-detector.ts` |
+| Tauri commands | verb-oriented snake_case | `aurora_provider_stream` |
 
----
+## 2. Organize by Concern, Not by Dumping Ground
 
-## 2. File & Module Organization
+The current codebase is moving toward small files per concern.
 
-Files are grouped by **feature/domain**, not by type:
+Good examples:
 
-```
-src/
-├── components/
-│   ├── agent/          # Agent-related components
-│   ├── chat/           # Chat panel components
-│   ├── editor/         # Monaco editor wrapper
-│   └── ...
-├── services/           # Business logic
-├── store/              # Zustand stores
-├── hooks/              # React hooks
-├── tools/              # AI tool system
-├── types/              # TypeScript types
-└── lib/                # Utility functions
-```
+- `src/services/providers/rust-provider.ts`
+- `src/services/providers/rust-message-mapper.ts`
+- `src/services/providers/rust-stream-state.ts`
+- `src-tauri/src/commands/provider_kernel/builders.rs`
+- `src-tauri/src/commands/provider_kernel/parsers.rs`
+- `src-tauri/src/commands/provider_kernel/streaming.rs`
+- `src-tauri/src/commands/local_providers/detect.rs`
+- `src-tauri/src/commands/local_providers/ollama.rs`
 
-Each feature folder contains its own index barrel file for clean imports.
+Rule:
 
----
+- split transport, mapping, parsing, and orchestration into separate files
+- do not rebuild giant provider files or giant catch-all command modules
 
-## 3. Design Patterns in Use
+## 3. Frontend/Backend Boundary Pattern
 
-| Pattern | Where Used | Purpose |
-|---------|------------|---------|
-| **Singleton** | `AgentService`, `ProviderRegistry` | Global service instances |
-| **Factory** | `createProvider()` | Provider instantiation by type |
-| **Observer** | Zustand stores | Reactive state updates |
-| **Command** | Tauri invoke handlers | Decoupled backend operations |
-| **Repository** | `src-tauri/src/db/repositories/` | Data access abstraction |
-| **Provider/Preset** | `provider-presets.ts` | Centralized provider config |
+Aurora now uses a thin frontend bridge over Rust for provider-related work.
 
----
+Preferred pattern:
 
-## 4. Import Order & Style
+1. frontend service or store gathers app state
+2. frontend maps state into a narrow invoke payload
+3. Rust command module owns provider-specific behavior
+4. frontend receives normalized data only
 
-Standard import grouping (from `src/services/agent-service.ts`):
+Example domains using this pattern:
 
-```typescript
-// 1. External libraries
-import { invoke } from "@tauri-apps/api/core";
+- provider catalog
+- provider streaming
+- local model detection
+- Ollama operations
 
-// 2. Internal absolute imports
-import { getToolsForModel } from "../tools";
-import type { ToolDefinition } from "../tools/types";
+## 4. Provider Pattern
 
-// 3. Relative imports from same directory
-import { AgentToolRunner } from "./agent-tool-runner";
-import type { AgentConfig } from "./agent-service.types";
-```
+Current rule:
 
-Barrel files re-export selectively:
+- frontend owns one provider implementation: `RustProvider`
+- Rust owns provider-specific logic
 
-```typescript
-// src/services/index.ts
-export * from './providers';
-export { AgentService, getAgentService } from './agent-service';
-export type { AgentConfig } from './agent-service.types';
-```
+Do:
 
----
+- extend `src-tauri/src/commands/provider_kernel/`
+- keep `src/services/providers/` generic
+- keep message mapping and stream assembly isolated
 
-## 5. Error Handling Strategy
+Do not:
 
-Frontend: Try/catch with user-friendly messages via callbacks:
+- add new `openai-provider.ts` / `anthropic-provider.ts` style classes
+- hardcode provider presets in Zustand
+- bypass the Rust provider kernel from the UI
 
-```typescript
-// From AgentService
-private getProvider(): IProvider {
-  if (!this.provider) {
-    throw new Error("Provider not initialized. Call setProvider first.");
-  }
-  return this.provider;
-}
+## 5. Tauri Command Pattern
 
-// Async with callback error handling
-await provider.streamChat(params, {
-  onError: (error) => callbacks.onError?.(error),
-});
-```
+Use small command entry points that delegate to focused modules.
 
-Rust: Result types with explicit error mapping:
+Pattern:
 
 ```rust
-// From context/types.rs
-pub fn get_final_response(&self) -> Option<&str> {
-    self.rounds.last().map(|r| r.response.as_str())
+#[tauri::command]
+pub async fn some_command(args: Args) -> Result<Response, String> {
+    inner_module::do_work(args).await
 }
 ```
 
----
+Keep these concerns separate:
 
-## 6. Async Patterns
+- command registration
+- request building
+- HTTP logic
+- stream parsing
+- emitted events
+- type definitions
 
-**async/await** throughout. No callbacks except for streaming:
+## 6. Zustand Store Pattern
 
-```typescript
-// From agent-service.ts
-public async chat(
-  userMessage: string,
-  callbacks: AgentCallbacks,
-): Promise<AgentResponse> {
-  const preparedContext = await this.prepareAgentContext(...);
-  
-  while (this.isRunning && iteration < this.config.maxToolIterations!) {
-    const response = await provider.streamChat(params, {
-      onToken: callbacks.onToken,
-      onThinking: callbacks.onThinking,
-    });
-    // ...
-  }
-}
-```
+Stores are responsible for:
 
-**Streaming callbacks** for real-time updates during long operations.
+- UI-facing state
+- persistence coordination
+- invoking services
 
-**Tauri invoke pattern** for Rust backend communication:
+Stores should not become protocol implementations.
 
-```typescript
-// Async invoke with type safety
-const result = await invoke<T>("command_name", { arg1, arg2 });
+Current examples:
 
-// Error handling for Rust errors
-try {
-  await invoke("write_file_content", { path, content });
-} catch (error) {
-  console.error("Failed to write file:", error);
-}
-```
+- `useSettingsStore.ts` owns selected provider/model state
+- provider presets are loaded through `providerCatalogService`
+- `useThemeStore.ts` now degrades cleanly in non-Tauri test environments instead of assuming Tauri exists
 
----
+## 7. Error Handling
 
-## 7. Type System Usage
+Frontend:
 
-**Strict mode enabled.** Interfaces for object shapes, types for unions:
+- normalize errors close to the boundary
+- keep user-facing fallbacks concise
+- do not let transport-specific errors leak into components if a service can normalize them
 
-```typescript
-// From src/types/index.ts
-export interface Tab {
-  id: string;
-  path: string;
-  filename: string;
-  content: string;
-  isDirty: boolean;
-  language: string;
-  type?: 'file' | 'browser';
-}
+Rust:
 
-export type TimelineEventType = 'thinking' | 'tool' | 'content';
-```
+- return `Result<T, String>` for Tauri commands
+- keep parsing/building helpers explicit
+- emit stream errors through event channels before returning command failure when needed
 
-**Generics** for reusable patterns:
+## 8. Async Patterns
 
-```typescript
-// From provider types
-export interface StreamCallbacks<T> {
-  onToken: (token: string) => void;
-  onComplete: (response: T) => void;
-}
-```
+TypeScript:
 
-**Discriminated unions** for message types:
+- use `async/await`
+- batch independent reads with `Promise.all`
+- keep stream state in dedicated objects, not ad hoc mutable component logic
 
-```typescript
-export type Message =
-  | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
-  | { role: 'assistant'; content: string; tool_calls?: ToolCall[] }
-  | { role: 'tool'; content: string; tool_call_id: string };
-```
+Rust:
 
----
+- split async HTTP work from sync shaping/parsing helpers
+- keep command functions thin
 
-## 8. Configuration Management
+## 9. Configuration Pattern
 
-Settings stored in SQLite via Tauri commands. Access via Zustand stores:
+Current provider configuration sources:
 
-```typescript
-// From useSettingsStore.ts
-export const useSettingsStore = create<SettingsState>((set, get) => ({
-  // State from DB
-  providers: [],
-  selectedModel: '',
-  autoApproveTools: false,
-  
-  // Initialize from database on app start
-  initializeFromDatabase: async () => {
-    const settings = await databaseService.getSettings();
-    set({ /* ... */ });
-  },
-  
-  // Persist changes back to DB
-  saveToDatabase: async () => {
-    await databaseService.saveSettings(get());
-  },
-}));
-```
+- built-in provider presets from Rust provider catalog
+- persisted provider rows in SQLite
+- local capability updates from Rust local-provider detection
 
-Provider presets are static configuration in `provider-presets.ts`:
+Avoid stale config duplication.
 
-```typescript
-export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
-  openai: { baseFormat: 'openai', authType: 'bearer', ... },
-  anthropic: { baseFormat: 'anthropic', authType: 'x-api-key', ... },
-};
-```
+If provider metadata changes, update:
 
-### Performance Thresholds
+- `src-tauri/src/commands/provider_catalog/types.rs`
+- any matching frontend types in `src/services/provider-catalog.ts`
+- settings hydration logic in `src/store/useSettingsStore.ts`
 
-File size thresholds for editor performance optimization (in `useEditorStore.ts`):
+## 10. Testing Pattern
 
-| Threshold | Size | Behavior |
-|-----------|------|----------|
-| `LARGE_FILE_THRESHOLD` | 100KB | Disable features, use plaintext |
-| `MEDIUM_FILE_THRESHOLD` | 50KB | Reduced features, keep syntax |
+When behavior is boundary-heavy, test the seam.
+
+Examples:
+
+- stream and response mapping logic
+- theme validation and integration behavior
+- skill prompt composition
+- tool runner behavior
+
+Recent stabilization fixes reinforced two rules:
+
+- test mode must not assume Tauri exists
+- tests should match the real runtime contract, not an older prompt shape
+
+## 11. Documentation Pattern
+
+When architecture changes materially, update docs by replacing stale sections rather than layering patches over obsolete mental models.
+
+For provider changes specifically:
+
+- architecture docs
+- expansion docs
+- provider-kernel docs
+- getting-started docs
+
+must stay aligned with the Rust-owned pipeline.
+

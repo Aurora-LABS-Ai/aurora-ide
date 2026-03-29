@@ -1,142 +1,136 @@
-# Getting Started with Aurora IDE
+# Getting Started
 
-Aurora is an AI-powered agentic code editor. This guide gets you from zero to your first AI-assisted interaction in under 5 minutes.
+Aurora is a desktop AI coding IDE. The current app uses a Rust-owned provider pipeline, so provider setup, local-model detection, and streaming behavior are more consistent than the older frontend-owned model path.
 
----
+## 1. Prerequisites
 
-## Quick Start (Pre-built Binary)
+| Tool | Version |
+|------|---------|
+| Node.js | 18+ |
+| pnpm | 8+ |
+| Rust | stable |
+| Tauri prerequisites | installed for your OS |
 
-If a release is available for your platform, download the installer from the [Releases](https://github.com/Aurora-LABS-Ai/aurora-ide/releases) page:
-
-| Platform | Installer |
-|----------|-----------|
-| **Windows** | `.msi` or `.exe` |
-| **macOS** | `.dmg` |
-| **Linux** | `.AppImage` or `.deb` |
-
-Double-click to install, then skip to [First Launch](#first-launch).
-
----
-
-## Building from Source
-
-### Prerequisites
-
-| Tool | Version | Install |
-|------|---------|---------|
-| **Node.js** | 18+ | [nodejs.org](https://nodejs.org) |
-| **pnpm** | 8+ | `npm install -g pnpm` |
-| **Rust** | stable | [rustup.rs](https://rustup.rs) |
-| **Tauri prerequisites** | — | [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) |
-
-### One-Command Setup
-
-The setup script detects your OS and GPU, then builds automatically:
-
-**macOS / Linux:**
-```bash
-git clone https://github.com/Aurora-LABS-Ai/aurora-ide.git
-cd aurora-ide
-chmod +x scripts/setup.sh
-./scripts/setup.sh
-```
-
-**Windows (PowerShell):**
-```powershell
-git clone https://github.com/Aurora-LABS-Ai/aurora-ide.git
-cd aurora-ide
-.\scripts\setup.ps1
-```
-
-### Manual Build
-
-If you prefer manual control:
+## 2. Install and Run
 
 ```bash
 pnpm install
-pnpm tauri:dev        # Development mode (hot reload)
-pnpm tauri:build      # Production installer
+pnpm tauri:dev
 ```
 
-### GPU Acceleration (Optional)
+Useful commands:
 
-Semantic search supports GPU acceleration. The default build is CPU-only for maximum compatibility.
+```bash
+pnpm dev
+pnpm test
+pnpm build
+pnpm tauri:build
+```
 
-| Your GPU | Build Command |
-|----------|--------------|
-| **None / Unknown** | `pnpm tauri:dev` (CPU-only, default) |
-| **NVIDIA (CUDA)** | `cd src-tauri && cargo build --no-default-features --features cuda` |
-| **Windows (DirectML)** | `cd src-tauri && cargo build --no-default-features --features directml` |
-| **macOS (CoreML)** | `cd src-tauri && cargo build --no-default-features --features coreml` |
+## 3. First Launch
 
----
+### Connect a provider
 
-## First Launch
+Aurora ships with built-in provider presets loaded from Rust:
 
-### Step 1: Connect an AI Provider
+- Fireworks
+- GLM
+- Anthropic
+- MiniMax
+- DeepSeek
+- OpenAI
+- LM Studio
+- Ollama
 
-When Aurora opens for the first time, you'll see the onboarding wizard.
+Open Settings and pick one of those presets or configure a custom provider row.
 
-1. On the **Setup** step, paste your **Fireworks AI** API key directly in the input field
-2. Click **Connect** to verify it works
-3. Don't have a key? Click "Get a Fireworks API key" to sign up (free tier available)
+### Open a workspace
 
-**Alternative providers:** Click "All Providers" to configure Anthropic, OpenAI, DeepSeek, GLM, or a local model (Ollama/LM Studio).
+Choose a folder so Aurora can:
 
-### Step 2: Open a Workspace
+- build project context
+- show explorer and editor state
+- track Git status
+- persist thread state
 
-Click **Open Folder** and select a project directory. Aurora will index the workspace for file exploration, Git status, and AI context.
+### Start a chat
 
-### Step 3: Send Your First Message
+The first request builds:
 
-The welcome screen shows suggested prompts based on your workspace:
+- system prompt
+- MCP summary
+- project rules
+- optional project layout
+- skill catalog references
+- context-engine message history
 
-- **"Explain the architecture of this project"** — Great first interaction
-- **"Find potential issues"** — Discover bugs and anti-patterns
-- **"Write unit tests"** — Generate tests for critical code
+Then the provider request is sent through the Rust provider kernel.
 
-Click any prompt or type your own. Aurora's agent can edit files, run commands, search code, and more.
+## 4. Local Models
 
----
+Aurora now detects local providers through Rust, not browser fetches.
 
-## Troubleshooting
+### LM Studio
 
-### Build Errors
+- default endpoint: `http://localhost:1234/v1`
+- detected through `local_provider_detect`
 
-| Error | Cause | Fix |
-|-------|-------|-----|
-| `CUDA not found` | NVIDIA toolkit missing | Use `--features cpu-only` (default) or install CUDA toolkit |
-| `aurora-semantic` build fails | GPU feature mismatch | Run `./scripts/setup.sh` which auto-detects your GPU |
-| `pnpm: command not found` | pnpm not installed | `npm install -g pnpm` |
-| `rustc: command not found` | Rust not installed | Visit [rustup.rs](https://rustup.rs) |
-| Tauri build fails on Linux | Missing system libraries | See [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) |
+### Ollama
 
-### First Chat Errors
+- default endpoint: `http://localhost:11434/v1`
+- supports detect, pull, load, unload, delete, and running-model queries
 
-| Error | Cause | Fix |
-|-------|-------|-----|
-| "No models configured" | No API key set | Open Settings and add an API key |
-| "Invalid API Key" (401) | Wrong or expired key | Check your key at your provider's dashboard |
-| "Rate Limit Reached" (429) | Too many requests | Wait and retry; check your plan limits |
-| "Connection Failed" | Network or provider down | Check internet; for local models, ensure they're running |
+Typical Ollama setup:
 
-### Local Models (Ollama)
+```bash
+ollama pull llama3.1
+```
 
-If you want to use AI without a cloud API key:
+Then open Settings and let Aurora detect it.
 
-1. Install [Ollama](https://ollama.com)
-2. Run: `ollama pull llama3.1`
-3. Aurora auto-detects Ollama on `localhost:11434` during setup
-4. No API key required
+## 5. Development Notes
 
----
+The active provider pipeline is:
 
-## What's Next?
+- frontend `RustProvider`
+- Rust `aurora_provider_stream` / `aurora_provider_chat`
 
-- **Agent Mode** (`Esc` to toggle) — Full-screen chat with file changes panel
-- **Keyboard shortcuts** — `Ctrl+P` quick open, `Ctrl+K` focus chat, `Ctrl+J` toggle terminal
-- **MCP Servers** — Connect external tools via Settings > MCP
-- **Semantic Search** — Enable in Settings > Semantic Search for AI-powered code search
-- **Themes** — Browse and import VS Code themes in Settings > Appearance
+If you are debugging provider behavior, do not look for old TS provider implementations. They are gone.
 
-See the [full documentation](./01-ARCHITECTURE.md) for architecture details.
+Use these files instead:
+
+- `src/services/providers/rust-provider.ts`
+- `src/services/providers/rust-message-mapper.ts`
+- `src-tauri/src/commands/provider_kernel/`
+
+## 6. Common Problems
+
+| Problem | Meaning | What to check |
+|---------|---------|---------------|
+| No models configured | No provider row selected or hydrated | Settings store and provider config |
+| Invalid API key | Cloud provider rejected auth | Provider key and base URL |
+| Local provider not detected | LM Studio/Ollama not reachable | Local server process and port |
+| Stream cancelled | Request was manually stopped or torn down | Frontend cancel flow or backend stream cancellation |
+| Build passes but tests fail | Behavior regression in service/store layer | Run `pnpm test` and inspect failing seam |
+
+## 7. Validation Commands
+
+For normal frontend work:
+
+```bash
+pnpm test
+pnpm build
+```
+
+For backend/provider work:
+
+```bash
+cargo check --manifest-path src-tauri/Cargo.toml
+```
+
+## 8. Where To Read Next
+
+- [01-ARCHITECTURE.md](./01-ARCHITECTURE.md)
+- [03-EXPANSION-GUIDE.md](./03-EXPANSION-GUIDE.md)
+- [04-PROVIDER-KERNEL.md](./04-PROVIDER-KERNEL.md)
+

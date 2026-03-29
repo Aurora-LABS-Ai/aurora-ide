@@ -63,7 +63,9 @@ const parseRgbColor = (value: string): RgbaColor | null => {
 
   if (
     [r, g, b].some((channel) => Number.isNaN(channel) || channel < 0 || channel > 255) ||
-    Number.isNaN(a)
+    Number.isNaN(a) ||
+    a < 0 ||
+    a > 1
   ) {
     return null;
   }
@@ -620,24 +622,14 @@ export function validateColor(value: string): ColorValidationResult {
     return { valid: true, normalizedValue: expanded.toLowerCase() };
   }
 
-  // Check rgb format
-  const rgbMatch = trimmed.match(COLOR_PATTERNS.rgb);
-  if (rgbMatch) {
-    const [, r, g, b] = rgbMatch;
-    if (Number(r) <= 255 && Number(g) <= 255 && Number(b) <= 255) {
+  // Check rgb / rgba formats using the shared parser so validation and
+  // runtime parsing accept the same surface area.
+  if (trimmed.toLowerCase().startsWith('rgb')) {
+    const parsed = parseRgbColor(trimmed);
+    if (parsed) {
       return { valid: true, normalizedValue: trimmed };
     }
-    return { valid: false, error: 'RGB values must be between 0 and 255' };
-  }
-
-  // Check rgba format
-  const rgbaMatch = trimmed.match(COLOR_PATTERNS.rgba);
-  if (rgbaMatch) {
-    const [, r, g, b, a] = rgbaMatch;
-    if (Number(r) <= 255 && Number(g) <= 255 && Number(b) <= 255 && Number(a) <= 1) {
-      return { valid: true, normalizedValue: trimmed };
-    }
-    return { valid: false, error: 'RGBA values must be valid (RGB: 0-255, A: 0-1)' };
+    return { valid: false, error: 'RGB/RGBA values must be valid (RGB: 0-255, A: 0-1)' };
   }
 
   return { valid: false, error: `Invalid color format: ${value}` };
@@ -727,7 +719,7 @@ const COLOR_PATTERNS = {
   hex6: /^#[0-9A-Fa-f]{6}$/,
   hex8: /^#[0-9A-Fa-f]{8}$/,
   rgb: /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/,
-  rgba: /^rgba\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(0|1|0?\.\d+)\s*\)$/,
+  rgba: /^rgba\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(?:0(?:\.\d+)?|1(?:\.0+)?)\s*\)$/,
 };
 
 // ============================================================================

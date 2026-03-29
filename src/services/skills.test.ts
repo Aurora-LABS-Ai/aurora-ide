@@ -137,10 +137,9 @@ Check changed files first.`);
       mcpSummary: "## MCP\nConnected server summary",
     });
 
-    expect(composed.systemPrompt).toContain("<available_skills>");
-    expect(composed.systemPrompt).toContain("<required_skills");
-    expect(composed.systemPrompt).toContain("<active_skills");
+    expect(composed.systemPrompt).toContain("## Skill System");
     expect(composed.systemPrompt).toContain("Connected server summary");
     expect(composed.activeSkills.some((skill) => skill.id === "mcp-integration")).toBe(true);
+    expect(composed.matchedSkills.some((skill) => skill.id === "mcp-integration")).toBe(true);
   });
 });

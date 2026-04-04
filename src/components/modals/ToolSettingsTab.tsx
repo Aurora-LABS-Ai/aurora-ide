@@ -45,6 +45,7 @@ import {
   settingsPrimaryButtonStyle,
   settingsSubtlePanelStyle,
 } from "./settings-shared";
+import { getProfessionalToolName } from "../../services/tool-display";
 
 // Group tools by category for better organization
 const TOOL_CATEGORIES = {
@@ -108,31 +109,6 @@ const TOOL_CATEGORIES = {
     description: "Task tracking tools used during multi-step work",
     tools: ["todo_write"],
   },
-};
-
-// Tool display names
-const TOOL_DISPLAY_NAMES: Record<string, string> = {
-  shell_execute: "Run Command",
-  shell_spawn: "Start Background Process",
-  shell_kill: "Stop Background Process",
-  shell_list_processes: "List Background Processes",
-  file_write: "Write File",
-  file_create: "Create File",
-  file_delete: "Delete File",
-  file_patch: "Patch File",
-  file_read: "Read File",
-  multi_file_read: "Read Multiple Files",
-  grep: "Search File Contents",
-  search_replace: "Replace Text",
-  multi_search_replace: "Apply Multiple Replacements",
-  folder_create: "Create Folder",
-  folder_delete: "Delete Folder",
-  workspace_tree: "Inspect Workspace Tree",
-  editor_open_file: "Open File in Editor",
-  read_lints: "Read Diagnostics",
-  aurora_search: "Search Workspace",
-  auroro_websearch: "Search the Web",
-  todo_write: "Update Task List",
 };
 
 interface ApprovalSelectProps {
@@ -420,7 +396,7 @@ export const ToolSettingsTab: React.FC = () => {
                     style={settingsSubtlePanelStyle}
                   >
                     <span className="text-[10px] text-text-secondary truncate">
-                      {TOOL_DISPLAY_NAMES[tool] || tool}
+                      {getProfessionalToolName(tool)}
                     </span>
                     <ApprovalSelect
                       value={toolApprovalSettings[tool] || "always_ask"}

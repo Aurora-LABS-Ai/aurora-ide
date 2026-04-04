@@ -26,6 +26,7 @@ import { useAuditStore, type AuditEntry } from '../../store/useAuditStore';
 import { X, CheckCircle, XCircle, Clock, AlertTriangle, Loader2, Terminal, FileText, FolderOpen, Code } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import clsx from 'clsx';
+import { getProfessionalToolName } from '../../services/tool-display';
 
 // Get icon for tool category
 const getToolIcon = (toolName: string) => {
@@ -93,7 +94,7 @@ const AuditEntryCard: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 mb-1">
                 <span className="font-mono text-[11px] font-semibold text-success">
-                  {entry.toolName}
+                  {getProfessionalToolName(entry.toolName)}
                 </span>
                 {entry.duration && (
                   <span className="text-[9px] text-muted-foreground font-mono">

@@ -26,6 +26,7 @@ import { useUiStore } from '../../store/useUiStore';
 import { useChatStore } from '../../store/useChatStore';
 import { X, AlertTriangle, Check, ShieldAlert } from 'lucide-react';
 import clsx from 'clsx';
+import { getProfessionalToolName } from '../../services/tool-display';
 
 export const ToolApprovalModal: React.FC = () => {
   const { toolApprovalState, closeToolApproval } = useUiStore();
@@ -82,7 +83,7 @@ export const ToolApprovalModal: React.FC = () => {
              <div>
                <label className="text-[11px] font-semibold text-text-secondary uppercase tracking-wider block mb-1">Tool</label>
                <div className="font-mono text-[12px] text-primary bg-primary/10 inline-block px-2 py-1 rounded border border-primary/30">
-                 {proposal.toolName}
+                 {getProfessionalToolName(proposal.toolName)}
                </div>
              </div>
              <div>

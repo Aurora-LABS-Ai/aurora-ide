@@ -37,7 +37,7 @@ import { motion } from "framer-motion";
 import type { ToolCall, ToolProposal } from "../../types";
 import { getIconName, getIconUrl } from "../../lib/material-icon-theme";
 import { ShimmerText } from "../ui/ShimmerText";
-import { getToolDisplayName } from "../../services/mcp-tools";
+import { getProfessionalToolName } from "../../services/tool-display";
 import { getToolIcon } from "../icons/ToolIcons";
 
 // --- Utility ---
@@ -64,45 +64,6 @@ const formatApprovalValue = (value: unknown): string => {
   } catch {
     return "[unserializable]";
   }
-};
-
-const TOOL_TITLES: Record<string, string> = {
-  aurora_search: "Search Workspace",
-  create_directory: "Create Folder",
-  delete_directory: "Delete Folder",
-  editor_open_file: "Open File in Editor",
-  file_create: "Create File",
-  file_delete: "Delete File",
-  file_patch: "Patch File",
-  file_read: "Read File",
-  file_write: "Write File",
-  folder_create: "Create Folder",
-  folder_delete: "Delete Folder",
-  grep: "Search File Contents",
-  list_directory: "List Directory",
-  list_workspace: "List Workspace",
-  multi_file_read: "Read Multiple Files",
-  multi_search_replace: "Apply Multiple Replacements",
-  search_replace: "Replace Text",
-  shell_execute: "Run Command",
-  todo_write: "Update Task List",
-  workspace_tree: "Inspect Workspace Tree",
-};
-
-const getProfessionalToolTitle = (toolName: string): string => {
-  if (toolName.startsWith("mcp_")) {
-    return getToolDisplayName(toolName);
-  }
-
-  if (TOOL_TITLES[toolName]) {
-    return TOOL_TITLES[toolName];
-  }
-
-  return toolName
-    .split("_")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
 };
 
 const getProfessionalStatusLabel = (
@@ -852,7 +813,7 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(
 
     const filePath = tool.args?.path as string;
     const fileName = filePath ? filePath.split(/[/\\]/).pop() || filePath : "";
-    const displayTitle = getProfessionalToolTitle(tool.name);
+    const displayTitle = getProfessionalToolName(tool.name);
 
     // Handle file click to open in editor
     const handleFileClick = async (e: React.MouseEvent) => {

@@ -26,6 +26,7 @@ import type { ToolProposal } from '../../types';
 import { useUiStore } from '../../store/useUiStore';
 import { useChatStore } from '../../store/useChatStore';
 import clsx from 'clsx';
+import { getProfessionalToolName } from '../../services/tool-display';
 
 interface ToolProposalCardProps {
   proposal: ToolProposal;
@@ -58,7 +59,7 @@ export const ToolProposalCard: React.FC<ToolProposalCardProps> = ({ proposal, me
       <div className="px-3 py-2 border-b border-border flex items-center justify-between">
         <div className="flex items-center gap-2">
            <span className="font-mono text-[11px] font-medium text-primary">
-             {proposal.toolName}
+             {getProfessionalToolName(proposal.toolName)}
            </span>
            <span className={clsx("text-[10px] flex items-center gap-1", getRiskColor(proposal.riskLevel))}>
              <AlertTriangle className="w-3 h-3" />

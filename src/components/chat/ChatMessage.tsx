@@ -33,6 +33,7 @@ import { loadFileContent } from '../../store/useWorkspaceStore';
 import { getLanguageFromExtension } from '../../lib/file-utils';
 import { FileIcon } from '../explorer/FileIcons';
 import { User, Copy, Check, BookOpen, Zap } from 'lucide-react';
+import { getProfessionalToolName } from '../../services/tool-display';
 
 // Copy button component with feedback
 const CopyButton: React.FC<{ text: string; className?: string }> = ({ text, className = '' }) => {
@@ -76,7 +77,7 @@ const extractTimelineText = (timeline: TimelineEvent[]): string => {
       parts.push(`[Thinking]\n${event.thinking}`);
     } else if (event.type === 'tool' && event.tool) {
       // Include tool name and result summary
-      const toolName = event.tool.name || 'Tool';
+      const toolName = event.tool.name ? getProfessionalToolName(event.tool.name) : 'Tool';
       const result = event.tool.result ? `Result: ${event.tool.result.substring(0, 500)}${event.tool.result.length > 500 ? '...' : ''}` : '';
       if (result) {
         parts.push(`[${toolName}]\n${result}`);

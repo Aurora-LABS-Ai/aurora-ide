@@ -8,6 +8,7 @@
  */
 
 import React, { useState } from 'react';
+import { getProfessionalToolName } from '../../services/tool-display';
 
 export interface ToolAction {
   id: string;
@@ -24,6 +25,7 @@ interface AgentToolCardProps {
 
 export const AgentToolCard: React.FC<AgentToolCardProps> = ({ action }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const toolLabel = getProfessionalToolName(action.toolName);
   const statusLabel = action.status === 'pending' ? 'Running' : action.status === 'error' ? 'Error' : 'Done';
   const statusDotClass = action.status === 'pending'
     ? 'bg-warning/70 ring-warning/30'
@@ -63,7 +65,7 @@ export const AgentToolCard: React.FC<AgentToolCardProps> = ({ action }) => {
             className="font-mono text-[12px] font-semibold truncate"
             style={{ color: 'var(--aurora-common-text-primary)' }}
           >
-            {action.toolName}
+            {toolLabel}
           </span>
         </div>
 
@@ -102,7 +104,7 @@ export const AgentToolCard: React.FC<AgentToolCardProps> = ({ action }) => {
                 <span className="uppercase text-[9px]">{action.status}</span>
               </div>
               <div className="mb-2">
-                <span style={{ color: 'var(--aurora-common-primary)' }}>{action.toolName}</span>
+                <span style={{ color: 'var(--aurora-common-primary)' }}>{toolLabel}</span>
                 <span style={{ color: 'var(--aurora-common-muted-foreground)' }}>({action.args})</span>
               </div>
 

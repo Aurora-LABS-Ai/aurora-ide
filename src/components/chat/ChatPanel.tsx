@@ -59,6 +59,7 @@ import { chatSyncBroadcast } from "../../hooks/useRustChatSync";
 import { useTaskStore } from "../../store/useTaskStore";
 import { useMcpStore } from "../../store/useMcpStore";
 import { parseToolArguments, parseToolArgumentsForDisplay } from "../../lib/tool-arguments";
+import { getProfessionalToolName } from "../../services/tool-display";
 import type {
   ToolProposal,
   ToolCall,
@@ -602,7 +603,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             const proposal: ToolProposal = {
               id: toolCall.id,
               toolName: toolName,
-              description: `Execute ${toolName}`,
+              description: `Execute ${getProfessionalToolName(toolName)}`,
               riskLevel: toolName.startsWith('shell_') || toolName.includes('delete') ? 'high' : 'medium',
               status: "pending",
               parameters: parseToolArgumentsForDisplay(toolCall.function.arguments),

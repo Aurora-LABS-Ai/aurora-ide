@@ -34,6 +34,7 @@ import {
 } from 'lucide-react';
 import type { ToolProposal } from '../../types';
 import clsx from 'clsx';
+import { getProfessionalToolName } from '../../services/tool-display';
 
 interface ToolApprovalBannerProps {
   proposal: ToolProposal;
@@ -113,7 +114,7 @@ export const ToolApprovalBanner: React.FC<ToolApprovalBannerProps> = ({
             <div className="mt-1 flex items-center gap-2 text-[13px] text-text-primary">
               <ToolIcon className="h-3.5 w-3.5 text-text-secondary" />
               <span className="font-mono rounded-lg bg-input/60 px-1.5 py-0.5 text-[12px] text-text-primary">
-                {proposal.toolName}
+                {getProfessionalToolName(proposal.toolName)}
               </span>
               <span className="text-text-secondary">will run</span>
             </div>

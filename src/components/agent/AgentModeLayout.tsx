@@ -59,6 +59,7 @@ import {
   parseToolArguments,
   parseToolArgumentsForDisplay,
 } from "../../lib/tool-arguments";
+import { getProfessionalToolName } from "../../services/tool-display";
 import { AgentChangesTree } from "./AgentChangesTree";
 import { AgentInputArea, type AttachedFile } from "./AgentInputArea";
 import { ChatMessage } from "../chat/ChatMessage";
@@ -539,7 +540,7 @@ export const AgentModeLayout: React.FC = () => {
               const proposal: ToolProposal = {
                 id: toolCall.id,
                 toolName: toolName,
-                description: `Execute ${toolName}`,
+                description: `Execute ${getProfessionalToolName(toolName)}`,
                 riskLevel:
                   toolName.startsWith("shell_") || toolName.includes("delete")
                     ? "high"

@@ -58,25 +58,28 @@ export class RustProvider extends BaseProvider {
 
     const streamState = new RustStreamState();
     let streamError: Error | null = null;
+    let unlistenChunk: (() => void) | null = null;
+    let unlistenUsage: (() => void) | null = null;
+    let unlistenError: (() => void) | null = null;
 
     try {
       callbacks.onStart?.();
 
-      const unlistenChunk = await listen<RustStreamChunk>(
+      unlistenChunk = await listen<RustStreamChunk>(
         `aurora-provider-chunk-${requestId}`,
         (event) => {
           streamState.applyChunk(event.payload, callbacks);
         },
       );
 
-      const unlistenUsage = await listen<TokenUsage>(
+      unlistenUsage = await listen<TokenUsage>(
         `aurora-provider-usage-${requestId}`,
         (event) => {
           callbacks.onUsage?.(event.payload);
         },
       );
 
-      const unlistenError = await listen<string>(
+      unlistenError = await listen<string>(
         `aurora-provider-error-${requestId}`,
         (event) => {
           streamError = new Error(event.payload);
@@ -87,10 +90,6 @@ export class RustProvider extends BaseProvider {
         requestId,
         request: buildRustProviderRequest(this._config, request, true),
       });
-
-      unlistenChunk();
-      unlistenUsage();
-      unlistenError();
 
       if (streamError) {
         throw streamError;
@@ -110,6 +109,13 @@ export class RustProvider extends BaseProvider {
         throw new Error("Request cancelled");
       }
 
+      const message =
+        error instanceof Error ? error.message : String(error);
+      if (message.includes("Request cancelled")) {
+        this.currentRequestId = null;
+        throw new Error("Request cancelled");
+      }
+
       if (typeof error === "object" && error !== null && "type" in error) {
         const tauriError = error as { msg?: string; type: string };
         if (tauriError.type === "cancelation") {
@@ -123,6 +129,9 @@ export class RustProvider extends BaseProvider {
       callbacks.onError?.(normalized);
       throw normalized;
     } finally {
+      unlistenChunk?.();
+      unlistenUsage?.();
+      unlistenError?.();
       this.currentRequestId = null;
     }
   }

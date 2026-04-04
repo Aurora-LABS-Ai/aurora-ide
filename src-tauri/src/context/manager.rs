@@ -200,6 +200,16 @@ impl ContextManager {
         
         None
     }
+
+    /// Discard the current pending turn and round.
+    ///
+    /// Used when a request is cancelled before the turn is complete, so a
+    /// partial assistant response or half-built tool call does not poison the
+    /// next provider request.
+    pub fn discard_current_turn(&mut self) -> Option<Turn> {
+        self.current_round = None;
+        self.current_turn.take()
+    }
     
     // ========================================
     // CONTEXT STATE
@@ -472,6 +482,12 @@ pub fn atomic_add_tool_result(
 pub fn atomic_finalize_turn(thread_id: &str) -> Option<Turn> {
     let mut store = CONTEXT_STORE.write().unwrap();
     store.get_mut(thread_id).and_then(|m| m.finalize_current_turn())
+}
+
+/// ATOMIC: Discard current pending turn
+pub fn atomic_discard_current_turn(thread_id: &str) -> Option<Turn> {
+    let mut store = CONTEXT_STORE.write().unwrap();
+    store.get_mut(thread_id).and_then(|m| m.discard_current_turn())
 }
 
 /// ATOMIC: Set turn summary

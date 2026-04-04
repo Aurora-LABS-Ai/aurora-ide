@@ -225,7 +225,7 @@ fn convert_openai_message(message: &AuroraMessage, preset: &ProviderPreset) -> V
                                     "type": tool_call.tool_type,
                                     "function": {
                                         "name": tool_call.function.name,
-                                        "arguments": tool_call.function.arguments,
+                                        "arguments": normalize_openai_tool_arguments(&tool_call.function.arguments),
                                     }
                                 })
                             })
@@ -269,6 +269,14 @@ fn convert_openai_message(message: &AuroraMessage, preset: &ProviderPreset) -> V
     }
 
     Value::Object(payload)
+}
+
+fn normalize_openai_tool_arguments(arguments: &str) -> String {
+    match serde_json::from_str::<Value>(arguments) {
+        Ok(Value::Object(object)) => Value::Object(object).to_string(),
+        Ok(_) => "{}".to_string(),
+        Err(_) => "{}".to_string(),
+    }
 }
 
 fn build_anthropic_request_body(request: &AuroraProviderRequest) -> Result<Value, String> {
@@ -493,5 +501,26 @@ fn apply_openai_thinking_params(body: &mut Map<String, Value>, preset: &Provider
             );
         }
         ThinkingMode::None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_openai_tool_arguments;
+    use serde_json::{json, Value};
+
+    #[test]
+    fn keeps_valid_object_arguments() {
+        let normalized = normalize_openai_tool_arguments(r#"{"path":"src/app.ts","content":"hi"}"#);
+        assert_eq!(
+            serde_json::from_str::<Value>(&normalized).unwrap(),
+            json!({"path":"src/app.ts","content":"hi"})
+        );
+    }
+
+    #[test]
+    fn replaces_invalid_arguments_with_empty_object() {
+        assert_eq!(normalize_openai_tool_arguments("{"), "{}");
+        assert_eq!(normalize_openai_tool_arguments(r#""not-object""#), "{}");
     }
 }

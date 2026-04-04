@@ -208,6 +208,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             context::commands::context_add_tool_call,
             context::commands::context_add_tool_result,
             context::commands::context_finalize_turn,
+            context::commands::context_discard_current_turn,
             context::commands::context_build_messages,
             context::commands::context_build_request_messages,
             context::commands::context_get_state,

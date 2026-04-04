@@ -66,6 +66,14 @@ pub async fn context_finalize_turn(
     Ok(atomic_finalize_turn(&thread_id))
 }
 
+/// Discard the current pending turn (ATOMIC)
+#[tauri::command]
+pub async fn context_discard_current_turn(
+    thread_id: String,
+) -> Result<Option<Turn>, String> {
+    Ok(atomic_discard_current_turn(&thread_id))
+}
+
 // ============================================================
 // MESSAGE BUILDING
 // ============================================================

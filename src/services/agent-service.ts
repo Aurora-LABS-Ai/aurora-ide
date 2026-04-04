@@ -197,6 +197,20 @@ export class AgentService {
         toolCalls: executedToolCalls.length > 0 ? executedToolCalls : undefined,
         iterations: iteration,
       };
+    } catch (error) {
+      const isCancelled =
+        error instanceof Error &&
+        (error.message === "Request cancelled" ||
+          error.name === "AbortError" ||
+          error.message.includes("cancelled"));
+
+      if (isCancelled) {
+        await invoke("context_discard_current_turn", { threadId }).catch(() => {
+          // Best-effort cleanup only.
+        });
+      }
+
+      throw error;
     } finally {
       this.isRunning = false;
     }

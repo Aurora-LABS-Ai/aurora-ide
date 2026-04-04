@@ -41,8 +41,7 @@ pub(crate) async fn stream_openai_compatible(
 
     while let Some(chunk_result) = stream.next().await {
         if is_stream_cancelled(request_id) {
-            emit_done(&app, request_id, None);
-            return Ok(());
+            return Err("Request cancelled".to_string());
         }
 
         let chunk = match chunk_result {
@@ -178,8 +177,7 @@ pub(crate) async fn stream_anthropic_compatible(
 
     while let Some(chunk_result) = stream.next().await {
         if is_stream_cancelled(request_id) {
-            emit_done(&app, request_id, None);
-            return Ok(());
+            return Err("Request cancelled".to_string());
         }
 
         let chunk = match chunk_result {

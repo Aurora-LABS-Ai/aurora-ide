@@ -1,5 +1,5 @@
 //! Browser Commands
-//! 
+//!
 //! Provides utility commands for browser-related functionality.
 //! The actual browser preview is handled by an iframe in the frontend.
 
@@ -26,24 +26,20 @@ pub fn get_inspector_script() -> String {
 console.log('[Aurora] Inspector script loaded');
 // Note: Full element inspection requires native WebView implementation
 // For now, users should use browser DevTools (F12)
-"#.to_string()
+"#
+    .to_string()
 }
 
 /// Placeholder for future browser navigation command
 #[tauri::command]
-pub async fn browser_navigate(
-    _label: String,
-    _url: String,
-) -> Result<(), String> {
+pub async fn browser_navigate(_label: String, _url: String) -> Result<(), String> {
     // Browser navigation is handled by iframe in frontend
     Ok(())
 }
 
 /// Placeholder for future inspector activation
 #[tauri::command]
-pub async fn browser_activate_inspector(
-    _label: String,
-) -> Result<(), String> {
+pub async fn browser_activate_inspector(_label: String) -> Result<(), String> {
     // Inspector not available in iframe mode
     // Users should use browser DevTools
     Ok(())
@@ -51,50 +47,37 @@ pub async fn browser_activate_inspector(
 
 /// Placeholder for future inspector deactivation
 #[tauri::command]
-pub async fn browser_deactivate_inspector(
-    _label: String,
-) -> Result<(), String> {
+pub async fn browser_deactivate_inspector(_label: String) -> Result<(), String> {
     Ok(())
 }
 
 /// Placeholder for clearing selection
 #[tauri::command]
-pub async fn browser_clear_selection(
-    _label: String,
-) -> Result<(), String> {
+pub async fn browser_clear_selection(_label: String) -> Result<(), String> {
     Ok(())
 }
 
 /// Placeholder for eval
 #[tauri::command]
-pub async fn browser_eval(
-    _label: String,
-    _script: String,
-) -> Result<(), String> {
+pub async fn browser_eval(_label: String, _script: String) -> Result<(), String> {
     Ok(())
 }
 
 /// Placeholder for close
 #[tauri::command]
-pub async fn close_browser_webview(
-    _label: String,
-) -> Result<(), String> {
+pub async fn close_browser_webview(_label: String) -> Result<(), String> {
     Ok(())
 }
 
 /// Placeholder for refresh
 #[tauri::command]
-pub async fn browser_refresh(
-    _label: String,
-) -> Result<(), String> {
+pub async fn browser_refresh(_label: String) -> Result<(), String> {
     Ok(())
 }
 
 /// Placeholder for get URL
 #[tauri::command]
-pub async fn browser_get_url(
-    _label: String,
-) -> Result<String, String> {
+pub async fn browser_get_url(_label: String) -> Result<String, String> {
     Ok(String::new())
 }
 

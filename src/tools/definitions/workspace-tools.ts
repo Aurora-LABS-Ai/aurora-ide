@@ -26,6 +26,31 @@ export const folderCreateTool: ToolDefinition = {
 };
 
 // ============================================
+// FOLDER MOVE TOOL
+// ============================================
+export const folderMoveTool: ToolDefinition = {
+  type: 'function',
+  function: {
+    name: 'folder_move',
+    description: 'Move or rename a folder from one path to another path. This fails if the source folder does not exist or the destination already exists.',
+    parameters: {
+      type: 'object',
+      properties: {
+        old_path: {
+          type: 'string',
+          description: 'The current full path of the folder',
+        },
+        new_path: {
+          type: 'string',
+          description: 'The new full path for the folder',
+        },
+      },
+      required: ['old_path', 'new_path'],
+    },
+  },
+};
+
+// ============================================
 // FOLDER DELETE TOOL
 // ============================================
 export const folderDeleteTool: ToolDefinition = {
@@ -81,5 +106,6 @@ export const workspaceTreeTool: ToolDefinition = {
 export const workspaceTools: ToolDefinition[] = [
   workspaceTreeTool,
   folderCreateTool,
+  folderMoveTool,
   folderDeleteTool,
 ];

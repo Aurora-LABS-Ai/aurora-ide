@@ -1,6 +1,6 @@
-use rusqlite::{params, Connection, OptionalExtension};
 use crate::db::error::DbResult;
 use crate::db::models::CustomTheme;
+use rusqlite::{params, Connection, OptionalExtension};
 
 /// Theme repository with built-in duplicate prevention
 pub struct ThemeRepository<'a> {
@@ -17,13 +17,16 @@ impl<'a> ThemeRepository<'a> {
     /// Otherwise creates a new theme
     pub fn save(&self, theme: &CustomTheme) -> DbResult<()> {
         // First check if a theme with same name+author already exists
-        let existing_id: Option<String> = self.conn.query_row(
-            "SELECT id FROM custom_themes 
+        let existing_id: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT id FROM custom_themes 
              WHERE LOWER(TRIM(name)) = LOWER(TRIM(?1)) 
              AND LOWER(TRIM(author)) = LOWER(TRIM(?2))",
-            params![&theme.name, &theme.author],
-            |row| row.get(0),
-        ).optional()?;
+                params![&theme.name, &theme.author],
+                |row| row.get(0),
+            )
+            .optional()?;
 
         if let Some(existing_id) = existing_id {
             // Update existing theme (use existing ID to maintain references)
@@ -72,7 +75,8 @@ impl<'a> ThemeRepository<'a> {
 
     /// Delete a custom theme by ID
     pub fn delete(&self, id: &str) -> DbResult<()> {
-        self.conn.execute("DELETE FROM custom_themes WHERE id = ?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM custom_themes WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -103,7 +107,7 @@ impl<'a> ThemeRepository<'a> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, author, version, type, colors, token_colors, created_at, updated_at
              FROM custom_themes
-             ORDER BY updated_at DESC"
+             ORDER BY updated_at DESC",
         )?;
 
         let theme_iter = stmt.query_map([], |row| {

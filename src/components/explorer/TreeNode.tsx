@@ -82,7 +82,6 @@ const TreeNodeComponent: React.FC<TreeNodeProps> = ({
   const toggleFolder = useWorkspaceStore((state) => state.toggleFolder);
   const expandFolder = useWorkspaceStore((state) => state.expandFolder);
   const selectFile = useWorkspaceStore((state) => state.selectFile);
-  const refreshDirectory = useWorkspaceStore((state) => state.refreshDirectory);
   const rootPath = useWorkspaceStore((state) => state.rootPath);
   const isExpanded = useWorkspaceStore(
     useCallback((state) => state.expandedFolders.has(node.id), [node.id])
@@ -111,6 +110,41 @@ const TreeNodeComponent: React.FC<TreeNodeProps> = ({
   // HANDLERS
   // ============================================
 
+  const loadFreshContentIntoTab = useCallback(
+    async (fileId: string, filename: string, language: string | undefined, requestId: number) => {
+      try {
+        const content = await loadFileContent(nodePath);
+
+        if (requestId !== latestLoadRequestId) {
+          return;
+        }
+
+        useEditorStore.getState().openFile(
+          fileId,
+          filename,
+          content,
+          language,
+          false,
+        );
+      } catch (err) {
+        if (requestId !== latestLoadRequestId) {
+          return;
+        }
+
+        console.error('Failed to load file:', err);
+        const message = err instanceof Error ? err.message : String(err);
+        useEditorStore.getState().openFile(
+          fileId,
+          filename,
+          `// Failed to load file: ${message}`,
+          language,
+          false,
+        );
+      }
+    },
+    [nodePath],
+  );
+
   const handleClick = useCallback(async () => {
     if (isFolder) {
       toggleFolder(node.id);
@@ -123,41 +157,43 @@ const TreeNodeComponent: React.FC<TreeNodeProps> = ({
       const fileId = node.id;
 
       // Check if file is already open in a tab
-      const { tabs } = useEditorStore.getState();
+      const editorStore = useEditorStore.getState();
+      const { tabs } = editorStore;
       const existingTab = tabs.find(t => t.id === fileId);
-      
+
       if (existingTab) {
-        // Tab already exists, just activate it
-        useEditorStore.getState().setActiveTab(fileId);
+        editorStore.setActiveTab(fileId);
+
+        // Keep unsaved work untouched, but refresh clean tabs from disk so the
+        // explorer always shows the latest saved file content.
+        if (existingTab.isDirty) {
+          return;
+        }
+
+        editorStore.reloadTabContent(fileId, existingTab.content, true);
+        await loadFreshContentIntoTab(
+          fileId,
+          existingTab.filename,
+          existingTab.language,
+          requestId,
+        );
         return;
       }
 
       // Open immediately with loading state
       openFile(fileId, node.name, '', node.language, true);
-
-      try {
-        const content = await loadFileContent(nodePath);
-
-        // Ignore stale responses (user clicked another file)
-        if (requestId !== latestLoadRequestId) {
-          return;
-        }
-
-        // Replace loading state with actual content
-        openFile(fileId, node.name, content, node.language, false);
-      } catch (err) {
-        // Ignore stale error responses
-        if (requestId !== latestLoadRequestId) {
-          return;
-        }
-
-        console.error('Failed to load file:', err);
-        const message = err instanceof Error ? err.message : String(err);
-        // Open with error message
-        openFile(fileId, node.name, `// Failed to load file: ${message}`, node.language, false);
-      }
+      await loadFreshContentIntoTab(fileId, node.name, node.language, requestId);
     }
-  }, [isFolder, node.id, node.name, node.language, nodePath, toggleFolder, selectFile, openFile]);
+  }, [
+    isFolder,
+    node.id,
+    node.name,
+    node.language,
+    toggleFolder,
+    selectFile,
+    openFile,
+    loadFreshContentIntoTab,
+  ]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -207,7 +243,6 @@ const TreeNodeComponent: React.FC<TreeNodeProps> = ({
         await createFolder(newPath);
       }
       expandFolder(node.id);
-      await refreshDirectory();
     } catch (err) {
       console.error('Failed to create:', err);
       alert(`Failed to create: ${err}`);
@@ -215,7 +250,7 @@ const TreeNodeComponent: React.FC<TreeNodeProps> = ({
 
     setLocalIsCreating(null);
     setLocalInputValue('');
-  }, [isCreatingHere, onCreateSubmit, localInputValue, localIsCreating, nodePath, node.id, expandFolder, selectFile, openFile, refreshDirectory]);
+  }, [isCreatingHere, onCreateSubmit, localInputValue, localIsCreating, nodePath, node.id, expandFolder, selectFile, openFile]);
 
   const handleCreateCancel = useCallback(() => {
     if (isCreatingHere && onCreateCancel) {
@@ -248,14 +283,13 @@ const TreeNodeComponent: React.FC<TreeNodeProps> = ({
 
     try {
       await renamePath(nodePath, newPath);
-      await refreshDirectory();
     } catch (err) {
       console.error('Failed to rename:', err);
       alert(`Failed to rename: ${err}`);
     }
 
     onRenameComplete?.();
-  }, [renameValue, node.name, nodePath, refreshDirectory, onRenameComplete]);
+  }, [renameValue, node.name, nodePath, onRenameComplete]);
 
   // --- DELETE HANDLER ---
   const handleDelete = useCallback(() => {
@@ -267,12 +301,11 @@ const TreeNodeComponent: React.FC<TreeNodeProps> = ({
     setShowDeleteDialog(false);
     try {
       await deletePath(nodePath);
-      await refreshDirectory();
     } catch (err) {
       console.error('Failed to delete:', err);
       alert(`Failed to delete: ${err}`);
     }
-  }, [nodePath, refreshDirectory]);
+  }, [nodePath]);
 
   const handleCancelDelete = useCallback(() => {
     setShowDeleteDialog(false);

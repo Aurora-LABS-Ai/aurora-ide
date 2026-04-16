@@ -1,7 +1,7 @@
-use tauri::State;
 use std::sync::Mutex;
+use tauri::State;
 
-use crate::db::{Database, CustomTheme};
+use crate::db::{CustomTheme, Database};
 
 // ============================================================
 // THEME COMMANDS
@@ -18,10 +18,7 @@ pub fn get_custom_themes(db: State<'_, Mutex<Database>>) -> Result<Vec<CustomThe
 
 /// Save a custom theme
 #[tauri::command]
-pub fn save_custom_theme(
-    theme: CustomTheme,
-    db: State<'_, Mutex<Database>>,
-) -> Result<(), String> {
+pub fn save_custom_theme(theme: CustomTheme, db: State<'_, Mutex<Database>>) -> Result<(), String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.themes()
         .save(&theme)
@@ -39,10 +36,7 @@ pub fn delete_custom_theme(id: String, db: State<'_, Mutex<Database>>) -> Result
 
 /// Set active theme ID preference
 #[tauri::command]
-pub fn set_active_theme_id(
-    theme_id: String,
-    db: State<'_, Mutex<Database>>,
-) -> Result<(), String> {
+pub fn set_active_theme_id(theme_id: String, db: State<'_, Mutex<Database>>) -> Result<(), String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.settings()
         .set_setting("active_theme_id", &theme_id)
@@ -53,9 +47,10 @@ pub fn set_active_theme_id(
 #[tauri::command]
 pub fn get_active_theme_id(db: State<'_, Mutex<Database>>) -> Result<Option<String>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
-    let setting = db.settings()
+    let setting = db
+        .settings()
         .get_setting("active_theme_id")
         .map_err(|e| format!("Failed to get active theme: {:?}", e))?;
-    
+
     Ok(setting.map(|s| s.value))
 }

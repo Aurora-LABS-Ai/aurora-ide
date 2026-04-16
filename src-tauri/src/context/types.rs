@@ -1,5 +1,5 @@
 //! Context Engine Type Definitions
-//! 
+//!
 //! Core data structures for turn-based conversation management.
 //! Inspired by VS Code Copilot's Turn/Round architecture.
 //!
@@ -18,48 +18,53 @@ use std::collections::HashMap;
 
 /// A conversation turn representing one user message and all resulting
 /// assistant responses and tool executions.
-/// 
+///
 /// This is the core unit of conversation context, similar to Copilot's Turn class.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Turn {
     /// Unique identifier for this turn
     pub id: String,
-    
+
     /// Thread this turn belongs to
     pub thread_id: String,
-    
+
     /// The user's message that started this turn
     pub user_message: String,
-    
+
     /// IDE context included with first message (open files, project layout, etc.)
     /// Only populated for the first turn in a thread
     pub user_context: Option<String>,
-    
+
     /// All tool call rounds in this turn
     /// Each round = assistant response + tool calls + tool results
     pub rounds: Vec<ToolCallRound>,
-    
+
     /// LLM-generated summary of this turn (for older turns)
     /// When set, this is used instead of full content to save tokens
     pub summary: Option<String>,
-    
+
     /// Cached token count for this turn (full content, not summary)
     pub token_count: Option<u32>,
-    
+
     /// Index of this turn in the thread (0-based)
     pub turn_index: u32,
-    
+
     /// Creation timestamp (ISO 8601)
     pub created_at: String,
-    
+
     /// Last update timestamp (ISO 8601)
     pub updated_at: String,
 }
 
 impl Turn {
     /// Create a new turn
-    pub fn new(thread_id: String, user_message: String, user_context: Option<String>, turn_index: u32) -> Self {
+    pub fn new(
+        thread_id: String,
+        user_message: String,
+        user_context: Option<String>,
+        turn_index: u32,
+    ) -> Self {
         let now = chrono::Utc::now().to_rfc3339();
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -74,17 +79,17 @@ impl Turn {
             updated_at: now,
         }
     }
-    
+
     /// Check if this turn has been summarized
     pub fn is_summarized(&self) -> bool {
         self.summary.is_some()
     }
-    
+
     /// Get the final assistant response (from the last round)
     pub fn get_final_response(&self) -> Option<&str> {
         self.rounds.last().map(|r| r.response.as_str())
     }
-    
+
     /// Add a new round to this turn
     pub fn add_round(&mut self, round: ToolCallRound) {
         self.rounds.push(round);
@@ -97,7 +102,7 @@ impl Turn {
 // ============================================================
 
 /// A single round of tool calling within a turn.
-/// 
+///
 /// Each round contains:
 /// - The assistant's response text
 /// - Any tool calls the assistant made
@@ -108,31 +113,31 @@ impl Turn {
 pub struct ToolCallRound {
     /// Unique identifier for this round
     pub id: String,
-    
+
     /// Turn this round belongs to
     pub turn_id: String,
-    
+
     /// The assistant's response text
     pub response: String,
-    
+
     /// Tool calls made by the assistant
     pub tool_calls: Vec<ToolCall>,
-    
+
     /// Results from tool executions (keyed by tool_call_id)
     pub tool_results: HashMap<String, ToolResult>,
-    
+
     /// Thinking/reasoning content (for models that support it)
     pub thinking: Option<String>,
-    
+
     /// Summary of this round (for compression)
     pub summary: Option<String>,
-    
+
     /// Cached token count for this round
     pub token_count: Option<u32>,
-    
+
     /// Index of this round in the turn (0-based)
     pub round_index: u32,
-    
+
     /// Creation timestamp (ISO 8601)
     pub created_at: String,
 }
@@ -153,20 +158,22 @@ impl ToolCallRound {
             created_at: chrono::Utc::now().to_rfc3339(),
         }
     }
-    
+
     /// Add a tool call to this round
     pub fn add_tool_call(&mut self, tool_call: ToolCall) {
         self.tool_calls.push(tool_call);
     }
-    
+
     /// Add a tool result
     pub fn add_tool_result(&mut self, tool_call_id: String, result: ToolResult) {
         self.tool_results.insert(tool_call_id, result);
     }
-    
+
     /// Check if all tool calls have results
     pub fn all_tools_executed(&self) -> bool {
-        self.tool_calls.iter().all(|tc| self.tool_results.contains_key(&tc.id))
+        self.tool_calls
+            .iter()
+            .all(|tc| self.tool_results.contains_key(&tc.id))
     }
 }
 
@@ -180,10 +187,10 @@ impl ToolCallRound {
 pub struct ToolCall {
     /// Unique identifier for this tool call
     pub id: String,
-    
+
     /// Name of the tool being called
     pub name: String,
-    
+
     /// JSON string of arguments passed to the tool
     pub arguments: String,
 }
@@ -191,7 +198,11 @@ pub struct ToolCall {
 impl ToolCall {
     /// Create a new tool call
     pub fn new(id: String, name: String, arguments: String) -> Self {
-        Self { id, name, arguments }
+        Self {
+            id,
+            name,
+            arguments,
+        }
     }
 }
 
@@ -205,16 +216,16 @@ impl ToolCall {
 pub struct ToolResult {
     /// The tool_call_id this result corresponds to
     pub tool_call_id: String,
-    
+
     /// The content/output of the tool execution
     pub content: String,
-    
+
     /// Whether this result represents an error
     pub is_error: bool,
-    
+
     /// Whether the content was truncated due to size
     pub truncated: bool,
-    
+
     /// Original length before truncation (if truncated)
     pub original_length: Option<usize>,
 }
@@ -230,7 +241,7 @@ impl ToolResult {
             original_length: None,
         }
     }
-    
+
     /// Create an error tool result
     pub fn error(tool_call_id: String, error_message: String) -> Self {
         Self {
@@ -241,7 +252,7 @@ impl ToolResult {
             original_length: None,
         }
     }
-    
+
     /// Create a truncated tool result
     pub fn truncated(tool_call_id: String, content: String, original_length: usize) -> Self {
         Self {
@@ -264,28 +275,28 @@ impl ToolResult {
 pub struct ContextState {
     /// Thread ID
     pub thread_id: String,
-    
+
     /// Total number of turns in the thread
     pub total_turns: usize,
-    
+
     /// Number of turns that have been summarized
     pub summarized_turns: usize,
-    
+
     /// Estimated tokens used by current context
     pub used_tokens: u32,
-    
+
     /// Maximum context window size (from provider config)
     pub context_window: u32,
-    
+
     /// Maximum output tokens (from provider config)
     pub max_output: u32,
-    
+
     /// Percentage of context window used (0-100)
     pub usage_percentage: f32,
-    
+
     /// Whether summarization is needed (usage > threshold)
     pub needs_summarization: bool,
-    
+
     /// Number of recent turns that will get full content (not summarized)
     pub recent_turns_count: usize,
 }
@@ -305,7 +316,7 @@ impl ContextState {
             recent_turns_count: 2, // Default: last 2 turns get full content
         }
     }
-    
+
     /// Update usage statistics
     pub fn update_usage(&mut self, used_tokens: u32) {
         self.used_tokens = used_tokens;
@@ -330,15 +341,11 @@ impl ContextState {
 #[serde(tag = "role", rename_all = "lowercase")]
 pub enum ApiMessage {
     /// System prompt message
-    System {
-        content: String,
-    },
-    
+    System { content: String },
+
     /// User message
-    User {
-        content: String,
-    },
-    
+    User { content: String },
+
     /// Assistant message (with optional tool calls and reasoning)
     Assistant {
         content: String,
@@ -347,7 +354,7 @@ pub enum ApiMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_calls: Option<Vec<ApiToolCall>>,
     },
-    
+
     /// Tool result message
     Tool {
         tool_call_id: String,
@@ -394,10 +401,10 @@ impl From<&ToolCall> for ApiToolCall {
 pub struct SummarizationRequest {
     /// Turn ID to summarize
     pub turn_id: String,
-    
+
     /// The turn content to summarize
     pub turn_content: String,
-    
+
     /// Provider configuration for making the summarization call
     pub provider_config: Option<serde_json::Value>,
 }
@@ -408,10 +415,10 @@ pub struct SummarizationRequest {
 pub struct SummarizationResult {
     /// Turn ID that was summarized
     pub turn_id: String,
-    
+
     /// The generated summary
     pub summary: String,
-    
+
     /// Tokens used for summarization
     pub tokens_used: Option<u32>,
 }
@@ -431,4 +438,3 @@ pub const SUMMARIZATION_THRESHOLD: f32 = 80.0;
 
 /// Maximum summary length (characters)
 pub const MAX_SUMMARY_LENGTH: usize = 500;
-

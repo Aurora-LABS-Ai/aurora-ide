@@ -339,9 +339,14 @@ export const getToolIcon = (toolName: string, size = 14): React.ReactNode => {
     'search_replace': SearchReplaceIcon,
     'multi_search_replace': SearchReplaceIcon,
     'aurora_search': SearchIcon,
+    'grep': SearchIcon,
     'grep_search': SearchIcon,
     
     // Folder operations
+    'workspace_tree': FolderOpenIcon,
+    'folder_create': FolderIcon,
+    'folder_move': FolderOpenIcon,
+    'folder_delete': FolderIcon,
     'list_workspace': FolderOpenIcon,
     'list_directory': FolderOpenIcon,
     'create_directory': FolderIcon,

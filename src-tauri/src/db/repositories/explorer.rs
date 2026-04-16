@@ -97,6 +97,8 @@ impl<'a> ExplorerRepository<'a> {
             })
         })?;
 
-        states.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)
+        states
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DbError::Sqlite)
     }
 }

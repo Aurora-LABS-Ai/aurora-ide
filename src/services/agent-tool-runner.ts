@@ -14,6 +14,7 @@ import type {
 } from "./agent-service.types";
 
 interface AgentToolRunnerOptions {
+  beforeToolExecution?: () => Promise<void>;
   callbacks: AgentCallbacks;
   config: AgentConfig;
   isRunning: () => boolean;
@@ -45,12 +46,15 @@ const toToolErrorPayload = (toolName: string, error: string): string =>
   });
 
 export class AgentToolRunner {
+  private readonly beforeToolExecution?: () => Promise<void>;
   private readonly callbacks: AgentCallbacks;
   private readonly config: AgentConfig;
+  private hasCompletedPreToolExecution = false;
   private readonly isRunning: () => boolean;
   private readonly threadId: string;
 
   constructor(options: AgentToolRunnerOptions) {
+    this.beforeToolExecution = options.beforeToolExecution;
     this.callbacks = options.callbacks;
     this.config = options.config;
     this.isRunning = options.isRunning;
@@ -111,6 +115,8 @@ export class AgentToolRunner {
       );
     }
 
+    await this.ensureReadyForToolExecution();
+
     this.callbacks.onToolExecutionStart?.(toolCall);
 
     try {
@@ -159,6 +165,15 @@ export class AgentToolRunner {
 
     const result = await toolRegistry.executeToolCall(toolCall, parsedArgs);
     return result.content;
+  }
+
+  private async ensureReadyForToolExecution(): Promise<void> {
+    if (this.hasCompletedPreToolExecution || !this.beforeToolExecution) {
+      return;
+    }
+
+    await this.beforeToolExecution();
+    this.hasCompletedPreToolExecution = true;
   }
 
   private async handleRejectedTool(

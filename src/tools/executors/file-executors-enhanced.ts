@@ -4,7 +4,7 @@
  * Includes pre-save syntax validation to catch errors before writing
  * Includes undo/redo integration for AI-made changes
  */
-import { deletePath, isTauri, readDirectory, readFileContent, writeFileContent } from "../../lib/tauri";
+import { deletePath, isTauri, readFileContent, ripgrepSearch, writeFileContent } from "../../lib/tauri";
 import { formatValidationForAgent, supportsValidation, validateSyntax } from "../../services/syntax-validator";
 // Dynamic import of useUndoRedoStore used in file_create and file_write
 import { useSettingsStore } from "../../store/useSettingsStore";
@@ -12,23 +12,11 @@ import { FsOperationType, operationLog } from "../operation-log";
 import { toolRegistry } from "../registry";
 import { isPathExcluded } from "../utils/excluded-paths";
 import { getWorkspaceRootPath, resolvePath } from "../utils/path-resolver";
-
-interface GrepFileResult {
-  count: number;
-  file: string;
-  matches: GrepMatch[];
-}
+import { planMultiSearchReplace, planSearchReplace, type SearchReplaceReplacement } from "./search-replace-utils";
 
 // ============================================
 // GREP EXECUTOR (Ripgrep-style search with logging)
 // ============================================
-interface GrepMatch {
-  afterContext?: string[];
-  beforeContext?: string[];
-  content: string;
-  file: string;
-  lineNumber: number;
-}
 
 // NOTE: processEscapeSequences was REMOVED
 // JSON.parse() already handles escape sequences correctly when parsing tool arguments.
@@ -41,7 +29,7 @@ const triggerRefresh = () => { };
 
 // Helper to validate file content before writing
 // Returns null if valid, or error message if invalid
-const validateBeforeWrite = (content: string, filename: string): string | null => {
+const validateBeforeWrite = async (content: string, filename: string): Promise<string | null> => {
   // Check if syntax validation is enabled in settings
   const syntaxValidationEnabled = useSettingsStore.getState().syntaxValidationEnabled;
 
@@ -54,7 +42,7 @@ const validateBeforeWrite = (content: string, filename: string): string | null =
     return null; // No validation for this file type
   }
 
-  const result = validateSyntax(content, filename);
+  const result = await validateSyntax(content, filename);
   if (!result.valid) {
     return formatValidationForAgent(result, filename);
   }
@@ -76,8 +64,7 @@ const fileCreateExecutor = async (
     });
   }
 
-  const rootPath = getWorkspaceRootPath();
-  if (!rootPath) {
+  if (!getWorkspaceRootPath()) {
     return JSON.stringify({ success: false, error: "No workspace open" });
   }
 
@@ -90,7 +77,7 @@ const fileCreateExecutor = async (
     const processedContent = args.content ?? '';
 
     // PRE-SAVE VALIDATION: Check syntax before writing
-    const validationError = validateBeforeWrite(processedContent, fileName);
+    const validationError = await validateBeforeWrite(processedContent, fileName);
     if (validationError) {
       console.warn("[file_create] Syntax validation failed:", fileName);
       return JSON.stringify({
@@ -351,7 +338,7 @@ const fileWriteExecutor = async (
     const processedContent = args.content ?? '';
 
     // PRE-SAVE VALIDATION: Check syntax before writing
-    const validationError = validateBeforeWrite(processedContent, fileName);
+    const validationError = await validateBeforeWrite(processedContent, fileName);
     if (validationError) {
       console.warn("[file_write] Syntax validation failed:", fileName);
       return JSON.stringify({
@@ -501,212 +488,51 @@ const grepExecutor = async (args: Record<string, any>): Promise<string> => {
   const maxResults = args.max_results || 50;
 
   try {
-    const flags = caseInsensitive ? "i" : "";
-    const regex = isRegex
-      ? new RegExp(pattern, flags)
-      : new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
+    const toRelativePath = (filePath: string): string => {
+      const normalizedRootPath = rootPath.replace(/\\/g, "/").replace(/\/$/, "");
+      const normalizedFilePath = filePath.replace(/\\/g, "/");
 
-    const results: GrepFileResult[] = [];
-    let totalMatches = 0;
-
-    const matchesGlob = (filename: string): boolean => {
-      if (!globPattern) return true;
-      const patterns = globPattern.split(",").map((p: string) => p.trim());
-      return patterns.some((p: string) => {
-        const regexPattern = p
-          .replace(/\./g, "\\.")
-          .replace(/\*/g, ".*")
-          .replace(/\?/g, ".");
-        return new RegExp(`^${regexPattern}$`, "i").test(filename);
-      });
-    };
-
-    const searchFile = async (filePath: string): Promise<GrepFileResult | null> => {
-      try {
-        const content = await readFileContent(filePath);
-        const lines = content.split("\n");
-        const matches: GrepMatch[] = [];
-
-        lines.forEach((line, index) => {
-          regex.lastIndex = 0; // Reset before test
-          if (regex.test(line)) {
-            const match: GrepMatch = {
-              file: filePath.replace(rootPath + "\\", "").replace(/\\/g, "/"),
-              lineNumber: index + 1,
-              content: line.trim(),
-            };
-
-            if (contextLines > 0) {
-              match.beforeContext = lines
-                .slice(Math.max(0, index - contextLines), index)
-                .map((l) => l.trim());
-              match.afterContext = lines
-                .slice(index + 1, index + 1 + contextLines)
-                .map((l) => l.trim());
-            }
-
-            matches.push(match);
-          }
-        });
-
-        if (matches.length > 0) {
-          return {
-            file: filePath.replace(rootPath + "\\", "").replace(/\\/g, "/"),
-            matches,
-            count: matches.length,
-          };
-        }
-        return null;
-      } catch (error) {
-        // Silently skip files that can't be read
-        return null;
+      if (normalizedFilePath.startsWith(`${normalizedRootPath}/`)) {
+        return normalizedFilePath.slice(normalizedRootPath.length + 1);
       }
+
+      return normalizedFilePath;
     };
 
-    // Comprehensive ignore list for grep searches
-    const shouldIgnore = (name: string): boolean => {
-      const ignorePatterns = [
-        // Hidden files and folders
-        /^\./,
-        // Dependencies
-        'node_modules',
-        'bower_components',
-        'vendor',
-        'packages',
-        // Build outputs
-        'dist',
-        'build',
-        'out',
-        'target',
-        '.next',
-        '.nuxt',
-        '.output',
-        '.vercel',
-        '.netlify',
-        // Lock files and large data files
-        'package-lock.json',
-        'yarn.lock',
-        'pnpm-lock.yaml',
-        'composer.lock',
-        'Cargo.lock',
-        'Gemfile.lock',
-        'poetry.lock',
-        'Pipfile.lock',
-        // Version control
-        '.git',
-        '.svn',
-        '.hg',
-        // IDE and editor folders
-        '.vscode',
-        '.idea',
-        '.vs',
-        // Cache folders
-        '.cache',
-        '.tmp',
-        'tmp',
-        'temp',
-        '.temp',
-        '__pycache__',
-        '.pytest_cache',
-        '.mypy_cache',
-        // OS files
-        '.DS_Store',
-        'Thumbs.db',
-        // Test coverage
-        'coverage',
-        '.coverage',
-        '.nyc_output',
-        // Documentation builds
-        'docs/_build',
-        'site',
-        // Other common ignores
-        'logs',
-        '*.log',
-      ];
+    const result = await ripgrepSearch({
+      caseInsensitive,
+      contextLines,
+      glob: globPattern,
+      isRegex,
+      maxResults,
+      outputMode,
+      path: searchPath,
+      pattern,
+    });
 
-      return ignorePatterns.some(pattern => {
-        if (pattern instanceof RegExp) {
-          return pattern.test(name);
-        }
-        return name === pattern || name.endsWith(pattern);
-      });
-    };
-
-    const searchDir = async (dirPath: string): Promise<void> => {
-      if (totalMatches >= maxResults) return;
-
-      try {
-        const entries = await readDirectory(dirPath);
-
-        for (const entry of entries) {
-          if (totalMatches >= maxResults) break;
-
-          const fullPath = entry.path;
-
-          // Skip ignored files and folders
-          if (shouldIgnore(entry.name)) {
-            continue;
-          }
-
-          if (entry.is_dir) {
-            await searchDir(fullPath);
-          } else if (entry.is_file && matchesGlob(entry.name)) {
-            const result = await searchFile(fullPath);
-            if (result) {
-              results.push(result);
-              totalMatches += result.count;
-            }
-          }
-        }
-      } catch (error) {
-        // Silently skip directories that can't be read
-      }
-    };
-
-    // Check if path is a directory by trying to read it
-    let isDirectory = false;
-    try {
-      await readDirectory(searchPath);
-      isDirectory = true;
-    } catch {
-      isDirectory = false;
+    if (!result.success) {
+      return JSON.stringify(result);
     }
 
-    if (isDirectory) {
-      await searchDir(searchPath);
-    } else {
-      const result = await searchFile(searchPath);
-      if (result) {
-        results.push(result);
-        totalMatches = result.count;
-      }
+    if (result.files) {
+      result.files = result.files.map(toRelativePath);
     }
 
-    if (outputMode === "files_with_matches") {
-      return JSON.stringify({
-        success: true,
-        pattern,
-        totalFiles: results.length,
-        files: results.map((r) => r.file),
-      });
-    } else if (outputMode === "count") {
-      return JSON.stringify({
-        success: true,
-        pattern,
-        totalMatches,
-        counts: results.map((r) => ({ file: r.file, count: r.count })),
-      });
-    } else {
-      const allMatches = results.flatMap((r) => r.matches).slice(0, maxResults);
-      return JSON.stringify({
-        success: true,
-        pattern,
-        totalMatches: Math.min(totalMatches, maxResults),
-        totalFiles: results.length,
-        matches: allMatches,
-        truncated: totalMatches > maxResults,
-      });
+    if (result.counts) {
+      result.counts = result.counts.map((entry) => ({
+        ...entry,
+        file: toRelativePath(entry.file),
+      }));
     }
+
+    if (result.matches) {
+      result.matches = result.matches.map((match) => ({
+        ...match,
+        file: toRelativePath(match.file),
+      }));
+    }
+
+    return JSON.stringify(result);
   } catch (error) {
     console.error("[grep] Error:", error);
     return JSON.stringify({
@@ -928,47 +754,49 @@ const searchReplaceExecutor = async (
 
   try {
     const existingContent = await readFileContent(fullPath);
+    const plannedReplacement = planSearchReplace(existingContent, {
+      old_string: oldString,
+      new_string: newString,
+      replace_all: replaceAll,
+    });
 
-    // Check if old_string exists in the file
-    const occurrences = existingContent.split(oldString).length - 1;
-
-    if (occurrences === 0) {
+    if (!plannedReplacement.success && plannedReplacement.reason === "not_found") {
       return JSON.stringify({
         success: false,
-        error: `Could not find the specified text in ${args.path}. Make sure old_string matches EXACTLY (including whitespace, indentation, and newlines).`,
+        error: `Could not find the specified text in ${args.path}. Line endings are handled automatically, so check indentation, surrounding context, or reread the file before retrying.`,
         path: args.path,
         fullPath,
-        hint: "The text to find must match exactly. Check for differences in whitespace, indentation, or line endings.",
+        hint: "The text still needs to match the current file content. Include enough nearby code to make the match exact and unique.",
       });
     }
 
-    if (occurrences > 1 && !replaceAll) {
+    if (!plannedReplacement.success && plannedReplacement.reason === "not_unique") {
       return JSON.stringify({
         success: false,
-        error: `Found ${occurrences} occurrences of the text. The old_string must be unique. Either include more context to make it unique, or set replace_all=true to replace all occurrences.`,
+        error: `Found ${plannedReplacement.occurrences} occurrences of the text. The old_string must be unique. Either include more context to make it unique, or set replace_all=true to replace all occurrences.`,
         path: args.path,
         fullPath,
-        occurrences,
+        occurrences: plannedReplacement.occurrences,
         hint: "Add more surrounding code to old_string to make it unique in the file.",
       });
     }
 
-    // Calculate lines added/removed
-    const oldLines = oldString.split('\n').length;
-    const newLines = newString.split('\n').length;
-    const linesRemoved = oldLines * (replaceAll ? occurrences : 1);
-    const linesAdded = newLines * (replaceAll ? occurrences : 1);
-
-    // Perform the replacement
-    let newContent: string;
-    if (replaceAll) {
-      newContent = existingContent.split(oldString).join(newString);
-    } else {
-      newContent = existingContent.replace(oldString, newString);
+    if (!plannedReplacement.success) {
+      return JSON.stringify({
+        success: false,
+        error: "Failed to plan the replacement.",
+        path: args.path,
+        fullPath,
+      });
     }
 
+    const linesAdded = plannedReplacement.linesAdded;
+    const linesRemoved = plannedReplacement.linesRemoved;
+    const replacementsCount = plannedReplacement.totalReplacements;
+    const newContent = plannedReplacement.content;
+
     // PRE-SAVE VALIDATION: Check syntax before writing
-    const validationError = validateBeforeWrite(newContent, fileName);
+    const validationError = await validateBeforeWrite(newContent, fileName);
     if (validationError) {
       console.warn("[search_replace] Syntax validation failed:", fileName);
       return JSON.stringify({
@@ -1000,7 +828,7 @@ const searchReplaceExecutor = async (
         fullPath,
         pending: false,
         autoAccepted: true,
-        replacements: replaceAll ? occurrences : 1,
+        replacements: replacementsCount,
         linesAdded,
         linesRemoved,
       });
@@ -1008,10 +836,10 @@ const searchReplaceExecutor = async (
       return JSON.stringify({
         success: true,
         pending: false,
-        message: `Replaced ${replaceAll ? occurrences : 1} occurrence(s) in ${args.path}`,
+        message: `Replaced ${replacementsCount} occurrence(s) in ${args.path}`,
         path: args.path,
         fullPath,
-        replacements: replaceAll ? occurrences : 1,
+        replacements: replacementsCount,
         linesAdded,
         linesRemoved,
       });
@@ -1051,7 +879,7 @@ const searchReplaceExecutor = async (
       fullPath,
       pending: true,
       changeId,
-      replacements: replaceAll ? occurrences : 1,
+      replacements: replacementsCount,
       linesAdded,
       linesRemoved,
     });
@@ -1060,10 +888,10 @@ const searchReplaceExecutor = async (
       success: true,
       pending: true,
       changeId,
-      message: `Replaced ${replaceAll ? occurrences : 1} occurrence(s) in ${args.path} (pending approval)`,
+      message: `Replaced ${replacementsCount} occurrence(s) in ${args.path} (pending approval)`,
       path: args.path,
       fullPath,
-      replacements: replaceAll ? occurrences : 1,
+      replacements: replacementsCount,
       linesAdded,
       linesRemoved,
     });
@@ -1079,12 +907,6 @@ const searchReplaceExecutor = async (
 // ============================================
 // MULTI SEARCH REPLACE EXECUTOR (Batch replacements in one file)
 // ============================================
-interface ReplacementItem {
-  old_string: string;
-  new_string: string;
-  replace_all?: boolean;
-}
-
 const multiSearchReplaceExecutor = async (
   args: Record<string, any>,
   toolCallId?: string,
@@ -1098,7 +920,7 @@ const multiSearchReplaceExecutor = async (
 
   const fullPath = resolvePath(args.path);
   const fileName = fullPath.split(/[/\\]/).pop() || args.path;
-  const replacements = args.replacements as ReplacementItem[];
+  const replacements = args.replacements as SearchReplaceReplacement[];
 
   console.log("[multi_search_replace] Editing file with batch replacements:", fullPath);
 
@@ -1118,81 +940,71 @@ const multiSearchReplaceExecutor = async (
         error: `Replacement ${i + 1}: old_string is required`,
       });
     }
+
+    if (typeof rep.new_string !== "string") {
+      return JSON.stringify({
+        success: false,
+        error: `Replacement ${i + 1}: new_string is required`,
+      });
+    }
   }
 
   try {
     const originalContent = await readFileContent(fullPath);
-    let newContent = originalContent;
-    let totalReplacements = 0;
-    let totalLinesAdded = 0;
-    let totalLinesRemoved = 0;
-    const replacementDetails: Array<{
-      index: number;
-      found: boolean;
-      occurrences: number;
-      replaced: number;
-    }> = [];
+    const plannedReplacements = planMultiSearchReplace(originalContent, replacements);
 
-    // Apply each replacement in order
-    for (let i = 0; i < replacements.length; i++) {
-      const rep = replacements[i];
-      const oldString = rep.old_string;
-      const newString = rep.new_string ?? '';
-      const replaceAll = rep.replace_all === true;
-
-      // Check if old_string exists in current content
-      const occurrences = newContent.split(oldString).length - 1;
-
-      if (occurrences === 0) {
-        return JSON.stringify({
-          success: false,
-          error: `Replacement ${i + 1}: Could not find the specified text. Make sure old_string matches EXACTLY (including whitespace, indentation, and newlines).`,
-          path: args.path,
-          fullPath,
-          failedAt: i + 1,
-          replacementsApplied: i,
-          hint: "All changes have been rolled back. Fix the old_string and try again.",
-        });
-      }
-
-      if (occurrences > 1 && !replaceAll) {
-        return JSON.stringify({
-          success: false,
-          error: `Replacement ${i + 1}: Found ${occurrences} occurrences of the text. Either include more context to make it unique, or set replace_all=true for this replacement.`,
-          path: args.path,
-          fullPath,
-          failedAt: i + 1,
-          occurrences,
-          replacementsApplied: i,
-          hint: "All changes have been rolled back. Fix the old_string to be unique or use replace_all.",
-        });
-      }
-
-      // Calculate lines added/removed
-      const oldLines = oldString.split('\n').length;
-      const newLines = newString.split('\n').length;
-      const replacedCount = replaceAll ? occurrences : 1;
-      totalLinesRemoved += oldLines * replacedCount;
-      totalLinesAdded += newLines * replacedCount;
-      totalReplacements += replacedCount;
-
-      // Apply the replacement
-      if (replaceAll) {
-        newContent = newContent.split(oldString).join(newString);
-      } else {
-        newContent = newContent.replace(oldString, newString);
-      }
-
-      replacementDetails.push({
-        index: i + 1,
-        found: true,
-        occurrences,
-        replaced: replacedCount,
+    if (!plannedReplacements.success && plannedReplacements.reason === "not_found") {
+      return JSON.stringify({
+        success: false,
+        error: `Replacement ${plannedReplacements.failedAt}: Could not find the specified text in the original file snapshot. Line endings are handled automatically, so check indentation, surrounding context, or reread the file.`,
+        path: args.path,
+        fullPath,
+        failedAt: plannedReplacements.failedAt,
+        hint: "All changes have been rolled back. The text still needs to match the current file content exactly.",
       });
     }
 
+    if (!plannedReplacements.success && plannedReplacements.reason === "not_unique") {
+      return JSON.stringify({
+        success: false,
+        error: `Replacement ${plannedReplacements.failedAt}: Found ${plannedReplacements.occurrences} occurrences of the text. Either include more context to make it unique, or set replace_all=true for this replacement.`,
+        path: args.path,
+        fullPath,
+        failedAt: plannedReplacements.failedAt,
+        occurrences: plannedReplacements.occurrences,
+        hint: "All changes have been rolled back. Fix the old_string to be unique or use replace_all.",
+      });
+    }
+
+    if (!plannedReplacements.success && plannedReplacements.reason === "overlap") {
+      return JSON.stringify({
+        success: false,
+        error: `Replacement ${plannedReplacements.failedAt} overlaps with replacement ${plannedReplacements.conflictingReplacement}. Combine nearby edits into one larger replacement or make the snippets non-overlapping.`,
+        path: args.path,
+        fullPath,
+        failedAt: plannedReplacements.failedAt,
+        conflictingReplacement: plannedReplacements.conflictingReplacement,
+        hint: "All changes have been rolled back. Batch edits can target the same file, but their matched regions cannot overlap.",
+      });
+    }
+
+    if (!plannedReplacements.success) {
+      return JSON.stringify({
+        success: false,
+        error: "Failed to plan batch replacements.",
+        path: args.path,
+        fullPath,
+      });
+    }
+
+    const newContent = plannedReplacements.content;
+    const totalReplacements = plannedReplacements.totalReplacements;
+    const totalLinesAdded = plannedReplacements.linesAdded;
+    const totalLinesRemoved = plannedReplacements.linesRemoved;
+    const replacementDetails = plannedReplacements.replacementDetails;
+
     // PRE-SAVE VALIDATION: Check syntax before writing
-    const validationError = validateBeforeWrite(newContent, fileName);
+    const validationError = await validateBeforeWrite(newContent, fileName);
     if (validationError) {
       console.warn("[multi_search_replace] Syntax validation failed:", fileName);
       return JSON.stringify({
@@ -1238,6 +1050,7 @@ const multiSearchReplaceExecutor = async (
         path: args.path,
         fullPath,
         replacementsRequested: replacements.length,
+        results: replacementDetails,
         totalReplacements,
         linesAdded: totalLinesAdded,
         linesRemoved: totalLinesRemoved,
@@ -1292,6 +1105,7 @@ const multiSearchReplaceExecutor = async (
       path: args.path,
       fullPath,
       replacementsRequested: replacements.length,
+      results: replacementDetails,
       totalReplacements,
       linesAdded: totalLinesAdded,
       linesRemoved: totalLinesRemoved,

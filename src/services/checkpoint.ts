@@ -50,6 +50,8 @@ export interface RestoreResponse {
  * Checkpoint Service - manages workspace file state snapshots
  */
 class CheckpointService {
+  private readonly initPromises = new Map<string, Promise<void>>();
+
   /**
    * Initialize the checkpoint service (called on app startup)
    */
@@ -59,6 +61,32 @@ class CheckpointService {
     } catch (error) {
       console.error("[CheckpointService] Failed to initialize:", error);
     }
+  }
+
+  /**
+   * Ensure the shadow checkpoint repository exists for a workspace.
+   * This lets the app pay the heavy first-time setup cost before the user sends a message.
+   */
+  async ensureInitialized(workspacePath: string): Promise<void> {
+    const existing = this.initPromises.get(workspacePath);
+    if (existing) {
+      return existing;
+    }
+
+    const promise = invoke("checkpoint_ensure_initialized", { workspacePath })
+      .catch((error) => {
+        console.error(
+          "[CheckpointService] Failed to ensure initialization:",
+          error,
+        );
+        throw error;
+      })
+      .finally(() => {
+        this.initPromises.delete(workspacePath);
+      });
+
+    this.initPromises.set(workspacePath, promise);
+    return promise;
   }
 
   /**

@@ -76,8 +76,8 @@ const TOOL_CATEGORIES = {
   folderOps: {
     label: "Folder Operations",
     icon: FolderOpen,
-    description: "Tools that create or delete folders",
-    tools: ["folder_create", "folder_delete"],
+    description: "Tools that create, move, or delete folders",
+    tools: ["folder_create", "folder_move", "folder_delete"],
   },
   fileRead: {
     label: "File Reading",
@@ -232,7 +232,7 @@ export const ToolSettingsTab: React.FC = () => {
                 Pre-save Syntax Validation
               </h3>
               <p className="text-[10px] text-text-secondary">
-                Check syntax before writing files (JSON, JS, TS, JSX, TSX, CSS)
+                Check syntax before writing files (JSON, YAML, TOML, JS, TS, JSX, TSX)
               </p>
             </div>
             <TogglePill

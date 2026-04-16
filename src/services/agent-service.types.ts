@@ -11,6 +11,7 @@ export interface AgentCallbacks extends ProviderStreamCallbacks {
 
 export interface AgentConfig {
   autoApproveTools?: boolean;
+  beforeToolExecution?: () => Promise<void>;
   getToolApproval?: (toolName: string) => "auto" | "always_ask" | "deny";
   maxTokens?: number;
   maxToolIterations?: number;

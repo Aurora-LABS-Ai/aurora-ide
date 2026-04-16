@@ -35,7 +35,7 @@ impl DbConnection {
              PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              PRAGMA cache_size = -64000;
-             PRAGMA temp_store = MEMORY;"
+             PRAGMA temp_store = MEMORY;",
         )?;
 
         Ok(Self { conn })

@@ -156,7 +156,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     // NO saveWorkspace() here - save only on window close
   },
 
-  closeTab: (tabId, _options) => {
+  closeTab: (tabId) => {
     const { tabs, activeTabId } = get();
     const tabToClose = tabs.find((tab) => tab.id === tabId);
     if (!tabToClose) return;
@@ -375,12 +375,19 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           is_dirty: tab.isDirty,
         }));
 
+      const checkpointStore = useCheckpointStore.getState();
+      const checkpointEnabled =
+        checkpointStore.workspacePath === currentWorkspacePath
+          ? checkpointStore.enabled
+          : (await databaseService.getWorkspaceState(currentWorkspacePath))
+              ?.checkpoint_enabled ?? true;
+
       const workspaceState: DbWorkspaceState = {
         workspace_path: currentWorkspacePath,
         open_tabs: tabStates,
         panel_sizes: currentPanelSizes,
         last_opened_at: new Date().toISOString(),
-        checkpoint_enabled: useCheckpointStore.getState().enabled,
+        checkpoint_enabled: checkpointEnabled,
       };
 
       await databaseService.saveWorkspaceState(workspaceState);
@@ -402,7 +409,12 @@ useEditorStore.subscribe((state) => {
     if (tab?.path) {
       // Dynamically import to avoid circular dependency
       import("./useWorkspaceStore").then(({ useWorkspaceStore }) => {
-        useWorkspaceStore.getState().revealFile(tab.path);
+        const workspaceStore = useWorkspaceStore.getState();
+        if (workspaceStore.selectedFileId === tab.path) {
+          return;
+        }
+
+        workspaceStore.revealFile(tab.path);
       });
     }
   }

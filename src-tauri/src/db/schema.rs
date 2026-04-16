@@ -41,11 +41,9 @@ pub fn get_schema_version(conn: &Connection) -> DbResult<i32> {
         return Ok(0);
     }
 
-    match conn.query_row(
-        "SELECT version FROM schema_version LIMIT 1",
-        [],
-        |row| row.get(0),
-    ) {
+    match conn.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+        row.get(0)
+    }) {
         Ok(version) => Ok(version),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(0),
         Err(e) => Err(crate::db::error::DbError::Sqlite(e)),
@@ -62,7 +60,10 @@ fn set_schema_version(conn: &Connection, version: i32) -> DbResult<()> {
     )?;
 
     conn.execute("DELETE FROM schema_version", [])?;
-    conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [version])?;
+    conn.execute(
+        "INSERT INTO schema_version (version) VALUES (?1)",
+        [version],
+    )?;
 
     Ok(())
 }

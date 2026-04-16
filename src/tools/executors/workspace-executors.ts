@@ -2,7 +2,7 @@
  * Workspace Tool Executors
  * Simplified: only essential workspace operations
  */
-import { createFolder, deletePath, isTauri, readDirectory } from "../../lib/tauri";
+import { createFolder, deletePath, isTauri, readDirectory, renamePath } from "../../lib/tauri";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { toolRegistry } from "../registry";
 import { isDirectoryExcluded } from "../utils/excluded-paths";
@@ -47,6 +47,53 @@ const folderCreateExecutor = async (
     return JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+// ============================================
+// FOLDER MOVE EXECUTOR
+// ============================================
+const folderMoveExecutor = async (
+  args: Record<string, any>,
+): Promise<string> => {
+  if (!isTauri()) {
+    return JSON.stringify({
+      success: false,
+      error: "Folder operations require desktop app",
+    });
+  }
+
+  const rootPath = getWorkspaceRootPath();
+  if (!rootPath) {
+    return JSON.stringify({ success: false, error: "No workspace open" });
+  }
+
+  if (!args.old_path || !args.new_path) {
+    return JSON.stringify({
+      success: false,
+      error: "old_path and new_path are required",
+    });
+  }
+
+  const sourcePath = resolvePath(args.old_path);
+  const destinationPath = resolvePath(args.new_path);
+
+  try {
+    await renamePath(sourcePath, destinationPath);
+    triggerRefresh();
+    return JSON.stringify({
+      success: true,
+      message: `Folder moved: ${sourcePath} -> ${destinationPath}`,
+      oldPath: sourcePath,
+      newPath: destinationPath,
+    });
+  } catch (error) {
+    return JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      oldPath: sourcePath,
+      newPath: destinationPath,
     });
   }
 };
@@ -171,5 +218,6 @@ const workspaceTreeExecutor = async (
 export const registerWorkspaceExecutors = (): void => {
   toolRegistry.registerExecutor("workspace_tree", workspaceTreeExecutor);
   toolRegistry.registerExecutor("folder_create", folderCreateExecutor);
+  toolRegistry.registerExecutor("folder_move", folderMoveExecutor);
   toolRegistry.registerExecutor("folder_delete", folderDeleteExecutor);
 };

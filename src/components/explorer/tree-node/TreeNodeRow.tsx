@@ -64,16 +64,17 @@ export const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
     const handleMouseDown = useCallback((e: React.MouseEvent) => {
         // Only left click
         if (e.button !== 0) return;
+        if (isFolder) return;
 
         // Prepare drag - actual drag starts after mouse moves past threshold
         prepareDrag(path, name, e.clientX, e.clientY);
-    }, [path, name, prepareDrag]);
+    }, [isFolder, path, name, prepareDrag]);
 
     const handleClick = useCallback(() => {
         // Read current state - closure values may be stale
         const state = useDragStore.getState();
-        // If we were dragging or have pending drag, don't trigger click
-        if (state.isDragging || state.pendingPath) {
+        // Ignore clicks only while an actual drag is active.
+        if (state.isDragging) {
             return;
         }
         onClick();

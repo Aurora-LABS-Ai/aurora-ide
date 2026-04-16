@@ -18,7 +18,7 @@ export const useExplorerKeyboard = ({
   onNewFile,
   onNewFolder,
 }: UseExplorerKeyboardProps) => {
-  const { selectedFileId, refreshDirectory, files, rootPath } = useWorkspaceStore();
+  const { selectedFileId, files, rootPath } = useWorkspaceStore();
   const { closeTab } = useEditorStore();
 
   // Find parent folder of selected file
@@ -67,6 +67,7 @@ export const useExplorerKeyboard = ({
 
     switch (e.key) {
       case 'Delete':
+      {
         e.preventDefault();
         if (!isTauri()) return;
         const confirmed = window.confirm(`Are you sure you want to delete "${node.name}"?`);
@@ -75,13 +76,13 @@ export const useExplorerKeyboard = ({
             await deletePath(node.path || node.id);
             // File is intentionally deleted, so skip unsaved close warning.
             closeTab(node.id, { skipUnsavedWarning: true });
-            await refreshDirectory();
           } catch (err) {
             console.error('Failed to delete:', err);
             alert(`Failed to delete: ${err}`);
           }
         }
         break;
+      }
 
       case 'F2':
         e.preventDefault();
@@ -97,6 +98,7 @@ export const useExplorerKeyboard = ({
         break;
 
       case 'n':
+      {
         if (e.ctrlKey || e.metaKey) {
           e.preventDefault();
           const isFolder = node.type === 'folder';
@@ -108,12 +110,13 @@ export const useExplorerKeyboard = ({
           }
         }
         break;
+      }
 
       case 'Enter':
         // Enter key is handled by TreeNode click
         break;
     }
-  }, [selectedFileId, findNode, findParentFolder, onRename, onNewFile, onNewFolder, refreshDirectory, closeTab, rootPath]);
+  }, [selectedFileId, findNode, findParentFolder, onRename, onNewFile, onNewFolder, closeTab, rootPath]);
 
   useEffect(() => {
     document.addEventListener('keydown', handleKeyDown);

@@ -20,8 +20,8 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
-use crate::db::{ContextUsage, Message, ThreadState, TokenUsage};
 use crate::db::Database;
+use crate::db::{ContextUsage, Message, ThreadState, TokenUsage};
 use crate::services::api_converter::{ApiConverter, ApiMessage, UiMessage};
 
 /// Thread event types for Tauri event emission
@@ -42,10 +42,7 @@ pub enum ThreadEvent {
 
     /// Message added to thread
     #[serde(rename = "thread-message-added")]
-    MessageAdded {
-        thread_id: String,
-        message: Message,
-    },
+    MessageAdded { thread_id: String, message: Message },
 
     /// Message updated in thread
     #[serde(rename = "thread-message-updated")]
@@ -536,7 +533,11 @@ impl ThreadService {
     }
 
     /// Get API-formatted history for a thread (for LLM requests)
-    pub fn get_api_history(&self, db: &Database, thread_id: &str) -> Result<Vec<ApiMessage>, String> {
+    pub fn get_api_history(
+        &self,
+        db: &Database,
+        thread_id: &str,
+    ) -> Result<Vec<ApiMessage>, String> {
         let thread = db
             .threads()
             .get(thread_id)
@@ -549,7 +550,8 @@ impl ThreadService {
             .iter()
             .map(|m| {
                 let timeline = m.timeline.clone().and_then(|t| {
-                    serde_json::from_value::<Vec<crate::services::api_converter::TimelineEvent>>(t).ok()
+                    serde_json::from_value::<Vec<crate::services::api_converter::TimelineEvent>>(t)
+                        .ok()
                 });
 
                 UiMessage {
@@ -598,9 +600,7 @@ impl Default for ThreadService {
 
 /// Generate a short unique ID (like nanoid)
 fn generate_id() -> String {
-    let chars: Vec<char> = "abcdefghijklmnopqrstuvwxyz0123456789"
-        .chars()
-        .collect();
+    let chars: Vec<char> = "abcdefghijklmnopqrstuvwxyz0123456789".chars().collect();
     let mut id = String::with_capacity(9);
     for _ in 0..9 {
         let idx = rand_index(chars.len());
@@ -632,4 +632,3 @@ mod tests {
         // IDs should be different (unless generated in same nanosecond)
     }
 }
-

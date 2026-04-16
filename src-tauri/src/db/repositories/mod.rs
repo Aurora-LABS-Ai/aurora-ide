@@ -1,17 +1,17 @@
 mod checkpoints;
-mod explorer;
-mod workspace;
 mod editor;
-mod settings;
-mod threads;
-mod themes;
+mod explorer;
 mod semantic;
+mod settings;
+mod themes;
+mod threads;
+mod workspace;
 
 pub use checkpoints::CheckpointRepository;
-pub use explorer::ExplorerRepository;
-pub use workspace::WorkspaceRepository;
 pub use editor::EditorRepository;
-pub use settings::SettingsRepository;
-pub use threads::ThreadsRepository;
-pub use themes::ThemeRepository;
+pub use explorer::ExplorerRepository;
 pub use semantic::SemanticRepository;
+pub use settings::SettingsRepository;
+pub use themes::ThemeRepository;
+pub use threads::ThreadsRepository;
+pub use workspace::WorkspaceRepository;

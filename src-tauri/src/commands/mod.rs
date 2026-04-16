@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -21,21 +22,20 @@ use parking_lot::RwLock;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command as TokioCommand;
 
-
-pub mod state;
+pub mod browser;
+pub mod chat;
+pub mod checkpoints;
+pub mod git;
+pub mod local_providers;
+pub mod openai_native;
+pub mod provider_catalog;
+pub mod provider_kernel;
+pub mod semantic;
 pub mod settings;
+pub mod state;
+pub mod themes;
 pub mod threads;
 pub mod tokens;
-pub mod local_providers;
-pub mod provider_catalog;
-pub mod chat;
-pub mod themes;
-pub mod semantic;
-pub mod git;
-pub mod browser;
-pub mod openai_native;
-pub mod provider_kernel;
-pub mod checkpoints;
 pub mod undo_redo;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -53,6 +53,51 @@ pub struct CommandOutput {
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub success: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RipgrepSearchRequest {
+    pub case_insensitive: Option<bool>,
+    pub context_lines: Option<u32>,
+    pub glob: Option<String>,
+    pub is_regex: Option<bool>,
+    pub max_results: Option<u32>,
+    pub output_mode: Option<String>,
+    pub path: String,
+    pub pattern: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RipgrepMatch {
+    pub after_context: Option<Vec<String>>,
+    pub before_context: Option<Vec<String>>,
+    pub content: String,
+    pub file: String,
+    pub line_number: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RipgrepFileCount {
+    pub count: usize,
+    pub file: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RipgrepSearchResponse {
+    pub counts: Option<Vec<RipgrepFileCount>>,
+    pub error: Option<String>,
+    pub files: Option<Vec<String>>,
+    pub matches: Option<Vec<RipgrepMatch>>,
+    pub pattern: String,
+    pub success: bool,
+    pub tool: String,
+    pub total_files: Option<usize>,
+    pub total_matches: Option<usize>,
+    pub truncated: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -78,7 +123,10 @@ lazy_static::lazy_static! {
 
 fn is_command_stream_cancelled(request_id: &str) -> bool {
     let streams = ACTIVE_COMMAND_STREAMS.read();
-    streams.get(request_id).map(|s| s.cancelled).unwrap_or(false)
+    streams
+        .get(request_id)
+        .map(|s| s.cancelled)
+        .unwrap_or(false)
 }
 
 fn cleanup_command_stream(request_id: &str) {
@@ -98,9 +146,7 @@ fn try_kill_pid(pid: u32) -> Result<(), String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = Command::new("kill")
-            .args(["-9", &pid.to_string()])
-            .output();
+        let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
         Ok(())
     }
 }
@@ -136,7 +182,10 @@ fn build_shell_command(
         _ => {
             #[cfg(target_os = "windows")]
             {
-                ("pwsh".to_string(), vec!["-NoProfile", "-NonInteractive", "-Command"])
+                (
+                    "pwsh".to_string(),
+                    vec!["-NoProfile", "-NonInteractive", "-Command"],
+                )
             }
             #[cfg(not(target_os = "windows"))]
             {
@@ -163,9 +212,9 @@ fn build_shell_command(
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SystemInfo {
-    pub os: String,           // e.g., "windows", "macos", "linux"
-    pub os_version: String,   // e.g., "10.0.26200" for Windows
-    pub arch: String,         // e.g., "x86_64", "aarch64"
+    pub os: String,         // e.g., "windows", "macos", "linux"
+    pub os_version: String, // e.g., "10.0.26200" for Windows
+    pub arch: String,       // e.g., "x86_64", "aarch64"
     pub hostname: String,
     pub shell: Option<String>, // Default shell path
 }
@@ -193,6 +242,403 @@ pub struct AuroraWebSearchResponse {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuredDocumentValidationRequest {
+    pub content: String,
+    pub format: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuredDocumentValidationResponse {
+    pub column: Option<usize>,
+    pub error: Option<String>,
+    pub line: Option<usize>,
+    pub valid: bool,
+}
+
+fn decode_rg_text(raw: &Value) -> String {
+    raw.get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn decode_rg_path(data: &Value) -> Option<String> {
+    data.get("path").map(decode_rg_text)
+}
+
+fn trim_line_endings(value: String) -> String {
+    value
+        .trim_end_matches('\n')
+        .trim_end_matches('\r')
+        .to_string()
+}
+
+fn parse_glob_patterns(glob: &Option<String>) -> Vec<String> {
+    glob.as_ref()
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn offset_to_line_column(content: &str, offset: usize) -> (usize, usize) {
+    let mut line = 1usize;
+    let mut column = 1usize;
+
+    for character in content[..offset.min(content.len())].chars() {
+        if character == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+
+    (line, column)
+}
+
+#[tauri::command]
+pub async fn validate_structured_document(
+    request: StructuredDocumentValidationRequest,
+) -> Result<StructuredDocumentValidationResponse, String> {
+    let format = request.format.to_lowercase();
+
+    match format.as_str() {
+        "json" => match serde_json::from_str::<serde_json::Value>(&request.content) {
+            Ok(_) => Ok(StructuredDocumentValidationResponse {
+                column: None,
+                error: None,
+                line: None,
+                valid: true,
+            }),
+            Err(error) => Ok(StructuredDocumentValidationResponse {
+                column: Some(error.column()),
+                error: Some(error.to_string()),
+                line: Some(error.line()),
+                valid: false,
+            }),
+        },
+        "yaml" | "yml" => match serde_yaml::from_str::<serde_yaml::Value>(&request.content) {
+            Ok(_) => Ok(StructuredDocumentValidationResponse {
+                column: None,
+                error: None,
+                line: None,
+                valid: true,
+            }),
+            Err(error) => {
+                let location = error.location();
+                Ok(StructuredDocumentValidationResponse {
+                    column: location.as_ref().map(|value| value.column()),
+                    error: Some(error.to_string()),
+                    line: location.as_ref().map(|value| value.line()),
+                    valid: false,
+                })
+            }
+        },
+        "toml" => match toml::from_str::<toml::Value>(&request.content) {
+            Ok(_) => Ok(StructuredDocumentValidationResponse {
+                column: None,
+                error: None,
+                line: None,
+                valid: true,
+            }),
+            Err(error) => {
+                let (line, column) = error
+                    .span()
+                    .map(|span| offset_to_line_column(&request.content, span.start))
+                    .unwrap_or((1, 1));
+
+                Ok(StructuredDocumentValidationResponse {
+                    column: Some(column),
+                    error: Some(error.to_string()),
+                    line: Some(line),
+                    valid: false,
+                })
+            }
+        },
+        _ => Err(format!(
+            "Unsupported structured document format: {}",
+            request.format
+        )),
+    }
+}
+
+#[tauri::command]
+pub async fn ripgrep_search(
+    request: RipgrepSearchRequest,
+) -> Result<RipgrepSearchResponse, String> {
+    use std::collections::BTreeMap;
+    use std::process::Stdio;
+
+    let RipgrepSearchRequest {
+        case_insensitive,
+        context_lines,
+        glob,
+        is_regex,
+        max_results,
+        output_mode,
+        path,
+        pattern,
+    } = request;
+
+    let resolved_output_mode = output_mode.unwrap_or_else(|| "content".to_string());
+    let resolved_context_lines = context_lines.unwrap_or(0);
+    let resolved_max_results = max_results.unwrap_or(50).max(1) as usize;
+
+    let mut cmd = TokioCommand::new("rg");
+    cmd.arg("--json")
+        .arg("--line-number")
+        .arg("--with-filename")
+        .arg("--hidden")
+        .arg("--no-messages")
+        .arg("--max-count")
+        .arg(resolved_max_results.to_string());
+
+    if !is_regex.unwrap_or(true) {
+        cmd.arg("--fixed-strings");
+    }
+
+    if case_insensitive.unwrap_or(false) {
+        cmd.arg("--ignore-case");
+    }
+
+    if resolved_context_lines > 0 {
+        cmd.arg("--context").arg(resolved_context_lines.to_string());
+    }
+
+    for pattern in parse_glob_patterns(&glob) {
+        cmd.arg("--glob").arg(pattern);
+    }
+
+    cmd.arg(&pattern)
+        .arg(&path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|error| format!("Failed to execute rg: {}", error))?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let mut matches: Vec<RipgrepMatch> = Vec::new();
+    let mut files_with_matches: Vec<String> = Vec::new();
+    let mut counts_by_file: BTreeMap<String, usize> = BTreeMap::new();
+    let mut pending_context_by_file: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut last_match_index_by_file: BTreeMap<String, usize> = BTreeMap::new();
+
+    for line in stdout.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let event: Value = serde_json::from_str(line)
+            .map_err(|error| format!("Failed to parse rg output: {}", error))?;
+
+        let event_type = event
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+
+        if event_type == "match" {
+            let Some(data) = event.get("data") else {
+                continue;
+            };
+
+            let Some(file_path) = decode_rg_path(data) else {
+                continue;
+            };
+
+            let line_number = data.get("line_number").and_then(Value::as_u64).unwrap_or(0) as usize;
+
+            let content =
+                trim_line_endings(decode_rg_text(data.get("lines").unwrap_or(&Value::Null)));
+            let pending_context = pending_context_by_file
+                .remove(&file_path)
+                .unwrap_or_default();
+
+            if !pending_context.is_empty() {
+                if let Some(previous_match_index) = last_match_index_by_file.get(&file_path) {
+                    if let Some(previous_match) = matches.get_mut(*previous_match_index) {
+                        let updated_after_context = previous_match
+                            .after_context
+                            .clone()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .chain(pending_context.clone().into_iter())
+                            .collect::<Vec<_>>();
+                        previous_match.after_context = Some(updated_after_context);
+                    }
+                }
+            }
+
+            counts_by_file
+                .entry(file_path.clone())
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+
+            if !files_with_matches.iter().any(|file| file == &file_path) {
+                files_with_matches.push(file_path.clone());
+            }
+
+            let match_index = matches.len();
+            matches.push(RipgrepMatch {
+                after_context: None,
+                before_context: if pending_context.is_empty() {
+                    None
+                } else {
+                    Some(pending_context)
+                },
+                content,
+                file: file_path.clone(),
+                line_number,
+            });
+            last_match_index_by_file.insert(file_path, match_index);
+        }
+
+        if event_type == "context" {
+            let Some(data) = event.get("data") else {
+                continue;
+            };
+
+            let Some(file_path) = decode_rg_path(data) else {
+                continue;
+            };
+
+            let context_content =
+                trim_line_endings(decode_rg_text(data.get("lines").unwrap_or(&Value::Null)));
+
+            pending_context_by_file
+                .entry(file_path)
+                .or_default()
+                .push(context_content);
+        }
+    }
+
+    for (file_path, trailing_context) in pending_context_by_file {
+        if trailing_context.is_empty() {
+            continue;
+        }
+
+        if let Some(last_match_index) = last_match_index_by_file.get(&file_path) {
+            if let Some(last_match) = matches.get_mut(*last_match_index) {
+                let updated_after_context = last_match
+                    .after_context
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .chain(trailing_context.into_iter())
+                    .collect::<Vec<_>>();
+                last_match.after_context = Some(updated_after_context);
+            }
+        }
+    }
+
+    let total_matches = counts_by_file.values().sum::<usize>();
+    let truncated = total_matches >= resolved_max_results;
+
+    if !output.status.success() && total_matches == 0 {
+        if output.status.code() == Some(1) {
+            return Ok(RipgrepSearchResponse {
+                counts: if resolved_output_mode == "count" {
+                    Some(Vec::new())
+                } else {
+                    None
+                },
+                error: None,
+                files: if resolved_output_mode == "files_with_matches" {
+                    Some(Vec::new())
+                } else {
+                    None
+                },
+                matches: if resolved_output_mode == "content" {
+                    Some(Vec::new())
+                } else {
+                    None
+                },
+                pattern,
+                success: true,
+                tool: "grep".to_string(),
+                total_files: Some(0),
+                total_matches: Some(0),
+                truncated: Some(false),
+            });
+        }
+
+        let error_message = if stderr.is_empty() {
+            "ripgrep search failed".to_string()
+        } else {
+            stderr
+        };
+
+        return Ok(RipgrepSearchResponse {
+            counts: None,
+            error: Some(error_message),
+            files: None,
+            matches: None,
+            pattern,
+            success: false,
+            tool: "grep".to_string(),
+            total_files: None,
+            total_matches: None,
+            truncated: None,
+        });
+    }
+
+    let total_files = counts_by_file.len();
+
+    let counts = if resolved_output_mode == "count" {
+        Some(
+            counts_by_file
+                .iter()
+                .map(|(file, count)| RipgrepFileCount {
+                    file: file.clone(),
+                    count: *count,
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
+
+    let files = if resolved_output_mode == "files_with_matches" {
+        Some(files_with_matches)
+    } else {
+        None
+    };
+
+    let content_matches = if resolved_output_mode == "content" {
+        Some(matches.into_iter().take(resolved_max_results).collect())
+    } else {
+        None
+    };
+
+    Ok(RipgrepSearchResponse {
+        counts,
+        error: None,
+        files,
+        matches: content_matches,
+        pattern,
+        success: true,
+        tool: "grep".to_string(),
+        total_files: Some(total_files),
+        total_matches: Some(total_matches.min(resolved_max_results)),
+        truncated: Some(truncated),
+    })
+}
 
 static FS_WATCHER: OnceLock<Mutex<Option<notify::RecommendedWatcher>>> = OnceLock::new();
 
@@ -201,7 +647,9 @@ fn get_watcher_handle() -> &'static Mutex<Option<notify::RecommendedWatcher>> {
 }
 
 #[tauri::command]
-pub async fn aurora_websearch(request: AuroraWebSearchRequest) -> Result<AuroraWebSearchResponse, String> {
+pub async fn aurora_websearch(
+    request: AuroraWebSearchRequest,
+) -> Result<AuroraWebSearchResponse, String> {
     use aurora_websearch::{AuroraSearchBuilder, SafeSearch};
 
     let action = request.action.clone().unwrap_or_else(|| {
@@ -214,17 +662,17 @@ pub async fn aurora_websearch(request: AuroraWebSearchRequest) -> Result<AuroraW
 
     // Build the search client with configuration
     let mut builder = AuroraSearchBuilder::new();
-    
+
     // Set limit if provided
     if let Some(num_results) = request.num_results {
         builder = builder.limit(num_results as usize);
     }
-    
+
     // Set region if provided
     if let Some(ref region) = request.region {
         builder = builder.region(region.clone());
     }
-    
+
     // Set safe search if provided
     if let Some(ref safe_search) = request.safe_search {
         let safe = match safe_search.to_uppercase().as_str() {
@@ -234,20 +682,25 @@ pub async fn aurora_websearch(request: AuroraWebSearchRequest) -> Result<AuroraW
         };
         builder = builder.safe_search(safe);
     }
-    
-    let aurora = builder.build()
+
+    let aurora = builder
+        .build()
         .map_err(|e| format!("Failed to create search client: {}", e))?;
 
     if action == "fetch" {
-        let url = request.url.clone().ok_or_else(|| "URL is required for fetch".to_string())?;
-        
-        let content = aurora.extract_content(&url)
+        let url = request
+            .url
+            .clone()
+            .ok_or_else(|| "URL is required for fetch".to_string())?;
+
+        let content = aurora
+            .extract_content(&url)
             .await
             .map_err(|e| format!("Web fetch failed: {}", e))?;
-        
+
         let content_value = serde_json::to_value(&content)
             .map_err(|e| format!("Failed to serialize fetch response: {}", e))?;
-        
+
         return Ok(AuroraWebSearchResponse {
             success: true,
             action,
@@ -260,13 +713,17 @@ pub async fn aurora_websearch(request: AuroraWebSearchRequest) -> Result<AuroraW
     }
 
     // Search action
-    let query = request.query.clone().ok_or_else(|| "Query is required for search".to_string())?;
+    let query = request
+        .query
+        .clone()
+        .ok_or_else(|| "Query is required for search".to_string())?;
     let limit = request.num_results.unwrap_or(10) as usize;
-    
-    let results = aurora.search_with_limit(&query, limit)
+
+    let results = aurora
+        .search_with_limit(&query, limit)
         .await
         .map_err(|e| format!("Web search failed: {}", e))?;
-    
+
     let results_value = serde_json::to_value(&results)
         .map_err(|e| format!("Failed to serialize search response: {}", e))?;
 
@@ -283,12 +740,15 @@ pub async fn aurora_websearch(request: AuroraWebSearchRequest) -> Result<AuroraW
 
 /// Read directory contents
 
-/// 
+///
 /// Args:
 ///   path: Directory path to read
 ///   include_hidden: Whether to include hidden files/folders (starting with .)
 #[tauri::command]
-pub async fn read_directory(path: String, include_hidden: Option<bool>) -> Result<Vec<FileEntry>, String> {
+pub async fn read_directory(
+    path: String,
+    include_hidden: Option<bool>,
+) -> Result<Vec<FileEntry>, String> {
     let dir_path = Path::new(&path);
     let show_hidden = include_hidden.unwrap_or(true); // Default to showing hidden files
 
@@ -314,7 +774,7 @@ pub async fn read_directory(path: String, include_hidden: Option<bool>) -> Resul
                 if !show_hidden && file_name.starts_with('.') && file_name != ".aurora" {
                     continue;
                 }
-                
+
                 // Always skip .git folder (too many internal files)
                 // But .gitignore, .gitattributes etc. are fine (they're files, not the .git folder)
                 if file_name == ".git" {
@@ -322,7 +782,11 @@ pub async fn read_directory(path: String, include_hidden: Option<bool>) -> Resul
                 }
 
                 // Skip large generated folders that slow down the explorer
-                if file_name == "node_modules" || file_name == "target" || file_name == "dist" || file_name == ".pnpm" {
+                if file_name == "node_modules"
+                    || file_name == "target"
+                    || file_name == "dist"
+                    || file_name == ".pnpm"
+                {
                     continue;
                 }
 
@@ -346,12 +810,10 @@ pub async fn read_directory(path: String, include_hidden: Option<bool>) -> Resul
 
     // Sort: directories first, then files, alphabetically
     // Hidden files (starting with .) are sorted among their peers
-    entries.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
 
     Ok(entries)
@@ -366,7 +828,6 @@ pub async fn read_file_content(path: String) -> Result<String, String> {
         .map_err(|e| format!("Failed to load file: {}", e))?
 }
 
-
 /// Write file content
 #[tauri::command]
 pub async fn write_file_content(path: String, content: String) -> Result<(), String> {
@@ -380,12 +841,11 @@ pub async fn write_file_content(path: String, content: String) -> Result<(), Str
         }
     }
 
-    let result = fs::write(file_path, &content)
-        .map_err(|e| format!("Failed to write file: {}", e));
-    
+    let result = fs::write(file_path, &content).map_err(|e| format!("Failed to write file: {}", e));
+
     // Invalidate cache after write (file content changed)
     crate::file_cache::get_file_cache().invalidate(&path);
-    
+
     result
 }
 
@@ -435,12 +895,18 @@ pub async fn execute_command(
                     }
                 }
             } else {
-                return Err(format!("Failed to execute command with {}: {}", shell_exe, e));
+                return Err(format!(
+                    "Failed to execute command with {}: {}",
+                    shell_exe, e
+                ));
             }
 
             #[cfg(not(target_os = "windows"))]
             {
-                return Err(format!("Failed to execute command with {}: {}", shell_exe, e));
+                return Err(format!(
+                    "Failed to execute command with {}: {}",
+                    shell_exe, e
+                ));
             }
         }
     };
@@ -743,18 +1209,15 @@ fn get_os_version() -> String {
         }
         "unknown".to_string()
     }
-    
+
     #[cfg(target_os = "macos")]
     {
-        if let Ok(output) = Command::new("sw_vers")
-            .arg("-productVersion")
-            .output()
-        {
+        if let Ok(output) = Command::new("sw_vers").arg("-productVersion").output() {
             return String::from_utf8_lossy(&output.stdout).trim().to_string();
         }
         "unknown".to_string()
     }
-    
+
     #[cfg(target_os = "linux")]
     {
         // Try to read from /etc/os-release
@@ -774,7 +1237,7 @@ fn get_os_version() -> String {
         }
         "unknown".to_string()
     }
-    
+
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         "unknown".to_string()
@@ -790,29 +1253,36 @@ fn get_default_shell() -> Option<String> {
             r"C:\Program Files\PowerShell\7\pwsh.exe",
             r"C:\Program Files (x86)\PowerShell\7\pwsh.exe",
         ];
-        
+
         for path in ps7_paths {
             if Path::new(path).exists() {
                 return Some(path.to_string());
             }
         }
-        
+
         // Check for Windows PowerShell
         if let Ok(system_root) = std::env::var("SystemRoot") {
-            let ps5_path = format!(r"{}\System32\WindowsPowerShell\v1.0\powershell.exe", system_root);
+            let ps5_path = format!(
+                r"{}\System32\WindowsPowerShell\v1.0\powershell.exe",
+                system_root
+            );
             if Path::new(&ps5_path).exists() {
                 return Some(ps5_path);
             }
         }
-        
+
         // Fallback to cmd.exe
-        Some(std::env::var("COMSPEC").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".to_string()))
+        Some(
+            std::env::var("COMSPEC").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".to_string()),
+        )
     }
-    
+
     #[cfg(not(target_os = "windows"))]
     {
         // Unix-like: check SHELL env var
-        std::env::var("SHELL").ok().or_else(|| Some("/bin/sh".to_string()))
+        std::env::var("SHELL")
+            .ok()
+            .or_else(|| Some("/bin/sh".to_string()))
     }
 }
 
@@ -835,8 +1305,7 @@ pub async fn create_file(path: String) -> Result<(), String> {
     }
 
     // Create empty file
-    fs::File::create(file_path)
-        .map_err(|e| format!("Failed to create file: {}", e))?;
+    fs::File::create(file_path).map_err(|e| format!("Failed to create file: {}", e))?;
 
     Ok(())
 }
@@ -851,8 +1320,7 @@ pub async fn create_folder(path: String) -> Result<(), String> {
         return Err(format!("Folder already exists: {}", path));
     }
 
-    fs::create_dir_all(dir_path)
-        .map_err(|e| format!("Failed to create folder: {}", e))
+    fs::create_dir_all(dir_path).map_err(|e| format!("Failed to create folder: {}", e))
 }
 
 /// Delete a file or folder
@@ -867,15 +1335,13 @@ pub async fn delete_path(path: String) -> Result<(), String> {
     let result = if target_path.is_dir() {
         // Invalidate all cached files under this directory
         crate::file_cache::get_file_cache().invalidate_prefix(&path);
-        fs::remove_dir_all(target_path)
-            .map_err(|e| format!("Failed to delete folder: {}", e))
+        fs::remove_dir_all(target_path).map_err(|e| format!("Failed to delete folder: {}", e))
     } else {
         // Invalidate the specific file
         crate::file_cache::get_file_cache().invalidate(&path);
-        fs::remove_file(target_path)
-            .map_err(|e| format!("Failed to delete file: {}", e))
+        fs::remove_file(target_path).map_err(|e| format!("Failed to delete file: {}", e))
     };
-    
+
     result
 }
 
@@ -901,8 +1367,7 @@ pub async fn rename_path(old_path: String, new_path: String) -> Result<(), Strin
         cache.invalidate(&old_path);
     }
 
-    fs::rename(old, new)
-        .map_err(|e| format!("Failed to rename: {}", e))
+    fs::rename(old, new).map_err(|e| format!("Failed to rename: {}", e))
 }
 
 /// Copy a file or folder to a new location
@@ -928,8 +1393,7 @@ pub async fn copy_path(source: String, destination: String) -> Result<(), String
     }
 
     if src.is_file() {
-        fs::copy(src, dest)
-            .map_err(|e| format!("Failed to copy file: {}", e))?;
+        fs::copy(src, dest).map_err(|e| format!("Failed to copy file: {}", e))?;
     } else if src.is_dir() {
         copy_dir_recursive(src, dest)?;
     }
@@ -939,8 +1403,7 @@ pub async fn copy_path(source: String, destination: String) -> Result<(), String
 
 /// Recursively copy a directory
 fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
-    fs::create_dir_all(dest)
-        .map_err(|e| format!("Failed to create directory: {}", e))?;
+    fs::create_dir_all(dest).map_err(|e| format!("Failed to create directory: {}", e))?;
 
     for entry in fs::read_dir(src).map_err(|e| format!("Failed to read directory: {}", e))? {
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
@@ -950,8 +1413,7 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
         if src_path.is_dir() {
             copy_dir_recursive(&src_path, &dest_path)?;
         } else {
-            fs::copy(&src_path, &dest_path)
-                .map_err(|e| format!("Failed to copy file: {}", e))?;
+            fs::copy(&src_path, &dest_path).map_err(|e| format!("Failed to copy file: {}", e))?;
         }
     }
 
@@ -1051,7 +1513,7 @@ pub async fn stop_fs_watcher() -> Result<(), String> {
 #[tauri::command]
 pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
     let target_path = Path::new(&path);
-    
+
     if !target_path.exists() {
         return Err(format!("Path does not exist: {}", path));
     }
@@ -1072,7 +1534,7 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
         } else {
             path.clone()
         };
-        
+
         Command::new("explorer")
             .arg(&select_path)
             .spawn()
@@ -1094,13 +1556,10 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
         let result = Command::new("xdg-open")
             .arg(reveal_path.to_string_lossy().to_string())
             .spawn();
-        
+
         if result.is_err() {
             // Try nautilus (GNOME)
-            let _ = Command::new("nautilus")
-                .arg("--select")
-                .arg(&path)
-                .spawn();
+            let _ = Command::new("nautilus").arg("--select").arg(&path).spawn();
         }
     }
 
@@ -1111,12 +1570,13 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn open_in_terminal(path: String) -> Result<(), String> {
     let target_path = Path::new(&path);
-    
+
     // Use the path directly if it's a directory, otherwise use its parent
     let terminal_path = if target_path.is_dir() {
         target_path.to_path_buf()
     } else {
-        target_path.parent()
+        target_path
+            .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| target_path.to_path_buf())
     };
@@ -1132,7 +1592,7 @@ pub async fn open_in_terminal(path: String) -> Result<(), String> {
             .arg("-d")
             .arg(terminal_path.to_string_lossy().to_string())
             .spawn();
-        
+
         if wt_result.is_err() {
             // Fall back to PowerShell in a new window
             Command::new("powershell")
@@ -1163,7 +1623,7 @@ pub async fn open_in_terminal(path: String) -> Result<(), String> {
         // Try common terminal emulators
         let terminals = ["gnome-terminal", "konsole", "xfce4-terminal", "xterm"];
         let mut opened = false;
-        
+
         for terminal in terminals {
             let result = match terminal {
                 "gnome-terminal" => Command::new(terminal)
@@ -1174,17 +1634,15 @@ pub async fn open_in_terminal(path: String) -> Result<(), String> {
                     .arg("--workdir")
                     .arg(terminal_path.to_string_lossy().to_string())
                     .spawn(),
-                _ => Command::new(terminal)
-                    .current_dir(&terminal_path)
-                    .spawn(),
+                _ => Command::new(terminal).current_dir(&terminal_path).spawn(),
             };
-            
+
             if result.is_ok() {
                 opened = true;
                 break;
             }
         }
-        
+
         if !opened {
             return Err("No supported terminal emulator found".to_string());
         }
@@ -1204,7 +1662,9 @@ use std::collections::HashMap;
 #[tauri::command]
 pub async fn read_files_batch(paths: Vec<String>) -> HashMap<String, Result<String, String>> {
     let fallback_paths = paths.clone();
-    match tokio::task::spawn_blocking(move || crate::file_cache::read_files_batch_cached(paths)).await {
+    match tokio::task::spawn_blocking(move || crate::file_cache::read_files_batch_cached(paths))
+        .await
+    {
         Ok(results) => results,
         Err(error) => fallback_paths
             .into_iter()
@@ -1240,8 +1700,7 @@ pub async fn get_cache_stats() -> (usize, usize) {
 /// This allows using `aurora .` from any terminal
 #[tauri::command]
 pub async fn install_aurora_cli() -> Result<String, String> {
-    crate::cli::install::install_cli()
-        .map(|_| "Aurora CLI installed successfully".to_string())
+    crate::cli::install::install_cli().map(|_| "Aurora CLI installed successfully".to_string())
 }
 
 /// Check if the Aurora CLI is installed
@@ -1253,8 +1712,7 @@ pub async fn is_aurora_cli_installed() -> Result<bool, String> {
 /// Uninstall the Aurora CLI from system PATH
 #[tauri::command]
 pub async fn uninstall_aurora_cli() -> Result<String, String> {
-    crate::cli::install::uninstall_cli()
-        .map(|_| "Aurora CLI uninstalled successfully".to_string())
+    crate::cli::install::uninstall_cli().map(|_| "Aurora CLI uninstalled successfully".to_string())
 }
 
 /// Install Aurora into the Windows Explorer context menu

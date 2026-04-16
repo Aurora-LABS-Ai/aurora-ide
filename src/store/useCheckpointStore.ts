@@ -69,6 +69,7 @@ export const useCheckpointStore = create<CheckpointState & CheckpointActions>(
       }));
 
       if (enabled) {
+        void checkpointService.ensureInitialized(workspacePath);
         const currentThreadId = get().threadId;
         if (currentThreadId) {
           await get().loadCheckpointsForThread(currentThreadId);

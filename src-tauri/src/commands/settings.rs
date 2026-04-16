@@ -1,7 +1,7 @@
-use tauri::State;
 use std::sync::Mutex;
+use tauri::State;
 
-use crate::db::{Database, LLMProvider, AppSettings, ToolSetting};
+use crate::db::{AppSettings, Database, LLMProvider, ToolSetting};
 
 // ============================================================
 // APP SETTINGS COMMANDS
@@ -30,14 +30,20 @@ pub fn save_app_settings(
 
 #[tauri::command]
 pub fn get_global_skills_path() -> Result<Option<String>, String> {
-    Ok(dirs::home_dir().map(|home| home.join(".agent").join("skills").to_string_lossy().to_string()))
+    Ok(dirs::home_dir().map(|home| {
+        home.join(".agent")
+            .join("skills")
+            .to_string_lossy()
+            .to_string()
+    }))
 }
 
 /// Get a single setting by key
 #[tauri::command]
 pub fn get_setting(key: String, db: State<'_, Mutex<Database>>) -> Result<Option<String>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
-    let setting = db.settings()
+    let setting = db
+        .settings()
         .get_setting(&key)
         .map_err(|e| format!("Failed to get setting: {:?}", e))?;
     Ok(setting.map(|s| s.value))
@@ -71,7 +77,10 @@ pub fn get_all_providers(db: State<'_, Mutex<Database>>) -> Result<Vec<LLMProvid
 
 /// Get a single provider by ID
 #[tauri::command]
-pub fn get_provider(id: String, db: State<'_, Mutex<Database>>) -> Result<Option<LLMProvider>, String> {
+pub fn get_provider(
+    id: String,
+    db: State<'_, Mutex<Database>>,
+) -> Result<Option<LLMProvider>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.settings()
         .get_provider(&id)
@@ -80,10 +89,7 @@ pub fn get_provider(id: String, db: State<'_, Mutex<Database>>) -> Result<Option
 
 /// Save or update a provider
 #[tauri::command]
-pub fn save_provider(
-    provider: LLMProvider,
-    db: State<'_, Mutex<Database>>,
-) -> Result<(), String> {
+pub fn save_provider(provider: LLMProvider, db: State<'_, Mutex<Database>>) -> Result<(), String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.settings()
         .save_provider(&provider)
@@ -160,4 +166,3 @@ pub fn save_all_tool_settings(
         .save_all_tool_settings(&settings)
         .map_err(|e| format!("Failed to save tool settings: {:?}", e))
 }
-

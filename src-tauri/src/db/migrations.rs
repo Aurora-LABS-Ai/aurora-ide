@@ -192,16 +192,10 @@ fn migration_v2(conn: &Connection) -> DbResult<()> {
 /// Migration v3: Add token_usage and context_usage columns to threads table
 fn migration_v3(conn: &Connection) -> DbResult<()> {
     // Add token_usage column to threads table
-    conn.execute(
-        "ALTER TABLE threads ADD COLUMN token_usage TEXT",
-        [],
-    )?;
+    conn.execute("ALTER TABLE threads ADD COLUMN token_usage TEXT", [])?;
 
     // Add context_usage column to threads table
-    conn.execute(
-        "ALTER TABLE threads ADD COLUMN context_usage TEXT",
-        [],
-    )?;
+    conn.execute("ALTER TABLE threads ADD COLUMN context_usage TEXT", [])?;
 
     Ok(())
 }
@@ -402,10 +396,7 @@ fn migration_v10(conn: &Connection) -> DbResult<()> {
 
 /// Migration v11: Add provider nicknames and model alias metadata
 fn migration_v11(conn: &Connection) -> DbResult<()> {
-    conn.execute(
-        "ALTER TABLE llm_providers ADD COLUMN nickname TEXT",
-        [],
-    )?;
+    conn.execute("ALTER TABLE llm_providers ADD COLUMN nickname TEXT", [])?;
 
     conn.execute(
         "ALTER TABLE llm_providers ADD COLUMN model_aliases TEXT",

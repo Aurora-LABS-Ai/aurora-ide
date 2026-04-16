@@ -1,6 +1,6 @@
-use rusqlite::{params, Connection};
 use crate::db::error::{DbError, DbResult};
-use crate::db::models::{AppSetting, LLMProvider, ToolSetting, AppSettings};
+use crate::db::models::{AppSetting, AppSettings, LLMProvider, ToolSetting};
+use rusqlite::{params, Connection};
 
 /// Repository for app settings operations
 pub struct SettingsRepository<'a> {
@@ -18,9 +18,9 @@ impl<'a> SettingsRepository<'a> {
 
     /// Get a setting by key
     pub fn get_setting(&self, key: &str) -> DbResult<Option<AppSetting>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT key, value, updated_at FROM app_settings WHERE key = ?1"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT key, value, updated_at FROM app_settings WHERE key = ?1")?;
 
         let result = stmt.query_row(params![key], |row| {
             Ok(AppSetting {
@@ -40,7 +40,7 @@ impl<'a> SettingsRepository<'a> {
     /// Set a setting value
     pub fn set_setting(&self, key: &str, value: &str) -> DbResult<()> {
         let now = chrono::Utc::now().to_rfc3339();
-        
+
         self.conn.execute(
             "INSERT INTO app_settings (key, value, updated_at)
              VALUES (?1, ?2, ?3)
@@ -53,9 +53,9 @@ impl<'a> SettingsRepository<'a> {
 
     /// Get all settings
     pub fn get_all_settings(&self) -> DbResult<Vec<AppSetting>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT key, value, updated_at FROM app_settings"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT key, value, updated_at FROM app_settings")?;
 
         let settings = stmt.query_map([], |row| {
             Ok(AppSetting {
@@ -75,71 +75,193 @@ impl<'a> SettingsRepository<'a> {
     /// Delete a setting
     #[allow(dead_code)]
     pub fn delete_setting(&self, key: &str) -> DbResult<()> {
-        self.conn.execute(
-            "DELETE FROM app_settings WHERE key = ?1",
-            params![key],
-        )?;
+        self.conn
+            .execute("DELETE FROM app_settings WHERE key = ?1", params![key])?;
         Ok(())
     }
 
     /// Get complete app settings (with defaults for missing values)
     pub fn get_app_settings(&self) -> DbResult<AppSettings> {
         let mut settings = AppSettings::default();
-        
+
         for setting in self.get_all_settings()? {
             match setting.key.as_str() {
-                "selectedModel" => settings.selected_model = serde_json::from_str(&setting.value).unwrap_or(settings.selected_model),
-                "autoApproveTools" => settings.auto_approve_tools = serde_json::from_str(&setting.value).unwrap_or(settings.auto_approve_tools),
-                "autoAcceptChanges" => settings.auto_accept_changes = serde_json::from_str(&setting.value).unwrap_or(settings.auto_accept_changes),
-                "fontSize" => settings.font_size = serde_json::from_str(&setting.value).unwrap_or(settings.font_size),
-                "wrapMode" => settings.wrap_mode = serde_json::from_str(&setting.value).unwrap_or(settings.wrap_mode),
-                "theme" => settings.theme = serde_json::from_str(&setting.value).unwrap_or(settings.theme),
-                "thinkingEnabled" => settings.thinking_enabled = serde_json::from_str(&setting.value).unwrap_or(settings.thinking_enabled),
-                "syntaxValidationEnabled" => settings.syntax_validation_enabled = serde_json::from_str(&setting.value).unwrap_or(settings.syntax_validation_enabled),
-                "projectLayoutEnabled" => settings.project_layout_enabled = serde_json::from_str(&setting.value).unwrap_or(settings.project_layout_enabled),
-                "uiFontFamily" => settings.ui_font_family = serde_json::from_str(&setting.value).unwrap_or(settings.ui_font_family.clone()),
-                "uiScale" => settings.ui_scale = serde_json::from_str(&setting.value).unwrap_or(settings.ui_scale),
-                "uiTextScale" => settings.ui_text_scale = serde_json::from_str(&setting.value).unwrap_or(settings.ui_text_scale),
-                "maxTokens" => settings.max_tokens = serde_json::from_str(&setting.value).unwrap_or(settings.max_tokens),
-                "temperature" => settings.temperature = serde_json::from_str(&setting.value).unwrap_or(settings.temperature),
-                "autoSave" => settings.auto_save = serde_json::from_str(&setting.value).unwrap_or(settings.auto_save),
-                "autoSaveDelay" => settings.auto_save_delay = serde_json::from_str(&setting.value).unwrap_or(settings.auto_save_delay),
-                "maxToolCallsPerRequest" => settings.max_tool_calls_per_request = serde_json::from_str(&setting.value).unwrap_or(settings.max_tool_calls_per_request),
-                "skillsEnabled" => settings.skills_enabled = serde_json::from_str(&setting.value).unwrap_or(settings.skills_enabled),
-                "skillToggles" => settings.skill_toggles = serde_json::from_str(&setting.value).unwrap_or(settings.skill_toggles.clone()),
-                "fireworksTabEnabled" => settings.fireworks_tab_enabled = serde_json::from_str(&setting.value).unwrap_or(settings.fireworks_tab_enabled),
-                "fireworksAccountId" => settings.fireworks_account_id = serde_json::from_str(&setting.value).unwrap_or(settings.fireworks_account_id.clone()),
+                "selectedModel" => {
+                    settings.selected_model =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.selected_model)
+                }
+                "autoApproveTools" => {
+                    settings.auto_approve_tools =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.auto_approve_tools)
+                }
+                "autoAcceptChanges" => {
+                    settings.auto_accept_changes =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.auto_accept_changes)
+                }
+                "fontSize" => {
+                    settings.font_size =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.font_size)
+                }
+                "wrapMode" => {
+                    settings.wrap_mode =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.wrap_mode)
+                }
+                "theme" => {
+                    settings.theme = serde_json::from_str(&setting.value).unwrap_or(settings.theme)
+                }
+                "thinkingEnabled" => {
+                    settings.thinking_enabled =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.thinking_enabled)
+                }
+                "syntaxValidationEnabled" => {
+                    settings.syntax_validation_enabled = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.syntax_validation_enabled)
+                }
+                "projectLayoutEnabled" => {
+                    settings.project_layout_enabled = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.project_layout_enabled)
+                }
+                "uiFontFamily" => {
+                    settings.ui_font_family = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.ui_font_family.clone())
+                }
+                "uiScale" => {
+                    settings.ui_scale =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.ui_scale)
+                }
+                "uiTextScale" => {
+                    settings.ui_text_scale =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.ui_text_scale)
+                }
+                "maxTokens" => {
+                    settings.max_tokens =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.max_tokens)
+                }
+                "temperature" => {
+                    settings.temperature =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.temperature)
+                }
+                "autoSave" => {
+                    settings.auto_save =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.auto_save)
+                }
+                "autoSaveDelay" => {
+                    settings.auto_save_delay =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.auto_save_delay)
+                }
+                "maxToolCallsPerRequest" => {
+                    settings.max_tool_calls_per_request = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.max_tool_calls_per_request)
+                }
+                "skillsEnabled" => {
+                    settings.skills_enabled =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.skills_enabled)
+                }
+                "skillToggles" => {
+                    settings.skill_toggles = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.skill_toggles.clone())
+                }
+                "fireworksTabEnabled" => {
+                    settings.fireworks_tab_enabled = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.fireworks_tab_enabled)
+                }
+                "fireworksAccountId" => {
+                    settings.fireworks_account_id = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.fireworks_account_id.clone())
+                }
                 _ => {}
             }
-
         }
-        
+
         Ok(settings)
     }
 
     /// Save complete app settings
     pub fn save_app_settings(&self, settings: &AppSettings) -> DbResult<()> {
-        self.set_setting("selectedModel", &serde_json::to_string(&settings.selected_model).unwrap_or_default())?;
-        self.set_setting("autoApproveTools", &serde_json::to_string(&settings.auto_approve_tools).unwrap_or_default())?;
-        self.set_setting("autoAcceptChanges", &serde_json::to_string(&settings.auto_accept_changes).unwrap_or_default())?;
-        self.set_setting("fontSize", &serde_json::to_string(&settings.font_size).unwrap_or_default())?;
-        self.set_setting("wrapMode", &serde_json::to_string(&settings.wrap_mode).unwrap_or_default())?;
-        self.set_setting("theme", &serde_json::to_string(&settings.theme).unwrap_or_default())?;
-        self.set_setting("thinkingEnabled", &serde_json::to_string(&settings.thinking_enabled).unwrap_or_default())?;
-        self.set_setting("syntaxValidationEnabled", &serde_json::to_string(&settings.syntax_validation_enabled).unwrap_or_default())?;
-        self.set_setting("projectLayoutEnabled", &serde_json::to_string(&settings.project_layout_enabled).unwrap_or_default())?;
-        self.set_setting("uiFontFamily", &serde_json::to_string(&settings.ui_font_family).unwrap_or_default())?;
-        self.set_setting("uiScale", &serde_json::to_string(&settings.ui_scale).unwrap_or_default())?;
-        self.set_setting("uiTextScale", &serde_json::to_string(&settings.ui_text_scale).unwrap_or_default())?;
-        self.set_setting("maxTokens", &serde_json::to_string(&settings.max_tokens).unwrap_or_default())?;
-        self.set_setting("temperature", &serde_json::to_string(&settings.temperature).unwrap_or_default())?;
-        self.set_setting("autoSave", &serde_json::to_string(&settings.auto_save).unwrap_or_default())?;
-        self.set_setting("autoSaveDelay", &serde_json::to_string(&settings.auto_save_delay).unwrap_or_default())?;
-        self.set_setting("maxToolCallsPerRequest", &serde_json::to_string(&settings.max_tool_calls_per_request).unwrap_or_default())?;
-        self.set_setting("skillsEnabled", &serde_json::to_string(&settings.skills_enabled).unwrap_or_default())?;
-        self.set_setting("skillToggles", &serde_json::to_string(&settings.skill_toggles).unwrap_or_default())?;
-        self.set_setting("fireworksTabEnabled", &serde_json::to_string(&settings.fireworks_tab_enabled).unwrap_or_default())?;
-        self.set_setting("fireworksAccountId", &serde_json::to_string(&settings.fireworks_account_id).unwrap_or_default())?;
+        self.set_setting(
+            "selectedModel",
+            &serde_json::to_string(&settings.selected_model).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "autoApproveTools",
+            &serde_json::to_string(&settings.auto_approve_tools).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "autoAcceptChanges",
+            &serde_json::to_string(&settings.auto_accept_changes).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "fontSize",
+            &serde_json::to_string(&settings.font_size).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "wrapMode",
+            &serde_json::to_string(&settings.wrap_mode).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "theme",
+            &serde_json::to_string(&settings.theme).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "thinkingEnabled",
+            &serde_json::to_string(&settings.thinking_enabled).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "syntaxValidationEnabled",
+            &serde_json::to_string(&settings.syntax_validation_enabled).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "projectLayoutEnabled",
+            &serde_json::to_string(&settings.project_layout_enabled).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "uiFontFamily",
+            &serde_json::to_string(&settings.ui_font_family).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "uiScale",
+            &serde_json::to_string(&settings.ui_scale).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "uiTextScale",
+            &serde_json::to_string(&settings.ui_text_scale).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "maxTokens",
+            &serde_json::to_string(&settings.max_tokens).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "temperature",
+            &serde_json::to_string(&settings.temperature).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "autoSave",
+            &serde_json::to_string(&settings.auto_save).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "autoSaveDelay",
+            &serde_json::to_string(&settings.auto_save_delay).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "maxToolCallsPerRequest",
+            &serde_json::to_string(&settings.max_tool_calls_per_request).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "skillsEnabled",
+            &serde_json::to_string(&settings.skills_enabled).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "skillToggles",
+            &serde_json::to_string(&settings.skill_toggles).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "fireworksTabEnabled",
+            &serde_json::to_string(&settings.fireworks_tab_enabled).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "fireworksAccountId",
+            &serde_json::to_string(&settings.fireworks_account_id).unwrap_or_default(),
+        )?;
         Ok(())
     }
 
@@ -252,13 +374,21 @@ impl<'a> SettingsRepository<'a> {
     /// Save or update a provider
     pub fn save_provider(&self, provider: &LLMProvider) -> DbResult<()> {
         let now = chrono::Utc::now().to_rfc3339();
-        let custom_models = provider.custom_models.as_ref()
+        let custom_models = provider
+            .custom_models
+            .as_ref()
             .map(|m| serde_json::to_string(m).unwrap_or_default());
-        let model_aliases = provider.model_aliases.as_ref()
+        let model_aliases = provider
+            .model_aliases
+            .as_ref()
             .map(|m| serde_json::to_string(m).unwrap_or_default());
-        let custom_headers = provider.custom_headers.as_ref()
+        let custom_headers = provider
+            .custom_headers
+            .as_ref()
             .map(|h| serde_json::to_string(h).unwrap_or_default());
-        let custom_params = provider.custom_params.as_ref()
+        let custom_params = provider
+            .custom_params
+            .as_ref()
             .map(|p| serde_json::to_string(p).unwrap_or_default());
 
         self.conn.execute(
@@ -306,20 +436,16 @@ impl<'a> SettingsRepository<'a> {
 
     /// Delete a provider
     pub fn delete_provider(&self, id: &str) -> DbResult<()> {
-        self.conn.execute(
-            "DELETE FROM llm_providers WHERE id = ?1",
-            params![id],
-        )?;
+        self.conn
+            .execute("DELETE FROM llm_providers WHERE id = ?1", params![id])?;
         Ok(())
     }
 
     /// Check if providers table is empty
     pub fn has_providers(&self) -> DbResult<bool> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM llm_providers",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM llm_providers", [], |row| row.get(0))?;
         Ok(count > 0)
     }
 
@@ -329,9 +455,9 @@ impl<'a> SettingsRepository<'a> {
 
     /// Get all tool settings
     pub fn get_all_tool_settings(&self) -> DbResult<Vec<ToolSetting>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT tool_name, approval_mode, updated_at FROM tool_settings"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT tool_name, approval_mode, updated_at FROM tool_settings")?;
 
         let settings = stmt.query_map([], |row| {
             Ok(ToolSetting {
@@ -352,7 +478,7 @@ impl<'a> SettingsRepository<'a> {
     #[allow(dead_code)]
     pub fn get_tool_setting(&self, tool_name: &str) -> DbResult<Option<ToolSetting>> {
         let mut stmt = self.conn.prepare(
-            "SELECT tool_name, approval_mode, updated_at FROM tool_settings WHERE tool_name = ?1"
+            "SELECT tool_name, approval_mode, updated_at FROM tool_settings WHERE tool_name = ?1",
         )?;
 
         let result = stmt.query_row(params![tool_name], |row| {
@@ -373,7 +499,7 @@ impl<'a> SettingsRepository<'a> {
     /// Set tool approval mode
     pub fn set_tool_setting(&self, tool_name: &str, approval_mode: &str) -> DbResult<()> {
         let now = chrono::Utc::now().to_rfc3339();
-        
+
         self.conn.execute(
             "INSERT INTO tool_settings (tool_name, approval_mode, updated_at)
              VALUES (?1, ?2, ?3)
@@ -392,4 +518,3 @@ impl<'a> SettingsRepository<'a> {
         Ok(())
     }
 }
-

@@ -28,10 +28,10 @@ impl UndoStack {
     fn push(&mut self, old_content: String) {
         // When a new change is made, clear redo stack
         self.redo_stack.clear();
-        
+
         // Add to undo stack
         self.undo_stack.push(old_content);
-        
+
         // Trim if over max size
         while self.undo_stack.len() > self.max_size {
             self.undo_stack.remove(0);
@@ -180,11 +180,15 @@ impl UndoRedoService {
     /// This should be called whenever file content is modified programmatically
     pub fn record_change(&self, change: FileChange) -> UndoRedoResult<FileUndoState> {
         let mut files = self.files.lock().unwrap();
-        
+
         let max_history = self.max_history;
-        let record = files
-            .entry(change.file_path.clone())
-            .or_insert_with(|| FileRecord::new(change.file_path.clone(), change.old_content.clone(), max_history));
+        let record = files.entry(change.file_path.clone()).or_insert_with(|| {
+            FileRecord::new(
+                change.file_path.clone(),
+                change.old_content.clone(),
+                max_history,
+            )
+        });
 
         record.push_change(change.old_content, change.new_content);
 
@@ -194,7 +198,7 @@ impl UndoRedoService {
     /// Undo the last change for a file
     pub fn undo(&self, file_path: &str) -> UndoRedoResult<(String, FileUndoState)> {
         let mut files = self.files.lock().unwrap();
-        
+
         let record = files
             .get_mut(file_path)
             .ok_or_else(|| UndoRedoError::FileNotFound(file_path.to_string()))?;
@@ -203,7 +207,8 @@ impl UndoRedoService {
             return Err(UndoRedoError::NothingToUndo(file_path.to_string()));
         }
 
-        let content = record.undo()
+        let content = record
+            .undo()
             .ok_or_else(|| UndoRedoError::NothingToUndo(file_path.to_string()))?
             .clone();
 
@@ -214,7 +219,7 @@ impl UndoRedoService {
     /// Redo the last undone change for a file
     pub fn redo(&self, file_path: &str) -> UndoRedoResult<(String, FileUndoState)> {
         let mut files = self.files.lock().unwrap();
-        
+
         let record = files
             .get_mut(file_path)
             .ok_or_else(|| UndoRedoError::FileNotFound(file_path.to_string()))?;
@@ -223,7 +228,8 @@ impl UndoRedoService {
             return Err(UndoRedoError::NothingToRedo(file_path.to_string()));
         }
 
-        let content = record.redo()
+        let content = record
+            .redo()
             .ok_or_else(|| UndoRedoError::NothingToRedo(file_path.to_string()))?
             .clone();
 
@@ -252,11 +258,11 @@ impl UndoRedoService {
     /// Undo and write to disk
     pub fn undo_and_save(&self, file_path: &str) -> UndoRedoResult<(String, FileUndoState)> {
         let (content, state) = self.undo(file_path)?;
-        
+
         // Write to disk
         fs::write(file_path, &content)
             .map_err(|e| UndoRedoError::WriteError(format!("{}: {}", file_path, e)))?;
-        
+
         // Invalidate file cache if available
         if let Ok(cache) = std::panic::catch_unwind(|| crate::file_cache::get_file_cache()) {
             cache.invalidate(file_path);
@@ -268,11 +274,11 @@ impl UndoRedoService {
     /// Redo and write to disk
     pub fn redo_and_save(&self, file_path: &str) -> UndoRedoResult<(String, FileUndoState)> {
         let (content, state) = self.redo(file_path)?;
-        
+
         // Write to disk
         fs::write(file_path, &content)
             .map_err(|e| UndoRedoError::WriteError(format!("{}: {}", file_path, e)))?;
-        
+
         // Invalidate file cache if available
         if let Ok(cache) = std::panic::catch_unwind(|| crate::file_cache::get_file_cache()) {
             cache.invalidate(file_path);
@@ -291,4 +297,3 @@ impl Default for UndoRedoService {
 // Thread-safe for Tauri
 unsafe impl Send for UndoRedoService {}
 unsafe impl Sync for UndoRedoService {}
-

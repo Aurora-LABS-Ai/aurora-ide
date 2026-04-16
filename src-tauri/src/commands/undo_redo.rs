@@ -1,8 +1,8 @@
 use std::sync::Mutex;
 use tauri::State;
 
-use crate::undo_redo::{FileChange, UndoRedoService};
 use crate::undo_redo::types::{FileUndoState, UndoRedoResponse};
+use crate::undo_redo::{FileChange, UndoRedoService};
 
 /// State wrapper for undo/redo service
 pub struct UndoRedoState {
@@ -46,12 +46,12 @@ pub async fn undo_record_change(
     state: State<'_, UndoRedoState>,
 ) -> Result<FileUndoState, String> {
     let service = state.service.lock().map_err(|e| e.to_string())?;
-    
+
     let mut change = FileChange::new(&file_path, &old_content, &new_content, &source);
     if let Some(desc) = description {
         change = change.with_description(desc);
     }
-    
+
     service.record_change(change).map_err(|e| e.to_string())
 }
 
@@ -62,7 +62,7 @@ pub async fn undo_file(
     state: State<'_, UndoRedoState>,
 ) -> Result<UndoRedoResponse, String> {
     let service = state.service.lock().map_err(|e| e.to_string())?;
-    
+
     match service.undo(&file_path) {
         Ok((content, undo_state)) => Ok(UndoRedoResponse {
             success: true,
@@ -86,7 +86,7 @@ pub async fn redo_file(
     state: State<'_, UndoRedoState>,
 ) -> Result<UndoRedoResponse, String> {
     let service = state.service.lock().map_err(|e| e.to_string())?;
-    
+
     match service.redo(&file_path) {
         Ok((content, undo_state)) => Ok(UndoRedoResponse {
             success: true,
@@ -110,7 +110,7 @@ pub async fn undo_file_and_save(
     state: State<'_, UndoRedoState>,
 ) -> Result<UndoRedoResponse, String> {
     let service = state.service.lock().map_err(|e| e.to_string())?;
-    
+
     match service.undo_and_save(&file_path) {
         Ok((content, undo_state)) => Ok(UndoRedoResponse {
             success: true,
@@ -134,7 +134,7 @@ pub async fn redo_file_and_save(
     state: State<'_, UndoRedoState>,
 ) -> Result<UndoRedoResponse, String> {
     let service = state.service.lock().map_err(|e| e.to_string())?;
-    
+
     match service.redo_and_save(&file_path) {
         Ok((content, undo_state)) => Ok(UndoRedoResponse {
             success: true,
@@ -174,11 +174,8 @@ pub async fn undo_clear_file(
 
 /// Clear all undo/redo history
 #[tauri::command]
-pub async fn undo_clear_all(
-    state: State<'_, UndoRedoState>,
-) -> Result<(), String> {
+pub async fn undo_clear_all(state: State<'_, UndoRedoState>) -> Result<(), String> {
     let service = state.service.lock().map_err(|e| e.to_string())?;
     service.clear_all();
     Ok(())
 }
-

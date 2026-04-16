@@ -297,9 +297,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
       // Create checkpoint for this user message (if enabled for workspace)
       // Pass threadId directly since the store's threadId might not be set yet for new threads
-      if (rootPath && threadId) {
-        await useCheckpointStore.getState().createCheckpoint(userMessage.id, threadId);
-      }
+      const checkpointReady =
+        rootPath && threadId
+          ? useCheckpointStore.getState().createCheckpoint(userMessage.id, threadId)
+          : Promise.resolve(true);
 
       // Build Cursor-style context with IDE state and attached files
       // First message: heavy (user_info, git_status, rules, layout, skills catalog)
@@ -464,6 +465,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
         agent.updateConfig({
           thinkingEnabled,
           autoApproveTools,
+          beforeToolExecution: async () => {
+            await checkpointReady;
+          },
           temperature,
           maxTokens,
           maxToolIterations: maxToolCallsPerRequest,
@@ -554,13 +558,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
               // Track file operations
               if (
-                [
-                  "file_create",
-                  "file_write",
-                  "file_delete",
-                  "folder_create",
-                  "folder_delete",
-                ].includes(toolCall.function.name)
+                  [
+                    "file_create",
+                    "file_write",
+                    "file_delete",
+                    "folder_create",
+                    "folder_move",
+                    "folder_delete",
+                  ].includes(toolCall.function.name)
               ) {
                 hasFileOperation = true;
               }

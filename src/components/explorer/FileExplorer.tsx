@@ -50,9 +50,10 @@ export const FileExplorer: React.FC = () => {
   const rootPath = useWorkspaceStore(state => state.rootPath);
   const files = useWorkspaceStore(state => state.files);
   const isLoading = useWorkspaceStore(state => state.isLoading);
-  const refreshDirectory = useWorkspaceStore(state => state.refreshDirectory);
   const selectFile = useWorkspaceStore(state => state.selectFile);
   const clearWorkspace = useWorkspaceStore(state => state.clearWorkspace);
+  const collapseAll = useWorkspaceStore(state => state.collapseAll);
+  const refreshDirectory = useWorkspaceStore(state => state.refreshDirectory);
   const { isDragging, dropTargetType } = useDragStore();
   const hasWorkspace = Boolean(rootPath);
   const hasExplorerEntries = files.length > 0;
@@ -111,11 +112,8 @@ export const FileExplorer: React.FC = () => {
 
   // Collapse all folders
   const handleCollapseAll = useCallback(() => {
-    const store = useWorkspaceStore.getState();
-    store.expandedFolders.clear();
-    useWorkspaceStore.setState({ expandedFolders: new Set() });
-    store.saveExplorer();
-  }, []);
+    collapseAll();
+  }, [collapseAll]);
 
   // Handle new file at root
   const handleNewFileAtRoot = useCallback(() => {
@@ -162,7 +160,6 @@ export const FileExplorer: React.FC = () => {
       } else {
         await createFolder(newPath);
       }
-      await refreshDirectory();
       selectFile(newPath);
     } catch (err) {
       console.error('Failed to create:', err);
@@ -171,7 +168,7 @@ export const FileExplorer: React.FC = () => {
 
     setIsCreating(null);
     setCreateInputValue('');
-  }, [isCreating, createInputValue, refreshDirectory, selectFile]);
+  }, [isCreating, createInputValue, selectFile]);
 
   // Filter files based on search query
   const filterFiles = useCallback((nodes: typeof files, query: string): typeof files => {

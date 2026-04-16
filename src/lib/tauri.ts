@@ -1,10 +1,60 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { FileNode } from "../types";
 
 export interface CommandOutput {
   exit_code: number | null;
   stderr: string;
   stdout: string;
   success: boolean;
+}
+
+export interface RipgrepFileCount {
+  count: number;
+  file: string;
+}
+
+export interface RipgrepMatch {
+  afterContext?: string[];
+  beforeContext?: string[];
+  content: string;
+  file: string;
+  lineNumber: number;
+}
+
+export interface RipgrepSearchRequest {
+  caseInsensitive?: boolean;
+  contextLines?: number;
+  glob?: string;
+  isRegex?: boolean;
+  maxResults?: number;
+  outputMode?: "content" | "files_with_matches" | "count";
+  path: string;
+  pattern: string;
+}
+
+export interface RipgrepSearchResponse {
+  counts?: RipgrepFileCount[];
+  error?: string;
+  files?: string[];
+  matches?: RipgrepMatch[];
+  pattern: string;
+  success: boolean;
+  tool: string;
+  totalFiles?: number;
+  totalMatches?: number;
+  truncated?: boolean;
+}
+
+export interface StructuredDocumentValidationRequest {
+  content: string;
+  format: "json" | "yaml" | "toml";
+}
+
+export interface StructuredDocumentValidationResponse {
+  column?: number;
+  error?: string;
+  line?: number;
+  valid: boolean;
 }
 
 export interface DbContextUsage {
@@ -56,6 +106,13 @@ export interface FileEntry {
 export interface FsEventPayload {
   kind: string;
   paths: string[];
+}
+
+export interface ExplorerSnapshot {
+  expandedFolders: string[];
+  files: FileNode[];
+  rootPath: string;
+  selectedFile: string | null;
 }
 
 // File System Operations
@@ -223,6 +280,38 @@ export const readDirectory = async (path: string, options?: ReadDirectoryOptions
     includeHidden: options?.includeHidden ?? true  // Default to showing hidden files
   });
 };
+
+export const ripgrepSearch = async (
+  request: RipgrepSearchRequest,
+): Promise<RipgrepSearchResponse> => {
+  if (!isTauri()) {
+    return {
+      success: false,
+      tool: "grep",
+      pattern: request.pattern,
+      error: "File operations require desktop app",
+    };
+  }
+
+  return invoke<RipgrepSearchResponse>("ripgrep_search", { request });
+};
+
+export const validateStructuredDocument = async (
+  request: StructuredDocumentValidationRequest,
+): Promise<StructuredDocumentValidationResponse> => {
+  if (!isTauri()) {
+    return {
+      valid: false,
+      error: "Structured document validation requires desktop app",
+    };
+  }
+
+  return invoke<StructuredDocumentValidationResponse>(
+    "validate_structured_document",
+    { request },
+  );
+};
+
 export const readFileContent = async (path: string): Promise<string> => {
   if (!isTauri()) {
     console.warn('readFileContent: Not running in Tauri');
@@ -297,6 +386,64 @@ export const stopFsWatcher = async (): Promise<void> => {
     return;
   }
   return invoke<void>('stop_fs_watcher');
+};
+
+export const explorerApplyFsChanges = async (
+  paths: string[],
+  kind?: string,
+): Promise<ExplorerSnapshot> => {
+  return invoke<ExplorerSnapshot>('explorer_apply_fs_changes', { paths, kind });
+};
+
+export const explorerClearWorkspace = async (): Promise<void> => {
+  return invoke<void>('explorer_clear_workspace');
+};
+
+export const explorerCollapseAll = async (): Promise<ExplorerSnapshot> => {
+  return invoke<ExplorerSnapshot>('explorer_collapse_all');
+};
+
+export const explorerExpandFolder = async (
+  folderId: string,
+): Promise<ExplorerSnapshot> => {
+  return invoke<ExplorerSnapshot>('explorer_expand_folder', { folderId });
+};
+
+export const explorerGetState = async (): Promise<ExplorerSnapshot | null> => {
+  return invoke<ExplorerSnapshot | null>('explorer_get_state');
+};
+
+export const explorerOpenWorkspace = async (
+  path: string,
+  showHidden?: boolean,
+): Promise<ExplorerSnapshot> => {
+  return invoke<ExplorerSnapshot>('explorer_open_workspace', { path, showHidden });
+};
+
+export const explorerRefresh = async (): Promise<ExplorerSnapshot> => {
+  return invoke<ExplorerSnapshot>('explorer_refresh');
+};
+
+export const explorerRevealFile = async (
+  filePath: string,
+): Promise<ExplorerSnapshot> => {
+  return invoke<ExplorerSnapshot>('explorer_reveal_file', { filePath });
+};
+
+export const explorerSaveState = async (): Promise<void> => {
+  return invoke<void>('explorer_save_state');
+};
+
+export const explorerSelectFile = async (
+  fileId: string | null,
+): Promise<ExplorerSnapshot> => {
+  return invoke<ExplorerSnapshot>('explorer_select_file', { fileId });
+};
+
+export const explorerToggleFolder = async (
+  folderId: string,
+): Promise<ExplorerSnapshot> => {
+  return invoke<ExplorerSnapshot>('explorer_toggle_folder', { folderId });
 };
 export const writeFileContent = async (path: string, content: string): Promise<void> => {
   if (!isTauri()) {

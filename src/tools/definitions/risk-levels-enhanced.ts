@@ -67,6 +67,7 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   workspace_find_files: 'low',     // Read operation
   workspace_grep: 'low',           // Read operation
   folder_create: 'low',            // Changed from 'medium' - auto-approve
+  folder_move: 'medium',           // Can reorganize project structure
   folder_delete: 'high',           // KEEP HIGH - deletion is destructive
   workspace_info: 'low',           // Read operation
 

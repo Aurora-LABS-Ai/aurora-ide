@@ -95,4 +95,3 @@ pub struct UndoRedoResponse {
     /// Error message (if any)
     pub error: Option<String>,
 }
-

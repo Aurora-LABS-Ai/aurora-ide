@@ -2,8 +2,11 @@
 
 Aurora technical documentation for the current Rust-provider-kernel architecture.
 
-**Last updated:** 2026-03-29  
+**Last updated:** 2026-03-30
+**Last validated:** 2026-03-30  
 **Current branch baseline:** `codex/aurora-provider-kernel`
+
+**Last validation result:** ✅ Fully in sync — no mismatches found, no changes made
 
 ## Files
 

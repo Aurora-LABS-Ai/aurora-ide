@@ -5,6 +5,7 @@
  * This provides accurate syntax validation before the agent writes code to disk.
  */
 import { type ParserOptions, parse } from "@babel/parser";
+import { isTauri, validateStructuredDocument } from "../lib/tauri";
 
 export interface ValidationError {
   column?: number;
@@ -29,7 +30,7 @@ export interface ValidationWarning {
 // ============================================
 // JSON VALIDATOR
 // ============================================
-function validateJSON(content: string): ValidationResult {
+function validateJSONFallback(content: string): ValidationResult {
   const errors: ValidationError[] = [];
   
   try {
@@ -57,6 +58,50 @@ function validateJSON(content: string): ValidationResult {
     
     return { valid: false, errors, warnings: [] };
   }
+}
+
+function buildStructuredValidationResult(
+  formatName: string,
+  validation: {
+    column?: number;
+    error?: string;
+    line?: number;
+    valid: boolean;
+  },
+): ValidationResult {
+  if (validation.valid) {
+    return { valid: true, errors: [], warnings: [] };
+  }
+
+  return {
+    valid: false,
+    errors: [
+      {
+        line: validation.line,
+        column: validation.column,
+        message: `${formatName} syntax error: ${validation.error || "Invalid document"}`,
+        severity: 'error',
+      },
+    ],
+    warnings: [],
+  };
+}
+
+async function validateStructuredContent(
+  content: string,
+  format: 'json' | 'yaml' | 'toml',
+): Promise<ValidationResult> {
+  if (!isTauri()) {
+    if (format === 'json') {
+      return validateJSONFallback(content);
+    }
+
+    return { valid: true, errors: [], warnings: [] };
+  }
+
+  const validation = await validateStructuredDocument({ content, format });
+  const formatName = format.toUpperCase();
+  return buildStructuredValidationResult(formatName, validation);
 }
 
 // ============================================
@@ -175,7 +220,7 @@ export function supportsValidation(filename: string): boolean {
 /**
  * Validate file content based on file extension
  */
-export function validateSyntax(content: string, filename: string): ValidationResult {
+export async function validateSyntax(content: string, filename: string): Promise<ValidationResult> {
   const ext = filename.split('.').pop()?.toLowerCase() || '';
   
   if (!SUPPORTED_EXTENSIONS.includes(ext)) {
@@ -184,7 +229,15 @@ export function validateSyntax(content: string, filename: string): ValidationRes
   }
   
   if (ext === 'json') {
-    return validateJSON(content);
+    return validateStructuredContent(content, 'json');
+  }
+
+  if (ext === 'yaml' || ext === 'yml') {
+    return validateStructuredContent(content, 'yaml');
+  }
+
+  if (ext === 'toml') {
+    return validateStructuredContent(content, 'toml');
   }
   
   // Use Babel parser for JS/TS/JSX/TSX
@@ -192,7 +245,7 @@ export function validateSyntax(content: string, filename: string): ValidationRes
 }
 
 // File extensions that support validation
-const SUPPORTED_EXTENSIONS = ['json', 'js', 'jsx', 'ts', 'tsx', 'mjs', 'mts', 'cjs', 'cts'];
+const SUPPORTED_EXTENSIONS = ['json', 'yaml', 'yml', 'toml', 'js', 'jsx', 'ts', 'tsx', 'mjs', 'mts', 'cjs', 'cts'];
 
 export default {
   validateSyntax,

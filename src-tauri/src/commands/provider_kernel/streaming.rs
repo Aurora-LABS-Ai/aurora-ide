@@ -226,9 +226,7 @@ pub(crate) async fn stream_anthropic_compatible(
                                     arguments: String::new(),
                                     name: content_block.name.unwrap_or_default(),
                                 },
-                                id: content_block
-                                    .id
-                                    .unwrap_or_else(|| format!("tool_{index}")),
+                                id: content_block.id.unwrap_or_else(|| format!("tool_{index}")),
                                 tool_type: "function".to_string(),
                             };
                             tool_calls.insert(index, tool_call.clone());
@@ -300,7 +298,9 @@ pub(crate) async fn stream_anthropic_compatible(
                                             reasoning_content: None,
                                             tool_calls: Some(vec![AuroraStreamToolCall {
                                                 function_arguments: Some(partial_json),
-                                                function_name: Some(tool_call.function.name.clone()),
+                                                function_name: Some(
+                                                    tool_call.function.name.clone(),
+                                                ),
                                                 id: Some(tool_call.id.clone()),
                                                 index,
                                             }]),

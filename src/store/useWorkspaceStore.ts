@@ -1,16 +1,21 @@
 import { listen } from "@tauri-apps/api/event";
-
 import { create } from "zustand";
 
-import { getLanguageFromExtension } from "../lib/file-utils";
 import {
+  explorerClearWorkspace,
+  explorerCollapseAll,
+  explorerExpandFolder,
+  explorerGetState,
+  explorerOpenWorkspace,
+  explorerRefresh,
+  explorerRevealFile,
+  explorerSaveState,
+  explorerSelectFile,
+  explorerToggleFolder,
   isTauri,
-  readDirectory,
   readFileContent,
-  startFsWatcher,
-  stopFsWatcher,
+  type ExplorerSnapshot,
 } from "../lib/tauri";
-import { databaseService } from "../services/database";
 import type { FileNode } from "../types";
 import { useEditorStore } from "./useEditorStore";
 import { useGitStore } from "./useGitStore";
@@ -28,6 +33,7 @@ function stripExtendedPathPrefix(path: string): string {
 
 interface WorkspaceState {
   clearWorkspace: () => void;
+  collapseAll: () => Promise<void>;
   expandFolder: (folderId: string) => Promise<void>;
   expandedFolders: Set<string>;
   files: FileNode[];
@@ -71,6 +77,7 @@ export const loadFileContent = async (path: string): Promise<string> => {
 
 // Global watcher cleanup
 let fsUnlisten: (() => void) | null = null;
+let explorerUnlisten: (() => void) | null = null;
 
 // Guard to prevent multiple simultaneous loadDirectory calls
 let isLoadingDirectory = false;
@@ -80,10 +87,25 @@ let lastSetRootPath: string | null = null;
 let pendingLoadPath: string | null = null;
 
 // Debounce timers for fs-changed events to prevent excessive refreshes
-let fsChangedDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let gitRefreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-const FS_CHANGED_DEBOUNCE_MS = 50; // 50ms debounce - fast but prevents rapid-fire
 const GIT_REFRESH_DEBOUNCE_MS = 150; // Slightly slower to coalesce file bursts before refreshing git state
+
+const applyExplorerSnapshot = (
+  setState: (partial: Partial<WorkspaceState>) => void,
+  snapshot: {
+    expandedFolders: string[];
+    files: FileNode[];
+    rootPath: string;
+    selectedFile: string | null;
+  },
+) => {
+  setState({
+    expandedFolders: new Set(snapshot.expandedFolders),
+    files: snapshot.files,
+    rootPath: snapshot.rootPath,
+    selectedFileId: snapshot.selectedFile,
+  });
+};
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   rootPath: "",
@@ -123,18 +145,19 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         });
     }
 
-    get().loadDirectory(cleanPath);
-
-    // Start filesystem watcher
     if (isTauri()) {
-      const startWatch = async () => {
+      const startListening = async () => {
         try {
-          // stop previous watcher if any
           if (fsUnlisten) {
             fsUnlisten();
             fsUnlisten = null;
           }
-          await startFsWatcher(path);
+
+          if (explorerUnlisten) {
+            explorerUnlisten();
+            explorerUnlisten = null;
+          }
+
           fsUnlisten = await listen<FsChangedPayload>(
             "fs-changed",
             async (event) => {
@@ -145,16 +168,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
               const hasMatch = paths.some((p) => p.startsWith(rootPath));
 
               if (hasMatch) {
-                // Debounce directory refresh to prevent rapid-fire updates
-                // This coalesces multiple rapid fs events into a single refresh
-                if (fsChangedDebounceTimer) {
-                  clearTimeout(fsChangedDebounceTimer);
-                }
-                fsChangedDebounceTimer = setTimeout(async () => {
-                  fsChangedDebounceTimer = null;
-                  await get().refreshDirectory();
-                }, FS_CHANGED_DEBOUNCE_MS);
-
                 if (gitRefreshDebounceTimer) {
                   clearTimeout(gitRefreshDebounceTimer);
                 }
@@ -211,12 +224,27 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
               }
             },
           );
+
+          explorerUnlisten = await listen<ExplorerSnapshot>(
+            "explorer-updated",
+            (event) => {
+              const { rootPath } = get();
+              const snapshot = event.payload;
+              if (!rootPath || snapshot.rootPath !== rootPath) {
+                return;
+              }
+
+              applyExplorerSnapshot(set, snapshot);
+            },
+          );
         } catch (err) {
-          console.error("Failed to start fs watcher:", err);
+          console.error("Failed to start explorer listeners:", err);
         }
       };
-      startWatch();
+      startListening();
     }
+
+    get().loadDirectory(cleanPath);
   },
 
   loadDirectory: async (path: string) => {
@@ -231,72 +259,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
 
     isLoadingDirectory = true;
-
-    // Restore explorer state first (only on initial load)
-    if (!get().rootPath || get().rootPath !== path) {
-      await get().restoreExplorer();
-    }
-
-    // Preserve current expanded folders
-    const currentExpanded = get().expandedFolders;
     set({ isLoading: true });
 
     try {
-      const entries = await readDirectory(path);
-
-      // Only load 1 level deep eagerly, rest on-demand
-      const buildTree = async (
-        _dirPath: string,
-        entries: Awaited<ReturnType<typeof readDirectory>>,
-        depth: number = 0,
-      ): Promise<FileNode[]> => {
-        const nodes: FileNode[] = [];
-        const maxEagerDepth = 1;
-
-        for (const entry of entries) {
-          if (entry.is_dir) {
-            let children: FileNode[] = [];
-            const isExpanded = currentExpanded.has(entry.path);
-            const shouldLoadChildren = depth < maxEagerDepth || isExpanded;
-
-            if (shouldLoadChildren) {
-              try {
-                const childEntries = await readDirectory(entry.path);
-                children = await buildTree(entry.path, childEntries, depth + 1);
-              } catch {
-                children = [];
-              }
-            }
-
-            nodes.push({
-              id: entry.path,
-              name: entry.name,
-              type: "folder",
-              children,
-              path: entry.path,
-            });
-          } else {
-            nodes.push({
-              id: entry.path,
-              name: entry.name,
-              type: "file",
-              language: getLanguageFromExtension(entry.name),
-              path: entry.path,
-            });
-          }
-        }
-
-        return nodes;
-      };
-
-      const children = await buildTree(path, entries, 0);
-      const newExpanded = new Set([...currentExpanded, path]);
-
-      set({
-        files: children,
-        expandedFolders: newExpanded,
-        isLoading: false,
-      });
+      const snapshot = await explorerOpenWorkspace(path, true);
+      applyExplorerSnapshot(set, snapshot);
+      set({ isLoading: false });
     } catch (err) {
       console.error("Failed to load directory:", err);
       set({ isLoading: false });
@@ -314,189 +282,93 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   refreshDirectory: async () => {
-    const { rootPath } = get();
-    if (rootPath) {
-      await get().loadDirectory(rootPath);
+    if (!isTauri()) {
+      return;
+    }
+
+    try {
+      const snapshot = await explorerRefresh();
+      applyExplorerSnapshot(set, snapshot);
+    } catch (error) {
+      console.error("Failed to refresh explorer:", error);
     }
   },
 
   toggleFolder: async (folderId) => {
-    const state = get();
-    const newExpanded = new Set(state.expandedFolders);
-    const isExpanding = !newExpanded.has(folderId);
-
-    if (isExpanding) {
-      newExpanded.add(folderId);
-    } else {
-      newExpanded.delete(folderId);
+    if (!isTauri()) {
+      return;
     }
 
-    set({ expandedFolders: newExpanded });
-    // NO saveExplorer() here - save only on window close
-
-    // If expanding, load children on-demand
-    if (isExpanding) {
-      const findFolder = (nodes: FileNode[]): FileNode | null => {
-        for (const node of nodes) {
-          if (node.id === folderId) return node;
-          if (node.children) {
-            const found = findFolder(node.children);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
-
-      const folder = findFolder(state.files);
-      if (
-        folder &&
-        folder.type === "folder" &&
-        (!folder.children || folder.children.length === 0)
-      ) {
-        try {
-          const childEntries = await readDirectory(folderId);
-          const children: FileNode[] = childEntries.map((entry) => ({
-            id: entry.path,
-            name: entry.name,
-            type: entry.is_dir ? ("folder" as const) : ("file" as const),
-            path: entry.path,
-            children: entry.is_dir ? [] : undefined,
-            language: entry.is_file
-              ? getLanguageFromExtension(entry.name)
-              : undefined,
-          }));
-
-          const updateTree = (nodes: FileNode[]): FileNode[] => {
-            return nodes.map((node) => {
-              if (node.id === folderId) {
-                return { ...node, children };
-              }
-              if (node.children) {
-                return { ...node, children: updateTree(node.children) };
-              }
-              return node;
-            });
-          };
-
-          set({ files: updateTree(get().files) });
-        } catch (err) {
-          console.error("Failed to load folder children:", err);
-        }
-      }
+    try {
+      const snapshot = await explorerToggleFolder(folderId);
+      applyExplorerSnapshot(set, snapshot);
+    } catch (error) {
+      console.error("Failed to toggle folder:", error);
     }
   },
 
   expandFolder: async (folderId) => {
-    const state = get();
-    const newExpanded = new Set(state.expandedFolders);
-    const wasExpanded = newExpanded.has(folderId);
-    newExpanded.add(folderId);
+    if (!isTauri()) {
+      return;
+    }
 
-    set({ expandedFolders: newExpanded });
-    // NO saveExplorer() here - save only on window close
-
-    if (!wasExpanded) {
-      const findFolder = (nodes: FileNode[]): FileNode | null => {
-        for (const node of nodes) {
-          if (node.id === folderId) return node;
-          if (node.children) {
-            const found = findFolder(node.children);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
-
-      const folder = findFolder(state.files);
-      if (
-        folder &&
-        folder.type === "folder" &&
-        (!folder.children || folder.children.length === 0)
-      ) {
-        try {
-          const childEntries = await readDirectory(folderId);
-          const children: FileNode[] = childEntries.map((entry) => ({
-            id: entry.path,
-            name: entry.name,
-            type: entry.is_dir ? ("folder" as const) : ("file" as const),
-            path: entry.path,
-            children: entry.is_dir ? [] : undefined,
-            language: entry.is_file
-              ? getLanguageFromExtension(entry.name)
-              : undefined,
-          }));
-
-          const updateTree = (nodes: FileNode[]): FileNode[] => {
-            return nodes.map((node) => {
-              if (node.id === folderId) {
-                return { ...node, children };
-              }
-              if (node.children) {
-                return { ...node, children: updateTree(node.children) };
-              }
-              return node;
-            });
-          };
-
-          set({ files: updateTree(get().files) });
-        } catch (err) {
-          console.error("Failed to load folder children:", err);
-        }
-      }
+    try {
+      const snapshot = await explorerExpandFolder(folderId);
+      applyExplorerSnapshot(set, snapshot);
+    } catch (error) {
+      console.error("Failed to expand folder:", error);
     }
   },
 
   selectFile: (fileId) => {
     set({ selectedFileId: fileId });
-    // NO saveExplorer() here - save only on window close
+
+    if (!isTauri()) {
+      return;
+    }
+
+    explorerSelectFile(fileId).catch((error) => {
+      console.error("Failed to sync selected file:", error);
+    });
   },
 
   // Reveal a file in the explorer: expand parent folders and select it
   revealFile: (filePath) => {
-    const { rootPath, expandedFolders } = get();
-    if (!filePath || !rootPath) return;
-
-    // Detect the separator used in the file path (preserve original format)
-    const separator = filePath.includes("\\") ? "\\" : "/";
-
-    // Normalize both paths to the same separator for comparison
-    const normalizedPath = filePath.replace(/[\\/]/g, separator);
-    const normalizedRoot = rootPath.replace(/[\\/]/g, separator);
-
-    // Check if the file is within the workspace
-    if (!normalizedPath.startsWith(normalizedRoot)) return;
-
-    // Get the relative path and extract parent folders
-    const relativePath = normalizedPath.slice(normalizedRoot.length);
-    const parts = relativePath.split(separator).filter(Boolean);
-
-    // Build list of parent folder paths to expand
-    const newExpanded = new Set(expandedFolders);
-    let currentPath = normalizedRoot;
-
-    // Expand each parent folder (excluding the file itself)
-    for (let i = 0; i < parts.length - 1; i++) {
-      currentPath = currentPath + separator + parts[i];
-      newExpanded.add(currentPath);
+    if (!isTauri() || !filePath) {
+      return;
     }
 
-    set({
-      expandedFolders: newExpanded,
-      selectedFileId: filePath,
-    });
+    explorerRevealFile(filePath)
+      .then((snapshot) => {
+        applyExplorerSnapshot(set, snapshot);
+      })
+      .catch((error) => {
+        console.error("Failed to reveal file in explorer:", error);
+      });
   },
 
-  setFiles: (files) => set({ files }),
+  collapseAll: async () => {
+    if (!isTauri()) {
+      return;
+    }
+
+    try {
+      const snapshot = await explorerCollapseAll();
+      applyExplorerSnapshot(set, snapshot);
+    } catch (error) {
+      console.error("Failed to collapse explorer:", error);
+    }
+  },
+
+  setFiles: (files) =>
+    set({
+      files,
+    }),
 
   clearWorkspace: () => {
     lastSetRootPath = null;
     pendingLoadPath = null;
     isLoadingDirectory = false;
-
-    if (fsChangedDebounceTimer) {
-      clearTimeout(fsChangedDebounceTimer);
-      fsChangedDebounceTimer = null;
-    }
 
     if (gitRefreshDebounceTimer) {
       clearTimeout(gitRefreshDebounceTimer);
@@ -516,29 +388,33 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     useEditorStore.getState().setWorkspacePath("");
 
+    if (isTauri()) {
+      explorerClearWorkspace().catch((error) => {
+        console.error("Failed to clear explorer workspace:", error);
+      });
+    }
+
     if (fsUnlisten) {
       fsUnlisten();
       fsUnlisten = null;
     }
-    if (isTauri()) {
-      stopFsWatcher().catch(() => {});
+
+    if (explorerUnlisten) {
+      explorerUnlisten();
+      explorerUnlisten = null;
     }
   },
 
   // Restore explorer state from database (called once on load)
   restoreExplorer: async () => {
-    const { rootPath } = get();
-    if (!rootPath) {
+    if (!isTauri()) {
       return;
     }
 
     try {
-      const state = await databaseService.getExplorerState(rootPath);
-      if (state) {
-        set({
-          expandedFolders: new Set(state.expanded_folders),
-          selectedFileId: state.selected_file,
-        });
+      const snapshot = await explorerGetState();
+      if (snapshot) {
+        applyExplorerSnapshot(set, snapshot);
       }
     } catch (error) {
       console.error("Failed to restore explorer state:", error);
@@ -547,19 +423,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   // Save explorer state to database (called ONLY on window close)
   saveExplorer: async () => {
-    const { rootPath, expandedFolders, selectedFileId } = get();
-    if (!rootPath) {
+    if (!isTauri()) {
       return;
     }
 
     try {
-      const explorerState = {
-        workspace_path: rootPath,
-        expanded_folders: Array.from(expandedFolders),
-        selected_file: selectedFileId,
-      };
-
-      await databaseService.saveExplorerState(explorerState);
+      await explorerSaveState();
     } catch (error) {
       console.error("Failed to save explorer state:", error);
     }

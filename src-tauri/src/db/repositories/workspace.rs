@@ -155,7 +155,9 @@ impl<'a> WorkspaceRepository<'a> {
             })
         })?;
 
-        states.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)
+        states
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DbError::Sqlite)
     }
 
     /// Update only the checkpoint_enabled setting for a workspace

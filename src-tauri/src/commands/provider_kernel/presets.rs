@@ -150,10 +150,7 @@ pub(crate) fn normalize_provider_type(provider_type: &str, base_url: &str, model
     if lower_url.contains("fireworks.ai") {
         return "fireworks".to_string();
     }
-    if lower_url.contains("z.ai")
-        || lower_url.contains("zhipuai")
-        || lower_model.contains("glm")
-    {
+    if lower_url.contains("z.ai") || lower_url.contains("zhipuai") || lower_model.contains("glm") {
         return "glm".to_string();
     }
     if lower_url.contains("openai.com") || lower_model.contains("gpt") || lower_model.contains("o1")

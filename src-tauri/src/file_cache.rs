@@ -1,5 +1,5 @@
 //! High-performance file content caching module
-//! 
+//!
 //! Provides an LRU cache for file contents to minimize disk I/O
 //! and reduce IPC overhead for frequently accessed files.
 
@@ -16,8 +16,6 @@ const MAX_CACHE_SIZE: usize = 50 * 1024 * 1024;
 
 /// Maximum single file size to cache (5MB - don't cache huge files)
 const MAX_FILE_SIZE: usize = 5 * 1024 * 1024;
-
-
 
 /// Cached file entry with content and metadata
 #[derive(Clone)]
@@ -57,7 +55,7 @@ impl FileCache {
 
         // Check if file was modified since caching
         let current_mtime = get_file_mtime(path).unwrap_or(0);
-        
+
         let mut cache = self.cache.write();
         if let Some(cached) = cache.get(path) {
             if cached.mtime == current_mtime {
@@ -75,7 +73,7 @@ impl FileCache {
     /// Cache file content
     pub fn set(&self, path: &str, content: String) {
         let size = content.len();
-        
+
         // Don't cache files that are too large
         if size > MAX_FILE_SIZE {
             return;
@@ -92,23 +90,23 @@ impl FileCache {
         {
             let mut total = self.total_size.write();
             let mut cache = self.cache.write();
-            
+
             while *total + size > MAX_CACHE_SIZE && cache.len() > 0 {
                 if let Some((evicted_path, evicted)) = cache.pop_lru() {
                     *total -= evicted.size;
                     self.paths.remove(&evicted_path);
                 }
             }
-            
+
             // Remove old entry for this path if exists
             if let Some((_, old)) = cache.pop_entry(path) {
                 *total -= old.size;
             }
-            
+
             cache.put(path.to_string(), cached);
             *total += size;
         }
-        
+
         self.paths.insert(path.to_string(), true);
     }
 
@@ -125,14 +123,15 @@ impl FileCache {
     pub fn invalidate_prefix(&self, prefix: &str) {
         let mut cache = self.cache.write();
         let mut total = self.total_size.write();
-        
+
         // Collect paths to remove
-        let to_remove: Vec<String> = self.paths
+        let to_remove: Vec<String> = self
+            .paths
             .iter()
             .filter(|entry| entry.key().starts_with(prefix))
             .map(|entry| entry.key().clone())
             .collect();
-        
+
         for path in to_remove {
             if let Some((_, cached)) = cache.pop_entry(&path) {
                 *total -= cached.size;
@@ -190,8 +189,8 @@ pub fn read_file_cached(path: &str) -> Result<String, String> {
     }
 
     // Read from disk
-    let content = std::fs::read_to_string(file_path)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+    let content =
+        std::fs::read_to_string(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
 
     // Cache the content
     cache.set(path, content.clone());
@@ -199,15 +198,16 @@ pub fn read_file_cached(path: &str) -> Result<String, String> {
     Ok(content)
 }
 
-
 /// Read multiple files in batch with caching
-pub fn read_files_batch_cached(paths: Vec<String>) -> std::collections::HashMap<String, Result<String, String>> {
+pub fn read_files_batch_cached(
+    paths: Vec<String>,
+) -> std::collections::HashMap<String, Result<String, String>> {
     use std::collections::HashMap;
-    
+
     let cache = get_file_cache();
     let mut results: HashMap<String, Result<String, String>> = HashMap::with_capacity(paths.len());
     let mut to_read: Vec<String> = Vec::new();
-    
+
     // Check cache first for all paths
     for path in &paths {
         if let Some(content) = cache.get(path) {
@@ -216,14 +216,14 @@ pub fn read_files_batch_cached(paths: Vec<String>) -> std::collections::HashMap<
             to_read.push(path.clone());
         }
     }
-    
+
     // Read uncached files in parallel using rayon-style iteration
     // (Using standard threads for simplicity - rayon would be overkill here)
     for path in to_read {
         let result = read_file_cached(&path);
         results.insert(path, result);
     }
-    
+
     results
 }
 

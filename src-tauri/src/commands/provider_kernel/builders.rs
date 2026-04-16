@@ -87,7 +87,10 @@ pub(crate) fn value_to_text(content: Option<&Value>) -> String {
             .iter()
             .filter_map(|block| {
                 if block.get("type").and_then(Value::as_str) == Some("text") {
-                    block.get("text").and_then(Value::as_str).map(ToString::to_string)
+                    block
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
                 } else {
                     None
                 }
@@ -113,10 +116,7 @@ fn insert_header(headers: &mut HeaderMap, key: &str, value: &str) -> Result<(), 
     Ok(())
 }
 
-fn build_openai_request_body(
-    request: &AuroraProviderRequest,
-    preset: &ProviderPreset,
-) -> Value {
+fn build_openai_request_body(request: &AuroraProviderRequest, preset: &ProviderPreset) -> Value {
     let provider = &request.provider;
     let model = provider.model.to_ascii_lowercase();
     let mut body = Map::new();
@@ -132,7 +132,10 @@ fn build_openai_request_body(
         ),
     );
     body.insert("stream".to_string(), Value::Bool(request.stream));
-    body.insert("max_tokens".to_string(), Value::from(resolve_max_tokens(request)));
+    body.insert(
+        "max_tokens".to_string(),
+        Value::from(resolve_max_tokens(request)),
+    );
 
     if !should_skip_temperature(preset, &model) {
         body.insert(
@@ -153,18 +156,16 @@ fn build_openai_request_body(
             body.insert(
                 "tools".to_string(),
                 Value::Array(
-                    tools.iter()
+                    tools
+                        .iter()
                         .map(|tool| serde_json::to_value(tool).unwrap_or(Value::Null))
                         .collect(),
                 ),
             );
             body.insert("tool_choice".to_string(), Value::String("auto".to_string()));
 
-            if normalize_provider_type(
-                &provider.provider_type,
-                &provider.base_url,
-                &provider.model,
-            ) == "glm"
+            if normalize_provider_type(&provider.provider_type, &provider.base_url, &provider.model)
+                == "glm"
             {
                 body.insert("tool_stream".to_string(), Value::Bool(true));
             }
@@ -257,7 +258,10 @@ fn convert_openai_message(message: &AuroraMessage, preset: &ProviderPreset) -> V
 
     if message.role == "tool" {
         if let Some(tool_call_id) = &message.tool_call_id {
-            payload.insert("tool_call_id".to_string(), Value::String(tool_call_id.clone()));
+            payload.insert(
+                "tool_call_id".to_string(),
+                Value::String(tool_call_id.clone()),
+            );
         }
 
         if !matches!(payload.get("content"), Some(Value::String(_))) {
@@ -285,7 +289,10 @@ fn build_anthropic_request_body(request: &AuroraProviderRequest) -> Result<Value
     let mut body = Map::new();
     body.insert("model".to_string(), Value::String(provider.model.clone()));
     body.insert("messages".to_string(), Value::Array(messages));
-    body.insert("max_tokens".to_string(), Value::from(resolve_max_tokens(request)));
+    body.insert(
+        "max_tokens".to_string(),
+        Value::from(resolve_max_tokens(request)),
+    );
     body.insert("stream".to_string(), Value::Bool(request.stream));
     body.insert(
         "temperature".to_string(),
@@ -334,11 +341,13 @@ fn convert_messages_for_anthropic(
             }
             "assistant" => {
                 let mut content_blocks = anthropic_content_blocks(message.content.as_ref())?;
+                inject_reasoning_block(&mut content_blocks, message.reasoning_content.as_deref());
 
                 if let Some(tool_calls) = &message.tool_calls {
                     for tool_call in tool_calls {
-                        let parsed_arguments = serde_json::from_str::<Value>(&tool_call.function.arguments)
-                            .unwrap_or_else(|_| json!({}));
+                        let parsed_arguments =
+                            serde_json::from_str::<Value>(&tool_call.function.arguments)
+                                .unwrap_or_else(|_| json!({}));
                         content_blocks.push(json!({
                             "type": "tool_use",
                             "id": tool_call.id,
@@ -447,6 +456,32 @@ fn anthropic_content_blocks(content: Option<&Value>) -> Result<Vec<Value>, Strin
     Ok(output)
 }
 
+fn inject_reasoning_block(content_blocks: &mut Vec<Value>, reasoning_content: Option<&str>) {
+    let Some(reasoning_content) = reasoning_content.map(str::trim) else {
+        return;
+    };
+
+    if reasoning_content.is_empty() {
+        return;
+    }
+
+    let already_has_thinking = content_blocks.iter().any(|block| {
+        block.get("type").and_then(Value::as_str) == Some("thinking")
+    });
+
+    if already_has_thinking {
+        return;
+    }
+
+    content_blocks.insert(
+        0,
+        json!({
+            "type": "thinking",
+            "thinking": reasoning_content,
+        }),
+    );
+}
+
 fn convert_tools_for_anthropic(tools: &[AuroraToolDefinition]) -> Value {
     Value::Array(
         tools.iter()
@@ -506,7 +541,7 @@ fn apply_openai_thinking_params(body: &mut Map<String, Value>, preset: &Provider
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_openai_tool_arguments;
+    use super::{inject_reasoning_block, normalize_openai_tool_arguments};
     use serde_json::{json, Value};
 
     #[test]
@@ -522,5 +557,29 @@ mod tests {
     fn replaces_invalid_arguments_with_empty_object() {
         assert_eq!(normalize_openai_tool_arguments("{"), "{}");
         assert_eq!(normalize_openai_tool_arguments(r#""not-object""#), "{}");
+    }
+
+    #[test]
+    fn injects_reasoning_block_at_start_for_anthropic_history() {
+        let mut blocks = vec![json!({ "type": "text", "text": "hello" })];
+
+        inject_reasoning_block(&mut blocks, Some("step by step"));
+
+        assert_eq!(
+            blocks,
+            vec![
+                json!({ "type": "thinking", "thinking": "step by step" }),
+                json!({ "type": "text", "text": "hello" }),
+            ]
+        );
+    }
+
+    #[test]
+    fn does_not_duplicate_existing_reasoning_blocks() {
+        let mut blocks = vec![json!({ "type": "thinking", "thinking": "existing" })];
+
+        inject_reasoning_block(&mut blocks, Some("new"));
+
+        assert_eq!(blocks, vec![json!({ "type": "thinking", "thinking": "existing" })]);
     }
 }

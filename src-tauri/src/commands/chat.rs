@@ -47,13 +47,16 @@ pub fn set_chat_loading(
 ) -> Result<(), String> {
     let mut chat = state.0.lock().map_err(|e| e.to_string())?;
     chat.is_loading = is_loading;
-    
+
     // Broadcast to all windows
-    let _ = app.emit("chat-state-changed", ChatStateEvent {
-        state: chat.clone(),
-        source,
-    });
-    
+    let _ = app.emit(
+        "chat-state-changed",
+        ChatStateEvent {
+            state: chat.clone(),
+            source,
+        },
+    );
+
     Ok(())
 }
 
@@ -66,12 +69,15 @@ pub fn broadcast_chat_event(
     source: String,
 ) -> Result<(), String> {
     // Broadcast to all windows
-    let _ = app.emit("chat-broadcast", BroadcastEvent {
-        event_type,
-        payload,
-        source,
-    });
-    
+    let _ = app.emit(
+        "chat-broadcast",
+        BroadcastEvent {
+            event_type,
+            payload,
+            source,
+        },
+    );
+
     Ok(())
 }
 
@@ -92,13 +98,16 @@ pub fn set_current_thread(
 ) -> Result<(), String> {
     let mut chat = state.0.lock().map_err(|e| e.to_string())?;
     chat.current_thread_id = thread_id;
-    
+
     // Broadcast to all windows
-    let _ = app.emit("chat-state-changed", ChatStateEvent {
-        state: chat.clone(),
-        source,
-    });
-    
+    let _ = app.emit(
+        "chat-state-changed",
+        ChatStateEvent {
+            state: chat.clone(),
+            source,
+        },
+    );
+
     Ok(())
 }
 
@@ -112,13 +121,16 @@ pub fn set_pending_approval(
 ) -> Result<(), String> {
     let mut chat = state.0.lock().map_err(|e| e.to_string())?;
     chat.pending_approval = approval;
-    
+
     // Broadcast to all windows
-    let _ = app.emit("chat-state-changed", ChatStateEvent {
-        state: chat.clone(),
-        source,
-    });
-    
+    let _ = app.emit(
+        "chat-state-changed",
+        ChatStateEvent {
+            state: chat.clone(),
+            source,
+        },
+    );
+
     Ok(())
 }
 
@@ -132,13 +144,16 @@ pub fn update_chat_state(
 ) -> Result<(), String> {
     let mut chat = state.0.lock().map_err(|e| e.to_string())?;
     *chat = new_state;
-    
+
     // Broadcast to all windows
-    let _ = app.emit("chat-state-changed", ChatStateEvent {
-        state: chat.clone(),
-        source,
-    });
-    
+    let _ = app.emit(
+        "chat-state-changed",
+        ChatStateEvent {
+            state: chat.clone(),
+            source,
+        },
+    );
+
     Ok(())
 }
 
@@ -151,12 +166,15 @@ pub fn clear_chat_state(
 ) -> Result<(), String> {
     let mut chat = state.0.lock().map_err(|e| e.to_string())?;
     *chat = ChatState::default();
-    
+
     // Broadcast to all windows
-    let _ = app.emit("chat-state-changed", ChatStateEvent {
-        state: chat.clone(),
-        source,
-    });
-    
+    let _ = app.emit(
+        "chat-state-changed",
+        ChatStateEvent {
+            state: chat.clone(),
+            source,
+        },
+    );
+
     Ok(())
 }

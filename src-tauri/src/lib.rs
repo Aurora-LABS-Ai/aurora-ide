@@ -6,6 +6,7 @@ pub mod cli;
 mod commands;
 mod context;
 mod db;
+mod explorer;
 mod file_cache;
 mod mcp;
 mod services;
@@ -64,6 +65,17 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::state::get_editor_state,
             commands::state::save_explorer_state,
             commands::state::get_explorer_state,
+            explorer::commands::explorer_open_workspace,
+            explorer::commands::explorer_refresh,
+            explorer::commands::explorer_apply_fs_changes,
+            explorer::commands::explorer_toggle_folder,
+            explorer::commands::explorer_expand_folder,
+            explorer::commands::explorer_select_file,
+            explorer::commands::explorer_reveal_file,
+            explorer::commands::explorer_collapse_all,
+            explorer::commands::explorer_save_state,
+            explorer::commands::explorer_get_state,
+            explorer::commands::explorer_clear_workspace,
             // Settings commands
             commands::settings::get_app_settings,
             commands::settings::save_app_settings,
@@ -202,6 +214,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::is_aurora_context_menu_installed,
             commands::uninstall_aurora_context_menu,
             commands::aurora_websearch,
+            commands::ripgrep_search,
+            commands::validate_structured_document,
             // Context Engine commands (turn-based context management)
             context::commands::context_add_user_message,
             context::commands::context_add_assistant_response,
@@ -223,6 +237,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             context::commands::context_estimate_request_tokens,
             // Checkpoint commands (workspace file state snapshots)
             commands::checkpoints::checkpoint_init,
+            commands::checkpoints::checkpoint_ensure_initialized,
             commands::checkpoints::checkpoint_create,
             commands::checkpoints::checkpoint_restore,
             commands::checkpoints::checkpoint_list,
@@ -259,6 +274,9 @@ pub fn run_with_args(cli_args: CliArgs) {
 
             // Store shared chat state for multi-window sync
             app.manage(commands::chat::SharedChatState::default());
+
+            // Store Rust-owned explorer state
+            app.manage(explorer::ExplorerStateHandle::default());
 
             // Store thread service for per-message persistence
             app.manage(ThreadService::new());

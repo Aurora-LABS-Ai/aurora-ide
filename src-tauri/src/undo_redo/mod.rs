@@ -16,4 +16,3 @@ pub mod types;
 
 pub use service::UndoRedoService;
 pub use types::FileChange;
-

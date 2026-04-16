@@ -20,7 +20,9 @@ pub fn format_bytes(bytes: u64) -> String {
 }
 
 pub fn trim_local_base(url: &str) -> String {
-    url.trim_end_matches('/').trim_end_matches("/v1").to_string()
+    url.trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .to_string()
 }
 
 pub fn thinking_supported(model_id: &str) -> bool {

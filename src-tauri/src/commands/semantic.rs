@@ -1,24 +1,35 @@
-use tauri::{State, AppHandle, Emitter, Manager};
-use std::sync::{Arc, Mutex};
-use std::path::PathBuf;
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
 
 use crate::db::{
-    Database, SemanticIndex, SemanticIndexStatus, SemanticSettings,
-    IndexProgress, SemanticSearchResult,
+    Database, IndexProgress, SemanticIndex, SemanticIndexStatus, SemanticSearchResult,
+    SemanticSettings,
 };
 
 // Import aurora-semantic (v1.2.1 with full filtering support)
 use aurora_semantic::{
-    Engine, EngineConfig, WorkspaceConfig, SearchQuery, SearchFilter,
-    SearchMode as AuroraSearchMode, IndexProgress as AuroraProgress,
-    IgnoreConfig, SearchConfig, ExecutionProviderInfo,
-    Language, ChunkType,
+    ChunkType,
+    EmbeddingTask,
+    Engine,
+    EngineConfig,
+    ExecutionProviderInfo,
+    IgnoreConfig,
+    IndexProgress as AuroraProgress,
     // Jina Code 1.5B embedder (recommended for code search)
-    JinaCodeEmbedder, EmbeddingTask, MatryoshkaDimension,
+    JinaCodeEmbedder,
+    Language,
+    MatryoshkaDimension,
     // Legacy model support
-    ModelConfig, OnnxEmbedder,
+    ModelConfig,
+    OnnxEmbedder,
+    SearchConfig,
+    SearchFilter,
+    SearchMode as AuroraSearchMode,
+    SearchQuery,
+    WorkspaceConfig,
 };
 
 // ============================================================
@@ -39,13 +50,13 @@ fn get_semantic_data_dir() -> Result<PathBuf, String> {
     let base_dir = dirs::data_dir()
         .or_else(|| dirs::config_dir())
         .ok_or_else(|| "Could not determine user data directory".to_string())?;
-    
+
     let semantic_dir = base_dir.join("aurora_agent").join("semantic");
-    
+
     // Ensure directory exists
     std::fs::create_dir_all(&semantic_dir)
         .map_err(|e| format!("Failed to create semantic data directory: {}", e))?;
-    
+
     Ok(semantic_dir)
 }
 
@@ -60,9 +71,7 @@ lazy_static::lazy_static! {
 
 /// Get or create the semantic engine
 /// Uses a SINGLE shared directory - aurora-semantic manages workspace IDs internally by path
-async fn get_or_create_engine(
-    settings: &SemanticSettings,
-) -> Result<Arc<Engine>, String> {
+async fn get_or_create_engine(settings: &SemanticSettings) -> Result<Arc<Engine>, String> {
     // Check if we already have an engine cached
     {
         let cache = ENGINE_CACHE.read().await;
@@ -79,23 +88,27 @@ async fn get_or_create_engine(
     let mut ignore_config = IgnoreConfig {
         use_gitignore: true,
         ignored_directories: settings.ignored_directories.clone(),
-        ignored_extensions: settings.ignored_patterns.iter()
+        ignored_extensions: settings
+            .ignored_patterns
+            .iter()
             .filter_map(|p| p.strip_prefix("*.").map(|s| s.to_string()))
             .collect(),
         max_file_size: settings.max_file_size as u64,
         // Glob patterns for file matching
-        patterns: settings.ignored_patterns.iter()
+        patterns: settings
+            .ignored_patterns
+            .iter()
             .filter(|p| !p.starts_with("*."))
             .cloned()
             .collect(),
         ..Default::default()
     };
-    
+
     // Add specific file exclusions (relative paths)
     for file_path in &settings.excluded_files {
         ignore_config = ignore_config.with_excluded_file(file_path);
     }
-    
+
     // Add specific directory exclusions (relative paths)
     for dir_path in &settings.excluded_directories {
         ignore_config = ignore_config.with_excluded_directory(dir_path);
@@ -118,53 +131,52 @@ async fn get_or_create_engine(
     let engine = if let Some(model_path) = &settings.model_path {
         if !model_path.is_empty() {
             let model_dir = PathBuf::from(model_path);
-            let has_model = model_dir.join("model.onnx").exists() || model_dir.join("model_optimized.onnx").exists();
+            let has_model = model_dir.join("model.onnx").exists()
+                || model_dir.join("model_optimized.onnx").exists();
             let has_tokenizer = model_dir.join("tokenizer.json").exists();
-            
+
             if has_model && has_tokenizer {
                 // Detect model type from directory name/path
                 let path_lower = model_path.to_lowercase();
-                let is_jina_1_5b = path_lower.contains("jina-code-1.5b") 
+                let is_jina_1_5b = path_lower.contains("jina-code-1.5b")
                     || path_lower.contains("jina-code-embeddings-1.5b");
-                
+
                 if is_jina_1_5b {
                     // Use JinaCodeEmbedder for jina-code-embeddings-1.5b
                     // This model has 1536 dimensions and supports Matryoshka truncation
                     let embedder = JinaCodeEmbedder::from_directory(&model_dir)
                         .map_err(|e| format!("Failed to load Jina Code 1.5B model: {}", e))?
-                        .with_task(EmbeddingTask::NL2Code)  // Best for natural language -> code search
-                        .with_dimension(MatryoshkaDimension::D512)  // Good balance of quality/speed
-                        .with_max_length(8192);  // Support long code files
-                    
-                    Engine::with_embedder(config, embedder)
-                        .map_err(|e| format!("Failed to create engine with Jina Code 1.5B: {}", e))?
+                        .with_task(EmbeddingTask::NL2Code) // Best for natural language -> code search
+                        .with_dimension(MatryoshkaDimension::D512) // Good balance of quality/speed
+                        .with_max_length(8192); // Support long code files
+
+                    Engine::with_embedder(config, embedder).map_err(|e| {
+                        format!("Failed to create engine with Jina Code 1.5B: {}", e)
+                    })?
                 } else {
                     // Use legacy OnnxEmbedder for other models (jina-v2, minilm, etc.)
                     let embedder = ModelConfig::from_directory(&model_dir)
                         .with_max_length(8192)
                         .load()
                         .map_err(|e| format!("Failed to load model: {}", e))?;
-                    
+
                     Engine::with_embedder(config, embedder)
                         .map_err(|e| format!("Failed to create engine with model: {}", e))?
                 }
             } else {
                 // Model path invalid, use hash embeddings
-                Engine::new(config)
-                    .map_err(|e| format!("Failed to create engine: {}", e))?
+                Engine::new(config).map_err(|e| format!("Failed to create engine: {}", e))?
             }
         } else {
-            Engine::new(config)
-                .map_err(|e| format!("Failed to create engine: {}", e))?
+            Engine::new(config).map_err(|e| format!("Failed to create engine: {}", e))?
         }
     } else {
         // No model configured, use hash embeddings (fast, lexical-focused)
-        Engine::new(config)
-            .map_err(|e| format!("Failed to create engine: {}", e))?
+        Engine::new(config).map_err(|e| format!("Failed to create engine: {}", e))?
     };
 
     let engine = Arc::new(engine);
-    
+
     // Cache the engine
     {
         let mut cache = ENGINE_CACHE.write().await;
@@ -186,7 +198,9 @@ async fn clear_engine_cache() {
 
 /// Get all semantic indexes
 #[tauri::command]
-pub fn get_all_semantic_indexes(db: State<'_, Mutex<Database>>) -> Result<Vec<SemanticIndex>, String> {
+pub fn get_all_semantic_indexes(
+    db: State<'_, Mutex<Database>>,
+) -> Result<Vec<SemanticIndex>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.semantic()
         .get_all_indexes()
@@ -195,7 +209,10 @@ pub fn get_all_semantic_indexes(db: State<'_, Mutex<Database>>) -> Result<Vec<Se
 
 /// Get a semantic index by ID
 #[tauri::command]
-pub fn get_semantic_index(id: String, db: State<'_, Mutex<Database>>) -> Result<Option<SemanticIndex>, String> {
+pub fn get_semantic_index(
+    id: String,
+    db: State<'_, Mutex<Database>>,
+) -> Result<Option<SemanticIndex>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.semantic()
         .get_index(&id)
@@ -236,21 +253,23 @@ pub async fn delete_semantic_index(
     // Get workspace path and settings before any async operations
     let (workspace_path, settings) = {
         let db = db.lock().map_err(|e| e.to_string())?;
-        
-        let workspace_path = db.semantic()
+
+        let workspace_path = db
+            .semantic()
             .get_index(&id)
             .map_err(|e| format!("Failed to get index: {:?}", e))?
             .map(|idx| idx.workspace_path);
-        
-        let settings = db.semantic()
+
+        let settings = db
+            .semantic()
             .get_settings()
             .map_err(|e| format!("Failed to get settings: {:?}", e))?;
-        
+
         // Delete from database
         db.semantic()
             .delete_index(&id)
             .map_err(|e| format!("Failed to delete index: {:?}", e))?;
-        
+
         (workspace_path, settings)
     }; // db lock released here
 
@@ -279,9 +298,10 @@ pub fn update_semantic_index_status(
     db: State<'_, Mutex<Database>>,
 ) -> Result<(), String> {
     let db = db.lock().map_err(|e| e.to_string())?;
-    let status = status.parse::<SemanticIndexStatus>()
+    let status = status
+        .parse::<SemanticIndexStatus>()
         .map_err(|e| format!("Invalid status: {}", e))?;
-    
+
     db.semantic()
         .update_index_status(&id, status, error_message.as_deref())
         .map_err(|e| format!("Failed to update status: {:?}", e))
@@ -296,7 +316,7 @@ pub fn update_workspace_exclusions(
     db: State<'_, Mutex<Database>>,
 ) -> Result<(), String> {
     let db = db.lock().map_err(|e| e.to_string())?;
-    
+
     db.semantic()
         .update_index_exclusions(&workspace_path, &excluded_files, &excluded_directories)
         .map_err(|e| format!("Failed to update exclusions: {:?}", e))
@@ -357,14 +377,14 @@ pub async fn set_semantic_model_path(
 #[tauri::command]
 pub fn validate_semantic_model_path(path: String) -> Result<bool, String> {
     let path = PathBuf::from(&path);
-    
+
     if !path.exists() {
         return Ok(false);
     }
-    
+
     let model_file = path.join("model.onnx");
     let tokenizer_file = path.join("tokenizer.json");
-    
+
     Ok(model_file.exists() && tokenizer_file.exists())
 }
 
@@ -373,16 +393,16 @@ pub fn validate_semantic_model_path(path: String) -> Result<bool, String> {
 #[tauri::command]
 pub fn get_semantic_model_info(path: String) -> Result<Option<ModelInfo>, String> {
     let path = PathBuf::from(&path);
-    
+
     if !path.exists() {
         return Ok(None);
     }
-    
+
     let model_file = path.join("model.onnx");
     let model_optimized = path.join("model_optimized.onnx");
     let tokenizer_file = path.join("tokenizer.json");
     let config_file = path.join("config.json");
-    
+
     // Check for either model.onnx or model_optimized.onnx
     let actual_model_file = if model_optimized.exists() {
         model_optimized
@@ -391,7 +411,7 @@ pub fn get_semantic_model_info(path: String) -> Result<Option<ModelInfo>, String
     } else {
         return Ok(None);
     };
-    
+
     if !tokenizer_file.exists() {
         return Ok(None);
     }
@@ -406,7 +426,11 @@ pub fn get_semantic_model_info(path: String) -> Result<Option<ModelInfo>, String
         std::fs::read_to_string(&config_file)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| v.get("_name_or_path").and_then(|n| n.as_str()).map(|s| s.to_string()))
+            .and_then(|v| {
+                v.get("_name_or_path")
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.to_string())
+            })
     } else {
         None
     };
@@ -414,10 +438,15 @@ pub fn get_semantic_model_info(path: String) -> Result<Option<ModelInfo>, String
     // NOTE: We intentionally do NOT load the ONNX model here to avoid UI freezing
     // Execution provider info is loaded lazily only when actually needed
     // (e.g., when starting indexing or searching)
-    
+
     Ok(Some(ModelInfo {
         path: path.to_string_lossy().to_string(),
-        name: model_name.unwrap_or_else(|| path.file_name().unwrap_or_default().to_string_lossy().to_string()),
+        name: model_name.unwrap_or_else(|| {
+            path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        }),
         size_bytes: model_size,
         has_tokenizer: true,
         has_config: config_file.exists(),
@@ -461,16 +490,18 @@ impl From<&ExecutionProviderInfo> for ExecutionProviderDetails {
 #[tauri::command]
 pub fn get_execution_provider_info(model_path: String) -> Result<ExecutionProviderDetails, String> {
     let path = PathBuf::from(&model_path);
-    
+
     if !path.exists() {
         return Err("Model path does not exist".to_string());
     }
-    
+
     // Try to load the model to get execution provider info
-    let embedder = OnnxEmbedder::from_directory(&path)
-        .map_err(|e| format!("Failed to load model: {}", e))?;
-    
-    Ok(ExecutionProviderDetails::from(embedder.execution_provider()))
+    let embedder =
+        OnnxEmbedder::from_directory(&path).map_err(|e| format!("Failed to load model: {}", e))?;
+
+    Ok(ExecutionProviderDetails::from(
+        embedder.execution_provider(),
+    ))
 }
 
 /// Check what GPU features are available (compiled into the binary)
@@ -507,7 +538,7 @@ pub async fn start_semantic_indexing(
     db: State<'_, Mutex<Database>>,
 ) -> Result<String, String> {
     use uuid::Uuid;
-    
+
     // Check if already indexing this workspace
     {
         let tasks = INDEXING_TASKS.read().await;
@@ -527,11 +558,12 @@ pub async fn start_semantic_indexing(
     // Create or get existing index record (UUID is the key for storage)
     let index_id = {
         let db = db.lock().map_err(|e| e.to_string())?;
-        
+
         // Check if index already exists for this workspace path
-        if let Some(existing) = db.semantic()
+        if let Some(existing) = db
+            .semantic()
             .get_index_by_path(&workspace_path)
-            .map_err(|e| format!("Failed to check existing index: {:?}", e))? 
+            .map_err(|e| format!("Failed to check existing index: {:?}", e))?
         {
             // Update status to indexing
             db.semantic()
@@ -556,18 +588,18 @@ pub async fn start_semantic_indexing(
                 created_at: String::new(),
                 updated_at: String::new(),
             };
-            
+
             db.semantic()
                 .save_index(&new_index)
                 .map_err(|e| format!("Failed to create index: {:?}", e))?;
-            
+
             new_index.id
         }
     };
-    
+
     // Ensure the shared semantic data directory exists
     let _index_dir = get_semantic_data_dir()?;
-    
+
     // Mark as indexing
     {
         let mut tasks = INDEXING_TASKS.write().await;
@@ -577,7 +609,7 @@ pub async fn start_semantic_indexing(
     let index_id_clone = index_id.clone();
     let workspace_path_clone = workspace_path.clone();
     let app_clone = app.clone();
-    
+
     // Spawn indexing task in background
     tokio::spawn(async move {
         let result = run_indexing(
@@ -585,7 +617,8 @@ pub async fn start_semantic_indexing(
             &workspace_path_clone,
             &index_id_clone,
             &settings,
-        ).await;
+        )
+        .await;
 
         // Clear indexing flag
         {
@@ -620,22 +653,28 @@ pub async fn start_semantic_indexing(
                 }
 
                 // Emit completion event
-                let _ = app_clone.emit("semantic-index-progress", IndexProgress {
-                    workspace_id: index_id_clone.clone(),
-                    phase: "complete".to_string(),
-                    processed: doc_count,
-                    total: doc_count,
-                    current_file: None,
-                    percentage: 100.0,
-                });
+                let _ = app_clone.emit(
+                    "semantic-index-progress",
+                    IndexProgress {
+                        workspace_id: index_id_clone.clone(),
+                        phase: "complete".to_string(),
+                        processed: doc_count,
+                        total: doc_count,
+                        current_file: None,
+                        percentage: 100.0,
+                    },
+                );
 
                 // Emit complete event for frontend to refresh
-                let _ = app_clone.emit("semantic-index-complete", serde_json::json!({
-                    "workspaceId": index_id_clone,
-                    "documentCount": doc_count,
-                    "chunkCount": chunk_count,
-                    "totalBytes": total_bytes,
-                }));
+                let _ = app_clone.emit(
+                    "semantic-index-complete",
+                    serde_json::json!({
+                        "workspaceId": index_id_clone,
+                        "documentCount": doc_count,
+                        "chunkCount": chunk_count,
+                        "totalBytes": total_bytes,
+                    }),
+                );
             }
             Err(e) => {
                 // Update database with error status
@@ -648,14 +687,17 @@ pub async fn start_semantic_indexing(
                 }
 
                 // Emit error event
-                let _ = app_clone.emit("semantic-index-error", serde_json::json!({
-                    "workspaceId": index_id_clone,
-                    "error": e,
-                }));
+                let _ = app_clone.emit(
+                    "semantic-index-error",
+                    serde_json::json!({
+                        "workspaceId": index_id_clone,
+                        "error": e,
+                    }),
+                );
             }
         }
     });
-    
+
     Ok(index_id)
 }
 
@@ -664,7 +706,7 @@ pub async fn start_semantic_indexing(
 async fn run_indexing(
     app: &AppHandle,
     workspace_path: &str,
-    index_id: &str,  // Our database record ID (for progress events)
+    index_id: &str, // Our database record ID (for progress events)
     settings: &SemanticSettings,
 ) -> Result<(i64, i64, i64), String> {
     // Clear any cached engine to ensure fresh config
@@ -674,14 +716,17 @@ async fn run_indexing(
     let engine = get_or_create_engine(settings).await?;
 
     // Emit scanning phase
-    let _ = app.emit("semantic-index-progress", IndexProgress {
-        workspace_id: index_id.to_string(),
-        phase: "scanning".to_string(),
-        processed: 0,
-        total: 0,
-        current_file: None,
-        percentage: 0.0,
-    });
+    let _ = app.emit(
+        "semantic-index-progress",
+        IndexProgress {
+            workspace_id: index_id.to_string(),
+            phase: "scanning".to_string(),
+            processed: 0,
+            total: 0,
+            current_file: None,
+            percentage: 0.0,
+        },
+    );
 
     // Create workspace config
     let ws_config = WorkspaceConfig::new(PathBuf::from(workspace_path));
@@ -700,24 +745,32 @@ async fn run_indexing(
         };
 
         let percentage = progress.percentage();
-        let _ = app_clone.emit("semantic-index-progress", IndexProgress {
-            workspace_id: index_id_clone.clone(),
-            phase: phase.to_string(),
-            processed: progress.processed as i64,
-            total: progress.total as i64,
-            current_file: progress.current_file.as_ref().map(|p| p.to_string_lossy().to_string()),
-            percentage: percentage as f64,
-        });
+        let _ = app_clone.emit(
+            "semantic-index-progress",
+            IndexProgress {
+                workspace_id: index_id_clone.clone(),
+                phase: phase.to_string(),
+                processed: progress.processed as i64,
+                total: progress.total as i64,
+                current_file: progress
+                    .current_file
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string()),
+                percentage: percentage as f64,
+            },
+        );
     });
 
     // Use index_or_reindex_workspace - it handles finding existing workspace by path,
     // deleting it if exists, and re-indexing with the same aurora-semantic ID
-    let workspace_id = engine.index_or_reindex_workspace(ws_config, Some(progress_callback))
+    let workspace_id = engine
+        .index_or_reindex_workspace(ws_config, Some(progress_callback))
         .await
         .map_err(|e| format!("Indexing failed: {}", e))?;
 
     // Get stats
-    let stats = engine.get_workspace_stats(&workspace_id)
+    let stats = engine
+        .get_workspace_stats(&workspace_id)
         .map_err(|e| format!("Failed to get stats: {}", e))?;
 
     Ok((
@@ -749,21 +802,26 @@ pub async fn semantic_search(
     // Get settings and verify workspace is indexed
     let settings = {
         let db = db.lock().map_err(|e| e.to_string())?;
-        
-        let settings = db.semantic()
+
+        let settings = db
+            .semantic()
             .get_settings()
             .map_err(|e| format!("Failed to get settings: {:?}", e))?;
-        
+
         // Check database for index status (optional - we'll verify with actual engine)
-        if let Some(index) = db.semantic()
+        if let Some(index) = db
+            .semantic()
             .get_index_by_path(&workspace_path)
-            .map_err(|e| format!("Failed to get index: {:?}", e))? 
+            .map_err(|e| format!("Failed to get index: {:?}", e))?
         {
             if index.status != crate::db::SemanticIndexStatus::Ready {
-                return Err(format!("Index not ready: {:?}. Please wait for indexing to complete.", index.status));
+                return Err(format!(
+                    "Index not ready: {:?}. Please wait for indexing to complete.",
+                    index.status
+                ));
             }
         }
-        
+
         settings
     };
 
@@ -779,7 +837,7 @@ pub async fn semantic_search(
                 workspace_path
             )
         })?;
-    
+
     // Load workspace into memory if not already loaded
     if engine.load_workspace(&workspace_id).is_err() {
         // Workspace might already be loaded, continue
@@ -807,15 +865,20 @@ pub async fn semantic_search(
         .min_score(min_score.unwrap_or(0.1));
 
     // Build search filter if any filter parameters are provided
-    let has_filters = languages.is_some() || chunk_types.is_some() || path_patterns.is_some() 
-        || symbol_names.is_some() || directories.is_some() || exclude_directories.is_some();
-    
+    let has_filters = languages.is_some()
+        || chunk_types.is_some()
+        || path_patterns.is_some()
+        || symbol_names.is_some()
+        || directories.is_some()
+        || exclude_directories.is_some();
+
     if has_filters {
         let mut filter = SearchFilter::new();
-        
+
         // Parse and apply language filter
         if let Some(langs) = languages {
-            let parsed_langs: Vec<Language> = langs.iter()
+            let parsed_langs: Vec<Language> = langs
+                .iter()
                 .filter_map(|l| match l.to_lowercase().as_str() {
                     "rust" => Some(Language::Rust),
                     "python" => Some(Language::Python),
@@ -832,10 +895,11 @@ pub async fn semantic_search(
                 filter = filter.languages(parsed_langs);
             }
         }
-        
+
         // Parse and apply chunk type filter
         if let Some(types) = chunk_types {
-            let parsed_types: Vec<ChunkType> = types.iter()
+            let parsed_types: Vec<ChunkType> = types
+                .iter()
                 .filter_map(|t| match t.to_lowercase().as_str() {
                     "function" => Some(ChunkType::Function),
                     "class" => Some(ChunkType::Class),
@@ -856,58 +920,63 @@ pub async fn semantic_search(
                 filter = filter.chunk_types(parsed_types);
             }
         }
-        
+
         // Apply path patterns filter
         if let Some(patterns) = path_patterns {
             if !patterns.is_empty() {
                 filter = filter.path_patterns(patterns);
             }
         }
-        
+
         // Apply symbol names filter
         if let Some(symbols) = symbol_names {
             if !symbols.is_empty() {
                 filter = filter.symbol_names(symbols);
             }
         }
-        
+
         // Apply directory inclusion filter
         if let Some(dirs) = directories {
             if !dirs.is_empty() {
                 filter = filter.in_directories(dirs.into_iter().map(PathBuf::from).collect());
             }
         }
-        
+
         // Apply directory exclusion filter
         if let Some(exclude_dirs) = exclude_directories {
             if !exclude_dirs.is_empty() {
-                filter = filter.exclude_directories(exclude_dirs.into_iter().map(PathBuf::from).collect());
+                filter = filter
+                    .exclude_directories(exclude_dirs.into_iter().map(PathBuf::from).collect());
             }
         }
-        
+
         search_query = search_query.filter(filter);
     }
 
     // Execute search
-    let results = engine.search(&workspace_id, search_query)
+    let results = engine
+        .search(&workspace_id, search_query)
         .map_err(|e| format!("Search failed: {}", e))?;
 
     // Convert to our result type
-    Ok(results.into_iter().map(|r| SemanticSearchResult {
-        file_path: r.document.absolute_path.to_string_lossy().to_string(),
-        relative_path: r.document.relative_path.to_string_lossy().to_string(),
-        start_line: r.chunk.start_line,
-        end_line: r.chunk.end_line,
-        chunk_type: format!("{:?}", r.chunk.chunk_type),
-        symbol_name: r.chunk.symbol_name,
-        content: r.chunk.content,
-        score: r.score,
-        match_type: match r.match_type {
-            aurora_semantic::MatchType::Lexical => "lexical".to_string(),
-            aurora_semantic::MatchType::Semantic => "semantic".to_string(),
-            aurora_semantic::MatchType::Hybrid => "hybrid".to_string(),
-        },
-    }).collect())
+    Ok(results
+        .into_iter()
+        .map(|r| SemanticSearchResult {
+            file_path: r.document.absolute_path.to_string_lossy().to_string(),
+            relative_path: r.document.relative_path.to_string_lossy().to_string(),
+            start_line: r.chunk.start_line,
+            end_line: r.chunk.end_line,
+            chunk_type: format!("{:?}", r.chunk.chunk_type),
+            symbol_name: r.chunk.symbol_name,
+            content: r.chunk.content,
+            score: r.score,
+            match_type: match r.match_type {
+                aurora_semantic::MatchType::Lexical => "lexical".to_string(),
+                aurora_semantic::MatchType::Semantic => "semantic".to_string(),
+                aurora_semantic::MatchType::Hybrid => "hybrid".to_string(),
+            },
+        })
+        .collect())
 }
 
 /// Cancel ongoing indexing
@@ -926,7 +995,11 @@ pub async fn cancel_semantic_indexing(
     {
         let db = db.lock().map_err(|e| e.to_string())?;
         db.semantic()
-            .update_index_status(&index_id, SemanticIndexStatus::Error, Some("Cancelled by user"))
+            .update_index_status(
+                &index_id,
+                SemanticIndexStatus::Error,
+                Some("Cancelled by user"),
+            )
             .map_err(|e| format!("Failed to cancel indexing: {:?}", e))?;
     }
 
@@ -954,4 +1027,3 @@ pub fn get_semantic_index_path(_workspace_id: String) -> Result<String, String> 
     // Legacy compatibility alias.
     get_semantic_data_directory()
 }
-

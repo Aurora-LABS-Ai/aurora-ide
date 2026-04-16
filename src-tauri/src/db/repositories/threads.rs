@@ -2,7 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json;
 
 use crate::db::error::DbResult;
-use crate::db::models::{Message, ThreadState, TokenUsage, ContextUsage};
+use crate::db::models::{ContextUsage, Message, ThreadState, TokenUsage};
 
 /// Repository for thread/chat history.
 pub struct ThreadsRepository<'a> {
@@ -18,11 +18,15 @@ impl<'a> ThreadsRepository<'a> {
         let messages_json = serde_json::to_string(&thread.messages)
             .map_err(crate::db::error::DbError::Serialization)?;
 
-        let token_usage_json = thread.token_usage.as_ref()
+        let token_usage_json = thread
+            .token_usage
+            .as_ref()
             .map(|u| serde_json::to_string(u).ok())
             .flatten();
 
-        let context_usage_json = thread.context_usage.as_ref()
+        let context_usage_json = thread
+            .context_usage
+            .as_ref()
             .map(|u| serde_json::to_string(u).ok())
             .flatten();
 
@@ -60,20 +64,21 @@ impl<'a> ThreadsRepository<'a> {
         let thread = stmt
             .query_row([id], |row| {
                 let messages_json: String = row.get(3)?;
-                let messages: Vec<Message> = serde_json::from_str(&messages_json)
-                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+                let messages: Vec<Message> = serde_json::from_str(&messages_json).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
                         messages_json.len(),
                         rusqlite::types::Type::Text,
                         Box::new(e),
-                    ))?;
+                    )
+                })?;
 
                 let token_usage_json: Option<String> = row.get(4)?;
-                let token_usage: Option<TokenUsage> = token_usage_json
-                    .and_then(|s| serde_json::from_str(&s).ok());
+                let token_usage: Option<TokenUsage> =
+                    token_usage_json.and_then(|s| serde_json::from_str(&s).ok());
 
                 let context_usage_json: Option<String> = row.get(5)?;
-                let context_usage: Option<ContextUsage> = context_usage_json
-                    .and_then(|s| serde_json::from_str(&s).ok());
+                let context_usage: Option<ContextUsage> =
+                    context_usage_json.and_then(|s| serde_json::from_str(&s).ok());
 
                 Ok(ThreadState {
                     id: row.get(0)?,
@@ -99,20 +104,21 @@ impl<'a> ThreadsRepository<'a> {
 
         let rows = stmt.query_map([], |row| {
             let messages_json: String = row.get(3)?;
-            let messages: Vec<Message> = serde_json::from_str(&messages_json)
-                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
+            let messages: Vec<Message> = serde_json::from_str(&messages_json).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
                     messages_json.len(),
                     rusqlite::types::Type::Text,
                     Box::new(e),
-                ))?;
+                )
+            })?;
 
             let token_usage_json: Option<String> = row.get(4)?;
-            let token_usage: Option<TokenUsage> = token_usage_json
-                .and_then(|s| serde_json::from_str(&s).ok());
+            let token_usage: Option<TokenUsage> =
+                token_usage_json.and_then(|s| serde_json::from_str(&s).ok());
 
             let context_usage_json: Option<String> = row.get(5)?;
-            let context_usage: Option<ContextUsage> = context_usage_json
-                .and_then(|s| serde_json::from_str(&s).ok());
+            let context_usage: Option<ContextUsage> =
+                context_usage_json.and_then(|s| serde_json::from_str(&s).ok());
 
             Ok(ThreadState {
                 id: row.get(0)?,

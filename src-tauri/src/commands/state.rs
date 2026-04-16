@@ -23,10 +23,12 @@ pub fn get_workspace_state(
 ) -> Result<Option<WorkspaceState>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     match workspace_path {
-        Some(path) => db.workspace()
+        Some(path) => db
+            .workspace()
             .get_by_path(&path)
             .map_err(|e| format!("Failed to get workspace state: {:?}", e)),
-        None => db.workspace()
+        None => db
+            .workspace()
             .get_most_recent()
             .map_err(|e| format!("Failed to get workspace state: {:?}", e)),
     }
@@ -55,10 +57,7 @@ pub fn list_recent_workspaces(
 
 /// Save editor state for a file
 #[tauri::command]
-pub fn save_editor_state(
-    state: EditorState,
-    db: State<'_, Mutex<Database>>,
-) -> Result<(), String> {
+pub fn save_editor_state(state: EditorState, db: State<'_, Mutex<Database>>) -> Result<(), String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.editor()
         .save(&state)

@@ -1,11 +1,11 @@
-use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Mutex;
 use tauri::{AppHandle, State};
 
 use crate::db::{ContextUsage, Database, Message, ThreadState, TokenUsage};
-use crate::services::thread_service::{ThreadService, ThreadSummary};
 use crate::services::api_converter::ApiMessage;
+use crate::services::thread_service::{ThreadService, ThreadSummary};
 
 /// Save/update a full thread state to the database.
 /// Used for bulk-persisting thread state (e.g., after streaming completes).

@@ -5,7 +5,7 @@
     windows_subsystem = "windows"
 )]
 
-use aurora_lib::cli::{CliArgs, install};
+use aurora_lib::cli::{install, CliArgs};
 use std::env;
 
 // Environment variable used to pass CLI args to spawned GUI process
@@ -17,7 +17,7 @@ fn main() {
     // This means we're the detached GUI process
     let env_path = env::var(AURORA_CLI_PATH_ENV).ok();
     let env_file = env::var(AURORA_CLI_FILE_ENV).ok();
-    
+
     if env_path.is_some() || env_file.is_some() {
         // We're the spawned GUI process - run with the path from env
         let mut args = CliArgs::default();
@@ -30,7 +30,7 @@ fn main() {
         // Clear env vars so child processes don't inherit them
         env::remove_var(AURORA_CLI_PATH_ENV);
         env::remove_var(AURORA_CLI_FILE_ENV);
-        
+
         aurora_lib::run_with_args(args);
         return;
     }
@@ -76,11 +76,11 @@ fn main() {
 
 /// Spawn Aurora as a detached process so the terminal is freed
 fn spawn_detached_gui(args: &CliArgs) -> Result<(), String> {
-    let current_exe = env::current_exe()
-        .map_err(|e| format!("Failed to get current executable: {}", e))?;
-    
+    let current_exe =
+        env::current_exe().map_err(|e| format!("Failed to get current executable: {}", e))?;
+
     let mut cmd = std::process::Command::new(&current_exe);
-    
+
     // Pass the path via environment variable
     if let Some(resolved) = args.resolve_path() {
         if resolved.is_dir() {
@@ -108,7 +108,7 @@ fn spawn_detached_gui(args: &CliArgs) -> Result<(), String> {
         cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     }
 
-    // On Unix, no special detachment flags needed - the process 
+    // On Unix, no special detachment flags needed - the process
     // will continue running after we exit
     #[cfg(unix)]
     let _ = &cmd; // silence unused warning
@@ -122,4 +122,3 @@ fn spawn_detached_gui(args: &CliArgs) -> Result<(), String> {
 
     Ok(())
 }
-

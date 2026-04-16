@@ -135,10 +135,8 @@ impl ApiConverter {
                     if let Some(tool) = &event.tool {
                         // Only include tool calls that have a result (complete, failed, or rejected)
                         // Skip pending/executing tools - they were interrupted
-                        let has_result = matches!(
-                            tool.status.as_str(),
-                            "complete" | "failed" | "rejected"
-                        );
+                        let has_result =
+                            matches!(tool.status.as_str(), "complete" | "failed" | "rejected");
 
                         if has_result {
                             // Add tool call request
@@ -331,4 +329,3 @@ mod tests {
         assert_eq!(extracted.content, "Hello world!");
     }
 }
-

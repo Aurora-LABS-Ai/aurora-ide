@@ -117,7 +117,10 @@ impl CheckpointService {
         // Check if we already have this repo cached
         // Use unwrap_or_else to recover from poisoned mutex (previous panic)
         {
-            let repos = self.repos.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let repos = self
+                .repos
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if repos.contains_key(workspace_path) {
                 if repo_path.join(".git").exists() {
                     return Ok(repo_path);
@@ -128,7 +131,8 @@ impl CheckpointService {
         // Create or open the repository
         if repo_path.exists() && repo_path.join(".git").exists() {
             // Verify the worktree config matches
-            let config_worktree = self.run_git_command_allow_fail(&repo_path, &["config", "core.worktree"]);
+            let config_worktree =
+                self.run_git_command_allow_fail(&repo_path, &["config", "core.worktree"]);
             if let Some(wt) = config_worktree {
                 if wt != workspace_path {
                     return Err(CheckpointError::InitializationFailed(format!(
@@ -143,7 +147,10 @@ impl CheckpointService {
 
         // Cache the repo path
         {
-            let mut repos = self.repos.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut repos = self
+                .repos
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             repos.insert(workspace_path.to_string(), repo_path.clone());
         }
 
@@ -165,9 +172,9 @@ impl CheckpointService {
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
-        let output = cmd
-            .output()
-            .map_err(|e| CheckpointError::InitializationFailed(format!("Failed to run git init: {}", e)))?;
+        let output = cmd.output().map_err(|e| {
+            CheckpointError::InitializationFailed(format!("Failed to run git init: {}", e))
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -181,7 +188,10 @@ impl CheckpointService {
         self.run_git_command(repo_path, &["config", "core.worktree", workspace_path])?;
         self.run_git_command(repo_path, &["config", "commit.gpgSign", "false"])?;
         self.run_git_command(repo_path, &["config", "user.name", "Aurora Checkpoints"])?;
-        self.run_git_command(repo_path, &["config", "user.email", "checkpoints@aurora.local"])?;
+        self.run_git_command(
+            repo_path,
+            &["config", "user.email", "checkpoints@aurora.local"],
+        )?;
 
         // Create .git/info/exclude file
         self.write_exclude_file(repo_path)?;
@@ -264,9 +274,22 @@ __pycache__/
         let _ = self.run_git_command_allow_fail(repo_path, &["add", ".", "--ignore-errors"]);
 
         // Create initial commit (allow empty in case workspace is empty)
-        self.run_git_command(repo_path, &["commit", "--allow-empty", "-m", "Initial checkpoint - baseline state"])?;
+        self.run_git_command(
+            repo_path,
+            &[
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial checkpoint - baseline state",
+            ],
+        )?;
 
         Ok(())
+    }
+
+    /// Create a checkpoint for the current workspace state using git CLI
+    pub fn ensure_initialized(&self, workspace_path: &str) -> CheckpointResult<()> {
+        self.get_or_create_repo(workspace_path).map(|_| ())
     }
 
     /// Create a checkpoint for the current workspace state using git CLI
@@ -289,7 +312,10 @@ __pycache__/
         );
 
         // Create commit (allow empty if no changes)
-        self.run_git_command(&repo_path, &["commit", "--allow-empty", "-m", &commit_message])?;
+        self.run_git_command(
+            &repo_path,
+            &["commit", "--allow-empty", "-m", &commit_message],
+        )?;
 
         // Get the commit hash
         let commit_hash = self.run_git_command(&repo_path, &["rev-parse", "HEAD"])?;
@@ -319,7 +345,11 @@ __pycache__/
         let verify_result = self.run_git_command(&repo_path, &["cat-file", "-t", checkpoint_id]);
         match verify_result {
             Ok(ref obj_type) if obj_type == "commit" => {}
-            _ => return Err(CheckpointError::CheckpointNotFound(checkpoint_id.to_string())),
+            _ => {
+                return Err(CheckpointError::CheckpointNotFound(
+                    checkpoint_id.to_string(),
+                ))
+            }
         }
 
         // Step 1: git clean -fd (remove untracked files/dirs created after checkpoint)
@@ -344,10 +374,7 @@ __pycache__/
         // Get all commits in reverse chronological order
         let log_output = self.run_git_command(&repo_path, &["log", "--format=%H", "--reverse"])?;
 
-        let checkpoints: Vec<String> = log_output
-            .lines()
-            .map(|s| s.to_string())
-            .collect();
+        let checkpoints: Vec<String> = log_output.lines().map(|s| s.to_string()).collect();
 
         Ok(checkpoints)
     }
@@ -373,7 +400,10 @@ __pycache__/
 
         // Remove from cache
         {
-            let mut repos = self.repos.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut repos = self
+                .repos
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             repos.remove(workspace_path);
         }
 

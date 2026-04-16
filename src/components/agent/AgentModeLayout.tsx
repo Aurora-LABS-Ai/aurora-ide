@@ -120,7 +120,6 @@ export const AgentModeLayout: React.FC = () => {
     getToolApproval,
     setToolApproval,
     getLLMConfig,
-    selectedModel,
   } = useSettingsStore();
   const { thinkingEnabled: userThinkingEnabled } = useSettingsStore();
   const llmConfig = getLLMConfig();
@@ -174,7 +173,7 @@ export const AgentModeLayout: React.FC = () => {
       scanWorkspace(rootPath).then(setWorkspaceSummary);
     }
     if (!rootPath) setWorkspaceSummary(null);
-  }, [rootPath]);
+  }, [rootPath, workspaceSummary]);
 
   // Initialize checkpoint store
   useEffect(() => {
@@ -310,11 +309,12 @@ export const AgentModeLayout: React.FC = () => {
       };
       addMessageToThread(userMessage);
 
-      if (rootPath && threadId) {
-        await useCheckpointStore
-          .getState()
-          .createCheckpoint(userMessage.id, threadId);
-      }
+      const checkpointReady =
+        rootPath && threadId
+          ? useCheckpointStore
+              .getState()
+              .createCheckpoint(userMessage.id, threadId)
+          : Promise.resolve(true);
 
       const isFirstMessage =
         isNewThread ||
@@ -428,6 +428,9 @@ export const AgentModeLayout: React.FC = () => {
         agent.updateConfig({
           thinkingEnabled,
           autoApproveTools,
+          beforeToolExecution: async () => {
+            await checkpointReady;
+          },
           temperature,
           maxTokens,
           maxToolIterations: maxToolCallsPerRequest,
@@ -509,6 +512,7 @@ export const AgentModeLayout: React.FC = () => {
                     "file_write",
                     "file_delete",
                     "folder_create",
+                    "folder_move",
                     "folder_delete",
                   ].includes(toolCall.function.name)
                 ) {
@@ -838,9 +842,10 @@ export const AgentModeLayout: React.FC = () => {
     },
     [
       currentThreadId,
+      currentThread,
       createThread,
       addMessageToThread,
-      updateMessageInThread,
+      updateThreadUsage,
       setLoading,
       autoApproveTools,
       maxToolCallsPerRequest,
@@ -851,7 +856,10 @@ export const AgentModeLayout: React.FC = () => {
       flushTimelineUpdate,
       refreshFileExplorer,
       getLLMConfig,
-      selectedModel,
+      thinkingEnabled,
+      temperature,
+      maxTokens,
+      threads,
       rootPath,
     ],
   );

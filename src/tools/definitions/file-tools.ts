@@ -128,10 +128,10 @@ export const grepTool: ToolDefinition = {
   type: 'function',
   function: {
     name: 'grep',
-    description: `Search for patterns in files using regex. Built on ripgrep for speed.
+    description: `Search the codebase for exact text or regex patterns using real ripgrep.
 
 Usage:
-- Use for exact symbol/string searches across the codebase
+- Use for exact symbol or string searches across the codebase
 - Supports full regex syntax (e.g., "log.*Error", "function\\s+\\w+")
 - Respects .gitignore by default
 - Output modes: "content" (default), "files_with_matches", "count"
@@ -235,7 +235,8 @@ HOW IT WORKS:
 3. The tool finds the old_string and replaces it with new_string
 
 IMPORTANT RULES:
-- old_string MUST match EXACTLY (including whitespace, indentation, newlines)
+- old_string MUST match the current file content exactly for indentation and surrounding code
+- Line ending differences (LF vs CRLF) are handled automatically
 - old_string must be UNIQUE in the file (appears only once)
 - Include enough context (3-5 lines before/after) to make old_string unique
 - new_string replaces old_string completely
@@ -309,8 +310,9 @@ WHEN TO USE multi_search_replace:
 HOW IT WORKS:
 1. Provide the file path
 2. Provide an array of replacements, each with old_string and new_string
-3. Each replacement is applied in order
-4. All replacements must be unique in the file (unless replace_all is set per replacement)
+3. Each replacement is matched against the original file snapshot
+4. Replacement regions must not overlap each other
+5. All replacements must be unique in the file (unless replace_all is set per replacement)
 
 EXAMPLE:
 {
@@ -323,9 +325,11 @@ EXAMPLE:
 }
 
 IMPORTANT RULES:
-- Each old_string must match EXACTLY (including whitespace, indentation, newlines)
+- Each old_string must match the current file content exactly for indentation and surrounding code
+- Line ending differences (LF vs CRLF) are handled automatically
 - Each old_string should be unique in the file for precise replacements
-- Replacements are applied in the order provided
+- Replacements are matched against the original file snapshot
+- Replacements must not overlap; if two edits are close together, combine them into one larger replacement
 - If any replacement fails, the entire operation is rolled back
 - Include enough context (3-5 lines) in each old_string to make it unique`,
     parameters: {

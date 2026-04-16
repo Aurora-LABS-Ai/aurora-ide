@@ -1,6 +1,6 @@
-use rusqlite::{params, Connection};
 use crate::db::error::{DbError, DbResult};
-use crate::db::models::{SemanticIndex, SemanticIndexStatus, SemanticSettings, SearchMode};
+use crate::db::models::{SearchMode, SemanticIndex, SemanticIndexStatus, SemanticSettings};
+use rusqlite::{params, Connection};
 
 /// Repository for semantic search operations
 pub struct SemanticRepository<'a> {
@@ -23,12 +23,13 @@ impl<'a> SemanticRepository<'a> {
                     total_bytes, status, error_message, last_indexed_at, 
                     excluded_files, excluded_directories, created_at, updated_at
              FROM semantic_indexes
-             ORDER BY updated_at DESC"
+             ORDER BY updated_at DESC",
         )?;
 
         let indexes = stmt.query_map([], |row| {
             let status_str: String = row.get(6)?;
-            let status = status_str.parse::<SemanticIndexStatus>()
+            let status = status_str
+                .parse::<SemanticIndexStatus>()
                 .unwrap_or(SemanticIndexStatus::Pending);
             let excluded_files_json: Option<String> = row.get(9)?;
             let excluded_directories_json: Option<String> = row.get(10)?;
@@ -68,12 +69,13 @@ impl<'a> SemanticRepository<'a> {
                     total_bytes, status, error_message, last_indexed_at,
                     excluded_files, excluded_directories, created_at, updated_at
              FROM semantic_indexes
-             WHERE id = ?1"
+             WHERE id = ?1",
         )?;
 
         let result = stmt.query_row(params![id], |row| {
             let status_str: String = row.get(6)?;
-            let status = status_str.parse::<SemanticIndexStatus>()
+            let status = status_str
+                .parse::<SemanticIndexStatus>()
                 .unwrap_or(SemanticIndexStatus::Pending);
             let excluded_files_json: Option<String> = row.get(9)?;
             let excluded_directories_json: Option<String> = row.get(10)?;
@@ -113,12 +115,13 @@ impl<'a> SemanticRepository<'a> {
                     total_bytes, status, error_message, last_indexed_at,
                     excluded_files, excluded_directories, created_at, updated_at
              FROM semantic_indexes
-             WHERE workspace_path = ?1"
+             WHERE workspace_path = ?1",
         )?;
 
         let result = stmt.query_row(params![workspace_path], |row| {
             let status_str: String = row.get(6)?;
-            let status = status_str.parse::<SemanticIndexStatus>()
+            let status = status_str
+                .parse::<SemanticIndexStatus>()
                 .unwrap_or(SemanticIndexStatus::Pending);
             let excluded_files_json: Option<String> = row.get(9)?;
             let excluded_directories_json: Option<String> = row.get(10)?;
@@ -154,10 +157,10 @@ impl<'a> SemanticRepository<'a> {
     /// Save or update a semantic index
     pub fn save_index(&self, index: &SemanticIndex) -> DbResult<()> {
         let now = chrono::Utc::now().to_rfc3339();
-        let excluded_files_json = serde_json::to_string(&index.excluded_files)
-            .unwrap_or_else(|_| "[]".to_string());
-        let excluded_directories_json = serde_json::to_string(&index.excluded_directories)
-            .unwrap_or_else(|_| "[]".to_string());
+        let excluded_files_json =
+            serde_json::to_string(&index.excluded_files).unwrap_or_else(|_| "[]".to_string());
+        let excluded_directories_json =
+            serde_json::to_string(&index.excluded_directories).unwrap_or_else(|_| "[]".to_string());
 
         self.conn.execute(
             "INSERT INTO semantic_indexes (
@@ -181,7 +184,11 @@ impl<'a> SemanticRepository<'a> {
                 index.last_indexed_at,
                 excluded_files_json,
                 excluded_directories_json,
-                if index.created_at.is_empty() { &now } else { &index.created_at },
+                if index.created_at.is_empty() {
+                    &now
+                } else {
+                    &index.created_at
+                },
                 now,
             ],
         )?;
@@ -190,7 +197,12 @@ impl<'a> SemanticRepository<'a> {
     }
 
     /// Update index status
-    pub fn update_index_status(&self, id: &str, status: SemanticIndexStatus, error_message: Option<&str>) -> DbResult<()> {
+    pub fn update_index_status(
+        &self,
+        id: &str,
+        status: SemanticIndexStatus,
+        error_message: Option<&str>,
+    ) -> DbResult<()> {
         let now = chrono::Utc::now().to_rfc3339();
 
         self.conn.execute(
@@ -202,7 +214,13 @@ impl<'a> SemanticRepository<'a> {
     }
 
     /// Update index statistics
-    pub fn update_index_stats(&self, id: &str, document_count: i64, chunk_count: i64, total_bytes: i64) -> DbResult<()> {
+    pub fn update_index_stats(
+        &self,
+        id: &str,
+        document_count: i64,
+        chunk_count: i64,
+        total_bytes: i64,
+    ) -> DbResult<()> {
         let now = chrono::Utc::now().to_rfc3339();
 
         self.conn.execute(
@@ -218,10 +236,8 @@ impl<'a> SemanticRepository<'a> {
 
     /// Delete a semantic index
     pub fn delete_index(&self, id: &str) -> DbResult<()> {
-        self.conn.execute(
-            "DELETE FROM semantic_indexes WHERE id = ?1",
-            params![id],
-        )?;
+        self.conn
+            .execute("DELETE FROM semantic_indexes WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -233,16 +249,21 @@ impl<'a> SemanticRepository<'a> {
         excluded_directories: &[String],
     ) -> DbResult<()> {
         let now = chrono::Utc::now().to_rfc3339();
-        let excluded_files_json = serde_json::to_string(excluded_files)
-            .unwrap_or_else(|_| "[]".to_string());
-        let excluded_directories_json = serde_json::to_string(excluded_directories)
-            .unwrap_or_else(|_| "[]".to_string());
+        let excluded_files_json =
+            serde_json::to_string(excluded_files).unwrap_or_else(|_| "[]".to_string());
+        let excluded_directories_json =
+            serde_json::to_string(excluded_directories).unwrap_or_else(|_| "[]".to_string());
 
         self.conn.execute(
             "UPDATE semantic_indexes SET 
                 excluded_files = ?2, excluded_directories = ?3, updated_at = ?4
              WHERE workspace_path = ?1",
-            params![workspace_path, excluded_files_json, excluded_directories_json, now],
+            params![
+                workspace_path,
+                excluded_files_json,
+                excluded_directories_json,
+                now
+            ],
         )?;
 
         Ok(())
@@ -259,7 +280,7 @@ impl<'a> SemanticRepository<'a> {
                     ignored_patterns, ignored_directories, excluded_files, excluded_directories,
                     max_file_size, search_mode, lexical_weight, semantic_weight, updated_at
              FROM semantic_settings
-             WHERE id = 1"
+             WHERE id = 1",
         )?;
 
         let result = stmt.query_row([], |row| {
@@ -294,7 +315,8 @@ impl<'a> SemanticRepository<'a> {
             let excluded_directories: Vec<String> = excluded_directories_json
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_default();
-            let search_mode = search_mode_str.parse::<SearchMode>()
+            let search_mode = search_mode_str
+                .parse::<SearchMode>()
                 .unwrap_or(SearchMode::Hybrid);
 
             Ok(SemanticSettings {
@@ -324,12 +346,12 @@ impl<'a> SemanticRepository<'a> {
     /// Save semantic settings
     pub fn save_settings(&self, settings: &SemanticSettings) -> DbResult<()> {
         let now = chrono::Utc::now().to_rfc3339();
-        let ignored_patterns_json = serde_json::to_string(&settings.ignored_patterns)
-            .unwrap_or_else(|_| "[]".to_string());
+        let ignored_patterns_json =
+            serde_json::to_string(&settings.ignored_patterns).unwrap_or_else(|_| "[]".to_string());
         let ignored_directories_json = serde_json::to_string(&settings.ignored_directories)
             .unwrap_or_else(|_| "[]".to_string());
-        let excluded_files_json = serde_json::to_string(&settings.excluded_files)
-            .unwrap_or_else(|_| "[]".to_string());
+        let excluded_files_json =
+            serde_json::to_string(&settings.excluded_files).unwrap_or_else(|_| "[]".to_string());
         let excluded_directories_json = serde_json::to_string(&settings.excluded_directories)
             .unwrap_or_else(|_| "[]".to_string());
 
@@ -375,4 +397,3 @@ impl<'a> SemanticRepository<'a> {
         Ok(())
     }
 }
-

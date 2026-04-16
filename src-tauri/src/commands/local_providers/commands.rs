@@ -1,7 +1,6 @@
 use super::detect::{detect_local_providers, probe_custom_url};
 use super::ollama::{
-    cancel_pull, delete_model, get_running_models, load_model, pull_model, show_model,
-    unload_model,
+    cancel_pull, delete_model, get_running_models, load_model, pull_model, show_model, unload_model,
 };
 use super::types::{DetectionResult, LocalProvider, OllamaModelInfo, OllamaRunningModel};
 

@@ -1,5 +1,5 @@
 //! MCP Configuration
-//! 
+//!
 //! Handles loading/saving MCP server configurations to mcp.json
 
 use super::types::McpServerConfig;
@@ -61,7 +61,7 @@ impl McpConfig {
     /// Load MCP config from file
     pub fn load() -> Result<Self, String> {
         let path = Self::config_path().ok_or("Could not determine home directory")?;
-        
+
         if !path.exists() {
             // Return empty config if file doesn't exist
             return Ok(Self::default());
@@ -69,15 +69,14 @@ impl McpConfig {
 
         let content = std::fs::read_to_string(&path)
             .map_err(|e| format!("Failed to read MCP config: {}", e))?;
-        
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse MCP config: {}", e))
+
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse MCP config: {}", e))
     }
 
     /// Save MCP config to file
     pub fn save(&self) -> Result<(), String> {
         let path = Self::config_path().ok_or("Could not determine home directory")?;
-        
+
         // Ensure .aurora directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -86,9 +85,8 @@ impl McpConfig {
 
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize MCP config: {}", e))?;
-        
-        std::fs::write(&path, content)
-            .map_err(|e| format!("Failed to write MCP config: {}", e))
+
+        std::fs::write(&path, content).map_err(|e| format!("Failed to write MCP config: {}", e))
     }
 
     /// Convert to list of McpServerConfig
@@ -189,7 +187,10 @@ mod tests {
             McpServerEntry {
                 name: Some("Test Server Display Name".to_string()),
                 command: Some("npx".to_string()),
-                args: vec!["-y".to_string(), "@modelcontextprotocol/server-git".to_string()],
+                args: vec![
+                    "-y".to_string(),
+                    "@modelcontextprotocol/server-git".to_string(),
+                ],
                 env: HashMap::new(),
                 url: None,
                 headers: HashMap::new(),
@@ -201,9 +202,8 @@ mod tests {
 
         let json = serde_json::to_string_pretty(&config).unwrap();
         let parsed: McpConfig = serde_json::from_str(&json).unwrap();
-        
+
         assert_eq!(parsed.mcp_servers.len(), 1);
         assert!(parsed.mcp_servers.contains_key("test-server"));
     }
 }
-

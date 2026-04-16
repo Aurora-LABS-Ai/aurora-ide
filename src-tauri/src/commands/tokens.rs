@@ -99,4 +99,3 @@ fn parse_encoding(s: &str) -> EncodingType {
         _ => EncodingType::Default,
     }
 }
-

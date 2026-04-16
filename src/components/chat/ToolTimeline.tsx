@@ -776,10 +776,10 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(
       "multi_search_replace",
     ].includes(tool.name);
     const isFolderTool = [
-      "list_workspace",
-      "list_directory",
-      "create_directory",
-      "delete_directory",
+      "workspace_tree",
+      "folder_create",
+      "folder_move",
+      "folder_delete",
     ].includes(tool.name);
     const [isOpen, setIsOpen] = useState(false);
     const [showApprovalDetails, setShowApprovalDetails] = useState(false);

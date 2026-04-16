@@ -11,7 +11,7 @@ import { useEditorStore } from "../store/useEditorStore";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 
 export const useInternalDrag = () => {
-  const { rootPath, refreshDirectory, expandFolder } = useWorkspaceStore();
+  const { rootPath, expandFolder } = useWorkspaceStore();
   const { openFile } = useEditorStore();
 
   useEffect(() => {
@@ -60,7 +60,7 @@ export const useInternalDrag = () => {
       state.setDropTarget(null, null);
     };
 
-    const handleMouseUp = async (_e: MouseEvent) => {
+    const handleMouseUp = async () => {
       const state = useDragStore.getState();
 
       // If there's a pending drag that never started, just cancel it
@@ -95,7 +95,6 @@ export const useInternalDrag = () => {
           if (newPath !== draggedPath) {
             await renamePath(draggedPath, newPath);
             expandFolder(dropTargetPath);
-            await refreshDirectory();
           }
         } else if (dropTargetType === 'root' && dropTargetPath) {
           // Move to root
@@ -104,7 +103,6 @@ export const useInternalDrag = () => {
             const filename = getFilename(draggedPath);
             const newPath = joinPath(dropTargetPath, filename);
             await renamePath(draggedPath, newPath);
-            await refreshDirectory();
           }
         }
       } catch (err) {
@@ -127,5 +125,5 @@ export const useInternalDrag = () => {
       document.removeEventListener('mouseup', handleMouseUp);
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [rootPath, refreshDirectory, expandFolder, openFile]);
+  }, [rootPath, expandFolder, openFile]);
 };

@@ -4,10 +4,10 @@
 //! character-based estimation. Supports multiple encoding schemes
 //! for different model families.
 
-use std::sync::Arc;
-use parking_lot::RwLock;
 use lazy_static::lazy_static;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tiktoken_rs::{cl100k_base, o200k_base, CoreBPE};
 
 /// Encoding type for different model families
@@ -147,11 +147,7 @@ impl TokenService {
 
     /// Estimate tokens for a chat message (includes overhead for message format)
     /// This matches OpenAI's token counting for chat completions
-    pub fn count_chat_tokens(
-        role: &str,
-        content: &str,
-        model: &str,
-    ) -> Result<TokenCount, String> {
+    pub fn count_chat_tokens(role: &str, content: &str, model: &str) -> Result<TokenCount, String> {
         let encoding = Self::detect_encoding(model);
         let tokenizer = Self::get_tokenizer(encoding)?;
 
@@ -267,10 +263,7 @@ mod tests {
 
     #[test]
     fn test_detect_encoding() {
-        assert_eq!(
-            TokenService::detect_encoding("gpt-4o"),
-            EncodingType::O200k
-        );
+        assert_eq!(TokenService::detect_encoding("gpt-4o"), EncodingType::O200k);
         assert_eq!(
             TokenService::detect_encoding("gpt-4-turbo"),
             EncodingType::Cl100k
@@ -290,4 +283,3 @@ mod tests {
         assert!(estimate <= text.len());
     }
 }
-

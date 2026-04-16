@@ -131,7 +131,10 @@ pub async fn pull_model(
     if !response.status().is_success() {
         cleanup_pull(&request_id);
         let status = response.status();
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
         return Err(format!("Pull failed ({}): {}", status, error_text));
     }
 

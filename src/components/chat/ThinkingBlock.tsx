@@ -20,7 +20,7 @@
  * See: src/services/theme-service.ts for theme utilities
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ChevronRight, Loader2, BrainCircuit } from 'lucide-react';
 import clsx from 'clsx';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -31,16 +31,17 @@ interface ThinkingBlockProps {
 }
 
 export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ content, isGenerating }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isManuallyExpanded, setIsManuallyExpanded] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const isExpanded = Boolean(isGenerating) || isManuallyExpanded;
 
-  // Auto-expand when generating starts, auto-collapse when done
   useEffect(() => {
-    if (isGenerating) {
-      setIsExpanded(true);
-    } else {
-      setIsExpanded(false);
+    if (!isExpanded || !isGenerating || !contentRef.current) {
+      return;
     }
-  }, [isGenerating]);
+
+    contentRef.current.scrollTop = contentRef.current.scrollHeight;
+  }, [content, isExpanded, isGenerating]);
 
   return (
     <div
@@ -50,7 +51,7 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ content, isGenerat
       }}
     >
       <button
-        onClick={() => setIsExpanded(!isExpanded)}
+        onClick={() => setIsManuallyExpanded(!isExpanded)}
         aria-expanded={isExpanded}
         className="flex items-center gap-2 px-2.5 py-1.5 text-xs font-medium w-full outline-none text-left transition-colors hover:bg-sidebar-item-hover/30"
       >
@@ -82,10 +83,15 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ content, isGenerat
             exit={{ height: 0, opacity: 0 }}
             className="overflow-hidden"
           >
-            <div className="border-t border-border/60 bg-input/25 px-3 py-2">
-              <p className="font-mono text-[10px] text-text-secondary leading-relaxed whitespace-pre-wrap break-words">
-                {content || <span className="italic opacity-50">Initializing...</span>}
-              </p>
+            <div className="border-t border-border/60 bg-input/25">
+              <div
+                ref={contentRef}
+                className="max-h-[260px] overflow-y-auto overflow-x-hidden px-3 py-2 scrollbar-thin scrollbar-thumb-scrollbar scrollbar-track-transparent"
+              >
+                <pre className="font-mono text-[10px] text-text-secondary leading-relaxed whitespace-pre-wrap break-words">
+                  {content || <span className="italic opacity-50">Initializing...</span>}
+                </pre>
+              </div>
             </div>
           </motion.div>
         )}

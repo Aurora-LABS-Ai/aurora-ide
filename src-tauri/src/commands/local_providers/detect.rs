@@ -16,13 +16,24 @@ async fn probe_ollama_at(client: &Client, host: &str) -> Option<LocalProvider> {
         .into_iter()
         .map(|model| LocalModel {
             id: model.name.clone(),
-            name: model.name.split(':').next().unwrap_or(&model.name).to_string(),
+            name: model
+                .name
+                .split(':')
+                .next()
+                .unwrap_or(&model.name)
+                .to_string(),
             size: Some(format_bytes(model.size)),
             size_bytes: Some(model.size),
-            parameter_size: model.details.as_ref().and_then(|d| d.parameter_size.clone()),
+            parameter_size: model
+                .details
+                .as_ref()
+                .and_then(|d| d.parameter_size.clone()),
             family: model.details.as_ref().and_then(|d| d.family.clone()),
             families: model.details.as_ref().and_then(|d| d.families.clone()),
-            quantization: model.details.as_ref().and_then(|d| d.quantization_level.clone()),
+            quantization: model
+                .details
+                .as_ref()
+                .and_then(|d| d.quantization_level.clone()),
             format: model.details.as_ref().and_then(|d| d.format.clone()),
             max_context_length: None,
             trained_for_tool_use: None,
@@ -57,10 +68,14 @@ async fn probe_lmstudio_at(client: &Client, host: &str) -> Option<LocalProvider>
         .into_iter()
         .map(|model| LocalModel {
             id: model.id.clone(),
-            name: model
-                .display_name
-                .clone()
-                .unwrap_or_else(|| model.id.split('/').next_back().unwrap_or(&model.id).to_string()),
+            name: model.display_name.clone().unwrap_or_else(|| {
+                model
+                    .id
+                    .split('/')
+                    .next_back()
+                    .unwrap_or(&model.id)
+                    .to_string()
+            }),
             size: model.size_bytes.map(format_bytes),
             size_bytes: model.size_bytes,
             parameter_size: model.params_string,
@@ -115,7 +130,8 @@ pub async fn detect_local_providers(custom_url: Option<String>) -> DetectionResu
     if let Some(url) = custom_url {
         if let Some(provider) = probe_custom_url(&url).await {
             let already_present = providers.iter().any(|existing| {
-                trim_local_base(&existing.base_url).eq_ignore_ascii_case(&trim_local_base(&provider.base_url))
+                trim_local_base(&existing.base_url)
+                    .eq_ignore_ascii_case(&trim_local_base(&provider.base_url))
             });
             if !already_present {
                 providers.push(provider);

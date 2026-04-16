@@ -195,6 +195,15 @@ const createDefaultProviders = (presets: ProviderCatalogPreset[]): LLMProvider[]
   return presets.map((preset) => presetToProvider(preset));
 };
 
+const mergeProviderModels = (
+  presetModels?: string[],
+  dbModels?: string[],
+): string[] | undefined => {
+  const merged = [...(presetModels || []), ...(dbModels || [])].filter(Boolean);
+  if (merged.length === 0) return undefined;
+  return Array.from(new Set(merged));
+};
+
 const getProviderModelList = (provider: LLMProvider): string[] => {
   const models = provider.customModels?.length ? provider.customModels : [provider.model];
   return Array.from(new Set(models.filter(Boolean)));
@@ -357,6 +366,7 @@ const DEFAULT_TOOL_APPROVAL_SETTINGS: Record<string, 'auto' | 'always_ask' | 'de
   file_delete: 'always_ask',
   file_patch: 'always_ask',
   folder_create: 'always_ask',
+  folder_move: 'always_ask',
   folder_delete: 'always_ask',
   // Read operations are generally safe
   file_read: 'auto',
@@ -464,10 +474,17 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
               ...presetProvider,
               ...dbProvider,
               isCustom: false,
+              providerType: presetProvider.providerType,
+              supportsThinking: presetProvider.supportsThinking,
+              supportsToolStream: presetProvider.supportsToolStream ?? dbProvider.supportsToolStream,
               modelAliases: {
                 ...(presetProvider.modelAliases || {}),
                 ...(dbProvider.modelAliases || {}),
               },
+              customModels: mergeProviderModels(
+                presetProvider.customModels,
+                dbProvider.customModels,
+              ),
               nickname: dbProvider.nickname || presetProvider.nickname,
             };
           }

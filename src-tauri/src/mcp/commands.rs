@@ -1,5 +1,5 @@
 //! MCP Tauri Commands
-//! 
+//!
 //! Exposes MCP functionality to the frontend via Tauri commands
 
 use super::manager::MCP_MANAGER;
@@ -20,7 +20,8 @@ pub async fn mcp_get_servers() -> Result<Vec<McpServerState>, String> {
 /// Get a specific MCP server
 #[tauri::command]
 pub async fn mcp_get_server(id: String) -> Result<McpServerState, String> {
-    MCP_MANAGER.get_server(&id)
+    MCP_MANAGER
+        .get_server(&id)
         .ok_or_else(|| format!("Server '{}' not found", id))
 }
 
@@ -79,4 +80,3 @@ pub async fn mcp_get_config_path() -> Result<String, String> {
         .map(|p| p.to_string_lossy().to_string())
         .ok_or_else(|| "Could not determine config path".to_string())
 }
-

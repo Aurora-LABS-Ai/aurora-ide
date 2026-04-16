@@ -80,10 +80,8 @@ impl<'a> EditorRepository<'a> {
     /// Delete editor state for a file
     #[allow(dead_code)]
     pub fn delete(&self, file_path: &str) -> DbResult<()> {
-        self.conn.execute(
-            "DELETE FROM editor_state WHERE file_path = ?1",
-            [file_path],
-        )?;
+        self.conn
+            .execute("DELETE FROM editor_state WHERE file_path = ?1", [file_path])?;
 
         Ok(())
     }
@@ -122,6 +120,8 @@ impl<'a> EditorRepository<'a> {
             })
         })?;
 
-        states.collect::<Result<Vec<_>, _>>().map_err(DbError::Sqlite)
+        states
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DbError::Sqlite)
     }
 }

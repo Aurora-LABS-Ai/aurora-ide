@@ -9,7 +9,7 @@ import { useEditorStore } from "../store/useEditorStore";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 
 export const useTauriDragDrop = () => {
-  const { rootPath, refreshDirectory, expandFolder } = useWorkspaceStore();
+  const { rootPath, expandFolder } = useWorkspaceStore();
   const { openFile } = useEditorStore();
   const dropTargetRef = useRef<{ type: 'folder' | 'editor' | 'root'; path: string } | null>(null);
 
@@ -93,7 +93,6 @@ export const useTauriDragDrop = () => {
               if (target.type === 'folder') {
                 expandFolder(target.path);
               }
-              await refreshDirectory();
             }
 
             dropTargetRef.current = null;
@@ -117,5 +116,5 @@ export const useTauriDragDrop = () => {
     return () => {
       cleanup?.();
     };
-  }, [rootPath, refreshDirectory, expandFolder, openFile]);
+  }, [rootPath, expandFolder, openFile]);
 };

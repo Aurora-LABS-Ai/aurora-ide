@@ -1,11 +1,10 @@
 /**
  * OpenAI-Native Provider using raw HTTP streaming
- * 
+ *
  * This provides direct integration with OpenAI-compatible APIs (LM Studio, Ollama, etc.)
  * using raw HTTP streaming to support extended fields like reasoning_content that
  * aren't exposed by the async-openai crate.
  */
-
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
@@ -184,7 +183,7 @@ fn build_request_body(request: &OpenAINativeRequest) -> Value {
 /// Parse an SSE line and return the JSON data if valid
 fn parse_sse_line(line: &str) -> Option<Value> {
     let line = line.trim();
-    
+
     // Skip empty lines and comments
     if line.is_empty() || line.starts_with(':') {
         return None;
@@ -219,7 +218,10 @@ pub async fn openai_native_stream(
     request: OpenAINativeRequest,
 ) -> Result<(), String> {
     // Build URL
-    let url = format!("{}/chat/completions", request.base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/chat/completions",
+        request.base_url.trim_end_matches('/')
+    );
 
     // Build headers for SSE streaming
     let mut headers = HeaderMap::new();
@@ -239,7 +241,7 @@ pub async fn openai_native_stream(
         reqwest::header::CONNECTION,
         HeaderValue::from_static("keep-alive"),
     );
-    
+
     if !request.api_key.is_empty() {
         let auth_value = format!("Bearer {}", request.api_key);
         headers.insert(
@@ -259,7 +261,7 @@ pub async fn openai_native_stream(
         .no_deflate()
         .build()
         .map_err(|e| e.to_string())?;
-    
+
     let response = client
         .post(&url)
         .headers(headers)
@@ -311,7 +313,11 @@ pub async fn openai_native_stream(
         http_chunk_count += 1;
         // Log first few HTTP chunks to debug buffering
         if http_chunk_count <= 5 {
-            println!("[openai_native] HTTP chunk {}: {} bytes", http_chunk_count, chunk.len());
+            println!(
+                "[openai_native] HTTP chunk {}: {} bytes",
+                http_chunk_count,
+                chunk.len()
+            );
         }
 
         // Convert bytes to string and add to buffer
@@ -326,7 +332,8 @@ pub async fn openai_native_stream(
             // Parse SSE line
             if let Some(json_data) = parse_sse_line(&line) {
                 // Try to parse as streaming response
-                if let Ok(response) = serde_json::from_value::<StreamingResponse>(json_data.clone()) {
+                if let Ok(response) = serde_json::from_value::<StreamingResponse>(json_data.clone())
+                {
                     for choice in &response.choices {
                         let delta = &choice.delta;
 
@@ -340,7 +347,9 @@ pub async fn openai_native_stream(
                         // Extract reasoning - support both field names:
                         // - `reasoning` (LM Studio / local models like gpt-oss-20b)
                         // - `reasoning_content` (DeepSeek, GLM)
-                        let reasoning_content = delta.reasoning.clone()
+                        let reasoning_content = delta
+                            .reasoning
+                            .clone()
                             .or_else(|| delta.reasoning_content.clone());
                         if let Some(ref r) = reasoning_content {
                             total_reasoning.push_str(r);
@@ -354,9 +363,10 @@ pub async fn openai_native_stream(
                                         let index = tc.index;
 
                                         // Initialize or update tool call data
-                                        let entry = tool_calls_data
-                                            .entry(index)
-                                            .or_insert_with(|| (String::new(), String::new(), String::new()));
+                                        let entry =
+                                            tool_calls_data.entry(index).or_insert_with(|| {
+                                                (String::new(), String::new(), String::new())
+                                            });
 
                                         if let Some(id) = &tc.id {
                                             entry.0 = id.clone();
@@ -373,8 +383,14 @@ pub async fn openai_native_stream(
                                         StreamToolCall {
                                             index,
                                             id: tc.id.clone(),
-                                            function_name: tc.function.as_ref().and_then(|f| f.name.clone()),
-                                            function_arguments: tc.function.as_ref().and_then(|f| f.arguments.clone()),
+                                            function_name: tc
+                                                .function
+                                                .as_ref()
+                                                .and_then(|f| f.name.clone()),
+                                            function_arguments: tc
+                                                .function
+                                                .as_ref()
+                                                .and_then(|f| f.arguments.clone()),
                                         }
                                     })
                                     .collect()
@@ -399,7 +415,8 @@ pub async fn openai_native_stream(
                             completion_tokens: usage.completion_tokens,
                             total_tokens: usage.total_tokens,
                         };
-                        let _ = app.emit(&format!("openai-native-usage-{}", request_id), usage_info);
+                        let _ =
+                            app.emit(&format!("openai-native-usage-{}", request_id), usage_info);
                     }
                 }
             }
@@ -412,11 +429,13 @@ pub async fn openai_native_stream(
             if let Ok(response) = serde_json::from_value::<StreamingResponse>(json_data) {
                 for choice in &response.choices {
                     let delta = &choice.delta;
-                    
+
                     if let Some(ref c) = delta.content {
                         total_content.push_str(c);
                         // Support both reasoning field names
-                        let reasoning = delta.reasoning.clone()
+                        let reasoning = delta
+                            .reasoning
+                            .clone()
                             .or_else(|| delta.reasoning_content.clone());
                         let chunk = NativeStreamChunk {
                             content: Some(c.clone()),
@@ -473,12 +492,15 @@ pub async fn openai_native_stream(
 #[tauri::command]
 pub async fn openai_native_chat(request: OpenAINativeRequest) -> Result<Value, String> {
     // Build URL
-    let url = format!("{}/chat/completions", request.base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/chat/completions",
+        request.base_url.trim_end_matches('/')
+    );
 
     // Build headers
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    
+
     if !request.api_key.is_empty() {
         let auth_value = format!("Bearer {}", request.api_key);
         headers.insert(

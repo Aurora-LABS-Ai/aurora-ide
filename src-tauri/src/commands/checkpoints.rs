@@ -66,6 +66,31 @@ pub async fn checkpoint_init(
 /// Create a checkpoint for the current workspace state
 /// Called when user sends a message
 #[tauri::command]
+pub async fn checkpoint_ensure_initialized(
+    workspace_path: String,
+    checkpoint_state: State<'_, CheckpointState>,
+) -> Result<(), String> {
+    let service = {
+        let guard = checkpoint_state
+            .service
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))?;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or("Checkpoint service not initialized")?
+    };
+
+    let workspace_path_clone = workspace_path.clone();
+    tokio::task::spawn_blocking(move || service.ensure_initialized(&workspace_path_clone))
+        .await
+        .map_err(|e| format!("Checkpoint initialization task failed: {}", e))?
+        .map_err(|e| format!("Failed to initialize checkpoint workspace: {}", e))
+}
+
+/// Create a checkpoint for the current workspace state
+/// Called when user sends a message
+#[tauri::command]
 pub async fn checkpoint_create(
     workspace_path: String,
     thread_id: String,

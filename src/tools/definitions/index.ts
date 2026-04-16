@@ -2,9 +2,9 @@
  * Tool Definitions Index
  * Central export for all tool definitions
  * 
- * TOOL COUNT: 18 tools total
+ * TOOL COUNT: 19 tools total
  * - File: 8 (create, read, write, search_replace, multi_search_replace, delete, grep, multi_file_read)
- * - Workspace: 3 (tree, folder_create, folder_delete)
+ * - Workspace: 4 (tree, folder_create, folder_move, folder_delete)
  * - Shell: 4 (execute, spawn, kill, list_processes)
  * - Editor: 2 (open_file, read_lints)
  * - Search: 1 (aurora_search)

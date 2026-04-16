@@ -8,16 +8,14 @@ mod schema;
 pub use connection::DbConnection;
 pub use error::DbResult;
 pub use models::{
-    EditorState, ExplorerState, WorkspaceState,
-    LLMProvider, ToolSetting, AppSettings,
-    ThreadState, Message, TokenUsage, ContextUsage, CustomTheme,
-    SemanticIndex, SemanticIndexStatus, SemanticSettings, SearchMode,
-    IndexProgress, SemanticSearchResult,
+    AppSettings, ContextUsage, CustomTheme, EditorState, ExplorerState, IndexProgress, LLMProvider,
+    Message, SearchMode, SemanticIndex, SemanticIndexStatus, SemanticSearchResult,
+    SemanticSettings, ThreadState, TokenUsage, ToolSetting, WorkspaceState,
 };
 // Note: ToolCall is available via crate::db::models::ToolCall or crate::context::types::ToolCall
 pub use repositories::{
-    CheckpointRepository, EditorRepository, ExplorerRepository, WorkspaceRepository,
-    SettingsRepository, ThreadsRepository, ThemeRepository, SemanticRepository,
+    CheckpointRepository, EditorRepository, ExplorerRepository, SemanticRepository,
+    SettingsRepository, ThemeRepository, ThreadsRepository, WorkspaceRepository,
 };
 
 use tauri::AppHandle;

@@ -133,7 +133,8 @@ pub async fn git_is_repository(workspace_path: String) -> Result<bool, String> {
 #[tauri::command]
 pub async fn git_get_status(workspace_path: String) -> Result<GitStatus, String> {
     // Get porcelain status
-    let status_output = run_git_command(&workspace_path, &["status", "--porcelain=v1", "-uall"]).await?;
+    let status_output =
+        run_git_command(&workspace_path, &["status", "--porcelain=v1", "-uall"]).await?;
 
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
@@ -169,7 +170,11 @@ pub async fn git_get_status(workspace_path: String) -> Result<GitStatus, String>
         }
 
         // Conflicted files (both modified)
-        if index_status == "U" || worktree_status == "U" || (index_status == "A" && worktree_status == "A") || (index_status == "D" && worktree_status == "D") {
+        if index_status == "U"
+            || worktree_status == "U"
+            || (index_status == "A" && worktree_status == "A")
+            || (index_status == "D" && worktree_status == "D")
+        {
             conflicted.push(GitFileChange {
                 path: file_path,
                 old_path,
@@ -234,14 +239,19 @@ async fn get_ahead_behind(workspace_path: &str) -> Result<(i32, i32), String> {
 #[tauri::command]
 pub async fn git_get_branches(workspace_path: String) -> Result<BranchResult, String> {
     // Get current branch
-    let current = run_git_command(&workspace_path, &["rev-parse", "--abbrev-ref", "HEAD"]).await?
+    let current = run_git_command(&workspace_path, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .await?
         .trim()
         .to_string();
 
     // Get all branches with details
     let output = run_git_command(
         &workspace_path,
-        &["branch", "-a", "--format=%(refname:short)|%(upstream:short)|%(objectname:short)"],
+        &[
+            "branch",
+            "-a",
+            "--format=%(refname:short)|%(upstream:short)|%(objectname:short)",
+        ],
     )
     .await?;
 
@@ -258,7 +268,11 @@ pub async fn git_get_branches(workspace_path: String) -> Result<BranchResult, St
         let is_remote = name.starts_with("remotes/") || name.starts_with("origin/");
         let upstream = parts.get(1).and_then(|s| {
             let s = s.trim();
-            if s.is_empty() { None } else { Some(s.to_string()) }
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
         });
         let last_commit = parts.get(2).map(|s| s.trim().to_string());
 
@@ -280,7 +294,11 @@ pub async fn git_get_commits(workspace_path: String, limit: u32) -> Result<Vec<G
     let format = "%H|%h|%s|%an|%ae|%ci|%D";
     let output = run_git_command(
         &workspace_path,
-        &["log", &format!("--format={}", format), &format!("-{}", limit)],
+        &[
+            "log",
+            &format!("--format={}", format),
+            &format!("-{}", limit),
+        ],
     )
     .await?;
 
@@ -380,23 +398,23 @@ pub async fn git_commit(workspace_path: String, message: String) -> Result<Strin
 pub async fn git_checkout(workspace_path: String, branch: String) -> Result<(), String> {
     // First, try normal checkout
     let result = run_git_command(&workspace_path, &["checkout", &branch]).await;
-    
+
     if result.is_ok() {
         return Ok(());
     }
-    
+
     // If normal checkout failed, try to create a tracking branch from remote
     // This handles the case where we're checking out a remote branch for the first time
     let track_result = run_git_command(
-        &workspace_path, 
-        &["checkout", "-b", &branch, &format!("origin/{}", branch)]
+        &workspace_path,
+        &["checkout", "-b", &branch, &format!("origin/{}", branch)],
     )
     .await;
-    
+
     if track_result.is_ok() {
         return Ok(());
     }
-    
+
     // Return the original error if both attempts failed
     result?;
     Ok(())
@@ -425,7 +443,11 @@ pub async fn git_push(workspace_path: String) -> Result<(), String> {
 
 /// Get diff for a file
 #[tauri::command]
-pub async fn git_get_diff(workspace_path: String, file_path: String, staged: bool) -> Result<String, String> {
+pub async fn git_get_diff(
+    workspace_path: String,
+    file_path: String,
+    staged: bool,
+) -> Result<String, String> {
     if staged {
         run_git_command(&workspace_path, &["diff", "--cached", &file_path]).await
     } else {
@@ -469,7 +491,9 @@ pub async fn git_get_file_versions(
             Ok(content) => content,
             Err(_) => {
                 if working_file_path.exists() {
-                    read_file_lossy(&working_file_path).await.unwrap_or_default()
+                    read_file_lossy(&working_file_path)
+                        .await
+                        .unwrap_or_default()
                 } else {
                     String::new()
                 }
@@ -498,7 +522,9 @@ pub async fn git_get_file_versions(
     };
 
     let modified_content = if working_file_path.exists() {
-        read_file_lossy(&working_file_path).await.unwrap_or_default()
+        read_file_lossy(&working_file_path)
+            .await
+            .unwrap_or_default()
     } else {
         String::new()
     };

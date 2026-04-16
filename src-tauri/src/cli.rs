@@ -1,5 +1,5 @@
 //! CLI module for `aurora .` command support
-//! 
+//!
 //! This module provides VS Code-like CLI functionality:
 //! - `aurora .` - Open Aurora in current directory
 //! - `aurora /path/to/folder` - Open Aurora in specified directory
@@ -8,13 +8,13 @@
 //! - `aurora --version` - Show version
 
 use clap::Parser;
-use std::path::{PathBuf, Path, Component};
+use std::path::{Component, Path, PathBuf};
 
 /// Normalize a path by resolving `.` and `..` components without using canonicalize()
 /// This avoids the \\?\ prefix that Windows canonicalize() adds
 fn normalize_path(path: &Path) -> PathBuf {
     let mut components = Vec::new();
-    
+
     for component in path.components() {
         match component {
             Component::CurDir => {
@@ -31,18 +31,18 @@ fn normalize_path(path: &Path) -> PathBuf {
             }
         }
     }
-    
+
     // Rebuild the path from components
     let mut result = PathBuf::new();
     for component in components {
         result.push(component.as_os_str());
     }
-    
+
     // Handle empty result (shouldn't happen but be safe)
     if result.as_os_str().is_empty() {
         return path.to_path_buf();
     }
-    
+
     result
 }
 
@@ -106,7 +106,7 @@ impl CliArgs {
                     .map(|cwd| cwd.join(p))
                     .unwrap_or_else(|_| p.clone())
             };
-            
+
             // Normalize the path to resolve ".", ".." components
             // NOTE: We avoid canonicalize() on Windows because it adds \\?\ prefix
             let normalized = normalize_path(&absolute);
@@ -116,22 +116,18 @@ impl CliArgs {
 
     /// Check if this is a folder path
     pub fn is_folder(&self) -> bool {
-        self.resolve_path()
-            .map(|p| p.is_dir())
-            .unwrap_or(false)
+        self.resolve_path().map(|p| p.is_dir()).unwrap_or(false)
     }
 
     /// Check if this is a file path
     pub fn is_file(&self) -> bool {
-        self.resolve_path()
-            .map(|p| p.is_file())
-            .unwrap_or(false)
+        self.resolve_path().map(|p| p.is_file()).unwrap_or(false)
     }
 
     /// Get the workspace root (folder to open)
     pub fn get_workspace_root(&self) -> Option<PathBuf> {
         let resolved = self.resolve_path()?;
-        
+
         if resolved.is_dir() {
             Some(resolved)
         } else if resolved.is_file() {
@@ -140,7 +136,8 @@ impl CliArgs {
         } else {
             // Path doesn't exist yet - could be a new file
             // Use parent directory or current directory
-            resolved.parent()
+            resolved
+                .parent()
                 .filter(|p| p.exists())
                 .map(|p| p.to_path_buf())
                 .or_else(|| std::env::current_dir().ok())
@@ -150,7 +147,7 @@ impl CliArgs {
     /// Get the file to open (if path is a file)
     pub fn get_file_to_open(&self) -> Option<PathBuf> {
         let resolved = self.resolve_path()?;
-        
+
         if resolved.is_file() {
             Some(resolved)
         } else {
@@ -164,28 +161,30 @@ impl CliArgs {
 pub struct CliOpenRequest {
     /// Workspace root folder to open
     pub workspace_path: Option<String>,
-    
+
     /// Specific file to open (and focus)
     pub file_path: Option<String>,
-    
+
     /// Line number to go to (1-indexed)
     pub goto_line: Option<u32>,
-    
+
     /// Whether this should open in a new window
     pub new_window: bool,
-    
+
     /// Files for diff view
     pub diff_files: Option<(String, String)>,
 }
 
 impl From<&CliArgs> for CliOpenRequest {
     fn from(args: &CliArgs) -> Self {
-        let workspace_path = args.get_workspace_root()
+        let workspace_path = args
+            .get_workspace_root()
             .and_then(|p| p.to_str().map(String::from));
-        
-        let file_path = args.get_file_to_open()
+
+        let file_path = args
+            .get_file_to_open()
             .and_then(|p| p.to_str().map(String::from));
-        
+
         let diff_files = args.diff.as_ref().and_then(|files| {
             if files.len() == 2 {
                 let f1 = files[0].to_str()?.to_string();
@@ -211,7 +210,9 @@ pub mod install {
     use std::io::ErrorKind;
     use std::path::PathBuf;
     use windows_sys::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+    };
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
     use winreg::RegKey;
 
@@ -292,16 +293,23 @@ pub mod install {
         Ok(())
     }
 
-    fn set_registry_value(key_path: &str, value_name: Option<&str>, value: &str) -> Result<(), String> {
+    fn set_registry_value(
+        key_path: &str,
+        value_name: Option<&str>,
+        value: &str,
+    ) -> Result<(), String> {
         let hkcu = get_hkcu();
         let (key, _) = hkcu
             .create_subkey(key_path)
             .map_err(|error| format!("Failed to open registry key {}: {}", key_path, error))?;
 
         match value_name {
-            Some(name) => key
-                .set_value(name, &value)
-                .map_err(|error| format!("Failed to write registry value {}\\{}: {}", key_path, name, error)),
+            Some(name) => key.set_value(name, &value).map_err(|error| {
+                format!(
+                    "Failed to write registry value {}\\{}: {}",
+                    key_path, name, error
+                )
+            }),
             None => key
                 .set_value("", &value)
                 .map_err(|error| format!("Failed to write registry value {}: {}", key_path, error)),
@@ -313,7 +321,10 @@ pub mod install {
         match hkcu.open_subkey_with_flags(key_path, KEY_READ) {
             Ok(_) => Ok(true),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(format!("Failed to query registry key {}: {}", key_path, error)),
+            Err(error) => Err(format!(
+                "Failed to query registry key {}: {}",
+                key_path, error
+            )),
         }
     }
 
@@ -322,7 +333,10 @@ pub mod install {
         match hkcu.delete_subkey_all(key_path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("Failed to delete registry key {}: {}", key_path, error)),
+            Err(error) => Err(format!(
+                "Failed to delete registry key {}: {}",
+                key_path, error
+            )),
         }
     }
 
@@ -366,7 +380,7 @@ pub mod install {
     /// Install the CLI command to system PATH
     pub fn install_cli() -> Result<(), String> {
         let install_dir = get_cli_install_path();
-        
+
         // Create the directory
         std::fs::create_dir_all(&install_dir)
             .map_err(|e| format!("Failed to create install directory: {}", e))?;
@@ -377,11 +391,8 @@ pub mod install {
 
         // Create a batch file that calls the main exe
         let batch_path = install_dir.join("aurora.cmd");
-        let batch_content = format!(
-            "@echo off\r\n\"{exe}\" %*",
-            exe = current_exe.display()
-        );
-        
+        let batch_content = format!("@echo off\r\n\"{exe}\" %*", exe = current_exe.display());
+
         std::fs::write(&batch_path, batch_content)
             .map_err(|e| format!("Failed to create aurora.cmd: {}", e))?;
 
@@ -393,8 +404,7 @@ pub mod install {
                 .map_err(|e| format!("Failed to remove stale aurora.exe: {}", e))?;
         }
 
-        let install_dir_str = install_dir.to_str()
-            .ok_or("Invalid install path")?;
+        let install_dir_str = install_dir.to_str().ok_or("Invalid install path")?;
 
         let existing_path = read_user_path()?;
         let mut segments = split_user_path(&existing_path);
@@ -416,8 +426,7 @@ pub mod install {
     pub fn is_cli_installed() -> Result<bool, String> {
         let install_dir = get_cli_install_path();
         let cmd_path = install_dir.join("aurora.cmd");
-        let install_dir_str = install_dir.to_str()
-            .ok_or("Invalid install path")?;
+        let install_dir_str = install_dir.to_str().ok_or("Invalid install path")?;
         let path_value = read_user_path()?;
         Ok(cmd_path.exists() && path_contains_dir(&path_value, install_dir_str))
     }
@@ -463,14 +472,15 @@ pub mod install {
 
     /// Check whether Aurora context menu registration exists.
     pub fn is_context_menu_installed() -> Result<bool, String> {
-        Ok(
-            registry_key_exists(DIRECTORY_CONTEXT_MENU_KEY)?
-                && registry_key_exists(&format!(r"{}\command", DIRECTORY_CONTEXT_MENU_KEY))?
-                && registry_key_exists(DIRECTORY_BACKGROUND_CONTEXT_MENU_KEY)?
-                && registry_key_exists(&format!(r"{}\command", DIRECTORY_BACKGROUND_CONTEXT_MENU_KEY))?
-                && registry_key_exists(DRIVE_CONTEXT_MENU_KEY)?
-                && registry_key_exists(&format!(r"{}\command", DRIVE_CONTEXT_MENU_KEY))?,
-        )
+        Ok(registry_key_exists(DIRECTORY_CONTEXT_MENU_KEY)?
+            && registry_key_exists(&format!(r"{}\command", DIRECTORY_CONTEXT_MENU_KEY))?
+            && registry_key_exists(DIRECTORY_BACKGROUND_CONTEXT_MENU_KEY)?
+            && registry_key_exists(&format!(
+                r"{}\command",
+                DIRECTORY_BACKGROUND_CONTEXT_MENU_KEY
+            ))?
+            && registry_key_exists(DRIVE_CONTEXT_MENU_KEY)?
+            && registry_key_exists(&format!(r"{}\command", DRIVE_CONTEXT_MENU_KEY))?)
     }
 
     /// Remove Aurora from Windows Explorer context menus.
@@ -486,8 +496,7 @@ pub mod install {
     pub fn uninstall_cli() -> Result<(), String> {
         let install_dir = get_cli_install_path();
 
-        let install_dir_str = install_dir.to_str()
-            .ok_or("Invalid install path")?;
+        let install_dir_str = install_dir.to_str().ok_or("Invalid install path")?;
         let normalized_dir = normalize_windows_path_for_compare(install_dir_str);
         let existing_path = read_user_path()?;
         let filtered_segments = split_user_path(&existing_path)
@@ -509,8 +518,8 @@ pub mod install {
 
 #[cfg(unix)]
 pub mod install {
-    use std::path::PathBuf;
     use std::os::unix::fs::symlink;
+    use std::path::PathBuf;
 
     /// Get the path where Aurora CLI symlink should be created
     pub fn get_cli_install_path() -> PathBuf {
@@ -524,7 +533,7 @@ pub mod install {
     /// Install the CLI command (create symlink)
     pub fn install_cli() -> Result<(), String> {
         let install_dir = get_cli_install_path();
-        
+
         // Create the directory
         std::fs::create_dir_all(&install_dir)
             .map_err(|e| format!("Failed to create install directory: {}", e))?;
@@ -534,7 +543,7 @@ pub mod install {
             .map_err(|e| format!("Failed to get current executable: {}", e))?;
 
         let symlink_path = install_dir.join("aurora");
-        
+
         // Remove existing symlink if present
         if symlink_path.exists() || symlink_path.is_symlink() {
             std::fs::remove_file(&symlink_path)
@@ -580,7 +589,6 @@ pub mod install {
     pub fn uninstall_cli() -> Result<(), String> {
         let symlink_path = get_cli_install_path().join("aurora");
 
-        
         if symlink_path.exists() || symlink_path.is_symlink() {
             std::fs::remove_file(&symlink_path)
                 .map_err(|e| format!("Failed to remove symlink: {}", e))?;
@@ -590,4 +598,3 @@ pub mod install {
         Ok(())
     }
 }
-

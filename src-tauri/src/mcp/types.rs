@@ -1,5 +1,5 @@
 //! MCP Types
-//! 
+//!
 //! Type definitions for MCP server configuration and state
 
 use serde::{Deserialize, Serialize};
@@ -63,7 +63,11 @@ fn default_true() -> bool {
 impl McpServerConfig {
     /// Create a new stdio-based MCP server config
     #[allow(dead_code)]
-    pub fn new_stdio(id: impl Into<String>, name: impl Into<String>, command: impl Into<String>) -> Self {
+    pub fn new_stdio(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        command: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
@@ -233,4 +237,3 @@ pub struct McpToolContent {
     pub data: Option<String>,
     pub mime_type: Option<String>,
 }
-

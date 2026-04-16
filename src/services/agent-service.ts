@@ -104,6 +104,7 @@ export class AgentService {
     const executedToolCalls: NonNullable<AgentResponse["toolCalls"]> = [];
     const { availableTools, messages, threadId } = preparedContext;
     const toolRunner = new AgentToolRunner({
+      beforeToolExecution: this.config.beforeToolExecution,
       callbacks,
       config: this.config,
       isRunning: () => this.isRunning,

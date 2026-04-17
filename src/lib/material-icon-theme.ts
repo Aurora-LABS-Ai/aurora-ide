@@ -96,10 +96,7 @@ export const getIconName = (name: string, isFolder: boolean, isOpen: boolean = f
  * Assuming usage of Vite/Webpack which can import SVGs from node_modules.
  */
 export const getIconUrl = (iconName: string): string => {
-  // If you are using Vite, you might need to copy icons to public or use a specific loader.
-  // This is a direct path assumption that works in many modern setups.
-  // Alternatively, you can use a CDN like jsdelivr for instant gratification without build config:
-  return `https://cdn.jsdelivr.net/npm/material-icon-theme@latest/icons/${iconName}.svg`;
+  return `/material-icons/${iconName}.svg`;
 };
 
 // 1. Generate the manifest once with your preferred configuration

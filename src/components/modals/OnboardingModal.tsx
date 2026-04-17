@@ -251,8 +251,8 @@ export const OnboardingModal: React.FC = () => {
         <div className="h-full rounded-2xl border border-border bg-sidebar shadow-premium-lg overflow-hidden flex flex-col lg:flex-row">
           <aside className="w-full lg:w-[320px] border-b lg:border-b-0 lg:border-r border-border bg-editor px-6 py-7">
             <div className="flex items-center gap-2 mb-8">
-              <div className="h-8 w-8 rounded-lg bg-primary/15 border border-primary/30 flex items-center justify-center">
-                <img src="/empty-state.png" alt="Onboarding" className="w-5 h-5 object-contain" />
+              <div className="h-10 w-10 rounded-xl bg-primary/10 border border-primary/20 shadow-premium-sm flex items-center justify-center overflow-hidden">
+                <img src="/empty.png" alt="Onboarding" className="w-7 h-7 object-contain scale-[1.16] drop-shadow-[0_10px_22px_rgba(245,158,11,0.22)]" />
               </div>
               <div className="sora-font text-lg font-bold tracking-tight">
                 <span className="text-primary">Aurora</span>
@@ -321,11 +321,11 @@ export const OnboardingModal: React.FC = () => {
                       <p className="text-base text-text-secondary max-w-2xl">
                         Aurora combines editing, terminal, Git, and AI execution in one workspace. This setup takes less than a minute.
                       </p>
-                      <div className="mt-6 inline-flex items-center justify-center rounded-2xl border border-border bg-editor/70 p-3 shadow-premium">
+                      <div className="mt-6 inline-flex items-center justify-center rounded-[28px] border border-border bg-editor/75 px-4 py-3 shadow-premium overflow-hidden">
                         <img
-                          src="/empty-state.png"
+                          src="/empty.png"
                           alt="Aurora empty state"
-                          className="w-24 h-24 object-contain"
+                          className="w-28 h-28 object-contain scale-[1.22] drop-shadow-[0_18px_40px_rgba(245,158,11,0.24)]"
                         />
                       </div>
                     </div>

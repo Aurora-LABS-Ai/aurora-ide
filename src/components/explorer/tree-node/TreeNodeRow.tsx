@@ -30,7 +30,6 @@ import { ChevronRight } from 'lucide-react';
 import clsx from 'clsx';
 import { FileIcon, FolderIcon } from '../FileIcons';
 import { useDragStore } from '../../../store/useDragStore';
-import { setDragFilePath } from '../../../lib/file-utils';
 
 interface TreeNodeRowProps {
     name: string;
@@ -80,15 +79,6 @@ export const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
         onClick();
     }, [onClick]);
 
-    const handleDragStart = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-        if (isFolder) {
-            e.preventDefault();
-            return;
-        }
-
-        setDragFilePath(e, path);
-    }, [isFolder, path]);
-
     // Calculate indent guides
     const indentGuides = [];
     for (let i = 0; i < level; i++) {
@@ -134,9 +124,8 @@ export const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
             }}
             onClick={handleClick}
             onMouseDown={handleMouseDown}
-            onDragStart={handleDragStart}
             onContextMenu={onContextMenu}
-            draggable={!isFolder}
+            draggable={false}
             data-file-path={path}
             {...(isFolder ? { 'data-folder-path': path } : {})}
         >

@@ -280,7 +280,7 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
     >
       {/* Avatar column */}
       <div className="absolute left-4 top-4 w-8 h-8 flex items-center justify-center shrink-0 overflow-hidden">
-        <img src="/aurora_icon.png" alt="Aurora" className="w-6 h-6 drop-shadow-sm" />
+        <img src="/aurora.png" alt="Aurora" className="w-6 h-6 object-contain drop-shadow-sm" />
       </div>
 
       {/* Content column */}

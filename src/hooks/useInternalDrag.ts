@@ -4,6 +4,7 @@
  */
 import { useEffect } from "react";
 
+import { dispatchAttachmentDrop } from "../lib/attachment-events";
 import { getFilename, getLanguageFromExtension, isChildPath, joinPath } from "../lib/file-utils";
 import { isTauri, readFileContent, renamePath } from "../lib/tauri";
 import { useDragStore } from "../store/useDragStore";
@@ -15,6 +16,47 @@ export const useInternalDrag = () => {
   const { openFile } = useEditorStore();
 
   useEffect(() => {
+    type DropTarget = {
+      path: string | null;
+      type: 'folder' | 'root' | 'editor' | 'attachment' | null;
+    };
+
+    const resolveDropTarget = (
+      element: Element | null,
+      draggedPath: string | null,
+    ): DropTarget => {
+      if (!element) {
+        return { path: null, type: null };
+      }
+
+      const folderRow = element.closest('[data-folder-path]') as HTMLElement | null;
+      if (folderRow) {
+        const folderPath = folderRow.dataset.folderPath;
+        if (
+          folderPath &&
+          folderPath !== draggedPath &&
+          draggedPath &&
+          !isChildPath(draggedPath, folderPath)
+        ) {
+          return { path: folderPath, type: 'folder' as const };
+        }
+      }
+
+      if (element.closest('[data-attachment-drop-zone]')) {
+        return { path: null, type: 'attachment' as const };
+      }
+
+      if (element.closest('[data-editor-panel]')) {
+        return { path: null, type: 'editor' as const };
+      }
+
+      if (rootPath && element.closest('[data-explorer-panel], [data-explorer-content]')) {
+        return { path: rootPath, type: 'root' as const };
+      }
+
+      return { path: null, type: null };
+    };
+
     const handleMouseMove = (e: MouseEvent) => {
       // Update mouse position (this also checks threshold for pending drags)
       useDragStore.getState().updateMouse(e.clientX, e.clientY);
@@ -23,41 +65,9 @@ export const useInternalDrag = () => {
       const state = useDragStore.getState();
       if (!state.isDragging) return;
 
-      // Find drop target
       const element = document.elementFromPoint(e.clientX, e.clientY);
-      if (!element) {
-        state.setDropTarget(null, null);
-        return;
-      }
-
-      // Check for folder
-      const folderRow = element.closest('[data-folder-path]') as HTMLElement;
-      if (folderRow) {
-        const folderPath = folderRow.dataset.folderPath;
-        if (folderPath && folderPath !== state.draggedPath) {
-          // Don't allow dropping into own child
-          if (!isChildPath(state.draggedPath!, folderPath)) {
-            state.setDropTarget(folderPath, 'folder');
-            return;
-          }
-        }
-      }
-
-      // Check for editor
-      const editorPanel = element.closest('[data-editor-panel]');
-      if (editorPanel) {
-        state.setDropTarget(null, 'editor');
-        return;
-      }
-
-      // Check for explorer root
-      const explorerContent = element.closest('[data-explorer-content]');
-      if (explorerContent && rootPath) {
-        state.setDropTarget(rootPath, 'root');
-        return;
-      }
-
-      state.setDropTarget(null, null);
+      const target = resolveDropTarget(element, state.draggedPath);
+      state.setDropTarget(target.path, target.type);
     };
 
     const handleMouseUp = async () => {
@@ -77,6 +87,11 @@ export const useInternalDrag = () => {
 
       const { draggedPath, dropTargetPath, dropTargetType } = state;
       state.endDrag();
+
+      if (dropTargetType === 'attachment') {
+        dispatchAttachmentDrop([draggedPath]);
+        return;
+      }
 
       if (!isTauri()) return;
 

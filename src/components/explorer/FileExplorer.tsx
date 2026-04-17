@@ -45,6 +45,7 @@ export const FileExplorer: React.FC = () => {
   const [renameTargetId, setRenameTargetId] = useState<string | null>(null);
   const [recentWorkspaces, setRecentWorkspaces] = useState<WorkspaceState[]>([]);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const explorerContentRef = useRef<HTMLDivElement>(null);
   // FIX: Use shallow equality selector to prevent re-renders when unrelated store values change
   const setRootPath = useWorkspaceStore(state => state.setRootPath);
   const rootPath = useWorkspaceStore(state => state.rootPath);
@@ -227,6 +228,16 @@ export const FileExplorer: React.FC = () => {
     }
   };
 
+  const handleExplorerMouseDownCapture = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+
+    if (target.closest('input, textarea, button, [contenteditable="true"], [role="menu"]')) {
+      return;
+    }
+
+    explorerContentRef.current?.focus();
+  }, []);
+
   // Get folder name from path
   const folderName = rootPath ? rootPath.split(/[/\\]/).pop() : null;
   const slimSurfaceStyle: React.CSSProperties = {
@@ -241,6 +252,7 @@ export const FileExplorer: React.FC = () => {
   return (
     <div
       className="h-full flex flex-col"
+      data-explorer-panel
       style={{
         backgroundColor: 'color-mix(in srgb, var(--aurora-sidebar-background) 88%, var(--aurora-editor-background) 12%)',
         boxShadow: 'inset -1px 0 0 color-mix(in srgb, var(--aurora-common-shadow) 10%, transparent)',
@@ -378,6 +390,9 @@ export const FileExplorer: React.FC = () => {
       {/* Content area - drop zone for moving files to root */}
       <div
         className={`flex-1 overflow-y-auto ${isDropTargetRoot ? 'bg-primary/10 ring-1 ring-primary/30 ring-inset' : ''}`}
+        ref={explorerContentRef}
+        tabIndex={-1}
+        onMouseDownCapture={handleExplorerMouseDownCapture}
         data-explorer-content
       >
         {hasWorkspace ? (

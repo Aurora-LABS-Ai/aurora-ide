@@ -38,6 +38,7 @@ import {
   loadPromptAttachments,
   type PromptAttachment,
 } from "../../services/prompt-assets";
+import { addAttachmentDropListener } from "../../lib/attachment-events";
 import { FileIcon } from "../explorer/FileIcons";
 import { PromptAttachmentPopup } from "../chat/PromptAttachmentPopup";
 import {
@@ -109,30 +110,19 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
   const { setSettingsOpen } = useUiStore();
   const rootPath = useWorkspaceStore((state) => state.rootPath);
 
-  // Wrapped setters that also sync to draft store
-  const setContent = useCallback((valOrUpdater: string | ((prev: string) => string)) => {
-    setContentLocal((prev) => {
-      const next = typeof valOrUpdater === 'function' ? valOrUpdater(prev) : valOrUpdater;
-      setDraftInput(next);
-      return next;
-    });
-  }, [setDraftInput]);
+  useEffect(() => {
+    setDraftInput(content);
+  }, [content, setDraftInput]);
 
-  const setAttachedFiles = useCallback((valOrUpdater: AttachedFile[] | ((prev: AttachedFile[]) => AttachedFile[])) => {
-    setAttachedFilesLocal((prev) => {
-      const next = typeof valOrUpdater === 'function' ? valOrUpdater(prev) : valOrUpdater;
-      setDraftAttachedFiles(next.map(f => ({ path: f.path, name: f.name })));
-      return next;
-    });
-  }, [setDraftAttachedFiles]);
+  useEffect(() => {
+    setDraftAttachedFiles(
+      attachedFiles.map((file) => ({ path: file.path, name: file.name })),
+    );
+  }, [attachedFiles, setDraftAttachedFiles]);
 
-  const setAttachedPromptAssets = useCallback((valOrUpdater: PromptAttachment[] | ((prev: PromptAttachment[]) => PromptAttachment[])) => {
-    setAttachedPromptAssetsLocal((prev) => {
-      const next = typeof valOrUpdater === 'function' ? valOrUpdater(prev) : valOrUpdater;
-      setDraftAttachedPromptAssets(next);
-      return next;
-    });
-  }, [setDraftAttachedPromptAssets]);
+  useEffect(() => {
+    setDraftAttachedPromptAssets(attachedPromptAssets);
+  }, [attachedPromptAssets, setDraftAttachedPromptAssets]);
   const {
     selectedModel,
     setSelectedModel,
@@ -227,9 +217,9 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     if (pending) {
       const rafId = window.requestAnimationFrame(() => {
         if (replace) {
-          setContent(pending);
+          setContentLocal(pending);
         } else {
-          setContent((prev) => (prev ? `${prev}\n\n${pending}` : pending));
+          setContentLocal((prev) => (prev ? `${prev}\n\n${pending}` : pending));
         }
         textareaRef.current?.focus();
       });
@@ -337,9 +327,9 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
       attachedFiles.length > 0 ? attachedFiles : undefined,
       attachedPromptAssets.length > 0 ? attachedPromptAssets : undefined,
     );
-    setContent("");
-    setAttachedFiles([]);
-    setAttachedPromptAssets([]);
+    setContentLocal("");
+    setAttachedFilesLocal([]);
+    setAttachedPromptAssetsLocal([]);
     clearDraft();
   };
 
@@ -376,13 +366,13 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
         e.preventDefault();
         const attachment = filteredPromptAssets[selectedPromptAssetIndex];
         if (attachment) {
-          setAttachedPromptAssets((prev) => [...prev, attachment]);
+          setAttachedPromptAssetsLocal((prev) => [...prev, attachment]);
           if (slashIndex !== -1) {
             const before = content.slice(0, slashIndex);
             const after = content.slice(
               slashIndex + (slashQuery?.length ?? 0) + 1,
             );
-            setContent(`${before}${after} `);
+            setContentLocal(`${before}${after} `);
           }
           setSlashQuery(null);
           setSlashSearchQuery("");
@@ -410,7 +400,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
       textareaRef.current?.selectionStart === 0
     ) {
       e.preventDefault();
-      setAttachedPromptAssets((items) => items.slice(0, -1));
+      setAttachedPromptAssetsLocal((items) => items.slice(0, -1));
     }
   };
 
@@ -426,6 +416,24 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     setIsDragOver(false);
   };
 
+  const attachFilePaths = useCallback(
+    (paths: string[]) => {
+      setAttachedFilesLocal((prev) => {
+        const existingPaths = new Set(prev.map((file) => file.path));
+        const nextFiles = paths
+          .filter((path) => path && !existingPaths.has(path))
+          .map((path) => ({ path, name: getFilename(path) }));
+
+        return nextFiles.length > 0 ? [...prev, ...nextFiles] : prev;
+      });
+
+      textareaRef.current?.focus();
+    },
+    [],
+  );
+
+  useEffect(() => addAttachmentDropListener(attachFilePaths), [attachFilePaths]);
+
   const handleDrop = useCallback(
     async (e: React.DragEvent) => {
       e.preventDefault();
@@ -435,20 +443,17 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
       const filePath = getDragFilePath(e);
       if (!filePath) return;
 
-      const fileName = getFilename(filePath);
-      if (attachedFiles.some((f) => f.path === filePath)) return;
-
-      setAttachedFiles((prev) => [...prev, { path: filePath, name: fileName }]);
+      attachFilePaths([filePath]);
     },
-    [attachedFiles],
+    [attachFilePaths],
   );
 
   const removeAttachedFile = (path: string) => {
-    setAttachedFiles((prev) => prev.filter((f) => f.path !== path));
+    setAttachedFilesLocal((prev) => prev.filter((f) => f.path !== path));
   };
 
   const removePromptAttachment = (key: string) => {
-    setAttachedPromptAssets((items) =>
+    setAttachedPromptAssetsLocal((items) =>
       items.filter((item) => item.key !== key),
     );
   };
@@ -472,7 +477,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
 
   const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newValue = event.target.value;
-    setContent(newValue);
+    setContentLocal(newValue);
 
     const cursorPos = event.target.selectionStart;
     const textBeforeCursor = newValue.slice(0, cursorPos);
@@ -508,7 +513,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
   };
 
   const selectPromptAttachment = (attachment: PromptAttachment) => {
-    setAttachedPromptAssets((prev) => {
+    setAttachedPromptAssetsLocal((prev) => {
       if (prev.some((item) => item.key === attachment.key)) {
         return prev;
       }
@@ -518,7 +523,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     if (slashQuery !== null && slashIndex !== -1) {
       const before = content.slice(0, slashIndex);
       const after = content.slice(slashIndex + slashQuery.length + 1);
-      setContent(`${before}${after} `);
+      setContentLocal(`${before}${after} `);
     }
 
     setSlashQuery(null);
@@ -681,12 +686,13 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      data-attachment-drop-zone="agent-input"
     >
       {/* Drag Overlay */}
       {isDragOver && (
         <div className="absolute inset-2 z-50 rounded-xl border-2 border-dashed border-accent/50 bg-accent/5 backdrop-blur-sm flex flex-col items-center justify-center text-accent animate-in fade-in duration-200">
           <Paperclip className="w-8 h-8 mb-2 animate-bounce" />
-          <span className="text-sm font-medium">Drop to attach context</span>
+          <span className="text-sm font-medium">Drop files or images to attach context</span>
         </div>
       )}
 

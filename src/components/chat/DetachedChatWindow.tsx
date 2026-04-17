@@ -128,9 +128,9 @@ export const DetachedChatWindow: React.FC = () => {
             className="flex items-center gap-2 px-3 h-full"
           >
             <img
-              src="/aurora_icon.png"
+              src="/aurora.png"
               alt="Aurora"
-              className="w-5 h-5 shrink-0"
+              className="w-5 h-5 shrink-0 object-contain"
             />
             <span
               data-tauri-drag-region
@@ -193,9 +193,9 @@ export const DetachedChatWindow: React.FC = () => {
           <div className="h-full flex items-center justify-center">
             <div className="flex flex-col items-center gap-3">
               <img
-                src="/aurora_icon.png"
+                src="/aurora.png"
                 alt="Aurora"
-                className="w-8 h-8 animate-pulse"
+                className="w-8 h-8 object-contain animate-pulse"
               />
               <span className="text-xs text-text-secondary">Syncing...</span>
             </div>

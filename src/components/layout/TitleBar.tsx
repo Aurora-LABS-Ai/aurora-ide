@@ -146,7 +146,7 @@ export const TitleBar: React.FC = () => {
           <div className="mx-1 h-4 w-[1px] bg-border" />
 
           <img
-            src="/aurora_icon.png"
+            src="/aurora.png"
             alt="Aurora"
             className="h-4 w-4 shrink-0 object-contain"
           />

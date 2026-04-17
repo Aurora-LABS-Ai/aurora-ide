@@ -73,7 +73,7 @@ class CheckpointService {
       return existing;
     }
 
-    const promise = invoke("checkpoint_ensure_initialized", { workspacePath })
+    const promise = invoke<void>("checkpoint_ensure_initialized", { workspacePath })
       .catch((error) => {
         console.error(
           "[CheckpointService] Failed to ensure initialization:",

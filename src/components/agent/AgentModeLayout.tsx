@@ -388,7 +388,7 @@ export const AgentModeLayout: React.FC = () => {
         maxOutputTokens: llmConfig.maxOutputTokens || 8192,
         supportsThinking: llmConfig.supportsThinking ?? false,
         supportsToolStream: llmConfig.supportsToolStream ?? false,
-        supportsVision: false,
+        supportsVision: llmConfig.supportsVision ?? false,
         defaultTemperature: llmConfig.defaultTemperature,
         defaultMaxTokens: llmConfig.defaultMaxTokens,
         customHeaders: llmConfig.customHeaders,
@@ -1120,13 +1120,13 @@ export const AgentModeLayout: React.FC = () => {
               {isEmpty ? (
                 <div className="flex-1 flex flex-col items-center justify-center px-6">
                   <div className="flex flex-col items-center max-w-lg w-full">
-                    <div className="w-16 h-16 mb-5">
-                      <img
-                        src="/aurora_icon.png"
-                        alt="Agent empty state"
-                        className="w-full h-full object-contain opacity-85"
-                      />
-                    </div>
+                    <img
+                      src="/empty.png"
+                      alt="Agent empty state"
+                      width={88}
+                      height={88}
+                      className="w-[88px] h-[88px] mb-5 object-contain"
+                    />
                     <h1
                       className="text-2xl font-semibold mb-2 tracking-tight"
                       style={{ color: "var(--aurora-editor-foreground)" }}

@@ -158,12 +158,7 @@ export const CodeEditor: React.FC = () => {
     return convertFileSrc(activeTab.path);
   }, [isImage, activeTab]);
 
-  // Reset view mode when switching away from markdown files
-  useEffect(() => {
-    if (!isMarkdown && viewMode !== 'raw') {
-      setViewMode('raw');
-    }
-  }, [isMarkdown, viewMode]);
+  const effectiveViewMode: ViewMode = isMarkdown ? viewMode : 'raw';
 
   if (!activeTab) {
     const openSettings = () => useUiStore.getState().setSettingsOpen(true);
@@ -176,13 +171,13 @@ export const CodeEditor: React.FC = () => {
       <div className="flex-1 flex items-center justify-center text-text-secondary bg-editor">
         <div className="text-center max-w-xs">
           {/* Empty state icon */}
-          <div className="w-16 h-16 mx-auto mb-5">
-            <img
-              src="/aurora_icon.png"
-              alt="Editor empty state"
-              className="w-full h-full object-contain opacity-85"
-            />
-          </div>
+          <img
+            src="/empty.png"
+            alt="Editor empty state"
+            width={176}
+            height={176}
+            className="w-44 h-44 mx-auto mb-7 object-contain"
+          />
           <p className="text-sm text-text-primary mb-1">Select a file to start editing</p>
           <p className="text-xs text-text-disabled mb-5">Open a file from the explorer or use shortcuts below</p>
 
@@ -275,7 +270,7 @@ export const CodeEditor: React.FC = () => {
             <button
               onClick={() => setViewMode('raw')}
               className={`flex items-center gap-1.5 px-2 py-1 text-[11px] rounded transition-colors ${
-                viewMode === 'raw'
+                effectiveViewMode === 'raw'
                   ? 'bg-primary/20 text-primary font-medium'
                   : 'text-text-secondary hover:bg-input/50 hover:text-text-primary'
               }`}
@@ -287,7 +282,7 @@ export const CodeEditor: React.FC = () => {
             <button
               onClick={() => setViewMode('preview')}
               className={`flex items-center gap-1.5 px-2 py-1 text-[11px] rounded transition-colors ${
-                viewMode === 'preview'
+                effectiveViewMode === 'preview'
                   ? 'bg-primary/20 text-primary font-medium'
                   : 'text-text-secondary hover:bg-input/50 hover:text-text-primary'
               }`}
@@ -299,7 +294,7 @@ export const CodeEditor: React.FC = () => {
             <button
               onClick={() => setViewMode('split')}
               className={`flex items-center gap-1.5 px-2 py-1 text-[11px] rounded transition-colors ${
-                viewMode === 'split'
+                effectiveViewMode === 'split'
                   ? 'bg-primary/20 text-primary font-medium'
                   : 'text-text-secondary hover:bg-input/50 hover:text-text-primary'
               }`}
@@ -313,7 +308,7 @@ export const CodeEditor: React.FC = () => {
       )}
 
       {/* Content Area */}
-      {viewMode === 'raw' || !isMarkdown ? (
+      {effectiveViewMode === 'raw' ? (
         <div className="flex-1 relative overflow-hidden">
           <Editor
             height="100%"
@@ -410,7 +405,7 @@ export const CodeEditor: React.FC = () => {
             }}
           />
         </div>
-      ) : viewMode === 'preview' && isMarkdown ? (
+      ) : effectiveViewMode === 'preview' ? (
         <div className="flex-1 overflow-auto p-6">
           <MarkdownPreview content={activeTab.content} />
         </div>

@@ -3,15 +3,16 @@
  */
 import { useEffect, useRef } from "react";
 
+import { dispatchAttachmentDrop } from "../lib/attachment-events";
 import { getFilename, getLanguageFromExtension, joinPath } from "../lib/file-utils";
 import { copyPath, isTauri, readFileContent } from "../lib/tauri";
 import { useEditorStore } from "../store/useEditorStore";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 
 export const useTauriDragDrop = () => {
-  const { rootPath, expandFolder } = useWorkspaceStore();
+  const { rootPath, expandFolder, refreshDirectory } = useWorkspaceStore();
   const { openFile } = useEditorStore();
-  const dropTargetRef = useRef<{ type: 'folder' | 'editor' | 'root'; path: string } | null>(null);
+  const dropTargetRef = useRef<{ type: 'folder' | 'editor' | 'root' | 'attachment'; path: string } | null>(null);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -19,54 +20,70 @@ export const useTauriDragDrop = () => {
     let cleanup: (() => void) | undefined;
 
     const setupDragDrop = async () => {
+      const clearFolderHighlights = () => {
+        document.querySelectorAll('[data-folder-path]').forEach(el => {
+          el.classList.remove('bg-primary/20', 'ring-1', 'ring-primary/50');
+        });
+      };
+
+      const resolveDropTarget = (x: number, y: number) => {
+        const element = document.elementFromPoint(x, y);
+        if (!element) return null;
+
+        const folderRow = element.closest('[data-folder-path]') as HTMLElement | null;
+        if (folderRow) {
+          const folderPath = folderRow.dataset.folderPath;
+          if (folderPath) {
+            return { type: 'folder' as const, path: folderPath };
+          }
+        }
+
+        if (element.closest('[data-attachment-drop-zone]')) {
+          return { type: 'attachment' as const, path: '' };
+        }
+
+        if (element.closest('[data-editor-panel]')) {
+          return { type: 'editor' as const, path: '' };
+        }
+
+        if (rootPath && element.closest('[data-explorer-panel], [data-explorer-content]')) {
+          return { type: 'root' as const, path: rootPath };
+        }
+
+        return null;
+      };
+
       try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         const currentWindow = getCurrentWindow();
 
         const unlisten = await currentWindow.onDragDropEvent(async (event) => {
           if (event.payload.type === 'over') {
-            // Find what element is at the drop position
             const { x, y } = event.payload.position;
-            const element = document.elementFromPoint(x, y);
+            clearFolderHighlights();
 
-            if (element) {
-              // Check if over a folder in the tree
-              const folderRow = element.closest('[data-folder-path]') as HTMLElement;
-              if (folderRow) {
-                const folderPath = folderRow.dataset.folderPath;
-                if (folderPath) {
-                  dropTargetRef.current = { type: 'folder', path: folderPath };
-                  folderRow.classList.add('bg-primary/20', 'ring-1', 'ring-primary/50');
-                  return;
-                }
-              }
+            const target = resolveDropTarget(x, y);
+            dropTargetRef.current = target;
 
-              // Check if over the editor panel
-              const editorPanel = element.closest('[data-editor-panel]');
-              if (editorPanel) {
-                dropTargetRef.current = { type: 'editor', path: '' };
-                return;
-              }
-
-              // Check if over the file explorer content area
-              const explorerContent = element.closest('[data-explorer-content]');
-              if (explorerContent && rootPath) {
-                dropTargetRef.current = { type: 'root', path: rootPath };
-                return;
-              }
+            if (target?.type === 'folder') {
+              const folderSelector = `[data-folder-path="${CSS.escape(target.path)}"]`;
+              document.querySelector(folderSelector)?.classList.add('bg-primary/20', 'ring-1', 'ring-primary/50');
             }
           } else if (event.payload.type === 'drop') {
             const paths = event.payload.paths;
-            const target = dropTargetRef.current;
+            const payloadWithPosition = event.payload as { position?: { x: number; y: number } };
+            const liveTarget = payloadWithPosition.position
+              ? resolveDropTarget(payloadWithPosition.position.x, payloadWithPosition.position.y)
+              : null;
+            const target = liveTarget ?? dropTargetRef.current;
 
-            // Clear visual feedback
-            document.querySelectorAll('[data-folder-path]').forEach(el => {
-              el.classList.remove('bg-primary/20', 'ring-1', 'ring-primary/50');
-            });
+            clearFolderHighlights();
 
             if (!paths || paths.length === 0) return;
 
-            if (target?.type === 'editor') {
+            if (target?.type === 'attachment') {
+              dispatchAttachmentDrop(paths);
+            } else if (target?.type === 'editor') {
               // Open files in editor
               for (const filePath of paths) {
                 try {
@@ -93,14 +110,12 @@ export const useTauriDragDrop = () => {
               if (target.type === 'folder') {
                 expandFolder(target.path);
               }
+              await refreshDirectory();
             }
 
             dropTargetRef.current = null;
           } else if (event.payload.type === 'leave') {
-            // Clear visual feedback
-            document.querySelectorAll('[data-folder-path]').forEach(el => {
-              el.classList.remove('bg-primary/20', 'ring-1', 'ring-primary/50');
-            });
+            clearFolderHighlights();
             dropTargetRef.current = null;
           }
         });
@@ -116,5 +131,5 @@ export const useTauriDragDrop = () => {
     return () => {
       cleanup?.();
     };
-  }, [rootPath, expandFolder, openFile]);
+  }, [rootPath, expandFolder, refreshDirectory, openFile]);
 };

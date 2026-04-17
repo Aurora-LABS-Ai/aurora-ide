@@ -15,6 +15,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import type { AttachedFile } from "../components/chat/ChatInput";
+import { isImageFilePath } from "../lib/file-utils";
 import { getSystemInfo, readDirectory, readFileContent } from "../lib/tauri";
 import { useEditorStore } from "../store/useEditorStore";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
@@ -88,10 +89,19 @@ async function buildAttachedFiles(
   const fullFileResults = await Promise.all(
     filesForFullContent.map(async (file) => {
       try {
+        if (isImageFilePath(file.path)) {
+          return {
+            ok: true as const,
+            kind: 'image' as const,
+            file,
+          };
+        }
+
         const content = await readFileContent(file.path);
         const { formatted, lineCount, truncated } = formatFileWithLineNumbers(content, MAX_FILE_LINES);
         return {
           ok: true as const,
+          kind: 'text' as const,
           file,
           content,
           formatted,
@@ -110,6 +120,14 @@ async function buildAttachedFiles(
 
   for (const result of fullFileResults) {
     if (result.ok) {
+      if (result.kind === 'image') {
+        filesAsPathsOnly.push(result.file.path);
+        fileSections.push(`<image_file path="${result.file.path}" note="Binary image attachment">
+User attached this image file. Treat it as image context rather than text content. Use the path for tools, and inspect it directly only if the active model/provider supports vision.
+</image_file>`);
+        continue;
+      }
+
       filesWithContent.push({
         path: result.file.path,
         name: result.file.name,

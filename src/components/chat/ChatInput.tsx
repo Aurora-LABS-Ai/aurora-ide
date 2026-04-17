@@ -54,6 +54,7 @@ import {
 import type { FileNode } from "../../types";
 import clsx from "clsx";
 import { createPortal } from "react-dom";
+import { addAttachmentDropListener } from "../../lib/attachment-events";
 import {
   getDragFilePath,
   getFilename,
@@ -193,45 +194,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   const { openFile } = useEditorStore();
   const { tasks, isVisible } = useTaskStore();
 
-  // Wrapped setters -- sync to draft store via separate calls (not inside updaters)
-  const setContent = useCallback((valOrUpdater: string | ((prev: string) => string)) => {
-    if (typeof valOrUpdater === 'function') {
-      setContentLocal((prev) => {
-        const next = valOrUpdater(prev);
-        queueMicrotask(() => setDraftInput(next));
-        return next;
-      });
-    } else {
-      setContentLocal(valOrUpdater);
-      setDraftInput(valOrUpdater);
-    }
-  }, [setDraftInput]);
+  useEffect(() => {
+    setDraftInput(content);
+  }, [content, setDraftInput]);
 
-  const setAttachedFiles = useCallback((valOrUpdater: AttachedFile[] | ((prev: AttachedFile[]) => AttachedFile[])) => {
-    if (typeof valOrUpdater === 'function') {
-      setAttachedFilesLocal((prev) => {
-        const next = valOrUpdater(prev);
-        queueMicrotask(() => setDraftAttachedFiles(next.map(f => ({ path: f.path, name: f.name }))));
-        return next;
-      });
-    } else {
-      setAttachedFilesLocal(valOrUpdater);
-      setDraftAttachedFiles(valOrUpdater.map(f => ({ path: f.path, name: f.name })));
-    }
-  }, [setDraftAttachedFiles]);
+  useEffect(() => {
+    setDraftAttachedFiles(
+      attachedFiles.map((file) => ({ path: file.path, name: file.name })),
+    );
+  }, [attachedFiles, setDraftAttachedFiles]);
 
-  const setAttachedPromptAssets = useCallback((valOrUpdater: PromptAttachment[] | ((prev: PromptAttachment[]) => PromptAttachment[])) => {
-    if (typeof valOrUpdater === 'function') {
-      setAttachedPromptAssetsLocal((prev) => {
-        const next = valOrUpdater(prev);
-        queueMicrotask(() => setDraftAttachedPromptAssets(next));
-        return next;
-      });
-    } else {
-      setAttachedPromptAssetsLocal(valOrUpdater);
-      setDraftAttachedPromptAssets(valOrUpdater);
-    }
-  }, [setDraftAttachedPromptAssets]);
+  useEffect(() => {
+    setDraftAttachedPromptAssets(attachedPromptAssets);
+  }, [attachedPromptAssets, setDraftAttachedPromptAssets]);
   const {
     thinkingEnabled,
     setThinkingEnabled,
@@ -331,9 +306,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     if (pending) {
       const rafId = window.requestAnimationFrame(() => {
         if (replace) {
-          setContent(pending);
+          setContentLocal(pending);
         } else {
-          setContent((prev) => (prev ? `${prev}\n\n${pending}` : pending));
+          setContentLocal((prev) => (prev ? `${prev}\n\n${pending}` : pending));
         }
         textareaRef.current?.focus();
       });
@@ -344,7 +319,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   // Handle Input Change for Mentions
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newVal = e.target.value;
-    setContent(newVal);
+    setContentLocal(newVal);
 
     const cursorPos = e.target.selectionStart;
     const textBeforeCursor = newVal.slice(0, cursorPos);
@@ -419,7 +394,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     // Add to attached (ensure path exists)
     if (!file.path) return;
     const filePath = file.path;
-    setAttachedFiles((prev) => {
+    setAttachedFilesLocal((prev) => {
       if (prev.some((f) => f.path === filePath)) return prev;
       return [...prev, { path: filePath, name: file.name }];
     });
@@ -428,14 +403,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     if (mentionQuery !== null && mentionIndex !== -1) {
       const before = content.slice(0, mentionIndex);
       const after = content.slice(mentionIndex + mentionQuery.length + 1); // +1 for @
-      setContent(`${before}${after} `);
+      setContentLocal(`${before}${after} `);
       // Close popup
       setMentionQuery(null);
     }
   };
 
   const selectPromptAttachment = (attachment: PromptAttachment) => {
-    setAttachedPromptAssets((prev) => {
+    setAttachedPromptAssetsLocal((prev) => {
       if (prev.some((item) => item.key === attachment.key)) {
         return prev;
       }
@@ -445,7 +420,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     if (slashQuery !== null && slashIndex !== -1) {
       const before = content.slice(0, slashIndex);
       const after = content.slice(slashIndex + slashQuery.length + 1);
-      setContent(`${before}${after} `);
+      setContentLocal(`${before}${after} `);
     }
 
     setSlashQuery(null);
@@ -547,9 +522,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
       attachedFiles.length > 0 ? attachedFiles : undefined,
       attachedPromptAssets.length > 0 ? attachedPromptAssets : undefined,
     );
-    setContent("");
-    setAttachedFiles([]);
-    setAttachedPromptAssets([]);
+    setContentLocal("");
+    setAttachedFilesLocal([]);
+    setAttachedPromptAssetsLocal([]);
     clearDraft();
     setHasInteracted(true);
   };
@@ -568,11 +543,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   };
 
   const removeAttachedFile = (path: string) => {
-    setAttachedFiles((files) => files.filter((f) => f.path !== path));
+    setAttachedFilesLocal((files) => files.filter((f) => f.path !== path));
   };
 
   const removePromptAttachment = (key: string) => {
-    setAttachedPromptAssets((items) =>
+    setAttachedPromptAssetsLocal((items) =>
       items.filter((item) => item.key !== key),
     );
   };
@@ -649,7 +624,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
       textareaRef.current?.selectionStart === 0
     ) {
       e.preventDefault();
-      setAttachedPromptAssets((items) => items.slice(0, -1));
+      setAttachedPromptAssetsLocal((items) => items.slice(0, -1));
     }
   };
 
@@ -925,6 +900,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   };
 
   // --- DRAG DROP HANDLERS ---
+  const attachFilePaths = useCallback((paths: string[]) => {
+    setAttachedFilesLocal((prev) => {
+      const existingPaths = new Set(prev.map((file) => file.path));
+      const nextFiles = paths
+        .filter((path) => path && !existingPaths.has(path))
+        .map((path) => ({ path, name: getFilename(path) }));
+
+      return nextFiles.length > 0 ? [...prev, ...nextFiles] : prev;
+    });
+
+    textareaRef.current?.focus();
+  }, []);
+
+  useEffect(() => addAttachmentDropListener(attachFilePaths), [attachFilePaths]);
+
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "link";
@@ -943,14 +933,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     const filePath = getDragFilePath(e);
     if (!filePath) return;
 
-    const filename = getFilename(filePath);
-    // Add file to attached files (avoid duplicates)
-    setAttachedFiles((prev) => {
-      if (prev.some((f) => f.path === filePath)) return prev;
-      return [...prev, { path: filePath, name: filename }];
-    });
-    textareaRef.current?.focus();
-  }, []);
+    attachFilePaths([filePath]);
+  }, [attachFilePaths]);
 
   // Handle clicking anywhere in container to focus input
   const handleContainerClick = (e: React.MouseEvent) => {
@@ -970,12 +954,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      data-attachment-drop-zone="chat-input"
     >
       {/* Drag Overlay */}
       {isDragOver && (
         <div className="absolute inset-2 z-50 rounded-xl border-2 border-dashed border-accent/50 bg-accent/5 backdrop-blur-sm flex flex-col items-center justify-center text-accent animate-in fade-in duration-200">
           <Paperclip className="w-8 h-8 mb-2 animate-bounce" />
-          <span className="text-sm font-medium">Drop to attach context</span>
+          <span className="text-sm font-medium">Drop files or images to attach context</span>
         </div>
       )}
 

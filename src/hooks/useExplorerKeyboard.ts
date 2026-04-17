@@ -21,6 +21,35 @@ export const useExplorerKeyboard = ({
   const { selectedFileId, files, rootPath } = useWorkspaceStore();
   const { closeTab } = useEditorStore();
 
+  const isEditableElement = useCallback((element: HTMLElement | null) => {
+    if (!element) return false;
+
+    const tagName = element.tagName;
+    if (tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') {
+      return true;
+    }
+
+    if (element.isContentEditable) {
+      return true;
+    }
+
+    return Boolean(
+      element.closest('[contenteditable="true"]') ||
+      element.closest('[role="textbox"]') ||
+      element.closest('.monaco-editor')
+    );
+  }, []);
+
+  const isExplorerFocused = useCallback(() => {
+    const activeElement = document.activeElement as HTMLElement | null;
+    return Boolean(activeElement?.closest('[data-explorer-content]'));
+  }, []);
+
+  const hasSelectedText = useCallback(() => {
+    const selection = window.getSelection();
+    return Boolean(selection && !selection.isCollapsed && selection.toString().length > 0);
+  }, []);
+
   // Find parent folder of selected file
   const findParentFolder = useCallback((nodeId: string): string | null => {
     const findParent = (nodes: typeof files, parentId: string | null): string | null => {
@@ -54,9 +83,14 @@ export const useExplorerKeyboard = ({
   }, [files]);
 
   const handleKeyDown = useCallback(async (e: KeyboardEvent) => {
-    // Only handle if explorer is focused (or no specific element is focused)
-    const target = e.target as HTMLElement;
-    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+    const target = e.target as HTMLElement | null;
+    const activeElement = document.activeElement as HTMLElement | null;
+
+    if (!isExplorerFocused()) {
+      return;
+    }
+
+    if (isEditableElement(target) || isEditableElement(activeElement)) {
       return;
     }
 
@@ -91,6 +125,9 @@ export const useExplorerKeyboard = ({
 
       case 'c':
         if (e.ctrlKey || e.metaKey) {
+          if (hasSelectedText()) {
+            return;
+          }
           e.preventDefault();
           const path = node.path || node.id;
           await copyToClipboard(path);
@@ -116,7 +153,19 @@ export const useExplorerKeyboard = ({
         // Enter key is handled by TreeNode click
         break;
     }
-  }, [selectedFileId, findNode, findParentFolder, onRename, onNewFile, onNewFolder, closeTab, rootPath]);
+  }, [
+    selectedFileId,
+    findNode,
+    findParentFolder,
+    onRename,
+    onNewFile,
+    onNewFolder,
+    closeTab,
+    rootPath,
+    isEditableElement,
+    isExplorerFocused,
+    hasSelectedText,
+  ]);
 
   useEffect(() => {
     document.addEventListener('keydown', handleKeyDown);

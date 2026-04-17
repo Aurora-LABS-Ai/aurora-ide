@@ -415,7 +415,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
         maxOutputTokens: llmConfig.maxOutputTokens || 8192,
         supportsThinking: llmConfig.supportsThinking ?? false,
         supportsToolStream: llmConfig.supportsToolStream ?? false,
-        supportsVision: false,
+        supportsVision: llmConfig.supportsVision ?? false,
         defaultTemperature: llmConfig.defaultTemperature,
         defaultMaxTokens: llmConfig.defaultMaxTokens,
         customHeaders: llmConfig.customHeaders,
@@ -1002,13 +1002,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       {isEmpty ? (
         <div className="flex-1 flex flex-col items-center justify-center px-6 relative overflow-hidden">
           <div className="relative z-10 flex flex-col items-center max-w-sm w-full">
-            <div className="w-20 h-20 mb-6">
-              <img
-                src="/aurora_icon.png"
-                alt="Chat empty state"
-                className="w-full h-full object-contain opacity-85"
-              />
-            </div>
+            <img
+              src="/empty.png"
+              alt="Chat empty state"
+              width={88}
+              height={88}
+              className="w-[88px] h-[88px] mb-6 object-contain"
+            />
 
             <h1 className="text-2xl font-bold text-text-primary mb-2 tracking-tight">
               Aurora

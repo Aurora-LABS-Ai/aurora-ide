@@ -13,7 +13,7 @@ interface DragState {
 
   // Drop target
   dropTargetPath: string | null;
-  dropTargetType: 'folder' | 'root' | 'editor' | null;
+  dropTargetType: 'folder' | 'root' | 'editor' | 'attachment' | null;
   endDrag: () => void;
   isDragging: boolean;
 
@@ -27,7 +27,7 @@ interface DragState {
 
   // Actions
   prepareDrag: (path: string, name: string, x: number, y: number) => void;
-  setDropTarget: (path: string | null, type: 'folder' | 'root' | 'editor' | null) => void;
+  setDropTarget: (path: string | null, type: 'folder' | 'root' | 'editor' | 'attachment' | null) => void;
   startDrag: () => void;
   startX: number;
   startY: number;

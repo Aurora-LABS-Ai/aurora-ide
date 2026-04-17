@@ -23,6 +23,29 @@ export const getFilename = (path: string): string => {
     return path.split(/[/\\]/).pop() || path;
 };
 
+const IMAGE_EXTENSIONS = new Set([
+    'png',
+    'jpg',
+    'jpeg',
+    'gif',
+    'webp',
+    'bmp',
+    'svg',
+    'ico',
+    'tif',
+    'tiff',
+    'avif',
+]);
+
+/**
+ * Check whether a path points to an image file.
+ */
+export const isImageFilePath = (path: string): boolean => {
+    const filename = getFilename(path).toLowerCase();
+    const extension = filename.includes('.') ? filename.split('.').pop() || '' : '';
+    return IMAGE_EXTENSIONS.has(extension);
+};
+
 /**
  * Get language identifier from file extension or well-known filename for Monaco editor.
  */

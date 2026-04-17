@@ -5,7 +5,7 @@
 - [completed] Produce a concrete recommendation list of what Aurora should emulate, reimplement, or avoid from Zed.
 - [completed] Create a fresh branch for the current Aurora work snapshot.
 - [completed] Verify the current uncommitted workspace state before committing.
-- [in_progress] Stage and commit all current changes.
+- [completed] Stage and commit all current changes.
 
 # Review
 
@@ -14,3 +14,4 @@
 - Created branch `codex/aurora-ecosystem-foundation`.
 - Verification: `pnpm exec tsc --noEmit -p tsconfig.app.json` passed.
 - Verification: `pnpm exec eslint src scripts` failed with existing repo-wide lint issues outside this snapshot batch, including `src/App.tsx`, `src/components/chat/TaskView.tsx`, `src/components/editor/BrowserTab.tsx`, `src/components/modals/QuickOpenModal.tsx`, and others.
+- Created commit `80e866e` with message `chore: snapshot current Aurora work`.

@@ -1,4 +1,9 @@
 import { type ManifestConfig, generateManifest } from "material-icon-theme";
+import type {
+  ExplorerIconPack,
+  ExplorerIconRequest,
+  ResolvedExplorerIcon,
+} from "./icon-types";
 
 /**
  * Resolves the icon name for a given file or folder.
@@ -97,6 +102,29 @@ export const getIconName = (name: string, isFolder: boolean, isOpen: boolean = f
  */
 export const getIconUrl = (iconName: string): string => {
   return `/material-icons/${iconName}.svg`;
+};
+
+export const resolveMaterialExplorerIcon = (
+  request: ExplorerIconRequest,
+): ResolvedExplorerIcon => {
+  const iconName = getIconName(request.name, request.isFolder, request.isOpen);
+
+  return {
+    kind: "asset",
+    alt: request.name,
+    src: getIconUrl(iconName),
+  };
+};
+
+export const materialExplorerIconPack: ExplorerIconPack = {
+  manifest: {
+    id: "material",
+    name: "Material",
+    version: "builtin",
+    description: "Material-style explorer icons generated from material-icon-theme.",
+    source: "built-in",
+  },
+  resolveIcon: resolveMaterialExplorerIcon,
 };
 
 // 1. Generate the manifest once with your preferred configuration

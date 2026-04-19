@@ -23,13 +23,16 @@
 import React, { useRef } from 'react';
 import { useThemeStore } from '../../store/useThemeStore';
 import type { ThemeDefinition } from '../../types/theme';
-import { Check, Upload, Trash2 } from 'lucide-react';
+import { Check, FolderTree, Palette, Trash2, Upload } from 'lucide-react';
 import { clsx } from 'clsx';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import { isTauri } from '../../lib/tauri';
 import { useThemeImportDrag } from '../../hooks/useThemeImportDrag';
 import { settingsCardStyle, settingsDangerPanelStyle, settingsPrimaryButtonStyle, settingsSubtlePanelStyle } from './settings-shared';
+import { ExplorerIconPackPanel } from '../theme/ExplorerIconPackPanel';
+
+type AppearanceTab = 'themes' | 'iconPacks';
 
 export const ThemeSettingsTab: React.FC = () => {
     const {
@@ -43,6 +46,7 @@ export const ThemeSettingsTab: React.FC = () => {
     } = useThemeStore();
 
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const [activeTab, setActiveTab] = React.useState<AppearanceTab>('themes');
 
     const handleImportClick = async () => {
         if (isTauri()) {
@@ -155,71 +159,106 @@ export const ThemeSettingsTab: React.FC = () => {
     }
 
     return (
-        <div
-            className="h-full flex flex-col relative overflow-hidden"
-            data-theme-drop-zone="true"
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-        >
-            {isDragging && (
-                <div className="absolute inset-0 z-50 flex items-center justify-center rounded-[24px] border-2 border-dashed border-primary bg-primary/10 backdrop-blur-sm transition-all pointer-events-none">
-                    <div className="flex flex-col items-center gap-2 text-primary font-medium animate-bounce">
-                        <Upload size={24} />
-                        <span>Drop JSON theme to import</span>
+        <div className="h-full flex flex-col relative overflow-hidden">
+            <div className="flex-none pb-4">
+                <div className="flex flex-wrap rounded-[16px] p-1" style={settingsSubtlePanelStyle}>
+                    <button
+                        onClick={() => setActiveTab('themes')}
+                        className={clsx(
+                            "flex min-w-[110px] flex-1 items-center justify-center gap-1.5 rounded-[12px] px-3 py-2 text-xs font-medium whitespace-nowrap transition-colors",
+                            activeTab === 'themes'
+                                ? "text-primary"
+                                : "text-text-secondary hover:text-text-primary"
+                        )}
+                        style={activeTab === 'themes' ? settingsCardStyle : undefined}
+                    >
+                        <Palette size={14} />
+                        Themes
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('iconPacks')}
+                        className={clsx(
+                            "flex min-w-[110px] flex-1 items-center justify-center gap-1.5 rounded-[12px] px-3 py-2 text-xs font-medium whitespace-nowrap transition-colors",
+                            activeTab === 'iconPacks'
+                                ? "text-primary"
+                                : "text-text-secondary hover:text-text-primary"
+                        )}
+                        style={activeTab === 'iconPacks' ? settingsCardStyle : undefined}
+                    >
+                        <FolderTree size={14} />
+                        Icon Packs
+                    </button>
+                </div>
+            </div>
+
+            {activeTab === 'themes' ? (
+                <div
+                    className="flex-1 min-h-0 flex flex-col relative overflow-hidden"
+                    data-theme-drop-zone="true"
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                >
+                    {isDragging && (
+                        <div className="absolute inset-0 z-50 flex items-center justify-center rounded-[24px] border-2 border-dashed border-primary bg-primary/10 backdrop-blur-sm transition-all pointer-events-none">
+                            <div className="flex flex-col items-center gap-2 text-primary font-medium animate-bounce">
+                                <Upload size={24} />
+                                <span>Drop JSON theme to import</span>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="flex-none space-y-4 pb-4">
+                        <div className="flex items-center justify-between rounded-[20px] px-4 py-4" style={settingsCardStyle}>
+                            <div>
+                                <p className="text-sm font-semibold text-text-primary">Theme Library</p>
+                                <p className="mt-1 text-[11px] leading-relaxed text-text-secondary">
+                                    Pick a theme or import a JSON file. Hover states and previews now live in the same settings material language.
+                                </p>
+                            </div>
+                            <div>
+                                <input
+                                    type="file"
+                                    ref={fileInputRef}
+                                    onChange={handleFileChange}
+                                    accept=".json"
+                                    className="hidden"
+                                />
+                                <button
+                                    onClick={handleImportClick}
+                                    className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold text-primary-foreground transition-colors"
+                                    style={settingsPrimaryButtonStyle}
+                                >
+                                    <Upload size={12} />
+                                    Import Theme
+                                </button>
+                            </div>
+                        </div>
+
+                        {error && (
+                            <div className="rounded-[18px] p-3 text-xs text-danger" style={settingsDangerPanelStyle}>
+                                {error}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto min-h-0 pr-2 -mr-2">
+                        <div className="grid grid-cols-2 gap-3 pb-24">
+                            {themes.map((theme) => (
+                                <ThemeCard
+                                    key={theme.id}
+                                    theme={theme}
+                                    isActive={theme.id === activeThemeId}
+                                    onSelect={() => setActiveTheme(theme.id)}
+                                    onDelete={theme.isBuiltIn ? undefined : () => deleteTheme(theme.id)}
+                                />
+                            ))}
+                        </div>
                     </div>
                 </div>
+            ) : (
+                <ExplorerIconPackPanel />
             )}
-
-            {/* Header Section - Fixed */}
-            <div className="flex-none space-y-4 pb-4">
-                <div className="flex items-center justify-between rounded-[20px] px-4 py-4" style={settingsCardStyle}>
-                    <div>
-                        <p className="text-sm font-semibold text-text-primary">Theme Library</p>
-                        <p className="mt-1 text-[11px] leading-relaxed text-text-secondary">
-                            Pick a theme or import a JSON file. Hover states and previews now live in the same settings material language.
-                        </p>
-                    </div>
-                    <div>
-                        <input
-                            type="file"
-                            ref={fileInputRef}
-                            onChange={handleFileChange}
-                            accept=".json"
-                            className="hidden"
-                        />
-                        <button
-                            onClick={handleImportClick}
-                            className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold text-primary-foreground transition-colors"
-                            style={settingsPrimaryButtonStyle}
-                        >
-                            <Upload size={12} />
-                            Import Theme
-                        </button>
-                    </div>
-                </div>
-
-                {error && (
-                    <div className="rounded-[18px] p-3 text-xs text-danger" style={settingsDangerPanelStyle}>
-                        {error}
-                    </div>
-                )}
-            </div>
-
-            {/* Scrollable Grid Section */}
-            <div className="flex-1 overflow-y-auto min-h-0 pr-2 -mr-2">
-                <div className="grid grid-cols-2 gap-3 pb-24">
-                    {themes.map((theme) => (
-                        <ThemeCard
-                            key={theme.id}
-                            theme={theme}
-                            isActive={theme.id === activeThemeId}
-                            onSelect={() => setActiveTheme(theme.id)}
-                            onDelete={theme.isBuiltIn ? undefined : () => deleteTheme(theme.id)}
-                        />
-                    ))}
-                </div>
-            </div>
         </div>
     );
 };

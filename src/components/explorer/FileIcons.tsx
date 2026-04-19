@@ -21,7 +21,8 @@
  */
 
 import React from 'react';
-import { getIconName, getIconUrl } from '../../lib/material-icon-theme';
+import { resolveExplorerIcon } from '../../lib/icon-registry';
+import { useSettingsStore } from '../../store/useSettingsStore';
 
 interface IconProps {
   name: string;
@@ -33,18 +34,6 @@ interface IconProps {
 interface FolderIconProps extends IconProps {
   open?: boolean;
 }
-
-// Aurora-specific folder names
-const AURORA_FOLDER = '.aurora';
-
-/**
- * Check if a file is inside the .aurora folder
- */
-const isAuroraFile = (path?: string): boolean => {
-  if (!path) return false;
-  const normalizedPath = path.replace(/\\/g, '/');
-  return normalizedPath.includes(`/${AURORA_FOLDER}/`) || normalizedPath.includes(`\\${AURORA_FOLDER}\\`);
-};
 
 /**
  * Aurora Rules Icon - for .md files inside .aurora folder
@@ -98,49 +87,37 @@ const AuroraFolderIcon: React.FC<{ open?: boolean; className?: string }> = ({ op
   </div>
 );
 
+const AssetIcon: React.FC<{ src: string; alt: string; className?: string }> = ({ src, alt, className }) => (
+  <img
+    src={src}
+    alt={alt}
+    className={className}
+    draggable={false}
+    style={{ objectFit: 'contain' }}
+  />
+);
+
 export const FileIcon: React.FC<IconProps> = ({ name, className, path }) => {
-  // Check for Aurora rules files (.md files inside .aurora folder)
-  if (isAuroraFile(path) && name.toLowerCase().endsWith('.md')) {
+  const explorerIconPack = useSettingsStore((state) => state.explorerIconPack);
+  const icon = resolveExplorerIcon({ name, path, isFolder: false }, explorerIconPack);
+
+  if (icon.kind === 'aurora-rules') {
     return <AuroraRulesIcon className={className} />;
   }
 
-  // 1. Determine which icon definition to use (e.g. "react", "typescript")
-  const iconName = getIconName(name, false);
-
-  // 2. Get the URL
-  const src = getIconUrl(iconName);
-
-  return (
-    <img
-      src={src}
-      alt={name}
-      className={className}
-      draggable={false}
-      // Ensure the icon doesn't look blurry
-      style={{ objectFit: 'contain' }}
-    />
-  );
+  return <AssetIcon src={icon.src || '/material-icons/file.svg'} alt={icon.alt} className={className} />;
 };
 
 export const FolderIcon: React.FC<FolderIconProps> = ({ name, open, className }) => {
-  // Check for .aurora folder
-  if (name === AURORA_FOLDER || name === 'aurora') {
+  const explorerIconPack = useSettingsStore((state) => state.explorerIconPack);
+  const icon = resolveExplorerIcon(
+    { name: name || 'folder', isFolder: true, isOpen: open },
+    explorerIconPack,
+  );
+
+  if (icon.kind === 'aurora-folder') {
     return <AuroraFolderIcon open={open} className={className} />;
   }
 
-  // 1. Determine folder icon (e.g. "folder-src", "folder-open")
-  const iconName = getIconName(name || 'folder', true, open);
-
-  // 2. Get the URL
-  const src = getIconUrl(iconName);
-
-  return (
-    <img
-      src={src}
-      alt={name}
-      className={className}
-      draggable={false}
-      style={{ objectFit: 'contain' }}
-    />
-  );
+  return <AssetIcon src={icon.src || '/material-icons/folder.svg'} alt={icon.alt} className={className} />;
 };

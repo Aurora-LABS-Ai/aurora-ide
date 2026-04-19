@@ -59,6 +59,15 @@ fn main() {
         }
     }
 
+    match args.execute_non_gui_command() {
+        Ok(true) => std::process::exit(0),
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("Error: {}", error);
+            std::process::exit(1);
+        }
+    }
+
     // If a path was provided, spawn a detached GUI process and exit
     // This frees the terminal immediately
     if args.path.is_some() {

@@ -8,6 +8,7 @@ mod context;
 mod db;
 mod explorer;
 mod file_cache;
+pub mod icon_pack;
 mod mcp;
 mod services;
 mod undo_redo;

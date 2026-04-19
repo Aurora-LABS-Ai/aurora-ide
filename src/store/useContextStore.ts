@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
+import type { Message } from "../types";
+import { buildContextTurnsFromMessages } from "../services/context-rehydration";
 
 // Rust Context Engine state
 interface RustContextState {
@@ -16,6 +18,7 @@ interface RustContextState {
 
 interface ContextState extends ContextUsage {
   // Sync with Rust Context Engine
+  initFromThread: (threadId: string, messages: Message[]) => Promise<void>;
   syncFromRust: (threadId: string) => Promise<void>;
   estimateFromRust: (threadId: string, systemPrompt: string) => Promise<void>;
   
@@ -95,6 +98,38 @@ export const useContextStore = create<ContextState>((set, get) => ({
   totalTurns: 0,
   summarizedTurns: 0,
   needsSummarization: false,
+
+  initFromThread: async (threadId: string, messages: Message[]) => {
+    try {
+      const state = get();
+      const turns = buildContextTurnsFromMessages(threadId, messages);
+      const rustState = await invoke<RustContextState>("context_init_from_thread", {
+        threadId,
+        turns,
+        contextWindow: state.contextWindow,
+        maxOutput: state.maxOutputTokens,
+      });
+
+      set({
+        usedContextTokens: rustState.usedTokens,
+        usagePercentage: Math.round(rustState.usagePercentage),
+        isNearLimit: rustState.usagePercentage >= 80,
+        isOverLimit: rustState.usagePercentage >= 100,
+        hasRealUsage: false,
+        totalTurns: rustState.totalTurns,
+        summarizedTurns: rustState.summarizedTurns,
+        needsSummarization: rustState.needsSummarization,
+      });
+
+      console.log("[ContextStore] Rehydrated Rust context from thread:", {
+        threadId,
+        turnCount: turns.length,
+        totalTurns: rustState.totalTurns,
+      });
+    } catch (err) {
+      console.error("[ContextStore] Failed to initialize from thread:", err);
+    }
+  },
 
   // Sync turn counts and summarization status from Rust (NOT token usage - API provides that)
   syncFromRust: async (threadId: string) => {

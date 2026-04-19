@@ -13,8 +13,9 @@ import React, { useState, useMemo } from 'react';
 import { ChevronDown, ChevronRight, FileEdit, RefreshCw } from 'lucide-react';
 import { useAuditStore } from '../../store/useAuditStore';
 import { useEditorStore } from '../../store/useEditorStore';
+import { useSettingsStore } from '../../store/useSettingsStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
-import { getIconName, getIconUrl } from '../../lib/material-icon-theme';
+import { resolveExplorerIcon } from '../../lib/icon-registry';
 
 type FileChangeType = 'created' | 'modified' | 'deleted';
 
@@ -356,6 +357,7 @@ interface FileItemProps {
 }
 
 const FileItem: React.FC<FileItemProps> = ({ change, onClick, color, disabled }) => {
+  const explorerIconPack = useSettingsStore((state) => state.explorerIconPack);
   // Get relative path for display
   const { rootPath } = useWorkspaceStore.getState();
   const displayPath = rootPath && change.path.startsWith(rootPath)
@@ -393,6 +395,10 @@ const FileItem: React.FC<FileItemProps> = ({ change, onClick, color, disabled })
     : change.changeType === 'modified'
       ? 'Modified'
       : 'Deleted';
+  const icon = resolveExplorerIcon(
+    { name: change.fileName, path: change.path, isFolder: false },
+    explorerIconPack,
+  );
 
   return (
     <div
@@ -400,7 +406,7 @@ const FileItem: React.FC<FileItemProps> = ({ change, onClick, color, disabled })
       className={`group flex items-center gap-2 px-4 py-1.5 transition-colors ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-sidebar-item-hover cursor-pointer'}`}
     >
       <img
-        src={getIconUrl(getIconName(change.fileName, false))}
+        src={icon.src || '/material-icons/file.svg'}
         alt=""
         className="w-4 h-4 flex-shrink-0"
         style={{ opacity: disabled ? 0.5 : 1 }}

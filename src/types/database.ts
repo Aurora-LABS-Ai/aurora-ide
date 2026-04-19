@@ -9,6 +9,7 @@ export interface AppSettings {
   autoApproveTools: boolean;
   autoSave: string;
   autoSaveDelay: number;
+  explorerIconPack?: string;
   fontSize: number;
   fireworksAccountId?: string;
   fireworksTabEnabled?: boolean;

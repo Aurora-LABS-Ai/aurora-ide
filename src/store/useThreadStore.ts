@@ -176,6 +176,15 @@ const isDevMode = (): boolean => {
   return env?.MODE === "development";
 };
 
+const rehydrateActiveThreadContext = async (
+  threadId: string,
+  thread: Thread,
+): Promise<void> => {
+  const contextStore = useContextStore.getState();
+  await contextStore.initFromThread(threadId, thread.messages);
+  contextStore.restoreFromThread(thread.contextUsage);
+};
+
 /**
  * DevPersistenceManager - Centralized file-based persistence for development
  *
@@ -480,11 +489,7 @@ export const useThreadStore = create<ThreadState>()(
         const existingThread = get().threads[threadId];
         if (existingThread) {
           set({ currentThreadId: threadId });
-          // CRITICAL: Restore context usage from thread when switching
-          // This prevents the context indicator from resetting to 0
-          useContextStore
-            .getState()
-            .restoreFromThread(existingThread.contextUsage);
+          await rehydrateActiveThreadContext(threadId, existingThread);
           console.log(
             `[ThreadStore] Loaded thread ${threadId} from memory (${existingThread.messages.length} messages)`,
           );
@@ -500,11 +505,7 @@ export const useThreadStore = create<ThreadState>()(
                 [threadId]: loadedThread,
               },
             }));
-            // CRITICAL: Restore context usage from thread when switching
-            // This prevents the context indicator from resetting to 0
-            useContextStore
-              .getState()
-              .restoreFromThread(loadedThread.contextUsage);
+            await rehydrateActiveThreadContext(threadId, loadedThread);
             console.log(
               `[ThreadStore] Loaded thread ${threadId} from file (${loadedThread.messages.length} messages)`,
             );
@@ -825,11 +826,7 @@ export const useThreadStore = create<ThreadState>()(
                   useThreadStore.setState((s) => ({
                     threads: { ...s.threads, [thread.id]: thread },
                   }));
-                  // CRITICAL: Restore context usage from thread on app startup
-                  // This ensures the context indicator shows correct usage after restart
-                  useContextStore
-                    .getState()
-                    .restoreFromThread(thread.contextUsage);
+                  void rehydrateActiveThreadContext(thread.id, thread);
                   console.log(
                     "[ThreadStore] Loaded persisted thread from DB:",
                     thread.id,

@@ -35,7 +35,8 @@ import clsx from "clsx";
 import { twMerge } from "tailwind-merge";
 import { motion } from "framer-motion";
 import type { ToolCall, ToolProposal } from "../../types";
-import { getIconName, getIconUrl } from "../../lib/material-icon-theme";
+import { resolveExplorerIcon } from "../../lib/icon-registry";
+import { useSettingsStore } from "../../store/useSettingsStore";
 import { ShimmerText } from "../ui/ShimmerText";
 import { getProfessionalToolName } from "../../services/tool-display";
 import { getToolIcon } from "../icons/ToolIcons";
@@ -44,6 +45,26 @@ import { getToolIcon } from "../icons/ToolIcons";
 function cn(...inputs: (string | undefined | null | false)[]) {
   return twMerge(clsx(inputs));
 }
+
+const ExplorerFileAssetIcon: React.FC<{
+  className?: string;
+  fileName: string;
+  path?: string;
+}> = ({ className, fileName, path }) => {
+  const explorerIconPack = useSettingsStore((state) => state.explorerIconPack);
+  const icon = resolveExplorerIcon(
+    { name: fileName, path, isFolder: false },
+    explorerIconPack,
+  );
+
+  return (
+    <img
+      src={icon.src || "/material-icons/file.svg"}
+      alt=""
+      className={className}
+    />
+  );
+};
 
 const summarizeShellCommand = (command: string): string => {
   const compact = command.replace(/\s+/g, " ").trim();
@@ -248,9 +269,9 @@ const MultiFileResultsView: React.FC<MultiFileResultsProps> = ({ files }) => {
               ) : (
                 <X size={10} className="text-error shrink-0" />
               )}
-              <img
-                src={getIconUrl(getIconName(fileName, false))}
-                alt=""
+              <ExplorerFileAssetIcon
+                fileName={fileName}
+                path={file.path}
                 className="w-3 h-3 flex-shrink-0"
               />
               <span className="truncate text-[10px] text-text-secondary group-hover:text-text-primary transition-colors">
@@ -342,9 +363,9 @@ const AuroraSearchResultsView: React.FC<AuroraSearchResultsProps> = ({
                 onClick={() => handleResultClick(result)}
                 className="w-full flex items-center gap-2 px-2 py-1 hover:bg-sidebar-item-hover cursor-pointer transition-colors"
               >
-                <img
-                  src={getIconUrl(getIconName(result.fileName, false))}
-                  alt=""
+                <ExplorerFileAssetIcon
+                  fileName={result.fileName}
+                  path={result.filePath}
                   className="w-3 h-3 flex-shrink-0 opacity-80"
                 />
 
@@ -536,9 +557,8 @@ const CodeView: React.FC<CodeViewProps> = ({
                 : "bg-code-block border-border/50 text-text-secondary",
           )}
         >
-          <img
-            src={getIconUrl(getIconName(fileName, false))}
-            alt=""
+          <ExplorerFileAssetIcon
+            fileName={fileName}
             className="w-3.5 h-3.5 flex-shrink-0 opacity-90"
           />
           <span className="text-[10.5px] font-mono tracking-tight">
@@ -1194,9 +1214,9 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(
                         className="text-info/80 fill-info/10 flex-shrink-0"
                       />
                     ) : (
-                      <img
-                        src={getIconUrl(getIconName(fileName, false))}
-                        alt=""
+                      <ExplorerFileAssetIcon
+                        fileName={fileName}
+                        path={filePath}
                         className="w-3 h-3 flex-shrink-0"
                       />
                     )}

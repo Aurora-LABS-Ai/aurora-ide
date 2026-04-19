@@ -5,11 +5,18 @@ import {
   formatModelDisplayName,
   formatProviderNickname,
 } from "../lib/provider-display";
+import {
+  DEFAULT_EXPLORER_ICON_PACK_ID,
+  isExplorerIconPackAvailable,
+  setActiveExplorerIconPackId,
+} from "../lib/icon-packs";
+import type { ExplorerIconPackId } from "../lib/icon-types";
 import { resolveThinkingModelPair } from "../lib/thinking-models";
 import { databaseService } from "../services/database";
 import { providerCatalogService, type ProviderCatalogPreset } from "../services/provider-catalog";
 import type { ProviderConfig } from "../services/providers/types";
 import type { AppSettings as DbAppSettings, DbLLMProvider } from "../types/database";
+import { useIconPackStore } from "./useIconPackStore";
 
 const UI_FONT_FAMILIES: Record<string, string> = {
   system: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif",
@@ -55,6 +62,7 @@ interface SettingsState {
   deleteProvider: (id: string) => void;
 
   // Editor Settings
+  explorerIconPack: ExplorerIconPackId;
   fontSize: number;
   fireworksAccountId: string;
   fireworksTabEnabled: boolean;
@@ -95,6 +103,7 @@ interface SettingsState {
   setAutoApproveTools: (value: boolean) => void;
   setAutoSave: (mode: 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange') => void;
   setAutoSaveDelay: (delay: number) => void;
+  setExplorerIconPack: (packId: ExplorerIconPackId) => void;
   setFontSize: (size: number) => void;
   setFireworksAccountId: (accountId: string) => void;
   setFireworksTabEnabled: (enabled: boolean) => void;
@@ -398,6 +407,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // Providers
   providers: [],
   selectedModel: DEFAULT_SELECTED_MODEL,
+  explorerIconPack: DEFAULT_EXPLORER_ICON_PACK_ID,
 
   // Tool Approval
   autoApproveTools: false,
@@ -454,6 +464,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     set({ isLoading: true });
 
     try {
+      await useIconPackStore.getState().initializeFromDatabase();
       const presetProviders = await providerCatalogService.getPresets();
 
       // Check if we have providers in the database
@@ -511,6 +522,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       if (appSettings) {
         const uiFontFamily = appSettings.uiFontFamily ?? "system";
         const uiTextScale = appSettings.uiTextScale ?? 1;
+        const explorerIconPack = isExplorerIconPackAvailable(
+          appSettings.explorerIconPack || DEFAULT_EXPLORER_ICON_PACK_ID,
+        )
+          ? (appSettings.explorerIconPack || DEFAULT_EXPLORER_ICON_PACK_ID)
+          : DEFAULT_EXPLORER_ICON_PACK_ID;
         const selectedModel = resolveSelectedModel(
           appSettings.selectedModel || DEFAULT_SELECTED_MODEL,
           get().providers,
@@ -526,6 +542,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           selectedModel,
           autoApproveTools: appSettings.autoApproveTools ?? false,
           autoAcceptChanges: appSettings.autoAcceptChanges ?? false,
+          explorerIconPack,
           syntaxValidationEnabled: appSettings.syntaxValidationEnabled ?? true,
           projectLayoutEnabled: appSettings.projectLayoutEnabled ?? true,
           skillsEnabled: appSettings.skillsEnabled ?? true,
@@ -545,6 +562,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           uiTextScale,
         });
 
+        setActiveExplorerIconPackId(explorerIconPack);
         applyUiPreferences(uiFontFamily, uiTextScale);
       }
 
@@ -560,6 +578,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       }
 
       const { uiTextScale, uiFontFamily } = get();
+      setActiveExplorerIconPackId(get().explorerIconPack);
       applyUiPreferences(uiFontFamily, uiTextScale);
 
       set({ isInitialized: true, isLoading: false });
@@ -583,6 +602,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         selectedModel: state.selectedModel,
         autoApproveTools: state.autoApproveTools,
         autoAcceptChanges: state.autoAcceptChanges,
+        explorerIconPack: state.explorerIconPack,
         syntaxValidationEnabled: state.syntaxValidationEnabled,
         projectLayoutEnabled: state.projectLayoutEnabled,
         skillsEnabled: state.skillsEnabled,
@@ -758,6 +778,15 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setFontSize: (size: number) => {
     set({ fontSize: size });
+    get().saveToDatabase();
+  },
+
+  setExplorerIconPack: (packId: ExplorerIconPackId) => {
+    const nextPackId = isExplorerIconPackAvailable(packId)
+      ? packId
+      : DEFAULT_EXPLORER_ICON_PACK_ID;
+    set({ explorerIconPack: nextPackId });
+    setActiveExplorerIconPackId(nextPackId);
     get().saveToDatabase();
   },
 

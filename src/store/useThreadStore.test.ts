@@ -23,6 +23,7 @@ const {
   listThreadsMock,
   saveThreadMock,
   deleteThreadMock,
+  initFromThreadMock,
   restoreFromThreadMock,
 } = vi.hoisted(() => ({
   deletePathMock: vi.fn<(path: string) => Promise<void>>(async () => undefined),
@@ -40,6 +41,7 @@ const {
   listThreadsMock: vi.fn<() => Promise<ServiceThreadSummary[]>>(async () => []),
   saveThreadMock: vi.fn(async () => undefined),
   deleteThreadMock: vi.fn(async () => undefined),
+  initFromThreadMock: vi.fn(async () => undefined),
   restoreFromThreadMock: vi.fn(),
 }));
 
@@ -63,6 +65,7 @@ vi.mock("../services/thread-service", () => ({
 vi.mock("./useContextStore", () => ({
   useContextStore: {
     getState: () => ({
+      initFromThread: initFromThreadMock,
       restoreFromThread: restoreFromThreadMock,
     }),
   },
@@ -154,6 +157,67 @@ describe("useThreadStore migration behavior", () => {
     expect(loadThreadMock).toHaveBeenCalledWith("file-thread");
     expect(readFileContentMock).not.toHaveBeenCalled();
     expect(thread).toBeNull();
+  });
+
+  it("rehydrates Rust context when loading a thread from the database", async () => {
+    loadThreadMock.mockResolvedValue({
+      id: "db-thread",
+      title: "Loaded from DB",
+      summary: null,
+      messages: [
+        {
+          id: "msg-1",
+          role: "user",
+          content: "hello",
+          timestamp: "2026-03-27T12:00:00.000Z",
+        },
+        {
+          id: "msg-2",
+          role: "assistant",
+          content: "world",
+          timestamp: "2026-03-27T12:01:00.000Z",
+          thinking: "thinking",
+          timeline: [
+            {
+              id: "thinking-1",
+              type: "thinking",
+              thinking: "thinking",
+              timestamp: 1,
+            },
+            {
+              id: "content-1",
+              type: "content",
+              content: "world",
+              timestamp: 2,
+            },
+          ],
+        },
+      ],
+      token_usage: null,
+      context_usage: {
+        usedTokens: 14,
+        contextWindow: 1000,
+        percentage: 1.4,
+      },
+      created_at: "2026-03-27T12:00:00.000Z",
+      updated_at: "2026-03-27T12:05:00.000Z",
+    });
+
+    const thread = await useThreadStore.getState().loadThread("db-thread");
+
+    expect(thread?.id).toBe("db-thread");
+    expect(initFromThreadMock).toHaveBeenCalledWith(
+      "db-thread",
+      expect.arrayContaining([
+        expect.objectContaining({ id: "msg-1", sender: "user" }),
+        expect.objectContaining({ id: "msg-2", sender: "assistant" }),
+      ]),
+    );
+    expect(restoreFromThreadMock).toHaveBeenCalledWith({
+      usedTokens: 14,
+      contextWindow: 1000,
+      percentage: 1.4,
+    });
   });
 
   it("uses service summaries for thread history in non-dev mode", async () => {

@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Check, Palette, PenLine, Eye, Save, X, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Check, Palette, PenLine, Eye, Save, X, AlertCircle, CheckCircle2, FolderTree } from 'lucide-react';
 import { useThemeStore } from '../../store/useThemeStore';
 import { themeService } from '../../services/theme-service';
 import type { ThemeDefinition, ThemeFile } from '../../types/theme';
 import clsx from 'clsx';
+import { ExplorerIconPackPanel } from './ExplorerIconPackPanel';
 
-type TabType = 'themes' | 'editor';
+type TabType = 'themes' | 'iconPacks' | 'editor';
 
 interface EditorState {
     jsonInput: string;
@@ -141,7 +142,7 @@ export const ThemePanel: React.FC = () => {
     const [activeTab, setActiveTab] = useState<TabType>(() => {
         // Restore from localStorage
         const saved = localStorage.getItem('theme-panel-active-tab');
-        return (saved === 'themes' || saved === 'editor') ? saved : 'themes';
+        return (saved === 'themes' || saved === 'iconPacks' || saved === 'editor') ? saved : 'themes';
     });
     const [previewThemeId, setPreviewThemeId] = useState<string | null>(null);
     const [committedThemeId, setCommittedThemeId] = useState(activeThemeId);
@@ -341,11 +342,11 @@ export const ThemePanel: React.FC = () => {
         <div className="flex h-full flex-col text-text-primary" style={shellStyle}>
             {/* Tab Header */}
             <div className="border-b px-2 py-2" style={headerStyle}>
-                <div className="flex rounded-[14px] p-1" style={panelStyle}>
+                <div className="flex flex-wrap rounded-[14px] p-1" style={panelStyle}>
                     <button
                         onClick={() => setActiveTab('themes')}
                         className={clsx(
-                            "flex items-center gap-1.5 rounded-[10px] px-3 py-2 text-xs font-medium transition-colors",
+                            "flex min-w-[92px] flex-1 items-center justify-center gap-1.5 rounded-[10px] px-3 py-2 text-xs font-medium whitespace-nowrap transition-colors",
                             activeTab === 'themes'
                                 ? "text-primary"
                                 : "border-transparent text-text-secondary hover:text-text-primary"
@@ -356,9 +357,22 @@ export const ThemePanel: React.FC = () => {
                         Themes
                     </button>
                     <button
+                        onClick={() => setActiveTab('iconPacks')}
+                        className={clsx(
+                            "flex min-w-[92px] flex-1 items-center justify-center gap-1.5 rounded-[10px] px-3 py-2 text-xs font-medium whitespace-nowrap transition-colors",
+                            activeTab === 'iconPacks'
+                                ? "text-primary"
+                                : "border-transparent text-text-secondary hover:text-text-primary"
+                        )}
+                        style={activeTab === 'iconPacks' ? activeCardStyle : undefined}
+                    >
+                        <FolderTree size={14} />
+                        Icon Packs
+                    </button>
+                    <button
                         onClick={() => setActiveTab('editor')}
                         className={clsx(
-                            "flex items-center gap-1.5 rounded-[10px] px-3 py-2 text-xs font-medium transition-colors",
+                            "flex min-w-[92px] flex-1 items-center justify-center gap-1.5 rounded-[10px] px-3 py-2 text-xs font-medium whitespace-nowrap transition-colors",
                             activeTab === 'editor'
                                 ? "text-primary"
                                 : "border-transparent text-text-secondary hover:text-text-primary"
@@ -379,32 +393,36 @@ export const ThemePanel: React.FC = () => {
                     </div>
                 )}
                 {activeTab === 'themes' ? (
-                    <ThemesTab
-                        themes={themes}
-                        activeThemeId={activeThemeId}
-                        previewThemeId={previewThemeId}
-                        committedThemeId={committedThemeId}
-                        onMouseEnter={handleMouseEnter}
-                        onMouseLeave={handleMouseLeaveList}
-                        onSelect={handleSelect}
-                        onEdit={(theme) => {
-                            const nextName = theme.isBuiltIn ? `${theme.name} Custom` : theme.name;
-                            setEditorState(prev => ({
-                                ...prev,
-                                jsonInput: JSON.stringify({
-                                    name: nextName,
-                                    type: theme.type,
-                                    author: theme.author,
-                                    version: theme.version,
-                                    colors: theme.colors,
-                                    tokenColors: theme.tokenColors
-                                }, null, 2),
-                                saveStatus: 'idle',
-                                saveError: null
-                            }));
-                            setActiveTab('editor');
-                        }}
-                    />
+                    <div className="flex min-h-0 flex-1 flex-col">
+                        <ThemesTab
+                            themes={themes}
+                            activeThemeId={activeThemeId}
+                            previewThemeId={previewThemeId}
+                            committedThemeId={committedThemeId}
+                            onMouseEnter={handleMouseEnter}
+                            onMouseLeave={handleMouseLeaveList}
+                            onSelect={handleSelect}
+                            onEdit={(theme) => {
+                                const nextName = theme.isBuiltIn ? `${theme.name} Custom` : theme.name;
+                                setEditorState(prev => ({
+                                    ...prev,
+                                    jsonInput: JSON.stringify({
+                                        name: nextName,
+                                        type: theme.type,
+                                        author: theme.author,
+                                        version: theme.version,
+                                        colors: theme.colors,
+                                        tokenColors: theme.tokenColors
+                                    }, null, 2),
+                                    saveStatus: 'idle',
+                                    saveError: null
+                                }));
+                                setActiveTab('editor');
+                            }}
+                        />
+                    </div>
+                ) : activeTab === 'iconPacks' ? (
+                    <ExplorerIconPackPanel />
                 ) : (
                     <EditorTab
                         editorState={editorState}

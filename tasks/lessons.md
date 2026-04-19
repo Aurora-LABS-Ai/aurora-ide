@@ -7,3 +7,8 @@
 - Do not change this app's visual design unless the user explicitly asks for design work; preserve the existing UI language when fixing bugs.
 - Verify the actual alpha/transparency of user-provided image assets before styling around them; do not assume an image is transparent just because it is intended to be.
 - Do not conflate the application icon with empty-state or onboarding artwork; keep brand/app icon and empty-surface assets mapped to their explicitly assigned files.
+- When extending Appearance in Aurora, match the existing card-based browsing pattern; do not downgrade icon-pack browsing to a plain dropdown if themes are presented as visual cards/tabs.
+- In narrow Aurora sidebars, use container-safe wrapping and auto-fit card layouts; do not force fixed multi-column grids or single-row tab bars that collapse into squeezed text.
+- In narrow settings sidebars, preserve explicit horizontal gutter space; avoid negative-margin scroll tricks or min-width card layouts that let cards touch or overlap the pane edges.
+- When documenting a package-script CLI workflow, run the documented command verbatim; argument forwarding through `pnpm` or wrapper scripts is easy to get wrong and must be proven, not assumed.
+- Do not run multiple long Cargo build/run validations in parallel in this repo; they contend on the build directory and package cache, creating noisy lock waits and hard-to-read validation results.

@@ -6,6 +6,20 @@ import type { AppSettings, DbLLMProvider, EditorState, ExplorerState, ToolSettin
  * Database service for persisting application state
  */
 class DatabaseService {
+  public async getSetting(key: string): Promise<string | null> {
+    try {
+      const result = await invoke<string | null>('get_setting', { key });
+      return result;
+    } catch (error) {
+      console.error(`Failed to get setting ${key}:`, error);
+      return null;
+    }
+  }
+
+  public async setSetting(key: string, value: string): Promise<void> {
+    await invoke('set_setting', { key, value });
+  }
+
   /**
    * Delete a provider
    */

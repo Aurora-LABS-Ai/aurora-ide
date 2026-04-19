@@ -98,6 +98,10 @@ impl<'a> SettingsRepository<'a> {
                     settings.auto_accept_changes =
                         serde_json::from_str(&setting.value).unwrap_or(settings.auto_accept_changes)
                 }
+                "explorerIconPack" => {
+                    settings.explorer_icon_pack = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.explorer_icon_pack.clone())
+                }
                 "fontSize" => {
                     settings.font_size =
                         serde_json::from_str(&setting.value).unwrap_or(settings.font_size)
@@ -189,6 +193,10 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting(
             "autoAcceptChanges",
             &serde_json::to_string(&settings.auto_accept_changes).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "explorerIconPack",
+            &serde_json::to_string(&settings.explorer_icon_pack).unwrap_or_default(),
         )?;
         self.set_setting(
             "fontSize",

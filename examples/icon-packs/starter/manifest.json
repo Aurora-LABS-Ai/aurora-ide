@@ -1,0 +1,31 @@
+{
+  "format": "aurora-pack",
+  "schemaVersion": 1,
+  "packageType": "icon-pack",
+  "manifest": {
+    "id": "starter-pack",
+    "name": "Starter Pack",
+    "version": "1.0.0",
+    "author": "Aurora",
+    "description": "Minimal starter pack for building a .aurora icon bundle."
+  },
+  "icons": {
+    "defaultFile": "icons/default-file.svg",
+    "defaultFolder": "icons/default-folder.svg",
+    "defaultFolderExpanded": "icons/default-folder-open.svg",
+    "typescript": "icons/typescript.svg",
+    "packageJson": "icons/package-json.svg"
+  },
+  "mappings": {
+    "defaultFile": "defaultFile",
+    "defaultFolder": "defaultFolder",
+    "defaultFolderExpanded": "defaultFolderExpanded",
+    "fileExtensions": {
+      "ts": "typescript",
+      "tsx": "typescript"
+    },
+    "fileNames": {
+      "package.json": "packageJson"
+    }
+  }
+}

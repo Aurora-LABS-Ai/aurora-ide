@@ -7,8 +7,10 @@
 //! - `aurora --help` - Show help
 //! - `aurora --version` - Show version
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::{Component, Path, PathBuf};
+
+use crate::icon_pack::{execute_cli_command, IconPackCommand};
 
 /// Normalize a path by resolving `.` and `..` components without using canonicalize()
 /// This avoids the \\?\ prefix that Windows canonicalize() adds
@@ -53,6 +55,9 @@ fn normalize_path(path: &Path) -> PathBuf {
 #[command(version)]
 #[command(about = "AI-Powered Agentic Code Editor", long_about = None)]
 pub struct CliArgs {
+    #[command(subcommand)]
+    pub command: Option<CliCommand>,
+
     /// Path to open (file or folder). Use "." for current directory.
     #[arg(value_name = "PATH")]
     pub path: Option<PathBuf>,
@@ -88,6 +93,16 @@ pub struct CliArgs {
     /// Uninstall the 'aurora' CLI command from system PATH
     #[arg(long)]
     pub uninstall_cli: bool,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum CliCommand {
+    /// Build and validate Aurora icon packs.
+    #[command(name = "icon-pack")]
+    IconPack {
+        #[command(subcommand)]
+        command: IconPackCommand,
+    },
 }
 
 impl CliArgs {
@@ -152,6 +167,17 @@ impl CliArgs {
             Some(resolved)
         } else {
             None
+        }
+    }
+
+    /// Execute a non-GUI CLI command and return whether one was handled.
+    pub fn execute_non_gui_command(&self) -> Result<bool, String> {
+        match &self.command {
+            Some(CliCommand::IconPack { command }) => {
+                execute_cli_command(command).map_err(|error| error.to_string())?;
+                Ok(true)
+            }
+            None => Ok(false),
         }
     }
 }
@@ -415,9 +441,12 @@ pub mod install {
         println!("\nAurora CLI installed successfully!");
         println!("Location: {}", install_dir.display());
         println!("\nUsage:");
-        println!("  aurora .              Open current directory");
-        println!("  aurora /path/to/dir   Open specific directory");
-        println!("  aurora file.txt       Open a file");
+        println!("  aurora .                              Open current directory");
+        println!("  aurora /path/to/dir                   Open specific directory");
+        println!("  aurora file.txt                       Open a file");
+        println!(
+            "  aurora icon-pack build --manifest ... Build a .aurora icon-pack bundle"
+        );
 
         Ok(())
     }
@@ -560,9 +589,12 @@ pub mod install {
         println!("Add this to your ~/.bashrc or ~/.zshrc:");
         println!("  export PATH=\"$HOME/.local/bin:$PATH\"");
         println!("\nUsage:");
-        println!("  aurora .              Open current directory");
-        println!("  aurora /path/to/dir   Open specific directory");
-        println!("  aurora file.txt       Open a file");
+        println!("  aurora .                              Open current directory");
+        println!("  aurora /path/to/dir                   Open specific directory");
+        println!("  aurora file.txt                       Open a file");
+        println!(
+            "  aurora icon-pack build --manifest ... Build a .aurora icon-pack bundle"
+        );
 
         Ok(())
     }

@@ -4,6 +4,7 @@ version = "1.5.0"
 description = "Aurora - AI-Powered Agentic Code Editor"
 authors = ["Aurora Team"]
 edition = "2021"
+default-run = "aurora"
 
 [lib]
 name = "aurora_lib"
@@ -73,6 +74,8 @@ tiktoken-rs = "0.6"
 
 # CLI argument parsing for `aurora .` command
 clap = { version = "4", features = ["derive"] }
+base64 = "0.22"
+anyhow = "1"
 
 # Single instance detection (prevent multiple instances, pass args to existing)
 single-instance = "0.3"

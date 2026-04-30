@@ -21,12 +21,12 @@
  */
 
 import React, { useRef, useCallback, useState, useEffect } from "react";
-import { Search, Bug, Sparkles, TestTube } from 'lucide-react';
 import { classifyError } from '../../lib/error-classifier';
 import { ChatMessages } from "./ChatMessages";
 import { ChatInput, type AttachedFile } from "./ChatInput";
 import { ChatHeader } from "./ChatHeader";
 import { ThreadHistory } from "./ThreadHistory";
+import { WorkspaceAwareEmptyState } from "./WorkspaceAwareEmptyState";
 import { useChatStore } from "../../store/useChatStore";
 import { useThreadStore, setStreamingState } from "../../store/useThreadStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
@@ -109,6 +109,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
   const rootPath = useWorkspaceStore((state) => state.rootPath);
 
   const autoApproveTools = useSettingsStore((state) => state.autoApproveTools);
+  const agentExecutionMode = useSettingsStore((state) => state.agentExecutionMode);
   const maxToolCallsPerRequest = useSettingsStore((state) => state.maxToolCallsPerRequest);
   const getToolApproval = useSettingsStore((state) => state.getToolApproval);
   const setToolApproval = useSettingsStore((state) => state.setToolApproval);
@@ -281,14 +282,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
       // IMPORTANT: Add user message IMMEDIATELY before any async operations
       // This ensures the message appears in the UI right away, not after context building
-      const displayContent = attachedFiles && attachedFiles.length > 0
-        ? `[${attachedFiles.map(f => f.name).join(', ')}]\n\n${content}`
-        : content;
-
       const userMessage: Message = {
         id: generateId(),
         sender: "user",
-        content: displayContent,
+        content,
         timestamp: Date.now(),
         attachedFiles: attachedFiles?.map(f => ({ path: f.path, name: f.name })),
         attachedPromptAssets: promptAttachments?.map(a => ({ key: a.key, type: a.type, title: a.title })),
@@ -464,6 +461,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
         // Agent already obtained above for history access
         agent.updateConfig({
           thinkingEnabled,
+          executionMode: agentExecutionMode,
           autoApproveTools,
           beforeToolExecution: async () => {
             await checkpointReady;
@@ -917,6 +915,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       updateThreadUsage,
       setLoading,
       autoApproveTools,
+      agentExecutionMode,
       maxToolCallsPerRequest,
       thinkingEnabled,
       temperature,
@@ -1000,50 +999,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
       {/* Chat Content */}
       {isEmpty ? (
-        <div className="flex-1 flex flex-col items-center justify-center px-6 relative overflow-hidden">
-          <div className="relative z-10 flex flex-col items-center max-w-sm w-full">
-            <img
-              src="/empty.png"
-              alt="Chat empty state"
-              width={88}
-              height={88}
-              className="w-[88px] h-[88px] mb-6 object-contain"
-            />
-
-            <h1 className="text-2xl font-bold text-text-primary mb-2 tracking-tight">
-              Aurora
-            </h1>
-            <p className="text-sm text-text-secondary text-center mb-10 leading-relaxed max-w-[280px]">
-              Your advanced AI engineering companion for complex tasks.
-            </p>
-
-            {/* Suggested prompts grid */}
-            <div className="w-full grid grid-cols-1 gap-2.5">
-              {[
-                { Icon: Search, label: "Analyze Codebase", prompt: "Explain the architecture of this project", color: "text-action-analyze" },
-                { Icon: Bug, label: "Find Bugs", prompt: "Scan the current file for potential bugs", color: "text-action-debug" },
-                { Icon: Sparkles, label: "Generate Feature", prompt: "Create a new React component for...", color: "text-action-generate" },
-                { Icon: TestTube, label: "Write Tests", prompt: "Write unit tests for the selected code", color: "text-action-test" },
-              ].map(({ Icon, label, prompt, color }, i) => (
-                <button
-                  key={i}
-                  onClick={() => {
-                    // Use store action to properly set input content
-                    setInputContent(prompt);
-                  }}
-                  className="group flex items-center gap-3 px-3 py-2.5 text-left bg-input hover:bg-input border border-border hover:border-border/80 rounded-xl transition-all duration-200"
-                >
-                  <div className={`p-1.5 rounded-lg bg-sidebar group-hover:bg-sidebar/80 transition-colors ${color}`}>
-                    <Icon size={14} strokeWidth={2.5} />
-                  </div>
-                  <span className="text-[13px] font-medium text-text-secondary group-hover:text-text-primary transition-colors">
-                    {label}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
+        <WorkspaceAwareEmptyState
+          mode="chat"
+          rootPath={rootPath}
+          onSelectPrompt={setInputContent}
+        />
       ) : (
         <ChatMessages
           messages={messages}

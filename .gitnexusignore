@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+.git/
+.gitnexus/
+.turbo/
+.cache/
+coverage/
+target/
+src-tauri/target/
+*.log
+pnpm-lock.yaml
+package-lock.json
+yarn.lock

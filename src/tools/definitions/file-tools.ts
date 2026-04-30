@@ -182,6 +182,11 @@ Examples:
           description: 'Maximum number of results to return. Default: 50',
           default: 50,
         },
+        timeout: {
+          type: 'number',
+          description: 'Timeout in milliseconds. Defaults to 30000 (30 seconds), maximum 300000 (5 minutes).',
+          default: 30000,
+        },
       },
       required: ['pattern'],
     },

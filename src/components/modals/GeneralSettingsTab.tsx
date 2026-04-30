@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { AlertCircle, CheckCircle2, FolderOpen, History, Laptop, Save, Terminal, Type, WrapText } from 'lucide-react';
-import clsx from 'clsx';
+import { Terminal, FolderOpen } from 'lucide-react';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useCheckpointStore } from '../../store/useCheckpointStore';
+import type { AgentExecutionMode } from '../../services/agent-execution-mode';
 import {
   isAuroraCliInstalled,
   installAuroraCli,
@@ -12,16 +12,33 @@ import {
   uninstallAuroraCli,
   uninstallAuroraContextMenu,
 } from '../../lib/tauri';
-import { TogglePill } from '../ui/TogglePill';
-import { SettingsSelect } from '../ui/SettingsSelect';
-import { settingsCardStyle, settingsPrimaryButtonStyle, settingsSubtlePanelStyle, UI_FONT_OPTIONS } from './settings-shared';
+import { IdeSwitch } from '../ui/IdeSwitch';
+import { IdeSelect } from '../ui/IdeSelect';
+import {
+  UI_FONT_OPTIONS,
+  settingsRowDividerColor,
+  settingsCodeBlockStyle,
+} from './settings-shared';
+import {
+  Section,
+  FormRow,
+  FormRowLast,
+  StatusPill,
+  ActionButton,
+  KeyValue,
+  IntegrationBanner,
+  IdeSlider,
+  type BannerStatus,
+} from './settings-primitives';
 
 type AutoSaveMode = 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange';
-type IntegrationStatus = 'idle' | 'installing' | 'uninstalling' | 'success' | 'error';
+type IntegrationStatus = BannerStatus;
 
 interface GeneralSettingsTabProps {
+  agentExecutionMode: AgentExecutionMode;
   autoSave: AutoSaveMode;
   fontSize: number;
+  setAgentExecutionMode: (mode: AgentExecutionMode) => void;
   setAutoSave: (mode: AutoSaveMode) => void;
   setFontSize: (value: number) => void;
   setUiFontFamily: (font: string) => void;
@@ -32,80 +49,82 @@ interface GeneralSettingsTabProps {
   wrapMode: boolean;
 }
 
-const innerPanelStyle: React.CSSProperties = {
-  backgroundColor: 'color-mix(in srgb, var(--aurora-common-secondary) 76%, var(--aurora-sidebar-background) 24%)',
-  border: '1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)',
-};
+// ---------------------------------------------------------------------------
+// Checkpoint section
+// ---------------------------------------------------------------------------
 
-const CheckpointSettingsCard: React.FC = () => {
+const CheckpointSection: React.FC = () => {
   const { rootPath } = useWorkspaceStore();
   const { enabled, setEnabled } = useCheckpointStore();
 
   if (!rootPath) {
     return (
-      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-            <History className="h-4 w-4" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold text-text-primary">Checkpoints</h3>
-            <p className="mt-1 text-[11px] leading-relaxed text-text-secondary">
-              Open a workspace to configure checkpoint snapshots.
-            </p>
-          </div>
+      <Section
+        title="Checkpoints"
+        description="Capture workspace state before each agent request so edits can be rolled back."
+        badge={<StatusPill variant="neutral">No workspace</StatusPill>}
+      >
+        <div className="flex items-center gap-3 px-4 py-4">
+          <p className="text-[11.5px] text-text-secondary">
+            Open a workspace to configure checkpoint snapshots.
+          </p>
         </div>
-      </div>
+      </Section>
     );
   }
 
   const workspaceName = rootPath.split(/[/\\]/).pop() || rootPath;
 
   return (
-    <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-            <History className="h-4 w-4" />
-          </div>
-          <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-text-primary">Checkpoints</h3>
-            <p className="mt-1 text-[11px] leading-relaxed text-text-secondary">
-              Capture workspace state before each request so you can roll back AI edits cleanly.
-            </p>
-          </div>
-        </div>
-        <TogglePill
+    <Section
+      title="Checkpoints"
+      description="Capture workspace state before each agent request so edits can be rolled back."
+      badge={
+        <StatusPill variant={enabled ? 'success' : 'neutral'}>
+          {enabled ? 'Enabled' : 'Disabled'}
+        </StatusPill>
+      }
+    >
+      <FormRow
+        label="Enable checkpoints for this workspace"
+        hint="Aurora creates a hidden git snapshot in app data — your real repo is untouched."
+      >
+        <IdeSwitch
           checked={enabled}
           onChange={setEnabled}
           ariaLabel="Toggle checkpoints"
-          variant="checkpoint"
+          variant="primary"
           size="sm"
-          className="shrink-0"
         />
-      </div>
-
-      <div className="mt-4 rounded-2xl px-3 py-3" style={innerPanelStyle}>
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-disabled">Workspace Scope</p>
-            <p className="mt-1 text-xs font-medium text-text-primary">{workspaceName}</p>
-          </div>
-          <div className="rounded-full bg-primary/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
-            {enabled ? 'Enabled' : 'Disabled'}
-          </div>
-        </div>
-        <p className="mt-2 text-[11px] leading-relaxed text-text-secondary" title={rootPath}>
-          {rootPath}
-        </p>
-      </div>
-    </div>
+      </FormRow>
+      <FormRowLast label="Workspace" hint={rootPath} align="top">
+        <span
+          className="inline-flex items-center gap-2 rounded-[4px] px-2 py-1 text-[11.5px] font-mono"
+          style={{
+            backgroundColor:
+              'color-mix(in srgb, var(--aurora-editor-background) 60%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--aurora-common-border) 50%, transparent)',
+            color: 'var(--aurora-editor-foreground)',
+          }}
+          title={rootPath}
+        >
+          <FolderOpen className="h-3 w-3 text-text-secondary" />
+          {workspaceName}
+        </span>
+      </FormRowLast>
+    </Section>
   );
 };
 
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
 export const GeneralSettingsTab: React.FC<GeneralSettingsTabProps> = ({
+  agentExecutionMode,
   autoSave,
   fontSize,
+  setAgentExecutionMode,
   setAutoSave,
   setFontSize,
   setUiFontFamily,
@@ -123,60 +142,42 @@ export const GeneralSettingsTab: React.FC<GeneralSettingsTabProps> = ({
     isTauri() && typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
   const [contextMenuStatus, setContextMenuStatus] = useState<IntegrationStatus>('idle');
   const [contextMenuMessage, setContextMenuMessage] = useState('');
-  const [contextMenuInstalled, setContextMenuInstalled] = useState<boolean | null>(() => (isWindowsDesktop ? null : false));
+  const [contextMenuInstalled, setContextMenuInstalled] = useState<boolean | null>(() =>
+    isWindowsDesktop ? null : false,
+  );
   const [isCheckingContextMenu, setIsCheckingContextMenu] = useState(() => isWindowsDesktop);
 
   useEffect(() => {
-    if (!isTauri()) {
-      return;
-    }
-
+    if (!isTauri()) return;
     let active = true;
     isAuroraCliInstalled()
       .then((installed) => {
-        if (active) {
-          setCliInstalled(installed);
-        }
+        if (active) setCliInstalled(installed);
       })
       .catch(() => {
-        if (active) {
-          setCliInstalled(null);
-        }
+        if (active) setCliInstalled(null);
       })
       .finally(() => {
-        if (active) {
-          setIsCheckingCli(false);
-        }
+        if (active) setIsCheckingCli(false);
       });
-
     return () => {
       active = false;
     };
   }, []);
 
   useEffect(() => {
-    if (!isWindowsDesktop) {
-      return;
-    }
-
+    if (!isWindowsDesktop) return;
     let active = true;
     isAuroraContextMenuInstalled()
       .then((installed) => {
-        if (active) {
-          setContextMenuInstalled(installed);
-        }
+        if (active) setContextMenuInstalled(installed);
       })
       .catch(() => {
-        if (active) {
-          setContextMenuInstalled(null);
-        }
+        if (active) setContextMenuInstalled(null);
       })
       .finally(() => {
-        if (active) {
-          setIsCheckingContextMenu(false);
-        }
+        if (active) setIsCheckingContextMenu(false);
       });
-
     return () => {
       active = false;
     };
@@ -188,10 +189,8 @@ export const GeneralSettingsTab: React.FC<GeneralSettingsTabProps> = ({
       setCliMessage('CLI installation requires the desktop app.');
       return;
     }
-
     setCliStatus('installing');
     setCliMessage('Installing Aurora CLI...');
-
     try {
       const result = await installAuroraCli();
       setCliStatus('success');
@@ -204,13 +203,9 @@ export const GeneralSettingsTab: React.FC<GeneralSettingsTabProps> = ({
   };
 
   const handleUninstallCli = async () => {
-    if (!isTauri()) {
-      return;
-    }
-
+    if (!isTauri()) return;
     setCliStatus('uninstalling');
     setCliMessage('Uninstalling Aurora CLI...');
-
     try {
       const result = await uninstallAuroraCli();
       setCliStatus('success');
@@ -225,13 +220,13 @@ export const GeneralSettingsTab: React.FC<GeneralSettingsTabProps> = ({
   const handleInstallContextMenu = async () => {
     if (!isWindowsDesktop) {
       setContextMenuStatus('error');
-      setContextMenuMessage('Windows Explorer context menu integration is only available on Windows desktop builds.');
+      setContextMenuMessage(
+        'Windows Explorer context menu integration is only available on Windows desktop builds.',
+      );
       return;
     }
-
     setContextMenuStatus('installing');
     setContextMenuMessage('Adding Aurora to the Explorer context menu...');
-
     try {
       const result = await installAuroraContextMenu();
       setContextMenuStatus('success');
@@ -239,18 +234,18 @@ export const GeneralSettingsTab: React.FC<GeneralSettingsTabProps> = ({
       setContextMenuInstalled(true);
     } catch (error) {
       setContextMenuStatus('error');
-      setContextMenuMessage(error instanceof Error ? error.message : 'Failed to add Aurora to the Explorer context menu.');
+      setContextMenuMessage(
+        error instanceof Error
+          ? error.message
+          : 'Failed to add Aurora to the Explorer context menu.',
+      );
     }
   };
 
   const handleUninstallContextMenu = async () => {
-    if (!isWindowsDesktop) {
-      return;
-    }
-
+    if (!isWindowsDesktop) return;
     setContextMenuStatus('uninstalling');
     setContextMenuMessage('Removing Aurora from the Explorer context menu...');
-
     try {
       const result = await uninstallAuroraContextMenu();
       setContextMenuStatus('success');
@@ -258,326 +253,306 @@ export const GeneralSettingsTab: React.FC<GeneralSettingsTabProps> = ({
       setContextMenuInstalled(false);
     } catch (error) {
       setContextMenuStatus('error');
-      setContextMenuMessage(error instanceof Error ? error.message : 'Failed to remove Aurora from the Explorer context menu.');
+      setContextMenuMessage(
+        error instanceof Error
+          ? error.message
+          : 'Failed to remove Aurora from the Explorer context menu.',
+      );
     }
   };
 
+  const cliBadge: React.ReactNode = isCheckingCli ? (
+    <StatusPill variant="neutral" dot={false}>
+      Checking…
+    </StatusPill>
+  ) : cliInstalled ? (
+    <StatusPill variant="success">Installed</StatusPill>
+  ) : (
+    <StatusPill variant="neutral">Not installed</StatusPill>
+  );
+
+  const ctxBadge: React.ReactNode = isCheckingContextMenu ? (
+    <StatusPill variant="neutral" dot={false}>
+      Checking…
+    </StatusPill>
+  ) : contextMenuInstalled ? (
+    <StatusPill variant="success">Registered</StatusPill>
+  ) : (
+    <StatusPill variant="neutral">Not registered</StatusPill>
+  );
+
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-3">
-        <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-            <Type className="h-4 w-4" />
-          </div>
-          <p className="mt-4 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-disabled">UI Text</p>
-          <p className="mt-1 text-xl font-semibold text-text-primary">{Math.round(uiTextScale * 100)}%</p>
-          <p className="mt-1 text-[11px] text-text-secondary">Global interface text scale.</p>
-        </div>
-        <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-            <WrapText className="h-4 w-4" />
-          </div>
-          <p className="mt-4 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-disabled">Wrap Mode</p>
-          <p className="mt-1 text-xl font-semibold text-text-primary">{wrapMode ? 'On' : 'Off'}</p>
-          <p className="mt-1 text-[11px] text-text-secondary">Editor and preview line wrapping.</p>
-        </div>
-        <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-            <Save className="h-4 w-4" />
-          </div>
-          <p className="mt-4 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-disabled">Auto Save</p>
-          <p className="mt-1 text-xl font-semibold text-text-primary">{autoSave === 'off' ? 'Off' : 'On'}</p>
-          <p className="mt-1 text-[11px] text-text-secondary">Current mode: {autoSave}</p>
-        </div>
-      </div>
+    <div className="space-y-6 pb-2">
+      {/* ============================================================ */}
+      {/* Workspace                                                    */}
+      {/* ============================================================ */}
+      <Section
+        title="Workspace"
+        description="Default behavior the agent and editor use across this workspace."
+      >
+        <FormRow
+          label="Default agent mode"
+          hint="Aurora restores this on launch. You can switch from the input box at any time."
+        >
+          <IdeSelect
+            align="end"
+            ariaLabel="Select default agent behavior"
+            className="min-w-[150px]"
+            options={[
+              {
+                label: 'Agent mode',
+                value: 'agent',
+                description: 'Ready to implement requested changes.',
+              },
+              {
+                label: 'Plan mode',
+                value: 'plan',
+                description: 'Read-only — blocks workspace edits.',
+              },
+            ]}
+            onChange={(nextValue) =>
+              setAgentExecutionMode(String(nextValue) as AgentExecutionMode)
+            }
+            value={agentExecutionMode}
+          />
+        </FormRow>
 
-      <div className="grid grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] gap-4">
-        <div className="space-y-4">
-          <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-                <Laptop className="h-4 w-4" />
+        <FormRow
+          label="Auto save"
+          hint="Persist edits automatically without manual Ctrl/Cmd+S."
+        >
+          <IdeSelect
+            align="end"
+            ariaLabel="Select auto save mode"
+            className="min-w-[180px]"
+            options={[
+              { label: 'Off', value: 'off' },
+              { label: 'After delay', value: 'afterDelay', meta: '1s' },
+              { label: 'On focus change', value: 'onFocusChange' },
+              { label: 'On window change', value: 'onWindowChange' },
+            ]}
+            onChange={(nextValue) => setAutoSave(String(nextValue) as AutoSaveMode)}
+            value={autoSave}
+          />
+        </FormRow>
+
+        <FormRow
+          label="Auto line wrap"
+          hint="Wrap long lines in the editor and chat preview surfaces."
+        >
+          <IdeSwitch
+            checked={wrapMode}
+            onChange={setWrapMode}
+            ariaLabel="Toggle auto line wrap"
+            variant="primary"
+            size="sm"
+          />
+        </FormRow>
+
+        <FormRowLast label="Editor font size" hint="Affects the Monaco editor only.">
+          <IdeSelect
+            align="end"
+            ariaLabel="Select editor font size"
+            className="min-w-[110px]"
+            options={[12, 14, 16, 18].map((size) => ({
+              label: `${size}px`,
+              value: size,
+            }))}
+            onChange={(nextValue) => setFontSize(Number(nextValue))}
+            value={fontSize}
+          />
+        </FormRowLast>
+      </Section>
+
+      {/* ============================================================ */}
+      {/* Appearance                                                   */}
+      {/* ============================================================ */}
+      <Section
+        title="Appearance"
+        description="Tune typography for chrome surfaces — labels, panels, and menus."
+      >
+        <FormRow label="UI font family" hint="Applied to chrome, labels, and panels.">
+          <IdeSelect
+            align="end"
+            ariaLabel="Select UI font"
+            className="min-w-[170px]"
+            options={UI_FONT_OPTIONS.map((option) => ({
+              label: option.label,
+              value: option.value,
+            }))}
+            onChange={(nextValue) => setUiFontFamily(String(nextValue))}
+            value={uiFontFamily}
+          />
+        </FormRow>
+
+        <FormRowLast
+          label="UI text scale"
+          hint="Adjust text density without scaling the entire app."
+        >
+          <IdeSlider
+            value={uiTextScale}
+            min={0.85}
+            max={1.4}
+            step={0.05}
+            onChange={setUiTextScale}
+            ariaLabel="UI text scale"
+            formatValue={(v) => `${Math.round(v * 100)}%`}
+          />
+        </FormRowLast>
+      </Section>
+
+      {/* ============================================================ */}
+      {/* Checkpoints                                                  */}
+      {/* ============================================================ */}
+      <CheckpointSection />
+
+      {/* ============================================================ */}
+      {/* System integrations                                          */}
+      {/* ============================================================ */}
+      <Section
+        title="System Integrations"
+        description="Surface Aurora in the operating system shell so users can launch into a workspace from anywhere."
+      >
+        {/* CLI block */}
+        <div className="px-4 py-3.5" style={{ borderBottom: `1px solid ${settingsRowDividerColor}` }}>
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 max-w-[58%]">
+              <div className="flex items-center gap-2">
+                <Terminal className="h-3.5 w-3.5 text-text-secondary" />
+                <p className="text-[12.5px] font-medium text-text-primary">Aurora CLI</p>
+                {cliBadge}
               </div>
-              <div>
-                <h3 className="text-sm font-semibold text-text-primary">Interface</h3>
-                <p className="mt-1 text-[11px] leading-relaxed text-text-secondary">
-                  Tune reading comfort without breaking theme consistency.
-                </p>
-              </div>
+              <p className="mt-1.5 text-[11px] leading-snug text-text-secondary">
+                Launch Aurora directly from a terminal with a workspace path or file.
+              </p>
             </div>
-
-            <div className="mt-4 space-y-4">
-              <div className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] items-center gap-3">
-                <div>
-                  <label className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-disabled">UI Font</label>
-                  <p className="mt-1 text-[11px] text-text-secondary">Applied to chrome, labels, and panels.</p>
-                </div>
-                <SettingsSelect
-                  ariaLabel="Select UI font"
-                  options={UI_FONT_OPTIONS.map((option) => ({
-                    label: option.label,
-                    value: option.value,
-                  }))}
-                  onChange={(nextValue) => setUiFontFamily(String(nextValue))}
-                  value={uiFontFamily}
-                />
-              </div>
-
-              <div>
-                <div className="mb-2 flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-disabled">Text Scale</p>
-                    <p className="mt-1 text-[11px] text-text-secondary">Adjust text density without scaling the whole app.</p>
-                  </div>
-                  <div className="rounded-full bg-primary/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
-                    {Math.round(uiTextScale * 100)}%
-                  </div>
-                </div>
-                <input
-                  type="range"
-                  min="0.85"
-                  max="1.4"
-                  step="0.05"
-                  value={uiTextScale}
-                  onChange={(event) => setUiTextScale(Number(event.target.value))}
-                  className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-input-border [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-                <Terminal className="h-4 w-4" />
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold text-text-primary">CLI Integration</h3>
-                <p className="mt-1 text-[11px] leading-relaxed text-text-secondary">
-                  Launch Aurora directly from a terminal with a workspace or file path.
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl px-3 py-3" style={innerPanelStyle}>
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-disabled">CLI Status</p>
-                <p className="mt-1 text-xs font-medium text-text-primary">
-                  {isCheckingCli ? 'Checking installation...' : cliInstalled ? 'Installed and ready' : 'Not installed'}
-                </p>
-              </div>
+            <div className="flex shrink-0 items-center justify-end">
               {cliInstalled ? (
-                <button
+                <ActionButton
+                  variant="danger"
                   onClick={handleUninstallCli}
+                  loading={cliStatus === 'uninstalling'}
                   disabled={cliStatus === 'uninstalling'}
-                  className="rounded-xl px-3 py-2 text-xs font-semibold text-danger disabled:opacity-50"
-                  style={{
-                    ...settingsSubtlePanelStyle,
-                    backgroundColor: 'color-mix(in srgb, var(--aurora-common-danger) 10%, var(--aurora-common-secondary))',
-                    border: '1px solid color-mix(in srgb, var(--aurora-common-danger) 26%, transparent)',
-                  }}
                 >
-                  {cliStatus === 'uninstalling' ? 'Removing...' : 'Uninstall CLI'}
-                </button>
+                  {cliStatus === 'uninstalling' ? 'Removing' : 'Uninstall'}
+                </ActionButton>
               ) : (
-                <button
-                  onClick={handleInstallCli}
-                  disabled={cliStatus === 'installing' || isCheckingCli}
-                  className="rounded-xl px-3 py-2 text-xs font-semibold text-success-foreground disabled:opacity-50"
-                  style={{
-                    ...settingsPrimaryButtonStyle,
-                    backgroundColor: 'var(--aurora-common-success)',
-                    boxShadow: '0 10px 24px color-mix(in srgb, var(--aurora-common-success) 22%, transparent)',
-                  }}
-                >
-                  {cliStatus === 'installing' || isCheckingCli ? 'Working...' : 'Install CLI'}
-                </button>
-              )}
-            </div>
-
-            {cliMessage && (
-              <div
-                className={clsx(
-                  'mt-3 flex items-start gap-2 rounded-2xl px-3 py-3 text-[11px]',
-                  cliStatus === 'success' && 'text-success',
-                  cliStatus === 'error' && 'text-danger',
-                  (cliStatus === 'installing' || cliStatus === 'uninstalling') && 'text-primary',
-                )}
-                style={{
-                  backgroundColor:
-                    cliStatus === 'success'
-                      ? 'color-mix(in srgb, var(--aurora-common-success) 12%, transparent)'
-                      : cliStatus === 'error'
-                        ? 'color-mix(in srgb, var(--aurora-common-danger) 12%, transparent)'
-                        : 'color-mix(in srgb, var(--aurora-common-primary) 12%, transparent)',
-                }}
-              >
-                {cliStatus === 'success' && <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />}
-                {cliStatus === 'error' && <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />}
-                {(cliStatus === 'installing' || cliStatus === 'uninstalling') && (
-                  <Terminal className="mt-0.5 h-4 w-4 shrink-0" />
-                )}
-                <span>{cliMessage}</span>
-              </div>
-            )}
-
-            <div className="mt-3 rounded-2xl px-3 py-3 font-mono text-[11px]" style={innerPanelStyle}>
-              <p className="font-semibold text-text-primary">Usage</p>
-              <div className="mt-2 space-y-1 text-text-secondary">
-                <p><span className="text-primary">aurora .</span> Open the current folder</p>
-                <p><span className="text-primary">aurora /path/to/project</span> Open a specific workspace</p>
-                <p><span className="text-primary">aurora file.ts</span> Open a file directly</p>
-              </div>
-            </div>
-          </div>
-
-          {isWindowsDesktop && (
-            <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-                  <FolderOpen className="h-4 w-4" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-semibold text-text-primary">Explorer Context Menu</h3>
-                  <p className="mt-1 text-[11px] leading-relaxed text-text-secondary">
-                    Add Aurora to the Windows right-click menu for folders, drives, and open folder backgrounds.
-                  </p>
-                </div>
-              </div>
-
-              <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl px-3 py-3" style={innerPanelStyle}>
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-disabled">Integration Status</p>
-                  <p className="mt-1 text-xs font-medium text-text-primary">
-                    {isCheckingContextMenu ? 'Checking registration...' : contextMenuInstalled ? 'Registered in Explorer' : 'Not registered'}
-                  </p>
-                </div>
-                {contextMenuInstalled ? (
-                  <button
-                    onClick={handleUninstallContextMenu}
-                    disabled={contextMenuStatus === 'uninstalling'}
-                    className="rounded-xl px-3 py-2 text-xs font-semibold text-danger disabled:opacity-50"
-                    style={{
-                      ...settingsSubtlePanelStyle,
-                      backgroundColor: 'color-mix(in srgb, var(--aurora-common-danger) 10%, var(--aurora-common-secondary))',
-                      border: '1px solid color-mix(in srgb, var(--aurora-common-danger) 26%, transparent)',
-                    }}
-                  >
-                    {contextMenuStatus === 'uninstalling' ? 'Removing...' : 'Remove Context Menu'}
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleInstallContextMenu}
-                    disabled={contextMenuStatus === 'installing' || isCheckingContextMenu}
-                    className="rounded-xl px-3 py-2 text-xs font-semibold text-success-foreground disabled:opacity-50"
-                    style={{
-                      ...settingsPrimaryButtonStyle,
-                      backgroundColor: 'var(--aurora-common-success)',
-                      boxShadow: '0 10px 24px color-mix(in srgb, var(--aurora-common-success) 22%, transparent)',
-                    }}
-                  >
-                    {contextMenuStatus === 'installing' || isCheckingContextMenu ? 'Working...' : 'Add to Context Menu'}
-                  </button>
-                )}
-              </div>
-
-              {contextMenuMessage && (
-                <div
-                  className={clsx(
-                    'mt-3 flex items-start gap-2 rounded-2xl px-3 py-3 text-[11px]',
-                    contextMenuStatus === 'success' && 'text-success',
-                    contextMenuStatus === 'error' && 'text-danger',
-                    (contextMenuStatus === 'installing' || contextMenuStatus === 'uninstalling') && 'text-primary',
-                  )}
-                  style={{
-                    backgroundColor:
-                      contextMenuStatus === 'success'
-                        ? 'color-mix(in srgb, var(--aurora-common-success) 12%, transparent)'
-                        : contextMenuStatus === 'error'
-                          ? 'color-mix(in srgb, var(--aurora-common-danger) 12%, transparent)'
-                          : 'color-mix(in srgb, var(--aurora-common-primary) 12%, transparent)',
-                  }}
-                >
-                  {contextMenuStatus === 'success' && <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />}
-                  {contextMenuStatus === 'error' && <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />}
-                  {(contextMenuStatus === 'installing' || contextMenuStatus === 'uninstalling') && (
-                    <FolderOpen className="mt-0.5 h-4 w-4 shrink-0" />
-                  )}
-                  <span>{contextMenuMessage}</span>
-                </div>
-              )}
-
-              <div className="mt-3 rounded-2xl px-3 py-3 text-[11px] text-text-secondary" style={innerPanelStyle}>
-                Right-click any folder or folder background in Explorer and choose <span className="font-semibold text-text-primary">Open with Aurora</span>.
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-4">
-          <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-            <h3 className="text-sm font-semibold text-text-primary">Editor</h3>
-            <p className="mt-1 text-[11px] leading-relaxed text-text-secondary">
-              Set the text density and save behavior used by code editing and previews.
-            </p>
-
-            <div className="mt-4 space-y-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-disabled">Font Size</p>
-                  <p className="mt-1 text-[11px] text-text-secondary">Editor text size only.</p>
-                </div>
-                <SettingsSelect
-                  ariaLabel="Select editor font size"
-                  className="w-[110px]"
-                  options={[12, 14, 16, 18].map((size) => ({
-                    label: `${size}px`,
-                    value: size,
-                  }))}
-                  onChange={(nextValue) => setFontSize(Number(nextValue))}
-                  value={fontSize}
-                />
-              </div>
-
-              <div className="flex items-center justify-between gap-3 rounded-2xl px-3 py-3" style={innerPanelStyle}>
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-disabled">Auto Line Wrap</p>
-                  <p className="mt-1 text-[11px] text-text-secondary">Controls wrapping in editors and previews.</p>
-                </div>
-                <TogglePill
-                  checked={wrapMode}
-                  onChange={setWrapMode}
-                  ariaLabel="Toggle auto line wrap"
+                <ActionButton
                   variant="primary"
-                  size="sm"
-                />
-              </div>
-
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-disabled">Auto Save</p>
-                  <p className="mt-1 text-[11px] text-text-secondary">Persist changes automatically.</p>
-                </div>
-                <SettingsSelect
-                  align="end"
-                  ariaLabel="Select auto save mode"
-                  className="w-[170px]"
-                  options={[
-                    { label: 'Off', value: 'off' },
-                    { label: 'After Delay (1s)', value: 'afterDelay' },
-                    { label: 'On Focus Change', value: 'onFocusChange' },
-                    { label: 'On Window Change', value: 'onWindowChange' },
-                  ]}
-                  onChange={(nextValue) => setAutoSave(String(nextValue) as AutoSaveMode)}
-                  value={autoSave}
-                />
-              </div>
+                  onClick={handleInstallCli}
+                  loading={cliStatus === 'installing' || isCheckingCli}
+                  disabled={cliStatus === 'installing' || isCheckingCli}
+                >
+                  {cliStatus === 'installing' || isCheckingCli ? 'Working' : 'Install CLI'}
+                </ActionButton>
+              )}
             </div>
           </div>
 
-          <CheckpointSettingsCard />
+          <div className="mt-3 px-3 py-2 font-mono text-[11px]" style={settingsCodeBlockStyle}>
+            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-disabled">
+              Usage
+            </p>
+            <div className="space-y-0.5 text-text-secondary">
+              <p>
+                <span className="text-primary">aurora .</span>
+                <span className="ml-2">Open the current folder</span>
+              </p>
+              <p>
+                <span className="text-primary">aurora /path/to/project</span>
+                <span className="ml-2">Open a specific workspace</span>
+              </p>
+              <p>
+                <span className="text-primary">aurora file.ts</span>
+                <span className="ml-2">Open a file directly</span>
+              </p>
+            </div>
+          </div>
         </div>
-      </div>
+
+        {cliMessage && <IntegrationBanner status={cliStatus} message={cliMessage} />}
+
+        {/* Context menu (Windows only) */}
+        {isWindowsDesktop && (
+          <>
+            <div className="px-4 py-3.5">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0 max-w-[58%]">
+                  <div className="flex items-center gap-2">
+                    <FolderOpen className="h-3.5 w-3.5 text-text-secondary" />
+                    <p className="text-[12.5px] font-medium text-text-primary">
+                      Explorer context menu
+                    </p>
+                    {ctxBadge}
+                  </div>
+                  <p className="mt-1.5 text-[11px] leading-snug text-text-secondary">
+                    Right-click any folder or folder background and choose{' '}
+                    <span className="font-semibold text-text-primary">Open with Aurora</span>.
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center justify-end">
+                  {contextMenuInstalled ? (
+                    <ActionButton
+                      variant="danger"
+                      onClick={handleUninstallContextMenu}
+                      loading={contextMenuStatus === 'uninstalling'}
+                      disabled={contextMenuStatus === 'uninstalling'}
+                    >
+                      {contextMenuStatus === 'uninstalling' ? 'Removing' : 'Remove'}
+                    </ActionButton>
+                  ) : (
+                    <ActionButton
+                      variant="primary"
+                      onClick={handleInstallContextMenu}
+                      loading={contextMenuStatus === 'installing' || isCheckingContextMenu}
+                      disabled={contextMenuStatus === 'installing' || isCheckingContextMenu}
+                    >
+                      {contextMenuStatus === 'installing' || isCheckingContextMenu
+                        ? 'Working'
+                        : 'Add to context menu'}
+                    </ActionButton>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {contextMenuMessage && (
+              <IntegrationBanner status={contextMenuStatus} message={contextMenuMessage} />
+            )}
+          </>
+        )}
+      </Section>
+
+      {/* ============================================================ */}
+      {/* About workspace details (read-only summary)                  */}
+      {/* ============================================================ */}
+      <Section
+        title="Diagnostics"
+        description="Quick reference for support requests and bug reports."
+      >
+        <div
+          className="grid grid-cols-2 gap-x-6 gap-y-2.5 px-4 py-3.5"
+          style={{ borderBottom: 'none' }}
+        >
+          <KeyValue label="Runtime" value={isTauri() ? 'Tauri Desktop' : 'Browser'} />
+          <KeyValue label="Platform" value={typeof navigator !== 'undefined' ? navigator.platform : '—'} />
+          <KeyValue label="UI Scale" value={`${Math.round(uiTextScale * 100)}%`} mono />
+          <KeyValue label="Editor Font" value={`${fontSize}px`} mono />
+          <KeyValue label="UI Font" value={uiFontFamily} mono />
+          <KeyValue
+            label="Auto Save"
+            value={
+              autoSave === 'off'
+                ? 'Off'
+                : autoSave === 'afterDelay'
+                  ? '1s delay'
+                  : autoSave === 'onFocusChange'
+                    ? 'Focus change'
+                    : 'Window change'
+            }
+          />
+        </div>
+      </Section>
     </div>
   );
 };

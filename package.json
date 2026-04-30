@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "node scripts/sync-material-icons.mjs && vite",
     "build": "node scripts/sync-material-icons.mjs && tsc -b && vite build",
+    "crispasr:package": "node scripts/package-crispasr-runtime.mjs",
+    "cuda:check": "node scripts/tauri-cuda.mjs check",
     "icon-pack:build": "node scripts/build-icon-pack.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
@@ -14,7 +16,9 @@
     "test:coverage": "vitest --run --coverage",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:dev:cuda": "node scripts/tauri-cuda.mjs dev",
+    "tauri:build": "tauri build",
+    "tauri:build:cuda": "node scripts/tauri-cuda.mjs build"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",

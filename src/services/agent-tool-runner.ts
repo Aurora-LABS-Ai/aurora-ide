@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { parseToolArguments } from "../lib/tool-arguments";
+import { auroraInvoke } from "../lib/runtime";
 import { toolRegistry } from "../tools";
 import { type Message, type ToolCallRequest } from "./providers/types";
 import {
@@ -12,6 +12,11 @@ import type {
   AgentConfig,
   ExecutedToolCall,
 } from "./agent-service.types";
+import {
+  getPlanModeRejectionMessage,
+  isToolAllowedForExecutionMode,
+  normalizeAgentExecutionMode,
+} from "./agent-execution-mode";
 
 interface AgentToolRunnerOptions {
   beforeToolExecution?: () => Promise<void>;
@@ -31,7 +36,43 @@ export interface ToolExecutionBatch {
   toolCalls: ExecutedToolCall[];
 }
 
-const TOOL_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_TOOL_TIMEOUT_MS = 5 * 60 * 1000;
+const MAX_TOOL_TIMEOUT_MS = 5 * 60 * 1000;
+const MIN_TOOL_TIMEOUT_MS = 1_000;
+const TOOL_TIMEOUT_GRACE_MS = 5_000;
+
+const getNumericArg = (
+  args: Record<string, unknown>,
+  keys: string[],
+): number | undefined => {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return undefined;
+};
+
+const resolveToolTimeoutMs = (
+  toolName: string,
+  args: Record<string, unknown>,
+): number => {
+  const requestedTimeout = getNumericArg(args, ["timeout", "timeoutMs", "timeout_ms"]);
+
+  if (toolName === "shell_execute" || toolName === "grep") {
+    const boundedRequestedTimeout = Math.min(
+      Math.max(Math.trunc(requestedTimeout ?? 30_000), MIN_TOOL_TIMEOUT_MS),
+      MAX_TOOL_TIMEOUT_MS,
+    );
+    return Math.min(boundedRequestedTimeout + TOOL_TIMEOUT_GRACE_MS, MAX_TOOL_TIMEOUT_MS);
+  }
+
+  return Math.min(
+    Math.max(Math.trunc(requestedTimeout ?? DEFAULT_TOOL_TIMEOUT_MS), MIN_TOOL_TIMEOUT_MS),
+    MAX_TOOL_TIMEOUT_MS,
+  );
+};
 
 const toToolMessage = (toolCallId: string, content: string): Message => ({
   role: "tool",
@@ -106,6 +147,17 @@ export class AgentToolRunner {
       );
     }
 
+    const executionMode = normalizeAgentExecutionMode(this.config.executionMode);
+    if (
+      !isToolAllowedForExecutionMode(executionMode, toolName, parsedArgs)
+    ) {
+      return this.handleRejectedTool(
+        toolCall,
+        getPlanModeRejectionMessage(toolName),
+        parsedArgs,
+      );
+    }
+
     const approved = await this.resolveApproval(toolCall);
     if (!approved) {
       return this.handleRejectedTool(
@@ -120,14 +172,7 @@ export class AgentToolRunner {
     this.callbacks.onToolExecutionStart?.(toolCall);
 
     try {
-      const result = await Promise.race([
-        this.executeTool(toolCall, parsedArgs),
-        new Promise<never>((_, reject) => {
-          setTimeout(() => {
-            reject(new Error(`Tool "${toolName}" timed out after 5 minutes`));
-          }, TOOL_TIMEOUT_MS);
-        }),
-      ]);
+      const result = await this.executeToolWithTimeout(toolCall, parsedArgs);
 
       await this.recordToolResult(toolCall.id, result, false);
       this.callbacks.onToolExecutionComplete?.(toolCall, result);
@@ -165,6 +210,32 @@ export class AgentToolRunner {
 
     const result = await toolRegistry.executeToolCall(toolCall, parsedArgs);
     return result.content;
+  }
+
+  private async executeToolWithTimeout(
+    toolCall: ToolCallRequest,
+    parsedArgs: Record<string, unknown>
+  ): Promise<string> {
+    const toolName = toolCall.function.name;
+    const timeoutMs = resolveToolTimeoutMs(toolName, parsedArgs);
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      return await Promise.race([
+        this.executeTool(toolCall, parsedArgs),
+        new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(() => {
+            reject(
+              new Error(`Tool "${toolName}" timed out after ${timeoutMs}ms`),
+            );
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    }
   }
 
   private async ensureReadyForToolExecution(): Promise<void> {
@@ -245,7 +316,7 @@ export class AgentToolRunner {
   }
 
   private async recordToolCall(toolCall: ToolCallRequest): Promise<void> {
-    await invoke("context_add_tool_call", {
+    await auroraInvoke("context_add_tool_call", {
       threadId: this.threadId,
       toolCallId: toolCall.id,
       name: toolCall.function.name,
@@ -258,7 +329,7 @@ export class AgentToolRunner {
     content: string,
     isError: boolean
   ): Promise<void> {
-    await invoke("context_add_tool_result", {
+    await auroraInvoke("context_add_tool_result", {
       threadId: this.threadId,
       toolCallId,
       content,

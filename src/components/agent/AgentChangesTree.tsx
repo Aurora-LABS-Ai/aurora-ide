@@ -10,7 +10,13 @@
  */
 
 import React, { useState, useMemo } from 'react';
-import { ChevronDown, ChevronRight, FileEdit, RefreshCw } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronRight,
+  FileEdit,
+  RefreshCw,
+  PanelRightClose,
+} from 'lucide-react';
 import { useAuditStore } from '../../store/useAuditStore';
 import { useEditorStore } from '../../store/useEditorStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
@@ -29,9 +35,10 @@ interface FileChange {
 
 interface AgentChangesTreeProps {
   className?: string;
+  onCollapse?: () => void;
 }
 
-export const AgentChangesTree: React.FC<AgentChangesTreeProps> = ({ className }) => {
+export const AgentChangesTree: React.FC<AgentChangesTreeProps> = ({ className, onCollapse }) => {
   const { entries } = useAuditStore();
   const { openFile } = useEditorStore();
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['modified', 'created']));
@@ -184,21 +191,57 @@ export const AgentChangesTree: React.FC<AgentChangesTreeProps> = ({ className })
         </div>
         <div className="flex items-center gap-1">
           <button
-            className="flex h-7 w-7 items-center justify-center rounded-[10px] transition-colors hover:bg-input/50"
+            className="flex h-6 w-6 items-center justify-center transition-colors outline-none focus:outline-none"
             style={{
               color: 'var(--aurora-sidebar-foreground)',
-              background: 'color-mix(in srgb, var(--aurora-common-secondary) 74%, var(--aurora-title-bar-background) 26%)',
-              border: '1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)',
+              background: 'transparent',
+              border: 'none',
+              borderRadius: 4,
+              opacity: 0.65,
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.opacity = '1';
+              e.currentTarget.style.backgroundColor =
+                'color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.opacity = '0.65';
+              e.currentTarget.style.backgroundColor = 'transparent';
             }}
             title="Refresh"
           >
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              className="flex h-6 w-6 items-center justify-center transition-colors outline-none focus:outline-none"
+              style={{
+                color: 'var(--aurora-sidebar-foreground)',
+                background: 'transparent',
+                border: 'none',
+                borderRadius: 4,
+                opacity: 0.65,
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.opacity = '1';
+                e.currentTarget.style.backgroundColor =
+                  'color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.opacity = '0.65';
+                e.currentTarget.style.backgroundColor = 'transparent';
+              }}
+              title="Hide changes panel"
+            >
+              <PanelRightClose className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto scrollbar-thin">
         {totalChanges === 0 ? (
           <div
             className="flex flex-col items-center justify-center h-full px-4 text-center"

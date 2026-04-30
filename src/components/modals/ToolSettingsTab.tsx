@@ -1,144 +1,127 @@
 /**
- * THEME ARCHITECTURE NOTICE:
- *
- * This project uses a centralized theme system. DO NOT use hardcoded colors.
- *
- * Instead of:
- *   - Hardcoded hex values: #ff0000, #1a1a1a
- *   - Hardcoded RGB values: rgb(255, 0, 0)
- *   - Tailwind arbitrary colors: bg-[#1a1a1a], text-[#ff0000]
- *
- * Use theme tokens via CSS variables:
- *   - CSS: var(--aurora-{category}-{token})
- *   - Tailwind: bg-[var(--aurora-editor-background)]
- *   - Component styles: style={{ background: 'var(--aurora-sidebar-background)' }}
- *
- * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
- *
- * See: DOCS/theme-dev.md for full token reference
- * See: src/types/theme.ts for TypeScript interfaces
- * See: src/services/theme-service.ts for theme utilities
+ * Tool Settings Tab — enterprise layout (Section + FormRow).
+ * Manages tool approval settings and max tool calls.
  */
 
-/**
- * Tool Settings Tab Component
- * Manages tool approval settings and max tool calls
- */
-
-import React from "react";
-import { useSettingsStore } from "../../store/useSettingsStore";
+import React from 'react';
 import {
-  Terminal,
+  AlertTriangle,
+  Code,
   FileText,
   FolderOpen,
-  Code,
-  AlertTriangle,
-  Shield,
   Map,
-} from "lucide-react";
-import clsx from "clsx";
-import { TogglePill } from "../ui/TogglePill";
-import { SettingsSelect } from "../ui/SettingsSelect";
+  Search,
+  Shield,
+  Terminal,
+  CheckSquare,
+} from 'lucide-react';
+import clsx from 'clsx';
+import { useSettingsStore } from '../../store/useSettingsStore';
+import { IdeSwitch } from '../ui/IdeSwitch';
+import { IdeSelect } from '../ui/IdeSelect';
+import { getProfessionalToolName } from '../../services/tool-display';
 import {
-  settingsCardStyle,
-  settingsDangerPanelStyle,
-  settingsPrimaryButtonStyle,
-  settingsSubtlePanelStyle,
-} from "./settings-shared";
-import { getProfessionalToolName } from "../../services/tool-display";
+  Section,
+  FormRow,
+  FormRowLast,
+  FormBlock,
+  StatusPill,
+  ActionButton,
+  IdeSlider,
+} from './settings-primitives';
+import { settingsRowDividerColor } from './settings-shared';
 
-// Group tools by category for better organization
-const TOOL_CATEGORIES = {
+type ApprovalMode = 'auto' | 'always_ask' | 'deny';
+
+interface ToolCategory {
+  description: string;
+  icon: typeof Terminal;
+  label: string;
+  tools: string[];
+  dangerous?: boolean;
+}
+
+const TOOL_CATEGORIES: Record<string, ToolCategory> = {
   shell: {
-    label: "Shell Commands",
+    label: 'Shell Commands',
     icon: Terminal,
-    description: "Command execution and background process tools",
-    tools: [
-      "shell_execute",
-      "shell_spawn",
-      "shell_kill",
-      "shell_list_processes",
-    ],
+    description: 'Command execution and background process tools.',
+    dangerous: true,
+    tools: ['shell_execute', 'shell_spawn', 'shell_kill', 'shell_list_processes'],
   },
   fileWrite: {
-    label: "File Modifications",
+    label: 'File Modifications',
     icon: FileText,
-    description: "Tools that create, update, patch, or delete files",
+    description: 'Tools that create, update, patch, or delete files.',
+    dangerous: true,
     tools: [
-      "file_write",
-      "file_create",
-      "file_delete",
-      "file_patch",
-      "search_replace",
-      "multi_search_replace",
+      'file_write',
+      'file_create',
+      'file_delete',
+      'file_patch',
+      'search_replace',
+      'multi_search_replace',
     ],
   },
   folderOps: {
-    label: "Folder Operations",
+    label: 'Folder Operations',
     icon: FolderOpen,
-    description: "Tools that create, move, or delete folders",
-    tools: ["folder_create", "folder_move", "folder_delete"],
+    description: 'Tools that create, move, or delete folders.',
+    dangerous: true,
+    tools: ['folder_create', 'folder_move', 'folder_delete'],
   },
   fileRead: {
-    label: "File Reading",
+    label: 'File Reading',
     icon: FileText,
-    description: "Safe read and search operations",
-    tools: ["file_read", "multi_file_read", "grep"],
+    description: 'Safe read and search operations across the workspace.',
+    tools: ['file_read', 'multi_file_read', 'grep'],
   },
   workspace: {
-    label: "Workspace",
+    label: 'Workspace',
     icon: FolderOpen,
-    description: "Workspace navigation and structure inspection",
-    tools: ["workspace_tree"],
+    description: 'Workspace navigation and structure inspection.',
+    tools: ['workspace_tree'],
   },
   editor: {
-    label: "Editor",
+    label: 'Editor',
     icon: Code,
-    description: "Editor interactions and diagnostics",
-    tools: ["editor_open_file", "read_lints"],
+    description: 'Editor interactions and diagnostics.',
+    tools: ['editor_open_file', 'read_lints'],
   },
   search: {
-    label: "Search",
-    icon: FolderOpen,
-    description: "Semantic and web search tools",
-    tools: ["aurora_search", "auroro_websearch"],
+    label: 'Search',
+    icon: Search,
+    description: 'Semantic and web search tools.',
+    tools: ['aurora_search', 'auroro_websearch'],
   },
   task: {
-    label: "Task Management",
-    icon: FileText,
-    description: "Task tracking tools used during multi-step work",
-    tools: ["todo_write"],
+    label: 'Task Management',
+    icon: CheckSquare,
+    description: 'Task tracking tools used during multi-step work.',
+    tools: ['todo_write'],
   },
 };
 
 interface ApprovalSelectProps {
-  value: "auto" | "always_ask" | "deny";
-  onChange: (value: "auto" | "always_ask" | "deny") => void;
+  value: ApprovalMode;
+  onChange: (value: ApprovalMode) => void;
+  className?: string;
 }
 
-const ApprovalSelect: React.FC<ApprovalSelectProps> = ({ value, onChange }) => {
-  return (
-    <SettingsSelect
-      align="end"
-      ariaLabel="Select tool approval mode"
-      className={clsx(
-        "w-[96px] px-2 py-1 text-[10px]",
-        value === "auto" && "text-success",
-        value === "always_ask" && "text-warning",
-        value === "deny" && "text-danger",
-      )}
-      options={[
-        { label: "Auto", value: "auto", tone: "success" },
-        { label: "Ask", value: "always_ask", tone: "warning" },
-        { label: "Deny", value: "deny", tone: "danger" },
-      ]}
-      onChange={(nextValue) =>
-        onChange(String(nextValue) as "auto" | "always_ask" | "deny")
-      }
-      value={value}
-    />
-  );
-};
+const ApprovalSelect: React.FC<ApprovalSelectProps> = ({ value, onChange, className }) => (
+  <IdeSelect
+    align="end"
+    ariaLabel="Select tool approval mode"
+    className={clsx('min-w-[100px]', className)}
+    options={[
+      { label: 'Auto', value: 'auto', tone: 'success' },
+      { label: 'Ask', value: 'always_ask', tone: 'warning' },
+      { label: 'Deny', value: 'deny', tone: 'danger' },
+    ]}
+    onChange={(nextValue) => onChange(String(nextValue) as ApprovalMode)}
+    value={value}
+  />
+);
 
 export const ToolSettingsTab: React.FC = () => {
   const {
@@ -158,277 +141,227 @@ export const ToolSettingsTab: React.FC = () => {
 
   const setCategoryApproval = (
     category: keyof typeof TOOL_CATEGORIES,
-    setting: "auto" | "always_ask" | "deny",
+    setting: ApprovalMode,
   ) => {
     const tools = TOOL_CATEGORIES[category].tools;
     tools.forEach((tool) => setToolApproval(tool, setting));
   };
 
   return (
-    <div className="space-y-4">
-      {/* Global Auto-approve Toggle */}
-      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-xs font-medium text-text-primary">
-              Auto-approve Tools
-            </h3>
-            <p className="text-[10px] text-text-secondary">
-              Execute all tools without asking
-            </p>
-          </div>
-          <TogglePill
+    <div className="space-y-6 pb-2">
+      {/* ============================================================ */}
+      {/* Global controls                                              */}
+      {/* ============================================================ */}
+      <Section
+        title="Approval Defaults"
+        description="Global controls that override per-tool settings when enabled."
+        badge={
+          autoApproveTools ? (
+            <StatusPill variant="warning">Global auto-approve on</StatusPill>
+          ) : undefined
+        }
+      >
+        <FormRow
+          label="Auto-approve all tools"
+          hint="Execute every tool without asking. Per-tool settings below are ignored when this is on."
+        >
+          <IdeSwitch
             checked={autoApproveTools}
             onChange={setAutoApproveTools}
             ariaLabel="Toggle auto-approve tools"
             variant="primary"
             size="sm"
           />
-        </div>
-      </div>
+        </FormRow>
 
-      {/* Auto-accept File Changes Toggle */}
-      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-xs font-medium text-text-primary">
-              Auto-accept File Changes
-            </h3>
-            <p className="text-[10px] text-text-secondary">
-              Skip diff review, accept all file modifications immediately
-            </p>
-          </div>
-          <TogglePill
+        <FormRowLast
+          label="Auto-accept file changes"
+          hint="Skip the diff viewer and apply file modifications immediately."
+          align="top"
+        >
+          <IdeSwitch
             checked={autoAcceptChanges}
             onChange={setAutoAcceptChanges}
             ariaLabel="Toggle auto-accept file changes"
             variant="primary"
             size="sm"
           />
-        </div>
-        {autoAcceptChanges && (
-          <p className="text-[10px] text-warning mt-2">
-            File changes will be applied directly without showing the diff
-            viewer.
-          </p>
-        )}
-      </div>
+        </FormRowLast>
+      </Section>
 
-      {/* Agent Guardrails Section */}
-      <div className="space-y-2">
-        <h3 className="text-xs font-medium text-text-primary flex items-center gap-1.5">
-          <Shield className="w-3.5 h-3.5" />
-          Agent Guardrails
-        </h3>
-        <p className="text-[10px] text-text-secondary mb-2">
-          Help the agent avoid common mistakes
-        </p>
+      {/* ============================================================ */}
+      {/* Guardrails                                                   */}
+      {/* ============================================================ */}
+      <Section
+        title="Agent Guardrails"
+        description="Quality checks that help the agent avoid common mistakes."
+      >
+        <FormRow
+          label="Pre-save syntax validation"
+          hint="Reject writes containing syntax errors (JSON, YAML, TOML, JS/TS, JSX/TSX). The agent must fix and retry."
+        >
+          <IdeSwitch
+            checked={syntaxValidationEnabled}
+            onChange={setSyntaxValidationEnabled}
+            ariaLabel="Toggle pre-save syntax validation"
+            variant="success"
+            size="sm"
+          />
+        </FormRow>
 
-        {/* Syntax Validation Toggle */}
-        <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-xs font-medium text-text-primary">
-                Pre-save Syntax Validation
-              </h3>
-              <p className="text-[10px] text-text-secondary">
-                Check syntax before writing files (JSON, YAML, TOML, JS, TS, JSX, TSX)
-              </p>
-            </div>
-            <TogglePill
-              checked={syntaxValidationEnabled}
-              onChange={setSyntaxValidationEnabled}
-              ariaLabel="Toggle pre-save syntax validation"
-              variant="success"
-              size="sm"
-            />
-          </div>
-          {syntaxValidationEnabled && (
-            <p className="text-[10px] text-success mt-2">
-              Files with syntax errors will be rejected, forcing the agent to
-              fix them.
-            </p>
-          )}
-        </div>
+        <FormRowLast
+          label="Project file map"
+          hint="Inject a workspace tree snapshot into the first message so the agent knows the project layout."
+        >
+          <IdeSwitch
+            checked={projectLayoutEnabled}
+            onChange={setProjectLayoutEnabled}
+            ariaLabel="Toggle project file map"
+            variant="success"
+            size="sm"
+          />
+        </FormRowLast>
+      </Section>
 
-        {/* Project Layout Toggle */}
-        <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-          <div className="flex items-center justify-between">
-            <div className="flex items-start gap-2">
-              <Map className="w-3.5 h-3.5 text-text-secondary mt-0.5" />
-              <div>
-                <h3 className="text-xs font-medium text-text-primary">
-                  Project File Map
-                </h3>
-                <p className="text-[10px] text-text-secondary">
-                  Include file tree in first message to help agent understand
-                  project structure
-                </p>
-              </div>
-            </div>
-            <TogglePill
-              checked={projectLayoutEnabled}
-              onChange={setProjectLayoutEnabled}
-              ariaLabel="Toggle project file map"
-              variant="success"
-              size="sm"
-            />
-          </div>
-          {projectLayoutEnabled && (
-            <p className="text-[10px] text-success mt-2">
-              Agent will receive a file tree snapshot at conversation start for
-              better path awareness.
-            </p>
-          )}
-        </div>
-      </div>
+      {/* ============================================================ */}
+      {/* Limits                                                       */}
+      {/* ============================================================ */}
+      <Section
+        title="Limits"
+        description="Caps on agent execution to keep runs predictable."
+      >
+        <FormRowLast
+          label="Max tool calls per request"
+          hint="Maximum iterations the agent can take in a single conversation turn."
+        >
+          <IdeSlider
+            value={maxToolCallsPerRequest}
+            min={5}
+            max={50}
+            step={5}
+            onChange={setMaxToolCallsPerRequest}
+            ariaLabel="Max tool calls per request"
+            formatValue={(v) => `${v}`}
+            trackWidth={160}
+          />
+        </FormRowLast>
+      </Section>
 
-      {/* Max Tool Calls */}
-      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-        <div className="flex items-center justify-between mb-2">
-          <div>
-            <h3 className="text-xs font-medium text-text-primary">
-              Max Tool Calls per Request
-            </h3>
-            <p className="text-[10px] text-text-secondary">
-              Limit iterations per conversation turn
-            </p>
-          </div>
-          <span className="text-xs font-mono text-primary">
-            {maxToolCallsPerRequest}
-          </span>
-        </div>
-        <input
-          type="range"
-          min="5"
-          max="50"
-          step="5"
-          value={maxToolCallsPerRequest}
-          onChange={(e) => setMaxToolCallsPerRequest(parseInt(e.target.value))}
-          className="w-full h-1 bg-input-border rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary"
-        />
-      </div>
-
-      {/* Warning */}
+      {/* Auto-approve warning */}
       {autoApproveTools && (
-        <div className="rounded-[20px] p-4" style={settingsDangerPanelStyle}>
-          <div className="flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 text-warning shrink-0 mt-0.5" />
-            <p className="text-[10px] text-text-secondary">
-              Global auto-approve is enabled. Individual tool settings below are
-              ignored.
-            </p>
-          </div>
+        <div
+          className="flex items-start gap-2.5 px-4 py-3 text-[11.5px]"
+          style={{
+            backgroundColor: 'color-mix(in srgb, var(--aurora-common-warning) 12%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--aurora-common-warning) 30%, transparent)',
+            borderRadius: 6,
+            color: 'var(--aurora-editor-foreground)',
+          }}
+        >
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+          <span>
+            Global auto-approve is on. Individual tool settings below are ignored
+            until you turn this off.
+          </span>
         </div>
       )}
 
-      {/* Per-Tool Settings */}
-      <div className="space-y-2">
-        <h3 className="text-xs font-medium text-text-primary">
-          Per-Tool Approval
-        </h3>
-        <p className="text-[10px] text-text-secondary mb-2">
-          Configure approval requirements for each tool category
-        </p>
-
-        {Object.entries(TOOL_CATEGORIES).map(([categoryKey, category]) => {
+      {/* ============================================================ */}
+      {/* Per-tool approval                                            */}
+      {/* ============================================================ */}
+      {(Object.entries(TOOL_CATEGORIES) as [keyof typeof TOOL_CATEGORIES, ToolCategory][])
+        .map(([categoryKey, category]) => {
           const Icon = category.icon;
-          const isDangerous = ["shell", "fileWrite", "folderOps"].includes(
-            categoryKey,
-          );
+          const isDangerous = !!category.dangerous;
+          const lastIndex = category.tools.length - 1;
 
           return (
-            <div
+            <Section
               key={categoryKey}
-              className={clsx("rounded-[20px] p-4", isDangerous ? "" : "")}
-              style={isDangerous ? settingsDangerPanelStyle : settingsCardStyle}
+              title={category.label}
+              description={category.description}
+              badge={
+                isDangerous ? (
+                  <StatusPill variant="danger">High risk</StatusPill>
+                ) : (
+                  <StatusPill variant="neutral">Read-only</StatusPill>
+                )
+              }
             >
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <Icon
-                    className={clsx(
-                      "w-4 h-4",
-                      isDangerous ? "text-warning" : "text-text-secondary",
-                    )}
-                  />
-                  <div>
-                    <h4 className="text-xs font-medium text-text-primary">
-                      {category.label}
-                    </h4>
-                    <p className="text-[10px] text-text-disabled">
-                      {category.description}
-                    </p>
-                  </div>
+              {/* Bulk actions header */}
+              <div
+                className="flex items-center justify-between gap-3 px-4 py-2.5"
+                style={{
+                  borderBottom: `1px solid ${settingsRowDividerColor}`,
+                  backgroundColor:
+                    'color-mix(in srgb, var(--aurora-sidebar-background) 40%, transparent)',
+                }}
+              >
+                <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
+                  <Icon className="h-3.5 w-3.5" />
+                  Bulk actions
                 </div>
-                <div className="flex gap-1">
-                  <button
-                    onClick={() =>
-                      setCategoryApproval(
-                        categoryKey as keyof typeof TOOL_CATEGORIES,
-                        "auto",
-                      )
-                    }
-                    className="rounded-full px-2.5 py-1 text-[9px] font-semibold text-primary-foreground"
-                    style={settingsPrimaryButtonStyle}
+                <div className="flex gap-1.5">
+                  <ActionButton
+                    variant="secondary"
+                    onClick={() => setCategoryApproval(categoryKey, 'auto')}
                   >
-                    All Auto
-                  </button>
-                  <button
-                    onClick={() =>
-                      setCategoryApproval(
-                        categoryKey as keyof typeof TOOL_CATEGORIES,
-                        "always_ask",
-                      )
-                    }
-                    className="rounded-full px-2.5 py-1 text-[9px] font-semibold text-warning"
-                    style={settingsSubtlePanelStyle}
+                    All auto
+                  </ActionButton>
+                  <ActionButton
+                    variant="secondary"
+                    onClick={() => setCategoryApproval(categoryKey, 'always_ask')}
                   >
-                    All Ask
-                  </button>
+                    All ask
+                  </ActionButton>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-1.5">
-                {category.tools.map((tool) => (
-                  <div
+              {/* Per-tool rows */}
+              {category.tools.map((tool, index) => {
+                const isLast = index === lastIndex;
+                const RowComp = isLast ? FormRowLast : FormRow;
+                return (
+                  <RowComp
                     key={tool}
-                    className="flex items-center justify-between rounded-[16px] px-3 py-2"
-                    style={settingsSubtlePanelStyle}
+                    label={getProfessionalToolName(tool)}
+                    hint={tool}
                   >
-                    <span className="text-[10px] text-text-secondary truncate">
-                      {getProfessionalToolName(tool)}
-                    </span>
                     <ApprovalSelect
-                      value={toolApprovalSettings[tool] || "always_ask"}
+                      value={(toolApprovalSettings[tool] || 'always_ask') as ApprovalMode}
                       onChange={(value) => setToolApproval(tool, value)}
                     />
-                  </div>
-                ))}
-              </div>
-            </div>
+                  </RowComp>
+                );
+              })}
+            </Section>
           );
         })}
-      </div>
 
-      {/* Legend */}
-      <div className="rounded-[18px] p-3" style={settingsCardStyle}>
-        <div className="flex items-center gap-4 text-[10px]">
-          <span className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-success"></span>
-            <span className="text-text-secondary">
-              Auto: Execute immediately
+      {/* ============================================================ */}
+      {/* Legend                                                       */}
+      {/* ============================================================ */}
+      <Section title="Legend" description="What each approval mode means.">
+        <FormBlock divided={false}>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[11.5px]">
+            <span className="flex items-center gap-2">
+              <Shield className="h-3 w-3 text-success" />
+              <span className="font-mono text-success">Auto</span>
+              <span className="text-text-secondary">Execute immediately</span>
             </span>
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-warning"></span>
-            <span className="text-text-secondary">Ask: Require approval</span>
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full bg-danger"></span>
-            <span className="text-text-secondary">Deny: Block execution</span>
-          </span>
-        </div>
-      </div>
+            <span className="flex items-center gap-2">
+              <Shield className="h-3 w-3 text-warning" />
+              <span className="font-mono text-warning">Ask</span>
+              <span className="text-text-secondary">Require user approval</span>
+            </span>
+            <span className="flex items-center gap-2">
+              <Map className="h-3 w-3 text-danger" />
+              <span className="font-mono text-danger">Deny</span>
+              <span className="text-text-secondary">Block execution outright</span>
+            </span>
+          </div>
+        </FormBlock>
+      </Section>
     </div>
   );
 };

@@ -1,5 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import {
+  auroraInvoke as invoke,
+  auroraListen as listen,
+} from "../../lib/runtime";
 
 import { BaseProvider } from "./base-provider";
 import type {

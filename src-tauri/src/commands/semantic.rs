@@ -1,5 +1,6 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
@@ -9,85 +10,129 @@ use crate::db::{
     SemanticSettings,
 };
 
-// Import aurora-semantic (v1.2.1 with full filtering support)
+// Import aurora-semantic from the local workspace crate.
 use aurora_semantic::{
-    ChunkType,
-    EmbeddingTask,
-    Engine,
-    EngineConfig,
-    ExecutionProviderInfo,
-    IgnoreConfig,
-    IndexProgress as AuroraProgress,
-    // Jina Code 1.5B embedder (recommended for code search)
-    JinaCodeEmbedder,
-    Language,
-    MatryoshkaDimension,
-    // Legacy model support
-    ModelConfig,
-    OnnxEmbedder,
-    SearchConfig,
-    SearchFilter,
-    SearchMode as AuroraSearchMode,
-    SearchQuery,
-    WorkspaceConfig,
+    graph::{GraphNode, GraphQuery, NodeLabel},
+    ChunkType, Engine, EngineConfig, ExecutionProviderInfo, IgnoreConfig,
+    IndexProgress as AuroraProgress, Language, ModelConfig, SearchConfig, SearchFilter,
+    SearchMode as AuroraSearchMode, SearchQuery, WorkspaceConfig, WorkspaceId,
 };
 
 // ============================================================
-// USER-LEVEL SEMANTIC DATA DIRECTORY
+// WORKSPACE-LOCAL SEMANTIC INDEXING
 // ============================================================
-// Semantic index files are stored at user level, NOT in workspace .aurora folder
-// Structure: {APP_DATA}/aurora_agent/semantic/{workspace-uuid}/
-//
-// Windows: %APPDATA%/aurora_agent/semantic/{uuid}/
-// macOS:   ~/Library/Application Support/aurora_agent/semantic/{uuid}/
-// Linux:   ~/.local/share/aurora_agent/semantic/{uuid}/
-
-/// Get the user-level semantic data directory
-/// This is a SINGLE shared directory for ALL workspaces
-/// aurora-semantic manages its own internal workspace IDs based on paths
-fn get_semantic_data_dir() -> Result<PathBuf, String> {
-    // Use platform-specific app data directory
-    let base_dir = dirs::data_dir()
-        .or_else(|| dirs::config_dir())
-        .ok_or_else(|| "Could not determine user data directory".to_string())?;
-
-    let semantic_dir = base_dir.join("aurora_agent").join("semantic");
-
-    // Ensure directory exists
-    std::fs::create_dir_all(&semantic_dir)
-        .map_err(|e| format!("Failed to create semantic data directory: {}", e))?;
-
-    Ok(semantic_dir)
-}
+// Index files live inside each opened workspace at:
+//   <workspace>/.aurora/index
+// This matches Aurora IDE's native workspace metadata layout and keeps each
+// codebase's graph/vector index isolated from every other workspace.
 
 // ============================================================
-// ENGINE CACHE (Singleton pattern for engine instances)
+// ENGINE CACHE
 // ============================================================
 
 lazy_static::lazy_static! {
-    static ref ENGINE_CACHE: RwLock<Option<Arc<Engine>>> = RwLock::new(None);
+    static ref ENGINE_CACHE: RwLock<HashMap<String, Arc<Engine>>> = RwLock::new(HashMap::new());
     static ref INDEXING_TASKS: RwLock<HashMap<String, bool>> = RwLock::new(HashMap::new());
 }
 
-/// Get or create the semantic engine
-/// Uses a SINGLE shared directory - aurora-semantic manages workspace IDs internally by path
-async fn get_or_create_engine(settings: &SemanticSettings) -> Result<Arc<Engine>, String> {
-    // Check if we already have an engine cached
-    {
-        let cache = ENGINE_CACHE.read().await;
-        if let Some(engine) = cache.as_ref() {
-            return Ok(engine.clone());
-        }
+fn workspace_index_dir(workspace_path: &str) -> PathBuf {
+    EngineConfig::workspace_index_dir(Path::new(workspace_path))
+}
+
+fn configured_model_path(settings: &SemanticSettings) -> Result<PathBuf, String> {
+    let model_path = settings
+        .model_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            "No embedding model is configured. Select the Qwen3 ONNX model folder in Settings > Semantic Search before indexing or searching.".to_string()
+        })?;
+
+    let path = PathBuf::from(model_path);
+    validate_model_files(&path).map(|_| path)
+}
+
+fn model_file_candidates(model_dir: &Path) -> [PathBuf; 4] {
+    [
+        model_dir.join("onnx").join("model_fp16.onnx"),
+        model_dir.join("model_fp16.onnx"),
+        model_dir.join("model_optimized.onnx"),
+        model_dir.join("model.onnx"),
+    ]
+}
+
+fn find_model_file(model_dir: &Path) -> Option<PathBuf> {
+    model_file_candidates(model_dir)
+        .into_iter()
+        .find(|path| path.exists())
+}
+
+fn validate_model_files(model_dir: &Path) -> Result<PathBuf, String> {
+    if !model_dir.exists() {
+        return Err(format!(
+            "Model path does not exist: {}",
+            model_dir.display()
+        ));
     }
 
-    // Use shared semantic data directory for ALL workspaces
-    // aurora-semantic will create its own workspace UUIDs internally based on paths
-    let index_dir = get_semantic_data_dir()?;
+    if !model_dir.is_dir() {
+        return Err(format!(
+            "Model path must be a directory containing tokenizer.json and an ONNX file: {}",
+            model_dir.display()
+        ));
+    }
 
-    // Build ignore config with all exclusion options from aurora-semantic v1.2.1
+    if !model_dir.join("tokenizer.json").exists() {
+        return Err(format!(
+            "Model directory is missing tokenizer.json: {}",
+            model_dir.display()
+        ));
+    }
+
+    find_model_file(model_dir).ok_or_else(|| {
+        format!(
+            "Model directory is missing an ONNX model. Expected one of: onnx/model_fp16.onnx, model_fp16.onnx, model_optimized.onnx, or model.onnx under {}",
+            model_dir.display()
+        )
+    })
+}
+
+fn engine_cache_key(
+    workspace_path: &str,
+    settings: &SemanticSettings,
+    workspace_index: Option<&SemanticIndex>,
+) -> String {
+    let mut hasher = DefaultHasher::new();
+    workspace_path.hash(&mut hasher);
+    settings.model_path.hash(&mut hasher);
+    settings.search_mode.to_string().hash(&mut hasher);
+    settings.lexical_weight.to_bits().hash(&mut hasher);
+    settings.semantic_weight.to_bits().hash(&mut hasher);
+    settings.max_file_size.hash(&mut hasher);
+    settings.ignored_patterns.hash(&mut hasher);
+    settings.ignored_directories.hash(&mut hasher);
+    settings.excluded_files.hash(&mut hasher);
+    settings.excluded_directories.hash(&mut hasher);
+    if let Some(index) = workspace_index {
+        index.excluded_files.hash(&mut hasher);
+        index.excluded_directories.hash(&mut hasher);
+    }
+    format!("{workspace_path}:{}", hasher.finish())
+}
+
+fn build_ignore_config(
+    settings: &SemanticSettings,
+    workspace_index: Option<&SemanticIndex>,
+) -> IgnoreConfig {
+    let mut ignored_directories = settings.ignored_directories.clone();
+    if !ignored_directories.iter().any(|dir| dir == ".aurora") {
+        ignored_directories.push(".aurora".to_string());
+    }
+
     let mut ignore_config = IgnoreConfig {
         use_gitignore: true,
-        ignored_directories: settings.ignored_directories.clone(),
+        ignored_directories,
         ignored_extensions: settings
             .ignored_patterns
             .iter()
@@ -114,7 +159,24 @@ async fn get_or_create_engine(settings: &SemanticSettings) -> Result<Arc<Engine>
         ignore_config = ignore_config.with_excluded_directory(dir_path);
     }
 
-    let config = EngineConfig::new(index_dir.clone())
+    if let Some(index) = workspace_index {
+        for file_path in &index.excluded_files {
+            ignore_config = ignore_config.with_excluded_file(file_path);
+        }
+        for dir_path in &index.excluded_directories {
+            ignore_config = ignore_config.with_excluded_directory(dir_path);
+        }
+    }
+
+    ignore_config
+}
+
+fn build_engine_config(
+    workspace_path: &str,
+    settings: &SemanticSettings,
+    workspace_index: Option<&SemanticIndex>,
+) -> EngineConfig {
+    EngineConfig::for_workspace(PathBuf::from(workspace_path))
         .with_search(SearchConfig {
             default_mode: match settings.search_mode {
                 crate::db::SearchMode::Lexical => AuroraSearchMode::Lexical,
@@ -125,62 +187,39 @@ async fn get_or_create_engine(settings: &SemanticSettings) -> Result<Arc<Engine>
             semantic_weight: settings.semantic_weight as f32,
             ..Default::default()
         })
-        .with_ignore(ignore_config);
+        .with_ignore(build_ignore_config(settings, workspace_index))
+}
 
-    // Create engine with or without ONNX model
-    let engine = if let Some(model_path) = &settings.model_path {
-        if !model_path.is_empty() {
-            let model_dir = PathBuf::from(model_path);
-            let has_model = model_dir.join("model.onnx").exists()
-                || model_dir.join("model_optimized.onnx").exists();
-            let has_tokenizer = model_dir.join("tokenizer.json").exists();
+/// Get or create a workspace-local semantic engine.
+async fn get_or_create_engine(
+    workspace_path: &str,
+    settings: &SemanticSettings,
+    workspace_index: Option<&SemanticIndex>,
+) -> Result<Arc<Engine>, String> {
+    let key = engine_cache_key(workspace_path, settings, workspace_index);
 
-            if has_model && has_tokenizer {
-                // Detect model type from directory name/path
-                let path_lower = model_path.to_lowercase();
-                let is_jina_1_5b = path_lower.contains("jina-code-1.5b")
-                    || path_lower.contains("jina-code-embeddings-1.5b");
-
-                if is_jina_1_5b {
-                    // Use JinaCodeEmbedder for jina-code-embeddings-1.5b
-                    // This model has 1536 dimensions and supports Matryoshka truncation
-                    let embedder = JinaCodeEmbedder::from_directory(&model_dir)
-                        .map_err(|e| format!("Failed to load Jina Code 1.5B model: {}", e))?
-                        .with_task(EmbeddingTask::NL2Code) // Best for natural language -> code search
-                        .with_dimension(MatryoshkaDimension::D512) // Good balance of quality/speed
-                        .with_max_length(8192); // Support long code files
-
-                    Engine::with_embedder(config, embedder).map_err(|e| {
-                        format!("Failed to create engine with Jina Code 1.5B: {}", e)
-                    })?
-                } else {
-                    // Use legacy OnnxEmbedder for other models (jina-v2, minilm, etc.)
-                    let embedder = ModelConfig::from_directory(&model_dir)
-                        .with_max_length(8192)
-                        .load()
-                        .map_err(|e| format!("Failed to load model: {}", e))?;
-
-                    Engine::with_embedder(config, embedder)
-                        .map_err(|e| format!("Failed to create engine with model: {}", e))?
-                }
-            } else {
-                // Model path invalid, use hash embeddings
-                Engine::new(config).map_err(|e| format!("Failed to create engine: {}", e))?
-            }
-        } else {
-            Engine::new(config).map_err(|e| format!("Failed to create engine: {}", e))?
+    {
+        let cache = ENGINE_CACHE.read().await;
+        if let Some(engine) = cache.get(&key) {
+            return Ok(engine.clone());
         }
-    } else {
-        // No model configured, use hash embeddings (fast, lexical-focused)
-        Engine::new(config).map_err(|e| format!("Failed to create engine: {}", e))?
-    };
+    }
+
+    let model_path = configured_model_path(settings)?;
+    let config = build_engine_config(workspace_path, settings, workspace_index);
+    let engine = Engine::with_model_path(config, &model_path, None).map_err(|e| {
+        format!(
+            "Failed to load embedding model from '{}': {}",
+            model_path.display(),
+            e
+        )
+    })?;
 
     let engine = Arc::new(engine);
 
-    // Cache the engine
     {
         let mut cache = ENGINE_CACHE.write().await;
-        *cache = Some(engine.clone());
+        cache.insert(key, engine.clone());
     }
 
     Ok(engine)
@@ -189,7 +228,19 @@ async fn get_or_create_engine(settings: &SemanticSettings) -> Result<Arc<Engine>
 /// Clear the engine cache (call when settings change)
 async fn clear_engine_cache() {
     let mut cache = ENGINE_CACHE.write().await;
-    *cache = None;
+    cache.clear();
+}
+
+fn load_workspace_for_query(engine: &Engine, workspace_path: &str) -> Result<WorkspaceId, String> {
+    engine
+        .load_workspace_by_path(Path::new(workspace_path))
+        .map_err(|e| format!("Failed to load workspace index: {}", e))?
+        .ok_or_else(|| {
+            format!(
+                "Workspace '{}' was not found in its .aurora/index semantic store. Index this workspace first from Settings > Semantic Search.",
+                workspace_path
+            )
+        })
 }
 
 // ============================================================
@@ -243,47 +294,46 @@ pub fn save_semantic_index(
         .map_err(|e| format!("Failed to save index: {:?}", e))
 }
 
-/// Delete a semantic index (also removes index files from user-level storage)
+/// Delete a semantic index (also removes workspace-local index files)
 #[tauri::command]
 pub async fn delete_semantic_index(
     id: String,
-    _workspace_path: String, // Kept for API compatibility, but not used for path
+    workspace_path: String,
     db: State<'_, Mutex<Database>>,
 ) -> Result<(), String> {
-    // Get workspace path and settings before any async operations
-    let (workspace_path, settings) = {
+    // Get workspace path, settings, and per-workspace exclusions before async operations.
+    let (workspace_path, settings, workspace_index) = {
         let db = db.lock().map_err(|e| e.to_string())?;
 
-        let workspace_path = db
+        let workspace_index = db
             .semantic()
             .get_index(&id)
-            .map_err(|e| format!("Failed to get index: {:?}", e))?
-            .map(|idx| idx.workspace_path);
+            .map_err(|e| format!("Failed to get index: {:?}", e))?;
+        let resolved_workspace_path = workspace_index
+            .as_ref()
+            .map(|idx| idx.workspace_path.clone())
+            .unwrap_or(workspace_path);
 
         let settings = db
             .semantic()
             .get_settings()
             .map_err(|e| format!("Failed to get settings: {:?}", e))?;
 
-        // Delete from database
         db.semantic()
             .delete_index(&id)
             .map_err(|e| format!("Failed to delete index: {:?}", e))?;
 
-        (workspace_path, settings)
-    }; // db lock released here
+        (resolved_workspace_path, settings, workspace_index)
+    };
 
-    // Delete from aurora-semantic engine by workspace path (async operation)
-    if let Some(ws_path) = workspace_path {
-        if let Ok(engine) = get_or_create_engine(&settings).await {
-            // Use aurora-semantic's built-in find_workspace_by_path
-            if let Ok(Some(ws_id)) = engine.find_workspace_by_path(std::path::Path::new(&ws_path)) {
-                let _ = engine.delete_workspace(&ws_id);
-            }
+    if let Ok(engine) =
+        get_or_create_engine(&workspace_path, &settings, workspace_index.as_ref()).await
+    {
+        if let Ok(Some(ws_id)) = engine.find_workspace_by_path(Path::new(&workspace_path)) {
+            let _ = engine.delete_workspace(&ws_id);
         }
     }
 
-    // Clear engine cache since index was deleted
     clear_engine_cache().await;
 
     Ok(())
@@ -373,19 +423,10 @@ pub async fn set_semantic_model_path(
     Ok(())
 }
 
-/// Validate model directory (check if model.onnx and tokenizer.json exist)
+/// Validate model directory without loading the ONNX session.
 #[tauri::command]
 pub fn validate_semantic_model_path(path: String) -> Result<bool, String> {
-    let path = PathBuf::from(&path);
-
-    if !path.exists() {
-        return Ok(false);
-    }
-
-    let model_file = path.join("model.onnx");
-    let tokenizer_file = path.join("tokenizer.json");
-
-    Ok(model_file.exists() && tokenizer_file.exists())
+    Ok(validate_model_files(Path::new(&path)).is_ok())
 }
 
 /// Get model info if valid (lightweight - does NOT load the ONNX model)
@@ -394,34 +435,22 @@ pub fn validate_semantic_model_path(path: String) -> Result<bool, String> {
 pub fn get_semantic_model_info(path: String) -> Result<Option<ModelInfo>, String> {
     let path = PathBuf::from(&path);
 
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let model_file = path.join("model.onnx");
-    let model_optimized = path.join("model_optimized.onnx");
-    let tokenizer_file = path.join("tokenizer.json");
-    let config_file = path.join("config.json");
-
-    // Check for either model.onnx or model_optimized.onnx
-    let actual_model_file = if model_optimized.exists() {
-        model_optimized
-    } else if model_file.exists() {
-        model_file
-    } else {
-        return Ok(None);
+    let actual_model_file = match validate_model_files(&path) {
+        Ok(model_file) => model_file,
+        Err(_) => {
+            return Ok(None);
+        }
     };
 
-    if !tokenizer_file.exists() {
+    let config_file = path.join("config.json");
+    if !actual_model_file.exists() {
         return Ok(None);
     }
 
-    // Get model file size (fast filesystem operation)
     let model_size = std::fs::metadata(&actual_model_file)
         .map(|m| m.len())
         .unwrap_or(0);
 
-    // Try to read config for model name (fast - just reads small JSON)
     let model_name = if config_file.exists() {
         std::fs::read_to_string(&config_file)
             .ok()
@@ -490,14 +519,12 @@ impl From<&ExecutionProviderInfo> for ExecutionProviderDetails {
 #[tauri::command]
 pub fn get_execution_provider_info(model_path: String) -> Result<ExecutionProviderDetails, String> {
     let path = PathBuf::from(&model_path);
-
-    if !path.exists() {
-        return Err("Model path does not exist".to_string());
-    }
+    validate_model_files(&path)?;
 
     // Try to load the model to get execution provider info
-    let embedder =
-        OnnxEmbedder::from_directory(&path).map_err(|e| format!("Failed to load model: {}", e))?;
+    let embedder = ModelConfig::from_directory(&path)
+        .load()
+        .map_err(|e| format!("Failed to load model: {}", e))?;
 
     Ok(ExecutionProviderDetails::from(
         embedder.execution_provider(),
@@ -528,8 +555,7 @@ pub struct GpuFeatures {
 // INDEXING COMMANDS (Integration with aurora-semantic)
 // ============================================================
 
-/// Start indexing a workspace
-/// Index files are stored at user-level: {APP_DATA}/aurora_agent/semantic/{workspace-uuid}/
+/// Start indexing a workspace into `<workspace>/.aurora/index`.
 #[tauri::command]
 pub async fn start_semantic_indexing(
     app: AppHandle,
@@ -554,9 +580,11 @@ pub async fn start_semantic_indexing(
             .get_settings()
             .map_err(|e| format!("Failed to get settings: {:?}", e))?
     };
+    configured_model_path(&settings)?;
 
-    // Create or get existing index record (UUID is the key for storage)
-    let index_id = {
+    // Create or get existing index record. The aurora-semantic workspace ID is stored inside
+    // the workspace-local index; this DB UUID is for Aurora UI/progress bookkeeping.
+    let (index_id, workspace_index) = {
         let db = db.lock().map_err(|e| e.to_string())?;
 
         // Check if index already exists for this workspace path
@@ -565,14 +593,12 @@ pub async fn start_semantic_indexing(
             .get_index_by_path(&workspace_path)
             .map_err(|e| format!("Failed to check existing index: {:?}", e))?
         {
-            // Update status to indexing
             db.semantic()
                 .update_index_status(&existing.id, SemanticIndexStatus::Indexing, None)
                 .map_err(|e| format!("Failed to update status: {:?}", e))?;
-            existing.id
+            let index_id = existing.id.clone();
+            (index_id, existing)
         } else {
-            // Create new index record with UUID
-            // This UUID will be used as the directory name in user-level storage
             let new_index = SemanticIndex {
                 id: Uuid::new_v4().to_string(),
                 workspace_path: workspace_path.clone(),
@@ -593,12 +619,10 @@ pub async fn start_semantic_indexing(
                 .save_index(&new_index)
                 .map_err(|e| format!("Failed to create index: {:?}", e))?;
 
-            new_index.id
+            let index_id = new_index.id.clone();
+            (index_id, new_index)
         }
     };
-
-    // Ensure the shared semantic data directory exists
-    let _index_dir = get_semantic_data_dir()?;
 
     // Mark as indexing
     {
@@ -608,6 +632,7 @@ pub async fn start_semantic_indexing(
 
     let index_id_clone = index_id.clone();
     let workspace_path_clone = workspace_path.clone();
+    let workspace_index_clone = workspace_index.clone();
     let app_clone = app.clone();
 
     // Spawn indexing task in background
@@ -617,6 +642,7 @@ pub async fn start_semantic_indexing(
             &workspace_path_clone,
             &index_id_clone,
             &settings,
+            &workspace_index_clone,
         )
         .await;
 
@@ -701,19 +727,18 @@ pub async fn start_semantic_indexing(
     Ok(index_id)
 }
 
-/// Internal function to run the actual indexing
-/// Uses workspace UUID (index_id) for user-level storage location
+/// Internal function to run the actual indexing.
 async fn run_indexing(
     app: &AppHandle,
     workspace_path: &str,
     index_id: &str, // Our database record ID (for progress events)
     settings: &SemanticSettings,
+    workspace_index: &SemanticIndex,
 ) -> Result<(i64, i64, i64), String> {
     // Clear any cached engine to ensure fresh config
     clear_engine_cache().await;
 
-    // Get or create engine (uses shared directory, aurora-semantic manages workspace IDs by path)
-    let engine = get_or_create_engine(settings).await?;
+    let engine = get_or_create_engine(workspace_path, settings, Some(workspace_index)).await?;
 
     // Emit scanning phase
     let _ = app.emit(
@@ -780,9 +805,7 @@ async fn run_indexing(
     ))
 }
 
-/// Search using semantic index with full filtering support
-/// Supports aurora-semantic v1.2.1 SearchQuery and SearchFilter features
-/// Looks up workspace by path to get UUID, then uses user-level storage
+/// Search code chunks in the workspace-local semantic index.
 #[tauri::command]
 pub async fn semantic_search(
     workspace_path: String,
@@ -800,7 +823,7 @@ pub async fn semantic_search(
     db: State<'_, Mutex<Database>>,
 ) -> Result<Vec<SemanticSearchResult>, String> {
     // Get settings and verify workspace is indexed
-    let settings = {
+    let (settings, workspace_index) = {
         let db = db.lock().map_err(|e| e.to_string())?;
 
         let settings = db
@@ -808,40 +831,27 @@ pub async fn semantic_search(
             .get_settings()
             .map_err(|e| format!("Failed to get settings: {:?}", e))?;
 
-        // Check database for index status (optional - we'll verify with actual engine)
-        if let Some(index) = db
+        let workspace_index = db
             .semantic()
             .get_index_by_path(&workspace_path)
             .map_err(|e| format!("Failed to get index: {:?}", e))?
-        {
-            if index.status != crate::db::SemanticIndexStatus::Ready {
-                return Err(format!(
-                    "Index not ready: {:?}. Please wait for indexing to complete.",
-                    index.status
-                ));
-            }
+            .ok_or_else(|| {
+                "This workspace has not been indexed yet. Index it from Settings > Semantic Search."
+                    .to_string()
+            })?;
+
+        if workspace_index.status != crate::db::SemanticIndexStatus::Ready {
+            return Err(format!(
+                "Index not ready: {:?}. Please wait for indexing to complete.",
+                workspace_index.status
+            ));
         }
 
-        settings
+        (settings, workspace_index)
     };
 
-    // Get or create engine (uses shared directory)
-    let engine = get_or_create_engine(&settings).await?;
-
-    // Find workspace by path using aurora-semantic's built-in method
-    let workspace_id = engine.find_workspace_by_path(std::path::Path::new(&workspace_path))
-        .map_err(|e| format!("Failed to find workspace: {}", e))?
-        .ok_or_else(|| {
-            format!(
-                "Workspace '{}' not found in semantic index. Please index this workspace first from Settings > Semantic Search.",
-                workspace_path
-            )
-        })?;
-
-    // Load workspace into memory if not already loaded
-    if engine.load_workspace(&workspace_id).is_err() {
-        // Workspace might already be loaded, continue
-    }
+    let engine = get_or_create_engine(&workspace_path, &settings, Some(&workspace_index)).await?;
+    let workspace_id = load_workspace_for_query(&engine, &workspace_path)?;
 
     // Determine search mode
     let search_mode = if let Some(mode_str) = mode.as_deref() {
@@ -979,6 +989,176 @@ pub async fn semantic_search(
         .collect())
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphNodeSummary {
+    pub id: String,
+    pub label: String,
+    pub name: String,
+    pub qualified_name: Option<String>,
+    pub path: Option<String>,
+    pub start_line: Option<u32>,
+    pub end_line: Option<u32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphRelationshipSummary {
+    pub source: String,
+    pub target: String,
+    pub relationship_type: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticGraphSearchResult {
+    pub node: GraphNodeSummary,
+    pub score: f32,
+    pub match_type: String,
+    pub relationships: Vec<GraphRelationshipSummary>,
+    pub related_nodes: Vec<GraphNodeSummary>,
+}
+
+fn parse_node_label(label: &str) -> Option<NodeLabel> {
+    match label.to_lowercase().replace('-', "_").as_str() {
+        "workspace" => Some(NodeLabel::Workspace),
+        "folder" | "directory" => Some(NodeLabel::Folder),
+        "file" => Some(NodeLabel::File),
+        "function" => Some(NodeLabel::Function),
+        "class" => Some(NodeLabel::Class),
+        "interface" => Some(NodeLabel::Interface),
+        "method" => Some(NodeLabel::Method),
+        "constructor" => Some(NodeLabel::Constructor),
+        "property" | "field" => Some(NodeLabel::Property),
+        "struct" => Some(NodeLabel::Struct),
+        "enum" => Some(NodeLabel::Enum),
+        "trait" => Some(NodeLabel::Trait),
+        "impl" | "implementation" => Some(NodeLabel::Impl),
+        "type_alias" | "typedef" => Some(NodeLabel::TypeAlias),
+        "const" | "constant" => Some(NodeLabel::Const),
+        "static" => Some(NodeLabel::Static),
+        "variable" => Some(NodeLabel::Variable),
+        "macro" => Some(NodeLabel::Macro),
+        "namespace" | "module" | "package" => Some(NodeLabel::Namespace),
+        "community" => Some(NodeLabel::Community),
+        "process" | "flow" => Some(NodeLabel::Process),
+        "route" => Some(NodeLabel::Route),
+        "tool" => Some(NodeLabel::Tool),
+        "section" => Some(NodeLabel::Section),
+        _ => None,
+    }
+}
+
+fn graph_node_summary(node: &GraphNode) -> GraphNodeSummary {
+    let span = node.span.as_ref();
+    GraphNodeSummary {
+        id: node.id.to_string(),
+        label: node.label.as_str().to_string(),
+        name: node.name.clone(),
+        qualified_name: node.qualified_name.clone(),
+        path: span.map(|span| span.path.to_string_lossy().to_string()),
+        start_line: span.map(|span| span.start_line),
+        end_line: span.map(|span| span.end_line),
+    }
+}
+
+/// Search graph nodes directly for symbols, files, routes, tools, and process nodes.
+#[tauri::command]
+pub async fn semantic_graph_search(
+    workspace_path: String,
+    query: String,
+    limit: Option<i32>,
+    mode: Option<String>,
+    min_score: Option<f32>,
+    labels: Option<Vec<String>>,
+    path_patterns: Option<Vec<String>>,
+    include_context: Option<bool>,
+    db: State<'_, Mutex<Database>>,
+) -> Result<Vec<SemanticGraphSearchResult>, String> {
+    let (settings, workspace_index) = {
+        let db = db.lock().map_err(|e| e.to_string())?;
+        let settings = db
+            .semantic()
+            .get_settings()
+            .map_err(|e| format!("Failed to get settings: {:?}", e))?;
+        let workspace_index = db
+            .semantic()
+            .get_index_by_path(&workspace_path)
+            .map_err(|e| format!("Failed to get index: {:?}", e))?
+            .ok_or_else(|| {
+                "This workspace has not been indexed yet. Index it from Settings > Semantic Search."
+                    .to_string()
+            })?;
+
+        if workspace_index.status != crate::db::SemanticIndexStatus::Ready {
+            return Err(format!(
+                "Index not ready: {:?}. Please wait for indexing to complete.",
+                workspace_index.status
+            ));
+        }
+
+        (settings, workspace_index)
+    };
+
+    let engine = get_or_create_engine(&workspace_path, &settings, Some(&workspace_index)).await?;
+    let workspace_id = load_workspace_for_query(&engine, &workspace_path)?;
+
+    let search_mode = match mode.as_deref() {
+        Some("lexical") => AuroraSearchMode::Lexical,
+        Some("semantic") => AuroraSearchMode::Semantic,
+        _ => AuroraSearchMode::Hybrid,
+    };
+
+    let mut graph_query = GraphQuery::new(&query)
+        .mode(search_mode)
+        .limit(limit.unwrap_or(20).clamp(1, 50) as usize)
+        .min_score(min_score.unwrap_or(0.0))
+        .include_context(include_context.unwrap_or(true));
+
+    if let Some(labels) = labels {
+        let parsed_labels: Vec<NodeLabel> = labels
+            .iter()
+            .filter_map(|label| parse_node_label(label))
+            .collect();
+        if !parsed_labels.is_empty() {
+            graph_query = graph_query.labels(parsed_labels);
+        }
+    }
+
+    if let Some(path_patterns) = path_patterns {
+        if !path_patterns.is_empty() {
+            graph_query = graph_query.path_patterns(path_patterns);
+        }
+    }
+
+    let results = engine
+        .query_graph(&workspace_id, graph_query)
+        .map_err(|e| format!("Graph search failed: {}", e))?;
+
+    Ok(results
+        .into_iter()
+        .map(|result| SemanticGraphSearchResult {
+            node: graph_node_summary(&result.node),
+            score: result.score,
+            match_type: format!("{:?}", result.match_type).to_lowercase(),
+            relationships: result
+                .relationships
+                .iter()
+                .map(|relationship| GraphRelationshipSummary {
+                    source: relationship.source.to_string(),
+                    target: relationship.target.to_string(),
+                    relationship_type: relationship.relationship_type.as_str().to_string(),
+                })
+                .collect(),
+            related_nodes: result
+                .related_nodes
+                .iter()
+                .map(graph_node_summary)
+                .collect(),
+        })
+        .collect())
+}
+
 /// Cancel ongoing indexing
 #[tauri::command]
 pub async fn cancel_semantic_indexing(
@@ -1013,17 +1193,20 @@ pub async fn is_semantic_indexing() -> bool {
     tasks.values().any(|&v| v)
 }
 
-/// Get the user-level semantic data directory path
+/// Get the workspace-local semantic index directory path.
 #[tauri::command]
-pub fn get_semantic_data_directory() -> Result<String, String> {
-    let dir = get_semantic_data_dir()?;
-    Ok(dir.to_string_lossy().to_string())
+pub fn get_semantic_data_directory(workspace_path: Option<String>) -> Result<String, String> {
+    let workspace_path = workspace_path
+        .ok_or_else(|| "Open a workspace to resolve its semantic index directory.".to_string())?;
+    Ok(workspace_index_dir(&workspace_path)
+        .to_string_lossy()
+        .to_string())
 }
 
-/// Get the semantic data directory path (same as get_semantic_data_directory)
-/// All workspaces share this directory, aurora-semantic manages internal structure
+/// Legacy compatibility alias. The argument now expects a workspace path.
 #[tauri::command]
-pub fn get_semantic_index_path(_workspace_id: String) -> Result<String, String> {
-    // Legacy compatibility alias.
-    get_semantic_data_directory()
+pub fn get_semantic_index_path(workspace_id: String) -> Result<String, String> {
+    Ok(workspace_index_dir(&workspace_id)
+        .to_string_lossy()
+        .to_string())
 }

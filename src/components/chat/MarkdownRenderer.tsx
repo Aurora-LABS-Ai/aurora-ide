@@ -219,17 +219,26 @@ const CodeBlockWrapper: React.FC<{
     <div
       className="group/code relative my-3 rounded-lg overflow-hidden"
       style={{
+        // Derive a deeper surface from the chat background so the code
+        // block always reads as an inset panel, regardless of theme.
+        // (Previously this used --aurora-chat-code-block which on the
+        // default dark theme was #2b2b2b — only ~7% delta from the chat
+        // background, so the block almost disappeared into the page.)
         background:
-          "var(--aurora-chat-code-block, var(--aurora-editor-background))",
-        border: "1px solid var(--aurora-common-border)",
+          "color-mix(in srgb, var(--aurora-chat-background) 78%, #000 22%)",
+        border:
+          "1px solid color-mix(in srgb, var(--aurora-common-border) 80%, transparent)",
       }}
     >
-      {/* Header bar with language and copy button */}
+      {/* Header bar with language and copy button — slightly lighter than
+          the code surface to read as a chrome strip on top of the panel. */}
       <div
         className="flex items-center justify-between px-3 py-1.5 border-b"
         style={{
-          background: "rgba(255, 255, 255, 0.03)",
-          borderColor: "var(--aurora-common-border)",
+          background:
+            "color-mix(in srgb, var(--aurora-chat-background) 92%, #fff 4%)",
+          borderColor:
+            "color-mix(in srgb, var(--aurora-common-border) 70%, transparent)",
         }}
       >
         <div className="flex items-center gap-1.5">
@@ -325,15 +334,20 @@ const components = {
       );
     }
 
-    // Inline code - styled nicely
+    // Inline code - VS Code / GitHub style: same text color as body, subtle
+    // background tint, hairline border. Using common-primary as the text
+    // color was unprofessional (whole sentences with inline `code` lit up
+    // in accent orange/amber). Body text reads naturally now; the subtle
+    // background tint is the only visual differentiator.
     return (
       <code
-        className="px-1.5 py-0.5 rounded font-mono text-[11px] mx-0.5"
+        className="px-1.5 py-0.5 rounded font-mono text-[12px] mx-[1px]"
         style={{
           background:
-            "var(--aurora-chat-code-block, var(--aurora-editor-background))",
-          color: "var(--aurora-common-primary)",
-          border: "1px solid var(--aurora-common-border)",
+            "color-mix(in srgb, var(--aurora-editor-foreground) 7%, transparent)",
+          color: "var(--aurora-common-text-primary)",
+          border:
+            "1px solid color-mix(in srgb, var(--aurora-common-border) 55%, transparent)",
         }}
         {...props}
       >
@@ -531,15 +545,25 @@ const components = {
     </em>
   ),
 
-  // Tables - professionally styled with zebra striping
+  // Tables — professionally styled with a deeper-than-chat surface so the
+  // grid actually reads as a contained panel (previously the table fill
+  // was --aurora-sidebar-background which on the default dark theme is
+  // identical to --aurora-chat-background, making the table effectively
+  // invisible against the message stream). Every layer is derived from
+  // chat-background via color-mix so it adapts to any theme.
   table: ({ children, ...props }: React.HTMLAttributes<HTMLTableElement>) => (
     <div
       className="my-4 overflow-x-auto scrollbar-thin rounded-lg"
-      style={{ border: "1px solid var(--aurora-common-border)" }}
+      style={{
+        background:
+          "color-mix(in srgb, var(--aurora-chat-background) 78%, #000 22%)",
+        border:
+          "1px solid color-mix(in srgb, var(--aurora-common-border) 80%, transparent)",
+      }}
     >
       <table
         className="min-w-full text-[12px] border-collapse"
-        style={{ background: "var(--aurora-sidebar-background)" }}
+        style={{ background: "transparent" }}
         {...props}
       >
         {children}
@@ -552,7 +576,12 @@ const components = {
   }: React.HTMLAttributes<HTMLTableSectionElement>) => (
     <thead
       style={{
-        background: "var(--aurora-chat-surface, rgba(255, 255, 255, 0.05))",
+        // Header strip reads as chrome on top of the deeper table fill —
+        // intentionally lighter than the body surface for visual hierarchy.
+        background:
+          "color-mix(in srgb, var(--aurora-chat-background) 92%, #fff 4%)",
+        borderBottom:
+          "1px solid color-mix(in srgb, var(--aurora-common-border) 80%, transparent)",
       }}
       {...props}
     >
@@ -563,17 +592,16 @@ const components = {
     children,
     ...props
   }: React.HTMLAttributes<HTMLTableSectionElement>) => (
-    <tbody
-      className="divide-y"
-      style={{ borderColor: "var(--aurora-common-border)" }}
-      {...props}
-    >
-      {children}
-    </tbody>
+    <tbody {...props}>{children}</tbody>
   ),
   tr: ({ children, ...props }: React.HTMLAttributes<HTMLTableRowElement>) => (
     <tr
-      className="transition-colors hover:bg-sidebar-item-hover even:bg-input/30"
+      className="transition-colors"
+      style={{
+        // Subtle zebra striping using a derived tint instead of input/30
+        // (which on identical-bg themes was invisible).
+        // The :nth-child rule lives in index.css via .markdown-content tr.
+      }}
       {...props}
     >
       {children}
@@ -581,10 +609,10 @@ const components = {
   ),
   th: ({ children, ...props }: React.HTMLAttributes<HTMLTableCellElement>) => (
     <th
-      className="px-4 py-2.5 text-left font-semibold text-[11px] uppercase tracking-wider"
+      className="px-4 py-2.5 text-left font-semibold text-[11px] uppercase tracking-[0.06em]"
       style={{
-        color: "var(--aurora-common-text-primary)",
-        borderBottom: "2px solid var(--aurora-common-border)",
+        color:
+          "color-mix(in srgb, var(--aurora-common-text-primary) 75%, transparent)",
       }}
       {...props}
     >
@@ -593,12 +621,11 @@ const components = {
   ),
   td: ({ children, ...props }: React.HTMLAttributes<HTMLTableCellElement>) => (
     <td
-      className="px-4 py-2.5"
+      className="px-4 py-2.5 align-top"
       style={{
         color: "var(--aurora-common-text-primary)",
-        opacity: 0.9,
-        borderBottom:
-          "1px solid color-mix(in srgb, var(--aurora-common-text-primary) 6%, transparent)",
+        borderTop:
+          "1px solid color-mix(in srgb, var(--aurora-common-border) 50%, transparent)",
       }}
       {...props}
     >

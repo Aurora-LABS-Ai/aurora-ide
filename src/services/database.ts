@@ -1,5 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
-
+import { auroraInvoke } from "../lib/runtime";
 import type { AppSettings, DbLLMProvider, EditorState, ExplorerState, ToolSetting, WorkspaceState } from "../types/database";
 
 /**
@@ -8,7 +7,7 @@ import type { AppSettings, DbLLMProvider, EditorState, ExplorerState, ToolSettin
 class DatabaseService {
   public async getSetting(key: string): Promise<string | null> {
     try {
-      const result = await invoke<string | null>('get_setting', { key });
+      const result = await auroraInvoke<string | null>('get_setting', { key });
       return result;
     } catch (error) {
       console.error(`Failed to get setting ${key}:`, error);
@@ -17,14 +16,14 @@ class DatabaseService {
   }
 
   public async setSetting(key: string, value: string): Promise<void> {
-    await invoke('set_setting', { key, value });
+    await auroraInvoke('set_setting', { key, value });
   }
 
   /**
    * Delete a provider
    */
   public async deleteProvider(id: string): Promise<void> {
-    await invoke('delete_provider', { id });
+    await auroraInvoke('delete_provider', { id });
   }
 
   // ============================================================
@@ -36,7 +35,7 @@ class DatabaseService {
    */
   public async getAllProviders(): Promise<DbLLMProvider[]> {
     try {
-      const result = await invoke<DbLLMProvider[]>('get_all_providers');
+      const result = await auroraInvoke<DbLLMProvider[]>('get_all_providers');
       return result;
     } catch (error) {
       console.error('Failed to get providers:', error);
@@ -53,7 +52,7 @@ class DatabaseService {
    */
   public async getAllToolSettings(): Promise<ToolSetting[]> {
     try {
-      const result = await invoke<ToolSetting[]>('get_all_tool_settings');
+      const result = await auroraInvoke<ToolSetting[]>('get_all_tool_settings');
       return result;
     } catch (error) {
       console.error('Failed to get tool settings:', error);
@@ -70,7 +69,7 @@ class DatabaseService {
    */
   public async getAppSettings(): Promise<AppSettings | null> {
     try {
-      const result = await invoke<AppSettings>('get_app_settings');
+      const result = await auroraInvoke<AppSettings>('get_app_settings');
       return result;
     } catch (error) {
       console.error('Failed to get app settings:', error);
@@ -83,7 +82,7 @@ class DatabaseService {
    */
   public async getEditorState(filePath: string): Promise<EditorState | null> {
     try {
-      const result = await invoke<EditorState | null>('get_editor_state', {
+      const result = await auroraInvoke<EditorState | null>('get_editor_state', {
         filePath,
       });
       return result;
@@ -100,7 +99,7 @@ class DatabaseService {
     workspacePath: string
   ): Promise<ExplorerState | null> {
     try {
-      const result = await invoke<ExplorerState | null>('get_explorer_state', {
+      const result = await auroraInvoke<ExplorerState | null>('get_explorer_state', {
         workspacePath,
       });
       return result;
@@ -115,7 +114,7 @@ class DatabaseService {
    */
   public async getProvider(id: string): Promise<DbLLMProvider | null> {
     try {
-      const result = await invoke<DbLLMProvider | null>('get_provider', { id });
+      const result = await auroraInvoke<DbLLMProvider | null>('get_provider', { id });
       return result;
     } catch (error) {
       console.error(`Failed to get provider ${id}:`, error);
@@ -131,7 +130,7 @@ class DatabaseService {
     workspacePath?: string
   ): Promise<WorkspaceState | null> {
     try {
-      const result = await invoke<WorkspaceState | null>('get_workspace_state', {
+      const result = await auroraInvoke<WorkspaceState | null>('get_workspace_state', {
         workspacePath: workspacePath ?? null,
       });
       return result;
@@ -146,7 +145,7 @@ class DatabaseService {
    */
   public async listRecentWorkspaces(limit: number = 3): Promise<WorkspaceState[]> {
     try {
-      const result = await invoke<WorkspaceState[]>('list_recent_workspaces', { limit });
+      const result = await auroraInvoke<WorkspaceState[]>('list_recent_workspaces', { limit });
       return result;
     } catch (error) {
       console.error('Failed to list recent workspaces:', error);
@@ -159,7 +158,7 @@ class DatabaseService {
    */
   public async hasProviders(): Promise<boolean> {
     try {
-      const result = await invoke<boolean>('has_providers');
+      const result = await auroraInvoke<boolean>('has_providers');
       return result;
     } catch (error) {
       console.error('Failed to check providers:', error);
@@ -171,21 +170,21 @@ class DatabaseService {
    * Save multiple providers at once
    */
   public async saveAllProviders(providers: DbLLMProvider[]): Promise<void> {
-    await invoke('save_all_providers', { providers });
+    await auroraInvoke('save_all_providers', { providers });
   }
 
   /**
    * Save all tool settings at once
    */
   public async saveAllToolSettings(settings: [string, string][]): Promise<void> {
-    await invoke('save_all_tool_settings', { settings });
+    await auroraInvoke('save_all_tool_settings', { settings });
   }
 
   /**
    * Save all app settings
    */
   public async saveAppSettings(settings: AppSettings): Promise<void> {
-    await invoke('save_app_settings', { settings });
+    await auroraInvoke('save_app_settings', { settings });
   }
 
   // ============================================================
@@ -196,7 +195,7 @@ class DatabaseService {
    * Save editor state for a file (cursor position, scroll offset, folds)
    */
   public async saveEditorState(state: EditorState): Promise<void> {
-    await invoke('save_editor_state', { state });
+    await auroraInvoke('save_editor_state', { state });
   }
 
   // ============================================================
@@ -207,14 +206,14 @@ class DatabaseService {
    * Save explorer state (expanded folders, selected file)
    */
   public async saveExplorerState(state: ExplorerState): Promise<void> {
-    await invoke('save_explorer_state', { state });
+    await auroraInvoke('save_explorer_state', { state });
   }
 
   /**
    * Save or update a provider
    */
   public async saveProvider(provider: DbLLMProvider): Promise<void> {
-    await invoke('save_provider', { provider });
+    await auroraInvoke('save_provider', { provider });
   }
 
   // ============================================================
@@ -225,14 +224,14 @@ class DatabaseService {
    * Save workspace state (open tabs, panel layout, etc.)
    */
   public async saveWorkspaceState(state: WorkspaceState): Promise<void> {
-    await invoke('save_workspace_state', { state });
+    await auroraInvoke('save_workspace_state', { state });
   }
 
   /**
    * Set tool approval mode
    */
   public async setToolApproval(toolName: string, approvalMode: string): Promise<void> {
-    await invoke('set_tool_approval', { toolName, approvalMode });
+    await auroraInvoke('set_tool_approval', { toolName, approvalMode });
   }
 }
 

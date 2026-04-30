@@ -1,7 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
-
 import { create } from "zustand";
 
+import {
+    auroraInvoke as invoke,
+    isAuroraRuntimeAvailable,
+} from "../lib/runtime";
 import { themeService } from "../services/theme-service";
 import type { ThemeDefinition, ThemeFile, ThemeStore } from "../types/theme";
 import alvanAuroraDarkThemeFile from "../themes/alvan-aurora-dark.json";
@@ -51,7 +53,7 @@ const BUILT_IN_THEME_NAMES = ['aurora dark', 'aurora light', 'alvan aurora dark'
 let hasThemeStorageListener = false;
 
 function canUseTauriThemeCommands(): boolean {
-    return typeof window !== 'undefined' && '__TAURI__' in window && typeof invoke === 'function';
+    return isAuroraRuntimeAvailable();
 }
 
 function deserializeStoredThemes(rows: StoredThemeRow[]): ThemeDefinition[] {

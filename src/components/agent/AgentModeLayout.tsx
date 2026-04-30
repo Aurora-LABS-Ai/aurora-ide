@@ -15,13 +15,7 @@ import {
   Minimize2,
   Plus,
   History,
-  Sparkles,
-  MessageSquare,
-  Zap,
-  Search,
-  Bug,
-  TestTube,
-  FolderOpen,
+  PanelRightOpen,
 } from "lucide-react";
 import { classifyError } from '../../lib/error-classifier';
 import { StreamingDotMatrix } from "../ui/StreamingDotMatrix";
@@ -64,7 +58,8 @@ import { AgentChangesTree } from "./AgentChangesTree";
 import { AgentInputArea, type AttachedFile } from "./AgentInputArea";
 import { ChatMessage } from "../chat/ChatMessage";
 import { ThreadHistory } from "../chat/ThreadHistory";
-import { scanWorkspace, type WorkspaceSummary } from "../../services/workspace-summary";
+import { WorkspaceAwareEmptyState } from "../chat/WorkspaceAwareEmptyState";
+import { AppIcon } from "../ui/AppIcon";
 import type {
   ToolProposal,
   ToolCall,
@@ -116,6 +111,7 @@ export const AgentModeLayout: React.FC = () => {
   const { refreshDirectory, rootPath } = useWorkspaceStore();
   const {
     autoApproveTools,
+    agentExecutionMode,
     maxToolCallsPerRequest,
     getToolApproval,
     setToolApproval,
@@ -130,7 +126,54 @@ export const AgentModeLayout: React.FC = () => {
     llmConfig?.defaultMaxTokens ?? llmConfig?.maxOutputTokens ?? 8192;
 
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [workspaceSummary, setWorkspaceSummary] = useState<WorkspaceSummary | null>(null);
+  // Track the user's preference for the changes panel separately from
+  // whether there are any changes at all. The panel/toggle only appear
+  // when both: (a) the agent has actually touched files for the current
+  // thread, AND (b) the user hasn't explicitly hidden it.
+  //
+  // Default `true` so that the very first file edit auto-reveals the
+  // panel. After the user collapses it, this flips to `false` and stays
+  // false until they re-open it (or until they start a new chat, where
+  // we reset it — see handleNewChat).
+  const [isChangesPanelVisible, setIsChangesPanelVisible] = useState(true);
+
+  // ───────────────────────────────────────────────────────────────────
+  // Show the agent-changes panel ONLY when the agent has actually
+  // modified files in the current thread. Without this guard the panel
+  // (and the floating "Changes" toggle button) are visible by default
+  // even on a brand-new empty chat — which feels unprofessional and
+  // wastes horizontal space.
+  //
+  // We filter the audit entries by current thread so that switching
+  // threads (or starting a new chat) hides the panel until that
+  // thread's agent actually edits something.
+  //
+  // The criteria mirror AgentChangesTree's internal filter — keep them
+  // in sync if the list of file-mutating tool names ever changes.
+  // ───────────────────────────────────────────────────────────────────
+  const auditEntries = useAuditStore((s) => s.entries);
+  const hasAgentFileChanges = React.useMemo(() => {
+    if (!currentThreadId) return false;
+    const FILE_OP_TOOLS = new Set([
+      "file_create",
+      "file_write",
+      "file_patch",
+      "search_replace",
+      "multi_search_replace",
+      "file_delete",
+    ]);
+    return auditEntries.some(
+      (e) =>
+        e.threadId === currentThreadId &&
+        e.status === "executed" &&
+        FILE_OP_TOOLS.has(e.toolName) &&
+        Boolean(e.args?.path),
+    );
+  }, [auditEntries, currentThreadId]);
+
+  // Composite states the layout actually consumes.
+  const showChangesPanel = hasAgentFileChanges && isChangesPanelVisible;
+  const showChangesToggle = hasAgentFileChanges && !isChangesPanelVisible;
   const currentMessageIdRef = useRef<string | null>(null);
   const pendingToolCallRef = useRef<{
     resolve: ((approved: boolean) => void) | null;
@@ -166,14 +209,6 @@ export const AgentModeLayout: React.FC = () => {
   useEffect(() => {
     initExecutors();
   }, []);
-
-  // Scan workspace for summary (used in empty state)
-  useEffect(() => {
-    if (rootPath && !workspaceSummary) {
-      scanWorkspace(rootPath).then(setWorkspaceSummary);
-    }
-    if (!rootPath) setWorkspaceSummary(null);
-  }, [rootPath, workspaceSummary]);
 
   // Initialize checkpoint store
   useEffect(() => {
@@ -211,6 +246,11 @@ export const AgentModeLayout: React.FC = () => {
     useContextStore.getState().reset();
     clearCurrentThread();
     chatSyncBroadcast.clear();
+    // Re-arm the auto-show: if the user hid the panel mid-thread, they
+    // still want it to auto-reveal the moment the *new* chat's agent
+    // touches a file. Without this reset, a previously-collapsed flag
+    // would silently swallow that first reveal.
+    setIsChangesPanelVisible(true);
   }, [clearCurrentThread]);
 
   // RAF-based timeline update
@@ -294,15 +334,10 @@ export const AgentModeLayout: React.FC = () => {
         isNewThread = true;
       }
 
-      const displayContent =
-        attachedFiles && attachedFiles.length > 0
-          ? `[${attachedFiles.map((f) => f.name).join(", ")}]\n\n${content}`
-          : content;
-
       const userMessage: Message = {
         id: generateId(),
         sender: "user",
-        content: displayContent,
+        content,
         timestamp: Date.now(),
         attachedFiles: attachedFiles?.map(f => ({ path: f.path, name: f.name })),
         attachedPromptAssets: promptAttachments?.map(a => ({ key: a.key, type: a.type, title: a.title })),
@@ -427,6 +462,7 @@ export const AgentModeLayout: React.FC = () => {
       try {
         agent.updateConfig({
           thinkingEnabled,
+          executionMode: agentExecutionMode,
           autoApproveTools,
           beforeToolExecution: async () => {
             await checkpointReady;
@@ -848,6 +884,7 @@ export const AgentModeLayout: React.FC = () => {
       updateThreadUsage,
       setLoading,
       autoApproveTools,
+      agentExecutionMode,
       maxToolCallsPerRequest,
       getToolApproval,
       setPendingApproval,
@@ -932,25 +969,52 @@ export const AgentModeLayout: React.FC = () => {
   };
 
   const isEmpty = messages.length === 0;
-  const headerButtonStyle: React.CSSProperties = {
-    backgroundColor:
-      "color-mix(in srgb, var(--aurora-common-secondary) 74%, var(--aurora-title-bar-background) 26%)",
-    border:
-      "1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)",
-    boxShadow: `
-      inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 5%, transparent),
-      inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 8%, transparent)
-    `,
-  };
-  const primaryHeaderButtonStyle: React.CSSProperties = {
-    backgroundColor:
-      "color-mix(in srgb, var(--aurora-common-primary) 12%, var(--aurora-common-secondary))",
-    border:
-      "1px solid color-mix(in srgb, var(--aurora-common-primary) 22%, transparent)",
-    boxShadow: `
-      inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 7%, transparent),
-      inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 10%, transparent)
-    `,
+
+  // Slim, wrapperless header buttons. Idle has no chrome — just the icon.
+  // Hover applies a subtle primary tint background.
+  const renderHeaderButton = (
+    onClick: () => void,
+    icon: React.ReactNode,
+    title: string,
+    variant: "ghost" | "primary" = "ghost",
+  ) => {
+    const isPrimary = variant === "primary";
+    return (
+      <button
+        onClick={onClick}
+        className="flex h-6 w-6 items-center justify-center transition-colors outline-none focus:outline-none"
+        style={{
+          background: isPrimary
+            ? "color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)"
+            : "transparent",
+          color: isPrimary
+            ? "var(--aurora-common-primary)"
+            : "var(--aurora-common-muted-foreground)",
+          border: "none",
+          borderRadius: 5,
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.backgroundColor = isPrimary
+            ? "color-mix(in srgb, var(--aurora-common-primary) 16%, transparent)"
+            : "color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)";
+          if (!isPrimary) {
+            e.currentTarget.style.color = "var(--aurora-common-primary)";
+          }
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.backgroundColor = isPrimary
+            ? "color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)"
+            : "transparent";
+          if (!isPrimary) {
+            e.currentTarget.style.color =
+              "var(--aurora-common-muted-foreground)";
+          }
+        }}
+        title={title}
+      >
+        {icon}
+      </button>
+    );
   };
 
   return (
@@ -958,248 +1022,133 @@ export const AgentModeLayout: React.FC = () => {
       className="h-full flex flex-col"
       style={{ background: "var(--aurora-editor-background)" }}
     >
-      {/* Header */}
+      {/* Header — slim, wrapperless buttons, single-line title row */}
       <div
-        className="flex h-11 items-center justify-between border-b px-4 shrink-0"
+        className="flex h-9 items-center justify-between border-b px-3 shrink-0"
         style={{
           background:
             "color-mix(in srgb, var(--aurora-title-bar-background) 78%, var(--aurora-editor-background) 22%)",
           borderColor:
-            "color-mix(in srgb, var(--aurora-common-border) 72%, transparent)",
-          boxShadow:
-            "inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent)",
+            "color-mix(in srgb, var(--aurora-common-border) 70%, transparent)",
         }}
       >
-        {/* Left - Title */}
-        <div className="flex items-center gap-2.5">
-          {isLoading ? (
-            <StreamingDotMatrix className="text-primary" size={14} />
-          ) : hasMessages ? (
-            <MessageSquare
-              className="w-4 h-4"
-              style={{ color: "var(--aurora-common-primary)" }}
-            />
-          ) : (
-            <Sparkles
-              className="w-4 h-4"
-              style={{ color: "var(--aurora-common-primary)" }}
-            />
-          )}
-          <div>
-            <h2
-              className="text-sm font-semibold"
-              style={{ color: "var(--aurora-title-bar-foreground)" }}
-            >
-              {title}
-            </h2>
-            {hasMessages && (
-              <div className="flex items-center gap-2 text-[10px]">
-                {totalTurns > 0 && (
-                  <span
-                    style={{ color: "var(--aurora-common-muted-foreground)" }}
-                  >
-                    {totalTurns} turn{totalTurns !== 1 ? "s" : ""}
-                  </span>
-                )}
-                {summarizedTurns > 0 && (
-                  <>
-                    <span
-                      style={{ color: "var(--aurora-common-muted-foreground)" }}
-                    >
-                      |
-                    </span>
-                    <span
-                      style={{ color: contextColors.low }}
-                      className="flex items-center gap-0.5"
-                    >
-                      <Zap size={8} />
-                      {summarizedTurns}
-                    </span>
-                  </>
-                )}
-                {usedContextTokens > 0 && (
-                  <>
-                    <span
-                      style={{ color: "var(--aurora-common-muted-foreground)" }}
-                    >
-                      |
-                    </span>
-                    <span
-                      className="font-mono"
-                      style={{ color: getUsageColor() }}
-                    >
-                      {formatTokens(usedContextTokens)}/
-                      {formatTokens(contextWindow)}
-                    </span>
-                  </>
-                )}
-              </div>
+        {/* Left - Title (single-line for compactness) */}
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <div className="flex h-4 w-4 shrink-0 items-center justify-center">
+            {isLoading ? (
+              <StreamingDotMatrix className="text-primary" size={13} />
+            ) : (
+              <img
+                src="/empty.png"
+                alt=""
+                aria-hidden="true"
+                className="h-4 w-4 object-contain"
+              />
             )}
           </div>
+          <h2
+            className="text-[12px] font-semibold truncate leading-none"
+            style={{ color: "var(--aurora-title-bar-foreground)" }}
+          >
+            {title}
+          </h2>
+          {hasMessages && (
+            <div className="flex items-center gap-1.5 shrink-0 leading-none">
+              {totalTurns > 0 && (
+                <span
+                  className="text-[10px]"
+                  style={{ color: "var(--aurora-common-muted-foreground)" }}
+                >
+                  {totalTurns}t
+                </span>
+              )}
+              {summarizedTurns > 0 && (
+                <>
+                  <span
+                    className="text-[10px] opacity-50"
+                    style={{ color: "var(--aurora-common-muted-foreground)" }}
+                  >
+                    ·
+                  </span>
+                  <span
+                    className="text-[10px]"
+                    style={{ color: contextColors.low }}
+                    title={`${summarizedTurns} turn(s) summarized`}
+                  >
+                    Σ{summarizedTurns}
+                  </span>
+                </>
+              )}
+              {usedContextTokens > 0 && (
+                <>
+                  <span
+                    className="text-[10px] opacity-50"
+                    style={{ color: "var(--aurora-common-muted-foreground)" }}
+                  >
+                    ·
+                  </span>
+                  <span
+                    className="text-[10px] font-mono"
+                    style={{ color: getUsageColor() }}
+                  >
+                    {formatTokens(usedContextTokens)}/
+                    {formatTokens(contextWindow)}
+                  </span>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Right - Actions */}
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => setIsHistoryOpen(true)}
-            className="flex h-8 w-8 items-center justify-center rounded-[10px] transition-all duration-200"
-            style={{
-              color: "var(--aurora-common-muted-foreground)",
-              ...headerButtonStyle,
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.color =
-                "var(--aurora-title-bar-foreground)";
-              e.currentTarget.style.backgroundColor =
-                "color-mix(in srgb, var(--aurora-common-secondary) 88%, var(--aurora-common-primary) 12%)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.color =
-                "var(--aurora-common-muted-foreground)";
-              e.currentTarget.style.backgroundColor =
-                "color-mix(in srgb, var(--aurora-common-secondary) 74%, var(--aurora-title-bar-background) 26%)";
-            }}
-            title="Chat History (Ctrl+H)"
-          >
-            <History className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={handleNewChat}
-            className="flex h-8 w-8 items-center justify-center rounded-[10px] transition-all duration-200"
-            style={{
-              color: "var(--aurora-common-primary)",
-              ...primaryHeaderButtonStyle,
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor =
-                "color-mix(in srgb, var(--aurora-common-primary) 18%, var(--aurora-common-secondary))";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor =
-                "color-mix(in srgb, var(--aurora-common-primary) 12%, var(--aurora-common-secondary))";
-            }}
-            title="New Chat"
-          >
-            <Plus className="w-4 h-4" />
-          </button>
-          <button
-            onClick={toggleAgentMode}
-            className="flex h-8 w-8 items-center justify-center rounded-[10px] transition-all duration-200"
-            style={{
-              color: "var(--aurora-common-muted-foreground)",
-              ...headerButtonStyle,
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.color = "var(--aurora-common-primary)";
-              e.currentTarget.style.backgroundColor =
-                "color-mix(in srgb, var(--aurora-common-primary) 12%, var(--aurora-common-secondary))";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.color =
-                "var(--aurora-common-muted-foreground)";
-              e.currentTarget.style.backgroundColor =
-                "color-mix(in srgb, var(--aurora-common-secondary) 74%, var(--aurora-title-bar-background) 26%)";
-            }}
-            title="Exit Agent Mode (Esc)"
-          >
-            <Minimize2 className="w-3.5 h-3.5" />
-          </button>
+        <div className="flex items-center gap-0.5 shrink-0">
+          {renderHeaderButton(
+            () => setIsHistoryOpen(true),
+            <AppIcon icon={History} size={13} />,
+            "Chat history (Ctrl+H)",
+          )}
+          {renderHeaderButton(
+            handleNewChat,
+            <AppIcon icon={Plus} size={14} />,
+            "New chat",
+            "primary",
+          )}
+          {renderHeaderButton(
+            toggleAgentMode,
+            <AppIcon icon={Minimize2} size={13} />,
+            "Exit Agent Mode (Esc)",
+          )}
         </div>
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
-        <PanelGroup direction="horizontal" id="agent-mode-panel-group">
+      <div className="flex-1 min-h-0 min-w-0 overflow-hidden relative">
+        <PanelGroup
+          direction="horizontal"
+          id="agent-mode-panel-group"
+          // Re-key the PanelGroup whenever the side panel mounts or
+          // unmounts so react-resizable-panels re-allocates sizes from
+          // scratch instead of leaving the chat panel pinned at 75%.
+          key={showChangesPanel ? "with-changes" : "no-changes"}
+        >
           {/* Center - Chat */}
-          <Panel id="agent-chat-panel" order={1} defaultSize={75} minSize={50}>
+          <Panel
+            id="agent-chat-panel"
+            order={1}
+            defaultSize={showChangesPanel ? 75 : 100}
+            minSize={50}
+          >
             <div
               className="h-full min-w-0 overflow-hidden flex flex-col"
               style={{ background: "var(--aurora-chat-background)" }}
             >
               {/* Messages Area */}
               {isEmpty ? (
-                <div className="flex-1 flex flex-col items-center justify-center px-6">
-                  <div className="flex flex-col items-center max-w-lg w-full">
-                    <img
-                      src="/empty.png"
-                      alt="Agent empty state"
-                      width={88}
-                      height={88}
-                      className="w-[88px] h-[88px] mb-5 object-contain"
-                    />
-                    <h1
-                      className="text-2xl font-semibold mb-2 tracking-tight"
-                      style={{ color: "var(--aurora-editor-foreground)" }}
-                    >
-                      Aurora Agent
-                    </h1>
-                    <p
-                      className="text-sm text-center leading-relaxed max-w-[340px] mb-4"
-                      style={{ color: "var(--aurora-common-muted-foreground)" }}
-                    >
-                      {rootPath
-                        ? "Your workspace is loaded. Try one of these to get started:"
-                        : "Open a workspace folder to unlock full capabilities, or ask anything below."}
-                    </p>
-
-                    {/* Workspace summary card */}
-                    {workspaceSummary && (
-                      <div
-                        className="w-full max-w-md rounded-lg border px-4 py-3 mb-6"
-                        style={{
-                          backgroundColor: 'var(--aurora-chat-surface)',
-                          borderColor: 'var(--aurora-chat-surface-border)',
-                        }}
-                      >
-                        <div className="flex items-center gap-2 mb-2">
-                          <FolderOpen className="w-3.5 h-3.5 text-primary" />
-                          <span className="text-xs font-semibold text-text-primary">{workspaceSummary.name}</span>
-                          {workspaceSummary.framework && (
-                            <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-primary/10 text-primary">{workspaceSummary.framework}</span>
-                          )}
-                        </div>
-                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-text-secondary">
-                          <span>{workspaceSummary.fileCount} files</span>
-                          {workspaceSummary.languages.length > 0 && (
-                            <span>{workspaceSummary.languages.join(', ')}</span>
-                          )}
-                          {workspaceSummary.hasGit && <span>Git repo</span>}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Suggested prompts */}
-                    <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-w-md">
-                      {(rootPath ? [
-                        { Icon: Search, label: "Analyze Codebase", prompt: "Explain the architecture of this project and how the main components are connected.", color: "text-action-analyze" },
-                        { Icon: Bug, label: "Find Issues", prompt: "Scan the codebase for potential bugs, anti-patterns, or areas that need improvement.", color: "text-action-debug" },
-                        { Icon: Sparkles, label: "Generate Feature", prompt: "Help me create a new feature for this project. Let's start by discussing what to build.", color: "text-action-generate" },
-                        { Icon: TestTube, label: "Write Tests", prompt: "Write unit tests for the most critical parts of this project.", color: "text-action-test" },
-                      ] : [
-                        { Icon: FolderOpen, label: "Open Workspace", prompt: "I'd like to open a project folder. Can you guide me through getting started?", color: "text-info" },
-                        { Icon: Sparkles, label: "What Can You Do?", prompt: "What are your capabilities? Show me what Aurora Agent can help with.", color: "text-action-generate" },
-                        { Icon: Search, label: "Explain Concept", prompt: "Explain how React hooks work with practical examples.", color: "text-action-analyze" },
-                        { Icon: Zap, label: "Quick Task", prompt: "Help me write a utility function that validates email addresses in TypeScript.", color: "text-warning" },
-                      ]).map(({ Icon, label, prompt, color }, i) => (
-                        <button
-                          key={i}
-                          onClick={() => setInputContent(prompt)}
-                          className="group flex items-center gap-3 px-3 py-2.5 text-left rounded-xl transition-all duration-200"
-                          style={{
-                            backgroundColor: 'var(--aurora-chat-surface)',
-                            border: '1px solid var(--aurora-chat-surface-border)',
-                          }}
-                        >
-                          <Icon className={`w-4 h-4 ${color} shrink-0 group-hover:scale-110 transition-transform`} />
-                          <div className="min-w-0">
-                            <span className="text-xs font-medium text-text-primary block">{label}</span>
-                            <span className="text-[10px] text-text-secondary line-clamp-1">{prompt}</span>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
+                <WorkspaceAwareEmptyState
+                  mode="agent"
+                  rootPath={rootPath}
+                  onSelectPrompt={setInputContent}
+                />
               ) : (
                 <div
                   ref={containerRef}
@@ -1240,22 +1189,71 @@ export const AgentModeLayout: React.FC = () => {
             </div>
           </Panel>
 
-          <PanelResizeHandle
-            className="w-[1px] hover:w-1 transition-all"
-            style={{ background: "var(--aurora-common-border)" }}
-          />
+          {/* Right side panel — only rendered when the agent has actually
+              edited files in this thread AND the user hasn't collapsed
+              the panel. Both conditions must be true; otherwise nothing
+              on the right side is rendered (no panel, no resize handle,
+              no floating toggle). */}
+          {showChangesPanel && (
+            <>
+              <PanelResizeHandle
+                className="w-[1px] hover:w-1 transition-all"
+                style={{ background: "var(--aurora-common-border)" }}
+              />
 
-          {/* Right - File Changes */}
-          <Panel
-            id="agent-changes-panel"
-            order={2}
-            defaultSize={25}
-            minSize={15}
-            maxSize={40}
-          >
-            <AgentChangesTree />
-          </Panel>
+              {/* Right - File Changes */}
+              <Panel
+                id="agent-changes-panel"
+                order={2}
+                defaultSize={25}
+                minSize={15}
+                maxSize={40}
+              >
+                <AgentChangesTree
+                  onCollapse={() => setIsChangesPanelVisible(false)}
+                />
+              </Panel>
+            </>
+          )}
         </PanelGroup>
+
+        {/* Floating "show changes" tab — only when the agent has touched
+            files AND the user collapsed the panel. On a fresh chat (no
+            file ops yet) this is hidden too, so the chat view stays
+            uncluttered. */}
+        {showChangesToggle && (
+          <button
+            onClick={() => setIsChangesPanelVisible(true)}
+            className="absolute top-3 right-3 z-20 flex h-7 items-center gap-1.5 px-2 transition-all outline-none focus:outline-none"
+            style={{
+              backgroundColor:
+                "color-mix(in srgb, var(--aurora-sidebar-background) 92%, var(--aurora-chat-surface) 8%)",
+              border:
+                "1px solid color-mix(in srgb, var(--aurora-common-border) 65%, transparent)",
+              borderRadius: 6,
+              color: "var(--aurora-common-muted-foreground)",
+              boxShadow:
+                "0 4px 10px color-mix(in srgb, var(--aurora-common-shadow) 12%, transparent)",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = "var(--aurora-common-primary)";
+              e.currentTarget.style.borderColor =
+                "color-mix(in srgb, var(--aurora-common-primary) 35%, transparent)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color =
+                "var(--aurora-common-muted-foreground)";
+              e.currentTarget.style.borderColor =
+                "color-mix(in srgb, var(--aurora-common-border) 65%, transparent)";
+            }}
+            title="Show changes panel"
+          >
+            <PanelRightOpen className="w-3.5 h-3.5" />
+            <span className="text-[10.5px] font-semibold tracking-tight">
+              Changes
+            </span>
+          </button>
+        )}
       </div>
 
       {/* Thread History Modal */}

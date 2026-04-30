@@ -70,3 +70,55 @@ export const settingsDangerPanelStyle: React.CSSProperties = {
   backgroundColor: 'color-mix(in srgb, var(--aurora-common-danger) 8%, transparent)',
   border: '1px solid color-mix(in srgb, var(--aurora-common-danger) 24%, transparent)',
 };
+
+// ---------------------------------------------------------------------------
+// Professional / enterprise settings primitives.
+// The tokens below replace the consumer-style "big rounded card with mobile
+// app icon badges" aesthetic with a tighter, IDE-grade form layout.
+// All values intentionally use 6-8px radii, 1px borders, and no glow shadows.
+// ---------------------------------------------------------------------------
+
+export const settingsSectionPanelStyle: React.CSSProperties = {
+  backgroundColor: 'color-mix(in srgb, var(--aurora-title-bar-background) 56%, var(--aurora-sidebar-background) 44%)',
+  border: '1px solid color-mix(in srgb, var(--aurora-common-border) 70%, transparent)',
+  borderRadius: 8,
+  boxShadow: `
+    inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 6%, transparent)
+  `,
+};
+
+export const settingsRowDividerColor =
+  'color-mix(in srgb, var(--aurora-common-border) 38%, transparent)';
+
+export const settingsControlButtonStyle: React.CSSProperties = {
+  backgroundColor: 'color-mix(in srgb, var(--aurora-common-secondary) 76%, var(--aurora-title-bar-background) 24%)',
+  border: '1px solid color-mix(in srgb, var(--aurora-common-border) 70%, transparent)',
+  borderRadius: 6,
+  boxShadow: `
+    inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 8%, transparent)
+  `,
+};
+
+export const settingsPrimaryActionStyle: React.CSSProperties = {
+  backgroundColor: 'var(--aurora-common-primary)',
+  border: '1px solid color-mix(in srgb, var(--aurora-common-primary) 90%, var(--aurora-common-shadow) 10%)',
+  borderRadius: 6,
+  boxShadow: `
+    inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 22%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 14%, transparent)
+  `,
+};
+
+export const settingsDangerActionStyle: React.CSSProperties = {
+  backgroundColor: 'color-mix(in srgb, var(--aurora-common-danger) 14%, var(--aurora-common-secondary) 86%)',
+  border: '1px solid color-mix(in srgb, var(--aurora-common-danger) 36%, transparent)',
+  borderRadius: 6,
+};
+
+export const settingsCodeBlockStyle: React.CSSProperties = {
+  backgroundColor: 'color-mix(in srgb, var(--aurora-editor-background) 70%, var(--aurora-title-bar-background) 30%)',
+  border: '1px solid color-mix(in srgb, var(--aurora-common-border) 60%, transparent)',
+  borderRadius: 6,
+};

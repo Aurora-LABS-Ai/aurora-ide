@@ -8,8 +8,9 @@
  */
 
 import React from 'react';
-import { Files, GitBranch, Search, Settings, Palette } from 'lucide-react';
+import { FolderTree, GitBranch, ScanSearch, SlidersHorizontal, SwatchBook } from 'lucide-react';
 import clsx from 'clsx';
+import { AppIcon } from '../ui/AppIcon';
 
 export type SidebarPanel = 'explorer' | 'git' | 'search' | 'theme';
 
@@ -35,26 +36,34 @@ const ActivityBarItem: React.FC<ActivityBarItemProps> = ({
   title,
   badgeCount,
 }) => {
+  const [isHovered, setIsHovered] = React.useState(false);
+
   return (
     <button
       onClick={onClick}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
       title={title}
       className={clsx(
-        "relative mx-auto my-0.5 flex h-10 w-10 items-center justify-center rounded-[12px] transition-all duration-150",
-        "hover:text-text-primary",
+        "relative mx-auto my-0.5 flex h-10 w-10 items-center justify-center rounded-[8px] transition-all duration-150",
         isActive
           ? "text-text-primary"
-          : "text-text-disabled"
+          : "text-text-disabled hover:text-text-primary",
       )}
       style={{
         background: isActive
-          ? 'color-mix(in srgb, var(--aurora-sidebar-item-selected) 84%, transparent)'
-          : 'transparent',
+          ? 'color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)'
+          : isHovered
+            ? 'color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)'
+            : 'transparent',
+        border: isActive
+          ? '1px solid color-mix(in srgb, var(--aurora-common-primary) 22%, transparent)'
+          : '1px solid transparent',
       }}
     >
       {isActive && (
         <span
-          className="absolute left-[-8px] top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full"
+          className="absolute left-[-7px] top-1/2 h-5 w-[2px] -translate-y-1/2 rounded-full"
           style={{ background: 'var(--aurora-common-primary)' }}
         />
       )}
@@ -91,26 +100,26 @@ export const ActivityBar: React.FC<ActivityBarProps> = ({
       {/* Top Icons */}
       <div className="flex flex-col">
         <ActivityBarItem
-          icon={<Files className="w-5 h-5" />}
+          icon={<AppIcon icon={FolderTree} size={18} />}
           isActive={activePanel === 'explorer'}
           onClick={() => onPanelChange('explorer')}
           title="Explorer (Ctrl+Shift+E)"
         />
         <ActivityBarItem
-          icon={<GitBranch className="w-5 h-5" />}
+          icon={<AppIcon icon={GitBranch} size={18} />}
           isActive={activePanel === 'git'}
           onClick={() => onPanelChange('git')}
           title="Source Control (Ctrl+Shift+G)"
           badgeCount={gitBadgeCount}
         />
         <ActivityBarItem
-          icon={<Search className="w-5 h-5" />}
+          icon={<AppIcon icon={ScanSearch} size={18} />}
           isActive={activePanel === 'search'}
           onClick={() => onPanelChange('search')}
           title="Search (Ctrl+Shift+F)"
         />
         <ActivityBarItem
-          icon={<Palette className="w-5 h-5" />}
+          icon={<AppIcon icon={SwatchBook} size={18} />}
           isActive={activePanel === 'theme'}
           onClick={() => onPanelChange('theme')}
           title="Themes"
@@ -123,7 +132,7 @@ export const ActivityBar: React.FC<ActivityBarProps> = ({
       {/* Bottom Icons */}
       <div className="mb-1 flex flex-col">
         <ActivityBarItem
-          icon={<Settings className="w-5 h-5" />}
+          icon={<AppIcon icon={SlidersHorizontal} size={18} />}
           isActive={false}
           onClick={onSettingsClick}
           title="Settings (Ctrl+,)"

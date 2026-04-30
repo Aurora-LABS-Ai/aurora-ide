@@ -19,6 +19,7 @@ import {
   settingsPrimaryButtonStyle,
   settingsSubtlePanelStyle,
 } from "../modals/settings-shared";
+import { ActionButton, StatusPill } from "../modals/settings-primitives";
 
 const sampleRequests = [
   { name: "src", isFolder: true, isOpen: false },
@@ -193,7 +194,7 @@ export const ExplorerIconPackPanel: React.FC = () => {
       )}
 
       <div className="flex-none space-y-4 px-3 pb-4">
-        <div className="rounded-[20px] px-4 py-4" style={settingsCardStyle}>
+        <div className="rounded-lg px-4 py-4" style={settingsCardStyle}>
           <div className="flex flex-col gap-3">
             <div>
             <p className="text-sm font-semibold text-text-primary">Icon Pack Library</p>
@@ -203,12 +204,9 @@ export const ExplorerIconPackPanel: React.FC = () => {
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
-              <div
-                className="rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary"
-                style={settingsSubtlePanelStyle}
-              >
+              <StatusPill variant="neutral" dot={false}>
                 {iconPacks.length} pack{iconPacks.length === 1 ? "" : "s"}
-              </div>
+              </StatusPill>
               <input
                 type="file"
                 ref={fileInputRef}
@@ -216,27 +214,26 @@ export const ExplorerIconPackPanel: React.FC = () => {
                 accept=".aurora,application/json"
                 className="hidden"
               />
-              <button
+              <ActionButton
+                variant="primary"
+                icon={<Upload size={12} />}
                 onClick={handleImportClick}
-                className="flex min-h-10 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold text-primary-foreground transition-colors"
-                style={settingsPrimaryButtonStyle}
               >
-                <Upload size={12} />
                 Import Pack
-              </button>
+              </ActionButton>
             </div>
           </div>
         </div>
 
         {error && (
-          <div className="rounded-[18px] p-3 text-xs text-danger" style={settingsDangerPanelStyle}>
+          <div className="rounded-lg p-3 text-xs" style={settingsDangerPanelStyle}>
             {error}
           </div>
         )}
 
         {activePack && (
           <div
-            className="rounded-[18px] px-4 py-3 text-[11px] leading-relaxed text-text-secondary"
+            className="rounded-lg px-4 py-3 text-[11px] leading-relaxed text-text-secondary"
             style={settingsSubtlePanelStyle}
           >
             Active pack: <span className="font-semibold text-text-primary">{activePack.manifest.name}</span>
@@ -247,7 +244,7 @@ export const ExplorerIconPackPanel: React.FC = () => {
         )}
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 pb-6">
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 pb-6 scrollbar-thin">
         {isLoading && iconPacks.length === 0 ? (
           <div className="p-4 text-xs text-text-secondary">Loading icon packs...</div>
         ) : (
@@ -269,12 +266,12 @@ export const ExplorerIconPackPanel: React.FC = () => {
                     }
                   }}
                   className={clsx(
-                    "group relative cursor-pointer rounded-[20px] border p-4 transition-all",
+                    "group relative cursor-pointer overflow-hidden border p-4 transition-all",
                     isActive
                       ? "border-primary ring-1 ring-primary"
                       : "border-border hover:border-primary/50",
                   )}
-                  style={settingsCardStyle}
+                  style={{...settingsCardStyle, borderRadius: 8}}
                 >
                   <div className="mb-3 flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
@@ -285,12 +282,9 @@ export const ExplorerIconPackPanel: React.FC = () => {
                       <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-text-secondary">
                         {pack.manifest.author ? <span>by {pack.manifest.author}</span> : null}
                         {pack.manifest.source ? (
-                          <span
-                            className="rounded-full px-1.5 py-0.5 uppercase tracking-wide"
-                            style={settingsSubtlePanelStyle}
-                          >
+                          <StatusPill variant="neutral" dot={false}>
                             {pack.manifest.source}
-                          </span>
+                          </StatusPill>
                         ) : null}
                       </div>
                     </div>
@@ -301,7 +295,7 @@ export const ExplorerIconPackPanel: React.FC = () => {
                           event.stopPropagation();
                           void handleDelete(pack.manifest.id);
                         }}
-                        className="rounded-xl p-2 opacity-0 transition-all group-hover:opacity-100 hover:text-danger"
+                        className="rounded-lg p-2 opacity-0 transition-all group-hover:opacity-100 hover:text-danger"
                         style={settingsSubtlePanelStyle}
                         title="Delete icon pack"
                       >
@@ -309,7 +303,7 @@ export const ExplorerIconPackPanel: React.FC = () => {
                       </button>
                     ) : (
                       <div
-                        className="flex h-8 w-8 items-center justify-center rounded-xl text-primary"
+                        className="flex h-8 w-8 items-center justify-center rounded-lg text-primary"
                         style={settingsSubtlePanelStyle}
                       >
                         <FolderTree size={14} />
@@ -317,7 +311,7 @@ export const ExplorerIconPackPanel: React.FC = () => {
                     )}
                   </div>
 
-                  <div className="mt-3 rounded-[16px] p-3" style={settingsSubtlePanelStyle}>
+                  <div className="mt-3 rounded-lg p-3" style={settingsSubtlePanelStyle}>
                     <div className="mb-2 text-[10px] uppercase tracking-[0.14em] text-text-secondary">
                       Preview
                     </div>

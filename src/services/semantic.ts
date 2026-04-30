@@ -1,7 +1,19 @@
-import { invoke } from "@tauri-apps/api/core";
-import { type UnlistenFn, listen } from "@tauri-apps/api/event";
+import {
+  auroraInvoke as invoke,
+  auroraListen as listen,
+  type AuroraUnlistenFn as UnlistenFn,
+} from "../lib/runtime";
 
-import type { ExecutionProviderDetails, GpuFeatures, IndexProgress, SearchMode, SemanticIndex, SemanticSearchResult, SemanticSettings } from "../types/database";
+import type {
+  ExecutionProviderDetails,
+  GpuFeatures,
+  IndexProgress,
+  SearchMode,
+  SemanticGraphSearchResult,
+  SemanticIndex,
+  SemanticSearchResult,
+  SemanticSettings,
+} from "../types/database";
 
 /**
  * Model info returned from validation
@@ -134,10 +146,10 @@ class SemanticService {
   }
 
   /**
-   * Get index directory path for a specific workspace UUID
+   * Get index directory path for a specific workspace path.
    */
-  public async getIndexPath(workspaceId: string): Promise<string> {
-    return await invoke<string>('get_semantic_index_path', { workspaceId });
+  public async getIndexPath(workspacePath: string): Promise<string> {
+    return await invoke<string>('get_semantic_index_path', { workspaceId: workspacePath });
   }
 
   /**
@@ -153,11 +165,12 @@ class SemanticService {
   }
 
   /**
-   * Get the user-level semantic data directory
-   * This is where all semantic index data is stored (not in workspace .aurora folder)
+   * Get the workspace-local semantic index directory.
    */
-  public async getSemanticDataDirectory(): Promise<string> {
-    return await invoke<string>('get_semantic_data_directory');
+  public async getSemanticDataDirectory(workspacePath?: string | null): Promise<string> {
+    return await invoke<string>('get_semantic_data_directory', {
+      workspacePath: workspacePath || null,
+    });
   }
 
   // ============================================================
@@ -182,7 +195,7 @@ class SemanticService {
         ignoredDirectories: ['node_modules', 'target', '.git', 'dist', 'build', '.next', '__pycache__', '.venv'],
         excludedFiles: [],
         excludedDirectories: [],
-        maxFileSize: 1048576,
+        maxFileSize: 524288,
         searchMode: 'hybrid',
         lexicalWeight: 0.4,
         semanticWeight: 0.6,
@@ -242,7 +255,7 @@ class SemanticService {
   public async isIndexing(): Promise<boolean> {
     try {
       return await invoke<boolean>('is_semantic_indexing');
-    } catch (error) {
+    } catch {
       return false;
     }
   }
@@ -259,13 +272,12 @@ class SemanticService {
   // ============================================================
 
   /**
-   * Search options interface matching aurora-semantic v1.2.1 capabilities
+   * Search options interface matching Aurora Semantic native capabilities.
    */
   // Note: This is defined here for the service, the tool executor has its own copy
 
   /**
-   * Search using semantic index with full filtering support
-   * Supports aurora-semantic v1.2.1 SearchQuery and SearchFilter features
+   * Search code chunks using the workspace-local semantic index.
    */
   public async search(
     workspacePath: string,
@@ -283,25 +295,46 @@ class SemanticService {
       excludeDirectories?: string[];
     }
   ): Promise<SemanticSearchResult[]> {
-    try {
-      return await invoke<SemanticSearchResult[]>('semantic_search', {
-        workspacePath,
-        query,
-        limit: options?.limit ?? 20,
-        mode: options?.mode,
-        minScore: options?.minScore,
-        // Pass filters to backend
-        languages: options?.languages,
-        chunkTypes: options?.chunkTypes,
-        pathPatterns: options?.pathPatterns,
-        symbolNames: options?.symbolNames,
-        directories: options?.directories,
-        excludeDirectories: options?.excludeDirectories,
-      });
-    } catch (error) {
-      console.error('Semantic search failed:', error);
-      return [];
+    return await invoke<SemanticSearchResult[]>('semantic_search', {
+      workspacePath,
+      query,
+      limit: options?.limit ?? 20,
+      mode: options?.mode,
+      minScore: options?.minScore,
+      languages: options?.languages,
+      chunkTypes: options?.chunkTypes,
+      pathPatterns: options?.pathPatterns,
+      symbolNames: options?.symbolNames,
+      directories: options?.directories,
+      excludeDirectories: options?.excludeDirectories,
+    });
+  }
+
+  /**
+   * Search graph nodes directly for symbols, files, routes, and tools.
+   */
+  public async graphSearch(
+    workspacePath: string,
+    query: string,
+    options?: {
+      includeContext?: boolean;
+      labels?: string[];
+      limit?: number;
+      minScore?: number;
+      mode?: SearchMode;
+      pathPatterns?: string[];
     }
+  ): Promise<SemanticGraphSearchResult[]> {
+    return await invoke<SemanticGraphSearchResult[]>('semantic_graph_search', {
+      workspacePath,
+      query,
+      limit: options?.limit ?? 20,
+      mode: options?.mode,
+      minScore: options?.minScore,
+      labels: options?.labels,
+      pathPatterns: options?.pathPatterns,
+      includeContext: options?.includeContext,
+    });
   }
 
   /**

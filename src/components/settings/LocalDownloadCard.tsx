@@ -3,11 +3,11 @@ import { AlertTriangle, CheckCircle2, Download, Loader2, Trash2 } from 'lucide-r
 import type { LocalProvider, PullProgress } from '../../services/local-model-detector';
 import { formatBytes } from './local-provider-utils';
 import {
-  settingsCardStyle,
-  settingsDangerPanelStyle,
-  settingsInputStyle,
-  settingsPrimaryButtonStyle,
-} from '../modals/settings-shared';
+  Section,
+  FormBlock,
+  ActionButton,
+  IdeTextInput,
+} from '../modals/settings-primitives';
 
 interface Props {
   currentProvider: LocalProvider;
@@ -30,122 +30,191 @@ interface Props {
 
 export const LocalDownloadCard: React.FC<Props> = ({
   selectedModelId,
-  pullModelName, onPullModelNameChange,
-  pulling, pullProgress, pullError, onPullErrorClear, pullSuccess, onPullSuccessClear,
-  onPull, onCancelPull,
-  deleting, deleteConfirm, onDeleteConfirm, onDelete,
+  pullModelName,
+  onPullModelNameChange,
+  pulling,
+  pullProgress,
+  pullError,
+  onPullErrorClear,
+  pullSuccess,
+  onPullSuccessClear,
+  onPull,
+  onCancelPull,
+  deleting,
+  deleteConfirm,
+  onDeleteConfirm,
+  onDelete,
 }) => {
-  const pullProgressPct = pullProgress?.total && pullProgress.completed
-    ? Math.round((pullProgress.completed / pullProgress.total) * 100)
-    : 0;
+  const pullProgressPct =
+    pullProgress?.total && pullProgress.completed
+      ? Math.round((pullProgress.completed / pullProgress.total) * 100)
+      : 0;
 
   return (
-    <div className="rounded-[20px] px-5 py-4 space-y-3" style={settingsCardStyle}>
-      <div className="flex items-center gap-2">
-        <Download className="w-3.5 h-3.5 text-text-secondary" />
-        <span className="text-[11px] font-semibold text-text-primary tracking-wide uppercase">Download Model</span>
-      </div>
-      <p className="text-[10px] text-text-disabled">
-        Pull from the Ollama registry (e.g. <code className="bg-sidebar px-1 rounded">qwen3:8b</code>).
-      </p>
-
-      <div className="flex gap-2">
-        <input
-          type="text"
-          value={pullModelName}
-          onChange={(e) => { onPullModelNameChange(e.target.value); onPullErrorClear(); onPullSuccessClear(); }}
-          placeholder="model:tag"
-          onKeyDown={(e) => { if (e.key === 'Enter' && !pulling) onPull(); }}
-          disabled={pulling}
-          className="flex-1 rounded-xl px-3 py-2 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none transition-colors"
-          style={settingsInputStyle}
-        />
-        {!pulling ? (
-          <button
-            onClick={onPull}
-            disabled={!pullModelName.trim()}
-            className="px-4 py-2 rounded-xl text-primary-foreground text-xs font-semibold hover:bg-primary-hover transition-colors disabled:opacity-50 flex items-center gap-1.5 shrink-0"
-            style={settingsPrimaryButtonStyle}
+    <Section
+      title="Download Model"
+      description={
+        <>
+          Pull from the Ollama registry (e.g.{' '}
+          <code
+            className="font-mono text-[10.5px]"
+            style={{
+              backgroundColor:
+                'color-mix(in srgb, var(--aurora-editor-foreground) 5%, transparent)',
+              padding: '0 4px',
+              borderRadius: 3,
+            }}
           >
-            <Download size={12} /> Pull
-          </button>
-        ) : (
-          <button
-            onClick={onCancelPull}
-            className="px-4 py-2 rounded-xl text-xs font-semibold text-danger border border-danger/30 hover:bg-danger/10 transition-colors flex items-center gap-1.5 shrink-0"
-          >
-            Cancel
-          </button>
-        )}
-      </div>
-
-      {/* Progress */}
-      {pulling && pullProgress && (
-        <div className="space-y-1.5">
-          <div className="h-2 rounded-full overflow-hidden" style={{
-            backgroundColor: 'color-mix(in srgb, var(--aurora-common-muted) 60%, transparent)',
-          }}>
-            <div
-              className="h-full rounded-full transition-all duration-300"
-              style={{ width: `${pullProgressPct}%`, backgroundColor: 'var(--aurora-common-primary)' }}
+            qwen3:8b
+          </code>
+          ).
+        </>
+      }
+      icon={<Download className="h-3.5 w-3.5 text-text-secondary" />}
+    >
+      <FormBlock>
+        <div className="flex gap-1.5">
+          <div className="flex-1">
+            <IdeTextInput
+              type="text"
+              value={pullModelName}
+              onChange={(event) => {
+                onPullModelNameChange(event.target.value);
+                onPullErrorClear();
+                onPullSuccessClear();
+              }}
+              placeholder="model:tag"
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !pulling) onPull();
+              }}
+              disabled={pulling}
             />
           </div>
-          <div className="flex items-center justify-between text-[10px] text-text-disabled">
-            <span>{pullProgress.status}</span>
-            {pullProgress.total && pullProgress.completed ? (
-              <span>{formatBytes(pullProgress.completed)} / {formatBytes(pullProgress.total)} ({pullProgressPct}%)</span>
-            ) : null}
-          </div>
+          {!pulling ? (
+            <ActionButton
+              variant="primary"
+              icon={<Download className="h-3 w-3" />}
+              disabled={!pullModelName.trim()}
+              onClick={onPull}
+            >
+              Pull
+            </ActionButton>
+          ) : (
+            <ActionButton variant="danger" onClick={onCancelPull}>
+              Cancel
+            </ActionButton>
+          )}
         </div>
-      )}
 
-      {pullError && (
-        <p className="text-[11px] text-danger flex items-center gap-1.5">
-          <AlertTriangle size={12} /> {pullError}
-        </p>
-      )}
-      {pullSuccess && (
-        <p className="text-[11px] text-success flex items-center gap-1.5">
-          <CheckCircle2 size={12} /> Model downloaded successfully!
-        </p>
-      )}
+        {pulling && pullProgress && (
+          <div className="mt-2 space-y-1.5">
+            <div
+              className="h-1.5 overflow-hidden"
+              style={{
+                backgroundColor:
+                  'color-mix(in srgb, var(--aurora-common-muted) 60%, transparent)',
+                borderRadius: 4,
+              }}
+            >
+              <div
+                className="h-full transition-all duration-300"
+                style={{
+                  width: `${pullProgressPct}%`,
+                  backgroundColor: 'var(--aurora-common-primary)',
+                  borderRadius: 4,
+                }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-[10px] text-text-disabled">
+              <span>{pullProgress.status}</span>
+              {pullProgress.total && pullProgress.completed ? (
+                <span>
+                  {formatBytes(pullProgress.completed)} / {formatBytes(pullProgress.total)} (
+                  {pullProgressPct}%)
+                </span>
+              ) : null}
+            </div>
+          </div>
+        )}
 
-      {/* Delete */}
+        {pullError && (
+          <p
+            className="mt-2 inline-flex items-center gap-1.5 text-[11px]"
+            style={{ color: 'var(--aurora-common-danger)' }}
+          >
+            <AlertTriangle size={12} /> {pullError}
+          </p>
+        )}
+        {pullSuccess && (
+          <p
+            className="mt-2 inline-flex items-center gap-1.5 text-[11px]"
+            style={{ color: 'var(--aurora-common-success)' }}
+          >
+            <CheckCircle2 size={12} /> Model downloaded successfully!
+          </p>
+        )}
+      </FormBlock>
+
       {selectedModelId && (
-        <div className="pt-2 border-t" style={{ borderColor: 'color-mix(in srgb, var(--aurora-common-border) 40%, transparent)' }}>
+        <FormBlock divided={false}>
           {deleteConfirm === selectedModelId ? (
-            <div className="rounded-xl p-3 space-y-2" style={settingsDangerPanelStyle}>
-              <p className="text-[11px] text-danger font-medium">
+            <div
+              className="space-y-2 px-3 py-2.5"
+              style={{
+                backgroundColor:
+                  'color-mix(in srgb, var(--aurora-common-danger) 6%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--aurora-common-danger) 30%, transparent)',
+                borderRadius: 6,
+              }}
+            >
+              <p
+                className="text-[11px] font-medium"
+                style={{ color: 'var(--aurora-common-danger)' }}
+              >
                 Delete <code className="font-mono">{selectedModelId}</code>? This cannot be undone.
               </p>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => onDelete(selectedModelId)}
+              <div className="flex gap-1.5">
+                <ActionButton
+                  variant="danger"
+                  icon={
+                    deleting === selectedModelId ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3 w-3" />
+                    )
+                  }
                   disabled={deleting === selectedModelId}
-                  className="px-3 py-1.5 rounded-lg bg-danger text-primary-foreground text-[11px] font-semibold hover:bg-danger/90 disabled:opacity-50 flex items-center gap-1"
+                  onClick={() => onDelete(selectedModelId)}
                 >
-                  {deleting === selectedModelId ? <Loader2 size={10} className="animate-spin" /> : <Trash2 size={10} />}
                   Confirm Delete
-                </button>
-                <button
-                  onClick={() => onDeleteConfirm(null)}
-                  className="px-3 py-1.5 rounded-lg text-[11px] text-text-secondary hover:text-text-primary transition-colors"
-                  style={settingsInputStyle}
-                >
+                </ActionButton>
+                <ActionButton variant="secondary" onClick={() => onDeleteConfirm(null)}>
                   Cancel
-                </button>
+                </ActionButton>
               </div>
             </div>
           ) : (
             <button
+              type="button"
               onClick={() => onDeleteConfirm(selectedModelId)}
-              className="text-[11px] text-danger/70 hover:text-danger transition-colors flex items-center gap-1.5"
+              className="inline-flex items-center gap-1.5 text-[11px] transition-colors"
+              style={{
+                color: 'color-mix(in srgb, var(--aurora-common-danger) 70%, transparent)',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = 'var(--aurora-common-danger)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color =
+                  'color-mix(in srgb, var(--aurora-common-danger) 70%, transparent)';
+              }}
             >
               <Trash2 size={11} /> Delete {selectedModelId}
             </button>
           )}
-        </div>
+        </FormBlock>
       )}
-    </div>
+
+    </Section>
   );
 };

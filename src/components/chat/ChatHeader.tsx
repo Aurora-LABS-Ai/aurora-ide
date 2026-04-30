@@ -1,21 +1,20 @@
 /**
- * Chat Header - Thread title bar with context info
+ * Chat Header — slim, professional thread title bar.
+ *
+ * Buttons are wrapperless at idle: no border, no background, just the icon.
+ * Hover applies a subtle primary tint (theme-driven). The "New Chat" button
+ * keeps a faint primary tint at idle so the primary action stands out
+ * without dominating the header. All chrome is driven by CSS variables.
  */
 
 import React from "react";
-import {
-  Plus,
-  History,
-  Sparkles,
-  MessageSquare,
-  Zap,
-  Maximize2,
-} from "lucide-react";
+import { Plus, History, Maximize2 } from "lucide-react";
 import { StreamingDotMatrix } from "../ui/StreamingDotMatrix";
 import { useThreadStore } from "../../store/useThreadStore";
 import { useChatStore } from "../../store/useChatStore";
 import { useContextStore } from "../../store/useContextStore";
 import { useUiStore } from "../../store/useUiStore";
+import { AppIcon } from "../ui/AppIcon";
 
 // Get theme colors at runtime from CSS variables
 const getContextColor = (varName: string, fallback: string): string => {
@@ -32,20 +31,53 @@ const getContextColors = () => ({
   high: getContextColor("--aurora-chat-usage-high", "#ef4444"),
 });
 
-// Agent Mode Toggle Button
-const AgentModeToggle: React.FC<{ buttonStyle: React.CSSProperties }> = ({
-  buttonStyle,
-}) => {
-  const { toggleAgentMode } = useUiStore();
+interface HeaderIconButtonProps {
+  onClick: () => void;
+  title: string;
+  variant?: "ghost" | "primary";
+  children: React.ReactNode;
+}
 
+const HeaderIconButton: React.FC<HeaderIconButtonProps> = ({
+  onClick,
+  title,
+  variant = "ghost",
+  children,
+}) => {
+  const isPrimary = variant === "primary";
   return (
     <button
-      onClick={toggleAgentMode}
-      className="flex h-7 w-7 items-center justify-center rounded-[10px] text-text-secondary transition-all duration-200 hover:text-primary hover:bg-primary/10"
-      style={buttonStyle}
-      title="Agent Mode - Full Screen Chat"
+      onClick={onClick}
+      title={title}
+      className="flex h-6 w-6 items-center justify-center transition-colors outline-none focus:outline-none"
+      style={{
+        background: isPrimary
+          ? "color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)"
+          : "transparent",
+        color: isPrimary
+          ? "var(--aurora-common-primary)"
+          : "var(--aurora-common-muted-foreground)",
+        border: "none",
+        borderRadius: 5,
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.backgroundColor = isPrimary
+          ? "color-mix(in srgb, var(--aurora-common-primary) 16%, transparent)"
+          : "color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)";
+        if (!isPrimary) {
+          e.currentTarget.style.color = "var(--aurora-common-primary)";
+        }
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.backgroundColor = isPrimary
+          ? "color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)"
+          : "transparent";
+        if (!isPrimary) {
+          e.currentTarget.style.color = "var(--aurora-common-muted-foreground)";
+        }
+      }}
     >
-      <Maximize2 className="w-3.5 h-3.5" />
+      {children}
     </button>
   );
 };
@@ -61,6 +93,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
 }) => {
   const { currentThreadId, threads } = useThreadStore();
   const { isLoading } = useChatStore();
+  const { toggleAgentMode } = useUiStore();
   const {
     usagePercentage,
     usedContextTokens,
@@ -71,7 +104,6 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
     needsSummarization,
   } = useContextStore();
 
-  // Get theme colors at render time
   const contextColors = getContextColors();
 
   const currentThread = currentThreadId ? threads[currentThreadId] : null;
@@ -90,85 +122,78 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
     return n.toLocaleString();
   };
 
-  const headerButtonStyle: React.CSSProperties = {
-    backgroundColor:
-      "color-mix(in srgb, var(--aurora-common-secondary) 74%, var(--aurora-title-bar-background) 26%)",
-    border:
-      "1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)",
-    boxShadow: `
-      inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent),
-      inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 8%, transparent)
-    `,
-  };
-
   return (
     <div className="relative shrink-0 z-10">
       <div
-        className="relative flex items-center justify-between gap-3 border-b px-4 py-2.5 backdrop-blur-md"
+        className="relative flex h-9 items-center justify-between gap-2 border-b px-3"
         style={{
-          background: `linear-gradient(
-            to bottom,
-            color-mix(in srgb, var(--aurora-title-bar-background) 82%, var(--aurora-chat-background) 18%) 0%,
-            color-mix(in srgb, var(--aurora-title-bar-background) 62%, transparent) 58%,
-            color-mix(in srgb, var(--aurora-chat-background) 18%, transparent) 100%
-          )`,
+          background:
+            "color-mix(in srgb, var(--aurora-title-bar-background) 78%, var(--aurora-chat-background) 22%)",
           borderColor:
-            "color-mix(in srgb, var(--aurora-common-border) 72%, transparent)",
-          boxShadow:
-            "inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent)",
+            "color-mix(in srgb, var(--aurora-common-border) 70%, transparent)",
         }}
       >
         {/* Left side - Title & Info */}
-        <div className="relative flex items-center gap-2.5 min-w-0 flex-1">
-          {/* Icon */}
-          <div
-            className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px]"
-            style={headerButtonStyle}
-          >
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          {/* Status icon — wrapperless */}
+          <div className="flex h-4 w-4 shrink-0 items-center justify-center">
             {isLoading ? (
-              <StreamingDotMatrix className="text-primary" size={14} />
-            ) : hasMessages ? (
-              <MessageSquare className="w-3.5 h-3.5 text-primary" />
+              <StreamingDotMatrix className="text-primary" size={13} />
             ) : (
-              <Sparkles className="w-3.5 h-3.5 text-primary" />
+              <img
+                src="/empty.png"
+                alt=""
+                aria-hidden="true"
+                className="h-4 w-4 object-contain"
+              />
             )}
           </div>
 
-          {/* Title & Meta */}
-          <div className="min-w-0 flex-1">
-            <h2 className="text-[12px] font-semibold text-text-primary truncate leading-tight">
+          {/* Title & Meta — single-line layout for max compactness */}
+          <div className="min-w-0 flex-1 flex items-center gap-2">
+            <h2
+              className="text-[12px] font-semibold truncate leading-none"
+              style={{ color: "var(--aurora-title-bar-foreground)" }}
+            >
               {title}
             </h2>
             {hasMessages && (
-              <div className="flex items-center gap-2 mt-0.5">
-                {/* Turn count */}
+              <div className="flex items-center gap-1.5 shrink-0 leading-none">
                 {totalTurns > 0 && (
-                  <span className="text-[9px] text-text-disabled">
-                    {totalTurns} turn{totalTurns !== 1 ? "s" : ""}
+                  <span
+                    className="text-[10px]"
+                    style={{ color: "var(--aurora-common-muted-foreground)" }}
+                  >
+                    {totalTurns}t
                   </span>
                 )}
-
-                {/* Summarized indicator */}
                 {summarizedTurns > 0 && (
                   <>
-                    <span className="text-[9px] text-text-disabled">|</span>
                     <span
-                      className="flex items-center gap-0.5 text-[9px]"
-                      style={{ color: contextColors.low }}
-                      title={`${summarizedTurns} turn(s) summarized to save context`}
+                      className="text-[10px] opacity-50"
+                      style={{ color: "var(--aurora-common-muted-foreground)" }}
                     >
-                      <Zap size={8} />
-                      {summarizedTurns}
+                      ·
+                    </span>
+                    <span
+                      className="text-[10px]"
+                      style={{ color: contextColors.low }}
+                      title={`${summarizedTurns} turn(s) summarized`}
+                    >
+                      Σ{summarizedTurns}
                     </span>
                   </>
                 )}
-
-                {/* Token usage */}
                 {usedContextTokens > 0 && (
                   <>
-                    <span className="text-[9px] text-text-disabled">|</span>
                     <span
-                      className="text-[9px] font-mono"
+                      className="text-[10px] opacity-50"
+                      style={{ color: "var(--aurora-common-muted-foreground)" }}
+                    >
+                      ·
+                    </span>
+                    <span
+                      className="text-[10px] font-mono"
                       style={{ color: getUsageColor() }}
                       title={
                         needsSummarization
@@ -187,30 +212,26 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
         </div>
 
         {/* Right side - Actions */}
-        <div className="relative flex items-center gap-1 shrink-0">
-          <button
+        <div className="flex items-center gap-0.5 shrink-0">
+          <HeaderIconButton
             onClick={onOpenHistory}
-            className="flex h-7 w-7 items-center justify-center rounded-[10px] text-text-secondary transition-all duration-200 hover:text-text-primary hover:bg-input/50"
-            style={headerButtonStyle}
-            title="Chat History (Ctrl+H)"
+            title="Chat history (Ctrl+H)"
           >
-            <History className="w-3.5 h-3.5" />
-          </button>
-          <button
+            <AppIcon icon={History} size={13} />
+          </HeaderIconButton>
+          <HeaderIconButton
             onClick={onNewChat}
-            className="flex h-7 w-7 items-center justify-center rounded-[10px] text-primary transition-all duration-200 hover:bg-primary/20"
-            style={{
-              ...headerButtonStyle,
-              backgroundColor:
-                "color-mix(in srgb, var(--aurora-common-primary) 10%, var(--aurora-common-secondary))",
-              border:
-                "1px solid color-mix(in srgb, var(--aurora-common-primary) 18%, transparent)",
-            }}
-            title="New Chat"
+            title="New chat"
+            variant="primary"
           >
-            <Plus className="w-4 h-4" />
-          </button>
-          <AgentModeToggle buttonStyle={headerButtonStyle} />
+            <AppIcon icon={Plus} size={14} />
+          </HeaderIconButton>
+          <HeaderIconButton
+            onClick={toggleAgentMode}
+            title="Agent Mode — full-screen chat"
+          >
+            <AppIcon icon={Maximize2} size={13} />
+          </HeaderIconButton>
         </div>
       </div>
     </div>

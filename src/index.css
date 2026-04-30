@@ -110,23 +110,70 @@ button:focus-visible {
     user-select: text !important;
 }
 
-/* VS Code style scrollbar */
+/* =============================================================================
+ * Custom Aurora Scrollbars
+ *
+ * Slim, fully theme-driven, professional IDE feel. The thumb sits inside a
+ * larger track via a transparent padding-box border so the visible thumb
+ * appears slim while the hit-target stays comfortable. The thumb tints with
+ * `--aurora-common-muted-foreground` at idle and shifts toward
+ * `--aurora-common-primary` on hover/active for subtle theme awareness.
+ *
+ * Variants:
+ *   .scrollbar-thin   → extra-slim (used inside dense lists like tree views)
+ *   .scrollbar-overlay→ thumb only appears while the container is hovered
+ *   .scrollbar-none   → hidden
+ * ========================================================================== */
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(
+            in srgb,
+            var(--aurora-common-muted-foreground, #888) 22%,
+            transparent
+        )
+        transparent;
+}
+
 ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
+    background: transparent;
 }
 
 ::-webkit-scrollbar-track {
     background: transparent;
+    border: none;
 }
 
 ::-webkit-scrollbar-thumb {
-    background: var(--aurora-common-scrollbar, #424242);
-    border-radius: 0;
+    background-color: color-mix(
+        in srgb,
+        var(--aurora-common-muted-foreground, #888) 24%,
+        transparent
+    );
+    background-clip: padding-box;
+    border: 2px solid transparent;
+    border-radius: 6px;
+    min-height: 32px;
+    min-width: 32px;
+    transition:
+        background-color 140ms ease,
+        border-color 140ms ease;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: var(--aurora-common-scrollbar-hover, #555555);
+    background-color: color-mix(
+        in srgb,
+        var(--aurora-common-primary, #0ea5e9) 50%,
+        var(--aurora-common-muted-foreground, #888) 50%
+    );
+    background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:active {
+    background-color: var(--aurora-common-primary, #0ea5e9);
+    background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-corner {
@@ -143,18 +190,62 @@ button:focus-visible {
     display: none;
 }
 
-/* Thin scrollbar utility */
+/* Extra-slim scrollbar utility (tree views, chat panels, terminals) */
+.scrollbar-thin {
+    scrollbar-width: thin;
+}
+
 .scrollbar-thin::-webkit-scrollbar {
-    width: 4px;
+    width: 7px;
+    height: 7px;
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb {
-    background: var(--aurora-common-scrollbar, #3a3a3a);
-    border-radius: 2px;
+    background-color: color-mix(
+        in srgb,
+        var(--aurora-common-muted-foreground, #888) 22%,
+        transparent
+    );
+    background-clip: padding-box;
+    border: 1px solid transparent;
+    border-radius: 4px;
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-    background: var(--aurora-common-scrollbar-hover, #4a4a4a);
+    background-color: color-mix(
+        in srgb,
+        var(--aurora-common-primary, #0ea5e9) 55%,
+        var(--aurora-common-muted-foreground, #888) 45%
+    );
+    background-clip: padding-box;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:active {
+    background-color: var(--aurora-common-primary, #0ea5e9);
+}
+
+/* Overlay scrollbar — only visible while the container is hovered/scrolling */
+.scrollbar-overlay::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    transition: background-color 200ms ease;
+}
+
+.scrollbar-overlay:hover::-webkit-scrollbar-thumb,
+.scrollbar-overlay:focus-within::-webkit-scrollbar-thumb {
+    background-color: color-mix(
+        in srgb,
+        var(--aurora-common-muted-foreground, #888) 26%,
+        transparent
+    );
+}
+
+.scrollbar-overlay:hover::-webkit-scrollbar-thumb:hover,
+.scrollbar-overlay:focus-within::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(
+        in srgb,
+        var(--aurora-common-primary, #0ea5e9) 55%,
+        var(--aurora-common-muted-foreground, #888) 45%
+    );
 }
 
 /* Animation utilities */
@@ -448,30 +539,48 @@ button:focus-visible {
     color: var(--aurora-editor-foreground, #d4d4d4);
 }
 
-/* Inline code styling */
+/* Inline code styling — VS Code / GitHub style. Body text color (not the
+ * accent primary, which painted entire sentences orange) with a subtle
+ * derived background tint and hairline border. */
 .markdown-content code:not(pre code) {
-    background: var(
-        --aurora-chat-code-block,
-        var(--aurora-editor-background, #1a1a1a)
+    background: color-mix(
+        in srgb,
+        var(--aurora-editor-foreground) 7%,
+        transparent
     );
-    color: var(--aurora-common-primary, #60a5fa);
+    color: var(--aurora-common-text-primary, #d4d4d4);
     padding: 2px 6px;
     border-radius: 4px;
     font-family: "Fira Code", "JetBrains Mono", "Cascadia Code", monospace;
-    font-size: 11px;
-    border: 1px solid var(--aurora-common-border, #333);
+    font-size: 12px;
+    border: 1px solid
+        color-mix(in srgb, var(--aurora-common-border) 55%, transparent);
 }
 
-/* Table styling - professional grid rendering */
+/* Table styling — derive a deeper-than-chat surface so the grid actually
+ * reads as a contained panel. Previously this used --aurora-sidebar-bg
+ * which on most themes is identical to --aurora-chat-bg, making the
+ * table effectively invisible against the message stream. */
 .markdown-content table {
     width: 100%;
     border-collapse: collapse;
     font-size: 12px;
-    background: var(--aurora-sidebar-background, #1e1e1e);
+    background: color-mix(
+        in srgb,
+        var(--aurora-chat-background) 78%,
+        #000 22%
+    );
 }
 
 .markdown-content thead {
-    background: var(--aurora-chat-surface, rgba(255, 255, 255, 0.05));
+    /* Header chrome — slightly lighter than the body fill for hierarchy. */
+    background: color-mix(
+        in srgb,
+        var(--aurora-chat-background) 92%,
+        #fff 4%
+    );
+    border-bottom: 1px solid
+        color-mix(in srgb, var(--aurora-common-border) 80%, transparent);
 }
 
 .markdown-content th {
@@ -480,25 +589,30 @@ button:focus-visible {
     font-weight: 600;
     font-size: 11px;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--aurora-common-text-primary, #e0e0e0);
-    border-bottom: 2px solid var(--aurora-common-border, #333);
+    letter-spacing: 0.06em;
+    color: color-mix(
+        in srgb,
+        var(--aurora-common-text-primary) 75%,
+        transparent
+    );
 }
 
 .markdown-content td {
     padding: 10px 16px;
     color: var(--aurora-common-text-primary, #d4d4d4);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    border-top: 1px solid
+        color-mix(in srgb, var(--aurora-common-border) 50%, transparent);
+    vertical-align: top;
 }
 
-.markdown-content tbody tr:last-child td {
-    border-bottom: none;
-}
-
+/* Subtle zebra striping — tinted with the editor foreground so it works
+ * on both dark themes (light foreground tints rows lighter against the
+ * deep table fill) and light themes (dark foreground tints rows darker
+ * against the lighter table fill). */
 .markdown-content tbody tr:nth-child(even) {
     background: color-mix(
         in srgb,
-        var(--aurora-common-text-primary) 2%,
+        var(--aurora-editor-foreground) 4%,
         transparent
     );
 }
@@ -506,7 +620,7 @@ button:focus-visible {
 .markdown-content tbody tr:hover {
     background: color-mix(
         in srgb,
-        var(--aurora-common-text-primary) 4%,
+        var(--aurora-common-primary) 6%,
         transparent
     );
 }
@@ -624,6 +738,27 @@ button:focus-visible {
     font-family: "Fira Code", "JetBrains Mono", "Cascadia Code", monospace;
     font-size: 12px;
     line-height: 1.6;
+}
+
+/* Kill per-token / per-line backgrounds that Shiki injects via inline
+ * styles. The github-dark / github-light themes (and Streamdown's
+ * controls={{ code: true }} renderer) emit `<span style="color:...">`
+ * tokens AND wrap each line in `<span class="line">`. Some of those
+ * spans carry an inline background-color from the theme — which then
+ * paints lighter rectangles over our code-block surface, giving the
+ * mottled "stripey" look (visible especially on whitespace selection).
+ * We force every descendant of the code block to be background-less
+ * so only the CodeBlockWrapper surface shows through.
+ *
+ * `!important` is required because Shiki's backgrounds come in via the
+ * element's `style=""` attribute, which has higher specificity than a
+ * regular class rule. */
+.markdown-content pre,
+.markdown-content pre *,
+.markdown-content .shiki *,
+.markdown-content [data-shiki] * {
+    background-color: transparent !important;
+    background-image: none !important;
 }
 
 /* Line numbers for code blocks (if present) */

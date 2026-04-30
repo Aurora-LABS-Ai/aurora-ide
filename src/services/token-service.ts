@@ -8,9 +8,10 @@
  * This replaces the old token-estimator.ts which used character approximation.
  */
 
-import { invoke } from '@tauri-apps/api/core';
-
-import { isTauri } from '../lib/tauri';
+import {
+  auroraInvoke as invoke,
+  isAuroraRuntimeAvailable,
+} from '../lib/runtime';
 
 // ============================================================
 // Types
@@ -43,7 +44,7 @@ class TokenServiceClass {
   async initialize(): Promise<void> {
     if (this.isInitialized) return;
 
-    if (!isTauri()) {
+    if (!isAuroraRuntimeAvailable()) {
       this.useFallback = true;
       this.isInitialized = true;
       return;
@@ -69,7 +70,7 @@ class TokenServiceClass {
    * @returns Token count with encoding info
    */
   async countTokens(text: string, model?: string): Promise<TokenCount> {
-    if (this.useFallback || !isTauri()) {
+    if (this.useFallback || !isAuroraRuntimeAvailable()) {
       return this.quickEstimate(text);
     }
 
@@ -87,7 +88,7 @@ class TokenServiceClass {
    * Count tokens for a chat message (includes OpenAI format overhead)
    */
   async countChatTokens(role: string, content: string, model: string): Promise<TokenCount> {
-    if (this.useFallback || !isTauri()) {
+    if (this.useFallback || !isAuroraRuntimeAvailable()) {
       return this.quickEstimateChatMessage(role, content);
     }
 
@@ -105,7 +106,7 @@ class TokenServiceClass {
    * Count tokens for a conversation history
    */
   async countMessagesTokens(messages: ChatMessageForCount[], model: string): Promise<TokenCount> {
-    if (this.useFallback || !isTauri()) {
+    if (this.useFallback || !isAuroraRuntimeAvailable()) {
       return this.quickEstimateMessages(messages);
     }
 
@@ -182,7 +183,7 @@ class TokenServiceClass {
    * Truncate text to fit within token limit
    */
   async truncateToTokens(text: string, maxTokens: number, model?: string): Promise<string> {
-    if (this.useFallback || !isTauri()) {
+    if (this.useFallback || !isAuroraRuntimeAvailable()) {
       // Approximate truncation: ~4 chars per token
       const maxChars = maxTokens * 4;
       return text.slice(0, maxChars);
@@ -203,7 +204,7 @@ class TokenServiceClass {
    * Detect encoding type for a model
    */
   async detectModelEncoding(model: string): Promise<string> {
-    if (this.useFallback || !isTauri()) {
+    if (this.useFallback || !isAuroraRuntimeAvailable()) {
       // Heuristic detection
       const m = model.toLowerCase();
       if (m.includes('gpt-4o') || m.includes('o1')) {

@@ -32,6 +32,7 @@ pub mod provider_catalog;
 pub mod provider_kernel;
 pub mod semantic;
 pub mod settings;
+pub mod speech;
 pub mod state;
 pub mod themes;
 pub mod threads;
@@ -66,6 +67,7 @@ pub struct RipgrepSearchRequest {
     pub output_mode: Option<String>,
     pub path: String,
     pub pattern: String,
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -109,6 +111,10 @@ pub struct CommandStreamChunk {
     pub exit_code: Option<i32>,
     pub success: Option<bool>,
 }
+
+const DEFAULT_RG_TIMEOUT_MS: u64 = 30_000;
+const MAX_RG_TIMEOUT_MS: u64 = 300_000;
+const MIN_RG_TIMEOUT_MS: u64 = 1_000;
 
 #[derive(Debug, Clone)]
 struct ActiveCommandStream {
@@ -387,11 +393,16 @@ pub async fn ripgrep_search(
         output_mode,
         path,
         pattern,
+        timeout_ms,
     } = request;
 
     let resolved_output_mode = output_mode.unwrap_or_else(|| "content".to_string());
     let resolved_context_lines = context_lines.unwrap_or(0);
     let resolved_max_results = max_results.unwrap_or(50).max(1) as usize;
+    let resolved_timeout_ms = timeout_ms
+        .unwrap_or(DEFAULT_RG_TIMEOUT_MS)
+        .clamp(MIN_RG_TIMEOUT_MS, MAX_RG_TIMEOUT_MS);
+    let timeout = std::time::Duration::from_millis(resolved_timeout_ms);
 
     let mut cmd = TokioCommand::new("rg");
     cmd.arg("--json")
@@ -426,10 +437,35 @@ pub async fn ripgrep_search(
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
 
-    let output = cmd
-        .output()
-        .await
+    let child = cmd
+        .spawn()
         .map_err(|error| format!("Failed to execute rg: {}", error))?;
+    let pid = child.id();
+
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(result) => result.map_err(|error| format!("Failed to execute rg: {}", error))?,
+        Err(_) => {
+            if let Some(pid) = pid {
+                let _ = try_kill_pid(pid);
+            }
+
+            return Ok(RipgrepSearchResponse {
+                counts: None,
+                error: Some(format!(
+                    "ripgrep search timed out after {}ms",
+                    timeout.as_millis()
+                )),
+                files: None,
+                matches: None,
+                pattern,
+                success: false,
+                tool: "grep".to_string(),
+                total_files: None,
+                total_matches: None,
+                truncated: None,
+            });
+        }
+    };
 
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout);

@@ -5,6 +5,7 @@
 // APP SETTINGS
 // ============================================================
 export interface AppSettings {
+  agentExecutionMode?: 'agent' | 'plan';
   autoAcceptChanges?: boolean;
   autoApproveTools: boolean;
   autoSave: string;
@@ -19,6 +20,14 @@ export interface AppSettings {
   selectedModel: string;
   skillToggles?: Record<string, boolean>;
   skillsEnabled?: boolean;
+  speechBackend?: string;
+  speechDevicePreference?: 'auto' | 'cpu' | 'gpu';
+  speechEnabled?: boolean;
+  speechEngine?: string;
+  speechLanguage?: string;
+  speechModelPath?: string;
+  speechRuntimePath?: string;
+  speechThreads?: number;
   syntaxValidationEnabled?: boolean; // Pre-save syntax validation
   temperature: number;
   theme: string;
@@ -143,6 +152,30 @@ export interface SemanticSearchResult {
   score: number;
   startLine: number;
   symbolName: string | null;
+}
+
+export interface SemanticGraphNode {
+  endLine: number | null;
+  id: string;
+  label: string;
+  name: string;
+  path: string | null;
+  qualifiedName: string | null;
+  startLine: number | null;
+}
+
+export interface SemanticGraphRelationship {
+  relationshipType: string;
+  source: string;
+  target: string;
+}
+
+export interface SemanticGraphSearchResult {
+  matchType: string;
+  node: SemanticGraphNode;
+  relatedNodes: SemanticGraphNode[];
+  relationships: SemanticGraphRelationship[];
+  score: number;
 }
 
 export interface SemanticSettings {

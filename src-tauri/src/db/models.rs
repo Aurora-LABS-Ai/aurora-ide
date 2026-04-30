@@ -227,6 +227,7 @@ pub struct ToolSetting {
 pub struct AppSettings {
     // General settings
     pub selected_model: String,
+    pub agent_execution_mode: String,
     pub auto_approve_tools: bool,
     pub auto_accept_changes: bool,
     pub explorer_icon_pack: String,
@@ -252,12 +253,23 @@ pub struct AppSettings {
     pub skill_toggles: HashMap<String, bool>,
     pub fireworks_tab_enabled: bool,
     pub fireworks_account_id: String,
+
+    // Speech input settings
+    pub speech_enabled: bool,
+    pub speech_engine: String,
+    pub speech_runtime_path: String,
+    pub speech_model_path: String,
+    pub speech_backend: String,
+    pub speech_device_preference: String,
+    pub speech_threads: i32,
+    pub speech_language: String,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             selected_model: "fireworks:accounts/fireworks/models/kimi-k2-instruct-0905".to_string(),
+            agent_execution_mode: "agent".to_string(),
             auto_approve_tools: false,
             auto_accept_changes: false,
             explorer_icon_pack: "material".to_string(),
@@ -279,6 +291,14 @@ impl Default for AppSettings {
             skill_toggles: HashMap::new(),
             fireworks_tab_enabled: false,
             fireworks_account_id: String::new(),
+            speech_enabled: false,
+            speech_engine: "qwen3-rust".to_string(),
+            speech_runtime_path: String::new(),
+            speech_model_path: String::new(),
+            speech_backend: "auto".to_string(),
+            speech_device_preference: "auto".to_string(),
+            speech_threads: 4,
+            speech_language: "auto".to_string(),
         }
     }
 }

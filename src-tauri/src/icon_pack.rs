@@ -100,7 +100,10 @@ fn build_pack(args: &IconPackBuildArgs) -> Result<()> {
 
     let assets_root = match &args.assets_root {
         Some(path) => fs::canonicalize(path).with_context(|| {
-            format!("Failed to resolve assets root directory: {}", path.display())
+            format!(
+                "Failed to resolve assets root directory: {}",
+                path.display()
+            )
         })?,
         None => manifest_path
             .parent()
@@ -109,7 +112,10 @@ fn build_pack(args: &IconPackBuildArgs) -> Result<()> {
     };
 
     let manifest_content = fs::read_to_string(&manifest_path).with_context(|| {
-        format!("Failed to read source manifest: {}", manifest_path.display())
+        format!(
+            "Failed to read source manifest: {}",
+            manifest_path.display()
+        )
     })?;
 
     let source_pack: SourceAuroraIconPack = serde_json::from_str(&manifest_content)
@@ -135,9 +141,8 @@ fn build_pack(args: &IconPackBuildArgs) -> Result<()> {
     };
 
     if let Some(parent) = args.output.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!("Failed to create output directory: {}", parent.display())
-        })?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create output directory: {}", parent.display()))?;
     }
 
     let serialized = serde_json::to_string_pretty(&output_pack)

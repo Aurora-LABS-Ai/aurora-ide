@@ -1,7 +1,7 @@
 /**
  * Search Tool Executors
- * Handles execution of search tools including aurora_search (semantic search)
- * Supports aurora-semantic v1.2.1 with full filtering capabilities
+ * Handles execution of search tools including aurora_search.
+ * Supports native Aurora Semantic chunk and graph search.
  */
 import { semanticService } from "../../services/semantic";
 import { auroraWebSearch } from "../../lib/tauri";
@@ -10,9 +10,10 @@ import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import type { SearchMode } from "../../types/database";
 import { toolRegistry } from "../registry";
 
+type AuroraSearchTarget = 'chunks' | 'symbols';
 
 /**
- * Search options interface matching aurora-semantic v1.2.1 capabilities
+ * Search options interface matching Aurora Semantic native capabilities.
  */
 export interface AuroraSearchOptions {
     chunkTypes?: string[];
@@ -55,6 +56,38 @@ export interface AuroraSearchResult {
   }>;
   searchMode: string;
   success: boolean;
+  target?: AuroraSearchTarget;
+  totalResults: number;
+}
+
+export interface AuroraGraphSearchResult {
+  error?: string;
+  indexStatus: string;
+  message?: string;
+  query: string;
+  results: Array<{
+    id: string;
+    label: string;
+    name: string;
+    qualifiedName: string | null;
+    path: string | null;
+    startLine: number | null;
+    endLine: number | null;
+    score: number;
+    matchType: string;
+    relationshipCount: number;
+    relatedNodes: Array<{
+      id: string;
+      label: string;
+      name: string;
+      path: string | null;
+      startLine: number | null;
+      endLine: number | null;
+    }>;
+  }>;
+  searchMode: string;
+  success: boolean;
+  target: 'symbols';
   totalResults: number;
 }
 
@@ -67,6 +100,7 @@ export async function executeAuroraSearch(args: Record<string, unknown>): Promis
   const limit = Math.min((args.limit as number) || 10, 50);
   const mode = (args.mode as SearchMode) || 'hybrid';
   const minScore = (args.minScore as number) || 0.1;
+  const target = ((args.target as AuroraSearchTarget | undefined) || 'chunks');
   
   // Filter parameters
   const languages = args.languages as string[] | undefined;
@@ -75,6 +109,7 @@ export async function executeAuroraSearch(args: Record<string, unknown>): Promis
   const symbolNames = args.symbolNames as string[] | undefined;
   const directories = args.directories as string[] | undefined;
   const excludeDirectories = args.excludeDirectories as string[] | undefined;
+  const labels = args.labels as string[] | undefined;
   
   if (!query) {
     return JSON.stringify({
@@ -119,6 +154,20 @@ export async function executeAuroraSearch(args: Record<string, unknown>): Promis
     });
   }
 
+  if (!settings.modelPath) {
+    return JSON.stringify({
+      success: false,
+      query,
+      results: [],
+      totalResults: 0,
+      searchMode: mode,
+      target,
+      indexStatus: 'model_missing',
+      message: 'No embedding model is configured. Set the Qwen3 ONNX model path in Settings > Semantic Search, then index the workspace.',
+      error: 'Semantic model path is not configured',
+    });
+  }
+
   // Check if workspace is indexed
   const currentIndex = useSemanticStore.getState().currentIndex;
   
@@ -139,6 +188,53 @@ export async function executeAuroraSearch(args: Record<string, unknown>): Promis
   }
 
   try {
+    if (target === 'symbols') {
+      const graphResults = await semanticService.graphSearch(workspacePath, query, {
+        limit,
+        mode,
+        minScore,
+        labels,
+        pathPatterns,
+        includeContext: true,
+      });
+
+      const transformedResults = graphResults.map((result) => ({
+        id: result.node.id,
+        label: result.node.label,
+        name: result.node.name,
+        qualifiedName: result.node.qualifiedName,
+        path: result.node.path,
+        startLine: result.node.startLine,
+        endLine: result.node.endLine,
+        score: result.score,
+        matchType: result.matchType,
+        relationshipCount: result.relationships.length,
+        relatedNodes: result.relatedNodes.slice(0, 10).map((node) => ({
+          id: node.id,
+          label: node.label,
+          name: node.name,
+          path: node.path,
+          startLine: node.startLine,
+          endLine: node.endLine,
+        })),
+      }));
+
+      const response: AuroraGraphSearchResult = {
+        success: true,
+        query,
+        target: 'symbols',
+        results: transformedResults,
+        totalResults: transformedResults.length,
+        searchMode: mode,
+        indexStatus: 'ready',
+        message: transformedResults.length > 0
+          ? `Found ${transformedResults.length} graph node${transformedResults.length !== 1 ? 's' : ''}`
+          : 'No graph nodes found for this query',
+      };
+
+      return JSON.stringify(response);
+    }
+
     // Build search options with filters
     const searchOptions: AuroraSearchOptions = {
       limit,
@@ -179,6 +275,7 @@ export async function executeAuroraSearch(args: Record<string, unknown>): Promis
     const response: AuroraSearchResult = {
       success: true,
       query,
+      target: 'chunks',
       results: transformedResults,
       totalResults: transformedResults.length,
       searchMode: mode,
@@ -211,6 +308,7 @@ export async function executeAuroraSearch(args: Record<string, unknown>): Promis
       totalResults: 0,
       searchMode: mode,
       indexStatus: currentIndex?.status || 'unknown',
+      target,
       error: error instanceof Error ? error.message : 'Search failed',
     });
   }

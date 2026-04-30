@@ -1,6 +1,6 @@
 /**
  * Search Tools - Definitions
- * Advanced search tools including semantic search powered by Aurora Semantic Engine v1.2.1
+ * Advanced search tools powered by the native Aurora Semantic workspace index.
  */
 import type { ToolDefinition } from "../types";
 
@@ -11,9 +11,13 @@ export const auroraSearchTool: ToolDefinition = {
   type: 'function',
   function: {
     name: 'aurora_search',
-    description: `**POWERFUL SEMANTIC CODE SEARCH** - Find code by meaning, not just text patterns.
+    description: `**NATIVE AURORA CODEBASE SEARCH** - Search the current workspace's .aurora/index using Qwen3 ONNX embeddings, lexical ranking, and the Aurora Semantic code graph.
 
-This tool uses AI embeddings to understand code semantically. It finds related code even when exact keywords don't match.
+Use this tool when you need codebase context from an indexed workspace. It can return source chunks or graph nodes for symbols/files/routes/tools.
+
+**TARGETS:**
+- "chunks" (default): returns code chunks with file paths, line ranges, symbol names, content, and scores
+- "symbols": searches the graph directly and returns functions, classes, files, routes, tools, and their direct relationships
 
 **SEARCH MODES:**
 - "hybrid" (default): Combines lexical (keywords) + semantic (meaning) - best for most queries
@@ -27,12 +31,15 @@ This tool uses AI embeddings to understand code semantically. It finds related c
 - symbolNames: Filter by symbol/function names (partial match)
 - directories: Only search in these directories
 - excludeDirectories: Exclude these directories from search
+- labels: For target="symbols", restrict graph nodes (function, method, class, file, route, tool, namespace, struct, enum, trait)
 
 **WHEN TO USE:**
 - Finding implementations: "where is user authentication handled"
 - Understanding architecture: "how does the routing system work"  
 - Locating features: "find the payment processing logic"
-- Finding specific types: query="database", chunkTypes=["class", "struct"]
+- Finding specific symbols: target="symbols", labels=["function"], query="database connection"
+- Finding files/routes/tools: target="symbols", labels=["file", "route", "tool"]
+- Finding specific types: target="chunks", query="database", chunkTypes=["class", "struct"]
 - Language-specific: query="error handling", languages=["typescript"]
 
 **WHEN NOT TO USE:**
@@ -41,6 +48,7 @@ This tool uses AI embeddings to understand code semantically. It finds related c
 
 **EXAMPLES:**
 - aurora_search(query="where are database connections managed")
+- aurora_search(query="dashboard", target="symbols", labels=["file", "function"])
 - aurora_search(query="authentication logic", mode="semantic", limit=20)
 - aurora_search(query="API handlers", languages=["typescript"], chunkTypes=["function"])
 - aurora_search(query="state management", pathPatterns=["**/store/**", "**/state/**"])
@@ -62,6 +70,12 @@ This tool uses AI embeddings to understand code semantically. It finds related c
           enum: ['hybrid', 'lexical', 'semantic'],
           description: 'Search mode: "hybrid" (default, combines both), "lexical" (keywords only), "semantic" (AI meaning only)',
           default: 'hybrid',
+        },
+        target: {
+          type: 'string',
+          enum: ['chunks', 'symbols'],
+          description: 'Result target. Use "chunks" for source snippets/content, "symbols" for graph nodes such as functions, files, routes, and tools.',
+          default: 'chunks',
         },
         languages: {
           type: 'array',
@@ -92,6 +106,11 @@ This tool uses AI embeddings to understand code semantically. It finds related c
           type: 'array',
           items: { type: 'string' },
           description: 'Exclude these directories from search (relative paths)',
+        },
+        labels: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'For target="symbols": graph node labels to include, such as function, method, class, file, route, tool, namespace, struct, enum, trait',
         },
         minScore: {
           type: 'number',

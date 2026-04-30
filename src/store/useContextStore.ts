@@ -1,7 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import type { Message } from "../types";
 import { buildContextTurnsFromMessages } from "../services/context-rehydration";
+import { auroraInvoke as invoke } from "../lib/runtime";
 
 // Rust Context Engine state
 interface RustContextState {

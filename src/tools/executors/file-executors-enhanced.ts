@@ -10,6 +10,7 @@ import { formatValidationForAgent, supportsValidation, validateSyntax } from "..
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { FsOperationType, operationLog } from "../operation-log";
 import { toolRegistry } from "../registry";
+import type { ToolExecutor } from "../types";
 import { isPathExcluded } from "../utils/excluded-paths";
 import { getWorkspaceRootPath, resolvePath } from "../utils/path-resolver";
 import { planMultiSearchReplace, planSearchReplace, type SearchReplaceReplacement } from "./search-replace-utils";
@@ -26,6 +27,45 @@ import { planMultiSearchReplace, planSearchReplace, type SearchReplaceReplacemen
 
 // NO-OP: Rust file watcher handles refresh via fs-changed events
 const triggerRefresh = () => { };
+
+const DEFAULT_GREP_TIMEOUT_MS = 30_000;
+const MAX_GREP_TIMEOUT_MS = 300_000;
+const MIN_GREP_TIMEOUT_MS = 1_000;
+
+interface FileExecutorArgs extends Record<string, unknown> {
+  case_insensitive?: boolean;
+  content: string;
+  context_lines?: number;
+  glob?: string;
+  is_regex?: boolean;
+  max_results?: number;
+  new_string: string;
+  old_string: string;
+  output_mode?: "content" | "files_with_matches" | "count";
+  path: string;
+  paths: string[];
+  pattern: string;
+  replace_all?: boolean;
+  replacements: SearchReplaceReplacement[];
+  timeout?: number;
+  timeout_ms?: number;
+}
+
+const asToolExecutor = (
+  executor: (args: FileExecutorArgs, toolCallId?: string) => Promise<string>,
+): ToolExecutor => (args, toolCallId) =>
+  executor(args as FileExecutorArgs, toolCallId);
+
+const normalizeGrepTimeoutMs = (value: unknown): number => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_GREP_TIMEOUT_MS;
+  }
+
+  return Math.min(
+    Math.max(Math.trunc(value), MIN_GREP_TIMEOUT_MS),
+    MAX_GREP_TIMEOUT_MS,
+  );
+};
 
 // Helper to validate file content before writing
 // Returns null if valid, or error message if invalid
@@ -54,7 +94,7 @@ const validateBeforeWrite = async (content: string, filename: string): Promise<s
 // FILE CREATE EXECUTOR (Cursor-style: Write immediately, revert on reject)
 // ============================================
 const fileCreateExecutor = async (
-  args: Record<string, any>,
+  args: FileExecutorArgs,
   toolCallId?: string,
 ): Promise<string> => {
   if (!isTauri()) {
@@ -196,7 +236,7 @@ const fileCreateExecutor = async (
 // FILE DELETE EXECUTOR (Enhanced with Logging)
 // ============================================
 const fileDeleteExecutor = async (
-  args: Record<string, any>,
+  args: FileExecutorArgs,
 ): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({
@@ -236,7 +276,7 @@ const fileDeleteExecutor = async (
 // ============================================
 // FILE READ EXECUTOR (Enhanced with Logging + Safety)
 // ============================================
-const fileReadExecutor = async (args: Record<string, any>): Promise<string> => {
+const fileReadExecutor = async (args: FileExecutorArgs): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({
       success: false,
@@ -314,7 +354,7 @@ const fileReadExecutor = async (args: Record<string, any>): Promise<string> => {
 // FILE WRITE EXECUTOR (Cursor-style: Write immediately, revert on reject)
 // ============================================
 const fileWriteExecutor = async (
-  args: Record<string, any>,
+  args: FileExecutorArgs,
   toolCallId?: string,
 ): Promise<string> => {
   if (!isTauri()) {
@@ -465,7 +505,7 @@ const fileWriteExecutor = async (
     });
   }
 };
-const grepExecutor = async (args: Record<string, any>): Promise<string> => {
+const grepExecutor = async (args: FileExecutorArgs): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({
       success: false,
@@ -486,6 +526,7 @@ const grepExecutor = async (args: Record<string, any>): Promise<string> => {
   const globPattern = args.glob;
   const contextLines = args.context_lines || 0;
   const maxResults = args.max_results || 50;
+  const timeoutMs = normalizeGrepTimeoutMs(args.timeout ?? args.timeout_ms);
 
   try {
     const toRelativePath = (filePath: string): string => {
@@ -508,6 +549,7 @@ const grepExecutor = async (args: Record<string, any>): Promise<string> => {
       outputMode,
       path: searchPath,
       pattern,
+      timeoutMs,
     });
 
     if (!result.success) {
@@ -546,7 +588,7 @@ const grepExecutor = async (args: Record<string, any>): Promise<string> => {
 // MULTI FILE READ EXECUTOR (Cursor-style parallel reading + Safety)
 // ============================================
 const multiFileReadExecutor = async (
-  args: Record<string, any>,
+  args: FileExecutorArgs,
 ): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({
@@ -727,7 +769,7 @@ const multiFileReadExecutor = async (
 // SEARCH REPLACE EXECUTOR (Cursor-style: Find exact text and replace)
 // ============================================
 const searchReplaceExecutor = async (
-  args: Record<string, any>,
+  args: FileExecutorArgs,
   toolCallId?: string,
 ): Promise<string> => {
   if (!isTauri()) {
@@ -908,7 +950,7 @@ const searchReplaceExecutor = async (
 // MULTI SEARCH REPLACE EXECUTOR (Batch replacements in one file)
 // ============================================
 const multiSearchReplaceExecutor = async (
-  args: Record<string, any>,
+  args: FileExecutorArgs,
   toolCallId?: string,
 ): Promise<string> => {
   if (!isTauri()) {
@@ -1125,14 +1167,17 @@ const multiSearchReplaceExecutor = async (
 export const registerEnhancedFileExecutors = (): void => {
   console.log("[FileExecutors] Registering enhanced executors with operation logging");
 
-  toolRegistry.registerExecutor("file_create", fileCreateExecutor);
-  toolRegistry.registerExecutor("file_read", fileReadExecutor);
-  toolRegistry.registerExecutor("file_write", fileWriteExecutor);
-  toolRegistry.registerExecutor("search_replace", searchReplaceExecutor);
-  toolRegistry.registerExecutor("multi_search_replace", multiSearchReplaceExecutor);
-  toolRegistry.registerExecutor("file_delete", fileDeleteExecutor);
-  toolRegistry.registerExecutor("grep", grepExecutor);
-  toolRegistry.registerExecutor("multi_file_read", multiFileReadExecutor);
+  toolRegistry.registerExecutor("file_create", asToolExecutor(fileCreateExecutor));
+  toolRegistry.registerExecutor("file_read", asToolExecutor(fileReadExecutor));
+  toolRegistry.registerExecutor("file_write", asToolExecutor(fileWriteExecutor));
+  toolRegistry.registerExecutor("search_replace", asToolExecutor(searchReplaceExecutor));
+  toolRegistry.registerExecutor(
+    "multi_search_replace",
+    asToolExecutor(multiSearchReplaceExecutor),
+  );
+  toolRegistry.registerExecutor("file_delete", asToolExecutor(fileDeleteExecutor));
+  toolRegistry.registerExecutor("grep", asToolExecutor(grepExecutor));
+  toolRegistry.registerExecutor("multi_file_read", asToolExecutor(multiFileReadExecutor));
 };
 
 // Maximum content size for a single file read (500KB)

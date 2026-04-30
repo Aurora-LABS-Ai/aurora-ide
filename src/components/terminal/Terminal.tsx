@@ -42,6 +42,7 @@ import {
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { useThemeStore } from "../../store/useThemeStore";
 import { isTauri } from "../../lib/tauri";
+import { MenuBarMenu, type MenuBarItem } from "../layout/MenuBarMenu";
 import { spawn, type IPty } from "tauri-pty";
 import { platform } from "@tauri-apps/plugin-os";
 import { Terminal } from "@xterm/xterm";
@@ -198,18 +199,24 @@ const getShellSpawnConfig = async (
 // ============================================
 // Shell Icons
 // ============================================
-const ShellIcon: React.FC<{ profile: ShellProfile; className?: string }> = ({
-  profile,
-  className,
-}) => {
+const ShellIcon: React.FC<{
+  profile: ShellProfile;
+  className?: string;
+  style?: React.CSSProperties;
+}> = ({ profile, className, style }) => {
   if (profile === "bash") {
     return (
-      <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <svg
+        viewBox="0 0 24 24"
+        fill="currentColor"
+        className={className}
+        style={style}
+      >
         <path d="M21.8 14.4c-.1-.1-.2-.2-.4-.2-.1 0-.2 0-.3.1l-1.4.9c-.1.1-.2.1-.3.1-.2 0-.3-.1-.3-.3v-2c0-.2.1-.3.3-.3.1 0 .2 0 .3.1l1.4.9c.1.1.2.1.3.1.1 0 .3-.1.4-.2.1-.1.2-.3.2-.4V9c0-.2-.1-.3-.2-.4-.1-.1-.2-.2-.4-.2-.1 0-.2 0-.3.1l-1.4.9c-.1.1-.2.1-.3.1-.2 0-.3-.1-.3-.3V7c0-.2-.1-.4-.2-.5-.2-.1-.3-.2-.5-.2H5c-.2 0-.4.1-.5.2-.1.1-.2.3-.2.5v10c0 .2.1.4.2.5.1.1.3.2.5.2h13c.2 0 .4-.1.5-.2.2-.1.2-.3.2-.5v-2c0-.2.1-.3.3-.3.1 0 .2 0 .3.1l1.4.9c.1.1.2.1.3.1.1 0 .3-.1.4-.2.1-.1.2-.3.2-.4v-1c0-.1-.1-.3-.2-.4z" />
       </svg>
     );
   }
-  return <TerminalIcon className={className} />;
+  return <TerminalIcon className={className} style={style} />;
 };
 
 // ============================================
@@ -582,10 +589,15 @@ const XTermSession: React.FC<{
 // ============================================
 // Resize Handle Component
 // ============================================
+//
+// Slim 1px theme-aware splitter with a 6px hit-target. The splitter line
+// itself stays calm (border tint at idle) and lifts to the primary tint
+// only while hovered or actively dragged — no bulky 3px chrome.
 const ResizeHandle: React.FC<{ onResize: (delta: number) => void }> = ({
   onResize,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
 
   useEffect(() => {
     if (!isDragging) return;
@@ -607,14 +619,39 @@ const ResizeHandle: React.FC<{ onResize: (delta: number) => void }> = ({
     };
   }, [isDragging, onResize]);
 
+  const lineColor =
+    isDragging
+      ? "var(--aurora-common-primary)"
+      : isHovered
+        ? "color-mix(in srgb, var(--aurora-common-primary) 70%, transparent)"
+        : "color-mix(in srgb, var(--aurora-common-border) 70%, transparent)";
+
   return (
     <div
       onMouseDown={() => setIsDragging(true)}
-      className={clsx(
-        "h-[3px] cursor-ns-resize transition-colors",
-        isDragging ? "bg-primary" : "bg-border hover:bg-primary",
-      )}
-    />
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      className="relative cursor-ns-resize"
+      style={{
+        height: 6,
+        marginTop: -3,
+        marginBottom: -3,
+        zIndex: 30,
+      }}
+    >
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          left: 0,
+          right: 0,
+          top: 3,
+          height: 1,
+          backgroundColor: lineColor,
+          transition: "background-color 120ms ease",
+        }}
+      />
+    </div>
   );
 };
 
@@ -634,33 +671,13 @@ export const TerminalPanel: React.FC = () => {
     setActiveSession,
   } = useTerminalStore();
   const { rootPath } = useWorkspaceStore();
-  const [showProfileMenu, setShowProfileMenu] = useState(false);
-  const profileMenuRef = useRef<HTMLDivElement>(null);
 
-  // Close profile menu on outside click
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (
-        profileMenuRef.current &&
-        !profileMenuRef.current.contains(e.target as Node)
-      ) {
-        setShowProfileMenu(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  const handleNewSession = (profile: ShellProfile) => {
-    createSession(rootPath || undefined, profile);
-    setShowProfileMenu(false);
-  };
-
-  const handlePlusClick = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setShowProfileMenu((prev) => !prev);
-  };
+  const handleNewSession = useCallback(
+    (profile: ShellProfile) => {
+      createSession(rootPath || undefined, profile);
+    },
+    [createSession, rootPath],
+  );
 
   const { unregisterSessionHandler } = useTerminalStore();
 
@@ -680,125 +697,221 @@ export const TerminalPanel: React.FC = () => {
     [height, setHeight],
   );
 
+  // Profile dropdown items shared by header trigger + empty-state action.
+  const profileMenuItems: MenuBarItem[] = [
+    { header: "Shell" },
+    {
+      label: "PowerShell",
+      icon: <TerminalIcon className="w-3.5 h-3.5" />,
+      onClick: () => handleNewSession("powershell"),
+    },
+    {
+      label: "Git Bash",
+      icon: <ShellIcon profile="bash" className="w-3.5 h-3.5" />,
+      onClick: () => handleNewSession("bash"),
+    },
+  ];
+
   if (!isOpen) return null;
+
+  // Wrapperless icon button used in the actions cluster.
+  const actionButtonClass =
+    "flex h-[22px] w-[22px] items-center justify-center rounded-[4px] transition-colors duration-100";
 
   return (
     <div
-      className="flex flex-col border-t border-border bg-editor shadow-[0_-4px_6px_-1px_var(--aurora-common-shadow)]"
-      style={{ height, minHeight: 150, maxHeight: 800 }}
+      className="flex flex-col bg-editor"
+      style={{
+        height,
+        minHeight: 150,
+        maxHeight: 800,
+        borderTop:
+          "1px solid color-mix(in srgb, var(--aurora-common-border) 70%, transparent)",
+        boxShadow:
+          "0 -4px 12px color-mix(in srgb, var(--aurora-common-shadow) 30%, transparent)",
+      }}
     >
       {/* Resize Handle */}
       <ResizeHandle onResize={handleResize} />
 
-      {/* Toolbar / Tabs Header */}
-      <div className="h-9 flex items-center justify-between bg-sidebar border-b border-border select-none">
+      {/*
+       * Toolbar / Tabs Header
+       * ---------------------
+       * Slim 30px strip. Tabs use a top-edge primary accent on the active
+       * session and theme-aware fills throughout. The actions cluster on
+       * the right is wrapperless until hover and uses MenuBarMenu for the
+       * profile dropdown so the visual language matches the rest of the
+       * IDE.
+       */}
+      <div
+        className="flex items-center justify-between select-none"
+        style={{
+          height: 30,
+          backgroundColor: "var(--aurora-sidebar-background)",
+          borderBottom:
+            "1px solid color-mix(in srgb, var(--aurora-common-border) 70%, transparent)",
+        }}
+      >
         {/* Scrollable Tabs Container */}
-        <div className="flex-1 flex items-center min-w-0 overflow-x-auto scrollbar-none px-2 gap-1 h-full">
+        <div className="flex-1 flex items-stretch min-w-0 overflow-x-auto scrollbar-none h-full">
           {sessions.map((session) => {
             const isActive = session.id === activeSessionId;
             return (
               <button
                 key={session.id}
                 onClick={() => setActiveSession(session.id)}
-                className={clsx(
-                  "group relative flex items-center gap-2 px-3 h-[28px] text-[12px] rounded-t-md transition-all duration-150 border-t-2",
-                  isActive
-                    ? "bg-editor text-text-primary border-primary font-medium"
-                    : "bg-transparent text-text-secondary hover:bg-input border-transparent hover:text-text-primary",
-                )}
+                className="group relative flex items-center gap-1.5 px-2.5 text-[11.5px] transition-colors duration-100"
+                style={{
+                  height: 30,
+                  minWidth: 0,
+                  backgroundColor: isActive
+                    ? "var(--aurora-editor-background)"
+                    : "transparent",
+                  color: isActive
+                    ? "var(--aurora-editor-foreground)"
+                    : "color-mix(in srgb, var(--aurora-editor-foreground) 70%, transparent)",
+                  fontWeight: isActive ? 500 : 400,
+                  borderRight:
+                    "1px solid color-mix(in srgb, var(--aurora-common-border) 60%, transparent)",
+                }}
+                onMouseEnter={(e) => {
+                  if (isActive) return;
+                  e.currentTarget.style.backgroundColor =
+                    "color-mix(in srgb, var(--aurora-editor-background) 55%, transparent)";
+                  e.currentTarget.style.color =
+                    "var(--aurora-editor-foreground)";
+                }}
+                onMouseLeave={(e) => {
+                  if (isActive) return;
+                  e.currentTarget.style.backgroundColor = "transparent";
+                  e.currentTarget.style.color =
+                    "color-mix(in srgb, var(--aurora-editor-foreground) 70%, transparent)";
+                }}
                 title={session.name}
               >
-                <ShellIcon
-                  profile={session.profile}
-                  className={clsx(
-                    "w-3.5 h-3.5 flex-shrink-0",
-                    isActive ? "text-primary" : "opacity-70",
-                  )}
-                />
-                <span className="truncate max-w-[150px]">{session.name}</span>
-
-                {/* Status Dot */}
-                {session.ptyConnected ? (
-                  isActive && (
-                    <div className="w-1.5 h-1.5 rounded-full bg-success flex-shrink-0 ml-1" />
-                  )
-                ) : (
+                {/* Active tab top accent — full-width 2px primary bar */}
+                {isActive && (
                   <div
-                    className="w-1.5 h-1.5 rounded-full bg-error flex-shrink-0 ml-1"
-                    title="Disconnected"
+                    aria-hidden
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      height: 2,
+                      backgroundColor: "var(--aurora-common-primary)",
+                    }}
                   />
                 )}
 
+                <ShellIcon
+                  profile={session.profile}
+                  className="w-3.5 h-3.5 flex-shrink-0"
+                  style={{
+                    color: isActive
+                      ? "var(--aurora-common-primary)"
+                      : undefined,
+                    opacity: isActive ? 1 : 0.7,
+                  }}
+                />
+                <span className="truncate max-w-[150px]">{session.name}</span>
+
+                {/* Connection status dot — green when connected, red when disconnected */}
                 <div
+                  className="ml-1 flex-shrink-0 rounded-full"
+                  style={{
+                    width: 5,
+                    height: 5,
+                    backgroundColor: session.ptyConnected
+                      ? "var(--aurora-common-success, #28a745)"
+                      : "var(--aurora-common-error)",
+                    opacity: session.ptyConnected ? (isActive ? 1 : 0.6) : 1,
+                  }}
+                  title={session.ptyConnected ? "Connected" : "Disconnected"}
+                />
+
+                {/* Close button — appears on hover, stays visible on active tab */}
+                <span
                   role="button"
                   tabIndex={0}
                   onClick={(e) => handleCloseSession(session.id, e)}
                   className={clsx(
-                    "ml-1 p-0.5 rounded-sm opacity-0 group-hover:opacity-100 transition-all",
-                    isActive ? "hover:bg-sidebar" : "hover:bg-sidebar",
+                    "ml-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-[3px] transition-opacity duration-100",
+                    isActive ? "opacity-70" : "opacity-0",
+                    "group-hover:opacity-90",
                   )}
+                  style={{
+                    color: "var(--aurora-editor-foreground)",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.opacity = "1";
+                    e.currentTarget.style.backgroundColor =
+                      "color-mix(in srgb, var(--aurora-common-error) 18%, transparent)";
+                    e.currentTarget.style.color = "var(--aurora-common-error)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = "transparent";
+                    e.currentTarget.style.color =
+                      "var(--aurora-editor-foreground)";
+                    e.currentTarget.style.opacity = isActive ? "0.7" : "0";
+                  }}
                 >
                   <X className="w-3 h-3" />
-                </div>
+                </span>
               </button>
             );
           })}
         </div>
 
-        {/* Fixed Actions Area (New Session + Close Panel) */}
-        <div className="flex items-center px-2 gap-1 h-full border-l border-border bg-sidebar z-20">
-          {/* New Session Dropdown */}
-          <div className="relative" ref={profileMenuRef}>
-            <button
-              onClick={handlePlusClick}
-              className={clsx(
-                "h-[24px] px-2 flex items-center gap-1 rounded text-text-primary transition-colors",
-                showProfileMenu
-                  ? "bg-input text-text-primary"
-                  : "hover:bg-input",
-              )}
-              title="New Terminal Profile"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <ChevronDown className="w-3 h-3 opacity-70" />
-            </button>
-
-            {/* Dropdown Menu - Fixed Position to avoid clipping issues if container was overflow */}
-            {showProfileMenu && (
-              <div className="absolute right-0 top-full mt-1 w-48 bg-sidebar border border-border rounded-md shadow-2xl z-[100] py-1 overflow-hidden ring-1 ring-border animate-in fade-in zoom-in-95 duration-100 origin-top-right">
-                <div className="px-3 py-1.5 text-[10px] uppercase font-bold text-text-secondary tracking-wider bg-sidebar-section-header">
-                  Select Profile
-                </div>
-                <button
-                  onClick={() => handleNewSession("powershell")}
-                  className="w-full px-3 py-2 text-left text-[13px] text-text-primary hover:bg-sidebar-item-hover flex items-center gap-2.5 transition-colors"
-                >
-                  <TerminalIcon className="w-4 h-4 text-text-primary" />
-                  <span>PowerShell</span>
-                </button>
-                <button
-                  onClick={() => handleNewSession("bash")}
-                  className="w-full px-3 py-2 text-left text-[13px] text-text-primary hover:bg-sidebar-item-hover flex items-center gap-2.5 transition-colors"
-                >
-                  <ShellIcon
-                    profile="bash"
-                    className="w-4 h-4 text-[#f05033]"
-                  />{" "}
-                  {/* Git color hint */}
-                  <span>Git Bash</span>
-                </button>
-              </div>
-            )}
-          </div>
-
-          <div className="w-[1px] h-4 bg-border mx-1" />
+        {/* Actions cluster — New Session dropdown + Close Panel */}
+        <div
+          className="flex items-center gap-0.5 h-full px-1.5"
+          style={{
+            borderLeft:
+              "1px solid color-mix(in srgb, var(--aurora-common-border) 60%, transparent)",
+          }}
+        >
+          <MenuBarMenu
+            label="New Terminal"
+            title="New Terminal Profile"
+            items={profileMenuItems}
+            menuWidth={200}
+            align="end"
+            triggerIcon={
+              <span className="flex items-center gap-0.5">
+                <Plus className="w-3.5 h-3.5" />
+                <ChevronDown className="w-2.5 h-2.5 opacity-70" />
+              </span>
+            }
+            triggerClassName={`${actionButtonClass} px-1.5`}
+            triggerStyle={{
+              width: "auto",
+              height: 22,
+              color: "var(--aurora-editor-foreground)",
+            }}
+          />
 
           <button
+            type="button"
             onClick={closeTerminal}
-            className="h-[24px] w-[24px] flex items-center justify-center text-text-secondary rounded hover:bg-danger hover:text-danger-foreground transition-colors"
+            className={actionButtonClass}
+            style={{
+              color:
+                "color-mix(in srgb, var(--aurora-editor-foreground) 70%, transparent)",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor =
+                "color-mix(in srgb, var(--aurora-common-error) 16%, transparent)";
+              e.currentTarget.style.color = "var(--aurora-common-error)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "transparent";
+              e.currentTarget.style.color =
+                "color-mix(in srgb, var(--aurora-editor-foreground) 70%, transparent)";
+            }}
             title="Close Panel"
           >
-            <X className="w-4 h-4" />
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
@@ -806,12 +919,42 @@ export const TerminalPanel: React.FC = () => {
       {/* Terminal Content Area */}
       <div className="flex-1 relative bg-editor overflow-hidden">
         {sessions.length === 0 && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center text-text-disabled gap-3">
-            <TerminalIcon className="w-12 h-12 opacity-20" />
-            <div className="text-sm">No active terminal sessions</div>
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+            <TerminalIcon
+              className="w-10 h-10"
+              style={{
+                color:
+                  "color-mix(in srgb, var(--aurora-editor-foreground) 22%, transparent)",
+              }}
+            />
+            <div
+              className="text-[12px]"
+              style={{
+                color:
+                  "color-mix(in srgb, var(--aurora-editor-foreground) 60%, transparent)",
+              }}
+            >
+              No active terminal sessions
+            </div>
             <button
+              type="button"
               onClick={() => handleNewSession("powershell")}
-              className="px-4 py-1.5 bg-primary text-primary-foreground text-xs rounded hover:bg-primary-hover transition-colors"
+              className="px-3 py-1 text-[11.5px] rounded-[5px] transition-colors duration-100"
+              style={{
+                backgroundColor:
+                  "color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)",
+                color: "var(--aurora-common-primary)",
+                border:
+                  "1px solid color-mix(in srgb, var(--aurora-common-primary) 28%, transparent)",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor =
+                  "color-mix(in srgb, var(--aurora-common-primary) 22%, transparent)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor =
+                  "color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)";
+              }}
             >
               Start New Session
             </button>

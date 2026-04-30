@@ -3,9 +3,14 @@
  * Orchestrates AI interactions with tool calling and thinking
  * Uses Rust Context Engine for turn-based message management
  */
-import { invoke } from "@tauri-apps/api/core";
+import { auroraInvoke } from "../lib/runtime";
 import { getToolsForModel } from "../tools";
 import type { ToolDefinition as LegacyToolDefinition } from "../tools/types";
+import {
+  filterToolsForExecutionMode,
+  normalizeAgentExecutionMode,
+  prependAgentExecutionModeRuntimeContext,
+} from "./agent-execution-mode";
 import {
   BASE_AGENT_SYSTEM_PROMPT,
   composeAgentSystemPrompt,
@@ -68,6 +73,7 @@ export class AgentService {
   constructor(config?: AgentConfig) {
     this.config = {
       systemPrompt: BASE_AGENT_SYSTEM_PROMPT,
+      executionMode: "agent",
       thinkingEnabled: true,
       autoApproveTools: false,
       maxToolIterations: 25,
@@ -178,7 +184,7 @@ export class AgentService {
         stoppedByIterationLimit = true;
       }
 
-      await invoke("context_finalize_turn", { threadId });
+      await auroraInvoke("context_finalize_turn", { threadId });
 
       await this.runSummarizationIfNeeded(threadId);
 
@@ -206,7 +212,7 @@ export class AgentService {
           error.message.includes("cancelled"));
 
       if (isCancelled) {
-        await invoke("context_discard_current_turn", { threadId }).catch(() => {
+        await auroraInvoke("context_discard_current_turn", { threadId }).catch(() => {
           // Best-effort cleanup only.
         });
       }
@@ -225,7 +231,7 @@ export class AgentService {
     const contextWindow = providerConfig?.contextWindow || 128000;
     const maxOutput = providerConfig?.maxOutputTokens || 8192;
 
-    return invoke<ContextState>("context_get_state", {
+    return auroraInvoke<ContextState>("context_get_state", {
       threadId,
       contextWindow,
       maxOutput,
@@ -236,7 +242,7 @@ export class AgentService {
     const threadId = this.config.threadId;
     if (!threadId) return;
 
-    await invoke("context_clear_thread", { threadId });
+    await auroraInvoke("context_clear_thread", { threadId });
   }
 
   public isActive(): boolean {
@@ -269,10 +275,15 @@ export class AgentService {
   ): Promise<PreparedAgentContext> {
     const threadId = this.requireThreadId();
     const { contextWindow, maxOutput } = this.getProviderLimits();
+    const executionMode = normalizeAgentExecutionMode(this.config.executionMode);
+    const runtimeUserMessage = prependAgentExecutionModeRuntimeContext(
+      userMessage,
+      executionMode,
+    );
 
-    await invoke("context_add_user_message", {
+    await auroraInvoke("context_add_user_message", {
       threadId,
-      content: userMessage,
+      content: runtimeUserMessage,
       ideContext: null,
       contextWindow,
       maxOutput,
@@ -280,6 +291,7 @@ export class AgentService {
 
     const composedPrompt = await composeAgentSystemPrompt({
       basePrompt: this.config.systemPrompt,
+      executionMode,
       mcpSummary: getMcpToolsSummary(),
       promptContext: promptContext ?? {
         userMessage,
@@ -310,7 +322,7 @@ export class AgentService {
       `[AgentService] Token budget: ${contextWindow} context - ${maxOutput} output - ${estimatedToolTokens} tools = ${tokenBudget} available`,
     );
 
-    const contextMessages = await invoke<ApiMessage[]>("context_build_messages", {
+    const contextMessages = await auroraInvoke<ApiMessage[]>("context_build_messages", {
       threadId,
       systemPrompt: composedPrompt.systemPrompt,
       tokenBudget,
@@ -339,7 +351,10 @@ export class AgentService {
       }),
     );
 
-    return [...builtInTools, ...getMcpToolDefinitions()];
+    return filterToolsForExecutionMode(
+      [...builtInTools, ...getMcpToolDefinitions()],
+      normalizeAgentExecutionMode(this.config.executionMode),
+    );
   }
 
   private getProvider(): IProvider {
@@ -399,7 +414,7 @@ export class AgentService {
     content: string,
     response: AssistantMessage,
   ): Promise<void> {
-    await invoke("context_add_assistant_response", {
+    await auroraInvoke("context_add_assistant_response", {
       threadId,
       content,
       thinking: response.reasoning_content || null,
@@ -422,21 +437,21 @@ export class AgentService {
    */
   private async runSummarizationIfNeeded(threadId: string): Promise<void> {
     try {
-      const needsSummarization = await invoke<boolean>(
+      const needsSummarization = await auroraInvoke<boolean>(
         "context_needs_summarization",
         { threadId },
       );
 
       if (!needsSummarization) return;
 
-      const request = await invoke<{
+      const request = await auroraInvoke<{
         turn_id: string;
         turn_content: string;
       } | null>("context_get_turn_to_summarize", { threadId });
 
       if (!request) return;
 
-      const summarizationPrompt = await invoke<string>(
+      const summarizationPrompt = await auroraInvoke<string>(
         "context_get_summarization_prompt",
       );
 
@@ -461,7 +476,7 @@ export class AgentService {
       const summary = this.normalizeAssistantContent(response.message);
 
       if (summary) {
-        await invoke("context_set_turn_summary", {
+        await auroraInvoke("context_set_turn_summary", {
           threadId,
           turnId: request.turn_id,
           summary,

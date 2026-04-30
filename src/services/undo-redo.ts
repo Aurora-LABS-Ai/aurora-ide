@@ -6,7 +6,7 @@
  * and is complementary to Monaco Editor's built-in keystroke undo/redo.
  */
 
-import { invoke } from '@tauri-apps/api/core';
+import { auroraInvoke as invoke } from '../lib/runtime';
 
 /**
  * State of undo/redo for a file

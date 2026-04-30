@@ -90,6 +90,10 @@ impl<'a> SettingsRepository<'a> {
                     settings.selected_model =
                         serde_json::from_str(&setting.value).unwrap_or(settings.selected_model)
                 }
+                "agentExecutionMode" => {
+                    settings.agent_execution_mode = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.agent_execution_mode.clone())
+                }
                 "autoApproveTools" => {
                     settings.auto_approve_tools =
                         serde_json::from_str(&setting.value).unwrap_or(settings.auto_approve_tools)
@@ -173,6 +177,38 @@ impl<'a> SettingsRepository<'a> {
                     settings.fireworks_account_id = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.fireworks_account_id.clone())
                 }
+                "speechEnabled" => {
+                    settings.speech_enabled =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.speech_enabled)
+                }
+                "speechEngine" => {
+                    settings.speech_engine = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.speech_engine.clone())
+                }
+                "speechRuntimePath" => {
+                    settings.speech_runtime_path = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.speech_runtime_path.clone())
+                }
+                "speechModelPath" => {
+                    settings.speech_model_path = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.speech_model_path.clone())
+                }
+                "speechBackend" => {
+                    settings.speech_backend = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.speech_backend.clone())
+                }
+                "speechDevicePreference" => {
+                    settings.speech_device_preference = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.speech_device_preference.clone())
+                }
+                "speechThreads" => {
+                    settings.speech_threads =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.speech_threads)
+                }
+                "speechLanguage" => {
+                    settings.speech_language = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.speech_language.clone())
+                }
                 _ => {}
             }
         }
@@ -185,6 +221,10 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting(
             "selectedModel",
             &serde_json::to_string(&settings.selected_model).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "agentExecutionMode",
+            &serde_json::to_string(&settings.agent_execution_mode).unwrap_or_default(),
         )?;
         self.set_setting(
             "autoApproveTools",
@@ -269,6 +309,38 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting(
             "fireworksAccountId",
             &serde_json::to_string(&settings.fireworks_account_id).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "speechEnabled",
+            &serde_json::to_string(&settings.speech_enabled).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "speechEngine",
+            &serde_json::to_string(&settings.speech_engine).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "speechRuntimePath",
+            &serde_json::to_string(&settings.speech_runtime_path).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "speechModelPath",
+            &serde_json::to_string(&settings.speech_model_path).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "speechBackend",
+            &serde_json::to_string(&settings.speech_backend).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "speechDevicePreference",
+            &serde_json::to_string(&settings.speech_device_preference).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "speechThreads",
+            &serde_json::to_string(&settings.speech_threads).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "speechLanguage",
+            &serde_json::to_string(&settings.speech_language).unwrap_or_default(),
         )?;
         Ok(())
     }

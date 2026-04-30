@@ -10,7 +10,7 @@
  * 3. All checkpoints after that point are deleted
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { auroraInvoke as invoke } from "../lib/runtime";
 
 /**
  * Checkpoint data representing a point-in-time snapshot

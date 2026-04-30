@@ -8,8 +8,11 @@
  * - Accurate token counting via Rust tiktoken
  */
 
-import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import {
+  auroraInvoke as invoke,
+  auroraListen as listen,
+  type AuroraUnlistenFn as UnlistenFn,
+} from '../lib/runtime';
 
 import type { Message } from '../types';
 
@@ -45,12 +48,12 @@ export interface DbMessage {
   role: string;
   content: string;
   timestamp: string;
-  tool_calls?: any[] | undefined;
+  tool_calls?: unknown[] | undefined;
   thinking?: string;
   isThinking?: boolean;
-  tools?: any[];
-  timeline?: any;
-  toolProposal?: any;
+  tools?: unknown[];
+  timeline?: unknown;
+  toolProposal?: unknown;
 }
 
 export interface DbThread {

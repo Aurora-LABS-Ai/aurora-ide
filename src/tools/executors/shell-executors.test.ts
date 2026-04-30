@@ -17,9 +17,10 @@ type Listener = (event: { payload: ListenerPayload }) => void;
 
 const listeners = new Map<string, Listener>();
 
-vi.mock("@tauri-apps/api/event", () => {
+vi.mock("../../lib/runtime", () => {
   return {
-    listen: vi.fn(async (eventName: string, cb: Listener) => {
+    isAuroraRuntimeAvailable: () => true,
+    auroraListen: vi.fn(async (eventName: string, cb: Listener) => {
       listeners.set(eventName, cb);
       return () => {
         listeners.delete(eventName);

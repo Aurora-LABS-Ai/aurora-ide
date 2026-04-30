@@ -28,7 +28,7 @@ export const shellExecuteTool: ToolDefinition = {
         timeout: {
           type: "number",
           description:
-            "Timeout in milliseconds. Defaults to 30000 (30 seconds).",
+            "Timeout in milliseconds. Defaults to 30000 (30 seconds), maximum 300000 (5 minutes). Use shell_spawn for long-running commands.",
           default: 30000,
         },
         type: {

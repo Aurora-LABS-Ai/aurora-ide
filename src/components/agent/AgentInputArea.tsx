@@ -2,9 +2,14 @@
  * Agent Mode Input Area
  *
  * Dedicated input component for Agent Mode with centered layout.
- * Uses the centralized theme system via CSS variables.
+ * Shares the exact same composer design as `ChatInput` so both surfaces
+ * stay visually consistent (background, border, focus halo, attachment
+ * tokens, model selector, send button, slash dropdown). Differences are
+ * limited to layout chrome — no outer padding wrapper, centered max width,
+ * and a small footer disclaimer instead of the chat task list.
  *
- * See: DOCS/theme-dev.md for full token reference
+ * All chrome is driven by CSS variables so theme switches restyle this
+ * component without code changes.
  */
 
 import React, {
@@ -15,17 +20,12 @@ import React, {
   useMemo,
 } from "react";
 import {
-  Sparkles,
-  Brain,
   ArrowUp,
   Square,
   X,
   Paperclip,
-  ChevronDown,
-  Settings,
   AlertCircle,
 } from "lucide-react";
-import { createPortal } from "react-dom";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useChatStore } from "../../store/useChatStore";
@@ -46,8 +46,10 @@ import {
   getFilename,
   getLanguageFromExtension,
 } from "../../lib/file-utils";
-import { resolveThinkingModelPair } from "../../lib/thinking-models";
 import clsx from "clsx";
+import { ModelSelector } from "../ui/ModelSelector";
+import { AgentExecutionModeToggle } from "../ui/AgentExecutionModeToggle";
+import { SpeechInputButton } from "../chat/SpeechInputButton";
 
 export interface AttachedFile {
   path: string;
@@ -70,23 +72,21 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
   // Initialize from shared draft state (persists across layout switches)
   const draftInput = useChatStore((s) => s.draftInput);
   const draftAttachedFiles = useChatStore((s) => s.draftAttachedFiles);
-  const draftAttachedPromptAssets = useChatStore((s) => s.draftAttachedPromptAssets);
+  const draftAttachedPromptAssets = useChatStore(
+    (s) => s.draftAttachedPromptAssets,
+  );
   const setDraftInput = useChatStore((s) => s.setDraftInput);
   const setDraftAttachedFiles = useChatStore((s) => s.setDraftAttachedFiles);
-  const setDraftAttachedPromptAssets = useChatStore((s) => s.setDraftAttachedPromptAssets);
+  const setDraftAttachedPromptAssets = useChatStore(
+    (s) => s.setDraftAttachedPromptAssets,
+  );
   const clearDraft = useChatStore((s) => s.clearDraft);
 
   const [content, setContentLocal] = useState(draftInput);
   const [isFocused, setIsFocused] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [showModelDropdown, setShowModelDropdown] = useState(false);
-  const [dropdownPosition, setDropdownPosition] = useState({
-    top: 0,
-    left: 0,
-    placement: "above" as "above" | "below",
-  });
-  const [attachedFiles, setAttachedFilesLocal] = useState<AttachedFile[]>(
-    () => draftAttachedFiles.map(f => ({ path: f.path, name: f.name }))
+  const [attachedFiles, setAttachedFilesLocal] = useState<AttachedFile[]>(() =>
+    draftAttachedFiles.map((f) => ({ path: f.path, name: f.name })),
   );
   const [attachedPromptAssets, setAttachedPromptAssetsLocal] = useState<
     PromptAttachment[]
@@ -103,7 +103,6 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     PromptAttachment[]
   >([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
 
   const { isLoading, stopGeneration, consumePendingInput, pendingInputNonce } =
     useChatStore();
@@ -123,6 +122,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
   useEffect(() => {
     setDraftAttachedPromptAssets(attachedPromptAssets);
   }, [attachedPromptAssets, setDraftAttachedPromptAssets]);
+
   const {
     selectedModel,
     setSelectedModel,
@@ -130,31 +130,13 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     getLLMConfig,
     skillToggles,
     skillsEnabled,
-    thinkingEnabled,
-    setThinkingEnabled,
+    agentExecutionMode,
+    setAgentExecutionMode,
   } = useSettingsStore();
 
   const llmConfig = getLLMConfig();
   const providerReady = llmConfig !== null;
-  const providerSupportsThinking = llmConfig?.supportsThinking ?? false;
   const availableModels = getAvailableModels();
-  const [selectedProviderId = "", selectedModelName = ""] =
-    selectedModel.split(":");
-  const providerModels = useMemo(
-    () =>
-      availableModels
-        .filter((item) => item.providerId === selectedProviderId)
-        .map((item) => item.model),
-    [availableModels, selectedProviderId],
-  );
-  const thinkingPair = useMemo(
-    () => resolveThinkingModelPair(selectedModelName, providerModels),
-    [selectedModelName, providerModels],
-  );
-  const showThinkingToggle = providerSupportsThinking && !!thinkingPair;
-  const effectiveThinkingEnabled = thinkingPair
-    ? thinkingPair.currentModelIsThinking
-    : thinkingEnabled;
   const selectedModelOption = useMemo(
     () =>
       availableModels.find(
@@ -165,6 +147,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
   const currentModelLabel =
     selectedModelOption?.label ||
     (availableModels.length > 0 ? "Select Model" : "No Models");
+
   const filteredPromptAssets = useMemo(() => {
     const activeQuery = (slashSearchQuery || slashQuery || "")
       .trim()
@@ -177,11 +160,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
         ) {
           return false;
         }
-
-        if (!activeQuery) {
-          return true;
-        }
-
+        if (!activeQuery) return true;
         return [
           asset.title,
           asset.subtitle,
@@ -206,7 +185,6 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     };
 
     void loadCatalog();
-
     return () => {
       isCancelled = true;
     };
@@ -223,7 +201,6 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
         }
         textareaRef.current?.focus();
       });
-
       return () => window.cancelAnimationFrame(rafId);
     }
   }, [pendingInputNonce, consumePendingInput]);
@@ -233,72 +210,15 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
       const newHeight = Math.min(
-        Math.max(textareaRef.current.scrollHeight, 60),
+        Math.max(textareaRef.current.scrollHeight, 36),
         200,
       );
       textareaRef.current.style.height = `${newHeight}px`;
     }
   }, [content]);
 
-  const updateDropdownPosition = useCallback(() => {
-    if (!buttonRef.current) return;
-
-    const rect = buttonRef.current.getBoundingClientRect();
-    const popupWidth = 256;
-    const estimatedPopupHeight = Math.min(
-      Math.max(availableModels.length * 52 + 56, 120),
-      340,
-    );
-    const viewportPadding = 12;
-
-    const left = Math.min(
-      Math.max(rect.left, viewportPadding),
-      window.innerWidth - popupWidth - viewportPadding,
-    );
-
-    const gap = 8;
-    const preferredTop = rect.top - gap - estimatedPopupHeight;
-    const fitsAbove = preferredTop >= viewportPadding;
-    const top = fitsAbove
-      ? Math.max(viewportPadding, preferredTop)
-      : Math.min(
-          rect.bottom + gap,
-          window.innerHeight - estimatedPopupHeight - viewportPadding,
-        );
-
-    setDropdownPosition({
-      top,
-      left,
-      placement: fitsAbove ? "above" : "below",
-    });
-  }, [availableModels.length]);
-
-  useEffect(() => {
-    if (!showModelDropdown) return;
-
-    updateDropdownPosition();
-
-    const handleWindowChange = () => {
-      updateDropdownPosition();
-    };
-
-    window.addEventListener("resize", handleWindowChange);
-    window.addEventListener("scroll", handleWindowChange, true);
-
-    return () => {
-      window.removeEventListener("resize", handleWindowChange);
-      window.removeEventListener("scroll", handleWindowChange, true);
-    };
-  }, [showModelDropdown, updateDropdownPosition]);
-
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (buttonRef.current && !buttonRef.current.contains(e.target as Node)) {
-        const dropdown = document.getElementById("model-dropdown-portal");
-        if (dropdown && dropdown.contains(e.target as Node)) return;
-        setShowModelDropdown(false);
-      }
-
       if (
         slashQuery !== null &&
         !document
@@ -416,21 +336,18 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     setIsDragOver(false);
   };
 
-  const attachFilePaths = useCallback(
-    (paths: string[]) => {
-      setAttachedFilesLocal((prev) => {
-        const existingPaths = new Set(prev.map((file) => file.path));
-        const nextFiles = paths
-          .filter((path) => path && !existingPaths.has(path))
-          .map((path) => ({ path, name: getFilename(path) }));
+  const attachFilePaths = useCallback((paths: string[]) => {
+    setAttachedFilesLocal((prev) => {
+      const existingPaths = new Set(prev.map((file) => file.path));
+      const nextFiles = paths
+        .filter((path) => path && !existingPaths.has(path))
+        .map((path) => ({ path, name: getFilename(path) }));
 
-        return nextFiles.length > 0 ? [...prev, ...nextFiles] : prev;
-      });
+      return nextFiles.length > 0 ? [...prev, ...nextFiles] : prev;
+    });
 
-      textareaRef.current?.focus();
-    },
-    [],
-  );
+    textareaRef.current?.focus();
+  }, []);
 
   useEffect(() => addAttachmentDropListener(attachFilePaths), [attachFilePaths]);
 
@@ -460,11 +377,11 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
 
   const handleFileClick = async (file: AttachedFile) => {
     try {
-      const content = await loadFileContent(file.path);
+      const fileContent = await loadFileContent(file.path);
       const language = getLanguageFromExtension(file.name);
       useEditorStore
         .getState()
-        .openFile(file.path, file.name, content, language);
+        .openFile(file.path, file.name, fileContent, language);
     } catch (error) {
       console.error("Failed to open file:", error);
     }
@@ -472,7 +389,6 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
 
   const handleModelSelect = (providerId: string, model: string) => {
     setSelectedModel(`${providerId}:${model}`);
-    setShowModelDropdown(false);
   };
 
   const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -514,9 +430,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
 
   const selectPromptAttachment = (attachment: PromptAttachment) => {
     setAttachedPromptAssetsLocal((prev) => {
-      if (prev.some((item) => item.key === attachment.key)) {
-        return prev;
-      }
+      if (prev.some((item) => item.key === attachment.key)) return prev;
       return [...prev, attachment];
     });
 
@@ -531,140 +445,18 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     setSlashSearchQuery("");
   };
 
-  const handleThinkingToggle = useCallback(() => {
-    if (!thinkingPair || !selectedProviderId) {
-      setThinkingEnabled(!thinkingEnabled);
-      return;
-    }
+  const handleExecutionModeToggle = useCallback(() => {
+    setAgentExecutionMode(agentExecutionMode === "plan" ? "agent" : "plan");
+  }, [agentExecutionMode, setAgentExecutionMode]);
 
-    const nextModel = effectiveThinkingEnabled
-      ? thinkingPair.nonThinkModel
-      : thinkingPair.thinkModel;
-
-    if (nextModel && nextModel !== selectedModelName) {
-      setSelectedModel(`${selectedProviderId}:${nextModel}`);
-    } else {
-      setThinkingEnabled(!thinkingEnabled);
-    }
-  }, [
-    thinkingPair,
-    selectedProviderId,
-    effectiveThinkingEnabled,
-    selectedModelName,
-    setSelectedModel,
-    setThinkingEnabled,
-    thinkingEnabled,
-  ]);
-
-  const renderDropdown = () => {
-    if (!showModelDropdown) return null;
-
-    const dropdown = (
-      <div
-        id="model-dropdown-portal"
-        className="fixed w-64 overflow-hidden rounded-2xl border border-border/70 shadow-2xl backdrop-blur-xl animate-in zoom-in-95 duration-100 z-[9999]"
-        style={{
-          top: dropdownPosition.top,
-          left: dropdownPosition.left,
-          transform:
-            dropdownPosition.placement === "above"
-              ? "translateY(0)"
-              : "translateY(0)",
-          background:
-            "color-mix(in srgb, var(--aurora-sidebar-background) 92%, var(--aurora-chat-surface) 8%)",
-          boxShadow: `
-            0 18px 40px color-mix(in srgb, var(--aurora-common-shadow) 28%, transparent),
-            0 2px 10px color-mix(in srgb, var(--aurora-common-shadow) 18%, transparent),
-            inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 8%, transparent)
-          `,
-        }}
-      >
-        <div
-          className="px-3 py-2 border-b border-border/70"
-          style={{
-            background:
-              "linear-gradient(180deg, color-mix(in srgb, var(--aurora-title-bar-background) 82%, transparent) 0%, color-mix(in srgb, var(--aurora-sidebar-background) 96%, transparent) 100%)",
-          }}
-        >
-          <span className="text-[10px] font-semibold text-text-secondary uppercase tracking-[0.18em]">
-            Select Model
-          </span>
-        </div>
-
-        {availableModels.length === 0 ? (
-          <div className="p-4 text-center">
-            <p className="text-[11px] text-muted-foreground mb-2">
-              No models found
-            </p>
-            <button
-              onClick={() => {
-                setShowModelDropdown(false);
-                setSettingsOpen(true);
-              }}
-              className="text-[11px] text-primary hover:text-primary/80 flex items-center gap-1.5 mx-auto transition-colors"
-            >
-              <Settings size={12} />
-              <span>Configure Settings</span>
-            </button>
-          </div>
-        ) : (
-          <div className="max-h-64 overflow-y-auto scrollbar-thin p-1.5">
-            {availableModels.map(
-              ({ providerId, providerName, model, label }) => (
-                <button
-                  key={`${providerId}:${model}`}
-                  onClick={() => handleModelSelect(providerId, model)}
-                  className={clsx(
-                    "w-full px-3 py-2.5 text-left text-[12px] transition-all duration-150 flex items-center justify-between group rounded-xl",
-                    selectedModel === `${providerId}:${model}`
-                      ? "text-primary"
-                      : "hover:bg-sidebar-item-hover",
-                  )}
-                  style={{
-                    background:
-                      selectedModel === `${providerId}:${model}`
-                        ? "color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)"
-                        : "transparent",
-                    boxShadow:
-                      selectedModel === `${providerId}:${model}`
-                        ? "inset 0 0 0 1px color-mix(in srgb, var(--aurora-common-primary) 18%, transparent)"
-                        : "none",
-                  }}
-                >
-                  <div className="flex flex-col">
-                    <span
-                      className={clsx(
-                        "font-medium",
-                        selectedModel !== `${providerId}:${model}` &&
-                          "text-text-primary",
-                      )}
-                    >
-                      {label}
-                    </span>
-                    <span className="text-[10px] text-text-disabled group-hover:text-text-secondary transition-colors">
-                      {providerName}
-                    </span>
-                  </div>
-                  {selectedModel === `${providerId}:${model}` && (
-                    <div
-                      className="w-1.5 h-1.5 rounded-full"
-                      style={{
-                        background: "var(--aurora-common-primary)",
-                        boxShadow:
-                          "0 0 10px color-mix(in srgb, var(--aurora-common-primary) 28%, transparent)",
-                      }}
-                    />
-                  )}
-                </button>
-              ),
-            )}
-          </div>
-        )}
-      </div>
-    );
-
-    return createPortal(dropdown, document.body);
-  };
+  const handleSpeechTranscript = useCallback((transcript: string) => {
+    setContentLocal((prev) => {
+      const trimmed = transcript.trim();
+      if (!trimmed) return prev;
+      return prev.trim() ? `${prev.trimEnd()} ${trimmed}` : trimmed;
+    });
+    textareaRef.current?.focus();
+  }, []);
 
   const renderPromptAttachmentPopup = () => (
     <PromptAttachmentPopup
@@ -680,9 +472,20 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     />
   );
 
+  const hasComposerContent =
+    content.trim().length > 0 ||
+    attachedFiles.length > 0 ||
+    attachedPromptAssets.length > 0;
+  const sendDisabled =
+    !isLoading &&
+    (!hasComposerContent ||
+      disabled ||
+      !providerReady ||
+      availableModels.length === 0);
+
   return (
     <div
-      className="w-full max-w-4xl mx-auto"
+      className="w-full max-w-4xl mx-auto relative"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -690,16 +493,32 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     >
       {/* Drag Overlay */}
       {isDragOver && (
-        <div className="absolute inset-2 z-50 rounded-xl border-2 border-dashed border-accent/50 bg-accent/5 backdrop-blur-sm flex flex-col items-center justify-center text-accent animate-in fade-in duration-200">
-          <Paperclip className="w-8 h-8 mb-2 animate-bounce" />
-          <span className="text-sm font-medium">Drop files or images to attach context</span>
+        <div
+          className="absolute inset-2 z-50 flex flex-col items-center justify-center animate-in fade-in duration-150"
+          style={{
+            backgroundColor:
+              "color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)",
+            border:
+              "1px dashed color-mix(in srgb, var(--aurora-common-primary) 55%, transparent)",
+            borderRadius: 14,
+            color: "var(--aurora-common-primary)",
+          }}
+        >
+          <Paperclip className="w-5 h-5 mb-1.5" />
+          <span className="text-[12px] font-semibold tracking-tight">
+            Drop to attach
+          </span>
         </div>
       )}
 
-      {/* Main Input Box */}
+      {/* Main Composer Shell — fully theme-driven, identical to ChatInput.
+          Multi-layer shadow stack matches the last committed look:
+          outer drop shadow + 3 inset layers (top highlight, bottom darken,
+          internal depth). Every layer uses color-mix() against theme
+          tokens so it renders correctly under any theme. */}
       <div
         className={clsx(
-          "rounded-[22px] transition-all duration-300 cursor-text relative overflow-hidden",
+          "rounded-[22px] transition-[border-color,box-shadow] duration-200 cursor-text relative overflow-hidden",
         )}
         style={{
           backgroundColor:
@@ -709,172 +528,164 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
             : "1px solid color-mix(in srgb, var(--aurora-chat-input-border) 82%, transparent)",
           boxShadow: isFocused
             ? `
-                0 6px 14px color-mix(in srgb, var(--aurora-common-shadow) 8%, transparent),
-                inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 8%, transparent),
-                inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 18%, transparent),
-                inset 0 10px 28px color-mix(in srgb, var(--aurora-common-shadow) 7%, transparent)
-              `
+              0 6px 14px color-mix(in srgb, var(--aurora-common-shadow) 8%, transparent),
+              inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 8%, transparent),
+              inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 18%, transparent),
+              inset 0 10px 28px color-mix(in srgb, var(--aurora-common-shadow) 7%, transparent)
+            `
             : `
-                0 4px 10px color-mix(in srgb, var(--aurora-common-shadow) 6%, transparent),
-                inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 8%, transparent),
-                inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 14%, transparent),
-                inset 0 8px 22px color-mix(in srgb, var(--aurora-common-shadow) 6%, transparent)
-              `,
-          backdropFilter: "blur(10px)",
+              0 4px 10px color-mix(in srgb, var(--aurora-common-shadow) 6%, transparent),
+              inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 8%, transparent),
+              inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 14%, transparent),
+              inset 0 8px 22px color-mix(in srgb, var(--aurora-common-shadow) 6%, transparent)
+            `,
         }}
         onClick={() => textareaRef.current?.focus()}
       >
-        <div
-          className="pointer-events-none absolute inset-x-0 top-0 h-14"
-          style={{
-            background:
-              "linear-gradient(180deg, color-mix(in srgb, var(--aurora-common-primary-foreground) 10%, transparent) 0%, transparent 100%)",
-            opacity: isFocused ? 1 : 0.8,
-          }}
-        />
-        {/* Top Control Bar */}
-        <div className="flex items-center justify-between px-3 pt-1.5 pb-0.5">
-          {/* Model Pill */}
-          <button
-            ref={buttonRef}
-            onClick={() => {
-              if (showModelDropdown) {
-                setShowModelDropdown(false);
-                return;
-              }
+        {/* Top Control Bar — model selector + agent/plan */}
+        <div className="flex items-center justify-between gap-2 px-2.5 pt-2 pb-1.5">
+          <ModelSelector
+            availableModels={availableModels}
+            currentModelLabel={currentModelLabel}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onSelectModel={handleModelSelect}
+            selectedModel={selectedModel}
+          />
 
-              updateDropdownPosition();
-              setShowModelDropdown(true);
-            }}
-            className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium text-text-primary transition-colors"
-            style={{
-              backgroundColor:
-                "color-mix(in srgb, var(--aurora-chat-surface) 82%, transparent)",
-              border: "1px solid transparent",
-              boxShadow: `
-                0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 10%, transparent),
-                0 0 0 1px var(--aurora-chat-surface-border)
-              `,
-            }}
-          >
-            <Sparkles size={10} className="text-primary" />
-            <span className="truncate max-w-[160px]">{currentModelLabel}</span>
-            <ChevronDown
-              size={10}
-              className={clsx(
-                "text-muted-foreground transition-transform",
-                showModelDropdown && "rotate-180",
-              )}
+          <div className="flex items-center gap-1.5">
+            <AgentExecutionModeToggle
+              mode={agentExecutionMode}
+              onToggle={handleExecutionModeToggle}
             />
-          </button>
-
-          {/* Thinking toggle only appears when provider exposes model pairs (think/non-think). */}
-          {showThinkingToggle && (
-            <button
-              onClick={handleThinkingToggle}
-              title={
-                effectiveThinkingEnabled
-                  ? `Switch to ${thinkingPair?.nonThinkModel}`
-                  : `Switch to ${thinkingPair?.thinkModel}`
-              }
-              className={clsx(
-                "flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all",
-                effectiveThinkingEnabled
-                  ? "bg-primary/10 text-primary"
-                  : "bg-transparent text-muted-foreground hover:text-text-primary",
-              )}
-              style={{
-                boxShadow: `
-                  0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 10%, transparent),
-                  0 0 0 1px var(--aurora-chat-surface-border)
-                `,
-                backgroundColor: effectiveThinkingEnabled
-                  ? "color-mix(in srgb, var(--aurora-chat-surface) 70%, var(--aurora-common-primary) 10%)"
-                  : "color-mix(in srgb, var(--aurora-chat-surface) 82%, transparent)",
-              }}
-            >
-              <Brain
-                size={12}
-                className={effectiveThinkingEnabled ? "animate-pulse" : ""}
-              />
-              <span>Thinking</span>
-            </button>
-          )}
+          </div>
         </div>
 
-        {/* Attached Files / Prompt Assets */}
+        {/* Attached Files / Prompt Assets — wrapperless inline tokens */}
         {(attachedFiles.length > 0 || attachedPromptAssets.length > 0) && (
-          <div className="px-3 py-2 flex flex-wrap gap-2">
+          <div className="px-3 pb-1 pt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
             {attachedFiles.map((file) => (
-              <div
+              <span
                 key={file.path}
                 onClick={() => handleFileClick(file)}
-                className="group flex items-center gap-1.5 pl-2 pr-1 py-1 bg-accent/10 text-accent rounded-md border border-accent/20 text-[10px] cursor-pointer hover:bg-accent/20 transition-colors"
+                className="group inline-flex items-center gap-1 cursor-pointer text-[11px] font-medium select-none"
+                style={{ color: "var(--aurora-common-primary)" }}
+                title={`Click to open ${file.path}`}
               >
                 <FileIcon
                   name={file.name}
                   path={file.path}
                   className="w-3 h-3 min-w-3"
                 />
-                <span className="truncate max-w-[150px] font-medium">
-                  {file.name}
+                <span
+                  className="truncate max-w-[180px]"
+                  style={{
+                    backgroundColor:
+                      "color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)",
+                    padding: "0 4px",
+                    borderRadius: 3,
+                  }}
+                >
+                  @{file.name}
                 </span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     removeAttachedFile(file.path);
                   }}
-                  className="p-0.5 rounded-sm hover:bg-input/50 text-accent hover:text-error transition-colors"
+                  className="inline-flex h-3.5 w-3.5 items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                  style={{
+                    color:
+                      "var(--aurora-text-secondary, var(--aurora-editor-foreground))",
+                  }}
+                  onMouseEnter={(event) => {
+                    event.currentTarget.style.color =
+                      "var(--aurora-common-error)";
+                  }}
+                  onMouseLeave={(event) => {
+                    event.currentTarget.style.color =
+                      "var(--aurora-text-secondary, var(--aurora-editor-foreground))";
+                  }}
+                  title="Remove"
                 >
                   <X size={10} />
                 </button>
-              </div>
+              </span>
             ))}
             {attachedPromptAssets.map((asset) => (
-              <div
+              <span
                 key={asset.key}
-                className="group flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] transition-colors"
-                style={{
-                  backgroundColor: "var(--aurora-chat-surface)",
-                  borderColor: "var(--aurora-chat-surface-border)",
-                  color: "var(--aurora-common-text-secondary)",
-                }}
+                className="group inline-flex items-center gap-1 text-[11px] font-medium select-none"
+                style={{ color: "var(--aurora-common-primary)" }}
               >
-                <span className="rounded bg-sidebar px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-text-secondary">
-                  {asset.type}
-                </span>
-                <span className="truncate max-w-[180px] font-medium text-text-primary">
-                  {asset.title}
+                <span
+                  className="truncate max-w-[200px]"
+                  style={{
+                    backgroundColor:
+                      "color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)",
+                    padding: "0 4px",
+                    borderRadius: 3,
+                  }}
+                >
+                  /{asset.title}
                 </span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     removePromptAttachment(asset.key);
                   }}
-                  className="p-0.5 rounded-sm hover:bg-input/50 hover:text-error transition-colors"
+                  className="inline-flex h-3.5 w-3.5 items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                  style={{
+                    color:
+                      "var(--aurora-text-secondary, var(--aurora-editor-foreground))",
+                  }}
+                  onMouseEnter={(event) => {
+                    event.currentTarget.style.color =
+                      "var(--aurora-common-error)";
+                  }}
+                  onMouseLeave={(event) => {
+                    event.currentTarget.style.color =
+                      "var(--aurora-text-secondary, var(--aurora-editor-foreground))";
+                  }}
+                  title="Remove"
                 >
                   <X size={10} />
                 </button>
-              </div>
+              </span>
             ))}
           </div>
         )}
 
         {/* Setup nudge when no provider is configured */}
         {!providerReady && !isLoading && (
-          <div className="mx-3 mb-2 mt-1 flex items-center gap-2.5 rounded-lg border px-3 py-2.5"
+          <div
+            className="mx-2.5 mb-1.5 mt-1 flex items-center gap-2 px-2.5 py-1.5"
             style={{
-              backgroundColor: 'color-mix(in srgb, var(--aurora-common-warning) 8%, var(--aurora-chat-surface))',
-              borderColor: 'color-mix(in srgb, var(--aurora-common-warning) 25%, transparent)',
+              backgroundColor:
+                "color-mix(in srgb, var(--aurora-common-warning) 10%, var(--aurora-chat-surface))",
+              border:
+                "1px solid color-mix(in srgb, var(--aurora-common-warning) 30%, transparent)",
+              borderRadius: 6,
             }}
           >
-            <AlertCircle size={14} className="text-warning shrink-0" />
-            <span className="text-xs text-text-secondary flex-1">
+            <AlertCircle
+              size={13}
+              className="shrink-0"
+              style={{ color: "var(--aurora-common-warning)" }}
+            />
+            <span
+              className="text-[11px] flex-1"
+              style={{ color: "var(--aurora-editor-foreground)" }}
+            >
               Connect an AI provider to start chatting.
             </span>
             <button
               onClick={() => setSettingsOpen(true)}
-              className="text-[10px] font-semibold px-2.5 py-1 rounded-md bg-primary text-primary-foreground hover:bg-primary-hover transition-colors shrink-0"
+              className="text-[10px] font-semibold px-2 py-0.5 transition-colors shrink-0"
+              style={{
+                backgroundColor: "var(--aurora-common-primary)",
+                color: "var(--aurora-common-primary-foreground)",
+                borderRadius: 4,
+              }}
             >
               Open Settings
             </button>
@@ -882,7 +693,7 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
         )}
 
         {/* Text Input */}
-        <div className="px-3 pb-1.75 pt-1">
+        <div className="px-3 pb-2 pt-1">
           <textarea
             ref={textareaRef}
             value={content}
@@ -893,69 +704,74 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
             disabled={disabled || isLoading || !providerReady}
             placeholder={
               !providerReady
-                ? "Add an API key in Settings to get started..."
+                ? "Add an API key in Settings to get started…"
                 : attachedFiles.length > 0 || attachedPromptAssets.length > 0
-                  ? "Ask Aurora with your attached files, skills, or rules..."
-                  : "Message Aurora (Type @ for files, / for skills and rules)..."
+                  ? "Ask Aurora with your attached files, skills, or rules…"
+                  : "Message Aurora — type @ for files, / for skills and rules"
             }
-            className="w-full bg-transparent text-[14px] font-normal tracking-[0.01em] text-text-primary resize-none border-0 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0 focus-visible:border-0 focus-visible:outline-none min-h-[28px] max-h-[140px] placeholder:text-text-disabled leading-[1.55]"
+            className="w-full bg-transparent text-[13.5px] font-normal tracking-[0.01em] text-text-primary resize-none border-0 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0 focus-visible:border-0 focus-visible:outline-none min-h-[36px] max-h-[200px] placeholder:text-text-disabled leading-[1.55]"
             rows={1}
           />
         </div>
 
         {/* Bottom Actions */}
-        <div className="px-2 pb-1 flex items-center justify-end">
+        <div className="px-2 pb-1.5 flex items-center justify-end gap-1.5">
+          <SpeechInputButton
+            disabled={disabled || isLoading}
+            onTranscript={handleSpeechTranscript}
+          />
           <button
             onClick={handleStopOrSend}
-            disabled={
-              !isLoading &&
-              ((!content.trim() &&
-                attachedFiles.length === 0 &&
-                attachedPromptAssets.length === 0) ||
-                disabled ||
-                !providerReady)
-            }
-            className={clsx(
-              "p-1 rounded-full transition-all duration-200 flex items-center justify-center",
-              isLoading
-                ? "bg-error/10 text-error hover:bg-error/20"
-                : "hover:bg-transparent",
-            )}
+            disabled={sendDisabled}
+            className="flex h-7 w-7 items-center justify-center transition-all duration-150 outline-none focus:outline-none disabled:cursor-not-allowed"
+            style={{
+              backgroundColor: isLoading
+                ? "color-mix(in srgb, var(--aurora-common-error) 16%, transparent)"
+                : hasComposerContent
+                  ? "var(--aurora-common-primary)"
+                  : "color-mix(in srgb, var(--aurora-chat-surface) 92%, transparent)",
+              border: `1px solid ${
+                isLoading
+                  ? "color-mix(in srgb, var(--aurora-common-error) 36%, transparent)"
+                  : hasComposerContent
+                    ? "color-mix(in srgb, var(--aurora-common-primary) 50%, transparent)"
+                    : "color-mix(in srgb, var(--aurora-chat-surface-border) 80%, transparent)"
+              }`,
+              color: isLoading
+                ? "var(--aurora-common-error)"
+                : hasComposerContent
+                  ? "var(--aurora-common-primary-foreground)"
+                  : "var(--aurora-text-disabled, var(--aurora-editor-foreground))",
+              borderRadius: 7,
+              opacity: sendDisabled && !isLoading ? 0.65 : 1,
+            }}
+            title={isLoading ? "Stop generation" : "Send message"}
           >
             {isLoading ? (
-              <Square size={14} fill="currentColor" />
+              <Square size={11} fill="currentColor" />
             ) : (
-              <div
-                className={clsx(
-                  "w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300",
-                  content.trim() || attachedFiles.length > 0
-                    ? "bg-gradient-to-br from-primary to-primary/80 hover:scale-105"
-                    : "bg-muted text-muted-foreground",
-                )}
-              >
-                <ArrowUp
-                  size={16}
-                  className={clsx(
-                    "transition-all duration-300",
-                    content.trim() || attachedFiles.length > 0
-                      ? "text-primary-foreground stroke-[2.5px]"
-                      : "opacity-50",
-                  )}
-                />
-              </div>
+              <ArrowUp
+                size={14}
+                strokeWidth={hasComposerContent ? 2.6 : 2}
+              />
             )}
           </button>
         </div>
       </div>
 
       {/* Footer text */}
-      <div className="mt-2 text-center">
-        <p className="text-[10px] text-muted-foreground">
+      <div className="mt-1.5 text-center">
+        <p
+          className="text-[10px]"
+          style={{
+            color:
+              "var(--aurora-text-disabled, var(--aurora-editor-foreground))",
+          }}
+        >
           AI can make mistakes. Review generated code.
         </p>
       </div>
 
-      {renderDropdown()}
       {renderPromptAttachmentPopup()}
     </div>
   );

@@ -1,6 +1,9 @@
-import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 
+import {
+  auroraListen as listen,
+  isAuroraRuntimeAvailable,
+} from "../lib/runtime";
 import {
   explorerClearWorkspace,
   explorerCollapseAll,
@@ -12,7 +15,6 @@ import {
   explorerSaveState,
   explorerSelectFile,
   explorerToggleFolder,
-  isTauri,
   readFileContent,
   type ExplorerSnapshot,
 } from "../lib/tauri";
@@ -46,7 +48,7 @@ interface WorkspaceState {
   revealFile: (filePath: string) => void;
   rootPath: string;
   saveExplorer: () => Promise<void>;
-  selectFile: (fileId: string) => void;
+  selectFile: (fileId: string | null) => void;
   selectedFileId: string | null;
   setFiles: (files: FileNode[]) => void;
 
@@ -62,8 +64,8 @@ interface FsChangedPayload {
 
 // Helper to load file content
 export const loadFileContent = async (path: string): Promise<string> => {
-  if (!isTauri()) {
-    return "// File content (desktop app only)";
+  if (!isAuroraRuntimeAvailable()) {
+    return "// File content unavailable: Aurora runtime is not connected";
   }
 
   try {
@@ -132,7 +134,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     // IMMEDIATELY save workspace state to database when workspace is opened
     // This ensures the workspace is persisted even if close event fails
-    if (isTauri() && cleanPath) {
+    if (isAuroraRuntimeAvailable() && cleanPath) {
       console.log(
         "[WorkspaceStore] Saving workspace path immediately:",
         cleanPath,
@@ -145,7 +147,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         });
     }
 
-    if (isTauri()) {
+    if (isAuroraRuntimeAvailable()) {
       const startListening = async () => {
         try {
           if (fsUnlisten) {
@@ -248,7 +250,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   loadDirectory: async (path: string) => {
-    if (!isTauri()) {
+    if (!isAuroraRuntimeAvailable()) {
       return;
     }
 
@@ -282,7 +284,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   refreshDirectory: async () => {
-    if (!isTauri()) {
+    if (!isAuroraRuntimeAvailable()) {
       return;
     }
 
@@ -295,7 +297,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   toggleFolder: async (folderId) => {
-    if (!isTauri()) {
+    if (!isAuroraRuntimeAvailable()) {
       return;
     }
 
@@ -308,7 +310,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   expandFolder: async (folderId) => {
-    if (!isTauri()) {
+    if (!isAuroraRuntimeAvailable()) {
       return;
     }
 
@@ -323,7 +325,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   selectFile: (fileId) => {
     set({ selectedFileId: fileId });
 
-    if (!isTauri()) {
+    if (!isAuroraRuntimeAvailable()) {
       return;
     }
 
@@ -334,7 +336,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   // Reveal a file in the explorer: expand parent folders and select it
   revealFile: (filePath) => {
-    if (!isTauri() || !filePath) {
+    if (!isAuroraRuntimeAvailable() || !filePath) {
       return;
     }
 
@@ -348,7 +350,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   collapseAll: async () => {
-    if (!isTauri()) {
+    if (!isAuroraRuntimeAvailable()) {
       return;
     }
 
@@ -388,7 +390,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     useEditorStore.getState().setWorkspacePath("");
 
-    if (isTauri()) {
+    if (isAuroraRuntimeAvailable()) {
       explorerClearWorkspace().catch((error) => {
         console.error("Failed to clear explorer workspace:", error);
       });
@@ -407,7 +409,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   // Restore explorer state from database (called once on load)
   restoreExplorer: async () => {
-    if (!isTauri()) {
+    if (!isAuroraRuntimeAvailable()) {
       return;
     }
 
@@ -423,7 +425,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   // Save explorer state to database (called ONLY on window close)
   saveExplorer: async () => {
-    if (!isTauri()) {
+    if (!isAuroraRuntimeAvailable()) {
       return;
     }
 

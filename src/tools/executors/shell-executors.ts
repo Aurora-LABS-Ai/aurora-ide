@@ -6,9 +6,11 @@
 import {
   cancelCommandStream,
   executeCommandStream,
-  isTauri,
 } from "../../lib/tauri";
-import { listen } from "@tauri-apps/api/event";
+import {
+  auroraListen as listen,
+  isAuroraRuntimeAvailable,
+} from "../../lib/runtime";
 import { useTerminalStore } from "../../store/useTerminalStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { toolRegistry } from "../registry";
@@ -36,6 +38,10 @@ interface ShellStreamChunk {
 
 type ShellExecuteMode = "inline" | "terminal";
 
+const DEFAULT_SHELL_TIMEOUT_MS = 30_000;
+const MAX_SHELL_TIMEOUT_MS = 300_000;
+const MIN_SHELL_TIMEOUT_MS = 1_000;
+
 const getRequestId = (): string => {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -45,6 +51,17 @@ const getRequestId = (): string => {
 
 const getShellExecuteMode = (value: unknown): ShellExecuteMode =>
   value === "terminal" ? "terminal" : "inline";
+
+const normalizeShellTimeoutMs = (value: unknown): number => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_SHELL_TIMEOUT_MS;
+  }
+
+  return Math.min(
+    Math.max(Math.trunc(value), MIN_SHELL_TIMEOUT_MS),
+    MAX_SHELL_TIMEOUT_MS,
+  );
+};
 
 const executeInlineShellCommand = async (
   command: string,
@@ -254,18 +271,17 @@ const executeTerminalShellCommand = async (
 const shellExecuteExecutor = async (
   args: Record<string, unknown>,
 ): Promise<string> => {
-  if (!isTauri()) {
+  if (!isAuroraRuntimeAvailable()) {
     return JSON.stringify({
       success: false,
-      error: "Shell operations require desktop app",
+      error: "Shell operations require an Aurora runtime",
     });
   }
 
   const command = args.command as string;
   const rootPath = useWorkspaceStore.getState().rootPath;
   const cwd = (args.cwd as string) || rootPath || undefined;
-  const timeoutMs =
-    typeof args.timeout === "number" ? (args.timeout as number) : 30000;
+  const timeoutMs = normalizeShellTimeoutMs(args.timeout ?? args.timeout_ms);
   const mode = getShellExecuteMode(args.type);
 
   console.log(
@@ -381,10 +397,10 @@ const shellListProcessesExecutor = async (): Promise<string> => {
 const shellSpawnExecutor = async (
   args: Record<string, unknown>,
 ): Promise<string> => {
-  if (!isTauri()) {
+  if (!isAuroraRuntimeAvailable()) {
     return JSON.stringify({
       success: false,
-      error: "Shell operations require desktop app",
+      error: "Shell operations require an Aurora runtime",
     });
   }
 

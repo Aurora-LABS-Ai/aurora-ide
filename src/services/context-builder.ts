@@ -13,9 +13,9 @@
  * 
  * Follow-up messages are lightweight: only changed state + user query.
  */
-import { invoke } from "@tauri-apps/api/core";
 import type { AttachedFile } from "../components/chat/ChatInput";
 import { isImageFilePath } from "../lib/file-utils";
+import { auroraInvoke as invoke } from "../lib/runtime";
 import { getSystemInfo, readDirectory, readFileContent } from "../lib/tauri";
 import { useEditorStore } from "../store/useEditorStore";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";

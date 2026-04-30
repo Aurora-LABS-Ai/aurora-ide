@@ -29,12 +29,8 @@ import React, {
 } from "react";
 import {
   Square,
-  Brain,
-  ChevronDown,
-  Settings,
   X,
   Paperclip,
-  Sparkles,
   ArrowUp,
   AlertCircle,
 } from "lucide-react";
@@ -60,12 +56,14 @@ import {
   getFilename,
   getLanguageFromExtension,
 } from "../../lib/file-utils";
-import { resolveThinkingModelPair } from "../../lib/thinking-models";
 import { FileIcon } from "../explorer/FileIcons";
 import { CompactTaskList } from "./TaskView";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
 import { PromptAttachmentPopup } from "./PromptAttachmentPopup";
 import { ShimmerText } from "../ui/ShimmerText";
+import { ModelSelector } from "../ui/ModelSelector";
+import { AgentExecutionModeToggle } from "../ui/AgentExecutionModeToggle";
+import { SpeechInputButton } from "./SpeechInputButton";
 
 // Rotating status messages for AI generation
 const GENERATING_MESSAGES = [
@@ -146,12 +144,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   const clearDraft = useChatStore((s) => s.clearDraft);
 
   const [content, setContentLocal] = useState(draftInput);
-  const [showModelDropdown, setShowModelDropdown] = useState(false);
-  const [dropdownPosition, setDropdownPosition] = useState({
-    top: 0,
-    left: 0,
-    placement: "above" as "above" | "below",
-  });
   const [isDragOver, setIsDragOver] = useState(false);
   const [attachedFiles, setAttachedFilesLocal] = useState<AttachedFile[]>(
     () => draftAttachedFiles.map(f => ({ path: f.path, name: f.name }))
@@ -185,8 +177,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   >([]);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-
   const { setSettingsOpen } = useUiStore();
   const { isLoading, stopGeneration, consumePendingInput, pendingInputNonce } =
     useChatStore();
@@ -208,38 +198,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     setDraftAttachedPromptAssets(attachedPromptAssets);
   }, [attachedPromptAssets, setDraftAttachedPromptAssets]);
   const {
-    thinkingEnabled,
-    setThinkingEnabled,
     selectedModel,
     setSelectedModel,
     getAvailableModels,
     getLLMConfig,
     skillToggles,
     skillsEnabled,
+    agentExecutionMode,
+    setAgentExecutionMode,
   } = useSettingsStore();
 
   const llmConfig = getLLMConfig();
   const providerReady = llmConfig !== null;
-  const providerSupportsThinking = llmConfig?.supportsThinking ?? false;
 
   // Re-compute available models when providers change
   const availableModels = getAvailableModels();
-  const [selectedProviderId = "", currentModel = ""] = selectedModel.split(":");
-  const providerModels = useMemo(
-    () =>
-      availableModels
-        .filter((item) => item.providerId === selectedProviderId)
-        .map((item) => item.model),
-    [availableModels, selectedProviderId],
-  );
-  const thinkingPair = useMemo(
-    () => resolveThinkingModelPair(currentModel, providerModels),
-    [currentModel, providerModels],
-  );
-  const showThinkingToggle = providerSupportsThinking && !!thinkingPair;
-  const effectiveThinkingEnabled = thinkingPair
-    ? thinkingPair.currentModelIsThinking
-    : thinkingEnabled;
   const selectedModelOption = useMemo(
     () =>
       availableModels.find(
@@ -439,56 +412,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     }
   };
 
-  // Update dropdown position when showing
-  const positionModelDropdown = useCallback(() => {
-    if (!buttonRef.current) return;
-
-    const rect = buttonRef.current.getBoundingClientRect();
-    const dropdownWidth = 256;
-    const estimatedDropdownHeight = Math.min(
-      320,
-      44 + Math.max(availableModels.length, 1) * 56,
-    );
-    const viewportPadding = 12;
-    const gap = 8;
-
-    const clampedLeft = Math.min(
-      Math.max(rect.left, viewportPadding),
-      window.innerWidth - dropdownWidth - viewportPadding,
-    );
-
-    const preferredTop = rect.top - gap - estimatedDropdownHeight;
-    const canPlaceAbove = preferredTop >= viewportPadding;
-
-    const top = canPlaceAbove
-      ? Math.max(viewportPadding, preferredTop)
-      : Math.min(
-          rect.bottom + gap,
-          window.innerHeight - estimatedDropdownHeight - viewportPadding,
-        );
-
-    setDropdownPosition({
-      top,
-      left: clampedLeft,
-      placement: canPlaceAbove ? "above" : "below",
-    });
-  }, [availableModels.length]);
-
-  useEffect(() => {
-    if (showModelDropdown) {
-      positionModelDropdown();
-    }
-  }, [positionModelDropdown, showModelDropdown]);
-
   // Close dropdowns on outside click
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (buttonRef.current && !buttonRef.current.contains(e.target as Node)) {
-        // Check if click is inside dropdown portal
-        const dropdown = document.getElementById("model-dropdown-portal");
-        if (dropdown && dropdown.contains(e.target as Node)) return;
-        setShowModelDropdown(false);
-      }
       if (
         mentionQuery !== null &&
         !document.getElementById("mention-popup")?.contains(e.target as Node)
@@ -638,84 +564,79 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
 
   const handleModelSelect = (providerId: string, model: string) => {
     setSelectedModel(`${providerId}:${model}`);
-    setShowModelDropdown(false);
   };
 
-  const handleThinkingToggle = useCallback(() => {
-    if (!thinkingPair || !selectedProviderId) {
-      setThinkingEnabled(!thinkingEnabled);
-      return;
-    }
+  const handleExecutionModeToggle = useCallback(() => {
+    setAgentExecutionMode(agentExecutionMode === "plan" ? "agent" : "plan");
+  }, [agentExecutionMode, setAgentExecutionMode]);
 
-    const nextModel = effectiveThinkingEnabled
-      ? thinkingPair.nonThinkModel
-      : thinkingPair.thinkModel;
-
-    if (nextModel && nextModel !== currentModel) {
-      setSelectedModel(`${selectedProviderId}:${nextModel}`);
-    } else {
-      setThinkingEnabled(!thinkingEnabled);
-    }
-  }, [
-    thinkingPair,
-    selectedProviderId,
-    effectiveThinkingEnabled,
-    currentModel,
-    setSelectedModel,
-    setThinkingEnabled,
-    thinkingEnabled,
-  ]);
+  const handleSpeechTranscript = useCallback((transcript: string) => {
+    setContentLocal((prev) => {
+      const trimmed = transcript.trim();
+      if (!trimmed) return prev;
+      return prev.trim() ? `${prev.trimEnd()} ${trimmed}` : trimmed;
+    });
+    textareaRef.current?.focus();
+  }, []);
 
   // Render Mention Popup
   const renderMentionPopup = () => {
-    // Only return null if query is null. If files are 0, we still want to show "No files found"
     if (mentionQuery === null) return null;
     if (!mentionPopupPosition) return null;
 
-    // Position above the input box (simple implementation)
-    // We can improve this by using the mentionCoords logic if stable
     const popupStyle = {
       bottom: mentionPopupPosition.bottom,
-      left: mentionPopupPosition.left, // Align with typical text start
+      left: mentionPopupPosition.left,
       maxHeight: "300px",
     };
-
-    console.log(
-      `[MentionPopup] Rendering with ${filteredFiles.length} files. Query: "${mentionQuery}"`,
-    );
 
     return createPortal(
       <div
         id="mention-popup"
-        className="fixed z-[10000] w-72 overflow-hidden rounded-2xl border border-border/70 shadow-2xl backdrop-blur-xl animate-in zoom-in-95 duration-100 flex flex-col"
+        className="fixed z-[10000] w-72 overflow-hidden flex flex-col animate-in fade-in duration-100"
         style={{
           ...popupStyle,
-          background:
-            "color-mix(in srgb, var(--aurora-chat-surface) 92%, var(--aurora-sidebar-background) 8%)",
-          boxShadow: `
-            0 18px 40px color-mix(in srgb, var(--aurora-common-shadow) 28%, transparent),
-            0 2px 10px color-mix(in srgb, var(--aurora-common-shadow) 18%, transparent),
-            inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 8%, transparent)
-          `,
+          backgroundColor:
+            "color-mix(in srgb, var(--aurora-sidebar-background) 96%, var(--aurora-chat-surface) 4%)",
+          border:
+            "1px solid color-mix(in srgb, var(--aurora-common-border) 65%, transparent)",
+          borderRadius: 10,
+          boxShadow:
+            "0 12px 28px color-mix(in srgb, var(--aurora-common-shadow) 22%, transparent)",
         }}
       >
         <div
-          className="px-3 py-2 border-b border-border/70 text-[10px] items-center flex justify-between"
+          className="flex items-center justify-between gap-2 px-3 pt-2.5 pb-2"
           style={{
-            background:
-              "linear-gradient(180deg, color-mix(in srgb, var(--aurora-title-bar-background) 82%, transparent) 0%, color-mix(in srgb, var(--aurora-chat-surface) 92%, transparent) 100%)",
-            color: "var(--aurora-common-text-secondary)",
+            borderBottom:
+              "1px solid color-mix(in srgb, var(--aurora-common-border) 40%, transparent)",
+            backgroundColor:
+              "color-mix(in srgb, var(--aurora-title-bar-background) 35%, transparent)",
           }}
         >
-          <span className="font-semibold uppercase tracking-[0.18em]">
-            Suggested Files
-          </span>
+          <div>
+            <p
+              className="text-[10px] font-semibold uppercase tracking-[0.14em]"
+              style={{
+                color:
+                  "var(--aurora-text-disabled, var(--aurora-editor-foreground))",
+              }}
+            >
+              Mention
+            </p>
+            <p className="mt-0.5 text-[12px] font-semibold text-text-primary">
+              Workspace files
+            </p>
+          </div>
           <span
-            className="rounded-md px-1.5 py-0.5 text-[9px] font-medium"
+            className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium"
             style={{
-              background:
-                "color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)",
+              backgroundColor:
+                "color-mix(in srgb, var(--aurora-common-primary) 12%, transparent)",
               color: "var(--aurora-common-primary)",
+              border:
+                "1px solid color-mix(in srgb, var(--aurora-common-primary) 28%, transparent)",
+              borderRadius: 4,
             }}
           >
             {filteredFiles.length}
@@ -724,49 +645,47 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
 
         {filteredFiles.length === 0 ? (
           <div
-            className="p-4 text-center text-[11px] italic"
-            style={{ color: "var(--aurora-common-text-disabled)" }}
+            className="px-3 py-5 text-center text-[11.5px]"
+            style={{
+              color:
+                "var(--aurora-text-secondary, var(--aurora-editor-foreground))",
+            }}
           >
             {allFiles.length === 0
               ? "No files in workspace"
-              : "No matching files found"}
+              : "No matching files."}
           </div>
         ) : (
-          <div className="max-h-56 overflow-y-auto p-1.5 scrollbar-thin">
-            {filteredFiles.map((file, idx) => (
-              <button
-                key={file.id}
-                onClick={() => selectFile(file)}
-                onMouseEnter={() => setSelectedFileIndex(idx)}
-                className={clsx(
-                  "w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-xl transition-all duration-150",
-                  idx === selectedFileIndex
-                    ? "text-primary"
-                    : "hover:bg-sidebar-item-hover",
-                )}
-                style={{
-                  color:
-                    idx === selectedFileIndex
+          <div className="max-h-56 overflow-y-auto px-1.5 py-1.5 scrollbar-thin">
+            {filteredFiles.map((file, idx) => {
+              const isActive = idx === selectedFileIndex;
+              return (
+                <button
+                  key={file.id}
+                  onClick={() => selectFile(file)}
+                  onMouseEnter={() => setSelectedFileIndex(idx)}
+                  className="w-full text-left flex items-center gap-2 px-2 py-1.5 transition-colors"
+                  style={{
+                    borderRadius: 5,
+                    color: isActive
                       ? "var(--aurora-common-primary)"
-                      : "var(--aurora-common-text-secondary)",
-                  background:
-                    idx === selectedFileIndex
-                      ? "color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)"
+                      : "var(--aurora-editor-foreground)",
+                    backgroundColor: isActive
+                      ? "color-mix(in srgb, var(--aurora-common-primary) 12%, transparent)"
                       : "transparent",
-                  boxShadow:
-                    idx === selectedFileIndex
-                      ? "inset 0 0 0 1px color-mix(in srgb, var(--aurora-common-primary) 18%, transparent)"
-                      : "none",
-                }}
-              >
-                <FileIcon
-                  name={file.name}
-                  path={file.path}
-                  className="w-4 h-4 min-w-4"
-                />
-                <span className="truncate">{file.name}</span>
-              </button>
-            ))}
+                  }}
+                >
+                  <FileIcon
+                    name={file.name}
+                    path={file.path}
+                    className="w-3.5 h-3.5 min-w-3.5"
+                  />
+                  <span className="truncate text-[12px] font-medium">
+                    {file.name}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         )}
       </div>,
@@ -787,117 +706,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
       selectedIndex={selectedPromptAssetIndex}
     />
   );
-
-  // Render dropdown as portal to avoid clipping
-  const renderDropdown = () => {
-    if (!showModelDropdown) return null;
-
-    const dropdown = (
-      <div
-        id="model-dropdown-portal"
-        className="fixed w-64 overflow-hidden rounded-2xl border border-border/70 shadow-2xl backdrop-blur-xl animate-in zoom-in-95 duration-100 z-[9999]"
-        style={{
-          top: dropdownPosition.top,
-          left: dropdownPosition.left,
-          transform:
-            dropdownPosition.placement === "above"
-              ? "translateY(0)"
-              : "translateY(0)",
-          background:
-            "color-mix(in srgb, var(--aurora-sidebar-background) 92%, var(--aurora-chat-surface) 8%)",
-          boxShadow: `
-            0 18px 40px color-mix(in srgb, var(--aurora-common-shadow) 28%, transparent),
-            0 2px 10px color-mix(in srgb, var(--aurora-common-shadow) 18%, transparent),
-            inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 8%, transparent)
-          `,
-        }}
-      >
-        <div
-          className="px-3 py-2 border-b border-border/70"
-          style={{
-            background:
-              "linear-gradient(180deg, color-mix(in srgb, var(--aurora-title-bar-background) 82%, transparent) 0%, color-mix(in srgb, var(--aurora-sidebar-background) 96%, transparent) 100%)",
-          }}
-        >
-          <span className="text-[10px] font-semibold text-text-secondary uppercase tracking-[0.18em]">
-            Select Model
-          </span>
-        </div>
-
-        {availableModels.length === 0 ? (
-          <div className="p-4 text-center">
-            <p className="text-[11px] text-muted-foreground mb-2">
-              No models found
-            </p>
-            <button
-              onClick={() => {
-                setShowModelDropdown(false);
-                setSettingsOpen(true);
-              }}
-              className="text-[11px] text-primary hover:text-primary/80 flex items-center gap-1.5 mx-auto transition-colors"
-            >
-              <Settings size={12} />
-              <span>Configure Settings</span>
-            </button>
-          </div>
-        ) : (
-          <div className="max-h-64 overflow-y-auto scrollbar-thin p-1.5">
-            {availableModels.map(
-              ({ providerId, providerName, model, label }) => (
-                <button
-                  key={`${providerId}:${model}`}
-                  onClick={() => handleModelSelect(providerId, model)}
-                  className={clsx(
-                    "w-full px-3 py-2.5 text-left text-[12px] transition-all duration-150 flex items-center justify-between group rounded-xl",
-                    selectedModel === `${providerId}:${model}`
-                      ? "text-primary"
-                      : "hover:bg-sidebar-item-hover",
-                  )}
-                  style={{
-                    background:
-                      selectedModel === `${providerId}:${model}`
-                        ? "color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)"
-                        : "transparent",
-                    boxShadow:
-                      selectedModel === `${providerId}:${model}`
-                        ? "inset 0 0 0 1px color-mix(in srgb, var(--aurora-common-primary) 18%, transparent)"
-                        : "none",
-                  }}
-                >
-                  <div className="flex flex-col">
-                    <span
-                      className={clsx(
-                        "font-medium",
-                        selectedModel !== `${providerId}:${model}` &&
-                          "text-text-primary",
-                      )}
-                    >
-                      {label}
-                    </span>
-                    <span className="text-[10px] text-text-disabled group-hover:text-text-secondary transition-colors">
-                      {providerName}
-                    </span>
-                  </div>
-                  {selectedModel === `${providerId}:${model}` && (
-                    <div
-                      className="w-1.5 h-1.5 rounded-full"
-                      style={{
-                        background: "var(--aurora-common-primary)",
-                        boxShadow:
-                          "0 0 10px color-mix(in srgb, var(--aurora-common-primary) 28%, transparent)",
-                      }}
-                    />
-                  )}
-                </button>
-              ),
-            )}
-          </div>
-        )}
-      </div>
-    );
-
-    return createPortal(dropdown, document.body);
-  };
 
   // --- DRAG DROP HANDLERS ---
   const attachFilePaths = useCallback((paths: string[]) => {
@@ -947,9 +755,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     textareaRef.current?.focus();
   };
 
+  const hasComposerContent =
+    content.trim().length > 0 ||
+    attachedFiles.length > 0 ||
+    attachedPromptAssets.length > 0;
+  const sendDisabled =
+    !isLoading &&
+    (!hasComposerContent ||
+      disabled ||
+      !providerReady ||
+      availableModels.length === 0);
+
   return (
     <div
-      className="p-4 transition-colors relative"
+      className="p-3 transition-colors relative"
       style={{ backgroundColor: "var(--aurora-chat-background)" }}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -958,17 +777,42 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     >
       {/* Drag Overlay */}
       {isDragOver && (
-        <div className="absolute inset-2 z-50 rounded-xl border-2 border-dashed border-accent/50 bg-accent/5 backdrop-blur-sm flex flex-col items-center justify-center text-accent animate-in fade-in duration-200">
-          <Paperclip className="w-8 h-8 mb-2 animate-bounce" />
-          <span className="text-sm font-medium">Drop files or images to attach context</span>
+        <div
+          className="absolute inset-2 z-50 flex flex-col items-center justify-center animate-in fade-in duration-150"
+          style={{
+            backgroundColor:
+              "color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)",
+            border:
+              "1px dashed color-mix(in srgb, var(--aurora-common-primary) 55%, transparent)",
+            borderRadius: 14,
+            color: "var(--aurora-common-primary)",
+          }}
+        >
+          <Paperclip className="w-5 h-5 mb-1.5" />
+          <span className="text-[12px] font-semibold tracking-tight">
+            Drop to attach
+          </span>
         </div>
       )}
 
-      {/* Main Box */}
+      {/* Main Composer Shell — fully theme-driven (matches the last
+          committed look). Background, border, and the multi-layer focus
+          shadow all come from CSS variables (chat-input-background,
+          chat-input-surface, common-primary, common-shadow,
+          common-primary-foreground) so themes can fully restyle the
+          composer without code edits.
+
+          The shadow stack is intentionally rich:
+            • 0 6px 14px outer drop shadow (depth)
+            • inset 0 1px 0 (top highlight)
+            • inset 0 -1px 0 (bottom darken)
+            • inset 0 10px 28px (subtle depth gradient inside)
+          All four layers use color-mix() against theme tokens so they
+          render correctly under any theme. */}
       <div
         onClick={handleContainerClick}
         className={clsx(
-          "rounded-[22px] transition-all duration-500 cursor-text relative overflow-hidden",
+          "rounded-[22px] transition-[border-color,box-shadow] duration-200 cursor-text relative overflow-hidden",
         )}
         style={{
           backgroundColor:
@@ -989,175 +833,157 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
               inset 0 -1px 0 color-mix(in srgb, var(--aurora-common-shadow) 14%, transparent),
               inset 0 8px 22px color-mix(in srgb, var(--aurora-common-shadow) 6%, transparent)
             `,
-          backdropFilter: "blur(10px)",
         }}
       >
-        <div
-          className="pointer-events-none absolute inset-x-0 top-0 h-14"
-          style={{
-            background:
-              "linear-gradient(180deg, color-mix(in srgb, var(--aurora-common-primary-foreground) 10%, transparent) 0%, transparent 100%)",
-            opacity: isFocused ? 1 : 0.8,
-          }}
-        />
-        {/* Top Control Bar */}
-        <div
-          className="flex items-center justify-between px-3 pt-2.5 pb-1"
-          style={{ backgroundColor: "transparent" }}
-        >
-          {/* Model Pill */}
-          <button
-            ref={buttonRef}
-            onClick={() => {
-              if (showModelDropdown) {
-                setShowModelDropdown(false);
-                return;
-              }
+        {/* Top Control Bar — model selector + agent/plan/thinking */}
+        <div className="flex items-center justify-between gap-2 px-2.5 pt-2 pb-1.5">
+          <ModelSelector
+            availableModels={availableModels}
+            currentModelLabel={
+              selectedModelOption?.label ||
+              (availableModels.length > 0 ? "Select Model" : "No Models")
+            }
+            onOpenSettings={() => setSettingsOpen(true)}
+            onSelectModel={handleModelSelect}
+            selectedModel={selectedModel}
+          />
 
-              positionModelDropdown();
-              setShowModelDropdown(true);
-            }}
-            className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium text-text-primary transition-colors"
-            style={{
-              backgroundColor:
-                "color-mix(in srgb, var(--aurora-chat-surface) 82%, transparent)",
-              border: "1px solid transparent",
-              boxShadow: `
-                0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 10%, transparent),
-                0 0 0 1px var(--aurora-chat-surface-border)
-              `,
-            }}
-          >
-            <Sparkles size={10} className="text-primary" />
-            <span className="truncate max-w-[160px]">
-              {selectedModelOption?.label ||
-                (availableModels.length > 0 ? "Select Model" : "No Models")}
-            </span>
-            <ChevronDown
-              size={10}
-              className={clsx(
-                "text-muted-foreground transition-transform",
-                showModelDropdown && "rotate-180",
-              )}
+          <div className="flex items-center gap-1.5">
+            <AgentExecutionModeToggle
+              mode={agentExecutionMode}
+              onToggle={handleExecutionModeToggle}
             />
-          </button>
-
-          {/* Thinking toggle only appears when provider exposes model pairs (think/non-think). */}
-          {showThinkingToggle && (
-            <button
-              onClick={handleThinkingToggle}
-              title={
-                effectiveThinkingEnabled
-                  ? `Switch to ${thinkingPair?.nonThinkModel}`
-                  : `Switch to ${thinkingPair?.thinkModel}`
-              }
-              className={clsx(
-                "flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all",
-                effectiveThinkingEnabled
-                  ? "bg-primary/10 text-primary"
-                  : "bg-transparent text-muted-foreground hover:text-text-primary",
-              )}
-              style={{
-                border: "1px solid transparent",
-                boxShadow: effectiveThinkingEnabled
-                  ? `
-                      0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 10%, transparent),
-                      0 0 0 1px color-mix(in srgb, var(--aurora-chat-surface-border) 40%, transparent)
-                    `
-                  : `
-                      0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 10%, transparent),
-                      0 0 0 1px var(--aurora-chat-surface-border)
-                    `,
-                backgroundColor: effectiveThinkingEnabled
-                  ? "color-mix(in srgb, var(--aurora-chat-surface) 70%, var(--aurora-common-primary) 10%)"
-                  : "var(--aurora-chat-surface)",
-              }}
-            >
-              <Brain
-                size={12}
-                className={effectiveThinkingEnabled ? "animate-pulse" : ""}
-              />
-              <span>Thinking</span>
-            </button>
-          )}
+          </div>
         </div>
 
-        {/* Attached Files / Prompt Assets */}
+        {/* Attached Files / Prompt Assets — wrapperless inline tokens.
+            Each item is a single line of text with a faint primary tint
+            behind it (no border, no chip box). Remove (×) appears on hover. */}
         {(attachedFiles.length > 0 || attachedPromptAssets.length > 0) && (
-          <div className="px-3 py-2 flex flex-wrap gap-2 text-text-primary">
+          <div className="px-3 pb-1 pt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
             {attachedFiles.map((file) => (
-              <div
+              <span
                 key={file.path}
                 onClick={() => handleFileClick(file)}
-                className="group flex items-center gap-1.5 pl-2 pr-1 py-1 bg-accent/10 text-accent rounded-md border border-accent/20 text-[10px] cursor-pointer hover:bg-accent/20 transition-colors"
-                title="Click to open file"
+                className="group inline-flex items-center gap-1 cursor-pointer text-[11px] font-medium select-none"
+                style={{ color: "var(--aurora-common-primary)" }}
+                title={`Click to open ${file.path}`}
               >
                 <FileIcon
                   name={file.name}
                   path={file.path}
                   className="w-3 h-3 min-w-3"
                 />
-                <span className="truncate max-w-[150px] font-medium">
-                  {file.name}
+                <span
+                  className="truncate max-w-[180px]"
+                  style={{
+                    backgroundColor:
+                      "color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)",
+                    padding: "0 4px",
+                    borderRadius: 3,
+                  }}
+                >
+                  @{file.name}
                 </span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     removeAttachedFile(file.path);
                   }}
-                  className="p-0.5 rounded-sm hover:bg-input/50 text-accent hover:text-error transition-colors"
-                  title="Remove file"
+                  className="inline-flex h-3.5 w-3.5 items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                  style={{
+                    color:
+                      "var(--aurora-text-secondary, var(--aurora-editor-foreground))",
+                  }}
+                  onMouseEnter={(event) => {
+                    event.currentTarget.style.color =
+                      "var(--aurora-common-error)";
+                  }}
+                  onMouseLeave={(event) => {
+                    event.currentTarget.style.color =
+                      "var(--aurora-text-secondary, var(--aurora-editor-foreground))";
+                  }}
+                  title="Remove"
                 >
                   <X size={10} />
                 </button>
-              </div>
+              </span>
             ))}
             {attachedPromptAssets.map((asset) => (
-              <div
+              <span
                 key={asset.key}
-                className="group flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] transition-colors"
-                style={{
-                  backgroundColor: "var(--aurora-chat-surface)",
-                  borderColor: "var(--aurora-chat-surface-border)",
-                  color: "var(--aurora-common-text-secondary)",
-                }}
+                className="group inline-flex items-center gap-1 text-[11px] font-medium select-none"
+                style={{ color: "var(--aurora-common-primary)" }}
               >
-                <span className="rounded bg-sidebar px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-text-secondary">
-                  {asset.type}
-                </span>
-                <span className="truncate max-w-[180px] font-medium text-text-primary">
-                  {asset.title}
+                <span
+                  className="truncate max-w-[200px]"
+                  style={{
+                    backgroundColor:
+                      "color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)",
+                    padding: "0 4px",
+                    borderRadius: 3,
+                  }}
+                >
+                  /{asset.title}
                 </span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     removePromptAttachment(asset.key);
                   }}
-                  className="p-0.5 rounded-sm hover:bg-input/50 hover:text-error transition-colors"
-                  title="Remove attachment"
+                  className="inline-flex h-3.5 w-3.5 items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                  style={{
+                    color:
+                      "var(--aurora-text-secondary, var(--aurora-editor-foreground))",
+                  }}
+                  onMouseEnter={(event) => {
+                    event.currentTarget.style.color =
+                      "var(--aurora-common-error)";
+                  }}
+                  onMouseLeave={(event) => {
+                    event.currentTarget.style.color =
+                      "var(--aurora-text-secondary, var(--aurora-editor-foreground))";
+                  }}
+                  title="Remove"
                 >
                   <X size={10} />
                 </button>
-              </div>
+              </span>
             ))}
           </div>
         )}
 
         {/* Setup nudge when no provider is configured */}
         {!providerReady && !isLoading && (
-          <div className="mx-3 mb-2 mt-1 flex items-center gap-2.5 rounded-lg border px-3 py-2.5"
+          <div
+            className="mx-2.5 mb-1.5 mt-1 flex items-center gap-2 px-2.5 py-1.5"
             style={{
-              backgroundColor: 'color-mix(in srgb, var(--aurora-common-warning) 8%, var(--aurora-chat-surface))',
-              borderColor: 'color-mix(in srgb, var(--aurora-common-warning) 25%, transparent)',
+              backgroundColor:
+                "color-mix(in srgb, var(--aurora-common-warning) 10%, var(--aurora-chat-surface))",
+              border:
+                "1px solid color-mix(in srgb, var(--aurora-common-warning) 30%, transparent)",
+              borderRadius: 6,
             }}
           >
-            <AlertCircle size={14} className="text-warning shrink-0" />
-            <span className="text-xs text-text-secondary flex-1">
+            <AlertCircle
+              size={13}
+              className="shrink-0"
+              style={{ color: "var(--aurora-common-warning)" }}
+            />
+            <span
+              className="text-[11px] flex-1"
+              style={{ color: "var(--aurora-editor-foreground)" }}
+            >
               Connect an AI provider to start chatting.
             </span>
             <button
               onClick={() => setSettingsOpen(true)}
-              className="text-[10px] font-semibold px-2.5 py-1 rounded-md bg-primary text-primary-foreground hover:bg-primary-hover transition-colors shrink-0"
+              className="text-[10px] font-semibold px-2 py-0.5 transition-colors shrink-0"
+              style={{
+                backgroundColor: "var(--aurora-common-primary)",
+                color: "var(--aurora-common-primary-foreground)",
+                borderRadius: 4,
+              }}
             >
               Open Settings
             </button>
@@ -1165,7 +991,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
         )}
 
         {/* Text Input */}
-        <div className="px-3 pb-3 pt-2">
+        <div className="px-3 pb-2 pt-1">
           <textarea
             ref={textareaRef}
             value={content}
@@ -1176,69 +1002,66 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
             disabled={disabled || isLoading || !providerReady}
             placeholder={
               !providerReady
-                ? "Add an API key in Settings to get started..."
+                ? "Add an API key in Settings to get started…"
                 : attachedFiles.length > 0 || attachedPromptAssets.length > 0
-                  ? "Ask Aurora with your attached files, skills, or rules..."
-                  : "Message Aurora (Type @ for files, / for skills and rules)..."
+                  ? "Ask Aurora with your attached files, skills, or rules…"
+                  : "Message Aurora — type @ for files, / for skills and rules"
             }
-            className="w-full bg-transparent text-[14px] font-normal tracking-[0.01em] text-text-primary resize-none border-0 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0 focus-visible:border-0 focus-visible:outline-none min-h-[40px] max-h-[200px] placeholder:text-text-disabled leading-[1.55]"
+            className="w-full bg-transparent text-[13.5px] font-normal tracking-[0.01em] text-text-primary resize-none border-0 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0 focus-visible:border-0 focus-visible:outline-none min-h-[36px] max-h-[200px] placeholder:text-text-disabled leading-[1.55]"
             rows={1}
           />
         </div>
 
         {/* Bottom Actions */}
-        <div className="px-2 pb-2 flex items-center">
-          <div className="flex-1 pl-1">
+        <div className="px-2 pb-1.5 flex items-center gap-1.5">
+          <div className="flex-1 pl-1.5 min-w-0">
             {hasInteracted && <ContextUsageIndicator />}
           </div>
+          <SpeechInputButton
+            disabled={disabled || isLoading}
+            onTranscript={handleSpeechTranscript}
+          />
           <button
             onClick={handleStopOrSend}
-            disabled={
-              !isLoading &&
-              ((!content.trim() &&
-                attachedFiles.length === 0 &&
-                attachedPromptAssets.length === 0) ||
-                disabled ||
-                !providerReady ||
-                availableModels.length === 0)
-            }
-            className={clsx(
-              "p-1 rounded-full transition-all duration-200 flex items-center justify-center tap-highlight-transparent outline-none focus:outline-none",
-              isLoading
-                ? "bg-error/10 text-error hover:bg-error/20"
-                : "hover:bg-transparent",
-            )}
+            disabled={sendDisabled}
+            className="flex h-7 w-7 items-center justify-center transition-all duration-150 outline-none focus:outline-none disabled:cursor-not-allowed"
+            style={{
+              backgroundColor: isLoading
+                ? "color-mix(in srgb, var(--aurora-common-error) 16%, transparent)"
+                : hasComposerContent
+                  ? "var(--aurora-common-primary)"
+                  : "color-mix(in srgb, var(--aurora-chat-surface) 92%, transparent)",
+              border: `1px solid ${
+                isLoading
+                  ? "color-mix(in srgb, var(--aurora-common-error) 36%, transparent)"
+                  : hasComposerContent
+                    ? "color-mix(in srgb, var(--aurora-common-primary) 50%, transparent)"
+                    : "color-mix(in srgb, var(--aurora-chat-surface-border) 80%, transparent)"
+              }`,
+              color: isLoading
+                ? "var(--aurora-common-error)"
+                : hasComposerContent
+                  ? "var(--aurora-common-primary-foreground)"
+                  : "var(--aurora-text-disabled, var(--aurora-editor-foreground))",
+              borderRadius: 7,
+              opacity: sendDisabled && !isLoading ? 0.65 : 1,
+            }}
             title={isLoading ? "Stop generation" : "Send message"}
           >
             {isLoading ? (
-              <Square size={14} fill="currentColor" />
+              <Square size={11} fill="currentColor" />
             ) : (
-              <div
-                className={clsx(
-                  "w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300",
-                  content.trim() || attachedFiles.length > 0
-                    ? "bg-gradient-to-br from-primary to-primary/80 hover:scale-105 active:scale-95"
-                    : "bg-muted text-muted-foreground",
-                )}
-              >
-                <ArrowUp
-                  size={16}
-                  className={clsx(
-                    "transition-all duration-300",
-                    content.trim() || attachedFiles.length > 0
-                      ? "text-primary-foreground stroke-[2.5px]"
-                      : "opacity-50",
-                  )}
-                />
-              </div>
+              <ArrowUp
+                size={14}
+                strokeWidth={hasComposerContent ? 2.6 : 2}
+              />
             )}
           </button>
         </div>
       </div>
 
-      {/* Task List (Active) */}
       {/* Footer Area: Tasks OR Caution */}
-      <div className="mt-2 text-center min-h-[20px] flex items-center justify-center w-full">
+      <div className="mt-1.5 text-center min-h-[18px] flex items-center justify-center w-full">
         {isVisible && tasks.length > 0 ? (
           <CompactTaskList todos={tasks} />
         ) : (
@@ -1246,7 +1069,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
         )}
       </div>
 
-      {renderDropdown()}
       {renderMentionPopup()}
       {renderPromptAttachmentPopup()}
     </div>

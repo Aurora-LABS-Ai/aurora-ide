@@ -96,10 +96,12 @@ export const TabBar: React.FC = () => {
         <button
           onMouseDown={(e) => e.preventDefault()}
           onClick={triggerMonacoUndo}
-          className="flex h-7 w-7 items-center justify-center rounded-[10px] text-text-secondary transition-colors hover:text-text-primary hover:bg-tabs-active"
+          className="flex h-7 w-7 items-center justify-center rounded-[6px] text-text-secondary transition-colors hover:text-text-primary"
           style={{
             background: 'color-mix(in srgb, var(--aurora-common-secondary) 72%, var(--aurora-title-bar-background) 28%)',
             border: '1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)',
+            boxShadow:
+              'inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent)',
           }}
           title="Undo (Ctrl+Z)"
         >
@@ -108,10 +110,12 @@ export const TabBar: React.FC = () => {
         <button
           onMouseDown={(e) => e.preventDefault()}
           onClick={triggerMonacoRedo}
-          className="flex h-7 w-7 items-center justify-center rounded-[10px] text-text-secondary transition-colors hover:text-text-primary hover:bg-tabs-active"
+          className="flex h-7 w-7 items-center justify-center rounded-[6px] text-text-secondary transition-colors hover:text-text-primary"
           style={{
             background: 'color-mix(in srgb, var(--aurora-common-secondary) 72%, var(--aurora-title-bar-background) 28%)',
             border: '1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)',
+            boxShadow:
+              'inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent)',
           }}
           title="Redo (Ctrl+Y)"
         >
@@ -125,25 +129,39 @@ export const TabBar: React.FC = () => {
           <div
             key={tab.id}
             className={clsx(
-              "group relative flex h-full shrink-0 items-center gap-1.5 border-r border-border px-3 cursor-pointer select-none",
+              "group relative flex h-full shrink-0 items-center gap-1.5 border-r border-border px-3 cursor-pointer select-none transition-colors",
               activeTabId === tab.id
                 ? "text-text-primary"
-                : "text-text-secondary hover:text-text-primary"
+                : "text-text-secondary hover:text-text-primary",
             )}
             style={{
-              background: activeTabId === tab.id
-                ? 'color-mix(in srgb, var(--aurora-editor-background) 86%, var(--aurora-common-primary) 14%)'
-                : 'transparent',
-              boxShadow: activeTabId === tab.id
-                ? 'inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent)'
-                : 'none',
+              // Active tab visually "becomes" the editor surface (VS Code style)
+              background:
+                activeTabId === tab.id
+                  ? 'var(--aurora-editor-background)'
+                  : 'transparent',
+              boxShadow:
+                activeTabId === tab.id
+                  ? 'inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 5%, transparent)'
+                  : 'none',
+            }}
+            onMouseEnter={(e) => {
+              if (activeTabId !== tab.id) {
+                e.currentTarget.style.background =
+                  'color-mix(in srgb, var(--aurora-editor-background) 35%, transparent)';
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (activeTabId !== tab.id) {
+                e.currentTarget.style.background = 'transparent';
+              }
             }}
             onClick={() => setActiveTab(tab.id)}
             title={tab.isDeleted ? `${tab.filename} (deleted)` : tab.filename}
           >
             {activeTabId === tab.id && (
               <span
-                className="absolute inset-x-2 top-0 h-[2px] rounded-full"
+                className="absolute inset-x-0 top-0 h-[2px]"
                 style={{ background: 'var(--aurora-common-primary)' }}
               />
             )}

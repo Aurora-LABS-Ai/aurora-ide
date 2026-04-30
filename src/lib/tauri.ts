@@ -1,5 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
 import type { FileNode } from "../types";
+import {
+  auroraInvoke as invoke,
+  isAuroraRuntimeAvailable,
+  isDesktopRuntime,
+} from "./runtime";
 
 export interface CommandOutput {
   exit_code: number | null;
@@ -30,6 +34,7 @@ export interface RipgrepSearchRequest {
   outputMode?: "content" | "files_with_matches" | "count";
   path: string;
   pattern: string;
+  timeoutMs?: number;
 }
 
 export interface RipgrepSearchResponse {
@@ -131,8 +136,8 @@ export interface SystemInfo {
 
 // Copy a file or folder to a new location
 export const copyPath = async (source: string, destination: string): Promise<void> => {
-  if (!isTauri()) {
-    console.warn('copyPath: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('copyPath: Aurora runtime unavailable');
     return;
   }
   return invoke<void>('copy_path', { source, destination });
@@ -152,8 +157,8 @@ export const copyToClipboard = async (text: string): Promise<void> => {
 
 // Create a new file
 export const createFile = async (path: string): Promise<void> => {
-  if (!isTauri()) {
-    console.warn('createFile: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('createFile: Aurora runtime unavailable');
     return;
   }
   return invoke<void>('create_file', { path });
@@ -161,8 +166,8 @@ export const createFile = async (path: string): Promise<void> => {
 
 // Create a new folder
 export const createFolder = async (path: string): Promise<void> => {
-  if (!isTauri()) {
-    console.warn('createFolder: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('createFolder: Aurora runtime unavailable');
     return;
   }
   return invoke<void>('create_folder', { path });
@@ -170,17 +175,17 @@ export const createFolder = async (path: string): Promise<void> => {
 
 // Delete a file or folder
 export const deletePath = async (path: string): Promise<void> => {
-  if (!isTauri()) {
-    console.warn('deletePath: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('deletePath: Aurora runtime unavailable');
     return;
   }
   return invoke<void>('delete_path', { path });
 };
 // Shell Operations
 export const executeCommand = async (command: string, cwd?: string, shell?: 'powershell' | 'bash'): Promise<CommandOutput> => {
-  if (!isTauri()) {
-    console.warn('executeCommand: Not running in Tauri');
-    return { stdout: '', stderr: 'Not running in Tauri', exit_code: 1, success: false };
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('executeCommand: Aurora runtime unavailable');
+    return { stdout: '', stderr: 'Aurora runtime unavailable', exit_code: 1, success: false };
   }
   return invoke<CommandOutput>('execute_command', { command, cwd, shell });
 };
@@ -192,9 +197,9 @@ export const executeCommandStream = async (
   shell?: 'powershell' | 'bash',
   timeoutMs?: number,
 ): Promise<CommandOutput> => {
-  if (!isTauri()) {
-    console.warn('executeCommandStream: Not running in Tauri');
-    return { stdout: '', stderr: 'Not running in Tauri', exit_code: 1, success: false };
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('executeCommandStream: Aurora runtime unavailable');
+    return { stdout: '', stderr: 'Aurora runtime unavailable', exit_code: 1, success: false };
   }
   return invoke<CommandOutput>('execute_command_stream', {
     app: undefined,
@@ -207,8 +212,8 @@ export const executeCommandStream = async (
 };
 
 export const cancelCommandStream = async (requestId: string): Promise<void> => {
-  if (!isTauri()) {
-    console.warn('cancelCommandStream: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('cancelCommandStream: Aurora runtime unavailable');
     return;
   }
   await invoke<void>('cancel_command_stream', { requestId });
@@ -216,23 +221,23 @@ export const cancelCommandStream = async (requestId: string): Promise<void> => {
 
 // System Operations
 export const getSystemInfo = async (): Promise<SystemInfo> => {
-  if (!isTauri()) {
-    console.warn('getSystemInfo: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('getSystemInfo: Aurora runtime unavailable');
     return { os: 'unknown', os_version: 'unknown', arch: 'unknown', hostname: 'unknown', shell: null };
   }
   return invoke<SystemInfo>('get_system_info');
 };
 export const getGlobalSkillsPath = async (): Promise<string | null> => {
-  if (!isTauri()) {
-    console.warn('getGlobalSkillsPath: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('getGlobalSkillsPath: Aurora runtime unavailable');
     return null;
   }
   return invoke<string | null>('get_global_skills_path');
 };
 // Workspace helpers
 export const getWorkspaceRoot = async (): Promise<string | null> => {
-  if (!isTauri()) {
-    console.warn('getWorkspaceRoot: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('getWorkspaceRoot: Aurora runtime unavailable');
     return null;
   }
   try {
@@ -245,7 +250,7 @@ export const getWorkspaceRoot = async (): Promise<string | null> => {
 
 // Check if running in Tauri
 export const isTauri = (): boolean => {
-  return typeof window !== 'undefined' && '__TAURI__' in window;
+  return isDesktopRuntime();
 };
 // Dialog Operations (using Tauri plugin)
 export const openFileDialog = async (options?: {
@@ -271,8 +276,8 @@ export const openInTerminal = async (path: string): Promise<void> => {
   return invoke<void>('open_in_terminal', { path });
 };
 export const readDirectory = async (path: string, options?: ReadDirectoryOptions): Promise<FileEntry[]> => {
-  if (!isTauri()) {
-    console.warn('readDirectory: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('readDirectory: Aurora runtime unavailable');
     return [];
   }
   return invoke<FileEntry[]>('read_directory', {
@@ -284,12 +289,12 @@ export const readDirectory = async (path: string, options?: ReadDirectoryOptions
 export const ripgrepSearch = async (
   request: RipgrepSearchRequest,
 ): Promise<RipgrepSearchResponse> => {
-  if (!isTauri()) {
+  if (!isAuroraRuntimeAvailable()) {
     return {
       success: false,
       tool: "grep",
       pattern: request.pattern,
-      error: "File operations require desktop app",
+      error: "Aurora runtime unavailable",
     };
   }
 
@@ -299,10 +304,10 @@ export const ripgrepSearch = async (
 export const validateStructuredDocument = async (
   request: StructuredDocumentValidationRequest,
 ): Promise<StructuredDocumentValidationResponse> => {
-  if (!isTauri()) {
+  if (!isAuroraRuntimeAvailable()) {
     return {
       valid: false,
-      error: "Structured document validation requires desktop app",
+      error: "Aurora runtime unavailable",
     };
   }
 
@@ -313,8 +318,8 @@ export const validateStructuredDocument = async (
 };
 
 export const readFileContent = async (path: string): Promise<string> => {
-  if (!isTauri()) {
-    console.warn('readFileContent: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('readFileContent: Aurora runtime unavailable');
     return '';
   }
   // Use cached file reader for better performance
@@ -333,8 +338,8 @@ export const readFromClipboard = async (): Promise<string> => {
 
 // Rename a file or folder
 export const renamePath = async (oldPath: string, newPath: string): Promise<void> => {
-  if (!isTauri()) {
-    console.warn('renamePath: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('renamePath: Aurora runtime unavailable');
     return;
   }
   return invoke<void>('rename_path', { oldPath, newPath });
@@ -363,8 +368,8 @@ export const saveFileDialog = async (options?: {
 
 // Thread persistence (DB-backed)
 export const saveThreadToDb = async (thread: DbThread): Promise<void> => {
-  if (!isTauri()) {
-    console.warn('saveThreadToDb: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('saveThreadToDb: Aurora runtime unavailable');
     return;
   }
   return invoke<void>('thread_save', { thread });
@@ -372,8 +377,8 @@ export const saveThreadToDb = async (thread: DbThread): Promise<void> => {
 
 // Start filesystem watcher
 export const startFsWatcher = async (path: string): Promise<void> => {
-  if (!isTauri()) {
-    console.warn('startFsWatcher: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('startFsWatcher: Aurora runtime unavailable');
     return;
   }
   return invoke<void>('start_fs_watcher', { path });
@@ -381,8 +386,8 @@ export const startFsWatcher = async (path: string): Promise<void> => {
 
 // Stop filesystem watcher
 export const stopFsWatcher = async (): Promise<void> => {
-  if (!isTauri()) {
-    console.warn('stopFsWatcher: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('stopFsWatcher: Aurora runtime unavailable');
     return;
   }
   return invoke<void>('stop_fs_watcher');
@@ -446,8 +451,8 @@ export const explorerToggleFolder = async (
   return invoke<ExplorerSnapshot>('explorer_toggle_folder', { folderId });
 };
 export const writeFileContent = async (path: string, content: string): Promise<void> => {
-  if (!isTauri()) {
-    console.warn('writeFileContent: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('writeFileContent: Aurora runtime unavailable');
     return;
   }
   // Invalidate frontend cache before write (Rust backend handles its own cache)
@@ -560,9 +565,9 @@ export interface AuroraWebSearchResponse {
 export const auroraWebSearch = async (
   request: AuroraWebSearchRequest,
 ): Promise<AuroraWebSearchResponse> => {
-  if (!isTauri()) {
-    console.warn('auroraWebSearch: Not running in Tauri');
-    return { success: false, error: 'Not running in Tauri' };
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('auroraWebSearch: Aurora runtime unavailable');
+    return { success: false, error: 'Aurora runtime unavailable' };
   }
   return invoke<AuroraWebSearchResponse>('aurora_websearch', { request });
 };

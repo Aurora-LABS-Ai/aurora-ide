@@ -8,16 +8,12 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Database,
   FolderOpen,
-  Search,
   RefreshCw,
   Trash2,
   CheckCircle,
   AlertCircle,
   Clock,
   Loader2,
-  HardDrive,
-  Cpu,
-  FileCode,
   Info,
   ExternalLink,
   Plus,
@@ -28,14 +24,26 @@ import {
   Save,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { TogglePill } from '../ui/TogglePill';
-import { SettingsSelect } from '../ui/SettingsSelect';
+import { IdeSwitch } from '../ui/IdeSwitch';
+import { IdeSelect } from '../ui/IdeSelect';
 import { useSemanticStore } from '../../store/useSemanticStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { open } from '@tauri-apps/plugin-dialog';
 import { semanticService } from '../../services/semantic';
 import { readDirectory, type FileEntry } from '../../lib/tauri';
-import { settingsCardStyle, settingsSubtlePanelStyle } from './settings-shared';
+import { settingsCardStyle, settingsRowDividerColor } from './settings-shared';
+import {
+  Section,
+  FormRow,
+  FormRowLast,
+  FormBlock,
+  StatusPill,
+  ActionButton,
+  IconButton,
+  IdeTextInput,
+  IdeTextArea,
+  IdeSlider,
+} from './settings-primitives';
 
 export const SemanticSettingsTab: React.FC = () => {
   const {
@@ -87,8 +95,10 @@ export const SemanticSettingsTab: React.FC = () => {
     if (rootPath) {
       loadCurrentIndex(rootPath);
     }
-    // Load semantic data directory path
-    semanticService.getSemanticDataDirectory().then(setSemanticDataDir).catch(() => {});
+    // Load workspace-local semantic index directory path.
+    semanticService.getSemanticDataDirectory(rootPath).then(setSemanticDataDir).catch(() => {
+      setSemanticDataDir(null);
+    });
   }, [loadSettings, loadIndexes, loadCurrentIndex, rootPath]);
 
   // Sync local model path with settings
@@ -360,332 +370,399 @@ export const SemanticSettingsTab: React.FC = () => {
 
   if (settingsLoading) {
     return (
-      <div className="flex items-center justify-center h-40">
-        <Loader2 className="w-5 h-5 text-primary animate-spin" />
+      <div className="flex h-40 items-center justify-center">
+        <Loader2 className="h-5 w-5 animate-spin text-primary" />
       </div>
     );
   }
 
+  const indexBadge = currentIndex ? (
+    <StatusPill
+      variant={
+        currentIndex.status === 'ready'
+          ? 'success'
+          : currentIndex.status === 'indexing'
+            ? 'info'
+            : currentIndex.status === 'error'
+              ? 'danger'
+              : 'warning'
+      }
+    >
+      {currentIndex.status}
+    </StatusPill>
+  ) : (
+    <StatusPill variant="neutral">Not indexed</StatusPill>
+  );
+
   return (
-    <div className="space-y-4">
-      {/* Enable/Disable Toggle */}
-      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-        <div className="flex items-center justify-between">
-          <div className="flex min-w-0 items-center gap-2">
-            <Database className="w-4 h-4 text-primary" />
-            <div className="min-w-0">
-              <h3 className="text-xs font-medium text-text-primary">Semantic Search</h3>
-              <p className="text-[9px] text-text-disabled">AI-powered code search using embeddings</p>
-            </div>
-          </div>
-          <TogglePill
+    <div className="space-y-6 pb-2">
+      {/* ============================================================ */}
+      {/* Enable / Embedding model                                      */}
+      {/* ============================================================ */}
+      <Section
+        title="Semantic Search"
+        description="AI-powered code search using local ONNX embeddings. Recommended model: Qwen3 Embedding 0.6B."
+        badge={
+          settings?.enabled ? (
+            <StatusPill variant="success">Enabled</StatusPill>
+          ) : (
+            <StatusPill variant="neutral">Disabled</StatusPill>
+          )
+        }
+      >
+        <FormRow
+          label="Enable semantic search"
+          hint="Uses the configured ONNX embedding model to power semantic and hybrid search."
+        >
+          <IdeSwitch
             checked={!!settings?.enabled}
             onChange={(next) => saveSettings({ enabled: next })}
             ariaLabel="Toggle semantic search"
             variant="primary"
             size="sm"
           />
-        </div>
-      </div>
+        </FormRow>
 
-      {/* Model Configuration */}
-      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-        <div className="flex items-center gap-2 mb-3">
-          <Cpu className="w-4 h-4 text-primary" />
-          <h3 className="text-xs font-medium text-text-primary">Embedding Model</h3>
-        </div>
-
-        <div className="space-y-2">
-          <div>
-            <label className="text-[10px] text-text-secondary block mb-1">
-              ONNX Model Directory
-            </label>
-            <div className="flex gap-1">
-              <input
-                type="text"
-                value={localModelPath}
-                onChange={(e) => handleModelPathChange(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && modelPathDirty && handleSaveModelPath()}
-                placeholder="Path to model directory (optional)"
-                className={clsx(
-                  "flex-1 bg-input border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled font-mono focus:outline-none focus:border-primary",
-                  modelPathDirty ? "border-warning" : "border-input-border"
-                )}
-              />
-              <button
-                onClick={handleBrowseModel}
-                className="px-2 py-1.5 rounded bg-input border border-input-border text-text-secondary hover:text-text-primary hover:bg-input-hover transition-colors"
-                title="Browse for model directory"
-              >
-                <FolderOpen className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={handleSaveModelPath}
-                disabled={!modelPathDirty || savingModelPath}
-                className={clsx(
-                  "px-2 py-1.5 rounded border transition-colors",
-                  modelPathDirty
-                    ? "bg-primary border-primary text-primary-foreground hover:bg-primary/80"
-                    : "bg-input border-input-border text-text-disabled cursor-not-allowed"
-                )}
-                title={modelPathDirty ? "Save model path" : "No changes to save"}
-              >
-                {savingModelPath ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Save className="w-3.5 h-3.5" />
-                )}
-              </button>
-            </div>
-            {modelPathDirty && (
-              <p className="text-[9px] text-warning mt-1">Unsaved changes - click Save or press Enter</p>
-            )}
-          </div>
-
-          {/* Model Status - simple indicator, actual validation happens on Index */}
-          {localModelPath && !modelPathDirty && (
-            <div className="flex items-center gap-2 rounded-[16px] px-3 py-2 text-[10px] text-text-secondary" style={settingsSubtlePanelStyle}>
-              <Database className="w-3.5 h-3.5" />
-              <span>Model path set - will be loaded when indexing</span>
-            </div>
-          )}
-
-          {/* No model info */}
-          {!localModelPath && (
-            <div
-              className="flex items-start gap-2 rounded-[16px] px-3 py-2 text-[10px] text-info"
-              style={{
-                ...settingsSubtlePanelStyle,
-                backgroundColor: 'color-mix(in srgb, var(--aurora-common-info) 10%, var(--aurora-common-muted))',
-                border: '1px solid color-mix(in srgb, var(--aurora-common-info) 18%, transparent)',
-              }}
+        <FormRowLast
+          label="ONNX model directory"
+          hint="Folder containing the ONNX model and tokenizer. Click Save or press Enter to apply."
+          align="top"
+        >
+          <div className="flex w-[320px] gap-1.5">
+            <IdeTextInput
+              value={localModelPath}
+              onChange={(e) => handleModelPathChange(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && modelPathDirty && handleSaveModelPath()}
+              placeholder="Path to Qwen3 ONNX model directory"
+              className={clsx('font-mono', modelPathDirty && 'border-warning')}
+              style={
+                modelPathDirty
+                  ? {
+                      border: '1px solid color-mix(in srgb, var(--aurora-common-warning) 50%, transparent)',
+                    }
+                  : undefined
+              }
+            />
+            <IconButton
+              ariaLabel="Browse for model"
+              title="Browse for model directory"
+              onClick={handleBrowseModel}
+              variant="secondary"
             >
-              <Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
-              <div>
-                <p className="font-medium">No model configured</p>
-                <p className="text-text-disabled mt-0.5">
-                  Without an ONNX model, search uses fast hash-based embeddings (lexical-focused).
-                  For semantic search, download a model like jina-embeddings-v2-base-code.
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Current Workspace Index */}
-      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex min-w-0 items-center gap-2">
-            <FileCode className="w-4 h-4 text-primary" />
-            <h3 className="text-xs font-medium text-text-primary">Current Workspace Index</h3>
-          </div>
-          {currentIndex && (
-            <button
-              onClick={handleDeleteIndex}
-              className="p-1 rounded text-text-disabled hover:text-danger hover:bg-danger/10 transition-colors"
-              title="Delete index"
+              <FolderOpen className="h-3.5 w-3.5" />
+            </IconButton>
+            <IconButton
+              ariaLabel="Save model path"
+              title={modelPathDirty ? 'Save model path' : 'No changes to save'}
+              onClick={handleSaveModelPath}
+              disabled={!modelPathDirty || savingModelPath}
+              variant={modelPathDirty ? 'primary' : 'secondary'}
             >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
-
-        {!rootPath ? (
-          <p className="text-[10px] text-text-disabled">No workspace open</p>
-        ) : currentIndex ? (
-          <div className="space-y-2">
-            {/* Status */}
-            <div className="flex items-center gap-2">
-              {getStatusIcon(currentIndex.status)}
-              <span className="text-xs text-text-primary capitalize">{currentIndex.status}</span>
-              {currentIndex.errorMessage && (
-                <span className="text-[10px] text-danger">({currentIndex.errorMessage})</span>
+              {savingModelPath ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Save className="h-3.5 w-3.5" />
               )}
-            </div>
+            </IconButton>
+          </div>
+        </FormRowLast>
 
+        {!localModelPath && (
+          <div
+            className="flex items-start gap-2 px-4 py-3 text-[11.5px]"
+            style={{
+              backgroundColor:
+                'color-mix(in srgb, var(--aurora-common-info) 10%, transparent)',
+              borderTop: `1px solid color-mix(in srgb, var(--aurora-common-info) 25%, transparent)`,
+            }}
+          >
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-info" />
+            <div className="text-text-secondary">
+              <span className="font-medium text-text-primary">No model configured. </span>
+              Select the local Qwen3 ONNX folder before indexing. Aurora stores each
+              workspace's index inside that workspace's <code className="font-mono">.aurora</code>{' '}
+              directory.
+            </div>
+          </div>
+        )}
+        {modelPathDirty && (
+          <div
+            className="flex items-start gap-2 px-4 py-2.5 text-[11.5px]"
+            style={{
+              backgroundColor:
+                'color-mix(in srgb, var(--aurora-common-warning) 10%, transparent)',
+              borderTop: `1px solid color-mix(in srgb, var(--aurora-common-warning) 25%, transparent)`,
+            }}
+          >
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+            <span className="text-text-secondary">
+              Unsaved model path changes — click Save or press Enter.
+            </span>
+          </div>
+        )}
+      </Section>
+
+      {/* ============================================================ */}
+      {/* Current workspace index                                      */}
+      {/* ============================================================ */}
+      <Section
+        title="Current Workspace Index"
+        description={
+          rootPath
+            ? rootPath
+            : 'Open a workspace to manage its index.'
+        }
+        badge={rootPath ? indexBadge : <StatusPill variant="neutral">No workspace</StatusPill>}
+      >
+        {!rootPath ? (
+          <FormBlock divided={false}>
+            <p className="text-[11.5px] text-text-secondary">
+              Open a workspace before indexing.
+            </p>
+          </FormBlock>
+        ) : currentIndex ? (
+          <>
             {/* Stats */}
             {currentIndex.status === 'ready' && (
-              <div className="grid grid-cols-3 gap-2 text-[10px]">
-                <div className="rounded-[16px] px-3 py-2" style={settingsSubtlePanelStyle}>
-                  <p className="text-text-disabled">Documents</p>
-                  <p className="text-text-primary font-medium">{currentIndex.documentCount.toLocaleString()}</p>
-                </div>
-                <div className="rounded-[16px] px-3 py-2" style={settingsSubtlePanelStyle}>
-                  <p className="text-text-disabled">Chunks</p>
-                  <p className="text-text-primary font-medium">{currentIndex.chunkCount.toLocaleString()}</p>
-                </div>
-                <div className="rounded-[16px] px-3 py-2" style={settingsSubtlePanelStyle}>
-                  <p className="text-text-disabled">Size</p>
-                  <p className="text-text-primary font-medium">{formatBytes(currentIndex.totalBytes)}</p>
-                </div>
+              <div
+                className="grid grid-cols-3 divide-x"
+                style={{
+                  borderBottom: `1px solid ${settingsRowDividerColor}`,
+                }}
+              >
+                {([
+                  ['Documents', currentIndex.documentCount.toLocaleString()],
+                  ['Chunks', currentIndex.chunkCount.toLocaleString()],
+                  ['Size', formatBytes(currentIndex.totalBytes)],
+                ] as const).map(([label, value]) => (
+                  <div
+                    key={label}
+                    className="px-4 py-3"
+                    style={{ borderColor: settingsRowDividerColor }}
+                  >
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-text-disabled">
+                      {label}
+                    </p>
+                    <p className="mt-1 text-[15px] font-mono font-semibold text-text-primary">
+                      {value}
+                    </p>
+                  </div>
+                ))}
               </div>
+            )}
+
+            {currentIndex.errorMessage && (
+              <FormBlock>
+                <p className="text-[11.5px] text-danger">{currentIndex.errorMessage}</p>
+              </FormBlock>
             )}
 
             {/* Progress */}
             {isIndexing && (
-              <div className="space-y-1">
-                <div className="flex items-center justify-between text-[10px]">
-                  <span className="text-text-secondary capitalize">
-                    {indexProgress?.phase || 'Starting'}...
+              <FormBlock>
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="capitalize text-text-secondary">
+                    {indexProgress?.phase || 'Starting'}…
                   </span>
-                  <span className="text-text-disabled">
+                  <span className="font-mono text-text-disabled">
                     {indexProgress ? `${indexProgress.percentage.toFixed(0)}%` : '0%'}
                   </span>
                 </div>
-                <div className="h-1.5 bg-input rounded-full overflow-hidden">
+                <div className="mt-2 h-1 overflow-hidden rounded-full bg-input">
                   <div
                     className="h-full bg-primary transition-all duration-300"
                     style={{ width: `${indexProgress?.percentage || 0}%` }}
                   />
                 </div>
                 {indexProgress?.currentFile && (
-                  <p className="text-[9px] text-text-disabled truncate">
+                  <p className="mt-1.5 truncate text-[10px] font-mono text-text-disabled">
                     {indexProgress.currentFile}
                   </p>
                 )}
-              </div>
+              </FormBlock>
             )}
 
             {/* Actions */}
-            <div className="flex gap-2 pt-1">
-              {isIndexing ? (
-                <button
-                  onClick={() => cancelIndexing(currentIndex.id)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-danger bg-danger/10 hover:bg-danger/20 rounded transition-colors"
-                >
-                  <AlertCircle className="w-3.5 h-3.5" />
-                  Cancel
-                </button>
-              ) : (
-                <button
-                  onClick={handleStartIndexing}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  Re-index
-                </button>
-              )}
-            </div>
-          </div>
+            <FormBlock divided={false}>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[11.5px] text-text-secondary">
+                  {isIndexing
+                    ? 'Aurora is indexing this workspace.'
+                    : currentIndex.status === 'ready'
+                      ? 'Index is ready. Re-index after large code changes.'
+                      : 'Index needs attention.'}
+                </p>
+                <div className="flex items-center gap-1.5">
+                  {isIndexing ? (
+                    <ActionButton
+                      variant="danger"
+                      icon={<AlertCircle className="h-3 w-3" />}
+                      onClick={() => cancelIndexing(currentIndex.id)}
+                    >
+                      Cancel
+                    </ActionButton>
+                  ) : (
+                    <ActionButton
+                      variant="primary"
+                      icon={<RefreshCw className="h-3 w-3" />}
+                      onClick={handleStartIndexing}
+                    >
+                      Re-index
+                    </ActionButton>
+                  )}
+                  <IconButton
+                    ariaLabel="Delete index"
+                    title="Delete index"
+                    onClick={handleDeleteIndex}
+                    variant="danger"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </IconButton>
+                </div>
+              </div>
+            </FormBlock>
+          </>
         ) : (
-          <div className="space-y-2">
-            <p className="text-[10px] text-text-disabled">This workspace has not been indexed yet.</p>
-            <button
-              onClick={handleStartIndexing}
-              disabled={isIndexing}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors disabled:opacity-50"
-            >
-              {isIndexing ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Database className="w-3.5 h-3.5" />
-              )}
-              Index Workspace
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Search Settings */}
-      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-        <div className="flex items-center gap-2 mb-3">
-          <Search className="w-4 h-4 text-primary" />
-          <h3 className="text-xs font-medium text-text-primary">Search Settings</h3>
-        </div>
-
-        <div className="space-y-3">
-          {/* Search Mode */}
-          <div>
-            <label className="text-[10px] text-text-secondary block mb-1">Search Mode</label>
-            <SettingsSelect
-              ariaLabel="Select semantic search mode"
-              options={[
-                { label: 'Hybrid (Recommended)', value: 'hybrid' },
-                { label: 'Lexical Only (Keywords)', value: 'lexical' },
-                { label: 'Semantic Only (Meaning)', value: 'semantic' },
-              ]}
-              onChange={(nextValue) => saveSettings({ searchMode: String(nextValue) as 'lexical' | 'semantic' | 'hybrid' })}
-              value={settings?.searchMode || 'hybrid'}
-            />
-          </div>
-
-          {/* Weights (only for hybrid mode) */}
-          {settings?.searchMode === 'hybrid' && (
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-[10px] text-text-secondary block mb-1">
-                  Lexical Weight ({(localLexicalWeight * 100).toFixed(0)}%)
-                </label>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={localLexicalWeight * 100}
-                  onChange={(e) => handleWeightChange(parseInt(e.target.value) / 100)}
-                  className="w-full accent-primary"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] text-text-secondary block mb-1">
-                  Semantic Weight ({(localSemanticWeight * 100).toFixed(0)}%)
-                </label>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={localSemanticWeight * 100}
-                  onChange={(e) => handleWeightChange(1 - parseInt(e.target.value) / 100)}
-                  className="w-full accent-primary"
-                />
-              </div>
+          <FormBlock divided={false}>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11.5px] text-text-secondary">
+                This workspace has not been indexed yet.
+              </p>
+              <ActionButton
+                variant="primary"
+                icon={
+                  isIndexing ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Database className="h-3 w-3" />
+                  )
+                }
+                onClick={handleStartIndexing}
+                disabled={isIndexing}
+              >
+                Index workspace
+              </ActionButton>
             </div>
-          )}
-        </div>
-      </div>
+          </FormBlock>
+        )}
+      </Section>
 
-      {/* Advanced Settings (Collapsible) */}
-      <div className="overflow-hidden rounded-[20px]" style={settingsCardStyle}>
-        <button
-          onClick={() => setShowAdvanced(!showAdvanced)}
-          className="w-full flex items-center justify-between p-4 transition-colors hover:bg-input/30"
-        >
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <HardDrive className="w-4 h-4 text-primary" />
-            <h3 className="truncate text-xs font-medium text-text-primary">Advanced Settings</h3>
-          </div>
-          <ChevronDown
-            className={clsx(
-              'ml-3 h-4 w-4 shrink-0 text-text-disabled transition-transform',
-              showAdvanced && 'rotate-180',
-            )}
+      {/* ============================================================ */}
+      {/* Search settings                                               */}
+      {/* ============================================================ */}
+      <Section
+        title="Search Behavior"
+        description="Choose how Aurora ranks results across keyword and semantic relevance."
+      >
+        <FormRow label="Search mode" hint="Hybrid blends both signals; lexical or semantic-only override the mix.">
+          <IdeSelect
+            ariaLabel="Select semantic search mode"
+            align="end"
+            className="min-w-[220px]"
+            options={[
+              {
+                label: 'Hybrid',
+                value: 'hybrid',
+                description: 'Recommended — blends keyword and meaning',
+              },
+              {
+                label: 'Lexical only',
+                value: 'lexical',
+                description: 'Keyword matching, no embeddings',
+              },
+              {
+                label: 'Semantic only',
+                value: 'semantic',
+                description: 'Pure embedding similarity',
+              },
+            ]}
+            onChange={(nextValue) =>
+              saveSettings({
+                searchMode: String(nextValue) as 'lexical' | 'semantic' | 'hybrid',
+              })
+            }
+            value={settings?.searchMode || 'hybrid'}
           />
-        </button>
+        </FormRow>
 
-        {showAdvanced && (
-          <div className="space-y-3 border-t border-border px-4 pb-4 pt-4">
-            {/* Auto Index */}
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-[10px] text-text-secondary">Auto-index on workspace open</p>
-                <p className="text-[9px] text-text-disabled">Automatically index new workspaces</p>
-              </div>
-              <TogglePill
+        {settings?.searchMode === 'hybrid' && (
+          <>
+            <FormRow
+              label="Lexical weight"
+              hint="Higher values favor exact keyword matches."
+            >
+              <IdeSlider
+                value={localLexicalWeight}
+                min={0}
+                max={1}
+                step={0.05}
+                onChange={(v) => handleWeightChange(v)}
+                ariaLabel="Lexical weight"
+                formatValue={(v) => `${Math.round(v * 100)}%`}
+                trackWidth={140}
+              />
+            </FormRow>
+            <FormRowLast
+              label="Semantic weight"
+              hint="Higher values favor meaning-based matches."
+            >
+              <IdeSlider
+                value={localSemanticWeight}
+                min={0}
+                max={1}
+                step={0.05}
+                onChange={(v) => handleWeightChange(1 - v)}
+                ariaLabel="Semantic weight"
+                formatValue={(v) => `${Math.round(v * 100)}%`}
+                trackWidth={140}
+              />
+            </FormRowLast>
+          </>
+        )}
+      </Section>
+
+      {/* ============================================================ */}
+      {/* Advanced                                                      */}
+      {/* ============================================================ */}
+      <Section
+        title="Advanced"
+        description="Indexing exclusions, file size cap, and storage details."
+        badge={
+          <button
+            type="button"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-text-secondary hover:text-text-primary"
+          >
+            {showAdvanced ? 'Hide' : 'Show'}
+            <ChevronDown
+              className={clsx(
+                'h-3 w-3 transition-transform',
+                showAdvanced && 'rotate-180',
+              )}
+            />
+          </button>
+        }
+      >
+        {showAdvanced ? (
+          <>
+            <FormRow
+              label="Auto-index on workspace open"
+              hint="Automatically index a workspace the first time it's opened."
+            >
+              <IdeSwitch
                 checked={!!settings?.autoIndex}
                 onChange={(next) => saveSettings({ autoIndex: next })}
                 ariaLabel="Toggle auto-index on workspace open"
                 variant="primary"
                 size="sm"
               />
-            </div>
+            </FormRow>
 
-            {/* Max File Size */}
-            <div>
-              <label className="text-[10px] text-text-secondary block mb-1">
-                Max File Size ({formatBytes(settings?.maxFileSize || 1048576)})
-              </label>
-              <SettingsSelect
+            <FormRow label="Max file size" hint="Files larger than this are skipped during indexing.">
+              <IdeSelect
                 ariaLabel="Select semantic max file size"
+                align="end"
+                className="min-w-[140px]"
                 options={[
                   { label: '512 KB', value: 524288 },
                   { label: '1 MB', value: 1048576 },
@@ -695,13 +772,14 @@ export const SemanticSettingsTab: React.FC = () => {
                 onChange={(nextValue) => saveSettings({ maxFileSize: Number(nextValue) })}
                 value={settings?.maxFileSize || 1048576}
               />
-            </div>
+            </FormRow>
 
-            {/* Ignored Directories */}
-            <div>
-              <label className="text-[10px] text-text-secondary block mb-1">Ignored Directories</label>
-              <input
-                type="text"
+            <FormRow
+              label="Ignored directories"
+              hint="Comma-separated list applied to every workspace."
+              align="top"
+            >
+              <IdeTextInput
                 value={localIgnoredDirs}
                 onChange={(e) => {
                   setLocalIgnoredDirs(e.target.value);
@@ -709,15 +787,16 @@ export const SemanticSettingsTab: React.FC = () => {
                 }}
                 onBlur={(e) => handleTextBlur('ignoredDirectories', e.target.value)}
                 placeholder="node_modules, target, dist"
-                className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled font-mono focus:outline-none focus:border-primary"
+                className="w-[300px] font-mono"
               />
-            </div>
+            </FormRow>
 
-            {/* Ignored Patterns */}
-            <div>
-              <label className="text-[10px] text-text-secondary block mb-1">Ignored File Patterns</label>
-              <input
-                type="text"
+            <FormRow
+              label="Ignored file patterns"
+              hint="Comma-separated globs applied to every workspace."
+              align="top"
+            >
+              <IdeTextInput
                 value={localIgnoredPatterns}
                 onChange={(e) => {
                   setLocalIgnoredPatterns(e.target.value);
@@ -725,180 +804,227 @@ export const SemanticSettingsTab: React.FC = () => {
                 }}
                 onBlur={(e) => handleTextBlur('ignoredPatterns', e.target.value)}
                 placeholder="*.min.js, *.map, *.lock"
-                className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled font-mono focus:outline-none focus:border-primary"
+                className="w-[300px] font-mono"
               />
-            </div>
+            </FormRow>
 
-            {/* Workspace-Specific Exclusions Section */}
+            {/* Workspace-specific exclusions */}
             {rootPath && currentIndex ? (
-              <div className="pt-2 border-t border-border/50">
-                <p className="text-[10px] text-text-secondary font-medium mb-2">Workspace-Specific Exclusions</p>
-                <p className="text-[9px] text-text-disabled mb-2">
-                  Exclude specific files or directories for this workspace only. Re-index after changes.
-                </p>
-                
-                {/* Excluded Files */}
-                <div className="mb-2">
-                  <label className="text-[10px] text-text-secondary block mb-1">Excluded Files</label>
-                  <textarea
+              <>
+                <FormRow
+                  label="Excluded files (this workspace)"
+                  hint="One path per line. Re-index to apply."
+                  align="top"
+                >
+                  <IdeTextArea
                     value={localExcludedFiles}
                     onChange={(e) => {
                       setLocalExcludedFiles(e.target.value);
-                      const excludedFiles = e.target.value.split('\n').map(s => s.trim()).filter(Boolean);
+                      const excludedFiles = e.target.value
+                        .split('\n')
+                        .map((s) => s.trim())
+                        .filter(Boolean);
                       saveWorkspaceExclusions(excludedFiles, localExcludedDirs);
                     }}
                     onBlur={handleExclusionBlur}
-                    placeholder="src/generated/types.ts&#10;src/proto/generated.rs&#10;config/secrets.json"
+                    placeholder="src/generated/types.ts&#10;src/proto/generated.rs"
                     rows={3}
-                    className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled font-mono focus:outline-none focus:border-primary resize-none"
+                    className="w-[300px] font-mono"
                   />
-                  <p className="text-[9px] text-text-disabled mt-0.5">One file path per line</p>
-                </div>
+                </FormRow>
 
-                {/* Excluded Directories */}
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-[10px] text-text-secondary">Excluded Directories</label>
-                    <button
+                <FormRow
+                  label="Excluded directories (this workspace)"
+                  hint="Click Browse to pick directories from the workspace tree."
+                  align="top"
+                >
+                  <div className="flex w-[300px] flex-col gap-2">
+                    <ActionButton
+                      variant="secondary"
+                      icon={<Plus className="h-3 w-3" />}
                       onClick={openDirPicker}
                       disabled={!rootPath}
-                      className="flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-medium text-primary bg-primary/10 hover:bg-primary/20 rounded transition-colors disabled:opacity-50"
                     >
-                      <Plus className="w-2.5 h-2.5" />
-                      Browse
-                    </button>
-                  </div>
-                  
-                  {/* Selected directories as tags */}
-                  {localExcludedDirs.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mb-2">
-                      {localExcludedDirs.map((dir) => (
-                        <span
-                          key={dir}
-                          className="flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-mono text-text-secondary"
-                          style={settingsSubtlePanelStyle}
-                        >
-                          <Folder className="w-2.5 h-2.5 text-text-disabled" />
-                          {dir}
-                          <button
-                            onClick={() => removeExcludedDir(dir)}
-                            className="text-text-disabled hover:text-danger transition-colors"
+                      Browse directories
+                    </ActionButton>
+                    {localExcludedDirs.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {localExcludedDirs.map((dir) => (
+                          <span
+                            key={dir}
+                            className="inline-flex items-center gap-1.5 px-2 py-1 text-[10.5px] font-mono text-text-secondary"
+                            style={{
+                              backgroundColor:
+                                'color-mix(in srgb, var(--aurora-editor-foreground) 6%, transparent)',
+                              border:
+                                '1px solid color-mix(in srgb, var(--aurora-common-border) 60%, transparent)',
+                              borderRadius: 4,
+                            }}
                           >
-                            <X className="w-2.5 h-2.5" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Directory Picker Modal */}
-                  {showDirPicker && (
-                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60]">
-                      <div className="flex max-h-[500px] w-[420px] flex-col rounded-[22px] shadow-xl" style={settingsCardStyle}>
-                        <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-                          <span className="text-xs font-medium text-text-primary">Select Directories to Exclude</span>
-                          <button
-                            onClick={() => setShowDirPicker(false)}
-                            className="p-1 rounded text-text-secondary hover:text-text-primary hover:bg-input"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                        <div className="flex-1 overflow-y-auto p-2 max-h-[350px]">
-                          {workspaceDirs.length === 0 ? (
-                            <p className="text-[10px] text-text-disabled text-center py-4">No directories found</p>
-                          ) : (
-                            <DirectoryTree
-                              entries={workspaceDirs}
-                              expandedDirs={expandedDirs}
-                              dirChildren={dirChildren}
-                              excludedDirs={localExcludedDirs}
-                              rootPath={rootPath || ''}
-                              onToggle={toggleDirExpand}
-                              onSelect={addExcludedDir}
-                            />
-                          )}
-                        </div>
-                        <div className="px-3 py-2 border-t border-border flex justify-end">
-                          <button
-                            onClick={() => setShowDirPicker(false)}
-                            className="px-3 py-1 text-xs font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors"
-                          >
-                            Done
-                          </button>
-                        </div>
+                            <Folder className="h-2.5 w-2.5 text-text-disabled" />
+                            {dir}
+                            <button
+                              type="button"
+                              onClick={() => removeExcludedDir(dir)}
+                              className="text-text-disabled hover:text-danger"
+                            >
+                              <X className="h-2.5 w-2.5" />
+                            </button>
+                          </span>
+                        ))}
                       </div>
-                    </div>
-                  )}
-
-                  <p className="text-[9px] text-text-disabled">Click "Browse" to select directories from your workspace</p>
-                </div>
-              </div>
+                    )}
+                  </div>
+                </FormRow>
+              </>
             ) : (
-              <div className="pt-2 border-t border-border/50">
-                <p className="text-[10px] text-text-disabled">
-                  {!rootPath 
-                    ? "Open a workspace to configure workspace-specific exclusions." 
-                    : "Index this workspace first to configure workspace-specific exclusions."}
+              <FormBlock>
+                <p className="text-[11.5px] text-text-secondary">
+                  {!rootPath
+                    ? 'Open a workspace to configure workspace-specific exclusions.'
+                    : 'Index this workspace first to configure exclusions.'}
                 </p>
-              </div>
+              </FormBlock>
             )}
 
-            {/* Storage Location */}
             {semanticDataDir && (
-              <div>
-                <label className="text-[10px] text-text-secondary block mb-1">Index Storage Location</label>
-                <div className="flex items-center gap-1">
+              <FormRowLast
+                label="Index storage location"
+                hint="Each workspace keeps its own embeddings index."
+                align="top"
+              >
+                <div className="flex w-[300px] gap-1.5">
                   <code
-                    className="flex-1 rounded-[16px] px-3 py-2 text-[10px] text-text-disabled font-mono truncate"
-                    style={settingsSubtlePanelStyle}
+                    className="flex-1 truncate px-2.5 py-1.5 text-[10.5px] font-mono text-text-secondary"
+                    style={{
+                      backgroundColor:
+                        'color-mix(in srgb, var(--aurora-editor-background) 65%, var(--aurora-common-secondary) 35%)',
+                      border:
+                        '1px solid color-mix(in srgb, var(--aurora-common-border) 70%, transparent)',
+                      borderRadius: 6,
+                    }}
+                    title={semanticDataDir}
                   >
                     {semanticDataDir}
                   </code>
-                  <button
+                  <IconButton
+                    ariaLabel="Open in file explorer"
+                    title="Open in file explorer"
                     onClick={() => {
-                      // Open in file explorer
                       import('@tauri-apps/plugin-shell').then(({ open }) => {
                         open(semanticDataDir);
                       });
                     }}
-                    className="p-1.5 rounded bg-input border border-input-border text-text-secondary hover:text-text-primary hover:bg-input-hover transition-colors"
-                    title="Open in file explorer"
+                    variant="secondary"
                   >
-                    <ExternalLink className="w-3 h-3" />
-                  </button>
+                    <ExternalLink className="h-3 w-3" />
+                  </IconButton>
                 </div>
-                <p className="text-[9px] text-text-disabled mt-1">
-                  Index files are stored per-workspace in user app data, not inside workspaces.
-                </p>
-              </div>
+              </FormRowLast>
             )}
-          </div>
+          </>
+        ) : (
+          <FormBlock divided={false}>
+            <p className="text-[11.5px] text-text-secondary">
+              Click "Show" above to expand exclusions, file size, and storage settings.
+            </p>
+          </FormBlock>
         )}
-      </div>
+      </Section>
 
-      {/* All Indexed Workspaces */}
+      {/* ============================================================ */}
+      {/* Directory picker modal                                        */}
+      {/* ============================================================ */}
+      {showDirPicker && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
+          <div
+            className="flex max-h-[500px] w-[420px] flex-col shadow-xl"
+            style={{
+              ...settingsCardStyle,
+              borderRadius: 8,
+            }}
+          >
+            <div
+              className="flex items-center justify-between px-3 py-2.5"
+              style={{ borderBottom: `1px solid ${settingsRowDividerColor}` }}
+            >
+              <span className="text-[12px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
+                Select directories to exclude
+              </span>
+              <IconButton
+                ariaLabel="Close"
+                onClick={() => setShowDirPicker(false)}
+                variant="secondary"
+              >
+                <X className="h-3.5 w-3.5" />
+              </IconButton>
+            </div>
+            <div className="max-h-[350px] flex-1 overflow-y-auto p-2">
+              {workspaceDirs.length === 0 ? (
+                <p className="py-4 text-center text-[11px] text-text-disabled">
+                  No directories found
+                </p>
+              ) : (
+                <DirectoryTree
+                  entries={workspaceDirs}
+                  expandedDirs={expandedDirs}
+                  dirChildren={dirChildren}
+                  excludedDirs={localExcludedDirs}
+                  rootPath={rootPath || ''}
+                  onToggle={toggleDirExpand}
+                  onSelect={addExcludedDir}
+                />
+              )}
+            </div>
+            <div
+              className="flex justify-end px-3 py-2"
+              style={{ borderTop: `1px solid ${settingsRowDividerColor}` }}
+            >
+              <ActionButton variant="primary" onClick={() => setShowDirPicker(false)}>
+                Done
+              </ActionButton>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* All indexed workspaces                                        */}
+      {/* ============================================================ */}
       {allIndexes.length > 0 && (
-        <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-          <h3 className="text-xs font-medium text-text-primary mb-2">All Indexed Workspaces</h3>
-          <div className="space-y-1 max-h-32 overflow-y-auto">
-            {allIndexes.map((idx) => (
+        <Section
+          title="All Indexed Workspaces"
+          description="Every workspace Aurora has indexed on this machine."
+          badge={
+            <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-text-disabled">
+              {allIndexes.length}
+            </span>
+          }
+        >
+          <div className="max-h-44 overflow-y-auto">
+            {allIndexes.map((idx, index) => (
               <div
                 key={idx.id}
-                className="flex items-center justify-between rounded-[16px] px-3 py-2 text-[10px]"
-                style={settingsSubtlePanelStyle}
+                className="flex items-center justify-between gap-3 px-4 py-2.5"
+                style={
+                  index < allIndexes.length - 1
+                    ? { borderBottom: `1px solid ${settingsRowDividerColor}` }
+                    : undefined
+                }
               >
-                <div className="flex items-center gap-2 min-w-0">
+                <div className="flex min-w-0 items-center gap-2">
                   {getStatusIcon(idx.status)}
-                  <span className="text-text-primary truncate">{idx.workspaceName}</span>
+                  <span className="truncate text-[11.5px] font-medium text-text-primary">
+                    {idx.workspaceName}
+                  </span>
                 </div>
-                <span className="text-text-disabled flex-shrink-0">
+                <span className="shrink-0 font-mono text-[10.5px] text-text-disabled">
                   {idx.documentCount} files
                 </span>
               </div>
             ))}
           </div>
-        </div>
+        </Section>
       )}
     </div>
   );

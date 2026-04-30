@@ -2,10 +2,9 @@
  * MCP Store
  * Manages MCP (Model Context Protocol) server state
  */
-import { invoke } from "@tauri-apps/api/core";
-
 import { create } from "zustand";
 
+import { auroraInvoke as invoke } from "../lib/runtime";
 import { populateMcpToolDisplayNameCache } from "../services/mcp-tools";
 
 // ============================================

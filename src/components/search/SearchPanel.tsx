@@ -360,7 +360,7 @@ export const SearchPanel: React.FC = () => {
       </div>
 
       {/* Results */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto scrollbar-thin">
         {isSearching && (
           <div className="flex items-center justify-center py-8">
             <RefreshCw className="w-5 h-5 animate-spin" style={{ color: 'var(--aurora-common-primary)' }} />

@@ -23,27 +23,29 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   MoreVertical, FolderOpen, FilePlus, FolderPlus,
-  Plus, ChevronDown, Search, X, RefreshCw,
-  Folder, FolderClosed, ChevronsDownUp, Copy
+  Plus, ChevronRight, Search, X, RefreshCw,
+  Folder, FolderClosed, ChevronsDownUp, Copy,
+  Terminal as TerminalIcon, ExternalLink, FileSearch, Type
 } from 'lucide-react';
 import { FileTree } from './FileTree';
 import { TreeNodeCreateInput } from './tree-node';
-import { ContextMenu } from '../ui/ContextMenu';
+import { MenuBarMenu, type MenuBarItem } from '../layout/MenuBarMenu';
+import { ContextMenu, type MenuItem } from '../ui/ContextMenu';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useDragStore } from '../../store/useDragStore';
-import { isTauri, createFile, createFolder } from '../../lib/tauri';
+import { isTauri, createFile, createFolder, openInTerminal, revealInExplorer } from '../../lib/tauri';
 import { useExplorerKeyboard } from '../../hooks/useExplorerKeyboard';
 import { databaseService } from '../../services/database';
 import type { WorkspaceState } from '../../types/database';
 
 export const FileExplorer: React.FC = () => {
-  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [isCreating, setIsCreating] = useState<{ type: 'file' | 'folder'; parentId: string } | null>(null);
   const [createInputValue, setCreateInputValue] = useState('');
   const [renameTargetId, setRenameTargetId] = useState<string | null>(null);
   const [recentWorkspaces, setRecentWorkspaces] = useState<WorkspaceState[]>([]);
+  const [workspaceContextMenu, setWorkspaceContextMenu] = useState<{ x: number; y: number } | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const explorerContentRef = useRef<HTMLDivElement>(null);
   // FIX: Use shallow equality selector to prevent re-renders when unrelated store values change
@@ -118,7 +120,6 @@ export const FileExplorer: React.FC = () => {
 
   // Handle new file at root
   const handleNewFileAtRoot = useCallback(() => {
-    setMenuPosition(null);
     if (!rootPath) return;
     setIsCreating({ type: 'file', parentId: rootPath });
     setCreateInputValue('');
@@ -126,7 +127,6 @@ export const FileExplorer: React.FC = () => {
 
   // Handle new folder at root
   const handleNewFolderAtRoot = useCallback(() => {
-    setMenuPosition(null);
     if (!rootPath) return;
     setIsCreating({ type: 'folder', parentId: rootPath });
     setCreateInputValue('');
@@ -134,7 +134,6 @@ export const FileExplorer: React.FC = () => {
 
   // Handle close folder
   const handleCloseFolder = useCallback(() => {
-    setMenuPosition(null);
     clearWorkspace();
   }, [clearWorkspace]);
 
@@ -206,8 +205,6 @@ export const FileExplorer: React.FC = () => {
   );
 
   const handleOpenFolder = async () => {
-    setMenuPosition(null);
-
     if (isTauri()) {
       try {
         const { open } = await import('@tauri-apps/plugin-dialog');
@@ -228,6 +225,35 @@ export const FileExplorer: React.FC = () => {
     }
   };
 
+  const handleOpenInTerminal = useCallback(async () => {
+    if (!rootPath) return;
+    try {
+      await openInTerminal(rootPath);
+    } catch (err) {
+      console.error('Failed to open terminal at workspace:', err);
+    }
+  }, [rootPath]);
+
+  const handleRevealInFileManager = useCallback(async () => {
+    if (!rootPath) return;
+    try {
+      await revealInExplorer(rootPath);
+    } catch (err) {
+      console.error('Failed to reveal in file manager:', err);
+    }
+  }, [rootPath]);
+
+  const handleCopyPath = useCallback(() => {
+    if (!rootPath) return;
+    void navigator.clipboard.writeText(rootPath);
+  }, [rootPath]);
+
+  const handleCopyFolderName = useCallback(() => {
+    if (!rootPath) return;
+    const name = rootPath.split(/[/\\]/).filter(Boolean).pop() ?? '';
+    void navigator.clipboard.writeText(name);
+  }, [rootPath]);
+
   const handleExplorerMouseDownCapture = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
 
@@ -235,8 +261,17 @@ export const FileExplorer: React.FC = () => {
       return;
     }
 
+    // Clear any active file/folder selection when the user clicks on the empty
+    // area inside the explorer content (i.e. not on a tree row, input, button,
+    // or context menu). Mirrors VS Code: clicking the void deselects.
+    const clickedRow =
+      target.closest('[data-file-path]') || target.closest('[data-folder-path]');
+    if (!clickedRow) {
+      selectFile(null);
+    }
+
     explorerContentRef.current?.focus();
-  }, []);
+  }, [selectFile]);
 
   // Get folder name from path
   const folderName = rootPath ? rootPath.split(/[/\\]/).pop() : null;
@@ -249,111 +284,342 @@ export const FileExplorer: React.FC = () => {
     `,
   };
 
+  // Slim, wrapperless icon button used inside the workspace header.
+  const headerIconButtonClass =
+    "flex h-[22px] w-[22px] items-center justify-center rounded-[4px] text-text-disabled transition-colors duration-100";
+
+  const handleWorkspaceContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      if (!hasWorkspace) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setWorkspaceContextMenu({ x: e.clientX, y: e.clientY });
+    },
+    [hasWorkspace],
+  );
+
+  // Right-click on the empty area inside the explorer content → open the
+  // workspace context menu (so users can create files/folders, refresh,
+  // etc. without targeting a specific row). TreeNode rows already call
+  // `e.stopPropagation()` on their own onContextMenu, so this handler
+  // only fires for clicks on the bare scroll container.
+  const handleEmptyAreaContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!hasWorkspace) return;
+      const target = e.target as HTMLElement;
+      // Defensive guard — never fire if the click landed on a row even if
+      // stopPropagation() is removed upstream.
+      if (
+        target.closest('[data-file-path]') ||
+        target.closest('[data-folder-path]')
+      ) {
+        return;
+      }
+      e.preventDefault();
+      // Clear any active selection so the user sees a clean menu against
+      // an unselected canvas (matches VS Code behaviour).
+      selectFile(null);
+      setWorkspaceContextMenu({ x: e.clientX, y: e.clientY });
+    },
+    [hasWorkspace, selectFile],
+  );
+
+  const workspaceMenuItems: MenuItem[] = hasWorkspace
+    ? [
+        { header: "Create" },
+        {
+          label: "New File",
+          icon: <FilePlus className="w-3.5 h-3.5" />,
+          onClick: handleNewFileAtRoot,
+          shortcut: "Ctrl+N",
+        },
+        {
+          label: "New Folder",
+          icon: <FolderPlus className="w-3.5 h-3.5" />,
+          onClick: handleNewFolderAtRoot,
+          shortcut: "Ctrl+Shift+N",
+        },
+        { divider: true },
+        { header: "Workspace" },
+        {
+          label: "Open Folder…",
+          icon: <FolderOpen className="w-3.5 h-3.5" />,
+          onClick: () => { void handleOpenFolder(); },
+        },
+        {
+          label: "Close Folder",
+          icon: <FolderClosed className="w-3.5 h-3.5" />,
+          onClick: handleCloseFolder,
+        },
+        { divider: true },
+        { header: "View" },
+        {
+          label: "Refresh Explorer",
+          icon: <RefreshCw className="w-3.5 h-3.5" />,
+          onClick: () => { void refreshDirectory(); },
+          shortcut: "F5",
+        },
+        {
+          label: "Collapse All Folders",
+          icon: <ChevronsDownUp className="w-3.5 h-3.5" />,
+          onClick: handleCollapseAll,
+        },
+        { divider: true },
+        { header: "Tools" },
+        {
+          label: "Open in External Terminal",
+          icon: <TerminalIcon className="w-3.5 h-3.5" />,
+          onClick: () => { void handleOpenInTerminal(); },
+        },
+        {
+          label: "Reveal in File Manager",
+          icon: <ExternalLink className="w-3.5 h-3.5" />,
+          onClick: () => { void handleRevealInFileManager(); },
+        },
+        { divider: true },
+        {
+          label: "Copy Workspace Path",
+          icon: <Copy className="w-3.5 h-3.5" />,
+          onClick: handleCopyPath,
+        },
+        {
+          label: "Copy Folder Name",
+          icon: <Type className="w-3.5 h-3.5" />,
+          onClick: handleCopyFolderName,
+        },
+      ]
+    : [];
+
   return (
     <div
       className="h-full flex flex-col"
       data-explorer-panel
       style={{
-        backgroundColor: 'color-mix(in srgb, var(--aurora-sidebar-background) 88%, var(--aurora-editor-background) 12%)',
-        boxShadow: 'inset -1px 0 0 color-mix(in srgb, var(--aurora-common-shadow) 10%, transparent)',
+        // Single flat sidebar fill — no editor-bg blend, no inset right shadow.
+        // The result is one cohesive panel surface (matches VS Code), with the
+        // EXPLORER header riding on the same color as the file tree below.
+        backgroundColor: 'var(--aurora-sidebar-background)',
       }}
     >
       {/* Explorer Title Bar */}
       <div
-        className="flex h-10 items-center justify-between border-b px-3 select-none"
+        className="flex h-9 items-center justify-between px-3 select-none"
         style={{
-          backgroundColor: 'color-mix(in srgb, var(--aurora-title-bar-background) 68%, var(--aurora-sidebar-background) 32%)',
-          borderColor: 'color-mix(in srgb, var(--aurora-common-border) 72%, transparent)',
-          boxShadow: 'inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent)',
+          backgroundColor: 'transparent',
         }}
       >
-        <span className="text-[11px] font-bold text-text-secondary uppercase tracking-widest opacity-80">
+        <span
+          className="text-[11px] font-semibold uppercase tracking-[0.14em]"
+          style={{
+            color: 'color-mix(in srgb, var(--aurora-sidebar-foreground) 70%, transparent)',
+          }}
+        >
           Explorer
         </span>
 
-        {/* Menu Button */}
-        <button
-          onClick={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            setMenuPosition({ x: rect.left, y: rect.bottom + 4 });
+        {/* Menu Button — VS Code-style dropdown */}
+        <MenuBarMenu
+          label="Explorer Actions"
+          title="Explorer actions"
+          align="end"
+          menuWidth={250}
+          triggerIcon={<MoreVertical className="w-4 h-4" />}
+          triggerClassName="flex h-7 w-7 items-center justify-center rounded-[6px] text-text-secondary cursor-pointer"
+          triggerStyle={{
+            backgroundColor: 'transparent',
+            transition: 'background-color 120ms ease, color 120ms ease, box-shadow 120ms ease',
           }}
-          className={`flex h-7 w-7 items-center justify-center rounded-xl border transition-all duration-200 ${menuPosition
-            ? 'text-text-primary'
-            : 'text-text-disabled hover:text-text-secondary hover:bg-sidebar-item-hover'
-            }`}
-          style={{
-            backgroundColor: menuPosition
-              ? 'color-mix(in srgb, var(--aurora-common-primary) 10%, var(--aurora-sidebar-item-selected))'
-              : 'transparent',
-            borderColor: menuPosition
-              ? 'color-mix(in srgb, var(--aurora-common-primary) 18%, transparent)'
-              : 'transparent',
-          }}
-          title="More Actions"
-        >
-          <MoreVertical className="w-4 h-4" />
-        </button>
-
-        {menuPosition && (
-          <ContextMenu
-            x={menuPosition.x}
-            y={menuPosition.y}
-            onClose={() => setMenuPosition(null)}
-            items={[
-              ...(hasWorkspace ? [
-                { label: 'New File', icon: <FilePlus className="w-4 h-4" />, onClick: handleNewFileAtRoot },
-                { label: 'New Folder', icon: <FolderPlus className="w-4 h-4" />, onClick: handleNewFolderAtRoot },
-                { divider: true, label: '', onClick: () => { } }
-              ] : []),
-              { label: 'Open Folder...', icon: <FolderOpen className="w-4 h-4" />, onClick: handleOpenFolder },
-              ...(hasWorkspace ? [
-                { label: 'Close Folder', icon: <FolderClosed className="w-4 h-4" />, onClick: handleCloseFolder },
-                { divider: true, label: '', onClick: () => { } },
-                { label: 'Refresh', icon: <RefreshCw className="w-4 h-4" />, onClick: () => { refreshDirectory(); setMenuPosition(null); } },
-                { label: 'Collapse All', icon: <ChevronsDownUp className="w-4 h-4" />, onClick: () => { handleCollapseAll(); setMenuPosition(null); } },
-                { divider: true, label: '', onClick: () => { } },
-                { label: 'Copy Path', icon: <Copy className="w-4 h-4" />, onClick: () => { navigator.clipboard.writeText(rootPath || ''); setMenuPosition(null); } }
-              ] : [])
-            ]}
-          />
-        )}
+          items={
+            hasWorkspace
+              ? ([
+                  { header: 'Workspace' },
+                  {
+                    label: 'New File',
+                    icon: <FilePlus size={13} />,
+                    shortcut: 'Ctrl+N',
+                    onClick: handleNewFileAtRoot,
+                  },
+                  {
+                    label: 'New Folder',
+                    icon: <FolderPlus size={13} />,
+                    onClick: handleNewFolderAtRoot,
+                  },
+                  { divider: true },
+                  {
+                    label: 'Open Folder…',
+                    icon: <FolderOpen size={13} />,
+                    onClick: () => {
+                      void handleOpenFolder();
+                    },
+                  },
+                  {
+                    label: 'Close Folder',
+                    icon: <FolderClosed size={13} />,
+                    onClick: handleCloseFolder,
+                  },
+                  { divider: true },
+                  { header: 'View' },
+                  {
+                    label: 'Refresh Explorer',
+                    icon: <RefreshCw size={13} />,
+                    shortcut: 'F5',
+                    onClick: () => {
+                      void refreshDirectory();
+                    },
+                  },
+                  {
+                    label: 'Collapse All Folders',
+                    icon: <ChevronsDownUp size={13} />,
+                    onClick: handleCollapseAll,
+                  },
+                  { divider: true },
+                  { header: 'Workspace Tools' },
+                  {
+                    label: 'Open in External Terminal',
+                    icon: <TerminalIcon size={13} />,
+                    onClick: () => {
+                      void handleOpenInTerminal();
+                    },
+                  },
+                  {
+                    label: 'Reveal in File Manager',
+                    icon: <ExternalLink size={13} />,
+                    onClick: () => {
+                      void handleRevealInFileManager();
+                    },
+                  },
+                  { divider: true },
+                  {
+                    label: 'Copy Workspace Path',
+                    icon: <Copy size={13} />,
+                    onClick: handleCopyPath,
+                  },
+                  {
+                    label: 'Copy Folder Name',
+                    icon: <Type size={13} />,
+                    onClick: handleCopyFolderName,
+                  },
+                ] satisfies MenuBarItem[])
+              : ([
+                  {
+                    label: 'Open Folder…',
+                    icon: <FolderOpen size={13} />,
+                    onClick: () => {
+                      void handleOpenFolder();
+                    },
+                  },
+                  { divider: true },
+                  {
+                    label: 'No workspace open',
+                    icon: <FileSearch size={13} />,
+                    disabled: true,
+                  },
+                ] satisfies MenuBarItem[])
+          }
+        />
       </div>
 
-      {/* Workspace Header - Folder name + Action Icons */}
+      {/*
+       * Workspace strip
+       * ---------------
+       * Flat single-row chrome (no nested pills) inspired by VS Code's
+       * sticky folder header. Hover lifts the strip; right-click opens
+       * a full workspace context menu with Create / Workspace / View /
+       * Tools sections. Action icons are wrapperless until hover.
+       */}
       {hasWorkspace && (
         <div
-          className="mx-2 mt-2 flex h-8 items-center gap-1 rounded-[14px] px-2.5"
-          style={slimSurfaceStyle}
+          className="group/workspace mx-1 mt-1 flex h-7 items-center gap-1.5 rounded-[5px] pl-2 pr-1 transition-colors duration-100"
+          style={{
+            color: 'var(--aurora-sidebar-foreground)',
+            backgroundColor: 'transparent',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor =
+              'color-mix(in srgb, var(--aurora-sidebar-item-hover, var(--aurora-common-primary)) 35%, transparent)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = 'transparent';
+          }}
           title={rootPath || ''}
+          onContextMenu={handleWorkspaceContextMenu}
         >
-          <ChevronDown className="w-3 h-3 text-text-secondary" />
-          <Folder className="w-3.5 h-3.5 text-warning/80" />
-          <span className="text-[11px] font-medium text-text-primary truncate flex-1 tracking-[0.01em]">
+          <ChevronRight
+            className="w-3 h-3 shrink-0"
+            style={{ opacity: 0.55, transform: 'rotate(90deg)' }}
+          />
+          <Folder
+            className="w-3.5 h-3.5 shrink-0"
+            style={{ color: 'var(--aurora-common-warning, #d29922)', opacity: 0.92 }}
+          />
+          <span
+            className="flex-1 truncate text-[11.5px] font-medium tracking-[0.01em] uppercase"
+            style={{ letterSpacing: '0.04em' }}
+          >
             {folderName}
           </span>
 
-          <div className="flex items-center gap-1 rounded-[11px] px-1 py-0.5" style={slimSurfaceStyle}>
+          {/* Action cluster — opacity ramps on hover so the strip stays calm at idle */}
+          <div className="flex items-center gap-0.5 opacity-70 group-hover/workspace:opacity-100 transition-opacity duration-100">
             <button
+              type="button"
               onClick={handleNewFileAtRoot}
-              className="flex h-5 w-5 items-center justify-center rounded-md text-text-disabled transition-colors hover:text-text-primary"
+              className={headerIconButtonClass}
               title="New File"
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor =
+                  'color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)';
+                e.currentTarget.style.color = 'var(--aurora-editor-foreground)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = 'transparent';
+                e.currentTarget.style.color = '';
+              }}
             >
               <FilePlus className="w-3.5 h-3.5" />
             </button>
             <button
+              type="button"
               onClick={handleNewFolderAtRoot}
-              className="flex h-5 w-5 items-center justify-center rounded-md text-text-disabled transition-colors hover:text-text-primary"
+              className={headerIconButtonClass}
               title="New Folder"
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor =
+                  'color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)';
+                e.currentTarget.style.color = 'var(--aurora-editor-foreground)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = 'transparent';
+                e.currentTarget.style.color = '';
+              }}
             >
               <FolderPlus className="w-3.5 h-3.5" />
             </button>
             <button
+              type="button"
               onClick={() => setShowSearch(!showSearch)}
-              className={`flex h-5 w-5 items-center justify-center rounded-md transition-colors ${showSearch ? 'text-primary' : 'text-text-disabled hover:text-text-primary'}`}
-              style={showSearch ? {
-                backgroundColor: 'color-mix(in srgb, var(--aurora-common-primary) 12%, transparent)',
-              } : undefined}
+              className={headerIconButtonClass}
               title="Search"
+              style={
+                showSearch
+                  ? {
+                      backgroundColor:
+                        'color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)',
+                      color: 'var(--aurora-common-primary)',
+                    }
+                  : undefined
+              }
+              onMouseEnter={(e) => {
+                if (showSearch) return;
+                e.currentTarget.style.backgroundColor =
+                  'color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)';
+                e.currentTarget.style.color = 'var(--aurora-editor-foreground)';
+              }}
+              onMouseLeave={(e) => {
+                if (showSearch) return;
+                e.currentTarget.style.backgroundColor = 'transparent';
+                e.currentTarget.style.color = '';
+              }}
             >
               <Search className="w-3.5 h-3.5" />
             </button>
@@ -361,24 +627,71 @@ export const FileExplorer: React.FC = () => {
         </div>
       )}
 
-      {/* Search bar */}
+      {/*
+       * Filter bar
+       * Slim, single-row text field; theme-aware focus ring driven entirely
+       * by `--aurora-common-primary` and `--aurora-common-border`.
+       */}
       {showSearch && hasWorkspace && (
-        <div className="px-2 pb-2 pt-1 animate-in slide-in-from-top-2 duration-200">
-          <div className="relative group">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-disabled group-focus-within:text-primary transition-colors" />
+        <div className="px-2 pb-1.5 pt-1 animate-in slide-in-from-top-2 duration-150">
+          <div
+            className="relative group flex items-center"
+            style={{ height: 26 }}
+          >
+            <Search
+              className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 transition-colors"
+              style={{
+                color: 'color-mix(in srgb, var(--aurora-editor-foreground) 50%, transparent)',
+              }}
+            />
             <input
               ref={searchInputRef}
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search files..."
-              className="w-full rounded-[14px] border px-8 py-2 text-[12px] text-text-primary placeholder:text-text-disabled transition-all focus:outline-none"
-              style={slimSurfaceStyle}
+              placeholder="Filter files…"
+              className="w-full rounded-[5px] pl-7 pr-7 text-[12px] focus:outline-none"
+              style={{
+                height: 26,
+                backgroundColor:
+                  'color-mix(in srgb, var(--aurora-chat-input-background, var(--aurora-sidebar-background)) 85%, transparent)',
+                color: 'var(--aurora-editor-foreground)',
+                border:
+                  '1px solid color-mix(in srgb, var(--aurora-common-border) 60%, transparent)',
+                transition: 'border-color 120ms ease, box-shadow 120ms ease',
+              }}
+              onFocus={(e) => {
+                e.currentTarget.style.borderColor =
+                  'color-mix(in srgb, var(--aurora-common-primary) 55%, transparent)';
+                e.currentTarget.style.boxShadow =
+                  '0 0 0 2px color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)';
+              }}
+              onBlur={(e) => {
+                e.currentTarget.style.borderColor =
+                  'color-mix(in srgb, var(--aurora-common-border) 60%, transparent)';
+                e.currentTarget.style.boxShadow = 'none';
+              }}
             />
             {searchQuery && (
               <button
+                type="button"
                 onClick={() => setSearchQuery('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-text-disabled transition-colors hover:text-text-primary hover:bg-sidebar-item-hover"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 flex h-4 w-4 items-center justify-center rounded-[3px] transition-colors"
+                style={{
+                  color:
+                    'color-mix(in srgb, var(--aurora-editor-foreground) 50%, transparent)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor =
+                    'color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)';
+                  e.currentTarget.style.color = 'var(--aurora-editor-foreground)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = 'transparent';
+                  e.currentTarget.style.color =
+                    'color-mix(in srgb, var(--aurora-editor-foreground) 50%, transparent)';
+                }}
+                title="Clear filter"
               >
                 <X className="w-3 h-3" />
               </button>
@@ -387,12 +700,18 @@ export const FileExplorer: React.FC = () => {
         </div>
       )}
 
-      {/* Content area - drop zone for moving files to root */}
+      {/* Content area - drop zone for moving files to root.
+          We intentionally use tabIndex=-1 + .focus() so keyboard nav inside
+          the tree works, but we MUST suppress the browser's default 2px
+          focus outline (otherwise an enormous rectangle frames the entire
+          empty area whenever the user clicks the void). */}
       <div
-        className={`flex-1 overflow-y-auto ${isDropTargetRoot ? 'bg-primary/10 ring-1 ring-primary/30 ring-inset' : ''}`}
+        className={`flex-1 overflow-y-auto scrollbar-thin outline-none focus:outline-none focus-visible:outline-none ${isDropTargetRoot ? 'bg-primary/10 ring-1 ring-primary/30 ring-inset' : ''}`}
         ref={explorerContentRef}
         tabIndex={-1}
+        style={{ outline: 'none' }}
         onMouseDownCapture={handleExplorerMouseDownCapture}
+        onContextMenu={handleEmptyAreaContextMenu}
         data-explorer-content
       >
         {hasWorkspace ? (
@@ -537,6 +856,16 @@ export const FileExplorer: React.FC = () => {
           </div>
         )}
       </div>
+
+      {workspaceContextMenu && (
+        <ContextMenu
+          x={workspaceContextMenu.x}
+          y={workspaceContextMenu.y}
+          items={workspaceMenuItems}
+          minWidth={240}
+          onClose={() => setWorkspaceContextMenu(null)}
+        />
+      )}
     </div>
   );
 };

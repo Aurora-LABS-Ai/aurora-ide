@@ -46,11 +46,15 @@ chrono = { version = "0.4", features = ["serde"] }
 # Diff library for comparing file changes
 similar = "2"
 
-# Semantic search engine — CUDA via `default`/ `cuda` feature; CI uses `--no-default-features --features cpu-only`
-aurora-semantic = { version = "1.2.1", default-features = false }
+# Semantic search engine — local native Aurora IDE integration.
+aurora-semantic = { path = "../../aurora-semantic", default-features = false }
 
 # https://crates.io/crates/aurora_websearch
 aurora_websearch = "0.1.0"
+
+# Native Qwen3-ASR speech recognition. Default build is CPU-only; CUDA builds opt in via Aurora's `cuda` feature.
+qwen3-asr = { version = "0.2.2", default-features = false }
+candle-core = { version = "0.9.2", default-features = false }
 
 # Lazy static for singleton patterns
 lazy_static = "1.4"
@@ -90,6 +94,16 @@ single-instance = "0.3"
 winreg = "0.55"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
+[patch.crates-io]
+# tokenizers enables esaxx-rs/cpp by default. The upstream esaxx-rs build uses
+# the static MSVC CRT, which conflicts with cxx's dynamic CRT when Aurora links
+# its Tauri cdylib. Keep the crate source identical except for dynamic CRT.
+esaxx-rs = { path = "../vendor/esaxx-rs" }
+# candle-kernels builds its CUDA MOE archive with the static MSVC CRT by default.
+# Aurora links a Tauri cdylib with dynamic CRT dependencies, so keep the crate
+# source identical except for passing /MD to nvcc's host compiler on MSVC.
+candle-kernels = { path = "../vendor/candle-kernels" }
+
 [features]
 # Default: CPU-only for maximum compatibility out of the box.
 # Opt in to GPU acceleration for semantic search if available:
@@ -99,7 +113,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shel
 default = ["cpu-only"]
 
 # GPU acceleration features (pass through to aurora-semantic)
-cuda = ["aurora-semantic/cuda"]
+cuda = ["aurora-semantic/cuda", "qwen3-asr/cuda", "candle-core/cuda"]
 tensorrt = ["aurora-semantic/tensorrt"]
 directml = ["aurora-semantic/directml"]
 coreml = ["aurora-semantic/coreml"]

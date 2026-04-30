@@ -147,12 +147,13 @@ export function useSmoothAutoScroll(
       const currentHeight = container.scrollHeight;
       const grew = currentHeight > previousHeightRef.current;
 
-      if (grew && isNearBottomRef.current) {
-        if (isStreaming) {
-          startFollowAnimation();
-        } else {
-          scrollToBottom("smooth");
-        }
+      // Only auto-follow growth while the assistant is actively streaming new
+      // tokens. When streaming has stopped, growth comes from the user
+      // expanding a thinking dropdown / tool card / etc. — those expansions
+      // must NEVER yank the viewport. The user is reading, not asking us to
+      // chase the bottom.
+      if (grew && isNearBottomRef.current && isStreaming) {
+        startFollowAnimation();
       }
 
       previousHeightRef.current = currentHeight;
@@ -163,7 +164,7 @@ export function useSmoothAutoScroll(
     return () => {
       observer.disconnect();
     };
-  }, [isStreaming, scrollToBottom, startFollowAnimation]);
+  }, [isStreaming, startFollowAnimation]);
 
   useEffect(() => {
     if (initialScrollBehavior === "auto") {

@@ -20,6 +20,7 @@ dist-ssr
 void-main
 # Tauri build artifacts
 src-tauri/target/
+src-tauri/crispasr-runtime/
 # Note: Cargo.lock should be committed for applications
 AGENTS.md
 docs-lm-studio
@@ -76,3 +77,4 @@ desktop.ini
 *.tmp
 *.temp
 nul
+.gitnexus

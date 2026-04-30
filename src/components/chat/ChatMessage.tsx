@@ -34,6 +34,7 @@ import { getLanguageFromExtension } from '../../lib/file-utils';
 import { FileIcon } from '../explorer/FileIcons';
 import { User, Copy, Check, BookOpen, Zap } from 'lucide-react';
 import { getProfessionalToolName } from '../../services/tool-display';
+import { Tooltip } from '../ui/Tooltip';
 
 // Copy button component with feedback
 const CopyButton: React.FC<{ text: string; className?: string }> = ({ text, className = '' }) => {
@@ -51,17 +52,18 @@ const CopyButton: React.FC<{ text: string; className?: string }> = ({ text, clas
   }, [text]);
 
   return (
-    <button
-      onClick={handleCopy}
-      className={`p-1 rounded hover:bg-sidebar-item-hover transition-all ${className}`}
-      title={copied ? 'Copied!' : 'Copy message'}
-    >
-      {copied ? (
-        <Check className="w-3.5 h-3.5 text-success" />
-      ) : (
-        <Copy className="w-3.5 h-3.5 text-text-disabled hover:text-text-primary" />
-      )}
-    </button>
+    <Tooltip label={copied ? 'Copied!' : 'Copy message'}>
+      <button
+        onClick={handleCopy}
+        className={`p-1 rounded hover:bg-sidebar-item-hover transition-all ${className}`}
+      >
+        {copied ? (
+          <Check className="w-3.5 h-3.5 text-success" />
+        ) : (
+          <Copy className="w-3.5 h-3.5 text-text-disabled hover:text-text-primary" />
+        )}
+      </button>
+    </Tooltip>
   );
 };
 
@@ -166,6 +168,7 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
     const hasAttachedFiles = message.attachedFiles && message.attachedFiles.length > 0;
     const hasAttachedAssets = message.attachedPromptAssets && message.attachedPromptAssets.length > 0;
     const hasAttachments = hasAttachedFiles || hasAttachedAssets;
+    const hasTextContent = message.content.trim().length > 0;
 
     const handleAttachedFileClick = async (file: { path: string; name: string }) => {
       try {
@@ -186,11 +189,28 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
       >
         <div className="max-w-[85%] flex flex-col items-end min-w-0">
           <div className="flex gap-3 flex-row-reverse min-w-0 w-full">
-            <div className="w-8 h-8 rounded-lg bg-input flex items-center justify-center shrink-0">
+            {/* Avatar — bound to the dedicated user-message token so theme
+                editor changes to Chat → User Message recolour ONLY the
+                user's bubble + avatar, with no spillover into inputs. */}
+            <div
+              className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+              style={{
+                background: 'var(--aurora-chat-user-message)',
+              }}
+            >
               <User className="w-4 h-4 text-text-secondary" />
             </div>
 
-            <div className="bg-input text-text-primary rounded-2xl rounded-tr-sm px-4 py-2.5 border border-border shadow-sm min-w-0 max-w-full overflow-hidden">
+            {/* User bubble — same dedicated token. The fallback to
+                chat-input-background preserves visual parity if a custom
+                theme didn't define the user-message colour. */}
+            <div
+              className="text-text-primary rounded-2xl rounded-tr-sm px-4 py-2.5 border border-border shadow-sm min-w-0 max-w-full overflow-hidden"
+              style={{
+                background:
+                  'var(--aurora-chat-user-message, var(--aurora-chat-input-background))',
+              }}
+            >
               {/* Attachment chips */}
               {hasAttachments && (
                 <div className="flex flex-wrap gap-1.5 mb-2">
@@ -241,9 +261,11 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
                   ))}
                 </div>
               )}
-              <p className="whitespace-pre-wrap break-words text-[14px] leading-[1.6] font-normal tracking-[0.01em] text-text-primary select-text cursor-text overflow-wrap-anywhere" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                {message.content}
-              </p>
+              {hasTextContent && (
+                <p className="whitespace-pre-wrap break-words text-[14px] leading-[1.6] font-normal tracking-[0.01em] text-text-primary select-text cursor-text overflow-wrap-anywhere" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                  {message.content}
+                </p>
+              )}
             </div>
           </div>
           {/* Copy button, checkpoint, and timestamp - visible on hover */}

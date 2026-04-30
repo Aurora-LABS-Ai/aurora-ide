@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import clsx from 'clsx';
-import { BookOpen, Check, FolderOpen, RefreshCw, Sparkles } from 'lucide-react';
+import { BookOpen, Check, FolderOpen, RefreshCw } from 'lucide-react';
 
-import { TogglePill } from '../ui/TogglePill';
+import { IdeSwitch } from '../ui/IdeSwitch';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import {
@@ -12,126 +12,153 @@ import {
   loadWorkspaceSkills,
   type SkillDefinition,
 } from '../../services/skills';
-import { settingsCardStyle, settingsPrimaryButtonStyle, settingsSubtlePanelStyle } from './settings-shared';
+import {
+  Section,
+  FormRow,
+  FormBlock,
+  StatusPill,
+  ActionButton,
+} from './settings-primitives';
+import { settingsRowDividerColor } from './settings-shared';
 
 type SkillsScope = 'project' | 'global';
 
 const getScopeMeta = (scope: SkillsScope) =>
   scope === 'project'
     ? {
-        author: 'Workspace Skills',
+        author: 'Workspace',
         badge: 'project',
         Icon: FolderOpen,
       }
     : {
-        author: 'Global Skills',
+        author: 'Global',
         badge: 'global',
         Icon: BookOpen,
       };
 
-const SkillCard: React.FC<{
+interface SkillRowProps {
   disabled: boolean;
   onToggle: (skill: SkillDefinition, enabled: boolean) => void;
   skill: SkillDefinition;
   skillToggles: Record<string, boolean>;
-}> = ({ disabled, onToggle, skill, skillToggles }) => {
+  isLast: boolean;
+}
+
+const SkillRow: React.FC<SkillRowProps> = ({
+  disabled,
+  onToggle,
+  skill,
+  skillToggles,
+  isLast,
+}) => {
   const enabled = isSkillEnabled(skill, skillToggles, true);
   const scope = skill.source === 'workspace' ? 'project' : 'global';
-  const { author, badge, Icon } = getScopeMeta(scope);
+  const { Icon } = getScopeMeta(scope);
 
   return (
-    <div className="flex h-full flex-col justify-between rounded-[20px] p-4" style={settingsCardStyle}>
-      <div>
-        <div className="flex items-start justify-between mb-2 gap-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-              <Icon className="w-4 h-4" />
-            </div>
-            <div className="min-w-0">
-              <h4 className="text-xs font-medium text-text-primary truncate">{skill.name}</h4>
-              <p className="text-[9px] text-text-secondary">by {author}</p>
-            </div>
-          </div>
+    <div
+      className="flex items-center gap-3 px-4 py-3"
+      style={
+        !isLast
+          ? { borderBottom: `1px solid ${settingsRowDividerColor}` }
+          : undefined
+      }
+    >
+      <div
+        className="flex h-7 w-7 shrink-0 items-center justify-center"
+        style={{
+          backgroundColor:
+            'color-mix(in srgb, var(--aurora-common-primary) 12%, transparent)',
+          color: 'var(--aurora-common-primary)',
+          borderRadius: 4,
+        }}
+      >
+        <Icon className="h-3.5 w-3.5" />
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="truncate text-[12.5px] font-medium leading-snug text-text-primary">
+            {skill.name}
+          </p>
           {enabled && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded bg-success/10 text-success flex items-center gap-1 shrink-0">
-              <Check className="w-2.5 h-2.5" />
-              Enabled
+            <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-success">
+              <Check className="h-2.5 w-2.5" />
+              On
             </span>
           )}
         </div>
-
-        <p className="text-[10px] text-text-secondary leading-relaxed mb-3 min-h-8 line-clamp-2">
+        <p className="mt-0.5 line-clamp-1 text-[11px] leading-snug text-text-secondary">
           {skill.description}
         </p>
-
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-            <span className="rounded-full border border-border bg-input px-1.5 py-0.5 font-mono text-[9px] text-text-secondary">
-            {badge}
-          </span>
-            <span className="max-w-[140px] truncate rounded-full border border-border bg-input px-1.5 py-0.5 font-mono text-[9px] text-text-disabled">
+        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+          <span
+            className="inline-flex items-center px-1.5 py-0.5 font-mono text-[10px] text-text-disabled"
+            style={{
+              backgroundColor:
+                'color-mix(in srgb, var(--aurora-editor-foreground) 5%, transparent)',
+              border:
+                '1px solid color-mix(in srgb, var(--aurora-common-border) 50%, transparent)',
+              borderRadius: 3,
+            }}
+          >
             {skill.id}
           </span>
           {skill.triggers.length > 0 && (
-            <span className="rounded-full border border-border bg-input px-1.5 py-0.5 text-[9px] text-text-disabled">
+            <span className="text-[10px] text-text-disabled">
               {skill.triggers.length} trigger{skill.triggers.length === 1 ? '' : 's'}
             </span>
           )}
         </div>
-
-        {skill.sourcePath && (
-          <p className="text-[9px] text-text-disabled leading-relaxed break-all line-clamp-2">
-            {skill.sourcePath}
-          </p>
-        )}
       </div>
 
-      <div
-        className={clsx(
-          'mt-3 flex items-center justify-between gap-2 rounded-[16px] border px-3 py-2 text-[10px] font-medium transition-colors',
-          enabled
-            ? 'border-success/20 bg-success/5 text-text-primary'
-            : 'text-text-secondary',
-          disabled && 'opacity-90'
-        )}
-        style={!enabled ? settingsSubtlePanelStyle : undefined}
-      >
-        <span>{enabled ? 'Enabled' : 'Disabled'}</span>
-        <TogglePill
+      <div className="shrink-0">
+        <IdeSwitch
           checked={enabled}
           onChange={(checked) => onToggle(skill, checked)}
           ariaLabel={`Toggle ${skill.name}`}
           disabled={disabled}
           size="sm"
+          variant="primary"
         />
       </div>
     </div>
   );
 };
 
-const SkillList: React.FC<{
+interface SkillListProps {
   emptyMessage: string;
   skills: SkillDefinition[];
   disabled: boolean;
   onToggle: (skill: SkillDefinition, enabled: boolean) => void;
   skillToggles: Record<string, boolean>;
-}> = ({ emptyMessage, skills, disabled, onToggle, skillToggles }) => {
+}
+
+const SkillList: React.FC<SkillListProps> = ({
+  emptyMessage,
+  skills,
+  disabled,
+  onToggle,
+  skillToggles,
+}) => {
   if (skills.length === 0) {
     return (
-      <div className="rounded-[20px] border border-dashed border-border px-3 py-6 text-center text-xs text-text-secondary" style={settingsCardStyle}>
-        {emptyMessage}
-      </div>
+      <FormBlock divided={false}>
+        <p className="text-center text-[11.5px] text-text-secondary">{emptyMessage}</p>
+      </FormBlock>
     );
   }
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-      {skills.map((skill) => (
-        <SkillCard
+    <div>
+      {skills.map((skill, index) => (
+        <SkillRow
           key={skill.storageKey}
           skill={skill}
           disabled={disabled}
           onToggle={onToggle}
           skillToggles={skillToggles}
+          isLast={index === skills.length - 1}
         />
       ))}
     </div>
@@ -150,16 +177,13 @@ export const SkillsSettingsTab: React.FC = () => {
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
-
     try {
       const [loadedProjectSkills, resolvedGlobalPath] = await Promise.all([
         loadWorkspaceSkills(rootPath),
         getResolvedGlobalSkillsPath(),
       ]);
-
       setProjectSkills(loadedProjectSkills);
       setGlobalSkillsPath(resolvedGlobalPath);
-
       const loadedGlobalSkills = await loadGlobalSkills(resolvedGlobalPath);
       setGlobalSkills(loadedGlobalSkills);
     } finally {
@@ -169,38 +193,24 @@ export const SkillsSettingsTab: React.FC = () => {
 
   useEffect(() => {
     let isActive = true;
-
     const loadSkills = async () => {
       setIsRefreshing(true);
-
       try {
         const [loadedProjectSkills, resolvedGlobalPath] = await Promise.all([
           loadWorkspaceSkills(rootPath),
           getResolvedGlobalSkillsPath(),
         ]);
-
-        if (!isActive) {
-          return;
-        }
-
+        if (!isActive) return;
         setProjectSkills(loadedProjectSkills);
         setGlobalSkillsPath(resolvedGlobalPath);
-
         const loadedGlobalSkills = await loadGlobalSkills(resolvedGlobalPath);
-        if (!isActive) {
-          return;
-        }
-
+        if (!isActive) return;
         setGlobalSkills(loadedGlobalSkills);
       } finally {
-        if (isActive) {
-          setIsRefreshing(false);
-        }
+        if (isActive) setIsRefreshing(false);
       }
     };
-
     void loadSkills();
-
     return () => {
       isActive = false;
     };
@@ -210,109 +220,151 @@ export const SkillsSettingsTab: React.FC = () => {
     setSkillEnabled(skill.storageKey, enabled);
   };
 
-  const scopeButtonClass = (scope: SkillsScope): string =>
-    clsx(
-      'rounded-xl px-3 py-2 text-xs transition-colors',
+  const scopeButtonStyle = (scope: SkillsScope): React.CSSProperties => ({
+    backgroundColor:
       activeScope === scope
-        ? 'bg-primary/10 font-medium text-primary'
-        : 'text-text-secondary hover:text-text-primary'
-    );
+        ? 'color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)'
+        : 'transparent',
+    border:
+      activeScope === scope
+        ? '1px solid color-mix(in srgb, var(--aurora-common-primary) 32%, transparent)'
+        : '1px solid transparent',
+    color:
+      activeScope === scope
+        ? 'var(--aurora-common-primary)'
+        : 'var(--aurora-text-secondary, var(--aurora-editor-foreground))',
+    borderRadius: 4,
+  });
+
+  const activeSkills = activeScope === 'project' ? projectSkills : globalSkills;
+  const enabledCount = activeSkills.filter((s) => isSkillEnabled(s, skillToggles, true)).length;
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-primary" />
-              <h3 className="text-sm font-medium text-text-primary">Skills</h3>
-            </div>
-            <p className="mt-1 text-xs text-text-secondary">
-              Enabled skills are the only external skill instructions Aurora injects into agent requests.
-            </p>
-          </div>
-          <TogglePill
+    <div className="space-y-6 pb-2">
+      {/* ============================================================ */}
+      {/* Master switch                                                 */}
+      {/* ============================================================ */}
+      <Section
+        title="Skills System"
+        description="Enabled skills are the only external skill instructions Aurora injects into agent requests."
+        badge={
+          skillsEnabled ? (
+            <StatusPill variant="success">Enabled</StatusPill>
+          ) : (
+            <StatusPill variant="neutral">Disabled</StatusPill>
+          )
+        }
+      >
+        <FormRow
+          label="Master switch"
+          hint="Per-skill toggles stay visible when off, but Aurora will not inject any skill content."
+        >
+          <IdeSwitch
             checked={skillsEnabled}
             onChange={setSkillsEnabled}
             ariaLabel="Toggle skill system"
-            size="md"
-            className="shrink-0"
+            variant="primary"
+            size="sm"
           />
-        </div>
-        {!skillsEnabled && (
-          <div className="mt-4 rounded-[16px] px-3 py-3 text-[11px] text-text-secondary" style={settingsSubtlePanelStyle}>
-            Per-skill toggles stay visible while the skill system is off. Re-enable the master switch above to make those toggles active again.
-          </div>
-        )}
-      </div>
+        </FormRow>
+      </Section>
 
-      <div className="rounded-[20px] p-4" style={settingsCardStyle}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 rounded-2xl p-1" style={settingsSubtlePanelStyle}>
-            <button type="button" onClick={() => setActiveScope('project')} className={scopeButtonClass('project')}>
+      {/* ============================================================ */}
+      {/* Skill scope tabs                                              */}
+      {/* ============================================================ */}
+      <Section
+        title="Available Skills"
+        description="Skills loaded from the project's .aurora/skills folder and the global Aurora skills folder."
+        badge={
+          <StatusPill variant="info" dot={false}>
+            {enabledCount} / {activeSkills.length} on
+          </StatusPill>
+        }
+      >
+        {/* Scope toggle + refresh */}
+        <div
+          className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5"
+          style={{
+            borderBottom: `1px solid ${settingsRowDividerColor}`,
+            backgroundColor:
+              'color-mix(in srgb, var(--aurora-sidebar-background) 40%, transparent)',
+          }}
+        >
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setActiveScope('project')}
+              className="h-7 px-3 text-[11.5px] font-semibold transition-colors"
+              style={scopeButtonStyle('project')}
+            >
               Project
             </button>
-            <button type="button" onClick={() => setActiveScope('global')} className={scopeButtonClass('global')}>
+            <button
+              type="button"
+              onClick={() => setActiveScope('global')}
+              className="h-7 px-3 text-[11.5px] font-semibold transition-colors"
+              style={scopeButtonStyle('global')}
+            >
               Global
             </button>
           </div>
-
-          <button
-            type="button"
+          <ActionButton
+            variant="secondary"
+            icon={
+              <RefreshCw
+                className={clsx('h-3 w-3', isRefreshing && 'animate-spin')}
+              />
+            }
             onClick={() => void handleRefresh()}
             disabled={isRefreshing}
-            className="inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium text-primary-foreground transition-colors disabled:opacity-60"
-            style={settingsPrimaryButtonStyle}
           >
-            <RefreshCw className={clsx('h-3.5 w-3.5', isRefreshing && 'animate-spin')} />
             Refresh
-          </button>
+          </ActionButton>
         </div>
 
-        {activeScope === 'project' && (
-          <div className="mt-4 space-y-3">
-            <div className="rounded-[18px] p-3" style={settingsSubtlePanelStyle}>
-              <div className="flex items-center gap-2">
-                <FolderOpen className="h-3.5 w-3.5 text-text-secondary" />
-                <p className="text-xs font-medium text-text-primary">Project skill root</p>
-              </div>
-              <p className="mt-2 break-all text-[11px] text-text-secondary">
-                {rootPath ? `${rootPath.replace(/\\/g, '/')}/.aurora/skills` : 'Open a workspace to load project skills.'}
-              </p>
-            </div>
+        {/* Skill folder hint */}
+        <div
+          className="px-4 py-2.5"
+          style={{
+            borderBottom: `1px solid ${settingsRowDividerColor}`,
+          }}
+        >
+          <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-text-disabled">
+            {activeScope === 'project' ? 'Project skill root' : 'Global skill root'}
+          </p>
+          <p
+            className="mt-1 break-all font-mono text-[11px] leading-snug text-text-secondary"
+            title={
+              activeScope === 'project'
+                ? rootPath
+                  ? `${rootPath.replace(/\\/g, '/')}/.aurora/skills`
+                  : ''
+                : globalSkillsPath ?? ''
+            }
+          >
+            {activeScope === 'project'
+              ? rootPath
+                ? `${rootPath.replace(/\\/g, '/')}/.aurora/skills`
+                : 'Open a workspace to load project skills.'
+              : (globalSkillsPath ?? 'Global skills path is unavailable in this runtime.')}
+          </p>
+        </div>
 
-            <SkillList
-              emptyMessage={rootPath ? 'No project skills found in .aurora/skills.' : 'Open a workspace to inspect project skills.'}
-              skills={projectSkills}
-              disabled={!skillsEnabled}
-              onToggle={handleToggle}
-              skillToggles={skillToggles}
-            />
-          </div>
-        )}
-
-        {activeScope === 'global' && (
-          <div className="mt-4 space-y-3">
-            <div className="rounded-[18px] p-3" style={settingsSubtlePanelStyle}>
-              <div className="flex items-center gap-2">
-                <BookOpen className="h-3.5 w-3.5 text-text-secondary" />
-                <p className="text-xs font-medium text-text-primary">Global skill root</p>
-              </div>
-              <p className="mt-2 break-all text-[11px] text-text-secondary">
-                {globalSkillsPath ?? 'Global skills path is unavailable in this runtime.'}
-              </p>
-            </div>
-
-            <SkillList
-              emptyMessage="No global skills found in the global skills directory."
-              skills={globalSkills}
-              disabled={!skillsEnabled}
-              onToggle={handleToggle}
-              skillToggles={skillToggles}
-            />
-          </div>
-        )}
-      </div>
+        {/* Skill list */}
+        <SkillList
+          emptyMessage={
+            activeScope === 'project'
+              ? rootPath
+                ? 'No project skills found in .aurora/skills.'
+                : 'Open a workspace to inspect project skills.'
+              : 'No global skills found in the global skills directory.'
+          }
+          skills={activeSkills}
+          disabled={!skillsEnabled}
+          onToggle={handleToggle}
+          skillToggles={skillToggles}
+        />
+      </Section>
     </div>
   );
 };

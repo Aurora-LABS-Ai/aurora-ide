@@ -2,9 +2,10 @@
  * Git Service
  * Frontend wrapper for Rust git commands via Tauri
  */
-import { invoke } from "@tauri-apps/api/core";
-
-import { isTauri } from "../lib/tauri";
+import {
+  auroraInvoke as invoke,
+  isAuroraRuntimeAvailable,
+} from "../lib/runtime";
 
 export interface BranchResult {
   branches: GitBranch[];
@@ -56,8 +57,8 @@ class GitService {
    * Checkout a branch
    */
   public async checkout(workspacePath: string, branch: string): Promise<void> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     await invoke('git_checkout', { workspacePath, branch });
   }
@@ -66,8 +67,8 @@ class GitService {
    * Create a commit
    */
   public async commit(workspacePath: string, message: string): Promise<string> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     return await invoke<string>('git_commit', { workspacePath, message });
   }
@@ -76,8 +77,8 @@ class GitService {
    * Create a new branch
    */
   public async createBranch(workspacePath: string, name: string): Promise<void> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     await invoke('git_create_branch', { workspacePath, name });
   }
@@ -86,8 +87,8 @@ class GitService {
    * Discard changes in a file
    */
   public async discardChanges(workspacePath: string, filePath: string): Promise<void> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     await invoke('git_discard_changes', { workspacePath, filePath });
   }
@@ -96,8 +97,8 @@ class GitService {
    * Get all branches (local and remote)
    */
   public async getBranches(workspacePath: string): Promise<BranchResult> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     return await invoke<BranchResult>('git_get_branches', { workspacePath });
   }
@@ -106,8 +107,8 @@ class GitService {
    * Get commit history
    */
   public async getCommits(workspacePath: string, limit: number = 50): Promise<GitCommit[]> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     return await invoke<GitCommit[]>('git_get_commits', { workspacePath, limit });
   }
@@ -116,8 +117,8 @@ class GitService {
    * Get current branch name
    */
   public async getCurrentBranch(workspacePath: string): Promise<string> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     return await invoke<string>('git_current_branch', { workspacePath });
   }
@@ -126,8 +127,8 @@ class GitService {
    * Get diff for a file
    */
   public async getDiff(workspacePath: string, filePath: string, staged: boolean = false): Promise<string> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     return await invoke<string>('git_get_diff', { workspacePath, filePath, staged });
   }
@@ -141,8 +142,8 @@ class GitService {
     staged: boolean = false,
     oldPath?: string
   ): Promise<GitFileVersions> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     return await invoke<GitFileVersions>('git_get_file_versions', {
       workspacePath,
@@ -156,8 +157,8 @@ class GitService {
    * Get current git status (staged, unstaged, untracked files)
    */
   public async getStatus(workspacePath: string): Promise<GitStatus> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     return await invoke<GitStatus>('git_get_status', { workspacePath });
   }
@@ -166,7 +167,7 @@ class GitService {
    * Check if directory is a git repository
    */
   public async isGitRepository(workspacePath: string): Promise<boolean> {
-    if (!isTauri()) return false;
+    if (!isAuroraRuntimeAvailable()) return false;
     try {
       return await invoke<boolean>('git_is_repository', { workspacePath });
     } catch {
@@ -178,8 +179,8 @@ class GitService {
    * Pull from remote
    */
   public async pull(workspacePath: string): Promise<void> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     await invoke('git_pull', { workspacePath });
   }
@@ -188,8 +189,8 @@ class GitService {
    * Push to remote
    */
   public async push(workspacePath: string): Promise<void> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     await invoke('git_push', { workspacePath });
   }
@@ -198,8 +199,8 @@ class GitService {
    * Stage all changes
    */
   public async stageAll(workspacePath: string): Promise<void> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     await invoke('git_stage_all', { workspacePath });
   }
@@ -208,8 +209,8 @@ class GitService {
    * Stage a file for commit
    */
   public async stageFile(workspacePath: string, filePath: string): Promise<void> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     await invoke('git_stage_file', { workspacePath, filePath });
   }
@@ -218,8 +219,8 @@ class GitService {
    * Unstage all changes
    */
   public async unstageAll(workspacePath: string): Promise<void> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     await invoke('git_unstage_all', { workspacePath });
   }
@@ -228,8 +229,8 @@ class GitService {
    * Unstage a file
    */
   public async unstageFile(workspacePath: string, filePath: string): Promise<void> {
-    if (!isTauri()) {
-      throw new Error('Git operations require desktop app');
+    if (!isAuroraRuntimeAvailable()) {
+      throw new Error('Git operations require an Aurora runtime');
     }
     await invoke('git_unstage_file', { workspacePath, filePath });
   }

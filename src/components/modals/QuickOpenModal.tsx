@@ -53,17 +53,47 @@ export const QuickOpenModal: React.FC<{ isOpen: boolean; onClose: () => void }> 
     const [results, setResults] = useState<string[]>([]);
     const [allFilePaths, setAllFilePaths] = useState<string[]>([]);
 
-    useEffect(() => {
-        if (isOpen) {
-            setQuery('');
-            setSelectedIndex(0);
-            setTimeout(() => inputRef.current?.focus(), 50);
+    // ────────────────────────────────────────────────────────────────────
+    // ⚠️  CRITICAL: keep these effects SEPARATE.
+    //
+    // Bug we fixed: the original code combined "reset on open" and
+    // "rebuild file list when workspace changes" into one effect with
+    // deps [isOpen, files]. The workspace store re-emits a fresh `files`
+    // reference very frequently (filesystem watcher, refresh, expand
+    // collapse, etc.), which made the effect fire constantly while the
+    // modal was open — and every fire called `setSelectedIndex(0)`,
+    // snapping the selection back to the top file regardless of
+    // ArrowDown/ArrowUp or mouse hover. (Symptom: highlighted row never
+    // moves; hover paints a normal hover bg on a *different* row.)
+    //
+    // Splitting the concerns: the open transition resets cursor/query;
+    // file changes only update the path index, never the selection.
+    // ────────────────────────────────────────────────────────────────────
 
-            // Flatten current workspace files for search
-            const paths = flattenFiles(files);
-            setAllFilePaths(paths);
-            setResults(paths.slice(0, 50)); // Show initial list
-        }
+    // (1) Reset cursor + query and focus the input ONLY when isOpen flips
+    //     from false → true. Decoupled from `files` deliberately.
+    useEffect(() => {
+        if (!isOpen) return;
+        setQuery('');
+        setSelectedIndex(0);
+        const t = window.setTimeout(() => inputRef.current?.focus(), 50);
+        return () => window.clearTimeout(t);
+    }, [isOpen]);
+
+    // (2) Keep the path index fresh as the workspace tree changes. We
+    //     intentionally do NOT touch selectedIndex here. We also clamp
+    //     it on the next render via the search effect if the row count
+    //     shrinks below the current cursor.
+    useEffect(() => {
+        if (!isOpen) return;
+        const paths = flattenFiles(files);
+        setAllFilePaths(paths);
+        setResults((prev) =>
+            // If there's no active query yet, surface the initial slice.
+            // Otherwise the search effect below will refilter on the
+            // next tick using the new allFilePaths.
+            prev.length === 0 ? paths.slice(0, 50) : prev,
+        );
     }, [isOpen, files]);
 
     // Handle Input
@@ -119,26 +149,40 @@ export const QuickOpenModal: React.FC<{ isOpen: boolean; onClose: () => void }> 
         onClose();
     };
 
-    // Search Effect
+    // Search Effect — debounced filter on the path index.
+    //
+    // selectedIndex is reset to 0 ONLY when the query changes (a fresh
+    // search makes the cursor stale). When `allFilePaths` updates from a
+    // workspace re-emit we leave selectedIndex alone and just clamp it
+    // below `results.length` on the next render — that way ArrowDown /
+    // mouse hover survive workspace activity while the modal is open.
     useEffect(() => {
-        // Debounce search
-        const timer = setTimeout(() => {
+        const timer = window.setTimeout(() => {
             if (!query) {
                 setResults(allFilePaths.slice(0, 50));
                 return;
             }
-
             const lowerQuery = query.toLowerCase();
             const filtered = allFilePaths
-                .filter(f => f.toLowerCase().includes(lowerQuery))
-                .slice(0, 50); // Limit results for performance
-
+                .filter((f) => f.toLowerCase().includes(lowerQuery))
+                .slice(0, 50);
             setResults(filtered);
-            setSelectedIndex(0);
         }, 150);
-
-        return () => clearTimeout(timer);
+        return () => window.clearTimeout(timer);
     }, [query, allFilePaths]);
+
+    // Reset cursor only when the user actually types/clears a query.
+    useEffect(() => {
+        setSelectedIndex(0);
+    }, [query]);
+
+    // Clamp cursor if the result set shrank below the current index
+    // (e.g. workspace re-emit removed files while a search was active).
+    useEffect(() => {
+        if (selectedIndex >= results.length && results.length > 0) {
+            setSelectedIndex(results.length - 1);
+        }
+    }, [results.length, selectedIndex]);
 
     if (!isOpen) return null;
 
@@ -167,7 +211,7 @@ export const QuickOpenModal: React.FC<{ isOpen: boolean; onClose: () => void }> 
                         <div className="text-[10px] text-muted-foreground bg-input/50 px-2 py-0.5 rounded">ESC to close</div>
                     </div>
 
-                    <div className="max-h-[300px] overflow-y-auto py-1 custom-scrollbar" ref={listRef}>
+                    <div className="max-h-[300px] overflow-y-auto py-1 scrollbar-thin" ref={listRef}>
                         {results.length === 0 ? (
                             <div className="px-4 py-8 text-center text-xs text-text-disabled">
                                 {query ? 'No matching files found' : 'Type to search files...'}

@@ -158,10 +158,14 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::semantic::get_available_gpu_features,
             commands::semantic::start_semantic_indexing,
             commands::semantic::semantic_search,
+            commands::semantic::semantic_graph_search,
             commands::semantic::cancel_semantic_indexing,
             commands::semantic::is_semantic_indexing,
             commands::semantic::get_semantic_data_directory,
             commands::semantic::get_semantic_index_path,
+            // Speech input commands
+            commands::speech::speech_validate_config,
+            commands::speech::speech_transcribe_pcm,
             // Git commands
             commands::git::git_is_repository,
             commands::git::git_get_status,

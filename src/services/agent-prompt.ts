@@ -3,6 +3,10 @@ import {
   type SkillDefinition,
 } from "./skills";
 import { useSettingsStore } from "../store/useSettingsStore";
+import {
+  getAgentModePromptSection,
+  type AgentExecutionMode,
+} from "./agent-execution-mode";
 
 export interface AgentPromptContext {
   explicitSkillKeys?: string[];
@@ -46,8 +50,10 @@ Your main goal is to follow the USER's instructions at each message.
 - Preserve existing project patterns, structure, and theming conventions
 
 ## Tool Usage Guidelines
-- On unfamiliar code, understand structure first using workspace-aware context, semantic search, or tree inspection
-- Use semantic search for conceptual discovery and grep for exact-match lookup
+- On unfamiliar code, understand structure first using workspace-aware context, native Aurora search, or tree inspection
+- Use aurora_search for indexed codebase discovery: use target="symbols" for functions/files/routes/tools and target="chunks" for source snippets; use grep for exact string lookup
+- If Aurora search reports the workspace is not indexed or the model path is missing, tell the user the workspace must be indexed from Settings > Semantic Search before semantic/graph search is available
+- Set an explicit timeout for shell and grep searches when the command may scan many files; use background execution for long-running servers or watch processes
 - Use editor and diagnostics tools to verify changes when relevant
 - Use MCP tools like any other tool when connected and relevant
 - When explaining available MCP capabilities to the user, prefer server-grouped friendly names over internal callable identifiers
@@ -106,10 +112,11 @@ ${refs.join('\n')}
 
 export async function composeAgentSystemPrompt(options: {
   basePrompt?: string;
+  executionMode?: AgentExecutionMode;
   mcpSummary?: string;
   promptContext: AgentPromptContext;
 }): Promise<ComposedAgentPrompt> {
-  const { basePrompt, mcpSummary, promptContext } = options;
+  const { basePrompt, executionMode = "agent", mcpSummary, promptContext } = options;
   const settings = useSettingsStore.getState();
   const { allSkills, activeSkills, explicitSkills, matchedSkills } = await resolveSkillsForPrompt({
     enabledSkillToggles: settings.skillToggles,
@@ -121,6 +128,7 @@ export async function composeAgentSystemPrompt(options: {
 
   const sections = [
     basePrompt?.trim() || BASE_AGENT_SYSTEM_PROMPT,
+    getAgentModePromptSection(executionMode),
     SKILL_SYSTEM_INSTRUCTIONS,
   ];
 

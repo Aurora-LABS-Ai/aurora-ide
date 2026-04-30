@@ -7,9 +7,7 @@
  * - Optimistic cache updates
  * - Automatic invalidation on file changes
  */
-import { invoke } from "@tauri-apps/api/core";
-
-import { isTauri } from "./tauri";
+import { auroraInvoke, isAuroraRuntimeAvailable } from "./runtime";
 
 // Cache entry with content and timestamp
 interface CacheEntry {
@@ -166,9 +164,9 @@ export function invalidateFileCache(path: string, isPrefix: boolean = false): vo
   }
 
   // Also notify Rust backend to invalidate its cache
-  if (isTauri()) {
-    invoke('invalidate_file_cache', { path, isPrefix }).catch(err => {
-      console.warn('Failed to invalidate Rust cache:', err);
+  if (isAuroraRuntimeAvailable()) {
+    auroraInvoke('invalidate_file_cache', { path, isPrefix }).catch(err => {
+      console.warn('Failed to invalidate backend file cache:', err);
     });
   }
 }
@@ -178,7 +176,7 @@ export function invalidateFileCache(path: string, isPrefix: boolean = false): vo
  * Useful for preloading files the user is likely to open next
  */
 export function preloadFiles(paths: string[]): void {
-  if (!isTauri() || paths.length === 0) return;
+  if (!isAuroraRuntimeAvailable() || paths.length === 0) return;
 
   // Filter out already cached paths
   const toPreload = paths.filter(p => fileCache.get(p) === null);
@@ -195,8 +193,8 @@ export function preloadFiles(paths: string[]): void {
  * Falls through to Rust backend cache if not in frontend cache
  */
 export async function readFileCached(path: string): Promise<string> {
-  if (!isTauri()) {
-    console.warn('readFileCached: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('readFileCached: Aurora runtime unavailable');
     return '';
   }
 
@@ -207,7 +205,7 @@ export async function readFileCached(path: string): Promise<string> {
   }
 
   // Fall through to Rust backend (which also has a cache)
-  const content = await invoke<string>('read_file_content', { path });
+  const content = await auroraInvoke<string>('read_file_content', { path });
 
   // Cache in frontend
   fileCache.set(path, content);
@@ -221,8 +219,8 @@ export async function readFileCached(path: string): Promise<string> {
  * This is the key performance optimization for batch operations
  */
 export async function readFilesBatch(paths: string[]): Promise<Map<string, string>> {
-  if (!isTauri()) {
-    console.warn('readFilesBatch: Not running in Tauri');
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn('readFilesBatch: Aurora runtime unavailable');
     return new Map();
   }
 
@@ -249,7 +247,7 @@ export async function readFilesBatch(paths: string[]): Promise<Map<string, strin
   }
 
   // Batch read uncached files from Rust
-  const batchResults = await invoke<Record<string, { Ok?: string; Err?: string }>>('read_files_batch', {
+  const batchResults = await auroraInvoke<Record<string, { Ok?: string; Err?: string }>>('read_files_batch', {
     paths: uncachedPaths,
   });
 

@@ -142,4 +142,16 @@ Check changed files first.`);
     expect(composed.activeSkills.some((skill) => skill.id === "mcp-integration")).toBe(true);
     expect(composed.matchedSkills.some((skill) => skill.id === "mcp-integration")).toBe(true);
   });
+
+  it("adds plan mode restrictions to the system prompt", async () => {
+    const composed = await composeAgentSystemPrompt({
+      executionMode: "plan",
+      promptContext: {
+        userMessage: "Review the change before implementation.",
+      },
+    });
+
+    expect(composed.systemPrompt).toContain("Active Execution Mode: Plan");
+    expect(composed.systemPrompt).toContain("must not create, edit, delete");
+  });
 });

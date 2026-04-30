@@ -26,8 +26,9 @@ import { useTerminalStore } from '../../store/useTerminalStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import { useUiStore } from '../../store/useUiStore';
-import { Terminal, Sparkles, FolderOpen, AlertTriangle } from 'lucide-react';
+import { SquareTerminal, Bot, FolderTree, AlertTriangle } from 'lucide-react';
 import clsx from 'clsx';
+import { AppIcon } from '../ui/AppIcon';
 
 export const StatusBar: React.FC = () => {
   const { tabs, activeTabId } = useEditorStore();
@@ -42,68 +43,118 @@ export const StatusBar: React.FC = () => {
   const providerReady = llmConfig !== null;
   const workspaceName = rootPath ? rootPath.split(/[/\\]/).pop() : null;
 
+  const StatusDivider: React.FC = () => (
+    <span
+      aria-hidden
+      className="block h-[12px] w-[1px]"
+      style={{
+        backgroundColor:
+          'color-mix(in srgb, var(--aurora-common-border) 60%, transparent)',
+      }}
+    />
+  );
+
+  const statusButtonClass =
+    'flex items-center gap-1.5 px-2 h-[18px] rounded-[4px] transition-colors';
+
   return (
-    <div className="h-[22px] bg-statusbar border-t border-border flex items-center justify-between px-2 text-[11px] text-text-secondary select-none">
-      <div className="flex items-center gap-3">
+    <div
+      className="h-[24px] flex items-center justify-between px-2 text-[11px] text-text-secondary select-none"
+      style={{
+        backgroundColor: 'var(--aurora-statusBar-background, var(--aurora-title-bar-background))',
+        borderTop:
+          '1px solid color-mix(in srgb, var(--aurora-common-border) 70%, transparent)',
+      }}
+    >
+      <div className="flex items-center gap-2">
         {/* Provider status */}
         <button
           onClick={() => !providerReady && setSettingsOpen(true)}
           className={clsx(
-            "flex items-center gap-1.5 px-1.5 py-0.5 rounded transition-colors",
+            statusButtonClass,
             providerReady
-              ? "text-text-secondary"
-              : "text-warning hover:bg-input cursor-pointer"
+              ? 'text-text-secondary hover:text-text-primary hover:bg-input/40'
+              : 'text-warning hover:bg-input cursor-pointer',
           )}
-          title={providerReady ? `Provider: ${llmConfig.name} (${llmConfig.model})` : "No AI provider configured — click to set up"}
+          title={
+            providerReady
+              ? `Provider: ${llmConfig.name} (${llmConfig.model})`
+              : 'No AI provider configured — click to set up'
+          }
         >
           {providerReady ? (
             <>
-              <Sparkles className="w-2.5 h-2.5 text-primary" />
+              <AppIcon icon={Bot} size={10} className="text-primary" />
               <span className="truncate max-w-[120px]">{llmConfig.name}</span>
             </>
           ) : (
             <>
-              <AlertTriangle className="w-2.5 h-2.5" />
+              <AppIcon icon={AlertTriangle} size={10} />
               <span>No Provider</span>
             </>
           )}
         </button>
 
-        <span className="text-border">|</span>
+        <StatusDivider />
 
         {/* Workspace status */}
-        <div className="flex items-center gap-1.5" title={rootPath || 'No workspace open'}>
-          <FolderOpen className="w-2.5 h-2.5" />
-          <span className="truncate max-w-[120px]">{workspaceName || 'No Workspace'}</span>
+        <div
+          className={clsx(statusButtonClass, 'text-text-secondary')}
+          title={rootPath || 'No workspace open'}
+        >
+          <AppIcon icon={FolderTree} size={10} />
+          <span className="truncate max-w-[140px]">
+            {workspaceName || 'No Workspace'}
+          </span>
         </div>
 
-        <span className="text-border">|</span>
+        <StatusDivider />
 
         {/* Terminal Toggle */}
         <button
           onClick={toggleTerminal}
           className={clsx(
-            "flex items-center gap-1.5 px-1.5 py-0.5 rounded transition-colors",
+            statusButtonClass,
             isTerminalOpen
-              ? "bg-primary/20 text-primary"
-              : "hover:bg-input text-text-secondary hover:text-text-primary"
+              ? 'bg-primary/15 text-primary'
+              : 'hover:bg-input/40 text-text-secondary hover:text-text-primary',
           )}
           title="Toggle Terminal (Ctrl+`)"
         >
-          <Terminal className="w-3 h-3" />
+          <AppIcon icon={SquareTerminal} size={11} />
           <span>Terminal</span>
           {hasRunningProcess && (
             <div className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse" />
           )}
         </button>
       </div>
-      
-      <div className="flex items-center gap-3">
+
+      <div className="flex items-center gap-2">
         {activeTab && (
           <>
-            <span>Ln 1, Col 1</span>
-            <span>UTF-8</span>
-            <span>{activeTab.language === 'typescript' ? 'TypeScript' : activeTab.language}</span>
+            <span className={clsx(statusButtonClass, 'cursor-default')}>
+              Ln 1, Col 1
+            </span>
+            <StatusDivider />
+            <span className={clsx(statusButtonClass, 'cursor-default')}>
+              Spaces: 2
+            </span>
+            <StatusDivider />
+            <span className={clsx(statusButtonClass, 'cursor-default')}>UTF-8</span>
+            <StatusDivider />
+            <span
+              className={clsx(statusButtonClass, 'cursor-default text-text-primary')}
+            >
+              {activeTab.language === 'typescript'
+                ? 'TypeScript'
+                : activeTab.language === 'javascript'
+                  ? 'JavaScript'
+                  : activeTab.language === 'typescriptreact'
+                    ? 'TSX'
+                    : activeTab.language === 'javascriptreact'
+                      ? 'JSX'
+                      : activeTab.language}
+            </span>
           </>
         )}
       </div>

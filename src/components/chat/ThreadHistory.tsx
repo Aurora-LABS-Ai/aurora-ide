@@ -362,7 +362,7 @@ export const ThreadHistory: React.FC<ThreadHistoryProps> = ({ isOpen, onClose })
             )}
 
             {/* Thread List */}
-            <div className="max-h-[350px] overflow-y-auto py-1 custom-scrollbar" ref={listRef}>
+            <div className="max-h-[350px] overflow-y-auto py-1 scrollbar-thin" ref={listRef}>
               {isLoading ? (
                 <div className="px-4 py-8 text-center">
                   <Loader2 className="w-5 h-5 animate-spin text-primary mx-auto mb-2" />

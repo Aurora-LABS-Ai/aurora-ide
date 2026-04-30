@@ -1,5 +1,13 @@
 # Task Checklist
 
+## Active Task: Native Aurora Semantic IDE Integration
+
+- [in_progress] Replace the old app-data/Jina/hash semantic bridge with local `aurora-semantic` workspace `.aurora/index` integration.
+- [pending] Expose model-path-driven ONNX loading and graph-aware search through the Tauri commands and frontend service.
+- [pending] Update the Semantic settings UI, agent system prompt, and `aurora_search` tool contract for native workspace indexing.
+- [pending] Point the IDE Cargo dependency at the local `E:\VOID-EDITOR\aurora-semantic` crate.
+- [pending] Run focused Rust and TypeScript validation, then record the review trail.
+
 - [completed] Inspect Aurora and Zed workspace structure relevant to editor architecture and icon systems.
 - [completed] Identify direct-port risks, especially license incompatibility and framework mismatch.
 - [completed] Produce a concrete recommendation list of what Aurora should emulate, reimplement, or avoid from Zed.
@@ -102,6 +110,244 @@
 ## Active Task: Zed-Inspired Appearance Parity
 
 - [completed] Inspect Zed's theme and icon theme selectors to identify concrete customization behavior worth copying into Aurora.
-- [in_progress] Bring Aurora's settings-modal Appearance surface to parity with the richer sidebar theme panel by adding safe live preview behavior and in-place editing.
-- [pending] Re-run focused frontend validation for the touched customization files.
-- [pending] Update the review section with the Zed references used, the Aurora changes made, and the verification results.
+- [completed] Bring Aurora's settings-modal Appearance surface to parity with the richer sidebar theme panel by adding safe live preview behavior and in-place editing.
+- [completed] Re-run focused frontend validation for the touched customization files.
+- [completed] Update the review section with the Zed references used, the Aurora changes made, and the verification results.
+
+# Review Addendum: Zed-Inspired Appearance Parity
+
+- Reference point from Zed: `crates/theme_selector/src/theme_selector.rs` previews a theme immediately as selection changes and restores the original settings if the selector is dismissed without confirmation.
+- Reference point from Zed: `crates/theme_selector/src/icon_theme_selector.rs` applies the same "preview first, commit explicitly" rule for icon themes, which keeps customization fast without making accidental changes sticky.
+- Aurora change: extracted the reusable theme editor surface into `src/components/theme/ThemeEditorTab.tsx` with shared template data in `src/components/theme/theme-editor-shared.ts`.
+- Aurora change: updated `src/components/theme/ThemePanel.tsx` to consume the shared editor so the sidebar Appearance surface keeps the existing capabilities without maintaining a second editor implementation.
+- Aurora change: upgraded `src/components/modals/ThemeSettingsTab.tsx` from a theme-picker/import-only view to a three-tab Appearance pane with `Themes`, `Icon Packs`, and `Editor`.
+- Aurora change: the modal theme library now previews themes on hover, restores the committed theme on mouse-leave/tab-switch/unmount, and lets the user open any theme directly into the in-place editor for modification.
+- Verification: `pnpm exec eslint src/components/theme/ThemeEditorTab.tsx src/components/theme/theme-editor-shared.ts src/components/theme/ThemePanel.tsx src/components/modals/ThemeSettingsTab.tsx` passed.
+- Verification: `pnpm exec tsc --noEmit -p tsconfig.app.json` passed.
+
+## Active Task: Workspace-Aware Empty States
+
+- [completed] Inspect the current chat and agent empty states plus the existing workspace summary scanner.
+- [completed] Replace the hard-coded starter prompts with a shared workspace-aware empty-state model and UI used by both chat mode and agent mode.
+- [completed] Refine the shared empty state into a calmer product surface using the installed `frontend-skill`, with utility copy, professional icons, and no visible jargon.
+- [completed] Re-run frontend validation, including a build check, to catch the parser/runtime break the user reported.
+- [completed] Update the review section with the final empty-state behavior and verification results from the refinement pass.
+
+# Review Addendum: Workspace-Aware Empty States
+
+- Replaced the separate hard-coded chat and agent starters with a shared `WorkspaceAwareEmptyState` in `src/components/chat/WorkspaceAwareEmptyState.tsx`, used by both `src/components/chat/ChatPanel.tsx` and `src/components/agent/AgentModeLayout.tsx`.
+- Added `src/hooks/useWorkspaceSummary.ts` so the empty state derives lightweight workspace signals once and uses them to tailor the headline, supporting copy, and suggested prompts.
+- The empty-state prompt suggestions are now workspace-based instead of random, adapting to signals such as root folder name, file count, languages, framework markers, package manager presence, TypeScript config, and Git state.
+- Final refinement pass used the installed `frontend-skill` to push the surface toward utility-first product UI: calmer headings, single-line starter actions, and professional Lucide icons (`FolderTree`, `ShieldAlert`, `FilePenLine`, `ListTodo`, `ClipboardList`) instead of decorative AI-style symbols.
+- Removed the large enclosing wrapper, the summary strip, and the card-based starter treatment; the final empty state is now a plain vertical four-line prompt list with no visible implementation jargon or extra chrome behind it.
+- Verification: `pnpm exec eslint src/components/chat/WorkspaceAwareEmptyState.tsx src/components/chat/ChatPanel.tsx src/components/agent/AgentModeLayout.tsx src/hooks/useWorkspaceSummary.ts` passed.
+- Verification: `pnpm exec tsc --noEmit -p tsconfig.app.json` passed.
+- Verification: `pnpm build` passed.
+
+## Active Task: Professional UI Icon System
+
+- [completed] Audit the current icon usage across shared Aurora chrome and identify the decorative or inconsistent icon surfaces.
+- [in_progress] Introduce a shared professional icon wrapper/vocabulary and apply it to the highest-visibility interface surfaces.
+- [pending] Extend the icon cleanup through settings/navigation surfaces so the app no longer mixes decorative and utility icon styles.
+- [pending] Re-run focused frontend validation plus a full frontend build for the icon-system pass.
+- [pending] Update the review section with the icon-system changes and verification results.
+
+## Active Task: Model Selector Interaction
+
+- [completed] Inspect the chat and agent input model selectors to confirm whether they share behavior or duplicate separate dropdown logic.
+- [completed] Extract the model selector into one shared interaction component with smoother open/close motion and selection behavior while keeping the existing visual styling.
+- [completed] Apply the shared selector to both chat mode and agent mode inputs.
+- [completed] Refine the shared selector positioning so the dropdown anchors tightly to the trigger instead of floating above it from an estimated menu height.
+- [completed] Fix the agent-mode layering regression by restoring the input shell clipping and moving the measured dropdown above layout clipping without reintroducing the detached floating gap.
+- [completed] Refine the selector with inspiration from the Alvan World prompt-box reference without importing its full product structure: adopt the better pill rhythm, searchable popover header, and cleaner option rows.
+- [completed] Re-run focused frontend validation plus a full frontend build for the selector interaction pass.
+- [completed] Update the review section with the interaction changes and verification results.
+
+# Review Addendum: Model Selector Interaction
+
+- Replaced the duplicated model dropdown logic in `src/components/chat/ChatInput.tsx` and `src/components/agent/AgentInputArea.tsx` with a shared selector component at `src/components/ui/ModelSelector.tsx`.
+- Kept the existing model-pill styling intact, per request, and changed only the interaction behavior: smoother spring open/close, animated chevron rotation, cleaner close-on-outside-click and `Escape` handling, and softer selection feedback on list items.
+- The selector now positions itself the same way in both chat mode and agent mode, so selection and dismissal behavior no longer drift between the two inputs.
+- Follow-up fix: removed the viewport-level fixed/portal positioning for the model menu and anchored it directly to the selector trigger, which eliminates the detached-layer gap above the pill and stops the menu from shaking during scroll.
+- Updated both `src/components/chat/ChatInput.tsx` and `src/components/agent/AgentInputArea.tsx` to allow the anchored menu to render above the input shell without clipping.
+- Final regression fix: restored the rounded input-shell clipping in both inputs and switched the model menu back to a measured portal in `src/components/ui/ModelSelector.tsx`, using the trigger's real screen position plus a slight visual overlap so the menu stays above agent-mode clipping layers without looking detached from the selector.
+- Reference used: `E:\ALVAN-WORLD-FINAL-ARCHITECTURE\Alvan-World-Dev-In-Cloud\components\chat\prompt-box\custom-model-selector.tsx`.
+- Borrowed from the reference: a calmer rounded trigger pill, searchable dropdown header, model-count badge, and cleaner left-to-right row anatomy with a clear selected state.
+- Kept Aurora-specific: no image/text tabs, no extra tool-intent logic, no shadcn/Radix migration, and no additional controls that would add product mismatch or visual clutter.
+- Replaced the decorative selector sparkles with utility iconography and provider monograms so the control reads more like infrastructure than marketing.
+- Verification: `pnpm exec eslint src/components/ui/ModelSelector.tsx src/components/chat/ChatInput.tsx src/components/agent/AgentInputArea.tsx` passed.
+- Verification: `pnpm exec tsc --noEmit -p tsconfig.app.json` passed.
+- Verification: `pnpm build` passed.
+
+## Active Task: Attachment-Only User Message Cleanup
+
+- [completed] Remove the synthetic filename text that duplicates real attachment chips in user bubbles for both chat mode and agent mode.
+- [completed] Keep user bubbles visually quiet when a message contains attachments but no typed text.
+- [completed] Re-run focused frontend validation for the touched chat and agent message files.
+- [completed] Update the review section with the root cause and the final rendering behavior.
+
+# Review Addendum: Attachment-Only User Message Cleanup
+
+- Root cause: both `src/components/chat/ChatPanel.tsx` and `src/components/agent/AgentModeLayout.tsx` were converting attachment-only user messages into synthetic text like `[file-name]`, even though the message already carried structured attachment metadata for chip rendering.
+- Removed that synthetic `displayContent` path in both send flows, so attached files now live only in `message.attachedFiles` instead of being duplicated into `message.content`.
+- Updated `src/components/chat/ChatMessage.tsx` so the user bubble only renders the text paragraph when there is actual typed content; attachment-only messages now render as chips only, with no dead second line under them.
+- Verification: `pnpm exec eslint src/components/chat/ChatPanel.tsx src/components/agent/AgentModeLayout.tsx src/components/chat/ChatMessage.tsx` passed.
+- Verification: `pnpm exec tsc --noEmit -p tsconfig.app.json` passed.
+
+## Active Task: Aurora Semantic and GitNexus Port Analysis
+
+- [completed] Persist the current Aurora semantic-search findings in root-level `Aurora Semantic.md`.
+- [completed] Inspect GitNexus architecture, indexing, graph/query, and type-resolution systems as the Rust-port inspiration source.
+- [completed] Map GitNexus concepts to Aurora Semantic and decide the likely integration boundary.
+- [completed] Update this review section with the written doc path and analysis status.
+
+# Review Addendum: Aurora Semantic and GitNexus Port Analysis
+
+- Started by preserving the Aurora semantic-search analysis before inspecting GitNexus, so the current findings survive context loss.
+- Created `Aurora Semantic.md` at the repository root and expanded it with the current Aurora semantic implementation, GitNexus architecture findings, and the initial Rust-port integration decision.
+- Verification: confirmed `Aurora Semantic.md` exists and is readable from the repository root.
+
+## Active Task: Plan and Agent Mode Enforcement
+
+- [completed] Trace chat input, agent input, system prompt, and tool execution paths for the shared mode switch.
+- [completed] Add a persisted Plan/Agent mode setting and shared input toggle without changing unrelated input behavior.
+- [completed] Enforce Plan mode by filtering write-capable tools and rejecting mutating fallback tool calls at execution time.
+- [completed] Move the default mode persistence into Rust-backed app settings and expose it in Settings.
+- [completed] Add focused tests for prompt/tool behavior and run frontend/Rust validation.
+- [completed] Update this review section with implementation and verification results.
+
+# Review Addendum: Plan and Agent Mode Enforcement
+
+- Added `agentExecutionMode` as the shared mode state with `agent` as the backward-compatible default.
+- Added the Plan/Agent input toggle to both regular chat input and full-screen agent input.
+- Added mode-specific system prompt sections so Aurora explicitly knows when it is in Plan mode or Agent mode.
+- Enforced Plan mode in the tool layer by filtering write-capable tools from model-visible tool definitions and rejecting blocked tool calls at execution time.
+- Plan mode blocks file/folder mutation tools, task writes, background/kill shell operations, mutating MCP tools by name, and mutating shell commands such as redirection, delete, move, Git state changes, and package installs.
+- Added Rust-backed app settings persistence for `agentExecutionMode` in `src-tauri/src/db/models.rs` and `src-tauri/src/db/repositories/settings.rs`.
+- Added a General Settings control named “Default Agent Behavior” so the launch default can be set to Agent mode or Plan mode and saved through the app settings path.
+- Follow-up hardening: each request now prepends an authoritative runtime mode context block before the user text reaches the Rust context engine, so the model cannot treat a false user claim like “I switched to Agent mode” as actual mode state.
+- Verification: `pnpm exec vitest run src/services/agent-execution-mode.test.ts src/services/agent-tool-runner.test.ts src/services/skills.test.ts` passed.
+- Verification: `pnpm exec vitest run src/services/agent-execution-mode.test.ts` passed after adding the false-mode-claim runtime context test.
+- Verification: focused ESLint for the touched TypeScript/TSX files passed.
+- Verification: `pnpm exec tsc --noEmit -p tsconfig.app.json` passed before the Rust persistence/UI follow-up.
+- Verification: `pnpm build` passed before the Rust persistence/UI follow-up.
+- Verification: `rustfmt --check src-tauri/src/db/models.rs src-tauri/src/db/repositories/settings.rs` passed.
+- Note: whole-crate `cargo fmt --check` reports pre-existing formatting drift in unrelated Rust files (`src-tauri/src/cli.rs`, `src-tauri/src/commands/provider_kernel/builders.rs`, `src-tauri/src/icon_pack.rs`). I did not mass-format unrelated files.
+- Note: `cargo check --manifest-path src-tauri/Cargo.toml` was started after the Rust persistence change but timed out before completion; the user is already running `pnpm tauri:dev` locally, so no further broad validation was run.
+
+## Active Task: Tool Timeout Hardening and Remote SSH Analysis
+
+- [completed] Trace shell, grep/ripgrep, registry, and agent tool-runner timeout behavior to identify the actual stuck path.
+- [completed] Add bounded timeout support to the grep/ripgrep tool path and strengthen agent-level timeout handling.
+- [completed] Add focused tests for timeout behavior and run targeted frontend/Rust validation.
+- [completed] Analyze the SSH remote-development architecture separately and summarize the implementation path.
+- [completed] Update this review section with root cause, changes, validation, and the remote-development recommendation.
+
+# Review Addendum: Tool Timeout Hardening and Remote SSH Analysis
+
+- Root cause: `shell_execute` already had Rust-side timeout handling, but the `grep` tool used `ripgrep_search`, which ran `rg` through `cmd.output().await` without a timeout. The frontend agent runner could eventually fail its promise, but that did not stop the underlying ripgrep process.
+- Added bounded timeout support to `ripgrep_search`, defaulting to 30 seconds, clamping to 1 second minimum and 5 minutes maximum, and killing the spawned `rg` process on timeout before returning a structured failed grep result.
+- Exposed the grep timeout through the TypeScript Tauri request type, the grep tool schema, and the grep executor, so the model can explicitly request shorter or longer searches while Aurora still enforces hard bounds.
+- Tightened `shell_execute` timeout normalization to the same 1 second to 5 minute range and clarified that long-running servers/watchers should use `shell_spawn`.
+- Strengthened the agent-level timeout wrapper so shell and grep calls get a small grace period over their own bounded timeout, other tools remain capped at 5 minutes, and timeout handles are cleared after completion.
+- Added a focused agent-runner test for stuck tool calls timing out instead of hanging the run.
+- Remote SSH recommendation: adopt a VS Code Remote-SSH style architecture, not a browser-hosted code-server architecture. Aurora should keep its Tauri UI local, bootstrap an Aurora remote backend on the SSH host, and route filesystem, watcher, shell, PTY, git, ripgrep, semantic indexing, checkpoints, and MCP operations through a local/remote workspace provider abstraction.
+- Verification: `pnpm exec vitest run src/services/agent-tool-runner.test.ts src/services/agent-execution-mode.test.ts src/services/skills.test.ts` passed.
+- Verification: focused ESLint for the touched TypeScript/TSX files passed.
+- Verification: `pnpm exec tsc --noEmit -p tsconfig.app.json` passed.
+- Verification: `rustfmt --edition 2021 --check --config skip_children=true src-tauri\src\commands\mod.rs` passed.
+- Verification: `cargo check --manifest-path src-tauri\Cargo.toml --no-default-features --features cpu-only` passed.
+- Note: a plain `rustfmt --edition 2021 --check src-tauri\src\commands\mod.rs` still reports unrelated formatting drift in a child module (`src-tauri/src/commands/provider_kernel/builders.rs`), so the touched command file was checked with `skip_children=true`.
+
+## Active Task: Aurora Web Runtime Foundation
+
+- [completed] Trace the current desktop IPC/tool execution boundary and identify the minimal runtime seam for web mode.
+- [completed] Add a shared runtime client that keeps desktop using Tauri IPC and gives web mode an HTTP/event-stream-backed shape.
+- [completed] Route the central Aurora command helpers through the runtime client without changing desktop behavior.
+- [completed] Add focused tests for desktop/web runtime selection and command forwarding.
+- [completed] Run targeted TypeScript validation and update this review section.
+
+# Review Addendum: Aurora Web Runtime Foundation
+
+- Added `src/lib/runtime.ts` as the frontend runtime boundary. Desktop mode keeps using Tauri `invoke`/`listen`; web mode now has a concrete HTTP contract at `/api/invoke/:command` and an event stream contract at `/api/events/:eventName`.
+- Routed central command and event consumers through the runtime boundary, including file cache, workspace explorer, thread/context services, agent context/tool logging, database settings, MCP, checkpoints, semantic indexing, provider streaming, local model management, git, undo/redo, token counting, and shell streaming.
+- Kept desktop-only UI affordances such as native dialogs, clipboard fallback behavior, explorer reveal, terminal opening, and window sync on their existing desktop paths.
+- Added `src/lib/runtime.test.ts` for runtime selection, injected test runtimes, web command forwarding, auth forwarding, and backend error propagation.
+- Verification: focused ESLint for the touched runtime/service/store/tool files passed.
+- Verification: `pnpm exec tsc --noEmit -p tsconfig.app.json` passed.
+- Verification: `pnpm exec vitest run src/lib/runtime.test.ts src/services/agent-tool-runner.test.ts src/tools/executors/shell-executors.test.ts` passed.
+- Note: I did not start `pnpm tauri dev`, per the user's instruction.
+
+## Active Task: Native Speech Input
+
+- [completed] Inspect the local `qwen3-asr-rs` implementation, Aurora settings/input/database patterns, and relevant framework docs.
+- [completed] Add a Rust-owned speech transcription service with Qwen3-ASR safetensors as the default engine and CrispASR GGUF as an optional compatibility path.
+- [completed] Persist Speech settings through Aurora's DB-backed app settings.
+- [completed] Add a dedicated Settings > Speech tab with enable, model path, and CPU/GPU controls.
+- [completed] Add microphone recording, waveform feedback, stop control, and transcript insertion to chat and agent inputs.
+- [completed] Copy the local CrispASR runtime into the project as an optional GGUF compatibility runtime and include it in Tauri bundle resources.
+- [completed] Run focused frontend and Rust validation.
+
+# Review Addendum: Native Speech Input
+
+- User asked to ignore remaining web UI implementation work for this batch; the existing web/runtime task entries are intentionally left unchanged.
+- Initial ASR finding: `E:\VOID-EDITOR\qwen3-asr-rs` loads Qwen3-ASR from a safetensors model directory containing `config.json`, tokenizer files, and `model.safetensors` or `model.safetensors.index.json`. The provided local model path currently contains a single `.gguf` file, so the native setup path must validate and report that mismatch instead of failing silently.
+- Final ASR direction: Qwen3-ASR safetensors is the production default through the published `qwen3-asr` crate from crates.io. The local `E:\VOID-EDITOR\qwen3-asr-rs` clone was used only to inspect the API and model-folder requirements.
+- Added `src-tauri/src/commands/speech.rs` with Qwen3 model-folder validation, cached Rust-native model loading, CPU/GPU device selection, and `speech_transcribe_pcm` for raw 16 kHz mono PCM audio.
+- CrispASR remains available only as `crispasr-gguf` for existing GGUF users. It runs through a child `crispasr.exe` process, not in-process DLL FFI, so a ggml abort cannot kill Aurora.
+- Copied the CrispASR release runtime into `src-tauri/crispasr-runtime/windows-x64` and added it to `src-tauri/tauri.conf.json` resources so packaged builds can carry the optional compatibility runtime.
+- Added database-backed Speech settings for enable state, engine, runtime path, model path, backend, CPU/GPU preference, thread count, and language.
+- Added `src/components/modals/SpeechSettingsTab.tsx` and wired it into the Settings modal as a dedicated Speech tab.
+- Added `src/components/chat/SpeechInputButton.tsx` and mounted it in both `src/components/chat/ChatInput.tsx` and `src/components/agent/AgentInputArea.tsx`; the control records locally, shows a live waveform, stops on user action, transcribes natively, and inserts the transcript into the input box.
+- Verification: `cargo check --manifest-path src-tauri/Cargo.toml` passed.
+- Verification: `pnpm exec tsc --noEmit` passed.
+- Verification: focused ESLint for the touched Speech/Input/Settings files passed.
+- Verification: `pnpm build` passed with only existing chunk-size warnings.
+- Verification: standalone CrispASR CLI script transcribed the provided local WAV samples correctly before the default engine was switched to Qwen3-ASR safetensors.
+- Note: full `pnpm lint` still fails because it scans generated build artifacts plus unrelated existing repo lint errors; the files touched by this Speech implementation pass targeted lint.
+
+## Active Task: Speech Runtime Crash Isolation
+
+- [completed] Reproduce and isolate why selecting the GPU runtime crashes `pnpm tauri dev`.
+- [completed] Change the native speech execution boundary so a CrispASR/ggml abort cannot kill Aurora.
+- [completed] Make the production default a Rust-native Qwen3-ASR safetensors engine from crates.io.
+- [completed] Re-run focused Rust/frontend validation and update this review section.
+- [completed] Fix Speech settings/input UX so CPU-only builds do not present GPU as active and chat does not show a red Speech text link.
+- [completed] Re-run focused validation after the Speech UX correction.
+- [completed] Remove bundled CrispASR CUDA runtime from the default installer and document the final Speech architecture.
+- [completed] Improve the speech recording waveform so active recording visibly reacts to input instead of rendering as a dark pill.
+- [in_progress] Fix the Windows CUDA build script so it loads Visual Studio `cl.exe` before compiling Candle kernels.
+
+# Review Addendum: Speech Runtime Crash Isolation
+
+- User reported `GGML_ASSERT(prev != ggml_uncaught_exception) failed` followed by `STATUS_STACK_BUFFER_OVERRUN` when setting the GPU runtime in `pnpm tauri dev`.
+- Initial diagnosis: this is not a packaging/install problem. It is a native library process-abort problem: loading the CrispASR/ggml GPU DLL inside Aurora means any ggml assertion or C++ runtime abort terminates the entire Tauri process.
+- Direction change after user clarification: the production default is now the published `qwen3-asr` Rust crate from crates.io, not the local clone and not an external CrispASR executable. The user manually downloads a Hugging Face safetensors model and selects that folder in Settings > Speech.
+- Added `qwen3-asr = "0.2.2"` from crates.io with default features disabled for CPU-compatible builds. Aurora's existing `cuda` feature now also enables `qwen3-asr/cuda`.
+- Settings > Speech now has an Engine selector. `Qwen3-ASR` expects a manually selected model folder containing `config.json`, `tokenizer.json`, and `model.safetensors` or `model.safetensors.index.json`; `CrispASR GGUF` expects a GGUF file and runtime folder.
+- Qwen3 model loading is cached by model folder and device, and transcription runs on `spawn_blocking` so model inference does not block the async Tauri runtime.
+- The provided `E:\SPEECH-TO-TEXT-SYSTEM\qwen-asr\qwen_asr_1_7b` folder has sharded safetensors plus tokenizer source files but no `tokenizer.json`; Aurora now prepares `tokenizer.json` from those source files automatically before loading.
+- Fixed the Windows Tauri link failure by patching only `esaxx-rs` through `[patch.crates-io]` to compile its C++ helper with the dynamic MSVC runtime. Root cause: `tokenizers` default `esaxx_fast` compiled `esaxx-rs` as `MT_StaticRelease`, while `cxx` linked as `MD_DynamicRelease`.
+- Verification: `cargo check --manifest-path src-tauri\Cargo.toml --no-default-features --features cpu-only` passed.
+- Verification: `cargo build --manifest-path src-tauri\Cargo.toml --no-default-features --features cpu-only` passed, including the Tauri cdylib link step that previously failed.
+- Verification: `pnpm exec tsc --noEmit` passed.
+- Verification: focused ESLint for the touched Speech/Input/Settings files passed.
+- Verification: `pnpm build` passed with only the existing chunk-size warning.
+- Follow-up UX fix: Settings > Speech now receives explicit CUDA build/effective-device metadata from Rust, disables and auto-resets GPU when the current Aurora build cannot use it, and keeps Auto/CPU usable instead of leaving a misleading GPU warning selected.
+- Follow-up UX fix: the chat microphone no longer renders a separate red "Speech" text link beside the input. Configuration/runtime errors stay on the mic control tooltip and the button keeps a compact warning state.
+- Added `tauri:dev:cuda` and `tauri:build:cuda` package scripts so local CUDA testing/building has an explicit command instead of relying on the default CPU-only Tauri flow.
+- Verification: `pnpm exec eslint src\components\modals\SpeechSettingsTab.tsx src\components\chat\SpeechInputButton.tsx src\services\speech.ts` passed.
+- Verification: `pnpm exec tsc --noEmit` passed.
+- Verification: `rustfmt --edition 2021 --check --config skip_children=true src-tauri\src\commands\speech.rs` passed.
+- Verification: `cargo build --manifest-path src-tauri\Cargo.toml --no-default-features --features cpu-only` passed.
+- Verification: `pnpm build` passed with only the existing chunk-size warning.
+- Follow-up packaging correction: removed `crispasr-runtime/windows-x64/*` from Tauri bundle resources, removed the copied local runtime directory from the workspace, and changed CrispASR compatibility to manual-runtime-path only.
+- Added `DOCS/06-SPEECH-INPUT.md` to document the Qwen3-ASR default path, CPU/CUDA build behavior, CrispASR compatibility boundary, separate CrispASR runtime zip flow, and fresh-machine setup.
+- Follow-up waveform fix: replaced the thin line waveform with responsive amplitude bars, a clearer primary-tinted surface, and a larger canvas so speech activity is visible while recording.
+- Added `pnpm crispasr:package` so a CrispASR runtime folder can be packaged as a separate zip instead of being embedded in the NSIS installer.
+- Added `scripts/tauri-cuda.mjs` plus `pnpm cuda:check`, `pnpm tauri:dev:cuda`, and `pnpm tauri:build:cuda` wrappers that load Visual Studio's x64 C++ environment before invoking Tauri with the `cuda` feature.
+- Verification: `pnpm exec eslint src\components\chat\SpeechInputButton.tsx src\components\modals\SpeechSettingsTab.tsx src\services\speech.ts src\store\useSettingsStore.ts` passed.
+- Verification: `pnpm exec eslint scripts\package-crispasr-runtime.mjs src\components\chat\SpeechInputButton.tsx src\components\modals\SpeechSettingsTab.tsx src\services\speech.ts src\store\useSettingsStore.ts` passed.
+- Verification: `pnpm exec tsc --noEmit` passed.
+- Verification: `pnpm crispasr:package -- --help` passed.
+- Verification: `pnpm build` passed with only the existing chunk-size warning.

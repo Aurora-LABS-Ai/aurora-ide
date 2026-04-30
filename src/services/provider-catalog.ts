@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { auroraInvoke as invoke } from "../lib/runtime";
 
 export interface ProviderCatalogPreset {
   id: string;

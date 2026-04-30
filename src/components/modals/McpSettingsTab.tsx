@@ -29,109 +29,33 @@ import {
   Check,
   Pencil,
   Save,
-  ShoppingBag,
-  Download,
 } from 'lucide-react';
 
 import clsx from 'clsx';
-import { TogglePill } from '../ui/TogglePill';
-import { SettingsSelect } from '../ui/SettingsSelect';
+import { IdeSwitch } from '../ui/IdeSwitch';
+import { IdeSelect } from '../ui/IdeSelect';
 import { DeleteConfirmDialog } from '../chat/DeleteConfirmDialog';
-import { settingsCardStyle, settingsPrimaryButtonStyle, settingsSubtlePanelStyle } from './settings-shared';
+import {
+  settingsCardStyle,
+  settingsPrimaryButtonStyle,
+  settingsSubtlePanelStyle,
+} from './settings-shared';
+import {
+  Section,
+  StatusPill,
+  ActionButton,
+} from './settings-primitives';
 
 // ============================================
-// MARKETPLACE DATA
+// SERVER CARD STYLES (matches ProviderCard)
 // ============================================
 
-interface MarketplaceItem {
-  id: string;
-  name: string;
-  description: string;
-  author: string;
-  transport: 'stdio' | 'sse';
-  command?: string;
-  args?: string[];
-  url?: string;
-  envExample?: string;
-}
-
-const MARKETPLACE_ITEMS: MarketplaceItem[] = [
-  {
-    id: 'git',
-    name: 'Git',
-    description: 'Git repository operations (read, commit, diff)',
-    author: 'Model Context Protocol',
-    transport: 'stdio',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-git', '.'],
-  },
-  {
-    id: 'postgres',
-    name: 'PostgreSQL',
-    description: 'Read-only database access for querying tables and schemas',
-    author: 'Model Context Protocol',
-    transport: 'stdio',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://user:password@localhost/db'],
-  },
-  {
-    id: 'filesystem',
-    name: 'Filesystem',
-    description: 'Secure file access outside the workspace',
-    author: 'Model Context Protocol',
-    transport: 'stdio',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-filesystem', '/path/to/allowed/dir'],
-  },
-  {
-    id: 'github',
-    name: 'GitHub',
-    description: 'Search, PRs, Issues, and file operations',
-    author: 'Model Context Protocol',
-    transport: 'stdio',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-github'],
-    envExample: 'GITHUB_PERSONAL_ACCESS_TOKEN=your_token',
-  },
-  {
-    id: 'sqlite',
-    name: 'SQLite',
-    description: 'SQLite database access and query execution',
-    author: 'Model Context Protocol',
-    transport: 'stdio',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-sqlite', 'my-db.sqlite'],
-  },
-  {
-    id: 'google-drive',
-    name: 'Google Drive',
-    description: 'Access files and folders in Google Drive',
-    author: 'Model Context Protocol',
-    transport: 'stdio',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-google-drive'],
-  },
-  {
-    id: 'slack',
-    name: 'Slack',
-    description: 'Read and post messages to Slack channels',
-    author: 'Model Context Protocol',
-    transport: 'stdio',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-slack'],
-    envExample: 'SLACK_BOT_TOKEN=xoxb-...\nSLACK_TEAM_ID=T...',
-  },
-  {
-    id: 'brave-search',
-    name: 'Brave Search',
-    description: 'Web search using Brave Search API',
-    author: 'Model Context Protocol',
-    transport: 'stdio',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-brave-search'],
-    envExample: 'BRAVE_API_KEY=your_key',
-  },
-];
+const serverCardOuterStyle: React.CSSProperties = {
+  backgroundColor:
+    'color-mix(in srgb, var(--aurora-title-bar-background) 56%, var(--aurora-sidebar-background) 44%)',
+  border: '1px solid color-mix(in srgb, var(--aurora-common-border) 70%, transparent)',
+  borderRadius: 8,
+};
 
 // ============================================
 // ADD SERVER FORM
@@ -140,52 +64,23 @@ const MARKETPLACE_ITEMS: MarketplaceItem[] = [
 type AddMode = 'form' | 'json';
 
 interface AddServerFormProps {
-  initialConfig?: Partial<McpServerConfig>;
   onSave: (config: Omit<McpServerConfig, 'id'>) => void;
   onCancel: () => void;
 }
 
-const AddServerForm: React.FC<AddServerFormProps> = ({ initialConfig, onSave, onCancel }) => {
+const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
   const [mode, setMode] = useState<AddMode>('form');
   
   // Form mode state
-  const [name, setName] = useState(initialConfig?.name || '');
-  const [transport, setTransport] = useState<McpTransportType>(initialConfig?.transport || 'stdio');
-  const [command, setCommand] = useState(initialConfig?.command || '');
-  const [args, setArgs] = useState(initialConfig?.args?.join(' ') || '');
-  const [url, setUrl] = useState(initialConfig?.url || '');
-  const [envVars, setEnvVars] = useState(
-    initialConfig?.env 
-      ? Object.entries(initialConfig.env).map(([k, v]) => `${k}=${v}`).join('\n') 
-      : ''
-  );
-  const [headerVars, setHeaderVars] = useState(
-    initialConfig?.headers 
-      ? Object.entries(initialConfig.headers).map(([k, v]) => `${k}=${v}`).join('\n') 
-      : ''
-  );
-  const [autoStart, setAutoStart] = useState(initialConfig?.autoStart || false);
-  const [autoApprove, setAutoApprove] = useState(initialConfig?.autoApprove !== false);
-
-  // If initialConfig provided, switch to form mode by default
-  useEffect(() => {
-    if (initialConfig) {
-      queueMicrotask(() => {
-        setMode('form');
-        if (initialConfig.name) setName(initialConfig.name);
-        if (initialConfig.transport) setTransport(initialConfig.transport);
-        if (initialConfig.command) setCommand(initialConfig.command);
-        if (initialConfig.args) setArgs(initialConfig.args.join(' '));
-        if (initialConfig.url) setUrl(initialConfig.url);
-        if (initialConfig.env) {
-          setEnvVars(Object.entries(initialConfig.env).map(([k, v]) => `${k}=${v}`).join('\n'));
-        }
-        if (initialConfig.headers) {
-          setHeaderVars(Object.entries(initialConfig.headers).map(([k, v]) => `${k}=${v}`).join('\n'));
-        }
-      });
-    }
-  }, [initialConfig]);
+  const [name, setName] = useState('');
+  const [transport, setTransport] = useState<McpTransportType>('stdio');
+  const [command, setCommand] = useState('');
+  const [args, setArgs] = useState('');
+  const [url, setUrl] = useState('');
+  const [envVars, setEnvVars] = useState('');
+  const [headerVars, setHeaderVars] = useState('');
+  const [autoStart, setAutoStart] = useState(false);
+  const [autoApprove, setAutoApprove] = useState(true);
 
   // JSON mode state
   const [jsonInput, setJsonInput] = useState('');
@@ -361,7 +256,7 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ initialConfig, onSave, on
             </div>
             <div>
               <label className="text-[10px] text-text-secondary block mb-0.5">Transport *</label>
-              <SettingsSelect
+              <IdeSelect
                 ariaLabel="Select MCP transport"
                 options={[
                   { label: 'Stdio (Local Process)', value: 'stdio' },
@@ -679,7 +574,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
   };
 
   return (
-    <div className="overflow-hidden rounded-[20px]" style={settingsCardStyle}>
+    <div className="overflow-hidden" style={serverCardOuterStyle}>
       {/* Header */}
       <div
         className="flex cursor-pointer items-center justify-between px-4 py-3 hover:bg-input/30"
@@ -768,7 +663,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
             <Trash2 className="w-3.5 h-3.5" />
           </button>
           {/* Enable/Disable toggle */}
-          <TogglePill
+          <IdeSwitch
             checked={server.config.enabled}
             onChange={() => handleToggle()}
             ariaLabel={`Toggle ${server.config.name || 'MCP server'}`}
@@ -803,7 +698,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
               <Check className="w-3.5 h-3.5 text-success" />
               <span className="text-[10px] text-text-secondary">Auto-approve all tools</span>
             </div>
-            <TogglePill
+            <IdeSwitch
               checked={isEditing ? editAutoApprove : server.config.autoApprove}
               onChange={async (next) => {
                 if (isEditing) {
@@ -832,7 +727,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
               </div>
               <div>
                 <label className="text-[10px] text-text-disabled block mb-0.5">Transport</label>
-                <SettingsSelect
+                <IdeSelect
                   ariaLabel="Select MCP edit transport"
                   options={[
                     { label: 'Stdio', value: 'stdio' },
@@ -885,7 +780,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
               </div>
               <div className="flex items-center justify-between">
                 <label className="text-[10px] text-text-secondary">Auto-start</label>
-                <TogglePill
+                <IdeSwitch
                   checked={editAutoStart}
                   onChange={setEditAutoStart}
                   ariaLabel="Toggle MCP auto-start"
@@ -1018,76 +913,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
   );
 };
 
-// ============================================
-// MARKETPLACE CARD
-// ============================================
 
-interface MarketplaceCardProps {
-  item: MarketplaceItem;
-  isInstalled: boolean;
-  onInstall: (item: MarketplaceItem) => void;
-}
-
-const MarketplaceCard: React.FC<MarketplaceCardProps> = ({ item, isInstalled, onInstall }) => {
-  return (
-    <div className="flex h-full flex-col justify-between rounded-[20px] p-4" style={settingsCardStyle}>
-      <div>
-        <div className="flex items-start justify-between mb-2">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded bg-primary/10 flex items-center justify-center text-primary">
-              <Globe className="w-4 h-4" />
-            </div>
-            <div>
-              <h4 className="text-xs font-medium text-text-primary">{item.name}</h4>
-              <p className="text-[9px] text-text-secondary">by {item.author}</p>
-            </div>
-          </div>
-          {isInstalled && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded bg-success/10 text-success flex items-center gap-1">
-              <Check className="w-2.5 h-2.5" />
-              Installed
-            </span>
-          )}
-        </div>
-        
-        <p className="text-[10px] text-text-secondary leading-relaxed mb-3 h-8 line-clamp-2">
-          {item.description}
-        </p>
-        
-        <div className="flex items-center gap-2 mb-3">
-          <span className="text-[9px] px-1.5 py-0.5 rounded bg-input text-text-secondary font-mono border border-border">
-            {item.transport}
-          </span>
-          {item.transport === 'stdio' && (
-            <span className="text-[9px] px-1.5 py-0.5 rounded bg-input text-text-disabled font-mono border border-border truncate max-w-[120px]">
-              {item.command}
-            </span>
-          )}
-        </div>
-      </div>
-
-      <button
-        onClick={() => onInstall(item)}
-        disabled={isInstalled}
-        className={clsx(
-          "w-full py-1.5 rounded text-[10px] font-medium transition-colors flex items-center justify-center gap-1.5",
-          isInstalled
-            ? "bg-input text-text-disabled cursor-default"
-            : "bg-primary text-primary-foreground hover:bg-primary/80"
-        )}
-      >
-        {isInstalled ? (
-          "Installed"
-        ) : (
-          <>
-            <Download className="w-3 h-3" />
-            Install
-          </>
-        )}
-      </button>
-    </div>
-  );
-};
 
 // ============================================
 // MAIN COMPONENT
@@ -1095,10 +921,8 @@ const MarketplaceCard: React.FC<MarketplaceCardProps> = ({ item, isInstalled, on
 
 export const McpSettingsTab: React.FC = () => {
   const { servers, isLoading, configPath, error, loadServers, refreshServers, getConfigPath, addServer } = useMcpStore();
-  const [activeTab, setActiveTab] = useState<'installed' | 'marketplace'>('installed');
   const [isAddingServer, setIsAddingServer] = useState(false);
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
-  const [installConfig, setInstallConfig] = useState<Partial<McpServerConfig> | undefined>(undefined);
 
   // Load servers on mount (only once, preserves connection state)
   useEffect(() => {
@@ -1109,35 +933,6 @@ export const McpSettingsTab: React.FC = () => {
   const handleAddServer = async (config: Omit<McpServerConfig, 'id'>) => {
     await addServer(config);
     setIsAddingServer(false);
-    setInstallConfig(undefined);
-  };
-
-  const handleInstall = (item: MarketplaceItem) => {
-    // Prepare config from marketplace item
-    const config: Partial<McpServerConfig> = {
-      name: item.name,
-      transport: item.transport,
-      command: item.command,
-      args: item.args || [],
-      url: item.url,
-      enabled: true,
-      autoStart: true,
-      autoApprove: true,
-    };
-    
-    // Add env example if present
-    if (item.envExample) {
-      const env: Record<string, string> = {};
-      item.envExample.split('\n').forEach(line => {
-        const [k, v] = line.split('=');
-        if (k && v) env[k] = v;
-      });
-      config.env = env;
-    }
-
-    setInstallConfig(config);
-    setIsAddingServer(true);
-    setActiveTab('installed');
   };
 
   const handleRefresh = () => {
@@ -1158,162 +953,135 @@ export const McpSettingsTab: React.FC = () => {
     }
   };
 
+  const connectedCount = servers.filter((s) => s.status === 'connected').length;
+  const enabledCount = servers.filter((s) => s.config.enabled).length;
+
   return (
-    <div className="space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-sm font-medium text-text-primary">MCP Servers</h3>
-          <p className="text-[10px] text-text-secondary mt-0.5">
-            Connect to Model Context Protocol servers to extend Aurora's capabilities
-          </p>
+    <div className="space-y-6 pb-2">
+      {/* Header row */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-1.5">
+          {connectedCount > 0 && (
+            <StatusPill variant="success">{connectedCount} Connected</StatusPill>
+          )}
+          <StatusPill variant="neutral" dot={false}>
+            {enabledCount} / {servers.length} Enabled
+          </StatusPill>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleRefresh}
-            disabled={isLoading}
-            className="p-1.5 rounded text-text-secondary hover:text-text-primary hover:bg-input disabled:opacity-50"
-            title="Refresh"
-          >
-            <RefreshCw className={clsx('w-3.5 h-3.5', isLoading && 'animate-spin')} />
-          </button>
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex items-center gap-1 border-b border-border">
-        <button
-          onClick={() => setActiveTab('installed')}
-          className={clsx(
-            "px-3 py-1.5 text-xs font-medium border-b-2 transition-colors flex items-center gap-1.5",
-            activeTab === 'installed'
-              ? "border-primary text-primary"
-              : "border-transparent text-text-secondary hover:text-text-primary"
-          )}
-        >
-          <Server className="w-3.5 h-3.5" />
-          Installed
-          <span className="bg-input text-text-secondary px-1.5 rounded-full text-[9px]">
-            {servers.length}
-          </span>
-        </button>
-        <button
-          onClick={() => setActiveTab('marketplace')}
-          className={clsx(
-            "px-3 py-1.5 text-xs font-medium border-b-2 transition-colors flex items-center gap-1.5",
-            activeTab === 'marketplace'
-              ? "border-primary text-primary"
-              : "border-transparent text-text-secondary hover:text-text-primary"
-          )}
-        >
-          <ShoppingBag className="w-3.5 h-3.5" />
-          Marketplace
-        </button>
-      </div>
-
-      {/* Content */}
-      {activeTab === 'installed' ? (
-        <div className="space-y-4">
-          {/* Action Bar */}
-          <div className="flex items-center justify-between">
-            {configPath && (
-              <button
-                onClick={handleCopyPath}
-                className="flex items-center gap-2 text-[10px] text-text-disabled hover:text-text-secondary transition-colors group"
-                title="Click to copy path"
-              >
-                {copied ? (
-                  <Check className="w-3 h-3 text-success" />
-                ) : (
-                  <Copy className="w-3 h-3 group-hover:text-primary" />
-                )}
-                <span className="font-mono">{configPath}</span>
-                {copied && <span className="text-success text-[9px]">Copied!</span>}
-              </button>
-            )}
-            
-            <button
-              onClick={() => {
-                setInstallConfig(undefined);
-                setIsAddingServer(true);
-              }}
-              className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-primary-foreground bg-primary hover:bg-primary/80 rounded transition-colors"
-            >
-              <Plus className="w-3 h-3" />
-              Add Custom Server
-            </button>
-          </div>
-
-          {/* Error message */}
-          {error && (
-            <div className="p-2 rounded bg-danger/10 border border-danger/20 text-xs text-danger flex items-center gap-2">
-              <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-              {error}
-            </div>
-          )}
-
-          {/* Add server form */}
-          {isAddingServer && (
-            <AddServerForm 
-              initialConfig={installConfig}
-              onSave={handleAddServer} 
-              onCancel={() => {
-                setIsAddingServer(false);
-                setInstallConfig(undefined);
-              }} 
+        <ActionButton
+          variant="secondary"
+          icon={
+            <RefreshCw
+              className={clsx('h-3 w-3', isLoading && 'animate-spin')}
             />
-          )}
+          }
+          onClick={handleRefresh}
+          disabled={isLoading}
+        >
+          Refresh
+        </ActionButton>
+      </div>
 
-          {/* Server list */}
-          {isLoading ? (
-            <div className="flex items-center justify-center py-8 text-text-secondary">
-              <Loader2 className="w-5 h-5 animate-spin" />
-            </div>
-          ) : servers.length === 0 && !isAddingServer ? (
-            <div className="text-center py-8">
-              <Server className="w-8 h-8 text-text-disabled mx-auto mb-2" />
-              <p className="text-xs text-text-secondary">No MCP servers configured</p>
-              <p className="text-[10px] text-text-disabled mt-1">
-                Check the Marketplace to discover available tools
-              </p>
-              <button
-                onClick={() => setActiveTab('marketplace')}
-                className="mt-3 px-3 py-1.5 text-xs font-medium text-primary bg-primary/10 hover:bg-primary/20 rounded transition-colors"
-              >
-                Browse Marketplace
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {servers.map((server) => (
-                <ServerCard
-                  key={server.config.id}
-                  server={server}
-                  isExpanded={expandedServer === server.config.id}
-                  onToggleExpand={() =>
-                    setExpandedServer(expandedServer === server.config.id ? null : server.config.id)
-                  }
-                />
-              ))}
-            </div>
+      {/* Add Server Section */}
+      <Section
+        title="Custom Server"
+        description="Add an MCP server by editing settings.json or use the form below."
+      >
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+          {configPath && (
+            <button
+              onClick={handleCopyPath}
+              className="group flex min-w-0 items-center gap-1.5 text-left text-[10.5px] text-text-disabled transition-colors hover:text-text-secondary"
+              title="Click to copy path"
+            >
+              {copied ? (
+                <Check className="h-3 w-3 shrink-0 text-success" />
+              ) : (
+                <Copy className="h-3 w-3 shrink-0 group-hover:text-primary" />
+              )}
+              <span className="truncate font-mono">{configPath}</span>
+              {copied && (
+                <span className="text-[9px] text-success">Copied!</span>
+              )}
+            </button>
           )}
+          <ActionButton
+            variant="primary"
+            icon={<Plus className="h-3 w-3" />}
+            onClick={() => setIsAddingServer(true)}
+          >
+            Add Custom Server
+          </ActionButton>
         </div>
-      ) : (
-        /* Marketplace Tab */
-        <div className="grid grid-cols-2 gap-3">
-          {MARKETPLACE_ITEMS.map((item) => {
-            const isInstalled = servers.some(s => s.config.name === item.name); // Simple check by name
-            return (
-              <MarketplaceCard
-                key={item.id}
-                item={item}
-                isInstalled={isInstalled}
-                onInstall={handleInstall}
-              />
-            );
-          })}
+      </Section>
+
+      {error && (
+        <div
+          className="flex items-center gap-2 px-4 py-2.5 text-[11.5px]"
+          style={{
+            backgroundColor:
+              'color-mix(in srgb, var(--aurora-common-danger) 10%, transparent)',
+            border:
+              '1px solid color-mix(in srgb, var(--aurora-common-danger) 32%, transparent)',
+            borderRadius: 6,
+            color: 'var(--aurora-common-danger)',
+          }}
+        >
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+          <span>{error}</span>
         </div>
       )}
+
+      {isAddingServer && (
+        <AddServerForm
+          onSave={handleAddServer}
+          onCancel={() => setIsAddingServer(false)}
+        />
+      )}
+
+      <Section
+        title="Configured Servers"
+        description="Click a server to expand and edit. Use the toggle to enable or disable without losing settings."
+      >
+        {isLoading ? (
+          <div className="flex items-center justify-center px-4 py-8">
+            <Loader2 className="h-4 w-4 animate-spin text-text-secondary" />
+          </div>
+        ) : servers.length === 0 && !isAddingServer ? (
+          <div className="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center">
+            <Server className="h-8 w-8 text-text-disabled" />
+            <p className="text-[12px] font-medium text-text-secondary">
+              No MCP servers configured
+            </p>
+            <p className="text-[11px] text-text-disabled">
+              Click "Add Custom Server" to configure your first MCP server.
+            </p>
+          </div>
+        ) : (
+          <div
+            className="space-y-1.5 p-1.5"
+            style={{
+              backgroundColor:
+                'color-mix(in srgb, var(--aurora-sidebar-background) 50%, transparent)',
+            }}
+          >
+            {servers.map((server) => (
+              <ServerCard
+                key={server.config.id}
+                server={server}
+                isExpanded={expandedServer === server.config.id}
+                onToggleExpand={() =>
+                  setExpandedServer(
+                    expandedServer === server.config.id
+                      ? null
+                      : server.config.id,
+                  )
+                }
+              />
+            ))}
+          </div>
+        )}
+      </Section>
     </div>
   );
 };

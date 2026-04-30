@@ -13,6 +13,10 @@ import {
 import type { ExplorerIconPackId } from "../lib/icon-types";
 import { resolveThinkingModelPair } from "../lib/thinking-models";
 import { databaseService } from "../services/database";
+import {
+  normalizeAgentExecutionMode,
+  type AgentExecutionMode,
+} from "../services/agent-execution-mode";
 import { providerCatalogService, type ProviderCatalogPreset } from "../services/provider-catalog";
 import type { ProviderConfig } from "../services/providers/types";
 import type { AppSettings as DbAppSettings, DbLLMProvider } from "../types/database";
@@ -43,6 +47,10 @@ const applyUiPreferences = (fontFamily: string, textScale: number) => {
   document.documentElement.style.setProperty('--aurora-ui-font-family', resolvedFamily);
 };
 
+const normalizeSpeechRuntimePath = (value?: string | null): string => {
+  const trimmed = value?.trim() ?? "";
+  return trimmed === "__bundled__" ? "" : trimmed;
+};
 
 // ============================================
 // SETTINGS STATE TYPES
@@ -55,6 +63,7 @@ interface SettingsState {
 
   // Tool Approval
   autoApproveTools: boolean;
+  agentExecutionMode: AgentExecutionMode;
 
   // Autosave Settings
   autoSave: 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange';
@@ -94,6 +103,14 @@ interface SettingsState {
   projectLayoutEnabled: boolean; // Include file tree in first message
   skillToggles: Record<string, boolean>;
   skillsEnabled: boolean;
+  speechBackend: string;
+  speechDevicePreference: 'auto' | 'cpu' | 'gpu';
+  speechEnabled: boolean;
+  speechEngine: string;
+  speechLanguage: string;
+  speechModelPath: string;
+  speechRuntimePath: string;
+  speechThreads: number;
 
   // Providers
   providers: LLMProvider[];
@@ -101,6 +118,7 @@ interface SettingsState {
   selectedModel: string; // Format: "providerId:model"
   setAutoAcceptChanges: (value: boolean) => void;
   setAutoApproveTools: (value: boolean) => void;
+  setAgentExecutionMode: (mode: AgentExecutionMode) => void;
   setAutoSave: (mode: 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange') => void;
   setAutoSaveDelay: (delay: number) => void;
   setExplorerIconPack: (packId: ExplorerIconPackId) => void;
@@ -114,6 +132,14 @@ interface SettingsState {
   setSelectedModel: (model: string) => void;
   setSkillEnabled: (storageKey: string, enabled: boolean) => void;
   setSkillsEnabled: (enabled: boolean) => void;
+  setSpeechBackend: (backend: string) => void;
+  setSpeechDevicePreference: (preference: 'auto' | 'cpu' | 'gpu') => void;
+  setSpeechEnabled: (enabled: boolean) => void;
+  setSpeechEngine: (engine: string) => void;
+  setSpeechLanguage: (language: string) => void;
+  setSpeechModelPath: (path: string) => void;
+  setSpeechRuntimePath: (path: string) => void;
+  setSpeechThreads: (threads: number) => void;
   setSyntaxValidationEnabled: (value: boolean) => void;
   setTemperature: (temp: number) => void;
   setTheme: (theme: "dark" | "light") => void;
@@ -411,6 +437,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   // Tool Approval
   autoApproveTools: false,
+  agentExecutionMode: "agent",
 
   // File Changes Approval
   autoAcceptChanges: false,
@@ -452,6 +479,14 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   toolApprovalSettings: { ...DEFAULT_TOOL_APPROVAL_SETTINGS },
   skillsEnabled: true,
   skillToggles: {},
+  speechEnabled: false,
+  speechEngine: "qwen3-rust",
+  speechRuntimePath: "",
+  speechModelPath: "",
+  speechBackend: "auto",
+  speechDevicePreference: "auto",
+  speechThreads: 4,
+  speechLanguage: "auto",
 
   // ============================================
   // DATABASE OPERATIONS
@@ -531,6 +566,9 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           appSettings.selectedModel || DEFAULT_SELECTED_MODEL,
           get().providers,
         );
+        const persistedExecutionMode = normalizeAgentExecutionMode(
+          appSettings.agentExecutionMode,
+        );
         const persistedThinkingEnabled = appSettings.thinkingEnabled ?? true;
         const syncedThinkingEnabled = syncThinkingForSelectedModel(
           selectedModel,
@@ -541,12 +579,21 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         set({
           selectedModel,
           autoApproveTools: appSettings.autoApproveTools ?? false,
+          agentExecutionMode: persistedExecutionMode,
           autoAcceptChanges: appSettings.autoAcceptChanges ?? false,
           explorerIconPack,
           syntaxValidationEnabled: appSettings.syntaxValidationEnabled ?? true,
           projectLayoutEnabled: appSettings.projectLayoutEnabled ?? true,
           skillsEnabled: appSettings.skillsEnabled ?? true,
           skillToggles: appSettings.skillToggles ?? {},
+          speechEnabled: appSettings.speechEnabled ?? false,
+          speechEngine: appSettings.speechEngine ?? "qwen3-rust",
+          speechRuntimePath: normalizeSpeechRuntimePath(appSettings.speechRuntimePath),
+          speechModelPath: appSettings.speechModelPath ?? "",
+          speechBackend: appSettings.speechBackend ?? "auto",
+          speechDevicePreference: appSettings.speechDevicePreference ?? "auto",
+          speechThreads: appSettings.speechThreads ?? 4,
+          speechLanguage: appSettings.speechLanguage ?? "auto",
           fireworksTabEnabled: appSettings.fireworksTabEnabled ?? false,
           fireworksAccountId: appSettings.fireworksAccountId ?? "",
           fontSize: appSettings.fontSize ?? 14,
@@ -600,6 +647,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       // Save app settings
       const appSettings: DbAppSettings = {
         selectedModel: state.selectedModel,
+        agentExecutionMode: state.agentExecutionMode,
         autoApproveTools: state.autoApproveTools,
         autoAcceptChanges: state.autoAcceptChanges,
         explorerIconPack: state.explorerIconPack,
@@ -607,6 +655,14 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         projectLayoutEnabled: state.projectLayoutEnabled,
         skillsEnabled: state.skillsEnabled,
         skillToggles: state.skillToggles,
+        speechEnabled: state.speechEnabled,
+        speechEngine: state.speechEngine,
+        speechRuntimePath: state.speechRuntimePath,
+        speechModelPath: state.speechModelPath,
+        speechBackend: state.speechBackend,
+        speechDevicePreference: state.speechDevicePreference,
+        speechThreads: state.speechThreads,
+        speechLanguage: state.speechLanguage,
         fireworksTabEnabled: state.fireworksTabEnabled,
         fireworksAccountId: state.fireworksAccountId,
         fontSize: state.fontSize,
@@ -746,6 +802,12 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     get().saveToDatabase();
   },
 
+  setAgentExecutionMode: (mode: AgentExecutionMode) => {
+    const nextMode = normalizeAgentExecutionMode(mode);
+    set({ agentExecutionMode: nextMode });
+    get().saveToDatabase();
+  },
+
   setAutoAcceptChanges: (value: boolean) => {
     set({ autoAcceptChanges: value });
     get().saveToDatabase();
@@ -773,6 +835,46 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         [storageKey]: enabled,
       },
     }));
+    get().saveToDatabase();
+  },
+
+  setSpeechEnabled: (enabled: boolean) => {
+    set({ speechEnabled: enabled });
+    get().saveToDatabase();
+  },
+
+  setSpeechEngine: (engine: string) => {
+    set({ speechEngine: engine || "qwen3-rust" });
+    get().saveToDatabase();
+  },
+
+  setSpeechRuntimePath: (path: string) => {
+    set({ speechRuntimePath: normalizeSpeechRuntimePath(path) });
+    get().saveToDatabase();
+  },
+
+  setSpeechModelPath: (path: string) => {
+    set({ speechModelPath: path });
+    get().saveToDatabase();
+  },
+
+  setSpeechBackend: (backend: string) => {
+    set({ speechBackend: backend || "auto" });
+    get().saveToDatabase();
+  },
+
+  setSpeechDevicePreference: (preference: 'auto' | 'cpu' | 'gpu') => {
+    set({ speechDevicePreference: preference });
+    get().saveToDatabase();
+  },
+
+  setSpeechThreads: (threads: number) => {
+    set({ speechThreads: Math.min(32, Math.max(1, Math.round(threads) || 4)) });
+    get().saveToDatabase();
+  },
+
+  setSpeechLanguage: (language: string) => {
+    set({ speechLanguage: language || "auto" });
     get().saveToDatabase();
   },
 

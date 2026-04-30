@@ -1,5 +1,5 @@
 import type { DetectionResult, LocalModel, LocalProvider } from '../../services/local-model-detector';
-import type { SettingsSelectOption } from '../ui/SettingsSelect';
+import type { IdeSelectOption } from '../ui/IdeSelect';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -73,7 +73,7 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-export function modelToSelectOption(m: LocalModel): SettingsSelectOption {
+export function modelToSelectOption(m: LocalModel): IdeSelectOption {
   const descParts: string[] = [];
   if (m.family) descParts.push(m.family);
   if (m.parameterSize) descParts.push(m.parameterSize);

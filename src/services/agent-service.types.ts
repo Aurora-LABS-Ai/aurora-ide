@@ -1,4 +1,5 @@
 import type { StreamCallbacks as ProviderStreamCallbacks, ToolCallRequest } from "./providers/types";
+import type { AgentExecutionMode } from "./agent-execution-mode";
 
 export interface AgentCallbacks extends ProviderStreamCallbacks {
   onIterationComplete?: (iteration: number) => void;
@@ -12,6 +13,7 @@ export interface AgentCallbacks extends ProviderStreamCallbacks {
 export interface AgentConfig {
   autoApproveTools?: boolean;
   beforeToolExecution?: () => Promise<void>;
+  executionMode?: AgentExecutionMode;
   getToolApproval?: (toolName: string) => "auto" | "always_ask" | "deny";
   maxTokens?: number;
   maxToolIterations?: number;

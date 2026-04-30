@@ -1,9 +1,17 @@
 import React from 'react';
 import { clsx } from 'clsx';
-import { ExternalLink, HardDrive, Loader2, Monitor, RefreshCw, Server, WifiOff } from 'lucide-react';
+import {
+  ExternalLink,
+  HardDrive,
+  Loader2,
+  Monitor,
+  RefreshCw,
+  Server,
+  WifiOff,
+} from 'lucide-react';
 import type { LocalProvider } from '../../services/local-model-detector';
 import type { ActiveConnection, DetectionPhase } from './local-provider-utils';
-import { settingsCardStyle, settingsInputStyle } from '../modals/settings-shared';
+import { Section, ActionButton, StatusPill } from '../modals/settings-primitives';
 
 interface Props {
   phase: DetectionPhase;
@@ -14,77 +22,131 @@ interface Props {
   onRescan: () => void;
 }
 
+const openExternal = async (url: string) => {
+  try {
+    const { open } = await import('@tauri-apps/plugin-shell');
+    await open(url);
+    return;
+  } catch {
+    if (typeof window !== 'undefined') {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  }
+};
+
 export const LocalServerHeader: React.FC<Props> = ({
-  phase, allProviders, activeProviderIndex, activeConnection, onProviderSelect, onRescan,
+  phase,
+  allProviders,
+  activeProviderIndex,
+  activeConnection,
+  onProviderSelect,
+  onRescan,
 }) => (
-  <div className="rounded-[20px] px-5 py-4" style={settingsCardStyle}>
-    <div className="flex items-center justify-between">
-      <div>
-        <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-          <HardDrive className="w-4 h-4 text-primary" />
-          Local AI Models
-        </h3>
-        <p className="mt-1 text-[11px] leading-relaxed text-text-secondary max-w-md">
-          Run models privately on your machine with Ollama or LM Studio.
-          Zero API keys required.
-        </p>
-      </div>
-      <button
+  <Section
+    title="Local AI Models"
+    description="Run models privately on your machine with Ollama or LM Studio. Zero API keys required."
+    icon={<HardDrive className="h-3.5 w-3.5 text-text-secondary" />}
+    badge={
+      <ActionButton
+        variant="secondary"
+        icon={
+          <RefreshCw
+            className={clsx('h-3 w-3', phase === 'scanning' && 'animate-spin')}
+          />
+        }
         onClick={onRescan}
         disabled={phase === 'scanning'}
-        className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-[11px] font-semibold text-text-secondary hover:text-text-primary transition-colors"
-        style={settingsInputStyle}
       >
-        <RefreshCw className={clsx('w-3 h-3', phase === 'scanning' && 'animate-spin')} />
-        {phase === 'scanning' ? 'Scanning...' : 'Rescan'}
-      </button>
-    </div>
+        {phase === 'scanning' ? 'Scanning…' : 'Rescan'}
+      </ActionButton>
+    }
+  >
+    <div className="px-4 py-3">
+      {phase === 'done' && allProviders.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {allProviders.map((provider, index) => {
+            const isActive = activeProviderIndex === index;
+            const isConnected = activeConnection?.type === provider.type;
+            return (
+              <button
+                key={`${provider.type}-${provider.baseUrl}`}
+                onClick={() => onProviderSelect(index)}
+                className="inline-flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium transition-colors"
+                style={{
+                  color: isActive
+                    ? 'var(--aurora-common-primary)'
+                    : 'var(--aurora-text-secondary, var(--aurora-editor-foreground))',
+                  backgroundColor: isActive
+                    ? 'color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)'
+                    : 'color-mix(in srgb, var(--aurora-editor-background) 50%, var(--aurora-sidebar-background) 50%)',
+                  border: `1px solid ${
+                    isActive
+                      ? 'color-mix(in srgb, var(--aurora-common-primary) 50%, transparent)'
+                      : 'color-mix(in srgb, var(--aurora-common-border) 50%, transparent)'
+                  }`,
+                  borderRadius: 6,
+                }}
+              >
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{
+                    backgroundColor: isConnected
+                      ? 'var(--aurora-common-success)'
+                      : 'var(--aurora-common-primary)',
+                  }}
+                />
+                {provider.type === 'ollama' ? (
+                  <Server size={10} />
+                ) : (
+                  <Monitor size={10} />
+                )}
+                <span>{provider.name}</span>
+                {provider.version && (
+                  <span className="text-text-disabled">v{provider.version}</span>
+                )}
+                <StatusPill variant="neutral" dot={false}>
+                  {provider.models.length} model{provider.models.length === 1 ? '' : 's'}
+                </StatusPill>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
-    {phase === 'done' && (
-      <div className="flex flex-wrap items-center gap-2 mt-3">
-        {allProviders.map((p, i) => (
+      {phase === 'done' && allProviders.length === 0 && (
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-disabled">
+          <WifiOff size={12} />
+          <span>No local servers detected</span>
+          <span>·</span>
           <button
-            key={`${p.type}-${p.baseUrl}`}
-            onClick={() => onProviderSelect(i)}
-            className={clsx(
-              'inline-flex items-center gap-2 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all',
-              activeProviderIndex === i ? 'ring-1 ring-primary/40' : 'opacity-70 hover:opacity-100',
-            )}
-            style={settingsInputStyle}
+            type="button"
+            onClick={() => openExternal('https://ollama.com/download')}
+            className="inline-flex items-center gap-0.5 hover:underline"
+            style={{ color: 'var(--aurora-common-primary)' }}
           >
-            <span className={clsx(
-              'w-2 h-2 rounded-full shrink-0',
-              activeConnection?.type === p.type ? 'bg-success' : 'bg-primary',
-            )} />
-            {p.type === 'ollama' ? <Server size={11} /> : <Monitor size={11} />}
-            {p.name}
-            {p.version && <span className="text-text-disabled">v{p.version}</span>}
-            <span className="text-text-disabled">{p.models.length} model{p.models.length !== 1 ? 's' : ''}</span>
+            Ollama <ExternalLink size={9} />
           </button>
-        ))}
-        {allProviders.length === 0 && (
-          <div className="flex items-center gap-2 text-[11px] text-text-disabled">
-            <WifiOff size={12} />
-            No local servers detected
-            <span>&middot;</span>
-            <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer"
-              className="text-primary hover:text-primary-hover flex items-center gap-0.5">
-              Ollama <ExternalLink size={9} />
-            </a>
-            <a href="https://lmstudio.ai" target="_blank" rel="noopener noreferrer"
-              className="text-primary hover:text-primary-hover flex items-center gap-0.5">
-              LM Studio <ExternalLink size={9} />
-            </a>
-          </div>
-        )}
-      </div>
-    )}
+          <button
+            type="button"
+            onClick={() => openExternal('https://lmstudio.ai')}
+            className="inline-flex items-center gap-0.5 hover:underline"
+            style={{ color: 'var(--aurora-common-primary)' }}
+          >
+            LM Studio <ExternalLink size={9} />
+          </button>
+        </div>
+      )}
 
-    {phase === 'scanning' && allProviders.length === 0 && (
-      <div className="flex items-center gap-2 mt-3 text-[11px] text-text-secondary">
-        <Loader2 size={12} className="animate-spin text-primary" />
-        Scanning localhost for Ollama and LM Studio...
-      </div>
-    )}
-  </div>
+      {phase === 'scanning' && allProviders.length === 0 && (
+        <div className="flex items-center gap-2 text-[11px] text-text-secondary">
+          <Loader2
+            size={12}
+            className="animate-spin"
+            style={{ color: 'var(--aurora-common-primary)' }}
+          />
+          <span>Scanning localhost for Ollama and LM Studio…</span>
+        </div>
+      )}
+    </div>
+  </Section>
 );

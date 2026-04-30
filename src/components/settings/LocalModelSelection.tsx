@@ -1,11 +1,18 @@
 import React from 'react';
-import { clsx } from 'clsx';
 import { CheckCircle2, CircleStop, HardDrive, Loader2, Play, Wrench, Zap } from 'lucide-react';
-import type { LocalModel, LocalProvider, OllamaRunningModel } from '../../services/local-model-detector';
-import type { SettingsSelectOption } from '../ui/SettingsSelect';
-import { SettingsSelect } from '../ui/SettingsSelect';
+import type {
+  LocalModel,
+  LocalProvider,
+  OllamaRunningModel,
+} from '../../services/local-model-detector';
+import { IdeSelect, type IdeSelectOption } from '../ui/IdeSelect';
 import { formatBytes, modelToSelectOption } from './local-provider-utils';
-import { settingsCardStyle, settingsPrimaryButtonStyle } from '../modals/settings-shared';
+import {
+  Section,
+  FormBlock,
+  ActionButton,
+  KeyValue,
+} from '../modals/settings-primitives';
 
 interface Props {
   currentProvider: LocalProvider;
@@ -22,126 +29,191 @@ interface Props {
 }
 
 export const LocalModelSelection: React.FC<Props> = ({
-  currentProvider, selectedModelId, onModelChange,
-  isConnected, isOllama,
-  isLoadingModel, isUnloadingModel,
-  currentModelRunning, runningModels,
-  onLoad, onUnload,
+  currentProvider,
+  selectedModelId,
+  onModelChange,
+  isConnected,
+  isOllama,
+  isLoadingModel,
+  isUnloadingModel,
+  currentModelRunning,
+  runningModels,
+  onLoad,
+  onUnload,
 }) => {
-  const modelOptions: SettingsSelectOption[] = currentProvider.models.map(modelToSelectOption);
-  const selectedModel: LocalModel | undefined = currentProvider.models.find((m) => m.id === selectedModelId);
+  const modelOptions: IdeSelectOption[] = currentProvider.models.map(modelToSelectOption);
+  const selectedModel: LocalModel | undefined = currentProvider.models.find(
+    (model) => model.id === selectedModelId,
+  );
 
   return (
-    <div className="rounded-[20px] px-5 py-4 space-y-4 flex flex-col" style={settingsCardStyle}>
-      <div className="flex items-center gap-2">
-        <Wrench className="w-3.5 h-3.5 text-text-secondary" />
-        <span className="text-[11px] font-semibold text-text-primary tracking-wide uppercase">Model Selection</span>
-      </div>
-
-      <SettingsSelect
-        options={modelOptions}
-        value={selectedModelId}
-        onChange={(v) => onModelChange(String(v))}
-        placeholder="Choose a model"
-        ariaLabel="Local model selection"
-      />
+    <Section
+      title="Model Selection"
+      icon={<Wrench className="h-3.5 w-3.5 text-text-secondary" />}
+    >
+      <FormBlock>
+        <IdeSelect
+          options={modelOptions}
+          value={selectedModelId}
+          onChange={(value) => onModelChange(String(value))}
+          placeholder="Choose a model"
+          ariaLabel="Local model selection"
+        />
+      </FormBlock>
 
       {/* VRAM status when loaded */}
       {currentModelRunning && (
-        <div className="rounded-xl border border-success/30 bg-success/5 px-3 py-2.5 space-y-1.5">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
-            <span className="text-[11px] font-semibold text-success">Model Loaded in VRAM</span>
+        <FormBlock>
+          <div
+            className="space-y-1.5 px-3 py-2.5"
+            style={{
+              backgroundColor:
+                'color-mix(in srgb, var(--aurora-common-success) 6%, transparent)',
+              border:
+                '1px solid color-mix(in srgb, var(--aurora-common-success) 28%, transparent)',
+              borderRadius: 6,
+            }}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                className="h-1.5 w-1.5 animate-pulse rounded-full"
+                style={{ backgroundColor: 'var(--aurora-common-success)' }}
+              />
+              <span
+                className="text-[11px] font-semibold"
+                style={{ color: 'var(--aurora-common-success)' }}
+              >
+                Model Loaded in VRAM
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+              {currentModelRunning.sizeVram > 0 && (
+                <KeyValue label="VRAM" value={formatBytes(currentModelRunning.sizeVram)} mono />
+              )}
+              {currentModelRunning.contextLength > 0 && (
+                <KeyValue
+                  label="Context"
+                  value={currentModelRunning.contextLength.toLocaleString()}
+                  mono
+                />
+              )}
+              {currentModelRunning.expiresAt && (
+                <div className="col-span-2">
+                  <KeyValue
+                    label="Expires"
+                    value={(() => {
+                      const remaining =
+                        new Date(currentModelRunning.expiresAt).getTime() - Date.now();
+                      if (remaining <= 0) return 'soon';
+                      const mins = Math.ceil(remaining / 60000);
+                      return mins > 60
+                        ? `${Math.floor(mins / 60)}h ${mins % 60}m`
+                        : `${mins}m`;
+                    })()}
+                    mono
+                  />
+                </div>
+              )}
+            </div>
           </div>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] text-text-secondary">
-            {currentModelRunning.sizeVram > 0 && (
-              <div className="flex justify-between">
-                <span>VRAM</span>
-                <span className="font-mono text-text-primary">{formatBytes(currentModelRunning.sizeVram)}</span>
-              </div>
-            )}
-            {currentModelRunning.contextLength > 0 && (
-              <div className="flex justify-between">
-                <span>Context</span>
-                <span className="font-mono text-text-primary">{currentModelRunning.contextLength.toLocaleString()}</span>
-              </div>
-            )}
-            {currentModelRunning.expiresAt && (
-              <div className="col-span-2 flex justify-between">
-                <span>Expires</span>
-                <span className="font-mono text-text-primary">
-                  {(() => {
-                    const remaining = new Date(currentModelRunning.expiresAt).getTime() - Date.now();
-                    if (remaining <= 0) return 'soon';
-                    const mins = Math.ceil(remaining / 60000);
-                    return mins > 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
-                  })()}
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
+        </FormBlock>
       )}
 
-      {/* Load / Ready / Unload buttons */}
-      <div className="mt-auto">
+      <FormBlock divided={false}>
         {isOllama ? (
-          <div className="flex gap-2">
+          <div className="flex gap-1.5">
             {currentModelRunning ? (
               <>
-                <div className="flex-1 py-2.5 rounded-xl text-xs font-semibold bg-success/10 text-success border border-success/30 flex items-center justify-center gap-1.5">
+                <div
+                  className="flex flex-1 items-center justify-center gap-1.5 px-3 py-1.5 text-[11.5px] font-semibold"
+                  style={{
+                    backgroundColor:
+                      'color-mix(in srgb, var(--aurora-common-success) 12%, transparent)',
+                    color: 'var(--aurora-common-success)',
+                    border:
+                      '1px solid color-mix(in srgb, var(--aurora-common-success) 30%, transparent)',
+                    borderRadius: 6,
+                  }}
+                >
                   <CheckCircle2 size={12} /> Ready
                 </div>
-                <button
-                  onClick={onUnload}
+                <ActionButton
+                  variant="danger"
+                  icon={
+                    isUnloadingModel ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <CircleStop className="h-3 w-3" />
+                    )
+                  }
                   disabled={isUnloadingModel}
-                  className="px-4 py-2.5 rounded-xl text-xs font-semibold text-error border border-error/30 bg-error/5 hover:bg-error/10 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                  onClick={onUnload}
                 >
-                  {isUnloadingModel
-                    ? <><Loader2 size={12} className="animate-spin" /> Unloading...</>
-                    : <><CircleStop size={12} /> Unload</>}
-                </button>
+                  {isUnloadingModel ? 'Unloading…' : 'Unload'}
+                </ActionButton>
               </>
             ) : (
-              <button
-                onClick={onLoad}
+              <ActionButton
+                variant="primary"
+                className="!w-full !justify-center"
+                icon={
+                  isLoadingModel ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Play className="h-3 w-3" />
+                  )
+                }
                 disabled={!selectedModel || isLoadingModel}
-                className="w-full py-2.5 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 text-primary-foreground hover:bg-primary-hover disabled:opacity-50"
-                style={settingsPrimaryButtonStyle}
+                onClick={onLoad}
               >
-                {isLoadingModel
-                  ? <><Loader2 size={12} className="animate-spin" /> Loading into VRAM...</>
-                  : <><Play size={12} /> Load Model</>}
-              </button>
+                {isLoadingModel ? 'Loading into VRAM…' : 'Load Model'}
+              </ActionButton>
             )}
           </div>
         ) : (
-          <button
-            onClick={onLoad}
-            disabled={!selectedModel || isLoadingModel}
-            className={clsx(
-              'w-full py-2.5 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-1.5',
-              isConnected
-                ? 'bg-success/10 text-success border border-success/30 hover:bg-success/20'
-                : 'text-primary-foreground hover:bg-primary-hover disabled:opacity-50',
+          <div className="flex">
+            {isConnected ? (
+              <div
+                className="flex w-full items-center justify-center gap-1.5 px-3 py-1.5 text-[11.5px] font-semibold"
+                style={{
+                  backgroundColor:
+                    'color-mix(in srgb, var(--aurora-common-success) 12%, transparent)',
+                  color: 'var(--aurora-common-success)',
+                  border:
+                    '1px solid color-mix(in srgb, var(--aurora-common-success) 30%, transparent)',
+                  borderRadius: 6,
+                }}
+              >
+                <CheckCircle2 size={12} /> Connected — {selectedModelId}
+              </div>
+            ) : (
+              <ActionButton
+                variant="primary"
+                className="!w-full !justify-center"
+                icon={
+                  isLoadingModel ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Zap className="h-3 w-3" />
+                  )
+                }
+                disabled={!selectedModel || isLoadingModel}
+                onClick={onLoad}
+              >
+                {isLoadingModel ? 'Connecting…' : 'Connect Model'}
+              </ActionButton>
             )}
-            style={!isConnected ? settingsPrimaryButtonStyle : undefined}
-          >
-            {isLoadingModel ? <><Loader2 size={12} className="animate-spin" /> Connecting...</>
-              : isConnected ? <><CheckCircle2 size={12} /> Connected &mdash; {selectedModelId}</>
-              : <><Zap size={12} /> Connect Model</>}
-          </button>
-        )}
-
-        {/* Running models summary */}
-        {runningModels.length > 0 && isOllama && (
-          <div className="mt-3 text-[10px] text-text-disabled flex items-center gap-1.5">
-            <HardDrive size={10} />
-            {runningModels.length} model{runningModels.length > 1 ? 's' : ''} loaded
-            ({formatBytes(runningModels.reduce((acc, rm) => acc + rm.sizeVram, 0))} total)
           </div>
         )}
-      </div>
-    </div>
+
+        {runningModels.length > 0 && isOllama && (
+          <div className="mt-2 flex items-center gap-1.5 text-[10px] text-text-disabled">
+            <HardDrive size={10} />
+            {runningModels.length} model{runningModels.length === 1 ? '' : 's'} loaded (
+            {formatBytes(runningModels.reduce((acc, model) => acc + model.sizeVram, 0))} total)
+          </div>
+        )}
+      </FormBlock>
+    </Section>
   );
 };

@@ -444,9 +444,7 @@ pub mod install {
         println!("  aurora .                              Open current directory");
         println!("  aurora /path/to/dir                   Open specific directory");
         println!("  aurora file.txt                       Open a file");
-        println!(
-            "  aurora icon-pack build --manifest ... Build a .aurora icon-pack bundle"
-        );
+        println!("  aurora icon-pack build --manifest ... Build a .aurora icon-pack bundle");
 
         Ok(())
     }
@@ -592,9 +590,7 @@ pub mod install {
         println!("  aurora .                              Open current directory");
         println!("  aurora /path/to/dir                   Open specific directory");
         println!("  aurora file.txt                       Open a file");
-        println!(
-            "  aurora icon-pack build --manifest ... Build a .aurora icon-pack bundle"
-        );
+        println!("  aurora icon-pack build --manifest ... Build a .aurora icon-pack bundle");
 
         Ok(())
     }

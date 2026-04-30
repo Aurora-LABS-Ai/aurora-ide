@@ -9,6 +9,19 @@ interface DetachedWindowState {
   windowLabel: string | null;
 }
 
+export type SettingsTabId =
+  | "providers"
+  | "local"
+  | "fireworks"
+  | "tools"
+  | "general"
+  | "themes"
+  | "semantic"
+  | "speech"
+  | "mcp"
+  | "skills"
+  | "about";
+
 interface UiState {
   closeToolApproval: () => void;
   detachChat: (windowLabel: string) => void;
@@ -22,6 +35,12 @@ interface UiState {
   setAuditOpen: (isOpen: boolean) => void;
   setChatOpen: (isOpen: boolean) => void;
   setSettingsOpen: (isOpen: boolean) => void;
+  /** Open settings panel and optionally jump to a specific tab. */
+  openSettings: (tab?: SettingsTabId) => void;
+  /** Tab to open the settings panel on (consumed by SettingsPanel). */
+  settingsInitialTab: SettingsTabId | null;
+  /** Clear the initial-tab hint after the panel has consumed it. */
+  consumeSettingsInitialTab: () => void;
   setSidebarOpen: (isOpen: boolean) => void;
   theme: "dark" | "light";
   toggleChat: () => void;
@@ -45,6 +64,7 @@ interface UiState {
 export const useUiStore = create<UiState>((set) => ({
   theme: "dark",
   isSettingsOpen: false,
+  settingsInitialTab: null,
   isAuditOpen: false,
   isChatOpen: true,
   isAgentMode: false,
@@ -75,6 +95,12 @@ export const useUiStore = create<UiState>((set) => ({
     }),
 
   setSettingsOpen: (isOpen) => set({ isSettingsOpen: isOpen }),
+  openSettings: (tab) =>
+    set({
+      isSettingsOpen: true,
+      settingsInitialTab: tab ?? null,
+    }),
+  consumeSettingsInitialTab: () => set({ settingsInitialTab: null }),
   setAuditOpen: (isOpen) => set({ isAuditOpen: isOpen }),
   toggleChat: () => set((state) => ({ isChatOpen: !state.isChatOpen })),
   setChatOpen: (isOpen) => set({ isChatOpen: isOpen }),

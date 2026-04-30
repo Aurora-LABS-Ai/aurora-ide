@@ -465,9 +465,9 @@ fn inject_reasoning_block(content_blocks: &mut Vec<Value>, reasoning_content: Op
         return;
     }
 
-    let already_has_thinking = content_blocks.iter().any(|block| {
-        block.get("type").and_then(Value::as_str) == Some("thinking")
-    });
+    let already_has_thinking = content_blocks
+        .iter()
+        .any(|block| block.get("type").and_then(Value::as_str) == Some("thinking"));
 
     if already_has_thinking {
         return;
@@ -580,6 +580,9 @@ mod tests {
 
         inject_reasoning_block(&mut blocks, Some("new"));
 
-        assert_eq!(blocks, vec![json!({ "type": "thinking", "thinking": "existing" })]);
+        assert_eq!(
+            blocks,
+            vec![json!({ "type": "thinking", "thinking": "existing" })]
+        );
     }
 }

@@ -38,136 +38,194 @@ export const PromptAttachmentPopup: React.FC<PromptAttachmentPopupProps> = ({
       {isOpen && (
         <motion.div
           id={id}
-          initial={{ opacity: 0, y: 10, scale: 0.985 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: 6, scale: 0.99 }}
-          transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-          className="fixed z-[10000] w-80 overflow-hidden rounded-2xl"
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 4, transition: { duration: 0.1 } }}
+          transition={{ duration: 0.12, ease: [0.16, 1, 0.3, 1] }}
+          className="fixed z-[10000] w-80 overflow-hidden"
           style={{
             bottom: position.bottom,
             left: position.left,
-            background:
-              "linear-gradient(180deg, color-mix(in srgb, var(--aurora-sidebar-background) 88%, var(--aurora-common-secondary) 12%) 0%, color-mix(in srgb, var(--aurora-sidebar-background) 94%, transparent) 100%)",
+            backgroundColor:
+              "color-mix(in srgb, var(--aurora-sidebar-background) 96%, var(--aurora-chat-surface) 4%)",
             border:
-              "1px solid color-mix(in srgb, var(--aurora-common-border) 72%, transparent)",
-            boxShadow: `
-              0 18px 40px color-mix(in srgb, var(--aurora-common-shadow) 28%, transparent),
-              0 6px 16px color-mix(in srgb, var(--aurora-common-shadow) 16%, transparent),
-              inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 8%, transparent)
-            `,
-            backdropFilter: "blur(16px)",
+              "1px solid color-mix(in srgb, var(--aurora-common-border) 65%, transparent)",
+            borderRadius: 10,
+            boxShadow:
+              "0 12px 28px color-mix(in srgb, var(--aurora-common-shadow) 22%, transparent)",
           }}
         >
+          {/* Header */}
           <div
-            className="pointer-events-none absolute inset-x-0 top-0 h-14"
+            className="flex items-center justify-between gap-2 px-3 pt-2.5 pb-2"
             style={{
-              background:
-                "linear-gradient(180deg, color-mix(in srgb, var(--aurora-common-primary-foreground) 8%, transparent) 0%, transparent 100%)",
-              opacity: 0.9,
-            }}
-          />
-          <div
-            className="relative border-b px-3 py-2.5"
-            style={{
-              borderColor:
-                "color-mix(in srgb, var(--aurora-common-border) 70%, transparent)",
-              background:
-                "color-mix(in srgb, var(--aurora-sidebar-background) 74%, var(--aurora-common-secondary) 26%)",
+              borderBottom:
+                "1px solid color-mix(in srgb, var(--aurora-common-border) 40%, transparent)",
+              backgroundColor:
+                "color-mix(in srgb, var(--aurora-title-bar-background) 35%, transparent)",
             }}
           >
-            <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-text-secondary">
-              <span className="font-semibold">Attach Skills Or Rules</span>
-              <span
-                className="rounded-md px-1.5 py-0.5 text-[9px] font-semibold"
+            <div>
+              <p
+                className="text-[10px] font-semibold uppercase tracking-[0.14em]"
                 style={{
-                  background:
-                    "color-mix(in srgb, var(--aurora-chat-surface) 82%, transparent)",
-                  border:
-                    "1px solid color-mix(in srgb, var(--aurora-common-border) 60%, transparent)",
+                  color:
+                    "var(--aurora-text-disabled, var(--aurora-editor-foreground))",
                 }}
               >
-                {items.length}
-              </span>
+                Attach
+              </p>
+              <p className="mt-0.5 text-[12px] font-semibold text-text-primary">
+                Skills & Rules
+              </p>
             </div>
-            <label
-              className="flex items-center gap-2 rounded-xl px-2.5 py-2 transition-colors"
+            <span
+              className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium"
               style={{
-                background:
-                  "color-mix(in srgb, var(--aurora-sidebar-background) 82%, transparent)",
+                backgroundColor:
+                  "color-mix(in srgb, var(--aurora-common-primary) 12%, transparent)",
+                color: "var(--aurora-common-primary)",
                 border:
-                  "1px solid color-mix(in srgb, var(--aurora-common-border) 68%, transparent)",
-                boxShadow: `
-                  0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 10%, transparent),
-                  inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 5%, transparent)
-                `,
+                  "1px solid color-mix(in srgb, var(--aurora-common-primary) 28%, transparent)",
+                borderRadius: 4,
               }}
             >
-              <Search className="h-3.5 w-3.5 text-text-disabled" />
+              {items.length}
+            </span>
+          </div>
+
+          {/* Search */}
+          <div className="px-3 py-2">
+            <label className="relative block">
+              <Search
+                size={12}
+                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2"
+                style={{
+                  color:
+                    "var(--aurora-text-disabled, var(--aurora-editor-foreground))",
+                }}
+              />
               <input
                 type="text"
                 value={query}
                 onChange={(event) => onQueryChange(event.target.value)}
-                placeholder="Search skills and rules"
-                className="w-full bg-transparent text-[11px] font-medium text-text-primary outline-none placeholder:text-text-disabled"
+                placeholder="Search skills and rules…"
+                className="h-7 w-full pl-7 pr-2 text-[12px] text-text-primary outline-none transition-colors placeholder:text-text-disabled"
+                style={{
+                  backgroundColor:
+                    "color-mix(in srgb, var(--aurora-editor-background) 65%, var(--aurora-sidebar-background) 35%)",
+                  border:
+                    "1px solid color-mix(in srgb, var(--aurora-common-border) 55%, transparent)",
+                  borderRadius: 6,
+                }}
+                onFocus={(event) => {
+                  event.currentTarget.style.borderColor =
+                    "color-mix(in srgb, var(--aurora-common-primary) 50%, transparent)";
+                }}
+                onBlur={(event) => {
+                  event.currentTarget.style.borderColor =
+                    "color-mix(in srgb, var(--aurora-common-border) 55%, transparent)";
+                }}
               />
             </label>
           </div>
 
           {items.length === 0 ? (
-            <div className="px-3 py-5 text-center text-[11px] italic text-text-disabled">
-              No matching skills or rules found.
+            <div
+              className="px-3 py-5 text-center text-[11.5px]"
+              style={{
+                color:
+                  "var(--aurora-text-secondary, var(--aurora-editor-foreground))",
+              }}
+            >
+              No matching skills or rules.
             </div>
           ) : (
-            <div className="max-h-72 overflow-y-auto p-1.5 scrollbar-thin">
-              {items.map((item, index) => (
-                <button
-                  key={item.key}
-                  onClick={() => onSelect(item)}
-                  onMouseEnter={() => onHoverIndex(index)}
-                  className={clsx(
-                    "mb-1 flex w-full flex-col rounded-xl px-2.5 py-2.5 text-left transition-all duration-150 last:mb-0",
-                    index === selectedIndex
-                      ? "bg-sidebar-item-selected"
-                      : "hover:bg-sidebar-item-hover",
-                  )}
-                  style={{
-                    border:
-                      index === selectedIndex
-                        ? "1px solid color-mix(in srgb, var(--aurora-common-primary) 24%, transparent)"
-                        : "1px solid transparent",
-                    boxShadow:
-                      index === selectedIndex
-                        ? "inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 6%, transparent)"
-                        : "none",
-                  }}
-                >
-                  <div className="mb-1 flex items-center gap-2">
-                    <span
-                      className="rounded-lg px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-text-secondary"
-                      style={{
-                        background:
-                          "color-mix(in srgb, var(--aurora-sidebar-background) 78%, transparent)",
-                        border:
-                          "1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)",
-                      }}
-                    >
-                      {item.sourceLabel}
-                    </span>
-                    <span className="rounded-lg bg-accent/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-accent">
-                      {item.type}
-                    </span>
-                  </div>
-                  <span className="text-[12px] font-medium text-text-primary">
-                    {item.title}
-                  </span>
-                  <span className="text-[10px] text-text-secondary">
-                    {item.subtitle}
-                  </span>
-                  <span className="mt-1 text-[10px] leading-relaxed text-text-disabled">
-                    {item.description}
-                  </span>
-                </button>
-              ))}
+            <div className="max-h-72 overflow-y-auto px-1.5 pb-1.5 scrollbar-thin">
+              {items.map((item, index) => {
+                const isActive = index === selectedIndex;
+                return (
+                  <button
+                    key={item.key}
+                    onClick={() => onSelect(item)}
+                    onMouseEnter={() => onHoverIndex(index)}
+                    className={clsx(
+                      "flex w-full flex-col px-2 py-1.5 text-left transition-colors",
+                    )}
+                    style={{
+                      borderRadius: 5,
+                      backgroundColor: isActive
+                        ? "color-mix(in srgb, var(--aurora-common-primary) 12%, transparent)"
+                        : "transparent",
+                      color: isActive
+                        ? "var(--aurora-common-primary)"
+                        : "var(--aurora-editor-foreground)",
+                    }}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className="font-mono text-[8.5px] font-semibold uppercase tracking-[0.1em]"
+                        style={{
+                          backgroundColor: isActive
+                            ? "color-mix(in srgb, var(--aurora-common-primary) 22%, transparent)"
+                            : "color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)",
+                          color: "var(--aurora-common-primary)",
+                          padding: "0 5px",
+                          borderRadius: 3,
+                          height: 14,
+                          display: "inline-flex",
+                          alignItems: "center",
+                        }}
+                      >
+                        {item.type}
+                      </span>
+                      <span
+                        className="truncate text-[12px] font-semibold"
+                        style={{
+                          color: isActive
+                            ? "var(--aurora-common-primary)"
+                            : "var(--aurora-editor-foreground)",
+                        }}
+                      >
+                        {item.title}
+                      </span>
+                      <span
+                        className="ml-auto truncate text-[10px] font-medium"
+                        style={{
+                          color:
+                            "var(--aurora-text-disabled, var(--aurora-editor-foreground))",
+                          opacity: 0.7,
+                        }}
+                      >
+                        {item.sourceLabel}
+                      </span>
+                    </div>
+                    {item.subtitle && (
+                      <span
+                        className="mt-0.5 truncate text-[10.5px]"
+                        style={{
+                          color:
+                            "var(--aurora-text-secondary, var(--aurora-editor-foreground))",
+                        }}
+                      >
+                        {item.subtitle}
+                      </span>
+                    )}
+                    {item.description && (
+                      <span
+                        className="mt-0.5 line-clamp-1 text-[10px] leading-snug"
+                        style={{
+                          color:
+                            "var(--aurora-text-disabled, var(--aurora-editor-foreground))",
+                          opacity: 0.85,
+                        }}
+                      >
+                        {item.description}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           )}
         </motion.div>

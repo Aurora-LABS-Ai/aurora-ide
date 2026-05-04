@@ -206,17 +206,28 @@ class ThreadServiceClass {
   }
 
   /**
-   * Add a user message to thread (persists immediately)
+   * Add a user message to thread (persists immediately).
+   *
+   * `content` MUST be the clean, user-typed text — this is what the chat
+   * bubble renders on reload. The IDE/runtime enrichment (execution_mode,
+   * user_info, project_rules, project_layout, agent_skills, open_files,
+   * attached_context, …) is passed separately via `ideContext` and combined
+   * with `content` only when constructing API messages for the LLM.
+   *
+   * Persisting them as separate fields prevents the entire XML enrichment
+   * from leaking into the user bubble when the thread is reloaded from JSONL.
    */
   async addUserMessage(
     threadId: string,
     content: string,
+    ideContext?: string | null,
     attachments?: unknown[]
   ): Promise<DbMessage> {
     return await invoke<DbMessage>('thread_add_user_message', {
       request: {
         threadId,
         content,
+        ideContext: ideContext ?? null,
         attachments: attachments ?? null,
       },
     });
@@ -301,6 +312,74 @@ class ThreadServiceClass {
    */
   async saveThread(thread: DbThread): Promise<void> {
     await invoke('thread_save', { thread });
+  }
+
+  /**
+   * Append a fully-formed assistant message to the JSONL log in one shot.
+   *
+   * Preferred over the streaming API for the agent loop: writes content,
+   * thinking, and embedded tool_calls as a single AssistantMessage event.
+   * Returns the persisted message (id is the JSONL event id).
+   */
+  async appendAssistantMessage(
+    threadId: string,
+    content: string,
+    thinking?: string | null,
+    toolCalls?: Array<{ id: string; name: string; arguments: string }>,
+  ): Promise<DbMessage> {
+    return await invoke<DbMessage>('thread_append_assistant_message', {
+      request: {
+        threadId,
+        content,
+        thinking: thinking ?? null,
+        toolCalls: toolCalls ?? null,
+      },
+    });
+  }
+
+  /**
+   * Append a tool result event (chains to the most recent assistant message
+   * that issued a matching tool_call_id).
+   */
+  async appendToolResult(
+    threadId: string,
+    toolCallId: string,
+    toolName: string,
+    content: string,
+    isError: boolean,
+    options?: {
+      truncated?: boolean;
+      originalLength?: number;
+      durationMs?: number;
+    },
+  ): Promise<string> {
+    return await invoke<string>('thread_append_tool_result', {
+      request: {
+        threadId,
+        toolCallId,
+        toolName,
+        content,
+        isError,
+        truncated: options?.truncated ?? null,
+        originalLength: options?.originalLength ?? null,
+        durationMs: options?.durationMs ?? null,
+      },
+    });
+  }
+
+  /**
+   * Cancel the current in-progress turn. Synthesises error tool results for
+   * any unfinished tool calls and finalises the turn so the next request
+   * sees coherent history.
+   */
+  async cancelCurrentTurn(
+    threadId: string,
+    reason: 'user_stop' | 'provider_error' | 'tool_timeout' | 'internal_error' = 'user_stop',
+  ): Promise<string | null> {
+    return await invoke<string | null>('thread_cancel_current_turn', {
+      threadId,
+      reason,
+    });
   }
 
   // ============================================================

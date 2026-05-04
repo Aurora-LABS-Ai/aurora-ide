@@ -78,7 +78,9 @@ export const workspaceTreeTool: ToolDefinition = {
   type: 'function',
   function: {
     name: 'workspace_tree',
-    description: 'Get the directory tree structure of the workspace or a specific directory. Returns a hierarchical view of files and folders.',
+    description: `Get the directory tree structure of the workspace or a specific directory. Returns a hierarchical view of files and folders.
+
+By default, file nodes include lineCount, size, and largeFile metadata for the first bounded set of files. Use this before file_read so large files can be inspected with start_line/end_line instead of loading entire files.`,
     parameters: {
       type: 'object',
       properties: {
@@ -95,6 +97,16 @@ export const workspaceTreeTool: ToolDefinition = {
           type: 'boolean',
           description: 'Whether to include hidden files (starting with dot). Defaults to false.',
           default: false,
+        },
+        include_file_stats: {
+          type: 'boolean',
+          description: 'Whether file nodes should include lineCount, size, and largeFile metadata. Defaults to true.',
+          default: true,
+        },
+        max_files_for_stats: {
+          type: 'number',
+          description: 'Maximum number of files to read for line-count metadata during this tree call. Defaults to 300.',
+          default: 300,
         },
       },
       required: [],

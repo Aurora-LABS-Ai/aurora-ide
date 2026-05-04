@@ -25,12 +25,12 @@ use tokio::process::Command as TokioCommand;
 pub mod browser;
 pub mod chat;
 pub mod checkpoints;
+pub mod editor_ops;
 pub mod git;
 pub mod local_providers;
 pub mod openai_native;
 pub mod provider_catalog;
 pub mod provider_kernel;
-pub mod semantic;
 pub mod settings;
 pub mod speech;
 pub mod state;
@@ -855,13 +855,24 @@ pub async fn read_directory(
     Ok(entries)
 }
 
-/// Read file content (cached for performance)
+/// Maximum wall-clock time we'll wait for a file read before giving up so a
+/// frozen disk or network share can never make the editor "load forever".
+const FILE_READ_TIMEOUT_MS: u64 = 10_000;
+
+/// Read file content (cached for performance, bounded by a wall-clock timeout)
 #[tauri::command]
 pub async fn read_file_content(path: String) -> Result<String, String> {
-    // Offload blocking I/O to keep the async runtime responsive
-    tokio::task::spawn_blocking(move || crate::file_cache::read_file_cached(&path))
-        .await
-        .map_err(|e| format!("Failed to load file: {}", e))?
+    let read_path = path.clone();
+    let join = tokio::task::spawn_blocking(move || crate::file_cache::read_file_cached(&read_path));
+
+    match tokio::time::timeout(std::time::Duration::from_millis(FILE_READ_TIMEOUT_MS), join).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(e)) => Err(format!("Failed to load file: {}", e)),
+        Err(_) => Err(format!(
+            "File read timed out after {}ms (path: {})",
+            FILE_READ_TIMEOUT_MS, path
+        )),
+    }
 }
 
 /// Write file content
@@ -984,6 +995,56 @@ pub fn cancel_command_stream(request_id: String) -> Result<(), String> {
     Ok(())
 }
 
+// Shell stream batching constants.
+//
+// The original implementation emitted a Tauri IPC event for every 4 KB chunk
+// it read from the child process. Long-running commands (e.g. `npm install`,
+// `cargo build`) produced thousands of events per second, saturating the JS
+// event loop and freezing the entire IDE — file reads, editor input, and even
+// the chat panel would stall behind the backlog.
+//
+// We now coalesce reads server-side and emit at most ~30 Hz (or sooner if the
+// pending buffer grows large). The wire format stays compatible with existing
+// TS listeners (`{ stream, data, done, ... }`) — we just send fewer, larger
+// chunks. This drops the IPC volume by 1-2 orders of magnitude without losing
+// any output, and the agent still gets the full text via the awaited
+// CommandOutput at the end.
+const SHELL_STREAM_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+const SHELL_STREAM_FLUSH_BYTES: usize = 32 * 1024;
+const SHELL_STREAM_READ_BUF: usize = 16 * 1024;
+
+fn flush_shell_pending(
+    app: &tauri::AppHandle,
+    request_id: &str,
+    stdout_pending: &mut String,
+    stderr_pending: &mut String,
+) {
+    if !stdout_pending.is_empty() {
+        let _ = app.emit(
+            &format!("shell-stream-{}", request_id),
+            CommandStreamChunk {
+                stream: "stdout".to_string(),
+                data: std::mem::take(stdout_pending),
+                done: false,
+                exit_code: None,
+                success: None,
+            },
+        );
+    }
+    if !stderr_pending.is_empty() {
+        let _ = app.emit(
+            &format!("shell-stream-{}", request_id),
+            CommandStreamChunk {
+                stream: "stderr".to_string(),
+                data: std::mem::take(stderr_pending),
+                done: false,
+                exit_code: None,
+                success: None,
+            },
+        );
+    }
+}
+
 #[tauri::command]
 pub async fn execute_command_stream(
     app: tauri::AppHandle,
@@ -1031,6 +1092,8 @@ pub async fn execute_command_stream(
 
     let mut stdout_buf = String::new();
     let mut stderr_buf = String::new();
+    let mut stdout_pending = String::new();
+    let mut stderr_pending = String::new();
 
     let mut stdout = child
         .stdout
@@ -1041,14 +1104,15 @@ pub async fn execute_command_stream(
         .take()
         .ok_or_else(|| "Failed to capture stderr".to_string())?;
 
-    let mut stdout_bytes = vec![0u8; 4096];
-    let mut stderr_bytes = vec![0u8; 4096];
+    let mut stdout_bytes = vec![0u8; SHELL_STREAM_READ_BUF];
+    let mut stderr_bytes = vec![0u8; SHELL_STREAM_READ_BUF];
 
     let mut stdout_done = false;
     let mut stderr_done = false;
 
     let mut wait_fut = Box::pin(child.wait());
     let mut timeout_fut = Box::pin(tokio::time::sleep(timeout));
+    let mut flush_fut = Box::pin(tokio::time::sleep(SHELL_STREAM_FLUSH_INTERVAL));
 
     loop {
         if is_command_stream_cancelled(&request_id) {
@@ -1063,31 +1127,32 @@ pub async fn execute_command_stream(
                 if let Some(pid) = pid {
                     let _ = try_kill_pid(pid);
                 }
+                flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
                 let _ = app.emit(
                     &format!("shell-stream-error-{}", request_id),
                     format!("Command timed out after {}ms", timeout.as_millis()),
                 );
                 break;
             }
+            _ = &mut flush_fut => {
+                flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
+                flush_fut = Box::pin(tokio::time::sleep(SHELL_STREAM_FLUSH_INTERVAL));
+            }
             read = stdout.read(&mut stdout_bytes), if !stdout_done => {
                 match read {
                     Ok(0) => { stdout_done = true; }
                     Ok(n) => {
-                        let data = String::from_utf8_lossy(&stdout_bytes[..n]).to_string();
+                        let data = String::from_utf8_lossy(&stdout_bytes[..n]);
                         stdout_buf.push_str(&data);
-                        let _ = app.emit(
-                            &format!("shell-stream-{}", request_id),
-                            CommandStreamChunk {
-                                stream: "stdout".to_string(),
-                                data,
-                                done: false,
-                                exit_code: None,
-                                success: None,
-                            },
-                        );
+                        stdout_pending.push_str(&data);
+                        if stdout_pending.len() + stderr_pending.len() >= SHELL_STREAM_FLUSH_BYTES {
+                            flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
+                            flush_fut = Box::pin(tokio::time::sleep(SHELL_STREAM_FLUSH_INTERVAL));
+                        }
                     }
                     Err(e) => {
                         stdout_done = true;
+                        flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
                         let _ = app.emit(
                             &format!("shell-stream-error-{}", request_id),
                             format!("stdout read error: {}", e),
@@ -1099,21 +1164,17 @@ pub async fn execute_command_stream(
                 match read {
                     Ok(0) => { stderr_done = true; }
                     Ok(n) => {
-                        let data = String::from_utf8_lossy(&stderr_bytes[..n]).to_string();
+                        let data = String::from_utf8_lossy(&stderr_bytes[..n]);
                         stderr_buf.push_str(&data);
-                        let _ = app.emit(
-                            &format!("shell-stream-{}", request_id),
-                            CommandStreamChunk {
-                                stream: "stderr".to_string(),
-                                data,
-                                done: false,
-                                exit_code: None,
-                                success: None,
-                            },
-                        );
+                        stderr_pending.push_str(&data);
+                        if stdout_pending.len() + stderr_pending.len() >= SHELL_STREAM_FLUSH_BYTES {
+                            flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
+                            flush_fut = Box::pin(tokio::time::sleep(SHELL_STREAM_FLUSH_INTERVAL));
+                        }
                     }
                     Err(e) => {
                         stderr_done = true;
+                        flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
                         let _ = app.emit(
                             &format!("shell-stream-error-{}", request_id),
                             format!("stderr read error: {}", e),
@@ -1129,36 +1190,21 @@ pub async fn execute_command_stream(
 
                 let mut tail = Vec::new();
                 if stdout.read_to_end(&mut tail).await.is_ok() && !tail.is_empty() {
-                    let data = String::from_utf8_lossy(&tail).to_string();
+                    let data = String::from_utf8_lossy(&tail);
                     stdout_buf.push_str(&data);
-                    let _ = app.emit(
-                        &format!("shell-stream-{}", request_id),
-                        CommandStreamChunk {
-                            stream: "stdout".to_string(),
-                            data,
-                            done: false,
-                            exit_code: None,
-                            success: None,
-                        },
-                    );
+                    stdout_pending.push_str(&data);
                 }
 
                 tail.clear();
                 if stderr.read_to_end(&mut tail).await.is_ok() && !tail.is_empty() {
-                    let data = String::from_utf8_lossy(&tail).to_string();
+                    let data = String::from_utf8_lossy(&tail);
                     stderr_buf.push_str(&data);
-                    let _ = app.emit(
-                        &format!("shell-stream-{}", request_id),
-                        CommandStreamChunk {
-                            stream: "stderr".to_string(),
-                            data,
-                            done: false,
-                            exit_code: None,
-                            success: None,
-                        },
-                    );
+                    stderr_pending.push_str(&data);
                 }
 
+                // Final flush of any remaining pending output, then emit a
+                // single done marker so listeners can detect completion.
+                flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
                 let _ = app.emit(
                     &format!("shell-stream-{}", request_id),
                     CommandStreamChunk {
@@ -1185,6 +1231,7 @@ pub async fn execute_command_stream(
         }
     }
 
+    flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
     cleanup_command_stream(&request_id);
     Ok(CommandOutput {
         stdout: stdout_buf,

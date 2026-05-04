@@ -1,4 +1,7 @@
-import { resolveExplorerIconFromPack } from "./icon-packs";
+import {
+  normalizeExplorerIconRequest,
+  resolveExplorerIconFromPack,
+} from "./icon-packs";
 import type {
   ExplorerIconPackId,
   ExplorerIconRequest,
@@ -25,19 +28,21 @@ export const resolveExplorerIcon = (
   request: ExplorerIconRequest,
   packId?: ExplorerIconPackId,
 ): ResolvedExplorerIcon => {
-  if (request.isFolder && isAuroraFolder(request.name)) {
+  const safeRequest = normalizeExplorerIconRequest(request);
+
+  if (safeRequest.isFolder && isAuroraFolder(safeRequest.name)) {
     return {
       kind: "aurora-folder",
-      alt: request.name,
+      alt: safeRequest.name,
     };
   }
 
-  if (isAuroraRulesFile(request)) {
+  if (isAuroraRulesFile(safeRequest)) {
     return {
       kind: "aurora-rules",
-      alt: request.name,
+      alt: safeRequest.name,
     };
   }
 
-  return resolveExplorerIconFromPack(request, packId);
+  return resolveExplorerIconFromPack(safeRequest, packId);
 };

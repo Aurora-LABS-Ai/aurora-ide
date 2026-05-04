@@ -35,6 +35,10 @@ interface EditorState {
     content: string,
     isLoading?: boolean,
   ) => void;
+  requestEditorReveal: (
+    tabId: string,
+    request: Omit<EditorRevealRequest, "requestId" | "tabId">,
+  ) => void;
 
   // Database actions
   restoreWorkspace: () => Promise<void>;
@@ -44,6 +48,7 @@ interface EditorState {
   setFontSize: (size: number) => void;
   setPanelSizes: (sizes: PanelSizes) => void;
   setWorkspacePath: (path: string | null) => void;
+  editorRevealRequest: EditorRevealRequest | null;
   tabs: Tab[];
   updateBrowserTab: (
     tabId: string,
@@ -54,9 +59,19 @@ interface EditorState {
   updateTabContent: (tabId: string, content: string) => void;
 }
 
+export interface EditorRevealRequest {
+  column?: number;
+  focus?: boolean;
+  lineNumber?: number;
+  mode: "bottom" | "line";
+  requestId: number;
+  tabId: string;
+}
+
 // Workspace path tracking
 let currentWorkspacePath: string | null = null;
 let currentPanelSizes: PanelSizes | null = null;
+let nextRevealRequestId = 1;
 
 // File size thresholds for performance optimization (shared constants)
 const LARGE_FILE_THRESHOLD = 100 * 1024; // 100KB - disable most features, use plaintext
@@ -65,6 +80,7 @@ const MEDIUM_FILE_THRESHOLD = 50 * 1024; // 50KB - disable some features but kee
 export const useEditorStore = create<EditorState>((set, get) => ({
   tabs: [],
   activeTabId: null,
+  editorRevealRequest: null,
   fontSize: 14,
 
   openFile: (fileId, filename, content, language, isLoading = false) => {
@@ -215,6 +231,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         };
       }),
     }));
+  },
+
+  requestEditorReveal: (tabId, request) => {
+    set({
+      editorRevealRequest: {
+        ...request,
+        tabId,
+        requestId: nextRevealRequestId++,
+      },
+    });
   },
 
   // Mark a tab as deleted when the underlying file is removed from filesystem

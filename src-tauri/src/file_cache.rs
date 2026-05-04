@@ -198,17 +198,25 @@ pub fn read_file_cached(path: &str) -> Result<String, String> {
     Ok(content)
 }
 
-/// Read multiple files in batch with caching
+/// Read multiple files in batch with caching.
+///
+/// Cache hits are served from memory immediately. Cache misses are dispatched
+/// across the rayon thread pool so that disk I/O for many files happens in
+/// parallel — turning a sequential N×latency wait into roughly max(latency).
+/// This is what makes `multi_file_read` and editor preloads feel instant on
+/// first cold open.
 pub fn read_files_batch_cached(
     paths: Vec<String>,
 ) -> std::collections::HashMap<String, Result<String, String>> {
+    use rayon::prelude::*;
     use std::collections::HashMap;
 
     let cache = get_file_cache();
     let mut results: HashMap<String, Result<String, String>> = HashMap::with_capacity(paths.len());
     let mut to_read: Vec<String> = Vec::new();
 
-    // Check cache first for all paths
+    // Cache pass on the calling thread — this is just hash lookups + clones,
+    // so going parallel here would only add coordination overhead.
     for path in &paths {
         if let Some(content) = cache.get(path) {
             results.insert(path.clone(), Ok(content));
@@ -217,13 +225,22 @@ pub fn read_files_batch_cached(
         }
     }
 
-    // Read uncached files in parallel using rayon-style iteration
-    // (Using standard threads for simplicity - rayon would be overkill here)
-    for path in to_read {
-        let result = read_file_cached(&path);
-        results.insert(path, result);
+    if to_read.is_empty() {
+        return results;
     }
 
+    // Disk I/O fan-out across rayon's global pool. Even on a 4-core machine,
+    // reading 20 cold files in parallel typically completes in the time of
+    // the single slowest file rather than the sum of all of them.
+    let read_results: Vec<(String, Result<String, String>)> = to_read
+        .into_par_iter()
+        .map(|path| {
+            let result = read_file_cached(&path);
+            (path, result)
+        })
+        .collect();
+
+    results.extend(read_results);
     results
 }
 

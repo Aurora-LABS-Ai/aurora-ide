@@ -19,8 +19,17 @@ import {
 } from "../services/agent-execution-mode";
 import { providerCatalogService, type ProviderCatalogPreset } from "../services/provider-catalog";
 import type { ProviderConfig } from "../services/providers/types";
+import { MAX_ENABLED_SKILLS } from "../services/skills";
 import type { AppSettings as DbAppSettings, DbLLMProvider } from "../types/database";
 import { useIconPackStore } from "./useIconPackStore";
+
+const countEnabledSkillToggles = (toggles: Record<string, boolean>): number => {
+  let count = 0;
+  for (const value of Object.values(toggles)) {
+    if (value === true) count += 1;
+  }
+  return count;
+};
 
 const UI_FONT_FAMILIES: Record<string, string> = {
   system: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif",
@@ -130,7 +139,13 @@ interface SettingsState {
   setMaxToolCallsPerRequest: (max: number) => void;
   setProjectLayoutEnabled: (value: boolean) => void;
   setSelectedModel: (model: string) => void;
-  setSkillEnabled: (storageKey: string, enabled: boolean) => void;
+  /**
+   * Toggle a skill on or off. Enabling is rejected (no-op + console warning)
+   * when {@link MAX_ENABLED_SKILLS} skills are already enabled — callers must
+   * disable a skill before enabling another. Disabling is always permitted.
+   * Returns true if the toggle was applied, false if it was rejected.
+   */
+  setSkillEnabled: (storageKey: string, enabled: boolean) => boolean;
   setSkillsEnabled: (enabled: boolean) => void;
   setSpeechBackend: (backend: string) => void;
   setSpeechDevicePreference: (preference: 'auto' | 'cpu' | 'gpu') => void;
@@ -829,13 +844,34 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   },
 
   setSkillEnabled: (storageKey: string, enabled: boolean) => {
-    set((state) => ({
+    const state = get();
+    const isCurrentlyEnabled = state.skillToggles[storageKey] === true;
+
+    // No-op: nothing to change.
+    if (isCurrentlyEnabled === enabled) {
+      return true;
+    }
+
+    // Enforce hard cap when turning ON. Turning OFF is always allowed.
+    if (enabled) {
+      const enabledCount = countEnabledSkillToggles(state.skillToggles);
+      if (enabledCount >= MAX_ENABLED_SKILLS) {
+        console.warn(
+          `[Skills] Cannot enable more than ${MAX_ENABLED_SKILLS} skills at once. ` +
+            `Disable an existing skill before enabling \`${storageKey}\`.`
+        );
+        return false;
+      }
+    }
+
+    set((current) => ({
       skillToggles: {
-        ...state.skillToggles,
+        ...current.skillToggles,
         [storageKey]: enabled,
       },
     }));
     get().saveToDatabase();
+    return true;
   },
 
   setSpeechEnabled: (enabled: boolean) => {

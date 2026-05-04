@@ -42,8 +42,8 @@ import { tokenService } from "../../services/token-service";
 import { toolRegistry } from "../../tools";
 import { registerAllExecutors } from "../../tools";
 import {
+  buildAttachedContextBlock,
   buildQueryContext,
-  enrichUserQueryWithAttachments,
   getIDEContext,
   getIDEContextLight,
   loadProjectRules,
@@ -53,6 +53,7 @@ import {
   parseToolArguments,
   parseToolArgumentsForDisplay,
 } from "../../lib/tool-arguments";
+import { liveFilePreviewService } from "../../services/live-file-preview";
 import { getProfessionalToolName } from "../../services/tool-display";
 import { AgentChangesTree } from "./AgentChangesTree";
 import { AgentInputArea, type AttachedFile } from "./AgentInputArea";
@@ -372,21 +373,29 @@ export const AgentModeLayout: React.FC = () => {
             )
           : undefined;
 
-      // Enrich user query with explicit skill/rule attachment annotations
-      // so the LLM knows which assets the user specifically referenced
-      const enrichedContent = enrichUserQueryWithAttachments(
-        content,
+      // Build the standalone <attached_context> block separately so the
+      // user-typed text stays clean — see the long comment in ChatPanel.tsx
+      // for why the bubble must not contain enrichment XML.
+      const attachedContextBlock = buildAttachedContextBlock(
         promptAttachments?.map(a => ({ type: a.type, title: a.title, key: a.key })),
       );
 
-      const { formattedContext } = await buildQueryContext(
-        enrichedContent,
+      const { ideContext: bareIdeContext } = await buildQueryContext(
+        content,
         attachedFiles,
         {
           ...ideContext,
           projectRules: selectedRules,
         },
       );
+
+      // Compose the enrichment passed alongside the clean user message.
+      const composedIdeContext: string | null = (() => {
+        const parts: string[] = [];
+        if (bareIdeContext) parts.push(bareIdeContext);
+        if (attachedContextBlock) parts.push(attachedContextBlock);
+        return parts.length > 0 ? parts.join("\n\n") : null;
+      })();
       const promptContext: AgentPromptContext = {
         explicitSkillKeys: promptSelection.explicitSkillKeys,
         userMessage: content,
@@ -474,7 +483,7 @@ export const AgentModeLayout: React.FC = () => {
         });
 
         await agent.chat(
-          formattedContext,
+          content,
           {
             onToken: (token) => {
               if (currentThinkingEventId) {
@@ -546,6 +555,8 @@ export const AgentModeLayout: React.FC = () => {
                   [
                     "file_create",
                     "file_write",
+                    "search_replace",
+                    "multi_search_replace",
                     "file_delete",
                     "folder_create",
                     "folder_move",
@@ -570,6 +581,8 @@ export const AgentModeLayout: React.FC = () => {
                   tool: updatedTool,
                 });
               }
+
+              liveFilePreviewService.updateFromToolCall(toolCall);
             },
             onToolApprovalRequired: async (toolCall) => {
               const toolName = toolCall.function.name;
@@ -606,6 +619,7 @@ export const AgentModeLayout: React.FC = () => {
               const parsedArgs = parseToolArgumentsForDisplay(
                 toolCall.function.arguments,
               );
+              liveFilePreviewService.markApplying(toolCall.id);
               const riskLevel = toolRegistry.getRiskLevel(toolName);
               const auditId = auditStore.addEntry({
                 toolName,
@@ -628,6 +642,8 @@ export const AgentModeLayout: React.FC = () => {
               }
             },
             onToolExecutionComplete: (toolCall, result) => {
+              liveFilePreviewService.complete(toolCall.id);
+
               const auditId = auditEntryIds.get(toolCall.id);
               if (auditId) {
                 const entry = auditStore.entries.find((e) => e.id === auditId);
@@ -656,6 +672,8 @@ export const AgentModeLayout: React.FC = () => {
               }
             },
             onToolExecutionError: (toolCall, error) => {
+              liveFilePreviewService.fail(toolCall.id);
+
               const auditId = auditEntryIds.get(toolCall.id);
               if (auditId) {
                 const entry = auditStore.entries.find((e) => e.id === auditId);
@@ -681,6 +699,8 @@ export const AgentModeLayout: React.FC = () => {
               }
             },
             onToolRejected: (toolCall, reason) => {
+              liveFilePreviewService.fail(toolCall.id);
+
               const toolEvent = timelineRef.current.find(
                 (e) => e.type === "tool" && e.tool?.id === toolCall.id,
               );
@@ -822,7 +842,7 @@ export const AgentModeLayout: React.FC = () => {
             },
           },
           undefined,
-          undefined,
+          composedIdeContext,
           promptContext,
         );
       } catch (error) {
@@ -865,6 +885,8 @@ export const AgentModeLayout: React.FC = () => {
             );
           }
         }
+
+        liveFilePreviewService.cancelAllActive();
 
         flushTimelineUpdate();
         if (threadId) {
@@ -948,6 +970,8 @@ export const AgentModeLayout: React.FC = () => {
           true,
         );
       }
+
+      liveFilePreviewService.fail(pending.toolCall.id);
     }
     if (pending?.resolve) {
       pending.resolve(false);

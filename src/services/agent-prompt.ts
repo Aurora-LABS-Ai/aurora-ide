@@ -18,8 +18,8 @@ export interface AgentPromptContext {
 export interface ComposedAgentPrompt {
   activeSkills: SkillDefinition[];
   allSkills: SkillDefinition[];
+  enabledSkills: SkillDefinition[];
   explicitSkills: SkillDefinition[];
-  matchedSkills: SkillDefinition[];
   systemPrompt: string;
 }
 
@@ -50,9 +50,9 @@ Your main goal is to follow the USER's instructions at each message.
 - Preserve existing project patterns, structure, and theming conventions
 
 ## Tool Usage Guidelines
-- On unfamiliar code, understand structure first using workspace-aware context, native Aurora search, or tree inspection
-- Use aurora_search for indexed codebase discovery: use target="symbols" for functions/files/routes/tools and target="chunks" for source snippets; use grep for exact string lookup
-- If Aurora search reports the workspace is not indexed or the model path is missing, tell the user the workspace must be indexed from Settings > Semantic Search before semantic/graph search is available
+- On unfamiliar code, understand structure first using workspace_tree and grep, then read the most relevant files
+- Use grep for fast literal/regex lookups across the workspace; pair it with file_read or multi_file_read to confirm context before editing
+- For implementation questions, search for the symbol with grep, then read the matching file(s) and follow imports/callers as needed
 - Set an explicit timeout for shell and grep searches when the command may scan many files; use background execution for long-running servers or watch processes
 - Use editor and diagnostics tools to verify changes when relevant
 - Use MCP tools like any other tool when connected and relevant
@@ -66,46 +66,110 @@ Your main goal is to follow the USER's instructions at each message.
 - Distinguish between prompt guidance and hard-enforced behavior when debugging agent behavior`;
 
 const SKILL_SYSTEM_INSTRUCTIONS = `## Skill System
-- Skills are modular instruction overlays that extend your behavior for specific task types.
-- The available skill catalog is included in the first message of each conversation (not repeated).
-- When a skill is relevant, use file_read to load the skill file from its path to get detailed instructions.
-- If the user explicitly attaches a skill, its name and path are noted in the user message. Read and follow it.
-- Auto-matched skills may also be noted. Read them if the task benefits from their guidance.
+- Skills are modular instruction overlays — focused playbooks for a specific kind of task.
+- Only the user's hand-picked skills (capped at 10) are previewed up front, with a 5-line snippet each. Everything else is browsable on demand.
+- Use \`aurora_skill_search\` to discover skills by query (e.g. \`{ query: "react performance" }\`) when a task may benefit from one.
+- Use \`aurora_skill_load\` with a skill id (e.g. \`{ id: "rust-async-patterns" }\`) to fetch the full SKILL.md body before applying it.
+- If a skill is explicitly attached to a turn, treat it as authoritative for that turn.
 - If no skill applies, continue with base Aurora behavior.`;
 
-/**
- * Format skill catalog for embedding in the first user message context.
- * Only includes name, description, and file path - NOT full content.
- * The agent reads skill files on demand via file_read.
- */
-export function formatSkillCatalogForContext(skills: SkillDefinition[]): string {
-  if (skills.length === 0) return '';
+const MAX_PREVIEW_SNIPPET_CHARS = 200;
 
-  const lines = skills.map((skill) => {
-    const pathNote = skill.sourcePath ? ` (path: ${skill.sourcePath})` : ' (built-in)';
-    return `- \`${skill.id}\`: ${skill.description}${pathNote}`;
+function clipPreviewLine(line: string): string {
+  if (line.length <= MAX_PREVIEW_SNIPPET_CHARS) {
+    return line;
+  }
+  return `${line.slice(0, MAX_PREVIEW_SNIPPET_CHARS - 1)}…`;
+}
+
+function formatSkillSourceLabel(skill: SkillDefinition): string {
+  if (skill.source === "workspace") {
+    return "project";
+  }
+  if (skill.source === "global") {
+    return "global";
+  }
+  return "built-in";
+}
+
+/**
+ * Format the agent_skills XML block for the first message in a conversation.
+ *
+ * - When `enabledSkills` is empty we emit a discovery-only hint so the agent
+ *   knows skills exist and how to fetch them.
+ * - When skills are enabled we render id + description + a 5-line preview per
+ *   skill, followed by a discovery footer for the rest of the catalog.
+ *
+ * The full SKILL.md body is *never* dumped here. The agent calls
+ * `aurora_skill_load({ id })` when it needs the full content.
+ */
+export function formatSkillCatalogForContext(input: {
+  enabledSkills: SkillDefinition[];
+  totalSkillCount: number;
+}): string {
+  const { enabledSkills, totalSkillCount } = input;
+  const enabledCount = enabledSkills.length;
+
+  if (totalSkillCount === 0) {
+    return `<agent_skills count="0" total="0">
+No skills are configured for this workspace yet.
+
+Project skills can be added under \`.aurora/skills/<name>/SKILL.md\` or \`agents/skills/<name>/SKILL.md\`. Built-in skills are always discoverable via \`aurora_skill_search\`.
+</agent_skills>`;
+  }
+
+  if (enabledCount === 0) {
+    return `<agent_skills count="0" total="${totalSkillCount}">
+${totalSkillCount} skill${totalSkillCount === 1 ? "" : "s"} are available, but the user has not enabled any for automatic injection.
+
+Use \`aurora_skill_search({ query? })\` to browse the catalog and \`aurora_skill_load({ id })\` to fetch the full body of any skill that looks relevant to the current task. Only load skills that are clearly applicable — most tasks need none.
+</agent_skills>`;
+  }
+
+  const remaining = Math.max(0, totalSkillCount - enabledCount);
+  const blocks = enabledSkills.map((skill) => {
+    const previewLines = skill.previewLines.map(clipPreviewLine);
+    const previewSection = previewLines.length === 0
+      ? "  (no preview available — load with aurora_skill_load to read the full body)"
+      : previewLines.map((line) => `  ${line}`).join("\n");
+    return `### \`${skill.id}\` (${formatSkillSourceLabel(skill)})
+${skill.description}
+Preview (first ${previewLines.length} non-empty line${previewLines.length === 1 ? "" : "s"}):
+${previewSection}`;
   });
 
-  return `<agent_skills description="Available skills. Use file_read on the path to load full instructions when relevant.">
-${lines.join('\n')}
+  const footer = remaining > 0
+    ? `\n\n${remaining} additional skill${remaining === 1 ? " is" : "s are"} available. Use \`aurora_skill_search\` to browse them or \`aurora_skill_load\` to fetch a specific one.`
+    : "";
+
+  return `<agent_skills count="${enabledCount}" total="${totalSkillCount}">
+The user has enabled ${enabledCount} skill${enabledCount === 1 ? "" : "s"} for this workspace. Apply them when the task benefits; load the full SKILL.md via \`aurora_skill_load\` if the preview suggests it is relevant.
+
+${blocks.join("\n\n")}${footer}
 </agent_skills>`;
 }
 
 /**
- * Format explicitly attached or auto-matched skills as lightweight references.
- * Only name + path, no full content. Agent reads via file_read.
+ * Format explicitly attached skills as a high-priority reference block. The
+ * agent must treat these as authoritative for the current turn.
  */
 export function formatSkillReferences(skills: SkillDefinition[], label: string): string {
   if (skills.length === 0) return '';
 
   const refs = skills.map((skill) => {
+    const previewLines = skill.previewLines.map(clipPreviewLine);
+    const previewSection = previewLines.length === 0
+      ? ""
+      : `\n  Preview:\n${previewLines.map((line) => `    ${line}`).join("\n")}`;
     if (skill.sourcePath) {
-      return `- \`${skill.name}\` — read from: ${skill.sourcePath}`;
+      return `- \`${skill.id}\` — ${skill.description}\n  Path: ${skill.sourcePath} (load via aurora_skill_load if you need the full body).${previewSection}`;
     }
-    return `- \`${skill.name}\` (built-in): ${skill.content}`;
+    return `- \`${skill.id}\` — ${skill.description}${previewSection}`;
   });
 
   return `<${label} count="${skills.length}">
+The user explicitly attached the following skill${skills.length === 1 ? "" : "s"} to this turn. Treat them as authoritative.
+
 ${refs.join('\n')}
 </${label}>`;
 }
@@ -118,7 +182,7 @@ export async function composeAgentSystemPrompt(options: {
 }): Promise<ComposedAgentPrompt> {
   const { basePrompt, executionMode = "agent", mcpSummary, promptContext } = options;
   const settings = useSettingsStore.getState();
-  const { allSkills, activeSkills, explicitSkills, matchedSkills } = await resolveSkillsForPrompt({
+  const { allSkills, activeSkills, enabledSkills, explicitSkills } = await resolveSkillsForPrompt({
     enabledSkillToggles: settings.skillToggles,
     explicitSkillKeys: promptContext.explicitSkillKeys,
     skillsEnabled: settings.skillsEnabled,
@@ -140,7 +204,7 @@ export async function composeAgentSystemPrompt(options: {
     systemPrompt: sections.join("\n\n"),
     allSkills,
     activeSkills,
+    enabledSkills,
     explicitSkills,
-    matchedSkills,
   };
 }

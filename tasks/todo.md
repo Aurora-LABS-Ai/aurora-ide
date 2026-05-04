@@ -1,12 +1,56 @@
 # Task Checklist
 
+## Active Task: Theme Documentation and Bonus Theme
+
+- [completed] Inspect existing theme schema, docs, and theme examples.
+- [completed] Create the missing `DOCS/theme-dev.md` token reference.
+- [completed] Add an importable modern dark VS Code-style theme JSON.
+- [completed] Validate the new documentation and theme JSON.
+- [completed] Record review trail with evidence.
+
+## Active Task: Live Preview Editor Auto-Scroll
+
+- [completed] Inspect Monaco editor integration and editor navigation tool behavior.
+- [completed] Add editor reveal requests for live preview auto-scroll and explicit open-file navigation.
+- [completed] Wire live preview and editor_open_file to the shared reveal path.
+- [completed] Run focused tests, typecheck, lint, and build.
+- [completed] Record review trail with evidence.
+
+## Active Task: Live File Edit Preview
+
+- [completed] Inspect streamed tool-call flow and editor update points for file-changing tools.
+- [completed] Add a UI-only live preview service for file_create, file_write, search_replace, and multi_search_replace.
+- [completed] Wire chat and agent-mode tool lifecycle events to preview, commit, and rollback paths.
+- [completed] Add focused tests and run frontend validation.
+- [completed] Record review trail with evidence.
+
+## Active Task: Agent Tooling Robustness
+
+- [completed] Diagnose current file-read, workspace-tree, and todo lifecycle failure modes.
+- [completed] Add line-aware and large-file-safe read behavior without breaking existing tool calls.
+- [completed] Add workspace file metadata so agents can see line counts before reading.
+- [completed] Make todo/task UI finalize cleanly when agent turns end, error, or cancel.
+- [completed] Run focused tests, typecheck, and update this review trail with evidence.
+
 ## Active Task: Native Aurora Semantic IDE Integration
 
-- [in_progress] Replace the old app-data/Jina/hash semantic bridge with local `aurora-semantic` workspace `.aurora/index` integration.
-- [pending] Expose model-path-driven ONNX loading and graph-aware search through the Tauri commands and frontend service.
-- [pending] Update the Semantic settings UI, agent system prompt, and `aurora_search` tool contract for native workspace indexing.
-- [pending] Point the IDE Cargo dependency at the local `E:\VOID-EDITOR\aurora-semantic` crate.
-- [pending] Run focused Rust and TypeScript validation, then record the review trail.
+- [completed] Diagnose installed-app provider unavailable while release EXE reports GPU.
+- [completed] Compare installed runtime search paths, bundled resources, and provider probe behavior against the working release EXE.
+- [completed] Implement the smallest root-cause fix for installed GPU provider detection/loading.
+- [completed] Record semantic search quality backlog separately from this runtime fix.
+- [completed] Diagnose installed-app blank screen on fresh launch after CUDA bundle install.
+- [completed] Identify whether failure is frontend runtime, Tauri startup, packaged assets, persisted state, or native provider loading.
+- [completed] Implement the smallest root-cause fix and add launch-safe validation.
+- [completed] Record review trail with evidence and verification for the blank-screen fix.
+- [completed] Replace the old app-data/Jina/hash semantic bridge with local `aurora-semantic` workspace `.aurora/index` integration.
+- [completed] Expose model-path-driven ONNX loading and graph-aware search through the Tauri commands and frontend service.
+- [completed] Update the Semantic settings UI, agent system prompt, and `aurora_search` tool contract for native workspace indexing.
+- [completed] Point the IDE Cargo dependency at the local `E:\VOID-EDITOR\aurora-semantic` crate.
+- [completed] Fix the CUDA wrapper so `pnpm tauri:build:cuda` enables Tauri's CUDA feature and passes `--no-default-features` through the Cargo runner separator.
+- [completed] Fix the frontend TypeScript errors surfaced by Tauri's `beforeBuildCommand`.
+- [completed] Diagnose and fix installed-bundle provider loading, semantic search UI freeze, and unnecessary full reindex behavior.
+- [completed] Add targeted runtime validation for Aurora IDE workspace semantic search without running the full Tauri bundle build.
+- [completed] Record the final review trail with root cause, changes, and verification.
 
 - [completed] Inspect Aurora and Zed workspace structure relevant to editor architecture and icon systems.
 - [completed] Identify direct-port risks, especially license incompatibility and framework mismatch.
@@ -33,6 +77,89 @@
 - [completed] Re-run focused frontend validation for the Aurora icon-pack ecosystem pass.
 
 # Review
+
+# Review Addendum: Theme Documentation and Bonus Theme
+
+- Root cause: multiple theme architecture notices referenced `DOCS/theme-dev.md`, but that documentation file did not exist.
+- Fix: added `DOCS/theme-dev.md` with the Aurora theme file shape, CSS variable mapping, all seven token categories, token tables, syntax highlighting guidance, and component authoring rules.
+- Bonus: added `example-themes/modern-vscode-dark.json`, an importable modern VS Code-style dark theme with complete color categories and 22 Monaco/TextMate token color rules.
+- Verification: parsed `example-themes/modern-vscode-dark.json` with Node, confirmed required theme fields, all seven color categories, and 22 `tokenColors`.
+- Verification: confirmed `DOCS/theme-dev.md` exists and contains the referenced token mapping examples.
+
+# Review Addendum: Live Preview Editor Auto-Scroll
+
+- Root cause: live-preview updates were changing the tab content, but Monaco had no one-shot reveal request tied to those preview updates, so the editor could remain at its old scroll position while generated content appended below the viewport.
+- Fix: `useEditorStore` now exposes a typed editor reveal request, and `CodeEditor` consumes it after Monaco renders to reveal either the bottom of the active file or a requested line/column.
+- Fix: live file preview now requests bottom reveal on each preview refresh without stealing focus from chat input.
+- Expansion: `editor_open_file` now honors its existing `line` and `column` parameters by requesting a Monaco reveal after opening the file.
+- Verification: `pnpm exec vitest run src/services/live-file-preview-utils.test.ts` passed.
+- Verification: focused ESLint passed for `CodeEditor`, `useEditorStore`, live-preview files, and `editor-executors`.
+- Verification: `pnpm exec tsc --noEmit -p tsconfig.app.json` passed.
+- Verification: `pnpm build` passed with the existing Vite chunk-size warning.
+- Impact note: direct GitNexus impact checks for `CodeEditor` and `useEditorStore` were low risk. The full unstaged-tree scan remains critical because the workspace includes broader unrelated semantic, icon, Rust, and tooling changes.
+
+# Review Addendum: Live File Edit Preview
+
+- Root cause: streamed file-changing tool arguments were only represented in the chat timeline. The editor did not receive provisional content until the executor finished and wrote to disk, so users could not see file_create, file_write, or patch-style edits evolve while the model was producing them.
+- Fix: added a UI-only live preview service that watches streamed tool-call arguments for `file_create`, `file_write`, `search_replace`, and `multi_search_replace`, opens the target file in the editor, and updates Monaco with the latest preview content without writing to disk early.
+- Fix: wired both normal chat and Agent Mode tool lifecycles so previews enter applying state when execution starts, are cleared on successful tool completion, and roll back if the tool is rejected, fails, or the agent turn ends with unfinished tools.
+- Fix: added tolerant streamed argument extraction that handles incomplete JSON and preserves literal Windows path backslashes for tool path fields.
+- Verification: `pnpm exec vitest run src/services/live-file-preview-utils.test.ts` passed.
+- Verification: focused ESLint passed for the live-preview service, utility, tests, ChatPanel, and AgentModeLayout.
+- Verification: `pnpm exec tsc --noEmit -p tsconfig.app.json` passed.
+- Verification: `pnpm build` passed with the existing Vite chunk-size warning.
+- Impact note: GitNexus reported critical risk for the full unstaged tree because this workspace already contains broader unrelated semantic, icon, Rust, and tooling changes. The direct pre-change checks for `ChatPanel` and `AgentModeLayout` were low risk.
+
+# Review Addendum: Agent Tooling Robustness
+
+- Root cause: `file_read` only guarded by bytes and had no line-range contract, so large source files could still dump huge content into model context. `workspace_tree` also lacked file line counts, so the agent had no cheap way to know a file was too large before reading it.
+- Fix: `file_read` now supports `start_line`, `end_line`, and `max_lines`, large files are returned as bounded line windows with `largeFile`, `totalLines`, range, and truncation metadata, and `multi_file_read` refuses to inline large files while returning line-count guidance.
+- Fix: `workspace_tree` now reports `lineCount`, `size`, and `largeFile` metadata for a bounded number of files by default, with controls to disable or cap stats.
+- Root cause: todo state relied on the agent remembering to mark every task complete. If the agent stopped, errored, or answered without a final todo update, the task store could keep an `in_progress` item visible indefinitely.
+- Fix: todo writes now preserve stable task IDs and require `activeForm`; `AgentService.chat` finalizes active tasks on normal completion and cancels unfinished work on errors, cancellation, or iteration-limit exits. Terminal task states auto-hide.
+- Verification: `pnpm exec vitest run src/tools/executors/file-read-policy.test.ts src/store/useTaskStore.test.ts` passed.
+- Verification: focused ESLint passed for the touched tool, task, agent-service, and task-view files.
+- Verification: `pnpm exec tsc --noEmit -p tsconfig.app.json` passed.
+- Verification: `pnpm build` passed with the existing Vite chunk-size warning.
+
+# Review Addendum: Installed CUDA Provider Location
+
+- Root cause: the installer correctly bundled the ONNX Runtime DLL files, but they were installed under `C:\Users\Alvan\AppData\Local\Aurora\onnxruntime\`. ONNX Runtime's CUDA provider loader specifically looked beside the executable at `C:\Users\Alvan\AppData\Local\Aurora\onnxruntime_providers_shared.dll`, so the provider probe failed even though the files existed.
+- Evidence: WebView/Tauri IPC from the installed app reported `get_available_gpu_features` as `{ cuda: true }`, but `get_execution_provider_info` failed with `Error loading "C:\Users\Alvan\AppData\Local\Aurora\onnxruntime_providers_shared.dll" which is missing`.
+- Fix: Tauri now maps `../build/release/onnxruntime*.dll` and `../build/release/DirectML*.dll` to the installer resource root, matching the working `build\release\aurora.exe` layout.
+- Verification: after manually copying the installed `onnxruntime\*.dll` files beside installed `aurora.exe`, the same installed-app Tauri provider probe returned `CUDA (GPU accelerated)` with `deviceId: 0`.
+- Semantic quality note: the agent's search-quality feedback is valid, but it is separate from this runtime/provider bug. The follow-up work is tracked under `Semantic Search Quality Backlog` above.
+
+# Review Addendum: Installed App Blank Screen and CUDA Bundle Resources
+
+- Root cause for the fresh installed-app blank screen: the Tauri process and WebView were alive, but React crashed before mounting. Remote WebView debugging showed `TypeError: Cannot read properties of undefined (reading 'split')` from the VS Code file icon resolver after the app restored the previous workspace.
+- Fix: explorer icon requests are now normalized before any icon pack resolver runs. Missing file names are recovered from the path when possible, and resolver failures fall back to a safe folder/file icon instead of taking down the whole renderer.
+- Added `src\lib\icon-packs.test.ts` to cover missing-name recovery and the VS Code icon-pack path that triggered the installed-app blank screen.
+- Packaging correction: Tauri now bundles ONNX Runtime provider DLLs from `build\release` into the installed app's `onnxruntime` resource directory, and `aurora-semantic` prepends that installed runtime directory to `PATH` before loading ONNX Runtime.
+- Evidence captured: installed `aurora.exe` stayed alive with `http://tauri.localhost/` loaded, but `#root` remained empty and console logs showed the icon resolver crash.
+- Verification: `pnpm exec vitest run src\lib\icon-packs.test.ts` passed.
+- Verification: `pnpm exec eslint src\lib\icon-packs.ts src\lib\icon-registry.ts src\lib\icon-packs.test.ts` passed.
+- Verification: `pnpm exec tsc --noEmit -p tsconfig.app.json` passed.
+- Verification: `pnpm build` passed with only the existing Vite chunk-size warning.
+- Verification: `cargo check --manifest-path src-tauri\Cargo.toml --no-default-features --features cuda` passed.
+- Note: I did not run the full Tauri installer build after this fix because the user asked to run build commands locally.
+
+# Review Addendum: Native Aurora Semantic Packaging, Freeze, and Incremental Reindex
+
+- Root cause for installed GPU provider unavailable: Windows ONNX Runtime provider DLLs were present in `build\release` as symlinks to the `ort` cache. The release EXE could run from the build folder, but MSI/NSIS packaging could carry unusable zero-byte symlink placeholders into the installed app.
+- Fix: `src-tauri/build.rs` now materializes ONNX Runtime DLL symlinks into real files before Tauri bundles the app. `aurora-semantic` also prepends the installed EXE directory and CUDA Toolkit `bin` directories to `PATH` before loading ONNX Runtime so provider dependencies can be found outside a developer shell.
+- Root cause for UI freeze/search break: semantic model loading, indexing, and graph/chunk searches were running directly inside async Tauri command paths, and agent search results could return large content payloads into the frontend.
+- Fix: semantic model load, provider probe, indexing, chunk search, and graph search now run through blocking worker tasks. Agent-side `aurora_search` results are capped to 10 results, chunk content is truncated to 3000 characters, and related graph nodes are capped.
+- Root cause for full reindex behavior: the settings indexing path always called the destructive reindex flow even when `workspace_index_status` already knew the index was current.
+- Fix: `aurora-semantic` now exposes blocking index APIs and `index_or_reindex_workspace` skips no-change work, preserves the workspace ID, and incrementally reprocesses only changed/deleted file paths when hashes show the index is stale.
+- Verification: `cargo test reindex_skips_current_workspace_and_reuses_id_for_changed_files --lib` passed in `E:\VOID-EDITOR\aurora-semantic`.
+- Verification: `cargo check --lib` passed in `E:\VOID-EDITOR\aurora-semantic`.
+- Verification: `cargo check --manifest-path src-tauri\Cargo.toml --no-default-features --features cpu-only` passed in `E:\VOID-EDITOR\Aurora-Agent-IDE`.
+- Verification: `cargo check --manifest-path src-tauri\Cargo.toml --no-default-features --features cuda` passed in `E:\VOID-EDITOR\Aurora-Agent-IDE`.
+- Verification: `pnpm exec tsc --noEmit -p tsconfig.app.json` passed.
+- Verification: focused ESLint passed for `src\tools\executors\search-executors.ts`, `src\components\modals\SemanticSettingsTab.tsx`, and `scripts\tauri-cuda.mjs`.
+- Runtime validation: `cargo run --bin aurora-demo -- --workspace E:\VOID-EDITOR\Aurora-Agent-IDE --limit 5` loaded the existing `.aurora\index` with 365 docs and 5492 chunks, then returned 5 hybrid search results for `semantic` in 8.50 ms.
+- Note: I did not run a full Tauri bundle build after these fixes because the user asked to run build commands locally.
 
 - Reviewed Zed's crate boundaries against Aurora's current Tauri + React architecture, with emphasis on icon systems, workspace boundaries, extensions, and editor-core strategy.
 - Preparing a clean git snapshot of the current Aurora work before the next implementation pass.

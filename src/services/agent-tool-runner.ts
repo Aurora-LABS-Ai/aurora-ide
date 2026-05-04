@@ -17,6 +17,7 @@ import {
   isToolAllowedForExecutionMode,
   normalizeAgentExecutionMode,
 } from "./agent-execution-mode";
+import { threadService } from "./thread-service";
 
 interface AgentToolRunnerOptions {
   beforeToolExecution?: () => Promise<void>;
@@ -174,7 +175,7 @@ export class AgentToolRunner {
     try {
       const result = await this.executeToolWithTimeout(toolCall, parsedArgs);
 
-      await this.recordToolResult(toolCall.id, result, false);
+      await this.recordToolResult(toolCall.id, result, false, toolName);
       this.callbacks.onToolExecutionComplete?.(toolCall, result);
 
       return {
@@ -255,7 +256,12 @@ export class AgentToolRunner {
     const content = toToolErrorPayload(toolCall.function.name, reason);
     this.callbacks.onToolRejected?.(toolCall, reason);
 
-    await this.recordToolResult(toolCall.id, content, true);
+    await this.recordToolResult(
+      toolCall.id,
+      content,
+      true,
+      toolCall.function.name,
+    );
 
     return {
       message: toToolMessage(toolCall.id, content),
@@ -275,7 +281,12 @@ export class AgentToolRunner {
     content: string,
     result: string
   ): Promise<ToolExecutionOutcome> {
-    await this.recordToolResult(toolCall.id, content, true);
+    await this.recordToolResult(
+      toolCall.id,
+      content,
+      true,
+      toolCall.function.name,
+    );
 
     return {
       message: toToolMessage(toolCall.id, content),
@@ -316,6 +327,10 @@ export class AgentToolRunner {
   }
 
   private async recordToolCall(toolCall: ToolCallRequest): Promise<void> {
+    // The tool_call itself is persisted to JSONL as part of the surrounding
+    // AssistantMessage event (written by `agent-service.ts` after the model
+    // finishes its turn). Here we only mirror it into the in-memory
+    // ContextManager so live message builds see the call.
     await auroraInvoke("context_add_tool_call", {
       threadId: this.threadId,
       toolCallId: toolCall.id,
@@ -327,13 +342,33 @@ export class AgentToolRunner {
   private async recordToolResult(
     toolCallId: string,
     content: string,
-    isError: boolean
+    isError: boolean,
+    toolName?: string,
   ): Promise<void> {
+    // 1. Mirror into the in-memory ContextManager.
     await auroraInvoke("context_add_tool_result", {
       threadId: this.threadId,
       toolCallId,
       content,
       isError,
     });
+
+    // 2. Persist to JSONL. We need a `tool_name` for replay/debug, so derive
+    //    it from the caller when available; otherwise fall back to a sentinel
+    //    so the event is still written (preferable to silently dropping it).
+    try {
+      await threadService.appendToolResult(
+        this.threadId,
+        toolCallId,
+        toolName ?? "unknown",
+        content,
+        isError,
+      );
+    } catch (err) {
+      console.warn(
+        `[agent-tool-runner] thread_append_tool_result failed for ${toolCallId}:`,
+        err,
+      );
+    }
   }
 }

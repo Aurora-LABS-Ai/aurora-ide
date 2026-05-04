@@ -338,7 +338,6 @@ export const getToolIcon = (toolName: string, size = 14): React.ReactNode => {
     // Search operations
     'search_replace': SearchReplaceIcon,
     'multi_search_replace': SearchReplaceIcon,
-    'aurora_search': SearchIcon,
     'grep': SearchIcon,
     'grep_search': SearchIcon,
     

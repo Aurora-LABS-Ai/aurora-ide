@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type MockDirectoryEntry = {
   extension: string | null;
@@ -25,10 +25,26 @@ vi.mock("../lib/tauri", () => ({
 }));
 
 import { composeAgentSystemPrompt } from "./agent-prompt";
-import { loadWorkspaceSkills, parseSkillDocument, resolveSkillsForPrompt } from "./skills";
+import {
+  extractPreviewLines,
+  findSkillById,
+  loadAllSkillCandidates,
+  loadWorkspaceSkills,
+  MAX_ENABLED_SKILLS,
+  parseSkillDocument,
+  resolveSkillsForPrompt,
+  searchSkillCandidates,
+} from "./skills";
+
+beforeEach(() => {
+  readDirectoryMock.mockReset();
+  readDirectoryMock.mockImplementation(async () => []);
+  readFileContentMock.mockReset();
+  readFileContentMock.mockImplementation(async () => "");
+});
 
 describe("skills", () => {
-  it("parses markdown skill frontmatter", () => {
+  it("parses markdown skill frontmatter and captures preview lines", () => {
     const skill = parseSkillDocument(
       `---
 id: custom-review
@@ -38,7 +54,9 @@ triggers:
   - review
   - regression
 ---
-Check changed files first and focus on correctness.`,
+Check changed files first and focus on correctness.
+
+Add tests for any regression you fix.`,
       {
         fallbackId: "fallback",
         source: "workspace",
@@ -51,17 +69,48 @@ Check changed files first and focus on correctness.`,
     expect(skill?.name).toBe("Custom Review");
     expect(skill?.triggers).toEqual(["review", "regression"]);
     expect(skill?.content).toContain("focus on correctness");
+    expect(skill?.previewLines.length).toBeGreaterThan(0);
+    expect(skill?.previewLines[0]).toBe("Check changed files first and focus on correctness.");
   });
 
-  it("activates explicit builtin skills from the user message", async () => {
+  it("extractPreviewLines collapses blank lines and caps at the limit", () => {
+    const preview = extractPreviewLines(
+      `\n\nfirst line\n   \nsecond line\n\nthird line\nfourth line\nfifth line\nsixth line`,
+      5
+    );
+    expect(preview).toEqual([
+      "first line",
+      "second line",
+      "third line",
+      "fourth line",
+      "fifth line",
+    ]);
+  });
+
+  it("default-off: built-in skills are NOT auto-injected without an explicit toggle", async () => {
     const resolved = await resolveSkillsForPrompt({
       userMessage: "Use the typescript skill to fix typing issues in this TSX component.",
     });
 
-    expect(resolved.activeSkills.some((skill) => skill.id === "typescript")).toBe(true);
+    expect(resolved.allSkills.some((skill) => skill.id === "typescript")).toBe(true);
+    // Without an explicit toggle, no skill is enabled.
+    expect(resolved.enabledSkills).toHaveLength(0);
+    expect(resolved.activeSkills).toHaveLength(0);
   });
 
-  it("loads project skills from folder-based SKILL.md layout", async () => {
+  it("respects a user-enabled toggle", async () => {
+    const resolved = await resolveSkillsForPrompt({
+      userMessage: "Use the typescript skill to fix typing issues in this TSX component.",
+      enabledSkillToggles: {
+        "builtin:typescript": true,
+      },
+    });
+
+    expect(resolved.enabledSkills.map((skill) => skill.id)).toEqual(["typescript"]);
+    expect(resolved.activeSkills.map((skill) => skill.id)).toEqual(["typescript"]);
+  });
+
+  it("loads project skills from both .aurora/skills and agents/skills", async () => {
     readDirectoryMock.mockImplementation(async (path: string) => {
       if (path === "E:/repo/.aurora/skills") {
         return [
@@ -87,49 +136,126 @@ Check changed files first and focus on correctness.`,
         ];
       }
 
+      if (path === "E:/repo/.agents/skills") {
+        return [
+          {
+            name: "shared-style",
+            path: "E:/repo/.agents/skills/shared-style",
+            is_dir: true,
+            is_file: false,
+            extension: null,
+          },
+        ];
+      }
+
+      if (path === "E:/repo/.agents/skills/shared-style") {
+        return [
+          {
+            name: "SKILL.md",
+            path: "E:/repo/.agents/skills/shared-style/SKILL.md",
+            is_dir: false,
+            is_file: true,
+            extension: "md",
+          },
+        ];
+      }
+
       return [];
     });
 
-    readFileContentMock.mockResolvedValue(`---
+    readFileContentMock.mockImplementation(async (path: string) => {
+      if (path === "E:/repo/.aurora/skills/custom-review/SKILL.md") {
+        return `---
 name: Custom Review
 description: Review changed code carefully.
 triggers: [review, correctness]
 ---
-Check changed files first.`);
+Check changed files first.`;
+      }
+      if (path === "E:/repo/.agents/skills/shared-style/SKILL.md") {
+        return `---
+name: Shared Style
+description: Cross-agent style guide.
+---
+Use 2-space indentation.`;
+      }
+      return "";
+    });
 
     const skills = await loadWorkspaceSkills("E:/repo");
 
-    expect(skills).toHaveLength(1);
-    expect(skills[0]?.id).toBe("custom-review");
-    expect(skills[0]?.storageKey).toContain("workspace:");
+    expect(skills).toHaveLength(2);
+    expect(skills.map((s) => s.id).sort()).toEqual(["custom-review", "shared-style"]);
+    expect(skills.every((s) => s.storageKey.startsWith("workspace:"))).toBe(true);
   });
 
-  it("filters disabled skills out of the prompt resolver", async () => {
-    const resolved = await resolveSkillsForPrompt({
-      userMessage: "Use the typescript skill to fix typing issues in this TSX component.",
-      enabledSkillToggles: {
-        "builtin:typescript": false,
-      },
-    });
-
-    expect(resolved.allSkills.some((skill) => skill.id === "typescript")).toBe(false);
-    expect(resolved.activeSkills.some((skill) => skill.id === "typescript")).toBe(false);
-  });
-
-  it("uses explicitly attached skills instead of auto-matched skills", async () => {
+  it("explicit attachments bypass the toggle gate", async () => {
     const resolved = await resolveSkillsForPrompt({
       explicitSkillKeys: ["builtin:mcp-integration"],
-      userMessage: "Use the typescript skill to fix typing and MCP work together.",
+      userMessage: "Use MCP",
     });
 
     expect(resolved.explicitSkills.map((skill) => skill.id)).toEqual(["mcp-integration"]);
-    expect(resolved.activeSkills.map((skill) => skill.id)).toEqual([
-      "mcp-integration",
-      "typescript",
-    ]);
+    expect(resolved.activeSkills.map((skill) => skill.id)).toEqual(["mcp-integration"]);
+    // mcp-integration is NOT in enabledSkills because the toggle is off.
+    expect(resolved.enabledSkills).toHaveLength(0);
   });
 
-  it("composes a layered system prompt with catalog and active skills", async () => {
+  it("hard-caps enabledSkills at MAX_ENABLED_SKILLS", async () => {
+    const builtinIds = [
+      "project-overview",
+      "typescript",
+      "react-frontend",
+      "tauri-rust",
+      "mcp-integration",
+      "testing-debugging",
+    ];
+    expect(builtinIds.length).toBeLessThanOrEqual(MAX_ENABLED_SKILLS);
+
+    const toggles: Record<string, boolean> = {};
+    for (const id of builtinIds) {
+      toggles[`builtin:${id}`] = true;
+    }
+
+    const resolved = await resolveSkillsForPrompt({
+      userMessage: "anything",
+      enabledSkillToggles: toggles,
+    });
+
+    // All 6 fit under the cap of 10.
+    expect(resolved.enabledSkills).toHaveLength(builtinIds.length);
+
+    // Now force the cap by passing maxActiveSkills=2.
+    const capped = await resolveSkillsForPrompt({
+      userMessage: "anything",
+      enabledSkillToggles: toggles,
+      maxActiveSkills: 2,
+    });
+    expect(capped.enabledSkills).toHaveLength(2);
+  });
+
+  it("loadAllSkillCandidates exposes every skill regardless of toggle", async () => {
+    const all = await loadAllSkillCandidates();
+    expect(all.length).toBeGreaterThan(0);
+    expect(all.some((s) => s.id === "typescript")).toBe(true);
+  });
+
+  it("findSkillById resolves a skill by id even when toggled off", async () => {
+    const skill = await findSkillById("typescript");
+    expect(skill?.id).toBe("typescript");
+  });
+
+  it("searchSkillCandidates returns ranked results for a query", async () => {
+    const results = await searchSkillCandidates("typescript");
+    expect(results[0]?.id).toBe("typescript");
+  });
+
+  it("searchSkillCandidates returns an empty list when nothing matches", async () => {
+    const results = await searchSkillCandidates("zzz-nothing-matches-this");
+    expect(results).toHaveLength(0);
+  });
+
+  it("composeAgentSystemPrompt emits the Skill System block and skill discovery hint when nothing is enabled", async () => {
     const composed = await composeAgentSystemPrompt({
       promptContext: {
         userMessage: "We need MCP marketplace integration and server tool routing.",
@@ -138,9 +264,12 @@ Check changed files first.`);
     });
 
     expect(composed.systemPrompt).toContain("## Skill System");
+    expect(composed.systemPrompt).toContain("aurora_skill_search");
+    expect(composed.systemPrompt).toContain("aurora_skill_load");
     expect(composed.systemPrompt).toContain("Connected server summary");
-    expect(composed.activeSkills.some((skill) => skill.id === "mcp-integration")).toBe(true);
-    expect(composed.matchedSkills.some((skill) => skill.id === "mcp-integration")).toBe(true);
+    // Default-off: no skill is auto-active.
+    expect(composed.enabledSkills).toHaveLength(0);
+    expect(composed.activeSkills).toHaveLength(0);
   });
 
   it("adds plan mode restrictions to the system prompt", async () => {

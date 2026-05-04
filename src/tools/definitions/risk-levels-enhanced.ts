@@ -98,9 +98,13 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   // ============================================
   // SEARCH TOOLS - AUTO-APPROVED
   // ============================================
-  aurora_search: 'low',            // Semantic search - read only operation
   auroro_websearch: 'low',         // Web search/fetch - read only operation
 
+  // ============================================
+  // SKILL DISCOVERY TOOLS - AUTO-APPROVED
+  // ============================================
+  aurora_skill_search: 'low',      // Read-only catalog browse
+  aurora_skill_load: 'low',        // Read-only SKILL.md fetch
 
   // Note: MCP tools are handled separately via mcp-tools.ts
   // Their approval is determined by the server's autoApprove setting

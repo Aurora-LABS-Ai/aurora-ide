@@ -68,13 +68,33 @@ export const fileReadTool: ToolDefinition = {
   type: 'function',
   function: {
     name: 'file_read',
-    description: 'Read the entire content of a file at the specified path. Returns the file content as a string.',
+    description: `Read file content safely. By default, small files are returned in full. Large files are never returned in full; the response marks largeFile=true and returns only a bounded line window so context is not flooded.
+
+Use start_line and end_line for precise 1-based inclusive line reads, especially after workspace_tree reports a large lineCount. Maximum returned range is capped for safety.
+
+Examples:
+- file_read(path="src/App.tsx") for a small file
+- file_read(path="src/big.ts", start_line=120, end_line=220) for exact lines 120-220
+
+Returns JSON with content, totalLines, size, largeFile, range, and truncation metadata.`,
     parameters: {
       type: 'object',
       properties: {
         path: {
           type: 'string',
           description: 'The full path of the file to read (e.g., "src/App.tsx")',
+        },
+        start_line: {
+          type: 'number',
+          description: 'Optional 1-based first line to return. Use with end_line for exact line-based reads.',
+        },
+        end_line: {
+          type: 'number',
+          description: 'Optional 1-based inclusive last line to return. If omitted with start_line, returns a safe bounded window.',
+        },
+        max_lines: {
+          type: 'number',
+          description: 'Optional maximum lines to return from start_line. Capped internally to prevent context overflow.',
         },
       },
       required: ['path'],
@@ -200,9 +220,9 @@ export const multiFileReadTool: ToolDefinition = {
   type: 'function',
   function: {
     name: 'multi_file_read',
-    description: `Read multiple files in parallel (10-100x faster than reading files one by one).
+    description: `Read multiple small/medium files in parallel (10-100x faster than reading files one by one).
 
-USE THIS TOOL when you need to read 2 or more files at once. This is significantly faster than calling file_read multiple times.
+USE THIS TOOL when you need to inspect 2 or more files at once. Large files are not returned in full; each large result is marked largeFile=true with line counts and a recommendation to call file_read with start_line/end_line.
 
 Examples:
 - multi_file_read(paths=["src/App.tsx", "src/main.tsx", "src/types/index.ts"])

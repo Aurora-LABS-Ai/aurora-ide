@@ -16,7 +16,6 @@ export type SettingsTabId =
   | "tools"
   | "general"
   | "themes"
-  | "semantic"
   | "speech"
   | "mcp"
   | "skills"

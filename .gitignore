@@ -21,6 +21,11 @@ void-main
 # Tauri build artifacts
 src-tauri/target/
 src-tauri/crispasr-runtime/
+# Vendored native runtime DLLs (ONNX Runtime / DirectML).
+# Each developer populates these locally; see src-tauri/runtime/onnxruntime/.
+src-tauri/runtime/onnxruntime/*.dll
+src-tauri/runtime/onnxruntime/*.lib
+src-tauri/runtime/onnxruntime/*.pdb
 # Note: Cargo.lock should be committed for applications
 AGENTS.md
 docs-lm-studio

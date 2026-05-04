@@ -7,6 +7,12 @@ export interface SkillDefinition {
   description: string;
   id: string;
   name: string;
+  /**
+   * First five non-empty lines of the skill body, intended for the inline
+   * catalog preview the agent sees in the prompt. The full content is loaded
+   * on demand via `aurora_skill_load`.
+   */
+  previewLines: string[];
   source: SkillSource;
   sourcePath?: string;
   storageKey: string;
@@ -17,17 +23,29 @@ export interface ResolveSkillsOptions {
   enabledSkillToggles?: Record<string, boolean>;
   explicitSkillKeys?: string[];
   globalSkillsPath?: string | null;
+  /**
+   * Hard cap on auto-injected skills. Defaults to {@link MAX_ENABLED_SKILLS}.
+   * Explicit per-message attachments are not affected by this cap; they are
+   * always included.
+   */
   maxActiveSkills?: number;
   skillsEnabled?: boolean;
-  userMessage: string;
+  userMessage?: string;
   workspacePath?: string | null;
 }
 
 export interface ResolvedSkills {
-  activeSkills: SkillDefinition[];
+  /** All discovered skill candidates (built-in + workspace + global). */
   allSkills: SkillDefinition[];
+  /**
+   * Skills the agent should treat as authoritative this turn. This is the
+   * union of explicit attachments and toggle-on skills, deduped and capped.
+   */
+  activeSkills: SkillDefinition[];
+  /** Skills the user toggled ON in settings, capped at {@link MAX_ENABLED_SKILLS}. */
+  enabledSkills: SkillDefinition[];
+  /** Skills explicitly attached to this turn (e.g. via @-mention). */
   explicitSkills: SkillDefinition[];
-  matchedSkills: SkillDefinition[];
 }
 
 interface ParsedFrontmatter {
@@ -40,11 +58,33 @@ interface SkillFileCandidate {
   filePath: string;
 }
 
-const WORKSPACE_SKILLS_FOLDER = ".aurora/skills";
+/**
+ * Workspace folders we scan for project-scoped skills, in priority order.
+ * `.aurora/skills` is the canonical Aurora location; `.agents/skills` is the
+ * shared convention used by other agentic tools so projects don't have to
+ * duplicate skills across ecosystems. Both are dotfile directories so they
+ * stay out of the workspace's regular file tree.
+ */
+export const WORKSPACE_SKILL_FOLDERS = [".aurora/skills", ".agents/skills"] as const;
+
+/**
+ * Maximum number of toggle-on skills auto-injected into the agent prompt.
+ * Beyond this cap, the agent must use the discovery tools (`aurora_skill_search`
+ * / `aurora_skill_load`) to pull in additional skills. Explicit attachments
+ * bypass this cap.
+ */
+export const MAX_ENABLED_SKILLS = 10;
+
+/**
+ * Number of leading non-empty body lines surfaced as a preview in the agent
+ * prompt. The agent loads the full content on demand.
+ */
+export const SKILL_PREVIEW_LINE_COUNT = 5;
+
 const SKILL_FILE_NAME = "skill.md";
 let cachedGlobalSkillsPath: string | null | undefined;
 
-const BUILTIN_SKILL_BASE: Array<Omit<SkillDefinition, "storageKey">> = [
+const BUILTIN_SKILL_BASE: Array<Omit<SkillDefinition, "previewLines" | "storageKey">> = [
   {
     id: "project-overview",
     name: "Project Overview",
@@ -188,6 +228,7 @@ Guidelines:
 
 const BUILTIN_SKILLS: SkillDefinition[] = BUILTIN_SKILL_BASE.map((skill) => ({
   ...skill,
+  previewLines: extractPreviewLines(skill.content),
   storageKey: `builtin:${skill.id}`,
 }));
 
@@ -224,13 +265,40 @@ const normalizeStoragePath = (path: string): string =>
 const createStorageKey = (source: SkillSource, sourcePath: string | undefined, fallbackId: string): string =>
   sourcePath ? `${source}:${normalizeStoragePath(sourcePath)}` : `${source}:${normalize(fallbackId).replace(/\s+/g, "-")}`;
 
-const toWorkspaceSkillsPath = (workspacePath: string): string =>
-  workspacePath.includes("\\")
-    ? `${workspacePath}\\${WORKSPACE_SKILLS_FOLDER.replace("/", "\\")}`
-    : `${workspacePath}/${WORKSPACE_SKILLS_FOLDER}`;
+const joinWorkspaceSubpath = (workspacePath: string, subpath: string): string => {
+  const usesWindows = workspacePath.includes("\\");
+  const normalizedSub = usesWindows ? subpath.replace(/\//g, "\\") : subpath;
+  const sep = usesWindows ? "\\" : "/";
+  return workspacePath.endsWith(sep)
+    ? `${workspacePath}${normalizedSub}`
+    : `${workspacePath}${sep}${normalizedSub}`;
+};
 
 const isSkillMarkdownFile = (name: string): boolean =>
   name.toLowerCase() === SKILL_FILE_NAME;
+
+/**
+ * Extract the first {@link SKILL_PREVIEW_LINE_COUNT} non-empty lines from a
+ * skill body, trimming horizontal whitespace. Heading-only lines (e.g. `#`)
+ * still count, since they're meaningful in markdown skill structure.
+ */
+export function extractPreviewLines(body: string, limit: number = SKILL_PREVIEW_LINE_COUNT): string[] {
+  if (!body) {
+    return [];
+  }
+  const out: string[] = [];
+  for (const rawLine of body.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+    out.push(line);
+    if (out.length >= limit) {
+      break;
+    }
+  }
+  return out;
+}
 
 function parseFrontmatter(document: string): ParsedFrontmatter {
   if (!document.startsWith("---")) {
@@ -321,6 +389,7 @@ export function parseSkillDocument(
     description,
     triggers: uniqueStrings(triggers),
     content,
+    previewLines: extractPreviewLines(content),
     source: options.source,
     sourcePath: options.sourcePath,
     storageKey: createStorageKey(options.source, options.sourcePath, options.fallbackId),
@@ -402,8 +471,36 @@ export async function getResolvedGlobalSkillsPath(): Promise<string | null> {
   return cachedGlobalSkillsPath;
 }
 
+/**
+ * Load workspace skills from every {@link WORKSPACE_SKILL_FOLDERS} root,
+ * de-duplicating by storage key (paths are normalized first). Folders earlier
+ * in the array take precedence on conflict.
+ */
 export async function loadWorkspaceSkills(workspacePath?: string | null): Promise<SkillDefinition[]> {
-  return loadSkillsFromRoot(workspacePath ? toWorkspaceSkillsPath(workspacePath) : null, "workspace");
+  if (!workspacePath) {
+    return [];
+  }
+
+  const folderSkillSets = await Promise.all(
+    WORKSPACE_SKILL_FOLDERS.map((folder) =>
+      loadSkillsFromRoot(joinWorkspaceSubpath(workspacePath, folder), "workspace")
+    )
+  );
+
+  const seenKeys = new Set<string>();
+  const merged: SkillDefinition[] = [];
+  for (const skillSet of folderSkillSets) {
+    for (const skill of skillSet) {
+      const dedupeKey = normalizeStorageKey(skill.storageKey);
+      if (seenKeys.has(dedupeKey)) {
+        continue;
+      }
+      seenKeys.add(dedupeKey);
+      merged.push(skill);
+    }
+  }
+
+  return merged.sort((left, right) => left.name.localeCompare(right.name));
 }
 
 export async function loadGlobalSkills(globalSkillsPath?: string | null): Promise<SkillDefinition[]> {
@@ -415,6 +512,32 @@ export function getBuiltinSkills(): SkillDefinition[] {
   return [...BUILTIN_SKILLS];
 }
 
+/**
+ * Load every discoverable skill (built-in + workspace + global) without
+ * applying any toggle/master-switch filtering. This is the canonical view for
+ * tools (`aurora_skill_search`, `aurora_skill_load`) and for explicit
+ * attachment lookups, both of which must work even when a skill is toggled
+ * off in settings.
+ */
+export async function loadAllSkillCandidates(options?: {
+  globalSkillsPath?: string | null;
+  workspacePath?: string | null;
+}): Promise<SkillDefinition[]> {
+  const [workspaceSkills, globalSkills] = await Promise.all([
+    loadWorkspaceSkills(options?.workspacePath),
+    loadGlobalSkills(options?.globalSkillsPath),
+  ]);
+
+  return [...BUILTIN_SKILLS, ...workspaceSkills, ...globalSkills];
+}
+
+/**
+ * Determine whether a given skill is enabled for prompt injection.
+ *
+ * **Default-off semantics:** when the user has never interacted with a
+ * skill's toggle, it is treated as DISABLED. The user explicitly opts in
+ * from the Skills settings tab.
+ */
 export function isSkillEnabled(
   skill: SkillDefinition,
   skillToggles?: Record<string, boolean>,
@@ -424,7 +547,37 @@ export function isSkillEnabled(
     return false;
   }
 
-  return skillToggles?.[skill.storageKey] ?? true;
+  return skillToggles?.[skill.storageKey] ?? false;
+}
+
+/**
+ * Filter a list of skills by toggle state, capping at {@link MAX_ENABLED_SKILLS}.
+ * Order is preserved, so callers control the priority via the input order.
+ */
+export function filterEnabledSkills(
+  skills: SkillDefinition[],
+  options?: {
+    enabledSkillToggles?: Record<string, boolean>;
+    maxActiveSkills?: number;
+    skillsEnabled?: boolean;
+  }
+): SkillDefinition[] {
+  const cap = Math.max(0, options?.maxActiveSkills ?? MAX_ENABLED_SKILLS);
+  if (cap === 0) {
+    return [];
+  }
+
+  const enabled: SkillDefinition[] = [];
+  for (const skill of skills) {
+    if (!isSkillEnabled(skill, options?.enabledSkillToggles, options?.skillsEnabled)) {
+      continue;
+    }
+    enabled.push(skill);
+    if (enabled.length >= cap) {
+      break;
+    }
+  }
+  return enabled;
 }
 
 export async function getSkillCatalog(options?: {
@@ -433,79 +586,26 @@ export async function getSkillCatalog(options?: {
   skillsEnabled?: boolean;
   workspacePath?: string | null;
 }): Promise<SkillDefinition[]> {
-  const { workspacePath, globalSkillsPath, enabledSkillToggles, skillsEnabled = true } = options ?? {};
-  const [workspaceSkills, globalSkills] = await Promise.all([
-    loadWorkspaceSkills(workspacePath),
-    loadGlobalSkills(globalSkillsPath),
-  ]);
-  const allSkills = [...BUILTIN_SKILLS, ...workspaceSkills, ...globalSkills];
-
-  return allSkills.filter((skill) => isSkillEnabled(skill, enabledSkillToggles, skillsEnabled));
-}
-
-function scoreSkill(skill: SkillDefinition, normalizedMessage: string): number {
-  let score = 0;
-  const normalizedName = normalize(skill.name);
-
-  const explicitMentions = [
-    `$${skill.id}`,
-    `$${normalizedName}`,
-    `skill ${skill.id}`,
-    `skill ${normalizedName}`,
-    `use ${skill.id}`,
-    `use ${normalizedName}`,
-    `activate ${skill.id}`,
-    `activate ${normalizedName}`,
-    `enable ${skill.id}`,
-    `enable ${normalizedName}`,
-    `apply ${skill.id}`,
-    `apply ${normalizedName}`,
-  ];
-
-  if (explicitMentions.some((mention) => normalizedMessage.includes(mention))) {
-    score += 100;
-  }
-
-  if (normalizedMessage.includes(skill.id)) {
-    score += 40;
-  }
-
-  if (normalizedMessage.includes(normalizedName)) {
-    score += 30;
-  }
-
-  for (const trigger of skill.triggers) {
-    const normalizedTrigger = normalize(trigger);
-    if (!normalizedTrigger) {
-      continue;
-    }
-    if (normalizedMessage.includes(normalizedTrigger)) {
-      score += normalizedTrigger.includes(" ") ? 14 : 8;
-    }
-  }
-
-  return score;
+  const allSkills = await loadAllSkillCandidates(options);
+  return allSkills.filter((skill) =>
+    isSkillEnabled(skill, options?.enabledSkillToggles, options?.skillsEnabled ?? true)
+  );
 }
 
 export async function resolveSkillsForPrompt(
   options: ResolveSkillsOptions
 ): Promise<ResolvedSkills> {
   const {
-    userMessage,
     workspacePath,
     globalSkillsPath,
     enabledSkillToggles,
     explicitSkillKeys,
     skillsEnabled = true,
-    maxActiveSkills = 4,
+    maxActiveSkills = MAX_ENABLED_SKILLS,
   } = options;
-  const allSkills = await getSkillCatalog({
-    workspacePath,
-    globalSkillsPath,
-    enabledSkillToggles,
-    skillsEnabled,
-  });
-  const normalizedMessage = normalize(userMessage);
+
+  const allSkills = await loadAllSkillCandidates({ workspacePath, globalSkillsPath });
+
   const normalizedExplicitKeys = new Set(
     (explicitSkillKeys ?? [])
       .map((key) => normalizeStorageKey(key))
@@ -518,59 +618,119 @@ export async function resolveSkillsForPrompt(
           normalizedExplicitKeys.has(normalizeStorageKey(skill.storageKey))
         );
 
-  const matchedSkills = allSkills
-    .map((skill) => ({ score: scoreSkill(skill, normalizedMessage), skill }))
-    .filter((entry) => entry.score > 0)
-    .sort((left, right) => right.score - left.score || left.skill.name.localeCompare(right.skill.name))
-    .map((entry) => entry.skill);
+  const enabledSkills = filterEnabledSkills(allSkills, {
+    enabledSkillToggles,
+    maxActiveSkills,
+    skillsEnabled,
+  });
 
-  const explicitSkillKeysSet = new Set(
+  const explicitKeySet = new Set(
     explicitSkills.map((skill) => normalizeStorageKey(skill.storageKey))
   );
-  const supplementalSkills = matchedSkills
-    .filter((skill) => !explicitSkillKeysSet.has(normalizeStorageKey(skill.storageKey)))
-    .slice(0, Math.max(maxActiveSkills - explicitSkills.length, 0));
-  const activeSkills = [...explicitSkills, ...supplementalSkills];
+  const activeSkills = [
+    ...explicitSkills,
+    ...enabledSkills.filter((skill) => !explicitKeySet.has(normalizeStorageKey(skill.storageKey))),
+  ];
 
   return {
     allSkills,
     activeSkills,
+    enabledSkills,
     explicitSkills,
-    matchedSkills,
   };
 }
 
-function formatSkillSource(source: SkillSource): string {
-  if (source === "workspace") {
-    return "project";
+/**
+ * Find a single skill by id within the unfiltered candidate list. Used by the
+ * `aurora_skill_load` tool so the agent can pull in a skill that isn't
+ * toggled on in settings.
+ */
+export async function findSkillById(
+  id: string,
+  options?: {
+    globalSkillsPath?: string | null;
+    workspacePath?: string | null;
+  }
+): Promise<SkillDefinition | null> {
+  const normalizedId = normalize(id).replace(/\s+/g, "-");
+  if (!normalizedId) {
+    return null;
   }
 
-  return source;
+  const candidates = await loadAllSkillCandidates(options);
+  return (
+    candidates.find((skill) => skill.id === normalizedId) ??
+    candidates.find(
+      (skill) => normalizeStorageKey(skill.storageKey) === normalizeStorageKey(id)
+    ) ??
+    null
+  );
 }
 
-export function formatSkillCatalog(skills: SkillDefinition[]): string {
-  if (skills.length === 0) {
-    return "No enabled skills available.";
-  }
-
-  return skills
-    .map((skill) => {
-      const triggerSuffix = skill.triggers.length > 0 ? ` Triggers: ${skill.triggers.join(", ")}.` : "";
-      return `- \`${skill.id}\` (${formatSkillSource(skill.source)}): ${skill.description}${triggerSuffix}`;
-    })
-    .join("\n");
+export interface SkillSearchResult {
+  description: string;
+  id: string;
+  name: string;
+  source: SkillSource;
+  sourcePath?: string;
+  triggers: string[];
 }
 
-export function formatActiveSkills(skills: SkillDefinition[]): string {
-  if (skills.length === 0) {
-    return "No active skills selected for this request.";
+/**
+ * Search the unfiltered skill catalog by id/name/description/trigger match.
+ * Used by the `aurora_skill_search` tool. With no query, returns up to
+ * `limit` candidates.
+ */
+export async function searchSkillCandidates(
+  query?: string | null,
+  limit: number = 30,
+  options?: {
+    globalSkillsPath?: string | null;
+    workspacePath?: string | null;
+  }
+): Promise<SkillSearchResult[]> {
+  const candidates = await loadAllSkillCandidates(options);
+  const cap = Math.max(1, Math.min(limit, 100));
+  const trimmedQuery = query?.trim() ?? "";
+
+  if (!trimmedQuery) {
+    return candidates.slice(0, cap).map(toSearchResult);
   }
 
-  return skills
-    .map(
-      (skill) => `<skill id="${skill.id}" name="${skill.name}" source="${formatSkillSource(skill.source)}">
-${skill.content}
-</skill>`
+  const needle = trimmedQuery.toLowerCase();
+  const scored = candidates
+    .map((skill) => ({ score: scoreSkillMatch(skill, needle), skill }))
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) =>
+      right.score - left.score || left.skill.name.localeCompare(right.skill.name)
     )
-    .join("\n\n");
+    .slice(0, cap)
+    .map((entry) => toSearchResult(entry.skill));
+
+  return scored;
+}
+
+function toSearchResult(skill: SkillDefinition): SkillSearchResult {
+  return {
+    id: skill.id,
+    name: skill.name,
+    description: skill.description,
+    source: skill.source,
+    sourcePath: skill.sourcePath,
+    triggers: skill.triggers,
+  };
+}
+
+function scoreSkillMatch(skill: SkillDefinition, needle: string): number {
+  let score = 0;
+  if (skill.id.includes(needle)) score += 50;
+  if (skill.name.toLowerCase().includes(needle)) score += 30;
+  if (skill.description.toLowerCase().includes(needle)) score += 15;
+  for (const trigger of skill.triggers) {
+    if (trigger.toLowerCase().includes(needle)) {
+      score += 8;
+      break;
+    }
+  }
+  return score;
 }

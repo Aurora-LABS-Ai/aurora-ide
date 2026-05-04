@@ -70,6 +70,14 @@ const editorOpenFileExecutor = async (args: Record<string, unknown>): Promise<st
       isLargeFile ? 'plaintext' : language
     );
 
+    if (line || column) {
+      useEditorStore.getState().requestEditorReveal(fullPath, {
+        mode: 'line',
+        lineNumber: line || 1,
+        column: column || 1,
+        focus: true,
+      });
+    }
 
     return JSON.stringify({
       success: true,

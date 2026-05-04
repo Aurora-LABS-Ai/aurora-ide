@@ -46,9 +46,6 @@ chrono = { version = "0.4", features = ["serde"] }
 # Diff library for comparing file changes
 similar = "2"
 
-# Semantic search engine — local native Aurora IDE integration.
-aurora-semantic = { path = "../../aurora-semantic", default-features = false }
-
 # https://crates.io/crates/aurora_websearch
 aurora_websearch = "0.1.0"
 
@@ -59,13 +56,15 @@ candle-core = { version = "0.9.2", default-features = false }
 # Lazy static for singleton patterns
 lazy_static = "1.4"
 
-# Cross-platform directories (for user-level semantic data storage)
+# Cross-platform directories
 dirs = "5.0"
 
 # Performance optimizations
 lru = "0.13"            # LRU cache for file contents
 parking_lot = "0.12"    # Faster mutexes than std::sync
 dashmap = "6"           # Concurrent hashmap for caching
+rayon = "1.10"          # Data-parallel I/O & CPU work (file batch reads, search/replace fan-out)
+memchr = "2.7"          # SIMD-accelerated byte search powering native search/replace
 
 # PTY support for native terminal
 tauri-plugin-pty = "0.1"
@@ -94,6 +93,10 @@ single-instance = "0.3"
 winreg = "0.55"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
+[dev-dependencies]
+# Isolated tempdirs for filesystem tests (threads JSONL, paths, writer/reader).
+tempfile = "3"
+
 [patch.crates-io]
 # tokenizers enables esaxx-rs/cpp by default. The upstream esaxx-rs build uses
 # the static MSVC CRT, which conflicts with cxx's dynamic CRT when Aurora links
@@ -106,17 +109,13 @@ candle-kernels = { path = "../vendor/candle-kernels" }
 
 [features]
 # Default: CPU-only for maximum compatibility out of the box.
-# Opt in to GPU acceleration for semantic search if available:
-#   NVIDIA GPU:  cargo build --features cuda
-#   Windows GPU: cargo build --features directml
-#   macOS GPU:   cargo build --features coreml
+# Opt in to GPU acceleration for the speech runtime with default features
+# disabled:
+#   NVIDIA GPU:  cargo build --no-default-features --features cuda
 default = ["cpu-only"]
 
-# GPU acceleration features (pass through to aurora-semantic)
-cuda = ["aurora-semantic/cuda", "qwen3-asr/cuda", "candle-core/cuda"]
-tensorrt = ["aurora-semantic/tensorrt"]
-directml = ["aurora-semantic/directml"]
-coreml = ["aurora-semantic/coreml"]
+# GPU acceleration for the speech runtime (Qwen3-ASR via candle-core).
+cuda = ["qwen3-asr/cuda", "candle-core/cuda"]
 
 # CPU-only build (no GPU acceleration) — safest default
 cpu-only = []

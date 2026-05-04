@@ -20,7 +20,7 @@
  * See: src/services/theme-service.ts for theme utilities
  */
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { Check, CheckCircle2, Clock, Loader2, XCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { ShimmerText } from '../ui/ShimmerText';
@@ -41,38 +41,28 @@ interface TaskViewProps {
 };
 
 export const CompactTaskList: React.FC<{ todos: Task[] }> = ({ todos }) => {
-    const [isFadingOut, setIsFadingOut] = useState(false);
-
-    const isAllDone = todos.length > 0 && todos.every(t => t.status === 'completed');
+    const isAllDone = todos.length > 0 && todos.every(t => t.status === 'completed' || t.status === 'cancelled');
+    const hasCancelled = todos.some(t => t.status === 'cancelled');
     const inProgress = todos.find(t => t.status === 'in_progress');
     const activeTask = inProgress || todos.slice().reverse().find(t => t.status === 'completed') || todos[0];
-
-    // Start fade-out animation when all tasks complete
-    useEffect(() => {
-        if (isAllDone) {
-            // Start fade after showing completion for 1.5s
-            const timer = setTimeout(() => {
-                setIsFadingOut(true);
-            }, 1500);
-            return () => clearTimeout(timer);
-        } else {
-            setIsFadingOut(false);
-        }
-    }, [isAllDone]);
 
     if (todos.length === 0) return null;
 
     return (
         <div className={clsx(
             "flex items-center justify-center gap-3 text-[10px] py-1 w-full px-4 transition-all duration-500",
-            isFadingOut ? "opacity-0 scale-95" : "opacity-100 scale-100 animate-in fade-in"
+            "opacity-100 scale-100 animate-in fade-in"
         )}>
             {isAllDone ? (
                 // Completion state - show success message
                 <>
-                    <CheckCircle2 size={12} className="text-success" />
-                    <span className="text-success font-medium">
-                        All {todos.length} tasks completed
+                    {hasCancelled ? (
+                        <XCircle size={12} className="text-text-disabled" />
+                    ) : (
+                        <CheckCircle2 size={12} className="text-success" />
+                    )}
+                    <span className={clsx("font-medium", hasCancelled ? "text-text-disabled" : "text-success")}>
+                        {hasCancelled ? "Task list closed" : `All ${todos.length} tasks completed`}
                     </span>
                 </>
             ) : (

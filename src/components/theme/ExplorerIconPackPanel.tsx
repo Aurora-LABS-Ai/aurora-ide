@@ -16,7 +16,6 @@ import { useIconPackStore } from "../../store/useIconPackStore";
 import {
   settingsCardStyle,
   settingsDangerPanelStyle,
-  settingsPrimaryButtonStyle,
   settingsSubtlePanelStyle,
 } from "../modals/settings-shared";
 import { ActionButton, StatusPill } from "../modals/settings-primitives";

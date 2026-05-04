@@ -8,14 +8,12 @@ mod schema;
 pub use connection::DbConnection;
 pub use error::DbResult;
 pub use models::{
-    AppSettings, ContextUsage, CustomTheme, EditorState, ExplorerState, IndexProgress, LLMProvider,
-    Message, SearchMode, SemanticIndex, SemanticIndexStatus, SemanticSearchResult,
-    SemanticSettings, ThreadState, TokenUsage, ToolSetting, WorkspaceState,
+    AppSettings, ContextUsage, CustomTheme, EditorState, ExplorerState, LLMProvider, Message,
+    ThreadState, TokenUsage, ToolCall, ToolSetting, WorkspaceState,
 };
-// Note: ToolCall is available via crate::db::models::ToolCall or crate::context::types::ToolCall
 pub use repositories::{
-    CheckpointRepository, EditorRepository, ExplorerRepository, SemanticRepository,
-    SettingsRepository, ThemeRepository, ThreadsRepository, WorkspaceRepository,
+    CheckpointRepository, EditorRepository, ExplorerRepository, SettingsRepository, ThemeRepository,
+    WorkspaceRepository,
 };
 
 use tauri::AppHandle;
@@ -51,11 +49,6 @@ impl Database {
         ExplorerRepository::new(self._conn.connection())
     }
 
-    /// Get a threads repository
-    pub fn threads(&self) -> ThreadsRepository<'_> {
-        ThreadsRepository::new(self._conn.connection())
-    }
-
     /// Get a settings repository
     pub fn settings(&self) -> SettingsRepository<'_> {
         SettingsRepository::new(self._conn.connection())
@@ -64,11 +57,6 @@ impl Database {
     /// Get a themes repository
     pub fn themes(&self) -> ThemeRepository<'_> {
         ThemeRepository::new(self._conn.connection())
-    }
-
-    /// Get a semantic repository
-    pub fn semantic(&self) -> SemanticRepository<'_> {
-        SemanticRepository::new(self._conn.connection())
     }
 
     /// Get a checkpoints repository

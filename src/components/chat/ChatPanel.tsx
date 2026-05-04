@@ -49,8 +49,8 @@ import { tokenService } from "../../services/token-service";
 import { toolRegistry } from "../../tools";
 import { registerAllExecutors } from "../../tools";
 import {
+  buildAttachedContextBlock,
   buildQueryContext,
-  enrichUserQueryWithAttachments,
   getIDEContext,
   getIDEContextLight,
   loadProjectRules,
@@ -59,6 +59,7 @@ import { chatSyncBroadcast } from "../../hooks/useRustChatSync";
 import { useTaskStore } from "../../store/useTaskStore";
 import { useMcpStore } from "../../store/useMcpStore";
 import { parseToolArguments, parseToolArgumentsForDisplay } from "../../lib/tool-arguments";
+import { liveFilePreviewService } from "../../services/live-file-preview";
 import { getProfessionalToolName } from "../../services/tool-display";
 import type {
   ToolProposal,
@@ -315,9 +316,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             )
           : undefined;
 
-      // Enrich user query with explicit skill/rule attachment annotations
-      const enrichedContent = enrichUserQueryWithAttachments(
-        content,
+      // Build the standalone <attached_context> block for skills/rules the
+      // user explicitly attached. We keep this OUT of the user-typed text so
+      // the chat bubble shows just what the user wrote on reload — the LLM
+      // still sees this block via the `ideContext` sidecar passed to
+      // `agent.chat` below.
+      const attachedContextBlock = buildAttachedContextBlock(
         promptAttachments?.map(a => ({ type: a.type, title: a.title, key: a.key })),
       );
 
@@ -345,19 +349,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           workspacePath: rootPath || undefined,
         });
 
-        if (isFirstMessage && resolved.allSkills.length > 0) {
-          skillCatalog = formatSkillCatalogForContext(resolved.allSkills);
+        if (isFirstMessage) {
+          skillCatalog = formatSkillCatalogForContext({
+            enabledSkills: resolved.enabledSkills,
+            totalSkillCount: resolved.allSkills.length,
+          });
         }
 
         if (resolved.explicitSkills.length > 0) {
           skillReferences = formatSkillReferences(resolved.explicitSkills, 'required_skills');
-        } else if (resolved.activeSkills.length > 0) {
-          skillReferences = formatSkillReferences(resolved.activeSkills, 'matched_skills');
         }
       }
 
-      const { formattedContext, filesWithContent, filesAsPathsOnly } = await buildQueryContext(
-        enrichedContent,
+      // Pass the *clean* user-typed text into `buildQueryContext` so that
+      // the resulting `ideContext` is purely the IDE/runtime enrichment
+      // (user_info, project_rules, project_layout, agent_skills, …). The
+      // legacy `formattedContext` is no longer sent to the agent — we only
+      // need it for tests/back-compat callers.
+      const { ideContext: bareIdeContext, filesWithContent, filesAsPathsOnly } = await buildQueryContext(
+        content,
         attachedFiles,
         {
           ...ideContext,
@@ -366,6 +376,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           skillReferences,
         }
       );
+
+      // Compose the enrichment that travels in the `ideContext` sidecar:
+      // bare IDE state + (optional) attached_context block. The agent
+      // service prepends the execution-mode block so we don't have to.
+      const composedIdeContext: string | null = (() => {
+        const parts: string[] = [];
+        if (bareIdeContext) parts.push(bareIdeContext);
+        if (attachedContextBlock) parts.push(attachedContextBlock);
+        return parts.length > 0 ? parts.join("\n\n") : null;
+      })();
 
       // Log when project layout is included
       if (shouldIncludeLayout && ideContext.projectLayout) {
@@ -472,7 +492,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           getToolApproval,
         });
 
-        await agent.chat(formattedContext, {
+        await agent.chat(content, {
           onToken: (token) => {
             // Close current thinking block when content starts
             if (currentThinkingEventId) {
@@ -559,6 +579,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
                   [
                     "file_create",
                     "file_write",
+                    "search_replace",
+                    "multi_search_replace",
                     "file_delete",
                     "folder_create",
                     "folder_move",
@@ -589,6 +611,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
                 tool: updatedTool,
               });
             }
+
+            liveFilePreviewService.updateFromToolCall(toolCall);
           },
           onToolApprovalRequired: async (toolCall) => {
             const toolName = toolCall.function.name;
@@ -623,6 +647,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           onToolExecutionStart: (toolCall) => {
             const toolName = toolCall.function.name;
             const parsedArgs = parseToolArgumentsForDisplay(toolCall.function.arguments);
+            liveFilePreviewService.markApplying(toolCall.id);
 
             // Add to audit store
             const riskLevel = toolRegistry.getRiskLevel(toolName);
@@ -646,6 +671,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             }
           },
           onToolExecutionComplete: (toolCall, result) => {
+            liveFilePreviewService.complete(toolCall.id);
+
             // Update audit store entry
             const auditId = auditEntryIds.get(toolCall.id);
             if (auditId) {
@@ -674,6 +701,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             }
           },
           onToolExecutionError: (toolCall, error) => {
+            liveFilePreviewService.fail(toolCall.id);
+
             const auditId = auditEntryIds.get(toolCall.id);
             if (auditId) {
               const entry = auditStore.entries.find(e => e.id === auditId);
@@ -695,6 +724,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             }
           },
           onToolRejected: (toolCall, reason) => {
+            liveFilePreviewService.fail(toolCall.id);
+
             const toolEvent = timelineRef.current.find(
               (e) => e.type === "tool" && e.tool?.id === toolCall.id,
             );
@@ -852,7 +883,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
               });
             }
           },
-        }, undefined, undefined, promptContext);
+        }, undefined, composedIdeContext, promptContext);
       } catch (error) {
         // Don't show error if request was cancelled by user
         const isCancelled = error instanceof Error && (
@@ -890,6 +921,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
             }, true);
           }
         }
+
+        liveFilePreviewService.cancelAllActive();
 
         // CRITICAL: Flush any pending timeline updates BEFORE clearing the message ID
         flushTimelineUpdate();
@@ -977,6 +1010,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           },
         }, true); // immediate: show rejection status right away
       }
+
+      liveFilePreviewService.fail(pending.toolCall.id);
     }
     if (pending?.resolve) {
       pending.resolve(false);

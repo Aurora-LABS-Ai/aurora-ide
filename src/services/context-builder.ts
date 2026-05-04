@@ -31,7 +31,27 @@ interface GitFileStatus {
 export interface BuiltContext {
   filesAsPathsOnly: string[];
   filesWithContent: FileContent[];
+  /**
+   * Legacy: full enriched blob = `ideContext` + `<user_query>...</user_query>`.
+   * Kept for callers that send the whole thing as a single LLM user message.
+   * Prefer the `ideContext` + `userQuery` pair below for new code so the
+   * persistence layer can store the clean user text separately from the
+   * enrichment.
+   */
   formattedContext: string;
+  /**
+   * The IDE/runtime enrichment block ONLY — execution_mode, user_info,
+   * project_rules, project_layout, agent_skills, open_files,
+   * attached_context, etc. — without the wrapping `<user_query>` element.
+   * `null` when there is no enrichment (e.g. follow-up message with no open
+   * files and no rules).
+   */
+  ideContext: string | null;
+  /**
+   * The clean text that will be wrapped in `<user_query>` for the LLM and
+   * shown verbatim in the chat bubble.
+   */
+  userQuery: string;
 }
 
 export interface ContextConfig {
@@ -427,20 +447,19 @@ export async function buildQueryContext(
   }
 
   // 7. Build final context with user query at the end
+  const ideContext = sections.length > 0 ? sections.join('\n\n') : null;
+
   let formattedContext: string;
-
-  if (sections.length > 0) {
-    formattedContext = `${sections.join('\n\n')}
-
-<user_query>
-${userQuery}
-</user_query>`;
+  if (ideContext) {
+    formattedContext = `${ideContext}\n\n<user_query>\n${userQuery}\n</user_query>`;
   } else {
     formattedContext = userQuery;
   }
 
   return {
     formattedContext,
+    ideContext,
+    userQuery,
     filesWithContent,
     filesAsPathsOnly,
   };
@@ -679,24 +698,26 @@ export async function loadProjectRules(workspacePath: string): Promise<ProjectRu
 }
 
 /**
- * Enrich user query with annotations about which skills/rules the user explicitly attached.
- * This ensures the LLM knows the user specifically referenced these assets in their message,
- * since the skill content is embedded in the system prompt but the user message would
- * otherwise contain no reference to which skills/rules were selected.
+ * Build a standalone `<attached_context>` XML block describing skills/rules
+ * the user explicitly attached to a message. Returns `null` when there are
+ * no attachments worth surfacing.
+ *
+ * Use this when you want the attachment metadata to live in the
+ * `ideContext` sidecar (so the chat bubble stays clean) instead of being
+ * folded into the user-typed text.
  */
-export function enrichUserQueryWithAttachments(
-  userQuery: string,
+export function buildAttachedContextBlock(
   promptAttachments?: Array<{ type: string; title: string; key: string }>,
-): string {
+): string | null {
   if (!promptAttachments || promptAttachments.length === 0) {
-    return userQuery;
+    return null;
   }
 
   const skills = promptAttachments.filter((a) => a.type === 'skill');
   const rules = promptAttachments.filter((a) => a.type === 'rule');
 
   if (skills.length === 0 && rules.length === 0) {
-    return userQuery;
+    return null;
   }
 
   const lines: string[] = [];
@@ -712,7 +733,23 @@ export function enrichUserQueryWithAttachments(
 
   lines.push('</attached_context>');
 
-  return `${lines.join('\n')}\n\n${userQuery}`;
+  return lines.join('\n');
+}
+
+/**
+ * @deprecated Folds the attached-context block into the user-typed text,
+ * which leaks XML into the chat bubble when a thread is reloaded. Prefer
+ * [`buildAttachedContextBlock`] and pass the block in the `ideContext`
+ * sidecar passed to `agent.chat`.
+ *
+ * Kept for callers that still rely on the legacy single-string flow.
+ */
+export function enrichUserQueryWithAttachments(
+  userQuery: string,
+  promptAttachments?: Array<{ type: string; title: string; key: string }>,
+): string {
+  const block = buildAttachedContextBlock(promptAttachments);
+  return block ? `${block}\n\n${userQuery}` : userQuery;
 }
 
 // Configuration

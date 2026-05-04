@@ -5,6 +5,12 @@
  * Includes undo/redo integration for AI-made changes
  */
 import { deletePath, isTauri, readFileContent, ripgrepSearch, writeFileContent } from "../../lib/tauri";
+import {
+  applyMultiSearchReplaceNative,
+  applySearchReplaceNative,
+  type NativeReplacementItem,
+  type NativeSearchReplaceResponse,
+} from "../../lib/native-editor-ops";
 import { formatValidationForAgent, supportsValidation, validateSyntax } from "../../services/syntax-validator";
 // Dynamic import of useUndoRedoStore used in file_create and file_write
 import { useSettingsStore } from "../../store/useSettingsStore";
@@ -13,7 +19,15 @@ import { toolRegistry } from "../registry";
 import type { ToolExecutor } from "../types";
 import { isPathExcluded } from "../utils/excluded-paths";
 import { getWorkspaceRootPath, resolvePath } from "../utils/path-resolver";
-import { planMultiSearchReplace, planSearchReplace, type SearchReplaceReplacement } from "./search-replace-utils";
+import {
+  DEFAULT_LINE_WINDOW,
+  MAX_SINGLE_READ_LINES,
+  isLargeFileByLines,
+  normalizeLineRange,
+  sliceLineRange,
+  splitLines,
+} from "./file-read-policy";
+import type { SearchReplaceReplacement } from "./search-replace-utils";
 
 // ============================================
 // GREP EXECUTOR (Ripgrep-style search with logging)
@@ -36,9 +50,11 @@ interface FileExecutorArgs extends Record<string, unknown> {
   case_insensitive?: boolean;
   content: string;
   context_lines?: number;
+  end_line?: number;
   glob?: string;
   is_regex?: boolean;
   max_results?: number;
+  max_lines?: number;
   new_string: string;
   old_string: string;
   output_mode?: "content" | "files_with_matches" | "count";
@@ -47,6 +63,7 @@ interface FileExecutorArgs extends Record<string, unknown> {
   pattern: string;
   replace_all?: boolean;
   replacements: SearchReplaceReplacement[];
+  start_line?: number;
   timeout?: number;
   timeout_ms?: number;
 }
@@ -65,6 +82,77 @@ const normalizeGrepTimeoutMs = (value: unknown): number => {
     Math.max(Math.trunc(value), MIN_GREP_TIMEOUT_MS),
     MAX_GREP_TIMEOUT_MS,
   );
+};
+
+// Convert agent-supplied replacement objects into the camelCase shape Rust expects.
+const toNativeReplacement = (rep: SearchReplaceReplacement): NativeReplacementItem => ({
+  oldString: rep.old_string,
+  newString: rep.new_string ?? "",
+  replaceAll: rep.replace_all === true,
+});
+
+// Render a structured planning failure (NotFound / NotUnique / Overlap) into the
+// same JSON shape the legacy TS planner produced, so the agent's downstream
+// behavior is unchanged.
+const renderPlanningFailure = (
+  result: NativeSearchReplaceResponse,
+  args: FileExecutorArgs,
+  fullPath: string,
+  context: "search_replace" | "multi_search_replace",
+): string | null => {
+  if (result.status === "ok") {
+    return null;
+  }
+
+  const isMulti = context === "multi_search_replace";
+  const rollbackHint = isMulti ? " All changes have been rolled back." : "";
+
+  if (result.status === "not_found") {
+    return JSON.stringify({
+      success: false,
+      error: isMulti
+        ? `Replacement ${result.failedAt}: Could not find the specified text in the original file snapshot. Line endings are handled automatically, so check indentation, surrounding context, or reread the file.`
+        : `Could not find the specified text in ${args.path}. Line endings are handled automatically, so check indentation, surrounding context, or reread the file before retrying.`,
+      path: args.path,
+      fullPath,
+      ...(isMulti && { failedAt: result.failedAt }),
+      hint: isMulti
+        ? "The text still needs to match the current file content exactly."
+        : "The text still needs to match the current file content. Include enough nearby code to make the match exact and unique.",
+    });
+  }
+
+  if (result.status === "not_unique") {
+    return JSON.stringify({
+      success: false,
+      error: isMulti
+        ? `Replacement ${result.failedAt}: Found ${result.occurrences} occurrences of the text. Either include more context to make it unique, or set replace_all=true for this replacement.`
+        : `Found ${result.occurrences} occurrences of the text. The old_string must be unique. Either include more context to make it unique, or set replace_all=true to replace all occurrences.`,
+      path: args.path,
+      fullPath,
+      occurrences: result.occurrences,
+      ...(isMulti && { failedAt: result.failedAt }),
+      hint:
+        (isMulti
+          ? "Fix the old_string to be unique or use replace_all."
+          : "Add more surrounding code to old_string to make it unique in the file.") + rollbackHint,
+    });
+  }
+
+  if (result.status === "overlap") {
+    return JSON.stringify({
+      success: false,
+      error: `Replacement ${result.failedAt} overlaps with replacement ${result.conflictingReplacement}. Combine nearby edits into one larger replacement or make the snippets non-overlapping.`,
+      path: args.path,
+      fullPath,
+      failedAt: result.failedAt,
+      conflictingReplacement: result.conflictingReplacement,
+      hint:
+        "Batch edits can target the same file, but their matched regions cannot overlap." + rollbackHint,
+    });
+  }
+
+  return null;
 };
 
 // Helper to validate file content before writing
@@ -311,19 +399,66 @@ const fileReadExecutor = async (args: FileExecutorArgs): Promise<string> => {
 
   try {
     const content = await readFileContent(fullPath);
-    const totalLines = content.split("\n").length;
+    const lines = splitLines(content);
+    const totalLines = lines.length;
+    const range = normalizeLineRange(
+      {
+        endLine: args.end_line,
+        maxLines: args.max_lines,
+        startLine: args.start_line,
+      },
+      totalLines,
+    );
 
-    // Safety check: Warn if file is very large
+    if (range) {
+      const result = sliceLineRange(lines, range);
+
+      operationLog.logOperation(FsOperationType.Read, args.path, {
+        fullPath,
+        lineRange: `${result.startLine}-${result.endLine}`,
+        lines: totalLines,
+        size: content.length,
+      });
+
+      return JSON.stringify({
+        success: true,
+        path: args.path,
+        fullPath,
+        content: result.content,
+        totalLines,
+        size: content.length,
+        largeFile: isLargeFileByLines(totalLines),
+        range: {
+          startLine: result.startLine,
+          endLine: result.endLine,
+        },
+        truncated: result.truncated,
+        omittedLinesBefore: result.omittedLinesBefore,
+        omittedLinesAfter: result.omittedLinesAfter,
+        warning: result.truncated
+          ? `Returned lines ${result.startLine}-${result.endLine} of ${totalLines}. Use start_line/end_line to read another range.`
+          : undefined,
+      });
+    }
+
+    // Safety check: never return oversized files by accident, even if they
+    // have unusually long lines and are below the line-count threshold.
     if (content.length > MAX_FILE_SIZE) {
       console.warn(`[file_read] Large file warning: ${content.length} bytes`);
       return JSON.stringify({
         success: true,
         path: args.path,
         fullPath,
-        content: content.substring(0, MAX_FILE_SIZE),
         totalLines,
-        truncated: true,
-        warning: `File truncated to ${MAX_FILE_SIZE} bytes to prevent context overflow. Original size: ${content.length} bytes.`,
+        size: content.length,
+        largeFile: true,
+        requiresLineRange: true,
+        content: "",
+        warning: `File is too large to return safely (${content.length} bytes, ${totalLines} lines). Call file_read with start_line/end_line; maximum ${MAX_SINGLE_READ_LINES} lines per call.`,
+        suggestedRange: {
+          startLine: 1,
+          endLine: Math.min(DEFAULT_LINE_WINDOW, totalLines),
+        },
       });
     }
 
@@ -340,6 +475,8 @@ const fileReadExecutor = async (args: FileExecutorArgs): Promise<string> => {
       fullPath,
       content,
       totalLines,
+      size: content.length,
+      largeFile: false,
     });
   } catch (error) {
     console.error("[file_read] Error:", error);
@@ -617,79 +754,142 @@ const multiFileReadExecutor = async (
 
   const startTime = Date.now();
   const results: Array<{
-    path: string;
-    success: boolean;
-    content?: string;
-    lines?: number;
-    error?: string;
     blocked?: boolean;
-    truncated?: boolean;
+    content?: string;
+    error?: string;
     excluded?: boolean;
+    largeFile?: boolean;
+    lines?: number;
+    path: string;
+    requiresLineRange?: boolean;
+    size?: number;
+    success: boolean;
+    suggestedRange?: {
+      endLine: number;
+      startLine: number;
+    };
+    truncated?: boolean;
+    warning?: string;
   }> = [];
 
   let totalContentSize = 0;
   let contentLimitReached = false;
 
-  // Read all files in parallel
-  const promises = paths.map(async (path) => {
-    // Safety check: Block reading from excluded directories/files
+  // Resolve every path up-front and run the exclusion gate once. Anything
+  // that survives is sent to the Rust batch reader, which fans out across
+  // rayon's thread pool — so 20 cold reads happen roughly in the time of
+  // the slowest single read instead of the sum of all of them.
+  type ResolvedEntry = { path: string; fullPath: string };
+  const allowed: ResolvedEntry[] = [];
+  const blockedResults: Array<{
+    path: string;
+    success: false;
+    error?: string;
+    excluded?: boolean;
+  }> = [];
+
+  for (const path of paths) {
+    const fullPath = resolvePath(path);
     const exclusionCheck = isPathExcluded(path);
     if (exclusionCheck.excluded) {
       console.warn("[multi_file_read] Excluded:", path, exclusionCheck.reason);
-      return {
+      blockedResults.push({
         path,
         success: false,
         error: exclusionCheck.reason,
         excluded: true,
-      };
+      });
+      continue;
     }
-
-    const fullPath = resolvePath(path);
-
-    // Also check the full resolved path
     const fullPathCheck = isPathExcluded(fullPath);
     if (fullPathCheck.excluded) {
       console.warn("[multi_file_read] Excluded (full path):", fullPath, fullPathCheck.reason);
-      return {
+      blockedResults.push({
         path,
         success: false,
         error: fullPathCheck.reason,
         excluded: true,
-      };
+      });
+      continue;
     }
-    try {
-      const content = await readFileContent(fullPath);
-      const totalLines = content.split("\n").length;
+    allowed.push({ path, fullPath });
+  }
 
-      // Log the read operation
-      operationLog.logOperation(FsOperationType.Read, path, {
-        fullPath,
+  type ReadResult =
+    | {
+        path: string;
+        success: true;
+        content: string;
+        largeFile: boolean;
+        lines: number;
+        size: number;
+      }
+    | {
+        path: string;
+        success: false;
+        error?: string;
+        excluded?: boolean;
+      };
+
+  const fileResults: ReadResult[] = [...blockedResults];
+
+  if (allowed.length > 0) {
+    const { readFilesBatch } = await import("../../lib/file-cache");
+    const contentMap = await readFilesBatch(allowed.map((entry) => entry.fullPath));
+
+    for (const entry of allowed) {
+      const content = contentMap.get(entry.fullPath);
+      if (typeof content !== "string") {
+        fileResults.push({
+          path: entry.path,
+          success: false,
+          error: `Failed to read ${entry.fullPath}`,
+        });
+        continue;
+      }
+
+      const lines = splitLines(content);
+      const totalLines = lines.length;
+
+      operationLog.logOperation(FsOperationType.Read, entry.path, {
+        fullPath: entry.fullPath,
         lines: totalLines,
         size: content.length,
         multiFile: true,
       });
 
-      return {
-        path,
+      fileResults.push({
+        path: entry.path,
         success: true,
         content,
+        largeFile: isLargeFileByLines(totalLines) || content.length > MAX_FILE_SIZE,
         lines: totalLines,
         size: content.length,
-      };
-    } catch (error) {
-      return {
-        path,
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
+      });
     }
-  });
-
-  const fileResults = await Promise.all(promises);
+  }
 
   // Process results with content size limit
   for (const result of fileResults) {
-    if (result.success && 'content' in result && result.content) {
+    if (result.success) {
+      if (result.largeFile) {
+        results.push({
+          path: result.path,
+          success: true,
+          content: "",
+          lines: result.lines,
+          size: result.size,
+          largeFile: true,
+          requiresLineRange: true,
+          warning: `File is too large for multi_file_read (${result.lines} lines, ${result.size} bytes). Use file_read with start_line/end_line.`,
+          suggestedRange: {
+            startLine: 1,
+            endLine: Math.min(DEFAULT_LINE_WINDOW, result.lines ?? DEFAULT_LINE_WINDOW),
+          },
+        });
+        continue;
+      }
+
       const contentSize = result.content.length;
 
       // Check if adding this file would exceed the limit
@@ -733,10 +933,10 @@ const multiFileReadExecutor = async (
         });
       }
     } else {
-      // Error or excluded file
+      // success: false — narrowed branch carries optional error/excluded.
       results.push({
         path: result.path,
-        success: result.success,
+        success: false,
         error: result.error,
         excluded: result.excluded,
       });
@@ -795,35 +995,25 @@ const searchReplaceExecutor = async (
   }
 
   try {
-    const existingContent = await readFileContent(fullPath);
-    const plannedReplacement = planSearchReplace(existingContent, {
-      old_string: oldString,
-      new_string: newString,
-      replace_all: replaceAll,
+    // NATIVE FAST PATH: read+plan happens in Rust (memchr SIMD scan) and
+    // returns both the new content and the original snapshot, so the entire
+    // hot loop avoids JS string copies of large files.
+    const planResult = await applySearchReplaceNative({
+      path: fullPath,
+      replacement: toNativeReplacement({
+        old_string: oldString,
+        new_string: newString,
+        replace_all: replaceAll,
+      }),
+      write: false,
     });
 
-    if (!plannedReplacement.success && plannedReplacement.reason === "not_found") {
-      return JSON.stringify({
-        success: false,
-        error: `Could not find the specified text in ${args.path}. Line endings are handled automatically, so check indentation, surrounding context, or reread the file before retrying.`,
-        path: args.path,
-        fullPath,
-        hint: "The text still needs to match the current file content. Include enough nearby code to make the match exact and unique.",
-      });
+    const failureResponse = renderPlanningFailure(planResult, args, fullPath, "search_replace");
+    if (failureResponse) {
+      return failureResponse;
     }
 
-    if (!plannedReplacement.success && plannedReplacement.reason === "not_unique") {
-      return JSON.stringify({
-        success: false,
-        error: `Found ${plannedReplacement.occurrences} occurrences of the text. The old_string must be unique. Either include more context to make it unique, or set replace_all=true to replace all occurrences.`,
-        path: args.path,
-        fullPath,
-        occurrences: plannedReplacement.occurrences,
-        hint: "Add more surrounding code to old_string to make it unique in the file.",
-      });
-    }
-
-    if (!plannedReplacement.success) {
+    if (planResult.status !== "ok") {
       return JSON.stringify({
         success: false,
         error: "Failed to plan the replacement.",
@@ -832,10 +1022,11 @@ const searchReplaceExecutor = async (
       });
     }
 
-    const linesAdded = plannedReplacement.linesAdded;
-    const linesRemoved = plannedReplacement.linesRemoved;
-    const replacementsCount = plannedReplacement.totalReplacements;
-    const newContent = plannedReplacement.content;
+    const existingContent = planResult.originalContent;
+    const newContent = planResult.newContent;
+    const replacementsCount = planResult.totalReplacements;
+    const linesAdded = planResult.linesAdded;
+    const linesRemoved = planResult.linesRemoved;
 
     // PRE-SAVE VALIDATION: Check syntax before writing
     const validationError = await validateBeforeWrite(newContent, fileName);
@@ -992,45 +1183,26 @@ const multiSearchReplaceExecutor = async (
   }
 
   try {
-    const originalContent = await readFileContent(fullPath);
-    const plannedReplacements = planMultiSearchReplace(originalContent, replacements);
+    // NATIVE FAST PATH: full atomic batch plan executed in Rust. The entire
+    // file content stays on the Rust side until we know the plan succeeded;
+    // we only ship the new content back over IPC if everything validated.
+    const planResult = await applyMultiSearchReplaceNative({
+      path: fullPath,
+      replacements: replacements.map(toNativeReplacement),
+      write: false,
+    });
 
-    if (!plannedReplacements.success && plannedReplacements.reason === "not_found") {
-      return JSON.stringify({
-        success: false,
-        error: `Replacement ${plannedReplacements.failedAt}: Could not find the specified text in the original file snapshot. Line endings are handled automatically, so check indentation, surrounding context, or reread the file.`,
-        path: args.path,
-        fullPath,
-        failedAt: plannedReplacements.failedAt,
-        hint: "All changes have been rolled back. The text still needs to match the current file content exactly.",
-      });
+    const failureResponse = renderPlanningFailure(
+      planResult,
+      args,
+      fullPath,
+      "multi_search_replace",
+    );
+    if (failureResponse) {
+      return failureResponse;
     }
 
-    if (!plannedReplacements.success && plannedReplacements.reason === "not_unique") {
-      return JSON.stringify({
-        success: false,
-        error: `Replacement ${plannedReplacements.failedAt}: Found ${plannedReplacements.occurrences} occurrences of the text. Either include more context to make it unique, or set replace_all=true for this replacement.`,
-        path: args.path,
-        fullPath,
-        failedAt: plannedReplacements.failedAt,
-        occurrences: plannedReplacements.occurrences,
-        hint: "All changes have been rolled back. Fix the old_string to be unique or use replace_all.",
-      });
-    }
-
-    if (!plannedReplacements.success && plannedReplacements.reason === "overlap") {
-      return JSON.stringify({
-        success: false,
-        error: `Replacement ${plannedReplacements.failedAt} overlaps with replacement ${plannedReplacements.conflictingReplacement}. Combine nearby edits into one larger replacement or make the snippets non-overlapping.`,
-        path: args.path,
-        fullPath,
-        failedAt: plannedReplacements.failedAt,
-        conflictingReplacement: plannedReplacements.conflictingReplacement,
-        hint: "All changes have been rolled back. Batch edits can target the same file, but their matched regions cannot overlap.",
-      });
-    }
-
-    if (!plannedReplacements.success) {
+    if (planResult.status !== "ok") {
       return JSON.stringify({
         success: false,
         error: "Failed to plan batch replacements.",
@@ -1039,11 +1211,12 @@ const multiSearchReplaceExecutor = async (
       });
     }
 
-    const newContent = plannedReplacements.content;
-    const totalReplacements = plannedReplacements.totalReplacements;
-    const totalLinesAdded = plannedReplacements.linesAdded;
-    const totalLinesRemoved = plannedReplacements.linesRemoved;
-    const replacementDetails = plannedReplacements.replacementDetails;
+    const originalContent = planResult.originalContent;
+    const newContent = planResult.newContent;
+    const totalReplacements = planResult.totalReplacements;
+    const totalLinesAdded = planResult.linesAdded;
+    const totalLinesRemoved = planResult.linesRemoved;
+    const replacementDetails = planResult.replacementDetails;
 
     // PRE-SAVE VALIDATION: Check syntax before writing
     const validationError = await validateBeforeWrite(newContent, fileName);

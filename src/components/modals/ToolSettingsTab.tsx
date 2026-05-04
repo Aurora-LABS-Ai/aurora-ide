@@ -91,8 +91,8 @@ const TOOL_CATEGORIES: Record<string, ToolCategory> = {
   search: {
     label: 'Search',
     icon: Search,
-    description: 'Semantic and web search tools.',
-    tools: ['aurora_search', 'auroro_websearch'],
+    description: 'Web search tools.',
+    tools: ['auroro_websearch'],
   },
   task: {
     label: 'Task Management',

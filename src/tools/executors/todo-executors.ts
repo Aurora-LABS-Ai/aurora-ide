@@ -38,6 +38,12 @@ const executeTodoWrite = async (args: Record<string, unknown>): Promise<string> 
         error: `Todo at index ${i} is missing required fields (content, status)`,
       });
     }
+    if (!todo.activeForm) {
+      return JSON.stringify({
+        success: false,
+        error: `Todo at index ${i} is missing activeForm. Provide present-continuous text such as "Running tests".`,
+      });
+    }
     if (!['pending', 'in_progress', 'completed'].includes(todo.status)) {
       return JSON.stringify({
         success: false,
@@ -46,10 +52,21 @@ const executeTodoWrite = async (args: Record<string, unknown>): Promise<string> 
     }
   }
 
+  const existingTasks = useTaskStore.getState().tasks;
+  const getStableTaskId = (todo: TodoItem, index: number) => {
+    const existing = existingTasks.find((task) =>
+      task.originalContent === todo.content || task.content === todo.activeForm || task.content === todo.content
+    );
+
+    return existing?.id ?? `task_${Date.now()}_${index}`;
+  };
+
   // Transform to TaskStore format (add unique IDs)
   const tasks = todos.map((todo, index) => ({
-    id: `task_${Date.now()}_${index}`,
-    content: todo.activeForm || todo.content, // Use activeForm for display, fallback to content
+    id: getStableTaskId(todo, index),
+    activeForm: todo.activeForm,
+    content: todo.status === 'in_progress' ? todo.activeForm : todo.content,
+    originalContent: todo.content,
     status: todo.status,
   }));
 

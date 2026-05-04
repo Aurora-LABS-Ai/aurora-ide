@@ -8,6 +8,7 @@ import {
   readFileContent,
   writeFileContent,
 } from "../lib/tauri";
+import { deriveThreadTitle } from "../lib/thread-title";
 import {
   threadService,
   type DbMessage,
@@ -580,9 +581,7 @@ export const useThreadStore = create<ThreadState>()(
         };
 
         if (message.sender === "user" && thread.messages.length === 0) {
-          updatedThread.title =
-            message.content.slice(0, 50) +
-            (message.content.length > 50 ? "..." : "");
+          updatedThread.title = deriveThreadTitle(message.content);
         }
 
         set((state) => ({

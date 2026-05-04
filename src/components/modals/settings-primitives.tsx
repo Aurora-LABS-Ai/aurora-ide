@@ -40,10 +40,11 @@ import {
 
 interface SectionProps {
   title: string;
-  description?: string;
+  description?: React.ReactNode;
   badge?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
+  icon?: React.ReactNode;
 }
 
 export const Section: React.FC<SectionProps> = ({
@@ -52,16 +53,20 @@ export const Section: React.FC<SectionProps> = ({
   badge,
   children,
   className,
+  icon,
 }) => (
   <section className={clsx('space-y-2.5', className)}>
     <header className="flex items-end justify-between gap-3 pb-2">
-      <div className="min-w-0">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-secondary">
-          {title}
-        </h3>
+      <div className="flex min-w-0 items-start gap-2">
+        {icon && <div className="mt-0.5 shrink-0">{icon}</div>}
+        <div className="min-w-0">
+          <h3 className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-secondary">
+            {title}
+          </h3>
         {description && (
           <p className="mt-1 text-[11.5px] leading-snug text-text-disabled">{description}</p>
         )}
+        </div>
       </div>
       {badge && <div className="shrink-0">{badge}</div>}
     </header>

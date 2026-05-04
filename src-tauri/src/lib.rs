@@ -11,10 +11,11 @@ mod file_cache;
 pub mod icon_pack;
 mod mcp;
 mod services;
+mod threads;
 mod undo_redo;
 
 use cli::{CliArgs, CliOpenRequest};
-use services::ThreadService;
+use threads::ThreadEventLog;
 
 /// Run Aurora with default (no CLI arguments)
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -58,6 +59,12 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::read_files_batch,
             commands::invalidate_file_cache,
             commands::get_cache_stats,
+            // Native editor operations (no JS string ops on hot paths)
+            commands::editor_ops::apply_search_replace,
+            commands::editor_ops::apply_multi_search_replace,
+            commands::editor_ops::compute_unified_diff,
+            commands::editor_ops::slice_file_lines,
+            commands::editor_ops::is_path_excluded,
             // State persistence commands
             commands::state::save_workspace_state,
             commands::state::get_workspace_state,
@@ -107,6 +114,9 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::threads::thread_update_usage,
             commands::threads::thread_get_api_history,
             commands::threads::thread_update_title,
+            commands::threads::thread_append_assistant_message,
+            commands::threads::thread_append_tool_result,
+            commands::threads::thread_cancel_current_turn,
             // Token counting commands
             commands::tokens::count_tokens,
             commands::tokens::count_chat_tokens,
@@ -141,28 +151,6 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::themes::delete_custom_theme,
             commands::themes::set_active_theme_id,
             commands::themes::get_active_theme_id,
-            // Semantic search commands
-            commands::semantic::get_all_semantic_indexes,
-            commands::semantic::get_semantic_index,
-            commands::semantic::get_semantic_index_by_path,
-            commands::semantic::save_semantic_index,
-            commands::semantic::delete_semantic_index,
-            commands::semantic::update_semantic_index_status,
-            commands::semantic::update_workspace_exclusions,
-            commands::semantic::get_semantic_settings,
-            commands::semantic::save_semantic_settings,
-            commands::semantic::set_semantic_model_path,
-            commands::semantic::validate_semantic_model_path,
-            commands::semantic::get_semantic_model_info,
-            commands::semantic::get_execution_provider_info,
-            commands::semantic::get_available_gpu_features,
-            commands::semantic::start_semantic_indexing,
-            commands::semantic::semantic_search,
-            commands::semantic::semantic_graph_search,
-            commands::semantic::cancel_semantic_indexing,
-            commands::semantic::is_semantic_indexing,
-            commands::semantic::get_semantic_data_directory,
-            commands::semantic::get_semantic_index_path,
             // Speech input commands
             commands::speech::speech_validate_config,
             commands::speech::speech_transcribe_pcm,
@@ -283,8 +271,17 @@ pub fn run_with_args(cli_args: CliArgs) {
             // Store Rust-owned explorer state
             app.manage(explorer::ExplorerStateHandle::default());
 
-            // Store thread service for per-message persistence
-            app.manage(ThreadService::new());
+            // JSONL-backed thread event log — the new source of truth for all
+            // conversation persistence. Lives at
+            // %APPDATA%/Aurora-Agent-IDE/Agent/Threads/{id}.jsonl.
+            let thread_log = std::sync::Arc::new(
+                ThreadEventLog::new().expect("Failed to initialize ThreadEventLog"),
+            );
+            thread_log.set_app_handle(handle.clone());
+            app.manage(thread_log);
+
+            // Transient buffer for streaming assistant responses.
+            app.manage(commands::threads::ActiveStreams::new());
 
             // Store checkpoint state for file state snapshots
             let checkpoint_state = commands::checkpoints::CheckpointState::new();

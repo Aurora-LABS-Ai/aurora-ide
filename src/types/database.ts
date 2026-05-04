@@ -100,102 +100,10 @@ export interface FoldedRegion {
   start_line: number;
 }
 
-export interface GpuFeatures {
-  coreml: boolean;
-  cuda: boolean;
-  directml: boolean;
-  tensorrt: boolean;
-}
-
-export interface IndexProgress {
-  currentFile: string | null;
-  percentage: number;
-  phase: string;
-  processed: number;
-  total: number;
-  workspaceId: string;
-}
-
 export interface PanelSizes {
   chat: number; // Percentage (0-100)
   editor: number; // Percentage (0-100)
   explorer: number; // Percentage (0-100)
-}
-
-export interface SemanticIndex {
-  chunkCount: number;
-  createdAt: string;
-  documentCount: number;
-  errorMessage: string | null;
-
-  /** Workspace-specific directory exclusions (relative paths) */
-  excludedDirectories: string[];
-
-  /** Workspace-specific file exclusions (relative paths) */
-  excludedFiles: string[];
-  id: string;
-  lastIndexedAt: string | null;
-  status: SemanticIndexStatus;
-  totalBytes: number;
-  updatedAt: string;
-  workspaceName: string;
-  workspacePath: string;
-}
-
-export interface SemanticSearchResult {
-  chunkType: string;
-  content: string;
-  endLine: number;
-  filePath: string;
-  matchType: string;
-  relativePath: string;
-  score: number;
-  startLine: number;
-  symbolName: string | null;
-}
-
-export interface SemanticGraphNode {
-  endLine: number | null;
-  id: string;
-  label: string;
-  name: string;
-  path: string | null;
-  qualifiedName: string | null;
-  startLine: number | null;
-}
-
-export interface SemanticGraphRelationship {
-  relationshipType: string;
-  source: string;
-  target: string;
-}
-
-export interface SemanticGraphSearchResult {
-  matchType: string;
-  node: SemanticGraphNode;
-  relatedNodes: SemanticGraphNode[];
-  relationships: SemanticGraphRelationship[];
-  score: number;
-}
-
-export interface SemanticSettings {
-  autoIndex: boolean;
-  autoReindexInterval: number | null; // Minutes, null = disabled
-  enabled: boolean;
-
-  /** Specific directory paths to exclude (relative to workspace root) */
-  excludedDirectories: string[];
-
-  /** Specific file paths to exclude (relative to workspace root) */
-  excludedFiles: string[];
-  ignoredDirectories: string[];
-  ignoredPatterns: string[];
-  lexicalWeight: number;
-  maxFileSize: number; // Bytes
-  modelPath: string | null;
-  searchMode: SearchMode;
-  semanticWeight: number;
-  updatedAt: string;
 }
 
 export interface TabState {
@@ -221,9 +129,3 @@ export interface WorkspaceState {
   workspace_path: string | null;
 }
 
-export type SearchMode = 'lexical' | 'semantic' | 'hybrid';
-
-// ============================================================
-// SEMANTIC SEARCH
-// ============================================================
-export type SemanticIndexStatus = 'pending' | 'indexing' | 'ready' | 'error';

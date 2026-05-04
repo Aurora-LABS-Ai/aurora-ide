@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 interface TaskState {
     clearTasks: () => void;
+    finalizeActiveTasks: (outcome: "completed" | "cancelled") => void;
     isAllComplete: boolean; // Track if all tasks just completed (for fade-out animation)
     isVisible: boolean;
     setIsVisible: (visible: boolean) => void;
@@ -22,19 +23,34 @@ export interface Task {
 
 // Timer for auto-hide
 let autoHideTimer: ReturnType<typeof setTimeout> | null = null;
-export const useTaskStore = create<TaskState>((set, _get) => ({
+
+const clearAutoHideTimer = () => {
+    if (autoHideTimer) {
+        clearTimeout(autoHideTimer);
+        autoHideTimer = null;
+    }
+};
+
+const scheduleAutoHide = (set: (state: Partial<TaskState>) => void) => {
+    clearAutoHideTimer();
+    autoHideTimer = setTimeout(() => {
+        set({ tasks: [], isVisible: false, isAllComplete: false });
+        autoHideTimer = null;
+    }, 2500);
+};
+
+const areAllTasksTerminal = (tasks: Task[]) =>
+    tasks.length > 0 && tasks.every(t => t.status === 'completed' || t.status === 'cancelled');
+
+export const useTaskStore = create<TaskState>((set) => ({
     tasks: [],
     isVisible: false,
     isAllComplete: false,
 
     setTasks: (tasks) => {
-        // Clear any existing auto-hide timer
-        if (autoHideTimer) {
-            clearTimeout(autoHideTimer);
-            autoHideTimer = null;
-        }
+        clearAutoHideTimer();
 
-        const allComplete = tasks.length > 0 && tasks.every(t => t.status === 'completed');
+        const allComplete = areAllTasksTerminal(tasks);
 
         set({
             tasks,
@@ -42,12 +58,9 @@ export const useTaskStore = create<TaskState>((set, _get) => ({
             isAllComplete: allComplete,
         });
 
-        // Auto-hide after 2.5 seconds if all tasks are complete
+        // Auto-hide after terminal task states so the UI cannot remain stuck.
         if (allComplete) {
-            autoHideTimer = setTimeout(() => {
-                set({ isVisible: false, tasks: [], isAllComplete: false });
-                autoHideTimer = null;
-            }, 2500);
+            scheduleAutoHide(set);
         }
     },
 
@@ -57,16 +70,46 @@ export const useTaskStore = create<TaskState>((set, _get) => ({
 
     setIsVisible: (isVisible) => set({ isVisible }),
 
+    finalizeActiveTasks: (outcome) => {
+        set((state) => {
+            if (state.tasks.length === 0 || areAllTasksTerminal(state.tasks)) {
+                return state;
+            }
+
+            const tasks = state.tasks.map((task) => {
+                if (task.status === 'completed' || task.status === 'cancelled') {
+                    return task;
+                }
+
+                return {
+                    ...task,
+                    status: outcome,
+                };
+            });
+
+            scheduleAutoHide(set);
+
+            return {
+                tasks,
+                isVisible: true,
+                isAllComplete: true,
+            };
+        });
+    },
+
     clearTasks: () => {
-        if (autoHideTimer) {
-            clearTimeout(autoHideTimer);
-            autoHideTimer = null;
-        }
+        clearAutoHideTimer();
         set({ tasks: [], isVisible: false, isAllComplete: false });
     },
 }));
 
 // DEBUG: Expose to window for console testing
 if (typeof window !== 'undefined') {
-    (window as any).taskStore = useTaskStore;
+    window.taskStore = useTaskStore;
+}
+
+declare global {
+    interface Window {
+        taskStore?: typeof useTaskStore;
+    }
 }

@@ -14,11 +14,7 @@
 //! - `crate::services::api_converter::ApiConverter` - Message format conversion
 
 pub mod api_converter;
-pub mod thread_service;
 pub mod token_service;
-
-// Re-export ThreadService as it's commonly used
-pub use thread_service::ThreadService;
 
 // ApiConverter and TokenService are imported directly from their modules:
 // - crate::services::api_converter::{ApiConverter, ApiMessage, UiMessage}

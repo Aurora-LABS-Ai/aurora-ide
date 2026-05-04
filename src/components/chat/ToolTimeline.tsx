@@ -22,7 +22,6 @@
 
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
-  ChevronRight,
   Check,
   X,
   Loader2,
@@ -281,152 +280,6 @@ const MultiFileResultsView: React.FC<MultiFileResultsProps> = ({ files }) => {
           </button>
         );
       })}
-    </div>
-  );
-};
-
-// --- 1.6. Aurora Search Results Component ---
-interface AuroraSearchResultsProps {
-  results: Array<{
-    filePath: string;
-    relativePath: string;
-    fileName: string;
-    startLine: number;
-    endLine: number;
-    chunkType: string;
-    symbolName: string | null;
-    content: string;
-    score: number;
-    matchType: string;
-  }>;
-}
-
-const AuroraSearchResultsView: React.FC<AuroraSearchResultsProps> = ({
-  results,
-}) => {
-  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  const handleResultClick = async (
-    result: AuroraSearchResultsProps["results"][0],
-  ) => {
-    try {
-      const { useEditorStore } = await import("../../store/useEditorStore");
-      const { resolvePath } = await import("../../tools/utils/path-resolver");
-      const { readFileContent } = await import("../../lib/tauri");
-      const fullPath = resolvePath(result.filePath);
-      const content = await readFileContent(fullPath);
-      const ext = result.fileName.split(".").pop()?.toLowerCase() || "";
-      const langMap: Record<string, string> = {
-        ts: "typescript",
-        tsx: "typescript",
-        js: "javascript",
-        jsx: "javascript",
-        json: "json",
-        css: "css",
-        scss: "scss",
-        html: "html",
-        md: "markdown",
-        rs: "rust",
-        py: "python",
-        go: "go",
-      };
-      const language = langMap[ext] || "plaintext";
-      useEditorStore
-        .getState()
-        .openFile(fullPath, result.fileName, content, language);
-    } catch (error) {
-      console.error("Failed to open file:", error);
-    }
-  };
-
-  const isLongContent = results.length > 3;
-
-  return (
-    <div className="mt-1">
-      <div
-        className={cn(
-          "grid gap-0.5 overflow-hidden transition-all",
-          isExpanded ? "max-h-none" : "max-h-[120px]",
-        )}
-      >
-        {results.map((result, idx) => {
-          const isResultExpanded = expandedIndex === idx;
-          const scorePercent = Math.round(result.score * 100);
-
-          return (
-            <div
-              key={idx}
-              className="group border-b border-border last:border-0"
-            >
-              <div
-                onClick={() => handleResultClick(result)}
-                className="w-full flex items-center gap-2 px-2 py-1 hover:bg-sidebar-item-hover cursor-pointer transition-colors"
-              >
-                <ExplorerFileAssetIcon
-                  fileName={result.fileName}
-                  path={result.filePath}
-                  className="w-3 h-3 flex-shrink-0 opacity-80"
-                />
-
-                <div className="flex-1 min-w-0 flex items-center gap-1.5">
-                  <span className="text-[10px] font-medium text-text-primary truncate">
-                    {result.fileName}
-                  </span>
-                  <span className="text-[9px] text-text-disabled font-mono flex-shrink-0">
-                    :{result.startLine}
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  <div className="w-4 h-0.5 bg-sidebar-item-hover rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-primary/70 rounded-full"
-                      style={{ width: `${scorePercent}%` }}
-                    />
-                  </div>
-                </div>
-
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setExpandedIndex(isResultExpanded ? null : idx);
-                  }}
-                  className="p-0.5 text-text-disabled hover:text-text-primary"
-                >
-                  <ChevronRight
-                    size={10}
-                    className={cn(
-                      "transition-transform",
-                      isResultExpanded && "rotate-90",
-                    )}
-                  />
-                </button>
-              </div>
-
-              {isResultExpanded && (
-                <div className="px-2 pb-1.5">
-                  <pre className="text-[9px] font-mono text-text-secondary bg-code-block rounded p-1.5 overflow-x-auto whitespace-pre-wrap break-words">
-                    {result.content}
-                  </pre>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {isLongContent && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            setIsExpanded(!isExpanded);
-          }}
-          className="mt-1 w-full text-center text-[9px] text-text-disabled hover:text-text-primary py-0.5"
-        >
-          {isExpanded ? "Show Less" : `Show ${results.length - 3} More`}
-        </button>
-      )}
     </div>
   );
 };
@@ -889,8 +742,6 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(
       fileList,
       isMultiFileResult,
       multiFileResults,
-      isAuroraSearchResult,
-      auroraSearchResults,
       searchReplaceData,
       multiSearchReplaceData,
       shellOutputData,
@@ -903,8 +754,6 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(
       let listData = [];
       let isMultiFile = false;
       let multiFileData = [];
-      let isAuroraSearch = false;
-      let auroraResults = [];
       let linesAddedCount: number | null = null;
       let linesRemovedCount: number | null = null;
       let isFileChangePending = false;
@@ -1038,17 +887,6 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(
             }
 
             if (combinedOutput) raw = combinedOutput;
-          } else if (tool.name === "aurora_search") {
-            const count = parsed.totalResults || 0;
-            if (!parsed.success) msg = "Search failed";
-            else if (count === 0) msg = "No results";
-            else {
-              msg = `Found ${count} results`;
-              if (parsed.results) {
-                isAuroraSearch = true;
-                auroraResults = parsed.results;
-              }
-            }
           } else if (tool.name === "multi_file_read" && parsed.success) {
             msg = `Read ${parsed.filesRead || 0} files`;
             if (parsed.files) {
@@ -1107,8 +945,6 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(
         isMultiFileResult: isMultiFile,
         multiFileResults: multiFileData,
         isPendingFileChange: isFileChangePending,
-        isAuroraSearchResult: isAuroraSearch,
-        auroraSearchResults: auroraResults,
         linesAdded: linesAddedCount,
         linesRemoved: linesRemovedCount,
         searchReplaceData,
@@ -1450,10 +1286,6 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(
               {isMultiFileResult && multiFileResults.length > 0 && (
                 <MultiFileResultsView files={multiFileResults} />
               )}
-              {isAuroraSearchResult && auroraSearchResults.length > 0 && (
-                <AuroraSearchResultsView results={auroraSearchResults} />
-              )}
-
               {/* Search/Replace Diff View */}
               {searchReplaceData &&
                 (searchReplaceData.oldString ||

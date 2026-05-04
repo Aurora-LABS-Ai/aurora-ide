@@ -1,13 +1,12 @@
 /**
  * Tool Definitions Index
  * Central export for all tool definitions
- * 
- * TOOL COUNT: 19 tools total
+ *
  * - File: 8 (create, read, write, search_replace, multi_search_replace, delete, grep, multi_file_read)
  * - Workspace: 4 (tree, folder_create, folder_move, folder_delete)
  * - Shell: 4 (execute, spawn, kill, list_processes)
  * - Editor: 2 (open_file, read_lints)
- * - Search: 1 (aurora_search)
+ * - Search: 1 (auroro_websearch)
  * - Todo: 1 (todo_write)
  * - MCP: Tools are dynamically loaded from connected servers
  */
@@ -17,6 +16,7 @@ import { fileTools } from "./file-tools";
 import { getEnhancedToolRiskLevel } from "./risk-levels-enhanced";
 import { searchTools } from "./search-tools";
 import { shellTools } from "./shell-tools";
+import { skillTools } from "./skill-tools";
 import { todoTools } from "./todo-tools";
 import { workspaceTools } from "./workspace-tools";
 
@@ -40,6 +40,8 @@ export * from './editor-tools';
 
 export * from './search-tools';
 
+export * from './skill-tools';
+
 export * from './todo-tools';
 
 // All available tools (MCP tools are added dynamically from connected servers)
@@ -49,6 +51,7 @@ export const allTools: ToolDefinition[] = [
   ...shellTools,
   ...editorTools,
   ...searchTools,
+  ...skillTools,
   ...todoTools,
 ];
 
@@ -76,8 +79,13 @@ export const toolCategories = {
   },
   search: {
     name: 'Search',
-    description: 'Advanced search tools including semantic search',
+    description: 'Web search and page fetch tools.',
     tools: searchTools,
+  },
+  skills: {
+    name: 'Skills',
+    description: 'Discovery tools for the Aurora skill catalog.',
+    tools: skillTools,
   },
   todo: {
     name: 'Task Management',

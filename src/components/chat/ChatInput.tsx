@@ -43,10 +43,8 @@ import {
 } from "../../store/useWorkspaceStore";
 import { useEditorStore } from "../../store/useEditorStore";
 import { useTaskStore } from "../../store/useTaskStore";
-import {
-  loadPromptAttachments,
-  type PromptAttachment,
-} from "../../services/prompt-assets";
+import { type PromptAttachment } from "../../services/prompt-assets";
+import { usePromptAssetCatalog } from "../../hooks/usePromptAssetCatalog";
 import type { FileNode } from "../../types";
 import clsx from "clsx";
 import { createPortal } from "react-dom";
@@ -172,9 +170,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   } | null>(null);
   const [slashSearchQuery, setSlashSearchQuery] = useState("");
   const [selectedPromptAssetIndex, setSelectedPromptAssetIndex] = useState(0);
-  const [promptAssetCatalog, setPromptAssetCatalog] = useState<
-    PromptAttachment[]
-  >([]);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { setSettingsOpen } = useUiStore();
@@ -253,25 +248,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
       .slice(0, 20);
   }, [attachedPromptAssets, promptAssetCatalog, slashQuery, slashSearchQuery]);
 
-  useEffect(() => {
-    let isCancelled = false;
-
-    const loadCatalog = async () => {
-      const attachments = await loadPromptAttachments(rootPath, {
-        enabledSkillToggles: skillToggles,
-        skillsEnabled,
-      });
-      if (!isCancelled) {
-        setPromptAssetCatalog(attachments);
-      }
-    };
-
-    void loadCatalog();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [rootPath, skillToggles, skillsEnabled]);
+  // Catalog of `/` prompt picker entries (rules + skills). Refreshes itself
+  // when the user adds or edits files inside the prompt-asset folders, and
+  // exposes `refreshCatalog()` for the imperative "freshen-on-open" path below.
+  const { promptAssetCatalog, refreshCatalog } = usePromptAssetCatalog({
+    rootPath,
+    skillToggles,
+    skillsEnabled,
+  });
 
   // Consume pending input from external sources (e.g., browser element inspector, suggested prompts)
   useEffect(() => {
@@ -306,6 +290,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
         const query = textBeforeCursor.slice(lastSlash + 1);
         if (!query.includes("\n")) {
           slashHandled = true;
+          // Refresh the catalog the moment the slash menu opens. This is the
+          // safety net for changes the workspace fs-watcher can miss (the
+          // global skills folder lives outside the workspace tree, and rapid
+          // bursts can race the debounce).
+          if (slashQuery === null) {
+            refreshCatalog();
+          }
           setSlashQuery(query);
           setSlashIndex(lastSlash);
           setSelectedPromptAssetIndex(0);

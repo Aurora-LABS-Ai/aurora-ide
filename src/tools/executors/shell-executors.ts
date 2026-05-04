@@ -63,19 +63,64 @@ const normalizeShellTimeoutMs = (value: unknown): number => {
   );
 };
 
+// JS-side safety net: outlive the Rust timeout by this much before we force a
+// cancel from the frontend. Rust normally kills the child on timeout, but if
+// the IPC reply somehow never arrives (e.g. main thread saturation, child
+// hanging in a kill-resistant state) we still want a hard upper bound so the
+// agent never gets stuck waiting on a tool call.
+const SHELL_EXECUTOR_GRACE_MS = 2_000;
+
+const runShellWithCancel = async (
+  command: string,
+  cwd: string | undefined,
+  timeoutMs: number,
+  requestId: string,
+): Promise<ReturnType<typeof executeCommandStream> extends Promise<infer R> ? R : never> => {
+  // Race the actual stream against a JS safety timeout. If the safety net
+  // fires we explicitly cancel the underlying Rust task so the OS process
+  // (and the IPC event flood it produces) is shut down before we throw.
+  let safetyTimer: ReturnType<typeof setTimeout> | undefined;
+  let safetyTriggered = false;
+
+  try {
+    return await new Promise((resolve, reject) => {
+      safetyTimer = setTimeout(() => {
+        safetyTriggered = true;
+        cancelCommandStream(requestId).catch(() => {
+          // Best-effort cancel; we still reject below.
+        });
+        reject(
+          new Error(
+            `Shell command exceeded ${timeoutMs + SHELL_EXECUTOR_GRACE_MS}ms (frontend safety timeout)`,
+          ),
+        );
+      }, timeoutMs + SHELL_EXECUTOR_GRACE_MS);
+
+      executeCommandStream(requestId, command, cwd, undefined, timeoutMs)
+        .then((result) => {
+          if (safetyTriggered) return;
+          resolve(result);
+        })
+        .catch((err) => {
+          if (safetyTriggered) return;
+          reject(err);
+        });
+    });
+  } finally {
+    if (safetyTimer) {
+      clearTimeout(safetyTimer);
+    }
+  }
+};
+
 const executeInlineShellCommand = async (
   command: string,
   cwd: string | undefined,
   timeoutMs: number,
 ): Promise<string> => {
+  const requestId = getRequestId();
   try {
-    const result = await executeCommandStream(
-      getRequestId(),
-      command,
-      cwd,
-      undefined,
-      timeoutMs,
-    );
+    const result = await runShellWithCancel(command, cwd, timeoutMs, requestId);
 
     return JSON.stringify({
       success: result.success,
@@ -89,6 +134,11 @@ const executeInlineShellCommand = async (
   } catch (error) {
     console.error("[shell_execute:inline] Error:", error);
     const errorMsg = error instanceof Error ? error.message : String(error);
+
+    // Make sure the underlying process is gone even on unexpected failure.
+    cancelCommandStream(requestId).catch(() => {
+      // ignore cancellation failures during error handling
+    });
 
     return JSON.stringify({
       success: false,
@@ -122,34 +172,49 @@ const executeTerminalShellCommand = async (
     });
   }
 
+  // RAF-batched writer. Even though Rust now coalesces stream events to ~30Hz,
+  // we still buffer on the frontend so multiple events that land in the same
+  // animation frame turn into a single xterm `write()` call. xterm writes are
+  // cheap individually but each one schedules a render; batching keeps the
+  // UI thread free during very chatty commands.
   const pendingWrites: string[] = [];
+  let scheduledFlush = false;
+  let rafHandle: number | null = null;
 
-  const writeOutput = (data: string) => {
+  const supportsRaf = typeof requestAnimationFrame === "function";
+
+  const flushNow = () => {
+    scheduledFlush = false;
+    rafHandle = null;
+    if (pendingWrites.length === 0) return;
+
     const state = useTerminalStore.getState();
     const handler = state.sessionHandlers.get(targetSessionId);
-    if (handler) {
-      if (pendingWrites.length > 0) {
-        for (const chunk of pendingWrites) {
-          handler(chunk);
-        }
-        pendingWrites.length = 0;
-      }
-      handler(data);
+    if (!handler) {
+      // Handler not ready yet; keep buffering until it is.
+      scheduleFlush();
       return;
     }
-    pendingWrites.push(data);
+
+    // Concatenate so xterm only schedules one render for this frame.
+    const payload = pendingWrites.join("");
+    pendingWrites.length = 0;
+    handler(payload);
   };
 
-  const flushPending = () => {
-    if (pendingWrites.length === 0) return;
-    const state = useTerminalStore.getState();
-    const handler = state.sessionHandlers.get(targetSessionId);
-    if (!handler) return;
-
-    for (const chunk of pendingWrites) {
-      handler(chunk);
+  const scheduleFlush = () => {
+    if (scheduledFlush) return;
+    scheduledFlush = true;
+    if (supportsRaf) {
+      rafHandle = requestAnimationFrame(flushNow);
+    } else {
+      setTimeout(flushNow, 16);
     }
-    pendingWrites.length = 0;
+  };
+
+  const writeOutput = (data: string) => {
+    pendingWrites.push(data);
+    scheduleFlush();
   };
 
   const waitForSessionHandler = async (maxWaitMs = 3000): Promise<boolean> => {
@@ -167,7 +232,7 @@ const executeTerminalShellCommand = async (
   };
 
   await waitForSessionHandler();
-  flushPending();
+  flushNow();
 
   const green = "\x1b[32m";
   const reset = "\x1b[0m";
@@ -192,7 +257,7 @@ const executeTerminalShellCommand = async (
 
       if (payload.stream === "stderr") {
         writeOutput(`${yellow}${payload.data}${reset}`);
-      } else {
+      } else if (payload.stream === "stdout") {
         writeOutput(payload.data);
       }
     });
@@ -203,13 +268,7 @@ const executeTerminalShellCommand = async (
       writeOutput(`${red}${msg}${reset}\r\n`);
     });
 
-    const result = await executeCommandStream(
-      requestId,
-      command,
-      cwd,
-      undefined,
-      timeoutMs,
-    );
+    const result = await runShellWithCancel(command, cwd, timeoutMs, requestId);
 
     if (result.exit_code !== 0) {
       writeOutput(
@@ -218,6 +277,7 @@ const executeTerminalShellCommand = async (
     }
 
     writeOutput(`${dim}[Done]${reset}\r\n`);
+    flushNow();
 
     return JSON.stringify({
       success: result.success,
@@ -232,7 +292,13 @@ const executeTerminalShellCommand = async (
     console.error("[shell_execute:terminal] Error:", error);
     const errorMsg = error instanceof Error ? error.message : String(error);
 
+    // Always make sure the OS process is killed if anything went wrong.
+    cancelCommandStream(requestId).catch(() => {
+      // ignore cancel failures during error handling
+    });
+
     writeOutput(`${red}Execution Error: ${errorMsg}${reset}\r\n`);
+    flushNow();
 
     return JSON.stringify({
       success: false,
@@ -242,6 +308,11 @@ const executeTerminalShellCommand = async (
       error: errorMsg,
     });
   } finally {
+    if (rafHandle !== null && supportsRaf) {
+      cancelAnimationFrame(rafHandle);
+      rafHandle = null;
+    }
+    flushNow();
     if (unlisten) {
       try {
         unlisten();

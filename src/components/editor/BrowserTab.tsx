@@ -501,9 +501,11 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({
           <div
             className="absolute bottom-4 left-4 right-4 flex items-center gap-2 px-4 py-3 rounded-lg z-30"
             style={{
-              backgroundColor: 'rgba(239, 68, 68, 0.1)',
-              border: '1px solid rgba(239, 68, 68, 0.3)',
-              color: '#ef4444',
+              backgroundColor:
+                'color-mix(in srgb, var(--aurora-common-error) 10%, transparent)',
+              border:
+                '1px solid color-mix(in srgb, var(--aurora-common-error) 30%, transparent)',
+              color: 'var(--aurora-common-error)',
             }}
           >
             <span className="text-sm flex-1">{error}</span>

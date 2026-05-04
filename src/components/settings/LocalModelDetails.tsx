@@ -35,11 +35,12 @@ export const LocalModelDetails: React.FC<Props> = ({
     );
   }
 
-  const hasCapabilities =
+  const hasCapabilities = Boolean(
     modelInfo ||
     selectedModel.vision ||
     selectedModel.trainedForToolUse ||
-    isThinkingModel(selectedModel);
+    isThinkingModel(selectedModel),
+  );
 
   return (
     <Section

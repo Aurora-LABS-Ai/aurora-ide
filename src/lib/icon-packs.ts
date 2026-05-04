@@ -17,6 +17,46 @@ export const DEFAULT_EXPLORER_ICON_PACK_ID: ExplorerIconPackId = "material";
 
 let activeExplorerIconPackId: ExplorerIconPackId = DEFAULT_EXPLORER_ICON_PACK_ID;
 
+const fallbackIconName = (request: Partial<ExplorerIconRequest> | undefined): string => {
+  const rawName = request?.name;
+  if (typeof rawName === "string" && rawName.trim()) {
+    return rawName;
+  }
+
+  const rawPath = request?.path;
+  if (typeof rawPath === "string" && rawPath.trim()) {
+    const normalizedPath = rawPath.replace(/[\\/]+$/, "");
+    const pathName = normalizedPath.split(/[\\/]/).filter(Boolean).pop();
+    if (pathName) {
+      return pathName;
+    }
+  }
+
+  return request?.isFolder ? "folder" : "file";
+};
+
+export const normalizeExplorerIconRequest = (
+  request: ExplorerIconRequest,
+): ExplorerIconRequest => {
+  const rawRequest = request as Partial<ExplorerIconRequest> | undefined;
+
+  return {
+    ...rawRequest,
+    name: fallbackIconName(rawRequest),
+    isFolder: Boolean(rawRequest?.isFolder),
+    isOpen: Boolean(rawRequest?.isOpen),
+    path: typeof rawRequest?.path === "string" ? rawRequest.path : undefined,
+  };
+};
+
+const fallbackResolvedIcon = (
+  request: ExplorerIconRequest,
+): ResolvedExplorerIcon => ({
+  kind: "asset",
+  alt: request.name,
+  src: request.isFolder ? "/material-icons/folder.svg" : "/material-icons/file.svg",
+});
+
 const getAvailableExplorerIconPacks = (): Record<
   ExplorerIconPackId,
   ExplorerIconPack
@@ -81,5 +121,11 @@ export const resolveExplorerIconFromPack = (
   request: ExplorerIconRequest,
   packId?: ExplorerIconPackId,
 ): ResolvedExplorerIcon => {
-  return getExplorerIconPack(packId).resolveIcon(request);
+  const safeRequest = normalizeExplorerIconRequest(request);
+
+  try {
+    return getExplorerIconPack(packId).resolveIcon(safeRequest);
+  } catch {
+    return fallbackResolvedIcon(safeRequest);
+  }
 };

@@ -47,6 +47,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "runtime/onnxruntime/onnxruntime*.dll": "",
+      "runtime/onnxruntime/DirectML*.dll": ""
+    },
     "windows": {
       "webviewInstallMode": {
         "type": "embedBootstrapper"

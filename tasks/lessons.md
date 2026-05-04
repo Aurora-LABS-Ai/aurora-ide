@@ -24,3 +24,7 @@
 - Do not bundle large optional native runtimes in Aurora installers when the production path is a different native Rust engine. Keep optional compatibility runtimes manual-path or separately downloadable so fresh installs stay predictable.
 - For microphone recording UI, do not rely on a one-pixel time-domain stroke inside a dark pill. Use visible amplitude bars or another high-contrast visualization so users can tell recording is active.
 - CUDA builds on Windows need the Visual Studio x64 C++ environment, not just the CUDA Toolkit. Do not expose raw `tauri --features cuda` scripts; wrap them so `VsDevCmd.bat` puts `cl.exe` on PATH first.
+- For installed-app blank screens, attach to the WebView console/debug target before changing unrelated startup code; an empty `#root` can be a renderer exception, not a Tauri process crash.
+- Explorer icon resolvers must sanitize restored file-tree data before passing it into third-party icon libraries. Persisted workspace state can contain malformed nodes even when TypeScript types say `name` is required.
+- Tauri resources are not automatically copied from Cargo target output into NSIS/MSI installs. Runtime DLLs that exist beside `build\release\aurora.exe` must be explicitly listed as bundle resources and added to the native DLL search path.
+- ONNX Runtime provider DLLs must be installed beside `aurora.exe`, not only in a nested resource folder, because the provider bridge loads names like `onnxruntime_providers_shared.dll` from the executable directory.

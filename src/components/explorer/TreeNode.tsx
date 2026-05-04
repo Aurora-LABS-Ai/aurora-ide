@@ -32,6 +32,7 @@ import { useWorkspaceStore, loadFileContent } from '../../store/useWorkspaceStor
 import { useEditorStore } from '../../store/useEditorStore';
 import { useTerminalStore } from '../../store/useTerminalStore';
 import { ContextMenu } from '../ui/ContextMenu';
+import { fileCache } from '../../lib/file-cache';
 import { createFile, createFolder, deletePath, renamePath, isTauri, revealInExplorer } from '../../lib/tauri';
 import { getLanguageFromExtension, joinPath } from '../../lib/file-utils';
 import {
@@ -164,13 +165,23 @@ const TreeNodeComponent: React.FC<TreeNodeProps> = ({
       if (existingTab) {
         editorStore.setActiveTab(fileId);
 
-        // Keep unsaved work untouched, but refresh clean tabs from disk so the
-        // explorer always shows the latest saved file content.
+        // Keep unsaved work untouched.
         if (existingTab.isDirty) {
           return;
         }
 
-        editorStore.reloadTabContent(fileId, existingTab.content, true);
+        // Fast-path: if the FE cache still has this file's content (mtime
+        // validated lazily on next miss), we can avoid a refresh-from-disk
+        // entirely. This was the source of the "loading and loading" symptom
+        // when the IPC channel was busy: every tab click queued a fresh read
+        // even when the tab was already perfectly up to date.
+        const cached = fileCache.get(nodePath);
+        if (cached !== null && cached === existingTab.content) {
+          return;
+        }
+
+        // Otherwise refresh from disk in the background but keep the current
+        // content visible (no spinner) so the user can read while we re-sync.
         await loadFreshContentIntoTab(
           fileId,
           existingTab.filename,
@@ -189,6 +200,7 @@ const TreeNodeComponent: React.FC<TreeNodeProps> = ({
     node.id,
     node.name,
     node.language,
+    nodePath,
     toggleFolder,
     selectFile,
     openFile,

@@ -4,12 +4,14 @@
  * Uses Rust Context Engine for turn-based message management
  */
 import { auroraInvoke } from "../lib/runtime";
+import { useTaskStore } from "../store/useTaskStore";
 import { getToolsForModel } from "../tools";
 import type { ToolDefinition as LegacyToolDefinition } from "../tools/types";
+import { threadService } from "./thread-service";
 import {
   filterToolsForExecutionMode,
+  formatAgentExecutionModeRuntimeContext,
   normalizeAgentExecutionMode,
-  prependAgentExecutionModeRuntimeContext,
 } from "./agent-execution-mode";
 import {
   BASE_AGENT_SYSTEM_PROMPT,
@@ -31,6 +33,7 @@ import {
 import type {
   AssistantMessage,
   Message,
+  TokenUsage,
   ToolCallRequest,
   ToolDefinition,
 } from "./providers/types";
@@ -87,11 +90,23 @@ export class AgentService {
     }
   }
 
+  /**
+   * Run an agent turn.
+   *
+   * `userMessage` MUST be the clean, user-typed text (e.g. "fix this bug").
+   * It is persisted verbatim to the JSONL log and rendered in the chat
+   * bubble. Any IDE/runtime enrichment (execution_mode, user_info,
+   * project_rules, project_layout, agent_skills, open_files,
+   * attached_context, …) MUST be passed via `ideContext` — the agent
+   * combines them only when constructing the API request to the provider,
+   * and persists them in a separate `ide_context` field on disk so the
+   * bubble never displays the giant XML blob.
+   */
   public async chat(
     userMessage: string,
     callbacks: AgentCallbacks,
     tools?: LegacyToolDefinition[],
-    _ideContext?: string | null,
+    ideContext?: string | null,
     promptContext?: AgentPromptContext,
   ): Promise<AgentResponse> {
     this.isRunning = true;
@@ -99,7 +114,7 @@ export class AgentService {
     const preparedContext = await this.prepareAgentContext(
       userMessage,
       tools,
-      null,
+      ideContext ?? null,
       promptContext,
     );
 
@@ -107,6 +122,12 @@ export class AgentService {
     let finalContent = "";
     let finalThinking = "";
     let stoppedByIterationLimit = false;
+    let taskFinalOutcome: "completed" | "cancelled" = "cancelled";
+    // Captures the most recent token usage emitted by the provider during this
+    // turn. Used after `context_finalize_turn` to persist a `TurnFinalized`
+    // event with usage so the JSONL log stays canonically replayable and we
+    // can show per-turn token breakdowns later.
+    let latestUsage: TokenUsage | undefined;
     const executedToolCalls: NonNullable<AgentResponse["toolCalls"]> = [];
     const { availableTools, messages, threadId } = preparedContext;
     const toolRunner = new AgentToolRunner({
@@ -135,7 +156,13 @@ export class AgentService {
             onToken: callbacks.onToken,
             onThinking: callbacks.onThinking,
             onToolCall: callbacks.onToolCall,
-            onUsage: callbacks.onUsage,
+            onUsage: (usage) => {
+              // Capture latest usage for `TurnFinalized` persistence below.
+              // The provider streams usage via this callback (the
+              // `AssistantMessage` return value does not carry it).
+              latestUsage = usage;
+              callbacks.onUsage?.(usage);
+            },
             onError: callbacks.onError,
           },
         );
@@ -186,6 +213,27 @@ export class AgentService {
 
       await auroraInvoke("context_finalize_turn", { threadId });
 
+      // Persist a `TurnFinalized` event to the JSONL log so completed turns
+      // are canonically closed (mirroring the cancellation path) and per-turn
+      // token usage is recorded for the most recent assistant turn. Best
+      // effort — never fail the user-facing response if persistence stumbles.
+      if (latestUsage) {
+        try {
+          const ctxState = await this.getContextState();
+          await threadService.updateUsage(
+            threadId,
+            latestUsage,
+            {
+              usedTokens: ctxState?.usedTokens ?? 0,
+              contextWindow: ctxState?.contextWindow ?? 0,
+              percentage: ctxState?.usagePercentage ?? 0,
+            },
+          );
+        } catch (err) {
+          console.warn("[AgentService] thread_update_usage failed:", err);
+        }
+      }
+
       await this.runSummarizationIfNeeded(threadId);
 
       if (stoppedByIterationLimit && !finalContent) {
@@ -197,6 +245,8 @@ export class AgentService {
         content: finalContent,
         reasoning_content: finalThinking || undefined,
       } as AssistantMessage);
+
+      taskFinalOutcome = stoppedByIterationLimit ? "cancelled" : "completed";
 
       return {
         content: finalContent,
@@ -212,13 +262,21 @@ export class AgentService {
           error.message.includes("cancelled"));
 
       if (isCancelled) {
-        await auroraInvoke("context_discard_current_turn", { threadId }).catch(() => {
-          // Best-effort cleanup only.
-        });
+        // Append a Cancelled event to the JSONL log instead of discarding the
+        // turn. The Rust handler synthesises error tool results for any
+        // unfinished tool calls and reconciles the in-memory ContextManager
+        // so the next request sees a coherent history — preventing the "AI
+        // forgot what it was doing" regression after a stop.
+        await threadService
+          .cancelCurrentTurn(threadId, "user_stop")
+          .catch((err) => {
+            console.warn("[agent] thread_cancel_current_turn failed:", err);
+          });
       }
 
       throw error;
     } finally {
+      useTaskStore.getState().finalizeActiveTasks(taskFinalOutcome);
       this.isRunning = false;
     }
   }
@@ -270,21 +328,47 @@ export class AgentService {
   private async prepareAgentContext(
     userMessage: string,
     tools: LegacyToolDefinition[] | undefined,
-    _ideContext: string | null | undefined,
+    ideContext: string | null | undefined,
     promptContext: AgentPromptContext | undefined,
   ): Promise<PreparedAgentContext> {
     const threadId = this.requireThreadId();
     const { contextWindow, maxOutput } = this.getProviderLimits();
     const executionMode = normalizeAgentExecutionMode(this.config.executionMode);
-    const runtimeUserMessage = prependAgentExecutionModeRuntimeContext(
-      userMessage,
-      executionMode,
-    );
 
+    // The execution-mode block is a piece of authoritative IDE state, not
+    // user input. Fold it into `ideContext` so the LLM still sees it AT the
+    // top of the request, but the JSONL bubble shows the clean user message.
+    const executionModeBlock = formatAgentExecutionModeRuntimeContext(executionMode);
+    const composedIdeContext: string | null =
+      ideContext && ideContext.trim().length > 0
+        ? `${executionModeBlock}\n\n${ideContext}`
+        : executionModeBlock;
+
+    // Persist to JSONL first — the user message is the durable anchor for
+    // the entire turn. If the rest of the request fails, we still have the
+    // user's prompt on disk to reload the conversation.
+    //
+    // CRITICAL: persist the *clean* user-typed text in `content` and the
+    // enrichment in `ideContext` separately. Squashing them into a single
+    // string causes the entire XML blob to render as a user bubble on
+    // reload (see message-reveal.md / regression in early-2026 builds).
+    try {
+      await threadService.addUserMessage(
+        threadId,
+        userMessage,
+        composedIdeContext,
+      );
+    } catch (err) {
+      console.warn("[AgentService] thread_add_user_message failed:", err);
+    }
+
+    // Mirror into the in-memory ContextManager. The Rust message builder
+    // re-combines `content` + `ideContext` into the final user-role API
+    // message, so the LLM sees the same shape it always did.
     await auroraInvoke("context_add_user_message", {
       threadId,
-      content: runtimeUserMessage,
-      ideContext: null,
+      content: userMessage,
+      ideContext: composedIdeContext,
       contextWindow,
       maxOutput,
     });
@@ -414,11 +498,34 @@ export class AgentService {
     content: string,
     response: AssistantMessage,
   ): Promise<void> {
+    // 1. Mirror into the in-memory ContextManager (drives live message
+    //    builds and tool-call/tool-result pairing for the active request).
     await auroraInvoke("context_add_assistant_response", {
       threadId,
       content,
       thinking: response.reasoning_content || null,
     });
+
+    // 2. Persist to JSONL as a single AssistantMessage event with embedded
+    //    tool_calls. Subsequent ToolResult events will chain to this round.
+    try {
+      const toolCalls = (response.tool_calls ?? []).map((tc) => ({
+        id: tc.id,
+        name: tc.function.name,
+        arguments:
+          typeof tc.function.arguments === "string"
+            ? tc.function.arguments
+            : JSON.stringify(tc.function.arguments ?? {}),
+      }));
+      await threadService.appendAssistantMessage(
+        threadId,
+        content,
+        response.reasoning_content ?? null,
+        toolCalls.length > 0 ? toolCalls : undefined,
+      );
+    } catch (err) {
+      console.warn("[AgentService] thread_append_assistant_message failed:", err);
+    }
   }
 
   private requireThreadId(): string {

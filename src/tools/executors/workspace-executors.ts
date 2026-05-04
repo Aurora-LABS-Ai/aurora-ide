@@ -2,11 +2,34 @@
  * Workspace Tool Executors
  * Simplified: only essential workspace operations
  */
-import { createFolder, deletePath, isTauri, readDirectory, renamePath } from "../../lib/tauri";
+import { createFolder, deletePath, isTauri, readDirectory, readFileContent, renamePath } from "../../lib/tauri";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { toolRegistry } from "../registry";
 import { isDirectoryExcluded } from "../utils/excluded-paths";
 import { getWorkspaceRootPath, resolvePath } from "../utils/path-resolver";
+import { isLargeFileByLines, splitLines } from "./file-read-policy";
+
+interface WorkspaceToolArgs {
+  depth?: number;
+  include_file_stats?: boolean;
+  include_hidden?: boolean;
+  max_files_for_stats?: number;
+  new_path?: string;
+  old_path?: string;
+  path?: string;
+}
+
+interface WorkspaceTreeNode {
+  children?: WorkspaceTreeNode[];
+  extension?: string | null;
+  largeFile?: boolean;
+  lineCount?: number;
+  name: string;
+  path: string;
+  size?: number;
+  statError?: string;
+  type: "directory" | "file";
+}
 
 // Helper to trigger file tree refresh
 const triggerRefresh = () => {
@@ -19,7 +42,7 @@ const triggerRefresh = () => {
 // FOLDER CREATE EXECUTOR
 // ============================================
 const folderCreateExecutor = async (
-  args: Record<string, any>,
+  args: WorkspaceToolArgs,
 ): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({
@@ -55,7 +78,7 @@ const folderCreateExecutor = async (
 // FOLDER MOVE EXECUTOR
 // ============================================
 const folderMoveExecutor = async (
-  args: Record<string, any>,
+  args: WorkspaceToolArgs,
 ): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({
@@ -102,7 +125,7 @@ const folderMoveExecutor = async (
 // FOLDER DELETE EXECUTOR
 // ============================================
 const folderDeleteExecutor = async (
-  args: Record<string, any>,
+  args: WorkspaceToolArgs,
 ): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({
@@ -138,7 +161,7 @@ const folderDeleteExecutor = async (
 // WORKSPACE TREE EXECUTOR
 // ============================================
 const workspaceTreeExecutor = async (
-  args: Record<string, any>,
+  args: WorkspaceToolArgs,
 ): Promise<string> => {
   if (!isTauri()) {
     return JSON.stringify({
@@ -155,18 +178,26 @@ const workspaceTreeExecutor = async (
   const targetPath = resolvePath(args.path);
   const maxDepth = args.depth ?? 3;
   const includeHidden = args.include_hidden ?? false;
+  const includeFileStats = args.include_file_stats !== false;
+  const maxFilesForStats =
+    typeof args.max_files_for_stats === "number" && Number.isFinite(args.max_files_for_stats)
+      ? Math.max(0, Math.trunc(args.max_files_for_stats))
+      : 300;
 
   try {
+    let statFilesRead = 0;
+    let statFilesSkipped = 0;
+
     const buildTree = async (
       dirPath: string,
       currentDepth: number,
-    ): Promise<any[]> => {
+    ): Promise<WorkspaceTreeNode[]> => {
       if (maxDepth !== -1 && currentDepth >= maxDepth) {
         return [];
       }
 
       const entries = await readDirectory(dirPath);
-      const tree: any[] = [];
+      const tree: WorkspaceTreeNode[] = [];
 
       for (const entry of entries) {
         if (!includeHidden && entry.name.startsWith(".")) {
@@ -178,7 +209,7 @@ const workspaceTreeExecutor = async (
           continue;
         }
 
-        const node: any = {
+        const node: WorkspaceTreeNode = {
           name: entry.name,
           path: entry.path,
           type: entry.is_dir ? "directory" : "file",
@@ -186,8 +217,27 @@ const workspaceTreeExecutor = async (
 
         if (entry.is_dir) {
           node.children = await buildTree(entry.path, currentDepth + 1);
-        } else if (entry.extension) {
-          node.extension = entry.extension;
+        } else {
+          if (entry.extension) {
+            node.extension = entry.extension;
+          }
+
+          if (includeFileStats) {
+            if (statFilesRead >= maxFilesForStats) {
+              statFilesSkipped++;
+            } else {
+              try {
+                const content = await readFileContent(entry.path);
+                const lineCount = splitLines(content).length;
+                node.lineCount = lineCount;
+                node.size = content.length;
+                node.largeFile = isLargeFileByLines(lineCount);
+                statFilesRead++;
+              } catch (error) {
+                node.statError = error instanceof Error ? error.message : String(error);
+              }
+            }
+        }
         }
 
         tree.push(node);
@@ -202,6 +252,12 @@ const workspaceTreeExecutor = async (
       success: true,
       rootPath: targetPath,
       depth: maxDepth,
+      stats: {
+        included: includeFileStats,
+        filesRead: statFilesRead,
+        filesSkipped: statFilesSkipped,
+        maxFilesForStats,
+      },
       tree,
     });
   } catch (error) {

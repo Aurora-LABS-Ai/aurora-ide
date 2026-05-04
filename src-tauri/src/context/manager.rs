@@ -515,6 +515,43 @@ pub fn atomic_discard_current_turn(thread_id: &str) -> Option<Turn> {
         .and_then(|m| m.discard_current_turn())
 }
 
+/// ATOMIC: Gracefully cancel the current pending turn *in place*.
+///
+/// For every tool call in the current round that has no matching tool result,
+/// synthesise an error result so the next provider request sees coherent
+/// `tool_call` ↔ `tool_result` pairs (most LLM APIs reject otherwise). Then
+/// finalise the turn so it lands in the conversation history with the
+/// assistant's partial work intact.
+///
+/// Returns the finalised turn, or `None` if the manager doesn't exist or has
+/// no pending turn.
+///
+/// This is the "preserve in-memory state" path for cancellations — used when
+/// the JSONL event log doesn't yet have an in-progress turn to cancel (e.g.
+/// during the transitional period before per-event persistence is fully
+/// wired, or when a cancellation races the persistence layer). The caller
+/// still appends a cancellation event to the JSONL log; this function exists
+/// purely to keep the live `ContextManager` coherent for the next request.
+pub fn atomic_cancel_current_turn_in_place(thread_id: &str) -> Option<Turn> {
+    let mut store = CONTEXT_STORE.write().unwrap();
+    let manager = store.get_mut(thread_id)?;
+
+    if let Some(round) = manager.current_round.as_mut() {
+        let unfinished_ids: Vec<String> = round
+            .tool_calls
+            .iter()
+            .filter(|tc| !round.tool_results.contains_key(&tc.id))
+            .map(|tc| tc.id.clone())
+            .collect();
+        for id in unfinished_ids {
+            let synth = ToolResult::error(id.clone(), "[cancelled by user]".to_string());
+            round.add_tool_result(id, synth);
+        }
+    }
+
+    manager.finalize_current_turn()
+}
+
 /// ATOMIC: Set turn summary
 pub fn atomic_set_turn_summary(thread_id: &str, turn_id: &str, summary: String) -> bool {
     let mut store = CONTEXT_STORE.write().unwrap();

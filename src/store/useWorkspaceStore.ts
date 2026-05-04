@@ -4,6 +4,7 @@ import {
   auroraListen as listen,
   isAuroraRuntimeAvailable,
 } from "../lib/runtime";
+import { invalidateFileCache, readFileCached } from "../lib/file-cache";
 import {
   explorerClearWorkspace,
   explorerCollapseAll,
@@ -15,7 +16,6 @@ import {
   explorerSaveState,
   explorerSelectFile,
   explorerToggleFolder,
-  readFileContent,
   type ExplorerSnapshot,
 } from "../lib/tauri";
 import type { FileNode } from "../types";
@@ -62,18 +62,48 @@ interface FsChangedPayload {
   paths?: string[];
 }
 
-// Helper to load file content
+// Helper to load file content.
+//
+// Routes through the frontend `readFileCached` helper so:
+//  - Repeated opens of the same file are instant (no IPC round-trip).
+//  - The Rust backend cache (mtime-validated) is only hit when the FE cache
+//    is cold, which keeps the IPC path tight even under load.
+//  - We add a soft timeout so a wedged disk / network share can never make
+//    the editor sit on a "Loading file..." spinner indefinitely. The Rust
+//    side enforces its own 10s wall-clock; this is a frontend belt-and-
+//    suspenders so the spinner always resolves.
+const FILE_LOAD_FRONTEND_TIMEOUT_MS = 12_000;
+
 export const loadFileContent = async (path: string): Promise<string> => {
   if (!isAuroraRuntimeAvailable()) {
     return "// File content unavailable: Aurora runtime is not connected";
   }
 
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
   try {
-    return await readFileContent(path);
+    const content = await Promise.race([
+      readFileCached(path),
+      new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(
+            new Error(
+              `File load timed out after ${FILE_LOAD_FRONTEND_TIMEOUT_MS}ms`,
+            ),
+          );
+        }, FILE_LOAD_FRONTEND_TIMEOUT_MS);
+      }),
+    ]);
+
+    return content;
   } catch (err) {
     console.error("Failed to load file:", err);
     const message = err instanceof Error ? err.message : String(err);
     return `// Failed to load file: ${message}`;
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
   }
 };
 
@@ -181,6 +211,28 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                   }
                 }, GIT_REFRESH_DEBOUNCE_MS);
 
+                // Invalidate the file cache for every touched path, regardless
+                // of whether a tab is open for it. This is essential because:
+                //   - The `@`-mention attachment flow, the agent's `file_read`
+                //     tool, and the slash-picker file loaders all read through
+                //     the frontend file cache (which has a 5-minute TTL and no
+                //     mtime check).
+                //   - Without this invalidation, an external edit (another
+                //     editor, git pull, formatter, etc.) is invisible to the
+                //     agent until the TTL expires or the user hard-refreshes
+                //     the IDE.
+                // We fire-and-forget here; cache invalidation is cheap and
+                // concurrent with the editor refresh below.
+                if (
+                  kind === "modify" ||
+                  kind === "create" ||
+                  kind === "remove"
+                ) {
+                  for (const changedPath of paths) {
+                    invalidateFileCache(changedPath);
+                  }
+                }
+
                 // Refresh any open editor tabs that were modified (immediate, no debounce)
                 if (kind === "modify" || kind === "create") {
                   const editorStore = useEditorStore.getState();
@@ -192,7 +244,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                     );
                     if (matchingTab && !matchingTab.isDirty) {
                       try {
-                        const newContent = await readFileContent(changedPath);
+                        const newContent = await loadFileContent(changedPath);
                         editorStore.reloadTabContent(
                           matchingTab.id,
                           newContent,

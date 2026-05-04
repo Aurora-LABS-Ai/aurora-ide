@@ -1,7 +1,6 @@
 import { getToolDisplayName } from "./mcp-tools";
 
 const TOOL_DISPLAY_NAMES: Record<string, string> = {
-  aurora_search: "Search Codebase",
   auroro_websearch: "Search the Web",
   editor_open_file: "Open File in Editor",
   file_create: "Create New File",

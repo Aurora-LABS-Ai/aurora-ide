@@ -34,10 +34,8 @@ import {
   useWorkspaceStore,
 } from "../../store/useWorkspaceStore";
 import { useEditorStore } from "../../store/useEditorStore";
-import {
-  loadPromptAttachments,
-  type PromptAttachment,
-} from "../../services/prompt-assets";
+import { type PromptAttachment } from "../../services/prompt-assets";
+import { usePromptAssetCatalog } from "../../hooks/usePromptAssetCatalog";
 import { addAttachmentDropListener } from "../../lib/attachment-events";
 import { FileIcon } from "../explorer/FileIcons";
 import { PromptAttachmentPopup } from "../chat/PromptAttachmentPopup";
@@ -99,9 +97,6 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     left: number;
   } | null>(null);
   const [selectedPromptAssetIndex, setSelectedPromptAssetIndex] = useState(0);
-  const [promptAssetCatalog, setPromptAssetCatalog] = useState<
-    PromptAttachment[]
-  >([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const { isLoading, stopGeneration, consumePendingInput, pendingInputNonce } =
@@ -171,24 +166,15 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
       .slice(0, 20);
   }, [attachedPromptAssets, promptAssetCatalog, slashQuery, slashSearchQuery]);
 
-  useEffect(() => {
-    let isCancelled = false;
-
-    const loadCatalog = async () => {
-      const attachments = await loadPromptAttachments(rootPath, {
-        enabledSkillToggles: skillToggles,
-        skillsEnabled,
-      });
-      if (!isCancelled) {
-        setPromptAssetCatalog(attachments);
-      }
-    };
-
-    void loadCatalog();
-    return () => {
-      isCancelled = true;
-    };
-  }, [rootPath, skillToggles, skillsEnabled]);
+  // Catalog of `/` prompt picker entries (rules + skills). Auto-refreshes when
+  // files in the prompt-asset folders change so newly-placed rules / skills
+  // show up immediately, and exposes `refreshCatalog()` for the open-slash
+  // safety net below (covers the global skills folder too).
+  const { promptAssetCatalog, refreshCatalog } = usePromptAssetCatalog({
+    rootPath,
+    skillToggles,
+    skillsEnabled,
+  });
 
   useEffect(() => {
     const { content: pending, replace } = consumePendingInput();
@@ -407,6 +393,12 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
         const query = textBeforeCursor.slice(lastSlash + 1);
         if (!query.includes("\n")) {
           slashHandled = true;
+          // Refresh the catalog the moment the slash menu opens so newly-added
+          // rules / skills (including those in the global skills folder, which
+          // the workspace fs-watcher does not cover) appear without a reload.
+          if (slashQuery === null) {
+            refreshCatalog();
+          }
           setSlashQuery(query);
           setSlashIndex(lastSlash);
           setSelectedPromptAssetIndex(0);

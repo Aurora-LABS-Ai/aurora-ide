@@ -117,6 +117,27 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [11])?;
             Ok(())
         }
+        12 => {
+            // Migration from v11 to v12: Drop the legacy semantic search tables.
+            // Aurora no longer ships a semantic indexer; reclaim the storage and
+            // make sure stale rows can never be served back to the frontend.
+            migration_v12(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [12])?;
+            Ok(())
+        }
+        13 => {
+            // Migration from v12 to v13: Drop the legacy `threads` table.
+            //
+            // Conversations are now stored as append-only JSONL event logs
+            // under `%APPDATA%/Aurora-Agent-IDE/Agent/Threads/{id}.jsonl`
+            // (see `crate::threads`). No data is migrated — per product
+            // direction this is a clean break for the v1 release.
+            migration_v13(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [13])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -403,5 +424,32 @@ fn migration_v11(conn: &Connection) -> DbResult<()> {
         [],
     )?;
 
+    Ok(())
+}
+
+/// Migration v12: Drop legacy semantic search tables.
+///
+/// The semantic indexer was removed in 2026; this clears the storage and the
+/// supporting indexes so a stale row can never leak back into the frontend.
+fn migration_v12(conn: &Connection) -> DbResult<()> {
+    conn.execute(
+        "DROP INDEX IF EXISTS idx_semantic_indexes_workspace_path",
+        [],
+    )?;
+    conn.execute("DROP TABLE IF EXISTS semantic_indexes", [])?;
+    conn.execute("DROP TABLE IF EXISTS semantic_settings", [])?;
+    Ok(())
+}
+
+/// Migration v13: Drop the legacy `threads` table.
+///
+/// Aurora's chat persistence moved to append-only JSONL event logs in the
+/// user's data directory (see `crate::threads`). The migration is destructive
+/// — by product direction we are not back-filling old SQLite rows into the
+/// new event log. Reclaim the storage and the supporting indexes.
+fn migration_v13(conn: &Connection) -> DbResult<()> {
+    conn.execute("DROP INDEX IF EXISTS idx_threads_created_at", [])?;
+    conn.execute("DROP INDEX IF EXISTS idx_threads_updated_at", [])?;
+    conn.execute("DROP TABLE IF EXISTS threads", [])?;
     Ok(())
 }

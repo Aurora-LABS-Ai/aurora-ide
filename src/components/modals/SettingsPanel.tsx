@@ -20,7 +20,7 @@
  * See: src/services/theme-service.ts for theme utilities
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useUiStore } from '../../store/useUiStore';
 import { useSettingsStore, type LLMProvider } from '../../store/useSettingsStore';
 import { formatModelDisplayName, formatProviderNickname } from '../../lib/provider-display';
@@ -36,7 +36,6 @@ import {
   Trash2,
   ChevronDown,
   Palette,
-  Database,
   Plug,
   Info,
   Sparkles,
@@ -47,7 +46,6 @@ import {
 import clsx from 'clsx';
 import { ToolSettingsTab } from './ToolSettingsTab';
 import { ThemeSettingsTab } from './ThemeSettingsTab';
-import { SemanticSettingsTab } from './SemanticSettingsTab';
 import { SpeechSettingsTab } from './SpeechSettingsTab';
 import { McpSettingsTab } from './McpSettingsTab';
 import { SkillsSettingsTab } from './SkillsSettingsTab';
@@ -739,7 +737,6 @@ type SettingsTabKey =
   | 'tools'
   | 'general'
   | 'themes'
-  | 'semantic'
   | 'speech'
   | 'mcp'
   | 'skills'
@@ -777,11 +774,6 @@ const TAB_TITLES: Record<SettingsTabKey, { eyebrow: string; title: string; descr
     eyebrow: 'Workspace',
     title: 'Skills',
     description: 'Curate which workspace and global skill packs Aurora injects into the agent prompt.',
-  },
-  semantic: {
-    eyebrow: 'Workspace',
-    title: 'Semantic Search',
-    description: 'ONNX embedding model, indexing, and search behavior for the workspace.',
   },
   speech: {
     eyebrow: 'Workspace',
@@ -874,7 +866,6 @@ export const SettingsPanel: React.FC = () => {
       : []),
     { id: 'mcp', label: 'MCP Servers', icon: Plug, group: 'connect' },
     { id: 'skills', label: 'Skills', icon: Sparkles, group: 'workspace' },
-    { id: 'semantic', label: 'Semantic Search', icon: Database, group: 'workspace' },
     { id: 'speech', label: 'Speech', icon: Mic, group: 'workspace' },
     { id: 'themes', label: 'Appearance', icon: Palette, group: 'system' },
     { id: 'tools', label: 'Tools', icon: Shield, group: 'system' },
@@ -1045,7 +1036,6 @@ export const SettingsPanel: React.FC = () => {
             {activeTab === 'fireworks' && fireworksTabEnabled && <FireworksSettingsTab />}
             {activeTab === 'mcp' && <McpSettingsTab />}
             {activeTab === 'skills' && <SkillsSettingsTab />}
-            {activeTab === 'semantic' && <SemanticSettingsTab />}
             {activeTab === 'speech' && <SpeechSettingsTab />}
             {activeTab === 'tools' && <ToolSettingsTab />}
             {activeTab === 'themes' && <ThemeSettingsTab />}

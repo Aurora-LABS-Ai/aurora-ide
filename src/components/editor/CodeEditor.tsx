@@ -40,25 +40,43 @@ const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
 const MARKDOWN_EXTS = new Set(['md', 'markdown', 'mdown', 'mkdn', 'mkd']);
 
 type ViewMode = 'raw' | 'preview' | 'split';
+type MonacoEditorInstance = Parameters<OnMount>[0];
 
 export const CodeEditor: React.FC = () => {
-  const { tabs, activeTabId, updateTabContent, fontSize } = useEditorStore();
-  const { wrapMode } = useSettingsStore();
-  const { activeThemeId, themes } = useThemeStore();
+  // PERFORMANCE: subscribe to specific slices instead of the whole store.
+  // The previous `const { ... } = useEditorStore()` caused the editor (and
+  // therefore the Monaco wrapper) to re-render on EVERY store mutation —
+  // including unrelated ones like dirty flags on background tabs or new tab
+  // additions. With selector subscriptions, the editor only re-renders when
+  // the specific value it consumes actually changes.
+  const tabs = useEditorStore((state) => state.tabs);
+  const activeTabId = useEditorStore((state) => state.activeTabId);
+  const updateTabContent = useEditorStore((state) => state.updateTabContent);
+  const fontSize = useEditorStore((state) => state.fontSize);
+  const editorRevealRequest = useEditorStore((state) => state.editorRevealRequest);
+
+  const wrapMode = useSettingsStore((state) => state.wrapMode);
+  const activeThemeId = useThemeStore((state) => state.activeThemeId);
+  const themes = useThemeStore((state) => state.themes);
   const activeTheme = useMemo(() => themes.find(t => t.id === activeThemeId) || themes[0], [themes, activeThemeId]);
   const monaco = useMonaco();
   const diagnosticsConfigured = useRef(false);
+  const editorRef = useRef<MonacoEditorInstance | null>(null);
   
   const [viewMode, setViewMode] = useState<ViewMode>('raw');
 
   // Store Monaco editor instance for programmatic undo/redo
   const handleEditorMount: OnMount = (editor) => {
+    editorRef.current = editor;
     setActiveMonacoEditor(editor);
   };
 
   // Clear editor ref when component unmounts
   useEffect(() => {
-    return () => setActiveMonacoEditor(null);
+    return () => {
+      editorRef.current = null;
+      setActiveMonacoEditor(null);
+    };
   }, []);
 
 
@@ -139,6 +157,41 @@ export const CodeEditor: React.FC = () => {
   }, [monaco, activeTheme]);
 
   const activeTab = useMemo(() => tabs.find(t => t.id === activeTabId), [tabs, activeTabId]);
+
+  useEffect(() => {
+    if (!activeTab || !editorRevealRequest || editorRevealRequest.tabId !== activeTab.id) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      const editor = editorRef.current;
+      const model = editor?.getModel();
+      if (!editor || !model) {
+        return;
+      }
+
+      const lineCount = Math.max(1, model.getLineCount());
+      const targetLine =
+        editorRevealRequest.mode === 'bottom'
+          ? lineCount
+          : Math.min(Math.max(editorRevealRequest.lineNumber ?? 1, 1), lineCount);
+
+      if (editorRevealRequest.mode === 'bottom') {
+        editor.revealLine(targetLine);
+        editor.setScrollTop(editor.getScrollHeight());
+      } else {
+        const column = Math.max(editorRevealRequest.column ?? 1, 1);
+        editor.setPosition({ lineNumber: targetLine, column });
+        editor.revealLineInCenterIfOutsideViewport(targetLine);
+      }
+
+      if (editorRevealRequest.focus) {
+        editor.focus();
+      }
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTab, editorRevealRequest]);
 
   const isImage = useMemo(() => {
     if (!activeTab?.path) return false;

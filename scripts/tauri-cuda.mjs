@@ -67,15 +67,25 @@ if (!vsDevCmd || !existsSync(vsDevCmd)) {
   process.exit(1);
 }
 
+const tauriArgs = [
+  quoteCmd(mode),
+  "--features",
+  "cuda",
+  "--",
+  "--no-default-features",
+  ...extraArgs.map(quoteCmd),
+].join(" ");
+
 const tauriCommand = mode === "check"
   ? "where cl && nvcc --version"
-  : `pnpm exec tauri ${quoteCmd(mode)} --features cuda ${extraArgs.map(quoteCmd).join(" ")}`.trim();
+  : `pnpm exec tauri ${tauriArgs}`.trim();
 
 const batchPath = join(tmpdir(), `aurora-tauri-cuda-${process.pid}.cmd`);
 const batch = [
   "@echo off",
   `call ${quoteCmd(vsDevCmd)} -arch=x64 -host_arch=x64`,
   "if errorlevel 1 exit /b %errorlevel%",
+  `echo [tauri:cuda] ${tauriCommand}`,
   tauriCommand,
   "exit /b %errorlevel%",
   "",

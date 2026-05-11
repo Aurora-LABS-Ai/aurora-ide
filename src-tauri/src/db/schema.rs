@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 13;
+pub const SCHEMA_VERSION: i32 = 14;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -156,6 +156,7 @@ fn create_llm_providers_table(conn: &Connection) -> DbResult<()> {
             max_output_tokens INTEGER NOT NULL DEFAULT 16384,
             supports_thinking INTEGER NOT NULL DEFAULT 0,
             supports_tool_stream INTEGER NOT NULL DEFAULT 0,
+            supports_vision INTEGER NOT NULL DEFAULT 0,
             enabled INTEGER NOT NULL DEFAULT 1,
             is_custom INTEGER NOT NULL DEFAULT 0,
             custom_models TEXT,           -- JSON array of model names

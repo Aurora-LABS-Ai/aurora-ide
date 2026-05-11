@@ -213,6 +213,14 @@ export interface LLMProvider {
   requiresApiKey?: boolean; // Whether API key is required (false for local)
   supportsThinking: boolean;
   supportsToolStream?: boolean;
+  /**
+   * Does the active model accept image content blocks (Claude 3+,
+   * GPT-4V, Llama-vision, …)? Drives `browser_screenshot` tool
+   * registration and switches the API adapter into multimodal
+   * tool_result mode (Anthropic native `image` block, OpenAI-compat
+   * `image_url` block).
+   */
+  supportsVision?: boolean;
 }
 
 // ============================================
@@ -360,6 +368,7 @@ function dbToProvider(db: DbLLMProvider): LLMProvider {
     maxOutputTokens: db.maxOutputTokens,
     supportsThinking: db.supportsThinking,
     supportsToolStream: db.supportsToolStream,
+    supportsVision: db.supportsVision ?? false,
     enabled: db.enabled,
     isCustom: db.isCustom,
     customModels: db.customModels || undefined,
@@ -389,6 +398,7 @@ function providerToDb(provider: LLMProvider, sortOrder: number): DbLLMProvider {
     maxOutputTokens: provider.maxOutputTokens,
     supportsThinking: provider.supportsThinking,
     supportsToolStream: provider.supportsToolStream || false,
+    supportsVision: provider.supportsVision ?? false,
     enabled: provider.enabled,
     isCustom: provider.isCustom || false,
     customModels: provider.customModels || null,

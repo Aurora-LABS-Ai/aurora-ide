@@ -82,6 +82,14 @@ export interface ProviderConfigSnapshot {
   defaultTemperature?: number;
   defaultMaxTokens?: number;
   supportsThinking: boolean;
+  /**
+   * Does the active model accept image content blocks? Drives whether
+   * `browser_screenshot` is registered in the tool list AND whether
+   * the API adapter emits multimodal `tool_result` payloads. Default
+   * false — opt in per-model via the Vision-capable checkbox in the
+   * provider settings UI.
+   */
+  supportsVision?: boolean;
   contextWindow?: number;
   maxOutputTokens?: number;
 }
@@ -359,6 +367,7 @@ export class AgentRuntimeClient {
       defaultTemperature: config.defaultTemperature,
       defaultMaxTokens: config.defaultMaxTokens,
       supportsThinking: config.supportsThinking ?? false,
+      supportsVision: config.supportsVision ?? false,
       contextWindow: config.contextWindow,
       maxOutputTokens: config.maxOutputTokens,
     };

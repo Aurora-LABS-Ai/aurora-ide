@@ -206,7 +206,7 @@ pub fn unprefix_model<'a>(model: &'a str, provider_id: &str) -> &'a str {
 /// Build the JSON body for an Anthropic `/v1/messages` streaming call.
 pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapshot) -> Value {
     let model = unprefix_model(request.model, &config.provider_id);
-    let (system, messages) = anthropic_split_system_and_messages(request);
+    let (system, messages) = anthropic_split_system_and_messages(request, config.supports_vision);
 
     let max_tokens = request.max_output_tokens.max(1);
     let temperature = request
@@ -267,7 +267,10 @@ fn anthropic_tool_schema(schema: &ToolSchema) -> Value {
     })
 }
 
-fn anthropic_split_system_and_messages(request: &ApiRequest<'_>) -> (Option<String>, Vec<Value>) {
+fn anthropic_split_system_and_messages(
+    request: &ApiRequest<'_>,
+    supports_vision: bool,
+) -> (Option<String>, Vec<Value>) {
     let mut system_chunks: Vec<String> = Vec::new();
     if let Some(prompt) = request.system_prompt {
         if !prompt.is_empty() {
@@ -290,19 +293,19 @@ fn anthropic_split_system_and_messages(request: &ApiRequest<'_>) -> (Option<Stri
             MessageRole::User => {
                 output.push(json!({
                     "role": "user",
-                    "content": message_blocks_to_anthropic_content(&message.blocks),
+                    "content": message_blocks_to_anthropic_content(&message.blocks, supports_vision),
                 }));
             }
             MessageRole::Assistant => {
                 output.push(json!({
                     "role": "assistant",
-                    "content": message_blocks_to_anthropic_content(&message.blocks),
+                    "content": message_blocks_to_anthropic_content(&message.blocks, supports_vision),
                 }));
             }
             MessageRole::Tool => {
                 output.push(json!({
                     "role": "user",
-                    "content": message_blocks_to_anthropic_content(&message.blocks),
+                    "content": message_blocks_to_anthropic_content(&message.blocks, supports_vision),
                 }));
             }
         }
@@ -316,7 +319,7 @@ fn anthropic_split_system_and_messages(request: &ApiRequest<'_>) -> (Option<Stri
     (system, output)
 }
 
-fn message_blocks_to_anthropic_content(blocks: &[ContentBlock]) -> Value {
+fn message_blocks_to_anthropic_content(blocks: &[ContentBlock], supports_vision: bool) -> Value {
     if blocks.is_empty() {
         return Value::String(String::new());
     }
@@ -348,10 +351,21 @@ fn message_blocks_to_anthropic_content(blocks: &[ContentBlock]) -> Value {
                 content,
                 is_error,
             } => {
+                // Detect `<aurora_image>` markers (emitted by
+                // `browser_screenshot`) and rewrite the tool_result
+                // content as a multimodal array — but only if the
+                // selected model declares vision support. Otherwise
+                // strip the marker down to a placeholder so the
+                // model isn't poisoned with unusable base64.
+                let content_value = if supports_vision {
+                    anthropic_tool_result_content(content)
+                } else {
+                    Value::String(strip_aurora_images_for_text(content))
+                };
                 let mut obj = json!({
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
-                    "content": content,
+                    "content": content_value,
                 });
                 if let Some(err) = is_error {
                     obj["is_error"] = Value::Bool(*err);
@@ -361,6 +375,155 @@ fn message_blocks_to_anthropic_content(blocks: &[ContentBlock]) -> Value {
         })
         .collect();
     Value::Array(arr)
+}
+
+/// Aurora's `browser_screenshot` tool returns its base64 PNG inside an
+/// `<aurora_image media_type="image/png">BASE64</aurora_image>` marker.
+/// For Anthropic the marker is split out into a real `image` content
+/// block so the model literally sees the screenshot; the surrounding
+/// text becomes a sibling `text` block. Plain text content (the vast
+/// majority of tool results) round-trips as a single string for
+/// minimum wire-format churn.
+fn anthropic_tool_result_content(content: &str) -> Value {
+    let pieces = split_aurora_images(content);
+    if pieces.iter().all(|p| matches!(p, AuroraImagePiece::Text(_))) {
+        // No images: keep the legacy string shape.
+        return Value::String(content.to_string());
+    }
+    let blocks: Vec<Value> = pieces
+        .into_iter()
+        .filter_map(|p| match p {
+            AuroraImagePiece::Text(t) if t.trim().is_empty() => None,
+            AuroraImagePiece::Text(t) => Some(json!({ "type": "text", "text": t })),
+            AuroraImagePiece::Image { media_type, base64 } => Some(json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": base64,
+                },
+            })),
+        })
+        .collect();
+    Value::Array(blocks)
+}
+
+#[derive(Debug)]
+enum AuroraImagePiece {
+    Text(String),
+    Image { media_type: String, base64: String },
+}
+
+/// Split a tool_result body into image and surrounding text segments.
+/// Markers without a valid `media_type` attribute or with an empty
+/// payload are kept as plain text — defensive against malformed
+/// output. Capped at 8 images per result.
+fn split_aurora_images(content: &str) -> Vec<AuroraImagePiece> {
+    const MAX_IMAGES: usize = 8;
+    let mut pieces: Vec<AuroraImagePiece> = Vec::new();
+    let mut images_emitted = 0usize;
+    let mut cursor = 0usize;
+
+    while cursor < content.len() && images_emitted < MAX_IMAGES {
+        let rest = &content[cursor..];
+        let Some(open) = rest.find("<aurora_image ") else { break };
+        let absolute_open = cursor + open;
+        let Some(close_attr) = content[absolute_open..].find('>') else { break };
+        let header_end = absolute_open + close_attr + 1;
+        let header = &content[absolute_open..header_end];
+        let Some(end_tag) = content[header_end..].find("</aurora_image>") else { break };
+        let payload_end = header_end + end_tag;
+        let body = &content[header_end..payload_end];
+
+        let media_type = extract_attr(header, "media_type").unwrap_or_else(|| "image/png".into());
+        if absolute_open > cursor {
+            let leading = content[cursor..absolute_open].trim_matches(['\n', '\r']);
+            if !leading.is_empty() {
+                pieces.push(AuroraImagePiece::Text(leading.to_string()));
+            }
+        }
+        if !body.trim().is_empty() {
+            pieces.push(AuroraImagePiece::Image {
+                media_type,
+                base64: body.trim().to_string(),
+            });
+            images_emitted += 1;
+        }
+        cursor = payload_end + "</aurora_image>".len();
+    }
+
+    if cursor < content.len() {
+        let trailing = content[cursor..].trim_matches(['\n', '\r']);
+        if !trailing.is_empty() {
+            pieces.push(AuroraImagePiece::Text(trailing.to_string()));
+        }
+    }
+    if pieces.is_empty() {
+        pieces.push(AuroraImagePiece::Text(content.to_string()));
+    }
+    pieces
+}
+
+/// Find `name="value"` in an open tag. Whitespace-tolerant; returns
+/// the value without quotes. Only matches double-quoted values to
+/// keep the parser dumb (the tool always emits double quotes).
+fn extract_attr(header: &str, name: &str) -> Option<String> {
+    let needle = format!("{name}=\"");
+    let start = header.find(&needle)? + needle.len();
+    let rest = &header[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// OpenAI-compat counterpart to `anthropic_tool_result_content`.
+/// Converts a tool_result string with `<aurora_image>` markers into
+/// the `content: [{type:"text",text}, {type:"image_url",image_url:
+/// {url:"data:..."}}]` array shape that vision-capable
+/// OpenAI-compatible providers (Fireworks, Together, Groq, OpenAI
+/// itself, OpenRouter) accept on the `tool` role. Falls back to a
+/// plain string when no images are present so non-screenshot tool
+/// results stay shape-compatible with strict providers.
+fn openai_tool_result_content(content: &str) -> Value {
+    let pieces = split_aurora_images(content);
+    if pieces.iter().all(|p| matches!(p, AuroraImagePiece::Text(_))) {
+        return Value::String(content.to_string());
+    }
+    let blocks: Vec<Value> = pieces
+        .into_iter()
+        .filter_map(|p| match p {
+            AuroraImagePiece::Text(t) if t.trim().is_empty() => None,
+            AuroraImagePiece::Text(t) => Some(json!({ "type": "text", "text": t })),
+            AuroraImagePiece::Image { media_type, base64 } => Some(json!({
+                "type": "image_url",
+                "image_url": {
+                    "url": format!("data:{media_type};base64,{base64}"),
+                },
+            })),
+        })
+        .collect();
+    Value::Array(blocks)
+}
+
+/// Replace every `<aurora_image …>BASE64</aurora_image>` block with a
+/// short placeholder string so non-vision providers see context about
+/// what happened without ingesting tens of thousands of base64 tokens.
+fn strip_aurora_images_for_text(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let pieces = split_aurora_images(content);
+    for (i, piece) in pieces.iter().enumerate() {
+        if i > 0 && !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        match piece {
+            AuroraImagePiece::Text(t) => out.push_str(t),
+            AuroraImagePiece::Image { media_type, .. } => {
+                out.push_str(&format!(
+                    "[Screenshot omitted: {media_type} image — current provider does not accept images in tool results]"
+                ));
+            }
+        }
+    }
+    out
 }
 
 /// Build the JSON body for an OpenAI-compatible `/chat/completions`
@@ -377,7 +540,7 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
     body.insert("model".to_string(), Value::String(model.to_string()));
     body.insert(
         "messages".to_string(),
-        Value::Array(openai_messages(request)),
+        Value::Array(openai_messages(request, config.supports_vision)),
     );
     body.insert("stream".to_string(), Value::Bool(true));
     body.insert("max_tokens".to_string(), Value::from(max_tokens));
@@ -418,7 +581,7 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
     Value::Object(body)
 }
 
-fn openai_messages(request: &ApiRequest<'_>) -> Vec<Value> {
+fn openai_messages(request: &ApiRequest<'_>, supports_vision: bool) -> Vec<Value> {
     let mut output: Vec<Value> = Vec::new();
 
     if let Some(prompt) = request.system_prompt {
@@ -467,10 +630,23 @@ fn openai_messages(request: &ApiRequest<'_>) -> Vec<Value> {
                         ..
                     } = block
                     {
+                        // Vision-capable OpenAI-compat providers
+                        // (Fireworks LLaVA/Llama-4-vision, Together,
+                        // GPT-4V, Groq vision models, OpenRouter)
+                        // accept image content blocks in the `tool`
+                        // role via the `content: [{type:"text"…},
+                        // {type:"image_url",image_url:{url:"data:..."}}]`
+                        // shape. Non-vision models get the placeholder
+                        // string only.
+                        let content_value = if supports_vision {
+                            openai_tool_result_content(content)
+                        } else {
+                            Value::String(strip_aurora_images_for_text(content))
+                        };
                         output.push(json!({
                             "role": "tool",
                             "tool_call_id": tool_use_id,
-                            "content": content,
+                            "content": content_value,
                         }));
                     }
                 }

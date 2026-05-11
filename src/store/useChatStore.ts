@@ -1,12 +1,29 @@
 import { create } from "zustand";
 
 import { getAgentService } from "../services/agent-service";
+import type { PickedElement } from "../services/browser-service";
 import type { PromptAttachment } from "../services/prompt-assets";
 import type { Message, ToolCall, ToolProposal } from "../types";
 
 export interface DraftAttachedFile {
   path: string;
   name: string;
+}
+
+/**
+ * A page element the user picked from a native browser preview window
+ * via the inspector or Stagewise toolbar. Stored here (not on the
+ * BrowserTab) because the chat input — which can live in a different
+ * panel or even a detached window — is the consumer that renders pills
+ * and serializes them into the outgoing message.
+ */
+export interface SelectedElementEntry {
+  /** Stable id for React keys + remove targeting. */
+  id: string;
+  /** 1-based ordinal — the agent refers to picks as "selected 1". */
+  index: number;
+  /** Full payload as captured by the inspector script. */
+  element: PickedElement;
 }
 
 interface ChatState {
@@ -43,6 +60,14 @@ interface ChatState {
   setDraftAttachedFiles: (files: DraftAttachedFile[]) => void;
   setDraftAttachedPromptAssets: (assets: PromptAttachment[]) => void;
   clearDraft: () => void;
+
+  // Browser-pick state — elements picked from a native browser preview
+  // window. Rendered as pills in `ChatInput`; serialized into the
+  // outgoing message at submit time and then cleared.
+  selectedElements: SelectedElementEntry[];
+  addSelectedElement: (element: PickedElement) => void;
+  removeSelectedElement: (id: string) => void;
+  clearSelectedElements: () => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -156,4 +181,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setDraftAttachedFiles: (files: DraftAttachedFile[]) => set({ draftAttachedFiles: files }),
   setDraftAttachedPromptAssets: (assets: PromptAttachment[]) => set({ draftAttachedPromptAssets: assets }),
   clearDraft: () => set({ draftInput: "", draftAttachedFiles: [], draftAttachedPromptAssets: [] }),
+
+  selectedElements: [],
+  addSelectedElement: (element) => set((state) => {
+    // Drop exact duplicates (same selector + url) within the current
+    // selection set so a stuttering listener never produces a "selected
+    // 2" pill for the same DOM node the user just clicked.
+    const matchKey = `${element.url || ''}|${element.selector}`;
+    const exists = state.selectedElements.some(
+      (entry) => `${entry.element.url || ''}|${entry.element.selector}` === matchKey,
+    );
+    if (exists) return {};
+    const nextIndex = state.selectedElements.length + 1;
+    const id = `pick-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    return {
+      selectedElements: [
+        ...state.selectedElements,
+        { id, index: nextIndex, element },
+      ],
+    };
+  }),
+  removeSelectedElement: (id) => set((state) => {
+    const next = state.selectedElements
+      .filter((entry) => entry.id !== id)
+      .map((entry, i) => ({ ...entry, index: i + 1 }));
+    return { selectedElements: next };
+  }),
+  clearSelectedElements: () => set({ selectedElements: [] }),
 }));

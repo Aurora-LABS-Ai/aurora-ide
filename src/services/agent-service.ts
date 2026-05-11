@@ -79,6 +79,15 @@ interface ContextState {
   recentTurnsCount: number;
 }
 
+/**
+ * Tools whose result the model can only act on if it accepts image
+ * content blocks. We strip these from the schema we ship to the LLM
+ * when the active provider's `supportsVision === false`, both to save
+ * the schema's tokens AND to prevent the model from emitting a
+ * tool_use call whose response it can't read.
+ */
+const VISION_REQUIRED_TOOLS = new Set<string>(["browser_screenshot"]);
+
 const SENSIBLE_DEFAULTS: AgentConfig = {
   systemPrompt: BASE_AGENT_SYSTEM_PROMPT,
   executionMode: "agent",
@@ -156,7 +165,7 @@ export class AgentService {
           ? `${executionModeBlock}\n\n${ideContext}`
           : executionModeBlock;
 
-      const availableTools = this.buildAvailableTools(tools);
+      const availableTools = this.buildAvailableTools(tools, providerConfig);
       const workspacePath = useWorkspaceStore.getState().rootPath || null;
 
       // Wrap the caller's callbacks so the façade can synthesise a
@@ -339,17 +348,24 @@ export class AgentService {
 
   private buildAvailableTools(
     tools: LegacyToolDefinition[] | undefined,
+    providerConfig: ProviderConfig,
   ): ToolDefinition[] {
-    const builtInTools: ToolDefinition[] = (tools || getToolsForModel()).map(
-      (tool) => ({
+    const supportsVision = providerConfig.supportsVision ?? false;
+
+    const builtInTools: ToolDefinition[] = (tools || getToolsForModel())
+      // Vision-only tools (browser_screenshot returns an image the model
+      // must be able to see). Stripping them from the schema entirely
+      // prevents non-vision models from emitting tool_use blocks they
+      // can't act on, AND saves the schema's tokens.
+      .filter((tool) => supportsVision || !VISION_REQUIRED_TOOLS.has(tool.function.name))
+      .map((tool) => ({
         type: "function",
         function: {
           name: tool.function.name,
           description: tool.function.description,
           parameters: tool.function.parameters,
         },
-      }),
-    );
+      }));
 
     return filterToolsForExecutionMode(
       [...builtInTools, ...getMcpToolDefinitions()],

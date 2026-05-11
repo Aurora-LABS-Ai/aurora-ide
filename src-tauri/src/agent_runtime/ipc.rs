@@ -180,6 +180,7 @@ mod tests {
             default_temperature: None,
             default_max_tokens: None,
             supports_thinking: true,
+            supports_vision: false,
         }
     }
 

@@ -189,6 +189,12 @@ pub struct LLMProvider {
     pub max_output_tokens: i64,
     pub supports_thinking: bool,
     pub supports_tool_stream: bool,
+    /// Does the active model accept image content blocks? Set per-model
+    /// via the Vision-capable checkbox in provider settings. Drives
+    /// `browser_screenshot` registration AND multimodal tool_result
+    /// encoding in the API adapters.
+    #[serde(default)]
+    pub supports_vision: bool,
     pub enabled: bool,
     pub is_custom: bool,
     pub custom_models: Option<Vec<String>>,

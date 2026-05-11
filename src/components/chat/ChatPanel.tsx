@@ -259,7 +259,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
     async (
       content: string,
       attachedFiles?: AttachedFile[],
-      promptAttachments?: PromptAttachment[]
+      promptAttachments?: PromptAttachment[],
+      selectedElements?: import("../../store/useChatStore").SelectedElementEntry[],
     ) => {
       // Reset timeline
       timelineRef.current = [];
@@ -289,6 +290,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
         timestamp: Date.now(),
         attachedFiles: attachedFiles?.map(f => ({ path: f.path, name: f.name })),
         attachedPromptAssets: promptAttachments?.map(a => ({ key: a.key, type: a.type, title: a.title })),
+        // Compact pill metadata for the bubble — full element payload
+        // (incl. outerHTML) ships separately via the ideContext sidecar.
+        attachedSelectedElements: selectedElements?.map((entry) => ({
+          index: entry.index,
+          selector: entry.element.selector,
+          tagName: entry.element.tagName,
+          url: entry.element.url,
+          text: entry.element.text,
+          source: entry.element.source,
+          note: entry.element.note,
+        })),
       };
       addMessageToThread(userMessage);
 
@@ -373,6 +385,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           projectRules: selectedRules,
           skillCatalog,
           skillReferences,
+          selectedElements: selectedElements?.map((entry) => entry.element),
         }
       );
 

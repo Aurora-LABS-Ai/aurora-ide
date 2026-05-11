@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "browser-windows",
+  "description": "Capabilities granted to native browser preview/inspector windows. Lets injected inspector + Stagewise scripts post picked-element payloads back into Aurora; everything else (fs, shell, db) is intentionally omitted.",
+  "windows": ["browser-*"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:webview:allow-internal-toggle-devtools"
+  ]
+}

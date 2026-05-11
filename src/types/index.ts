@@ -32,6 +32,27 @@ export interface Message {
   // Attachments displayed on user message bubbles
   attachedFiles?: { path: string; name: string }[];
   attachedPromptAssets?: { key: string; type: string; title: string }[];
+
+  /**
+   * Page elements the user picked from a native browser preview window
+   * before sending. Stored on the message in compact pill form so the
+   * bubble can show "Selected 1 / Selected 2" pills (with hover tooltips)
+   * instead of a wall of XML. The full element payload — including
+   * outerHTML — flows to the agent via the `ideContext` sidecar built
+   * by `buildQueryContext`, not via this field.
+   */
+  attachedSelectedElements?: SelectedElementPill[];
+}
+
+export interface SelectedElementPill {
+  index: number;
+  selector: string;
+  tagName: string;
+  url: string | null;
+  text: string | null;
+  source: 'inspector' | 'stagewise';
+  /** Optional user note from the Stagewise toolbar. */
+  note: string | null;
 }
 
 export interface ProviderConfig {

@@ -42,6 +42,7 @@ import {
   Clock,
   Folder,
   ChevronDown,
+  Globe,
 } from "lucide-react";
 import { useUiStore } from "../../store/useUiStore";
 import { useDetachedChatWindow } from "../../hooks/useDetachedChatWindow";
@@ -402,6 +403,15 @@ export const TitleBar: React.FC = () => {
       <div className="flex items-center h-full" data-no-drag>
         {/* Action buttons */}
         <div className="flex items-center gap-1 px-2">
+          <button
+            onClick={() => useEditorStore.getState().openBrowserTab()}
+            className="flex h-7 w-7 items-center justify-center rounded-[6px] text-text-secondary transition-colors hover:text-text-primary hover:bg-input/50"
+            style={chromeButtonStyle}
+            title="Open Browser preview"
+          >
+            <AppIcon icon={Globe} size={14} />
+          </button>
+
           <button
             onClick={() => setAuditOpen(true)}
             className="flex h-7 w-7 items-center justify-center rounded-[6px] text-text-secondary transition-colors hover:text-text-primary hover:bg-input/50"

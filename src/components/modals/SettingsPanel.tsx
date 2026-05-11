@@ -531,6 +531,19 @@ const ProviderCard: React.FC<ProviderCardProps> = ({
             />
           </FormRow>
 
+          <FormRow
+            label="Vision capable"
+            hint="Tick if the active model accepts image inputs (Claude 3+, GPT-4V, Llama-vision, etc.). When on, the agent gains the browser_screenshot tool and screenshot tool results are sent as real images so the model can see the page."
+          >
+            <IdeSwitch
+              checked={!!provider.supportsVision}
+              onChange={(next) => updateProvider(provider.id, { supportsVision: next })}
+              ariaLabel="Toggle vision support"
+              variant="primary"
+              size="sm"
+            />
+          </FormRow>
+
           {/* Models section */}
           <FormBlock>
             <FieldLabel className="mb-2">Add Model ID</FieldLabel>

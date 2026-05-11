@@ -355,7 +355,8 @@ impl<'a> SettingsRepository<'a> {
             "SELECT id, name, nickname, base_url, api_key, model, context_window, max_output_tokens,
                     supports_thinking, supports_tool_stream, enabled, is_custom, custom_models,
                     model_aliases, custom_headers, custom_params, provider_type, default_temperature,
-                    default_max_tokens, requires_api_key, sort_order, created_at, updated_at
+                    default_max_tokens, requires_api_key, sort_order, created_at, updated_at,
+                    supports_vision
              FROM llm_providers
              ORDER BY sort_order ASC"
         )?;
@@ -390,6 +391,7 @@ impl<'a> SettingsRepository<'a> {
                 sort_order: row.get(20)?,
                 created_at: row.get(21)?,
                 updated_at: row.get(22)?,
+                supports_vision: row.get::<_, i32>(23)? != 0,
             })
         })?;
 
@@ -406,7 +408,8 @@ impl<'a> SettingsRepository<'a> {
             "SELECT id, name, nickname, base_url, api_key, model, context_window, max_output_tokens,
                     supports_thinking, supports_tool_stream, enabled, is_custom, custom_models,
                     model_aliases, custom_headers, custom_params, provider_type, default_temperature,
-                    default_max_tokens, requires_api_key, sort_order, created_at, updated_at
+                    default_max_tokens, requires_api_key, sort_order, created_at, updated_at,
+                    supports_vision
              FROM llm_providers
              WHERE id = ?1"
         )?;
@@ -441,6 +444,7 @@ impl<'a> SettingsRepository<'a> {
                 sort_order: row.get(20)?,
                 created_at: row.get(21)?,
                 updated_at: row.get(22)?,
+                supports_vision: row.get::<_, i32>(23)? != 0,
             })
         });
 
@@ -476,14 +480,16 @@ impl<'a> SettingsRepository<'a> {
                 id, name, nickname, base_url, api_key, model, context_window, max_output_tokens,
                 supports_thinking, supports_tool_stream, enabled, is_custom, custom_models,
                 model_aliases, custom_headers, custom_params, provider_type, default_temperature,
-                default_max_tokens, requires_api_key, sort_order, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+                default_max_tokens, requires_api_key, sort_order, created_at, updated_at,
+                supports_vision
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
             ON CONFLICT(id) DO UPDATE SET
                 name = ?2, nickname = ?3, base_url = ?4, api_key = ?5, model = ?6, context_window = ?7,
                 max_output_tokens = ?8, supports_thinking = ?9, supports_tool_stream = ?10,
                 enabled = ?11, is_custom = ?12, custom_models = ?13, model_aliases = ?14, custom_headers = ?15,
                 custom_params = ?16, provider_type = ?17, default_temperature = ?18,
-                default_max_tokens = ?19, requires_api_key = ?20, sort_order = ?21, updated_at = ?23",
+                default_max_tokens = ?19, requires_api_key = ?20, sort_order = ?21, updated_at = ?23,
+                supports_vision = ?24",
             params![
                 provider.id,
                 provider.name,
@@ -508,6 +514,7 @@ impl<'a> SettingsRepository<'a> {
                 provider.sort_order,
                 if provider.created_at.is_empty() { &now } else { &provider.created_at },
                 now,
+                provider.supports_vision as i32,
             ],
         )?;
 

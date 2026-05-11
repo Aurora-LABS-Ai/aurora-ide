@@ -59,6 +59,14 @@ pub struct ProviderConfigSnapshot {
     pub default_max_tokens: Option<u32>,
     #[serde(default)]
     pub supports_thinking: bool,
+    /// Does the active model accept image content blocks?
+    /// `true` switches the API adapter into vision mode for tool
+    /// results (Anthropic uses native multimodal `tool_result`,
+    /// OpenAI-compat emits a content array with `image_url` blocks).
+    /// `false` strips screenshot markers down to a placeholder so the
+    /// model isn't poisoned with unusable base64.
+    #[serde(default)]
+    pub supports_vision: bool,
 }
 
 /// Wire-shape kind chosen by the factory. Distinct from `provider_id`
@@ -111,6 +119,7 @@ mod tests {
             default_temperature: None,
             default_max_tokens: None,
             supports_thinking: false,
+            supports_vision: false,
         }
     }
 

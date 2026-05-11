@@ -9,7 +9,9 @@ import {
   Code,
   FileText,
   FolderOpen,
+  Globe,
   Map,
+  MousePointer2,
   Search,
   Shield,
   Terminal,
@@ -98,6 +100,43 @@ const TOOL_CATEGORIES: Record<string, ToolCategory> = {
     icon: CheckSquare,
     description: 'Task tracking tools used during multi-step work.',
     tools: ['todo_write'],
+  },
+  browserRead: {
+    label: 'Browser (Read-only)',
+    icon: Globe,
+    description:
+      'Open browser windows, read DOM, inspect elements, capture screenshots, and read JS console logs. Safe by default.',
+    tools: [
+      'browser_open',
+      'browser_close',
+      'browser_list_windows',
+      'browser_get_url',
+      'browser_get_dom',
+      'browser_inspect_element',
+      'browser_get_console_logs',
+      'browser_screenshot',
+    ],
+  },
+  browserInteract: {
+    label: 'Browser (Interaction)',
+    icon: MousePointer2,
+    description:
+      'Drive the previewed page — navigate, click, fill inputs, wait for elements. Mutates state on real pages.',
+    dangerous: true,
+    tools: [
+      'browser_navigate',
+      'browser_click',
+      'browser_fill',
+      'browser_wait_for',
+    ],
+  },
+  browserEval: {
+    label: 'Browser (Eval)',
+    icon: Code,
+    description:
+      'Evaluate arbitrary JavaScript in the page. Has full page privileges — can read storage, mutate the DOM, call APIs. Always require explicit approval.',
+    dangerous: true,
+    tools: ['browser_eval'],
   },
 };
 

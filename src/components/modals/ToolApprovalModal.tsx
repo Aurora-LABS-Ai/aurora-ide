@@ -29,11 +29,15 @@ import clsx from 'clsx';
 import { getProfessionalToolName } from '../../services/tool-display';
 
 export const ToolApprovalModal: React.FC = () => {
+  // Mounted by `MainLayout` only when `toolApprovalState.isOpen` AND
+  // `proposal` are both truthy. We assert non-null here so the
+  // embedded DiffEditor never sees its `original`/`modified` props
+  // flip to empty strings while it is mid-disposal — that race used
+  // to throw `TextModel got disposed before DiffEditorWidget model
+  // got reset` whenever a user approved or rejected a tool call.
   const { toolApprovalState, closeToolApproval } = useUiStore();
-  const { isOpen, proposal } = toolApprovalState;
+  const proposal = toolApprovalState.proposal!;
   const { updateToolStatus, messages } = useChatStore();
-
-  if (!isOpen || !proposal) return null;
 
   const message = messages.find(m => m.toolProposal?.id === proposal.id);
   

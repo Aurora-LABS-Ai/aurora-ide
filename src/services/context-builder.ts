@@ -17,6 +17,10 @@ import type { AttachedFile } from "../components/chat/ChatInput";
 import { isImageFilePath } from "../lib/file-utils";
 import { auroraInvoke as invoke } from "../lib/runtime";
 import { getSystemInfo, readDirectory, readFileContent } from "../lib/tauri";
+import {
+  formatSelectedElementsBlock,
+  type PickedElement,
+} from "./browser-service";
 import { useEditorStore } from "../store/useEditorStore";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import type { FileNode } from "../types";
@@ -62,6 +66,14 @@ export interface ContextConfig {
   projectLayout?: string; // Pre-built project tree string
   projectRules?: ProjectRule[]; // Rules from .aurora/*.md
   recentFiles?: string[];
+  /**
+   * Page elements the user picked from a native browser preview window
+   * (inspector / Stagewise) before sending. Wrapped in
+   * `<selected_elements>` and dropped into the ideContext sidecar so
+   * the agent can refer to them as `selected 1`, `selected 2`, etc.
+   * — without polluting the user's chat bubble with raw XML.
+   */
+  selectedElements?: PickedElement[];
   shellPath?: string; // Default shell path
   skillCatalog?: string; // Pre-formatted skill catalog (first message only)
   skillReferences?: string; // Pre-formatted active/required skill references (when skills are attached)
@@ -449,6 +461,14 @@ export async function buildQueryContext(
     sections.push(result.section);
     filesWithContent = result.filesWithContent;
     filesAsPathsOnly = result.filesAsPathsOnly;
+  }
+
+  // 9. Selected page elements (browser inspector / Stagewise picks).
+  //    Sent every turn the user picked something — does NOT travel in
+  //    `userQuery` so the chat bubble stays clean.
+  if (config?.selectedElements && config.selectedElements.length > 0) {
+    const block = formatSelectedElementsBlock(config.selectedElements);
+    if (block) sections.push(block);
   }
 
   // 7. Build final context with user query at the end

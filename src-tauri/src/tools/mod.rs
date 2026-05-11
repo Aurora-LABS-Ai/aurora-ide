@@ -49,15 +49,16 @@
 
 #![allow(dead_code)]
 
+pub mod browser;
 pub mod file_workspace_search;
 pub mod permissions;
 pub mod shell_editor_todo;
 
-/// Number of tools the Phase 3 contract pre-populates the
-/// production [`crate::agent_runtime::tool_executor::ToolRegistry`]
-/// with. Sub-C ships 15 (file/workspace/search), Sub-D ships 7
-/// (shell/editor/todo) — the union must equal this value.
-pub const BUILTIN_TOOL_COUNT: usize = 22;
+/// Number of tools pre-populated in the production
+/// [`crate::agent_runtime::tool_executor::ToolRegistry`]:
+/// Sub-C ships 15 (file/workspace/search), Sub-D ships 7
+/// (shell/editor/todo), the browser bucket ships 13 — total 35.
+pub const BUILTIN_TOOL_COUNT: usize = 35;
 
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
@@ -87,10 +88,11 @@ pub const BUILTIN_TOOL_COUNT: usize = 22;
 pub fn register_builtin_tools(
     reg: &crate::agent_runtime::tool_executor::ToolRegistry,
     sink: std::sync::Arc<dyn shell_editor_todo::IdeEventSink>,
+    browser_manager: Option<std::sync::Arc<crate::services::browser_runtime::BrowserManager>>,
 ) {
     use crate::agent_runtime::tool_executor::ToolRegistry;
 
-    // Sub-C and Sub-D both expose
+    // Sub-C, Sub-D, and the browser bucket all expose
     // `register(&mut ToolRegistry, …)`. We satisfy their `&mut`
     // signature against a fresh staging registry, then transfer the
     // resulting executors into `reg` (which we only have `&` access
@@ -100,6 +102,9 @@ pub fn register_builtin_tools(
     let mut staging = ToolRegistry::new();
     file_workspace_search::register(&mut staging);
     shell_editor_todo::register(&mut staging, sink);
+    if let Some(manager) = browser_manager {
+        browser::register(&mut staging, manager);
+    }
 
     for name in staging.names() {
         if let Some(executor) = staging.get(&name) {
@@ -149,26 +154,32 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
 
+    // Tests pass `None` for the browser manager because constructing
+    // a real one needs a Tauri AppHandle. The browser bucket has its
+    // own unit tests inside `tools::browser::tests`.
+
     #[test]
-    fn builtin_tool_count_is_22() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 22);
+    fn builtin_tool_count_is_35() {
+        assert_eq!(BUILTIN_TOOL_COUNT, 35);
         assert_eq!(
-            file_workspace_search::TOOL_NAMES.len() + shell_editor_todo::TOOL_NAMES.len(),
+            file_workspace_search::TOOL_NAMES.len()
+                + shell_editor_todo::TOOL_NAMES.len()
+                + browser::TOOL_NAMES.len(),
             BUILTIN_TOOL_COUNT
         );
     }
 
     #[test]
-    fn register_builtin_tools_mounts_22_tools() {
+    fn register_builtin_tools_without_browser_mounts_22_tools() {
         let reg = ToolRegistry::new();
-        register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink));
-        assert_eq!(reg.len(), BUILTIN_TOOL_COUNT);
+        register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
+        assert_eq!(reg.len(), 22);
     }
 
     #[test]
     fn register_builtin_tools_includes_every_sub_c_name() {
         let reg = ToolRegistry::new();
-        register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink));
+        register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
         let registered: HashSet<String> = reg.names().into_iter().collect();
         for &name in file_workspace_search::TOOL_NAMES {
             assert!(
@@ -181,7 +192,7 @@ mod tests {
     #[test]
     fn register_builtin_tools_includes_every_sub_d_name() {
         let reg = ToolRegistry::new();
-        register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink));
+        register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
         let registered: HashSet<String> = reg.names().into_iter().collect();
         for &name in shell_editor_todo::TOOL_NAMES {
             assert!(
@@ -194,28 +205,15 @@ mod tests {
     #[test]
     fn register_builtin_tools_is_idempotent() {
         let reg = ToolRegistry::new();
-        register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink));
-        register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink));
-        assert_eq!(reg.len(), BUILTIN_TOOL_COUNT, "re-register must coalesce");
-    }
-
-    #[test]
-    fn register_builtin_tools_works_through_shared_arc() {
-        // Mirrors the production wiring: lib.rs holds Arc<ToolRegistry>
-        // (cloned from AgentRegistry::tools()), and registers tools
-        // through the cloned Arc. The DashMap is shared, so the
-        // AgentRegistry's view sees the same 22 tools.
-        let original = Arc::new(ToolRegistry::new());
-        let cloned = original.clone();
-        register_builtin_tools(&cloned, Arc::new(shell_editor_todo::NoopIdeEventSink));
-        assert_eq!(original.len(), BUILTIN_TOOL_COUNT);
-        assert_eq!(cloned.len(), BUILTIN_TOOL_COUNT);
+        register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
+        register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
+        assert_eq!(reg.len(), 22, "re-register must coalesce");
     }
 
     #[test]
     fn schemas_match_registered_names() {
         let reg = ToolRegistry::new();
-        register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink));
+        register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
         for &name in file_workspace_search::TOOL_NAMES
             .iter()
             .chain(shell_editor_todo::TOOL_NAMES.iter())

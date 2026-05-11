@@ -33,10 +33,12 @@ import {
   Paperclip,
   ArrowUp,
   AlertCircle,
+  MousePointer2,
 } from "lucide-react";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useChatStore } from "../../store/useChatStore";
+import type { SelectedElementEntry } from "../../store/useChatStore";
 import {
   useWorkspaceStore,
   loadFileContent,
@@ -83,6 +85,7 @@ interface ChatInputProps {
     content: string,
     attachedFiles?: AttachedFile[],
     promptAttachments?: PromptAttachment[],
+    selectedElements?: SelectedElementEntry[],
   ) => void;
   disabled?: boolean;
 }
@@ -140,6 +143,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   const setDraftAttachedFiles = useChatStore((s) => s.setDraftAttachedFiles);
   const setDraftAttachedPromptAssets = useChatStore((s) => s.setDraftAttachedPromptAssets);
   const clearDraft = useChatStore((s) => s.clearDraft);
+
+  // Browser-pick state (lives on the chat store so any chat input
+  // instance — main panel, agent layout, detached window — sees the
+  // same selection set).
+  const selectedElements = useChatStore((s) => s.selectedElements);
+  const removeSelectedElement = useChatStore((s) => s.removeSelectedElement);
+  const clearSelectedElements = useChatStore((s) => s.clearSelectedElements);
 
   const [content, setContentLocal] = useState(draftInput);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -433,18 +443,27 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     if (
       (!content.trim() &&
         attachedFiles.length === 0 &&
-        attachedPromptAssets.length === 0) ||
+        attachedPromptAssets.length === 0 &&
+        selectedElements.length === 0) ||
       disabled
     )
       return;
+
+    // Selected page elements ride the 4th onSend arg — kept separate
+    // from `content` so the user's chat bubble shows clean text +
+    // pills (handled in ChatMessage), while the agent receives the
+    // full XML payload via the ideContext sidecar built downstream
+    // in buildQueryContext.
     onSend(
       content,
       attachedFiles.length > 0 ? attachedFiles : undefined,
       attachedPromptAssets.length > 0 ? attachedPromptAssets : undefined,
+      selectedElements.length > 0 ? selectedElements : undefined,
     );
     setContentLocal("");
     setAttachedFilesLocal([]);
     setAttachedPromptAssetsLocal([]);
+    clearSelectedElements();
     clearDraft();
     setHasInteracted(true);
   };
@@ -850,10 +869,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
           </div>
         </div>
 
-        {/* Attached Files / Prompt Assets — wrapperless inline tokens.
-            Each item is a single line of text with a faint primary tint
-            behind it (no border, no chip box). Remove (×) appears on hover. */}
-        {(attachedFiles.length > 0 || attachedPromptAssets.length > 0) && (
+        {/* Attached Files / Prompt Assets / Picked Elements — wrapperless
+            inline tokens. Each item is a single line of text with a faint
+            primary tint behind it (no border, no chip box). Remove (×)
+            appears on hover. */}
+        {(attachedFiles.length > 0 ||
+          attachedPromptAssets.length > 0 ||
+          selectedElements.length > 0) && (
           <div className="px-3 pb-1 pt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
             {attachedFiles.map((file) => (
               <span
@@ -944,6 +966,60 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
                 </button>
               </span>
             ))}
+            {selectedElements.map((entry) => {
+              const el = entry.element;
+              const tooltipParts = [
+                `selector: ${el.selector}`,
+                `tag: <${el.tagName}>`,
+                el.url ? `url: ${el.url}` : null,
+                el.text ? `text: ${el.text.slice(0, 120)}${el.text.length > 120 ? '…' : ''}` : null,
+                el.note ? `note: ${el.note}` : null,
+              ].filter(Boolean);
+              const tooltip = tooltipParts.join('\n');
+              return (
+                <span
+                  key={entry.id}
+                  className="group inline-flex items-center gap-1 text-[11px] font-medium select-none"
+                  style={{ color: "var(--aurora-common-primary)" }}
+                  title={tooltip}
+                >
+                  <MousePointer2 className="w-3 h-3 min-w-3" />
+                  <span
+                    className="truncate max-w-[180px]"
+                    style={{
+                      backgroundColor:
+                        "color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)",
+                      padding: "0 4px",
+                      borderRadius: 3,
+                    }}
+                  >
+                    Selected {entry.index}
+                  </span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeSelectedElement(entry.id);
+                    }}
+                    className="inline-flex h-3.5 w-3.5 items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    style={{
+                      color:
+                        "var(--aurora-text-secondary, var(--aurora-editor-foreground))",
+                    }}
+                    onMouseEnter={(event) => {
+                      event.currentTarget.style.color =
+                        "var(--aurora-common-error)";
+                    }}
+                    onMouseLeave={(event) => {
+                      event.currentTarget.style.color =
+                        "var(--aurora-text-secondary, var(--aurora-editor-foreground))";
+                    }}
+                    title="Remove this selection"
+                  >
+                    <X size={10} />
+                  </button>
+                </span>
+              );
+            })}
           </div>
         )}
 
@@ -997,8 +1073,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
             placeholder={
               !providerReady
                 ? "Add an API key in Settings to get started…"
-                : attachedFiles.length > 0 || attachedPromptAssets.length > 0
-                  ? "Ask Aurora with your attached files, skills, or rules…"
+                : attachedFiles.length > 0 ||
+                    attachedPromptAssets.length > 0 ||
+                    selectedElements.length > 0
+                  ? "Ask Aurora about the attached context…"
                   : "Message Aurora — type @ for files, / for skills and rules"
             }
             className="w-full bg-transparent text-[13.5px] font-normal tracking-[0.01em] text-text-primary resize-none border-0 outline-none ring-0 focus:border-0 focus:outline-none focus:ring-0 focus-visible:border-0 focus-visible:outline-none min-h-[36px] max-h-[200px] placeholder:text-text-disabled leading-[1.55]"

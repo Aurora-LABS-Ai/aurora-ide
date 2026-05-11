@@ -64,6 +64,7 @@ export interface DbLLMProvider {
   sortOrder: number;
   supportsThinking: boolean;
   supportsToolStream: boolean;
+  supportsVision: boolean;
   updatedAt: string;
 }
 

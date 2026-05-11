@@ -322,6 +322,7 @@ export const AgentModeLayout: React.FC = () => {
       content: string,
       attachedFiles?: AttachedFile[],
       promptAttachments?: PromptAttachment[],
+      selectedElements?: import("../../store/useChatStore").SelectedElementEntry[],
     ) => {
       timelineRef.current = [];
       let threadId = currentThreadId;
@@ -341,6 +342,15 @@ export const AgentModeLayout: React.FC = () => {
         timestamp: Date.now(),
         attachedFiles: attachedFiles?.map(f => ({ path: f.path, name: f.name })),
         attachedPromptAssets: promptAttachments?.map(a => ({ key: a.key, type: a.type, title: a.title })),
+        attachedSelectedElements: selectedElements?.map((entry) => ({
+          index: entry.index,
+          selector: entry.element.selector,
+          tagName: entry.element.tagName,
+          url: entry.element.url,
+          text: entry.element.text,
+          source: entry.element.source,
+          note: entry.element.note,
+        })),
       };
       addMessageToThread(userMessage);
 
@@ -385,6 +395,7 @@ export const AgentModeLayout: React.FC = () => {
         {
           ...ideContext,
           projectRules: selectedRules,
+          selectedElements: selectedElements?.map((entry) => entry.element),
         },
       );
 
@@ -1187,19 +1198,33 @@ export const AgentModeLayout: React.FC = () => {
                   }}
                 >
                   <div ref={contentRef} className="max-w-4xl mx-auto py-6">
-                    {messages.map((msg, index) => (
-                      <ChatMessage
-                        key={msg.id}
-                        message={msg}
-                        isStreaming={isLoading}
-                        isLastMessage={index === messages.length - 1}
-                        toolVariant="timeline"
-                        pendingApproval={pendingApproval}
-                        onApprovePending={handleApprove}
-                        onRejectPending={handleReject}
-                        onApprovePendingRemember={handleApproveRemember}
-                      />
-                    ))}
+                    {messages.map((msg, index) => {
+                      // Suppress the avatar/header on every assistant
+                      // message that follows another assistant message —
+                      // the rehydration path produces one Message per
+                      // tool-loop iteration, and we want them to render
+                      // as a single grouped bubble (matches live
+                      // streaming, which writes everything into one
+                      // Message's timeline).
+                      const prev = index > 0 ? messages[index - 1] : undefined;
+                      const hideAssistantHeader =
+                        msg.sender === "assistant" &&
+                        prev?.sender === "assistant";
+                      return (
+                        <ChatMessage
+                          key={msg.id}
+                          message={msg}
+                          isStreaming={isLoading}
+                          isLastMessage={index === messages.length - 1}
+                          toolVariant="timeline"
+                          hideAssistantHeader={hideAssistantHeader}
+                          pendingApproval={pendingApproval}
+                          onApprovePending={handleApprove}
+                          onRejectPending={handleReject}
+                          onApprovePendingRemember={handleApproveRemember}
+                        />
+                      );
+                    })}
                     <div ref={bottomRef} className="h-4" />
                   </div>
                 </div>

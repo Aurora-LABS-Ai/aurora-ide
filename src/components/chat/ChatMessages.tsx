@@ -67,18 +67,27 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({
       }}
     >
       <div ref={contentRef} className="py-2">
-        {messages.map((msg, index) => (
-          <ChatMessage
-            key={msg.id}
-            message={msg}
-            isStreaming={isLoading}
-            isLastMessage={index === messages.length - 1}
-            pendingApproval={pendingApproval}
-            onApprovePending={onApprovePending}
-            onRejectPending={onRejectPending}
-            onApprovePendingRemember={onApprovePendingRemember}
-          />
-        ))}
+        {messages.map((msg, index) => {
+          // Group consecutive assistant messages under a single header —
+          // see the comment in AgentModeLayout's matching block. Same
+          // bug, same fix.
+          const prev = index > 0 ? messages[index - 1] : undefined;
+          const hideAssistantHeader =
+            msg.sender === "assistant" && prev?.sender === "assistant";
+          return (
+            <ChatMessage
+              key={msg.id}
+              message={msg}
+              isStreaming={isLoading}
+              isLastMessage={index === messages.length - 1}
+              hideAssistantHeader={hideAssistantHeader}
+              pendingApproval={pendingApproval}
+              onApprovePending={onApprovePending}
+              onRejectPending={onRejectPending}
+              onApprovePendingRemember={onApprovePendingRemember}
+            />
+          );
+        })}
         <div ref={bottomRef} className="h-4" />
       </div>
     </div>

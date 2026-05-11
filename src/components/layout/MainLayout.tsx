@@ -51,7 +51,13 @@ export const MainLayout: React.FC = () => {
     isSidebarOpen,
     toggleSidebar,
     isAgentMode,
+    toolApprovalState,
   } = useUiStore();
+  // Hoisted gate: only mount the modal (and its embedded DiffEditor)
+  // when both the open flag and the proposal are present. Both flip
+  // together at unmount time, so Monaco's TextModel disposal happens
+  // in a single clean pass instead of mid-flight.
+  const shouldShowToolApproval = toolApprovalState.isOpen && !!toolApprovalState.proposal;
   const { isOpen: isTerminalOpen } = useTerminalStore();
   const status = useGitStore((state) => state.status);
   const initializeGit = useGitStore((state) => state.initialize);
@@ -194,7 +200,7 @@ export const MainLayout: React.FC = () => {
       <StatusBar />
 
       <SettingsPanel />
-      <ToolApprovalModal />
+      {shouldShowToolApproval && <ToolApprovalModal />}
       <AuditTimeline />
     </div>
   );

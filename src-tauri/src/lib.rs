@@ -300,17 +300,24 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::git::git_push,
             commands::git::git_get_diff,
             commands::git::git_get_file_versions,
-            // Browser WebView commands
+            // Browser WebView commands (native window backed by
+            // crate::services::browser_runtime::BrowserManager).
             commands::browser::create_browser_webview,
             commands::browser::get_inspector_script,
             commands::browser::browser_navigate,
             commands::browser::browser_activate_inspector,
             commands::browser::browser_deactivate_inspector,
             commands::browser::browser_clear_selection,
+            commands::browser::browser_activate_stagewise,
+            commands::browser::browser_deactivate_stagewise,
             commands::browser::browser_eval,
             commands::browser::close_browser_webview,
             commands::browser::browser_refresh,
             commands::browser::browser_get_url,
+            commands::browser::browser_set_size,
+            commands::browser::browser_set_position,
+            commands::browser::aurora_record_picked_element,
+            commands::browser::aurora_record_browser_result,
             // MCP (Model Context Protocol) commands
             mcp::commands::mcp_load_servers,
             mcp::commands::mcp_get_servers,
@@ -463,7 +470,20 @@ pub fn run_with_args(cli_args: CliArgs) {
             let production_sink: std::sync::Arc<
                 dyn tools::shell_editor_todo::IdeEventSink,
             > = std::sync::Arc::new(ProductionIdeEventSink::new(handle.clone()));
-            tools::register_builtin_tools(&agent_registry.tools(), production_sink);
+
+            // Build the BrowserManager BEFORE tool registration so the
+            // browser bucket can hold an Arc to it. The same Arc is
+            // also installed as managed Tauri state below so the IPC
+            // commands in `commands::browser` see the same instance.
+            let browser_manager = std::sync::Arc::new(
+                crate::services::browser_runtime::BrowserManager::new(handle.clone()),
+            );
+
+            tools::register_builtin_tools(
+                &agent_registry.tools(),
+                production_sink,
+                Some(browser_manager.clone()),
+            );
 
             // Phase 4 — production permission gate.
             //
@@ -525,6 +545,17 @@ pub fn run_with_args(cli_args: CliArgs) {
 
             app.manage(agent_registry);
             app.manage(permission_router);
+
+            // Native browser-window manager. Owns the lifecycle of
+            // every browser-* WebviewWindow used for previews,
+            // element inspection, and the agent browser tools.
+            // `BrowserManager` is `Clone` and every field is shared
+            // through `Arc<DashMap>`, so this clone is a second
+            // *handle* over the same per-window state map the tool
+            // bucket holds — `State<'_, BrowserManager>` lookups in
+            // `commands::browser::*` see the windows the tools open
+            // and vice-versa.
+            app.manage((*browser_manager).clone());
 
             // If CLI provided a path, emit event to frontend to open it
             // Clone open_request since we're in a move closure

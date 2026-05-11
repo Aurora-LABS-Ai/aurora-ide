@@ -140,6 +140,17 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [13])?;
             Ok(())
         }
+        14 => {
+            // Migration from v13 to v14: Add `supports_vision` column
+            // to `llm_providers` so the user can mark per-model whether
+            // the model accepts image content blocks. Drives both the
+            // browser_screenshot tool registration AND the API adapter's
+            // multimodal tool_result encoding.
+            migration_v14(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [14])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -455,5 +466,37 @@ fn migration_v13(conn: &Connection) -> DbResult<()> {
     conn.execute("DROP INDEX IF EXISTS idx_threads_created_at", [])?;
     conn.execute("DROP INDEX IF EXISTS idx_threads_updated_at", [])?;
     conn.execute("DROP TABLE IF EXISTS threads", [])?;
+    Ok(())
+}
+
+/// Migration v14: Add `supports_vision` column to `llm_providers`.
+/// Defaults to `0` (no vision); the user opts in per-model via the
+/// Vision-capable checkbox in provider settings. Used by the API
+/// adapter to decide whether `<aurora_image>` markers in tool results
+/// should be expanded into multimodal content blocks (Anthropic
+/// `image` source / OpenAI-compat `image_url`) or stripped to a
+/// placeholder.
+fn migration_v14(conn: &Connection) -> DbResult<()> {
+    // SQLite has no `IF NOT EXISTS` for `ALTER TABLE ADD COLUMN`, so
+    // we sniff the column list first. This keeps the migration
+    // idempotent for any user whose DB was hand-patched.
+    let already_present: bool = {
+        let mut stmt = conn.prepare("PRAGMA table_info(llm_providers)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut found = false;
+        for name in rows.flatten() {
+            if name == "supports_vision" {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+    if !already_present {
+        conn.execute(
+            "ALTER TABLE llm_providers ADD COLUMN supports_vision INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
     Ok(())
 }

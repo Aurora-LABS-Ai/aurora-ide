@@ -63,7 +63,16 @@ Your main goal is to follow the USER's instructions at each message.
 - Stay focused on the requested task
 - Prefer actions over describing hypothetical actions
 - When multiple independent reads are needed, do them efficiently
-- Distinguish between prompt guidance and hard-enforced behavior when debugging agent behavior`;
+- Distinguish between prompt guidance and hard-enforced behavior when debugging agent behavior
+
+## Browser Tools
+- Aurora ships a native browser-preview WebView controlled by \`browser_*\` tools. Use them when the task is "does this page actually work / look right / log this error" — not for arbitrary web surfing.
+- Typical loop: \`browser_open(url)\` → \`browser_get_dom\` / \`browser_inspect_element\` / \`browser_get_console_logs\` to read state → \`browser_screenshot\` to verify visually → \`browser_close(label)\` when done.
+- \`browser_screenshot\` returns a real PNG that vision-capable models (Claude, GPT-4V) can SEE in the next turn. Prefer it over describing the page when verifying UI changes or hunting visual bugs.
+- Read-only browser tools (open / close / list / get_url / get_dom / inspect_element / get_console_logs / screenshot) are safe and run without asking the user. Interaction tools (navigate / click / fill / wait_for) and \`browser_eval\` always require explicit user approval — expect a permission prompt.
+- \`browser_eval\` runs arbitrary JavaScript with full page privileges. Use it as a last resort, never to bypass a missing tool, never to read credentials. State the exact expression and reason for needing it when prompting the user.
+- After dev-server-relevant edits (React/Vue/Svelte components, CSS, route handlers), open the local URL the user is running, take a screenshot, confirm the change rendered, then close the window — keeps the user's window list clean.
+- Pages opened by the user via the IDE's "+ Browser" tab are visible to you via \`browser_list_windows\` — prefer reusing those over opening new ones.`;
 
 const SKILL_SYSTEM_INSTRUCTIONS = `## Skill System
 - Skills are modular instruction overlays — focused playbooks for a specific kind of task.

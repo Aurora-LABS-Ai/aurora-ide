@@ -32,7 +32,7 @@ import { useEditorStore } from '../../store/useEditorStore';
 import { loadFileContent } from '../../store/useWorkspaceStore';
 import { getLanguageFromExtension } from '../../lib/file-utils';
 import { FileIcon } from '../explorer/FileIcons';
-import { User, Copy, Check, BookOpen, Zap } from 'lucide-react';
+import { User, Copy, Check, BookOpen, Zap, MousePointer2 } from 'lucide-react';
 import { getProfessionalToolName } from '../../services/tool-display';
 import { Tooltip } from '../ui/Tooltip';
 
@@ -146,6 +146,15 @@ interface ChatMessageProps {
   isStreaming?: boolean; // Whether this message is currently being streamed
   isLastMessage?: boolean; // Whether this is the last message in the list
   toolVariant?: 'timeline' | 'cards'; // Style variant for tool displays
+  /**
+   * When true, suppress the avatar + "AURORA" header so this message
+   * visually merges with the assistant turn above it. Used by the
+   * thread-history rehydration path because each Rust
+   * `ConversationMessage` (one per tool-loop iteration) becomes its
+   * own React Message — without this the user sees N AURORA bubbles
+   * for what was a single live turn.
+   */
+  hideAssistantHeader?: boolean;
   pendingApproval?: ToolProposal | null;
   onApprovePending?: () => void;
   onRejectPending?: () => void;
@@ -157,6 +166,7 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
   isStreaming = false,
   isLastMessage = false,
   toolVariant = 'timeline',
+  hideAssistantHeader = false,
   pendingApproval = null,
   onApprovePending,
   onRejectPending,
@@ -167,7 +177,8 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
   if (isUser) {
     const hasAttachedFiles = message.attachedFiles && message.attachedFiles.length > 0;
     const hasAttachedAssets = message.attachedPromptAssets && message.attachedPromptAssets.length > 0;
-    const hasAttachments = hasAttachedFiles || hasAttachedAssets;
+    const hasSelectedElements = message.attachedSelectedElements && message.attachedSelectedElements.length > 0;
+    const hasAttachments = hasAttachedFiles || hasAttachedAssets || hasSelectedElements;
     const hasTextContent = message.content.trim().length > 0;
 
     const handleAttachedFileClick = async (file: { path: string; name: string }) => {
@@ -259,6 +270,39 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
                       <span className="truncate max-w-[140px]">{asset.title}</span>
                     </span>
                   ))}
+                  {message.attachedSelectedElements?.map((pill) => {
+                    const tooltip = [
+                      `selector: ${pill.selector}`,
+                      `tag: <${pill.tagName}>`,
+                      pill.url ? `url: ${pill.url}` : null,
+                      pill.text
+                        ? `text: ${pill.text.slice(0, 120)}${pill.text.length > 120 ? '…' : ''}`
+                        : null,
+                      pill.note ? `note: ${pill.note}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join('\n');
+                    return (
+                      <span
+                        key={`pick-${pill.index}`}
+                        className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-medium"
+                        style={{
+                          background:
+                            'color-mix(in srgb, var(--aurora-common-primary) 10%, transparent)',
+                          border:
+                            '1px solid color-mix(in srgb, var(--aurora-common-primary) 22%, transparent)',
+                          color: 'var(--aurora-common-primary)',
+                        }}
+                        title={tooltip}
+                      >
+                        <MousePointer2 className="w-3 h-3" />
+                        <span className="uppercase text-[9px] font-bold tracking-wider opacity-70">
+                          {pill.source === 'stagewise' ? 'Stage' : 'Pick'}
+                        </span>
+                        <span className="truncate max-w-[140px]">Selected {pill.index}</span>
+                      </span>
+                    );
+                  })}
                 </div>
               )}
               {hasTextContent && (
@@ -294,21 +338,26 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
   const copyableText = getCopyableText();
 
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: "easeOut" }}
-      className="px-4 py-4 group relative"
+      className={hideAssistantHeader ? "px-4 pt-0 pb-4 group relative" : "px-4 py-4 group relative"}
     >
-      {/* Avatar column */}
-      <div className="absolute left-4 top-4 w-8 h-8 flex items-center justify-center shrink-0 overflow-hidden">
-        <img src="/aurora.png" alt="Aurora" className="w-6 h-6 object-contain drop-shadow-sm" />
-      </div>
+      {/* Avatar column — hidden on continuation rows so consecutive
+          assistant messages render as a single visual bubble. */}
+      {!hideAssistantHeader && (
+        <div className="absolute left-4 top-4 w-8 h-8 flex items-center justify-center shrink-0 overflow-hidden">
+          <img src="/aurora.png" alt="Aurora" className="w-6 h-6 object-contain drop-shadow-sm" />
+        </div>
+      )}
 
       {/* Content column */}
       <div className="pl-12 pr-2">
-        {/* Name header */}
-        <div className="flex items-center gap-2 mb-2">
+        {/* Name header — also suppressed on continuation rows. */}
+        <div
+          className={hideAssistantHeader ? "hidden" : "flex items-center gap-2 mb-2"}
+        >
           {isStreaming && isLastMessage ? (
             <span
               className="text-[11px] font-bold tracking-wide aurora-shimmer"

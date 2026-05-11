@@ -4,7 +4,7 @@ import {
   auroraListen as listen,
   isAuroraRuntimeAvailable,
 } from "../lib/runtime";
-import { invalidateFileCache, readFileCached } from "../lib/file-cache";
+import { invalidateFileCache, readFileCached, readFileWithMeta, type FileMeta } from "../lib/file-cache";
 import {
   explorerClearWorkspace,
   explorerCollapseAll,
@@ -64,14 +64,15 @@ interface FsChangedPayload {
 
 // Helper to load file content.
 //
-// Routes through the frontend `readFileCached` helper so:
-//  - Repeated opens of the same file are instant (no IPC round-trip).
-//  - The Rust backend cache (mtime-validated) is only hit when the FE cache
-//    is cold, which keeps the IPC path tight even under load.
-//  - We add a soft timeout so a wedged disk / network share can never make
-//    the editor sit on a "Loading file..." spinner indefinitely. The Rust
-//    side enforces its own 10s wall-clock; this is a frontend belt-and-
-//    suspenders so the spinner always resolves.
+// Goes straight to the Rust file cache (single source of truth — mtime-
+// validated, LRU-bounded, rayon-fanned for batches). The frontend used to
+// keep its own LRU here as a "fast path", but that cache had no mtime
+// guard and was the source of stale-content bugs; it's gone now.
+//
+// We still wrap the call in a soft timeout so a wedged disk / network
+// share can never make the editor sit on a "Loading file..." spinner
+// indefinitely. Rust enforces its own 10s wall-clock; this is the
+// frontend belt-and-suspenders so the spinner always resolves.
 const FILE_LOAD_FRONTEND_TIMEOUT_MS = 12_000;
 
 export const loadFileContent = async (path: string): Promise<string> => {
@@ -100,6 +101,53 @@ export const loadFileContent = async (path: string): Promise<string> => {
     console.error("Failed to load file:", err);
     const message = err instanceof Error ? err.message : String(err);
     return `// Failed to load file: ${message}`;
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+};
+
+/**
+ * Load content + freshness metadata for a file in a single round-trip. Used
+ * on the editor open path so the resulting tab can record the canonical
+ * mtime captured at read time. On error, returns synthetic content with an
+ * mtime of `0` so callers can still mount a tab and surface the failure.
+ */
+export const loadFileMeta = async (path: string): Promise<FileMeta> => {
+  if (!isAuroraRuntimeAvailable()) {
+    return {
+      content: "// File content unavailable: Aurora runtime is not connected",
+      mtime: 0,
+      size: 0,
+    };
+  }
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const meta = await Promise.race([
+      readFileWithMeta(path),
+      new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(
+            new Error(
+              `File load timed out after ${FILE_LOAD_FRONTEND_TIMEOUT_MS}ms`,
+            ),
+          );
+        }, FILE_LOAD_FRONTEND_TIMEOUT_MS);
+      }),
+    ]);
+
+    return meta;
+  } catch (err) {
+    console.error("Failed to load file:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      content: `// Failed to load file: ${message}`,
+      mtime: 0,
+      size: 0,
+    };
   } finally {
     if (timeoutHandle) {
       clearTimeout(timeoutHandle);

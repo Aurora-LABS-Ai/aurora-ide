@@ -56,6 +56,13 @@ export interface Tab {
   isMediumFile?: boolean;
   isLoading?: boolean;
   language: string;
+  /**
+   * Disk mtime captured when the tab last loaded its content. Used by the
+   * editor for cache-free freshness checks: `stat_file_mtime` against this
+   * value tells us whether the on-disk file has diverged since we read it,
+   * without needing to keep a duplicate copy of the bytes anywhere.
+   */
+  mtime?: number;
   path: string;
 
   // Browser tab support

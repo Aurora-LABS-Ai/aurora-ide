@@ -239,6 +239,7 @@ name = "aurora"
 version = "1.5.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "aurora_websearch",
  "base64 0.22.1",
  "candle-core",
@@ -246,6 +247,7 @@ dependencies = [
  "clap",
  "dashmap",
  "dirs 5.0.1",
+ "dunce",
  "eventsource-stream",
  "futures",
  "futures-util",
@@ -282,6 +284,7 @@ dependencies = [
  "tiktoken-rs",
  "time",
  "tokio",
+ "tokio-util",
  "toml 0.8.2",
  "uuid",
  "windows-sys 0.61.2",

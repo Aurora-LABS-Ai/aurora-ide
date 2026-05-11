@@ -9,6 +9,7 @@ import type { ToolDefinition } from "../types";
 // ============================================
 export const editorOpenFileTool: ToolDefinition = {
   type: 'function',
+  nativeRustOwned: true,
   function: {
     name: 'editor_open_file',
     description: 'Open a file in the code editor. Optionally navigate to a specific line. Use this to show important files to the user.',
@@ -38,6 +39,7 @@ export const editorOpenFileTool: ToolDefinition = {
 // ============================================
 export const readLintsTool: ToolDefinition = {
   type: 'function',
+  nativeRustOwned: true,
   function: {
     name: 'read_lints',
     description: `Read linter/diagnostic errors from files. Returns TypeScript, JavaScript, and other language errors detected by the editor.

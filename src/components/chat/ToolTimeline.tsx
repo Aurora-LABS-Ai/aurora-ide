@@ -675,11 +675,19 @@ const ToolItem: React.FC<ToolItemProps> = React.memo(
       effectiveStatus === "executing" || effectiveStatus === "pending";
     const isError =
       effectiveStatus === "failed" || effectiveStatus === "rejected";
+    // Awaiting approval whenever the agent runtime has parked on the
+    // permission gate for *this* tool. We deliberately do NOT gate on
+    // `tool.status === "pending"` — the Rust runtime emits
+    // `ToolExecutionStart` (which flips status to "executing") before
+    // it calls into the permission-guarded executor, so the card has
+    // already advanced past pending by the time the approval event
+    // fires. Gating on `pendingApproval.id === tool.id` is sufficient:
+    // once the user clicks approve/deny the parent clears
+    // `pendingApproval` and this collapses back to false.
     const isAwaitingApproval = Boolean(
       pendingApproval &&
       pendingApproval.id === tool.id &&
-      pendingApproval.status === "pending" &&
-      tool.status === "pending",
+      pendingApproval.status === "pending",
     );
     const approvalParameters = pendingApproval?.parameters ?? {};
     const hasApprovalParameters = Object.keys(approvalParameters).length > 0;

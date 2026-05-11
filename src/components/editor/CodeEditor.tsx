@@ -32,8 +32,10 @@ import { isTauri } from '../../lib/tauri';
 import { Search, Settings, Eye, FileCode, Columns, AlertTriangle } from 'lucide-react';
 import { BrowserTab } from './BrowserTab';
 import { MarkdownPreview } from './MarkdownPreview';
-import { setMonacoInstance } from '../../tools/executors/editor-executors';
-import { setActiveMonacoEditor } from '../../lib/monaco-editor-ref';
+import {
+  registerMonacoEditorForPath,
+  setActiveMonacoEditor,
+} from '../../lib/monaco-editor-ref';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
@@ -62,20 +64,57 @@ export const CodeEditor: React.FC = () => {
   const monaco = useMonaco();
   const diagnosticsConfigured = useRef(false);
   const editorRef = useRef<MonacoEditorInstance | null>(null);
-  
+  // Holds the path -> editor unregister callback for the *currently* mounted
+  // editor. Cleared on unmount or before re-registering against a new path.
+  const editorPathUnregisterRef = useRef<(() => void) | null>(null);
+
   const [viewMode, setViewMode] = useState<ViewMode>('raw');
 
-  // Store Monaco editor instance for programmatic undo/redo
+  // Force the path-registration effect to re-run after Monaco has actually
+  // mounted (Monaco's `onMount` fires asynchronously after React's commit,
+  // so the very first registration would otherwise miss the editor ref).
+  const [editorMountTick, setEditorMountTick] = useState(0);
+
   const handleEditorMount: OnMount = (editor) => {
     editorRef.current = editor;
     setActiveMonacoEditor(editor);
+    setEditorMountTick((tick) => tick + 1);
   };
 
-  // Clear editor ref when component unmounts
+  // Keep the path -> editor registry in sync with whichever file is shown
+  // in the editor right now. AI tool executors look this up to apply
+  // changes through Monaco's undo-aware edit pipeline instead of a raw
+  // model.setValue, which wipes the undo stack.
+  const registeredEditorPath = useMemo(
+    () => tabs.find((t) => t.id === activeTabId)?.path ?? null,
+    [tabs, activeTabId],
+  );
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || !registeredEditorPath) return;
+    if (editorPathUnregisterRef.current) {
+      editorPathUnregisterRef.current();
+    }
+    editorPathUnregisterRef.current = registerMonacoEditorForPath(
+      registeredEditorPath,
+      editor,
+    );
+    return () => {
+      if (editorPathUnregisterRef.current) {
+        editorPathUnregisterRef.current();
+        editorPathUnregisterRef.current = null;
+      }
+    };
+  }, [registeredEditorPath, editorMountTick]);
+
   useEffect(() => {
     return () => {
       editorRef.current = null;
       setActiveMonacoEditor(null);
+      if (editorPathUnregisterRef.current) {
+        editorPathUnregisterRef.current();
+        editorPathUnregisterRef.current = null;
+      }
     };
   }, []);
 
@@ -87,8 +126,9 @@ export const CodeEditor: React.FC = () => {
     if (monaco && !diagnosticsConfigured.current) {
       diagnosticsConfigured.current = true;
 
-      // Set Monaco instance for read_lints tool
-      setMonacoInstance(monaco);
+      // The Rust `read_lints` tool emits a fire-and-forget event;
+      // Monaco already surfaces diagnostics natively in the gutter,
+      // so no JS-side bridging is required.
 
       try {
         // Access the typescript language service (may be under languages.typescript or directly)

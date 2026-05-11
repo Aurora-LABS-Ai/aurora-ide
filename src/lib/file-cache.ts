@@ -1,274 +1,147 @@
 /**
- * High-performance file content cache for the frontend.
- * 
- * This module provides:
- * - LRU cache for file contents (reduces IPC calls)
- * - Batch file reading (single IPC call for multiple files)
- * - Optimistic cache updates
- * - Automatic invalidation on file changes
+ * Thin IPC wrappers around the Rust file cache.
+ *
+ * The Rust side ([`file_cache.rs`]) owns the only cache. It does:
+ *   - LRU eviction (1k entries / 50MB)
+ *   - mtime-validated reads (stale entries auto-evict on hit)
+ *   - rayon-parallelised batch fan-out
+ *   - `core.worktree`-style prefix invalidation for fs-watcher events
+ *
+ * The frontend used to keep its own LRU here as a "fast path", but that
+ * cache had no mtime check, a 5-min TTL, and was the source of the
+ * "stale @-mention / agent reads old content" class of bugs. It also
+ * forced every caller through an extra in-process layer that did nothing
+ * the Rust cache wasn't already doing better.
+ *
+ * Now: every read is a single IPC call. Repeated opens of the same file
+ * stay fast because Rust serves from memory; staleness is impossible
+ * because Rust re-stats on every hit; and the frontend never holds a
+ * second copy of the bytes in JS heap.
  */
 import { auroraInvoke, isAuroraRuntimeAvailable } from "./runtime";
 
-// Cache entry with content and timestamp
-interface CacheEntry {
+/**
+ * Content + on-disk metadata returned by `read_file_with_meta`. The editor
+ * captures `mtime` when opening a tab so subsequent freshness checks can be
+ * answered with a cheap `stat_file_mtime` call instead of re-reading.
+ */
+export interface FileMeta {
   content: string;
+  mtime: number;
   size: number;
-  timestamp: number;
-}
-
-
-
-/**
- * Frontend LRU file cache
- * Works in conjunction with the Rust backend cache for maximum performance
- */
-class FileCache {
-  private accessOrder: string[] = []; // Most recently accessed at end
-  private cache: Map<string, CacheEntry> = new Map();
-  private totalSize: number = 0;
-
-  /**
-   * Clear the entire cache
-   */
-  public clear(): void {
-    this.cache.clear();
-    this.accessOrder = [];
-    this.totalSize = 0;
-  }
-
-  /**
-   * Get file content from cache
-   * Returns null if not cached or expired
-   */
-  public get(path: string): string | null {
-    const entry = this.cache.get(path);
-    if (!entry) return null;
-
-    // Check if entry is too old (needs revalidation)
-    const age = Date.now() - entry.timestamp;
-    if (age > MAX_CACHE_AGE_MS) {
-      return null; // Force refetch to ensure freshness
-    }
-
-    // Update access order (move to end)
-    this.touchAccessOrder(path);
-
-    return entry.content;
-  }
-
-  /**
-   * Invalidate a specific path
-   */
-  public invalidate(path: string): void {
-    const entry = this.cache.get(path);
-    if (entry) {
-      this.totalSize -= entry.size;
-      this.cache.delete(path);
-      this.removeFromAccessOrder(path);
-    }
-  }
-
-  /**
-   * Invalidate all paths under a directory prefix
-   */
-  public invalidatePrefix(prefix: string): void {
-    const normalizedPrefix = prefix.replace(/\\/g, '/');
-    const toRemove: string[] = [];
-
-    for (const path of this.cache.keys()) {
-      const normalizedPath = path.replace(/\\/g, '/');
-      if (normalizedPath.startsWith(normalizedPrefix)) {
-        toRemove.push(path);
-      }
-    }
-
-    for (const path of toRemove) {
-      this.invalidate(path);
-    }
-  }
-
-  /**
-   * Cache file content
-   */
-  public set(path: string, content: string): void {
-    const size = content.length * 2; // Approximate UTF-16 size
-
-    // Remove old entry for this path
-    if (this.cache.has(path)) {
-      const old = this.cache.get(path)!;
-      this.totalSize -= old.size;
-      this.removeFromAccessOrder(path);
-    }
-
-    // Evict old entries if we exceed max size
-    while (this.totalSize + size > MAX_CACHE_SIZE && this.accessOrder.length > 0) {
-      const oldestPath = this.accessOrder.shift()!;
-      const oldEntry = this.cache.get(oldestPath);
-      if (oldEntry) {
-        this.totalSize -= oldEntry.size;
-        this.cache.delete(oldestPath);
-      }
-    }
-
-    // Add new entry
-    this.cache.set(path, {
-      content,
-      timestamp: Date.now(),
-      size,
-    });
-    this.totalSize += size;
-    this.accessOrder.push(path);
-  }
-
-  /**
-   * Get cache statistics
-   */
-  public stats(): { entries: number; size: number } {
-    return {
-      entries: this.cache.size,
-      size: this.totalSize,
-    };
-  }
-
-  private removeFromAccessOrder(path: string): void {
-    const idx = this.accessOrder.indexOf(path);
-    if (idx !== -1) {
-      this.accessOrder.splice(idx, 1);
-    }
-  }
-
-  private touchAccessOrder(path: string): void {
-    const idx = this.accessOrder.indexOf(path);
-    if (idx !== -1) {
-      this.accessOrder.splice(idx, 1);
-      this.accessOrder.push(path);
-    }
-  }
 }
 
 /**
- * Debug: Get cache statistics
- */
-export function getCacheStats(): { entries: number; size: number } {
-  return fileCache.stats();
-}
-
-/**
- * Invalidate cache for a path (after file modification)
- */
-export function invalidateFileCache(path: string, isPrefix: boolean = false): void {
-  if (isPrefix) {
-    fileCache.invalidatePrefix(path);
-  } else {
-    fileCache.invalidate(path);
-  }
-
-  // Also notify Rust backend to invalidate its cache
-  if (isAuroraRuntimeAvailable()) {
-    auroraInvoke('invalidate_file_cache', { path, isPrefix }).catch(err => {
-      console.warn('Failed to invalidate backend file cache:', err);
-    });
-  }
-}
-
-/**
- * Preload files into cache in the background
- * Useful for preloading files the user is likely to open next
- */
-export function preloadFiles(paths: string[]): void {
-  if (!isAuroraRuntimeAvailable() || paths.length === 0) return;
-
-  // Filter out already cached paths
-  const toPreload = paths.filter(p => fileCache.get(p) === null);
-  if (toPreload.length === 0) return;
-
-  // Preload in background (don't await)
-  readFilesBatch(toPreload).catch(err => {
-    console.warn('Background preload failed:', err);
-  });
-}
-
-/**
- * Read file content with frontend caching
- * Falls through to Rust backend cache if not in frontend cache
+ * Read file content (Rust-cached, mtime-validated).
  */
 export async function readFileCached(path: string): Promise<string> {
   if (!isAuroraRuntimeAvailable()) {
-    console.warn('readFileCached: Aurora runtime unavailable');
-    return '';
+    console.warn("readFileCached: Aurora runtime unavailable");
+    return "";
   }
-
-  // Check frontend cache first (instant)
-  const cached = fileCache.get(path);
-  if (cached !== null) {
-    return cached;
-  }
-
-  // Fall through to Rust backend (which also has a cache)
-  const content = await auroraInvoke<string>('read_file_content', { path });
-
-  // Cache in frontend
-  fileCache.set(path, content);
-
-  return content;
+  return auroraInvoke<string>("read_file_content", { path });
 }
 
+/**
+ * Read content + size + mtime in one round-trip. Use this on the editor
+ * open path so the tab can record the canonical freshness stamp without a
+ * separate stat call.
+ */
+export async function readFileWithMeta(path: string): Promise<FileMeta> {
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn("readFileWithMeta: Aurora runtime unavailable");
+    return { content: "", mtime: 0, size: 0 };
+  }
+  return auroraInvoke<FileMeta>("read_file_with_meta", { path });
+}
 
 /**
- * Read multiple files in a single IPC call
- * This is the key performance optimization for batch operations
+ * Cheap freshness probe — returns the current disk mtime as a unix
+ * timestamp. Used to decide whether an already-mounted tab needs to refresh
+ * its content. Returns `0` if the file is missing or stat fails.
  */
-export async function readFilesBatch(paths: string[]): Promise<Map<string, string>> {
+export async function statFileMtime(path: string): Promise<number> {
   if (!isAuroraRuntimeAvailable()) {
-    console.warn('readFilesBatch: Aurora runtime unavailable');
+    return 0;
+  }
+  try {
+    return await auroraInvoke<number>("stat_file_mtime", { path });
+  } catch (err) {
+    console.warn("statFileMtime failed:", err);
+    return 0;
+  }
+}
+
+/**
+ * Read multiple files in a single IPC call. Rust fans the disk reads out
+ * across rayon's global pool, so cold reads complete in roughly the time of
+ * the slowest single file rather than the sum.
+ */
+export async function readFilesBatch(
+  paths: string[],
+): Promise<Map<string, string>> {
+  if (!isAuroraRuntimeAvailable()) {
+    console.warn("readFilesBatch: Aurora runtime unavailable");
     return new Map();
   }
-
   if (paths.length === 0) {
     return new Map();
   }
 
-  // Check which files are already cached
-  const results = new Map<string, string>();
-  const uncachedPaths: string[] = [];
+  const batchResults = await auroraInvoke<
+    Record<string, { Ok?: string; Err?: string }>
+  >("read_files_batch", { paths });
 
-  for (const path of paths) {
-    const cached = fileCache.get(path);
-    if (cached !== null) {
-      results.set(path, cached);
-    } else {
-      uncachedPaths.push(path);
-    }
-  }
-
-  // If all were cached, return immediately (no IPC!)
-  if (uncachedPaths.length === 0) {
-    return results;
-  }
-
-  // Batch read uncached files from Rust
-  const batchResults = await auroraInvoke<Record<string, { Ok?: string; Err?: string }>>('read_files_batch', {
-    paths: uncachedPaths,
-  });
-
-  // Process results and update cache
+  const out = new Map<string, string>();
   for (const [path, result] of Object.entries(batchResults)) {
     if (result.Ok !== undefined) {
-      fileCache.set(path, result.Ok);
-      results.set(path, result.Ok);
-    } else {
+      out.set(path, result.Ok);
+    } else if (result.Err) {
       console.warn(`Failed to read file ${path}:`, result.Err);
     }
   }
-
-  return results;
+  return out;
 }
 
-// Maximum age for cached entries (5 minutes) - after this, we'll check with Rust cache
-const MAX_CACHE_AGE_MS = 5 * 60 * 1000;
+/**
+ * Fire-and-forget batch read. The Rust cache absorbs the results, so
+ * subsequent foreground reads of the same paths are served from memory.
+ * Used to warm sibling files when the user opens one file in a folder.
+ */
+export function preloadFiles(paths: string[]): void {
+  if (!isAuroraRuntimeAvailable() || paths.length === 0) return;
 
-// Maximum cache size in bytes (50MB)
-const MAX_CACHE_SIZE = 50 * 1024 * 1024;
+  // Background warm-up; we don't care about the bytes here, just the
+  // side-effect of priming Rust's cache.
+  void readFilesBatch(paths).catch((err) => {
+    console.warn("Background preload failed:", err);
+  });
+}
 
-// Global cache instance
-export const fileCache = new FileCache();
+/**
+ * Invalidate one path or every cached path under a prefix. Routed straight
+ * to the Rust cache — no in-process bookkeeping to keep in sync.
+ */
+export function invalidateFileCache(
+  path: string,
+  isPrefix: boolean = false,
+): void {
+  if (!isAuroraRuntimeAvailable()) return;
+  void auroraInvoke("invalidate_file_cache", { path, isPrefix }).catch((err) => {
+    console.warn("Failed to invalidate Rust file cache:", err);
+  });
+}
+
+/**
+ * Diagnostic helper. Returns Rust cache occupancy as `(entries, totalBytes)`.
+ */
+export async function getCacheStats(): Promise<{ entries: number; size: number }> {
+  if (!isAuroraRuntimeAvailable()) return { entries: 0, size: 0 };
+  try {
+    const [entries, size] = await auroraInvoke<[number, number]>("get_cache_stats");
+    return { entries, size };
+  } catch (err) {
+    console.warn("getCacheStats failed:", err);
+    return { entries: 0, size: 0 };
+  }
+}

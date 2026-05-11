@@ -1,187 +1,132 @@
 /**
- * Tool Registry
- * Central registry for managing tool definitions and executors
+ * Tool Registry (post-Rust-migration)
+ * ===================================
+ *
+ * Frontend-side metadata catalogue for tools the LLM can call. The
+ * actual executors now live in the Rust runtime
+ * (`src-tauri/src/tools/`); the frontend only needs:
+ *
+ *   1. The OpenAI-shaped tool definitions to send in the
+ *      `AgentChatRequest.tools` array.
+ *   2. Risk-level lookup so the UI can decorate high-risk tool cards.
+ *   3. Per-call tracking for the in-flight tool spinner / status
+ *      pills the chat timeline already renders.
+ *
+ * What's gone:
+ *   - `executor` field on `RegisteredTool` / `registerExecutor` —
+ *     the Rust ToolRegistry is the source of truth.
+ *   - `executeToolCall` — the Rust runtime dispatches every native
+ *     tool itself; only `mcp_*` tools round-trip through the
+ *     frontend (handled directly by `agent-runtime-client`).
+ *   - `requiresApproval` legacy plumbing — permissions are now
+ *     gated by `SettingsAwarePermitter` on the Rust side, which
+ *     consults the `tool_settings` SQLite table on every call.
  */
 import { allTools } from "./definitions";
 import { getEnhancedToolRiskLevel } from "./definitions/risk-levels-enhanced";
-import { parseToolArguments } from "../lib/tool-arguments";
-import type { RegisteredTool, ToolCallRequest, ToolCallResult, ToolDefinition, ToolExecutor, TrackedToolCall } from "./types";
+import type { RegisteredTool, TrackedToolCall, ToolDefinition } from "./types";
 
 class ToolRegistry {
   private activeToolCalls: Map<string, TrackedToolCall> = new Map();
   private tools: Map<string, RegisteredTool> = new Map();
 
   constructor() {
-    // Register all tool definitions (executors will be added later)
     this.registerAllDefinitions();
   }
 
-  /**
-   * Clear completed tool calls from tracking
-   */
+  /** Clear completed tool calls from in-memory tracking. */
   public clearCompletedToolCalls(): void {
     for (const [id, call] of this.activeToolCalls) {
-      if (call.status === 'complete' || call.status === 'failed') {
+      if (call.status === "complete" || call.status === "failed") {
         this.activeToolCalls.delete(id);
       }
     }
   }
 
-  /**
-   * Execute a tool call
-   */
-  public async executeToolCall(
-    toolCall: ToolCallRequest,
-    preParsedArgs?: Record<string, unknown>
-  ): Promise<ToolCallResult> {
-    const tool = this.tools.get(toolCall.function.name);
-
-    if (!tool) {
-      return {
-        tool_call_id: toolCall.id,
-        role: 'tool',
-        content: JSON.stringify({ error: `Unknown tool: ${toolCall.function.name}` }),
-      };
-    }
-
-    let args: Record<string, unknown>;
-    if (preParsedArgs) {
-      args = preParsedArgs;
-    } else {
-      // Parse arguments
-      const parsedArgsResult = parseToolArguments(toolCall.function.arguments);
-      if (parsedArgsResult.status === 'invalid') {
-        return {
-          tool_call_id: toolCall.id,
-          role: 'tool',
-          content: JSON.stringify({ error: 'Invalid JSON arguments' }),
-        };
-      }
-      args = parsedArgsResult.args;
-    }
-
-    // Track the tool call
-    const trackedCall: TrackedToolCall = {
-      id: toolCall.id,
-      name: toolCall.function.name,
-      args,
-      status: 'executing',
-      startTime: Date.now(),
-    };
-    this.activeToolCalls.set(toolCall.id, trackedCall);
-
-    try {
-      // Execute the tool
-      const result = await tool.executor(args, toolCall.id);
-
-      // Update tracking
-      trackedCall.status = 'complete';
-      trackedCall.result = result;
-      trackedCall.endTime = Date.now();
-
-      return {
-        tool_call_id: toolCall.id,
-        role: 'tool',
-        content: result,
-      };
-    } catch (error) {
-      // Update tracking with error
-      trackedCall.status = 'failed';
-      trackedCall.error = error instanceof Error ? error.message : String(error);
-      trackedCall.endTime = Date.now();
-
-      return {
-        tool_call_id: toolCall.id,
-        role: 'tool',
-        content: JSON.stringify({
-          error: error instanceof Error ? error.message : String(error)
-        }),
-      };
-    }
-  }
-
-  /**
-   * Get all active tool calls
-   */
+  /** Active (still-running) tool calls — used by the timeline. */
   public getActiveToolCalls(): TrackedToolCall[] {
     return Array.from(this.activeToolCalls.values());
   }
 
-  /**
-   * Get all registered tools
-   */
+  /** Every registered tool with its risk level + definition. */
   public getAllTools(): RegisteredTool[] {
     return Array.from(this.tools.values());
   }
 
-  /**
-   * Get the risk level of a tool
-   */
-  public getRiskLevel(name: string): 'low' | 'medium' | 'high' {
+  /** Risk level for a given tool name (defaults to `medium`). */
+  public getRiskLevel(name: string): "low" | "medium" | "high" {
     const tool = this.tools.get(name);
-    return tool?.riskLevel ?? 'medium';
+    return tool?.riskLevel ?? "medium";
   }
 
-  /**
-   * Get a tool by name
-   */
+  /** Single tool record by name (or `undefined`). */
   public getTool(name: string): RegisteredTool | undefined {
     return this.tools.get(name);
   }
 
   /**
-   * Get all tool definitions (for sending to the AI model)
+   * Tool definitions in the OpenAI-shaped wire format the model
+   * expects. Used by `agent-service` when building the
+   * `AgentChatRequest.tools` array.
    */
   public getToolDefinitions(): ToolDefinition[] {
-    return Array.from(this.tools.values()).map(t => t.definition);
+    return Array.from(this.tools.values()).map((t) => t.definition);
   }
 
-  /**
-   * Get a tracked tool call by ID
-   */
+  /** One tracked tool call by id (used by the chat timeline). */
   public getTrackedToolCall(id: string): TrackedToolCall | undefined {
     return this.activeToolCalls.get(id);
   }
 
   /**
-   * Register a tool definition without an executor
+   * Record a tool call as `executing` so the UI can show a spinner
+   * before the Rust runtime fires its first delta. Called by the
+   * agent runtime client when an `assistant_event::tool_use` is
+   * received.
+   */
+  public recordToolCallStart(id: string, name: string, args: Record<string, unknown>): void {
+    this.activeToolCalls.set(id, {
+      id,
+      name,
+      args,
+      status: "executing",
+      startTime: Date.now(),
+    });
+  }
+
+  /** Mark a tracked tool call complete with its result string. */
+  public recordToolCallComplete(id: string, result: string): void {
+    const tracked = this.activeToolCalls.get(id);
+    if (!tracked) return;
+    tracked.status = "complete";
+    tracked.result = result;
+    tracked.endTime = Date.now();
+  }
+
+  /** Mark a tracked tool call as failed with an error message. */
+  public recordToolCallFailure(id: string, error: string): void {
+    const tracked = this.activeToolCalls.get(id);
+    if (!tracked) return;
+    tracked.status = "failed";
+    tracked.error = error;
+    tracked.endTime = Date.now();
+  }
+
+  /**
+   * Register a tool definition (no executor). Used internally by
+   * `registerAllDefinitions` and by MCP integration when servers
+   * advertise new tools at runtime.
    */
   public registerDefinition(definition: ToolDefinition): void {
     const name = definition.function.name;
     const riskLevel = getEnhancedToolRiskLevel(name);
-
     this.tools.set(name, {
       definition,
-      executor: async () => {
-        throw new Error(`Executor not implemented for tool: ${name}`);
-      },
-      requiresApproval: riskLevel === 'high', // Only HIGH risk requires approval
+      requiresApproval: riskLevel === "high",
       riskLevel,
     });
   }
 
-  /**
-   * Register an executor for a tool
-   */
-  public registerExecutor(name: string, executor: ToolExecutor): void {
-    const tool = this.tools.get(name);
-    if (!tool) {
-      throw new Error(`Tool not found: ${name}`);
-    }
-    tool.executor = executor;
-  }
-
-  /**
-   * Check if a tool requires approval
-   */
-  public requiresApproval(name: string): boolean {
-    const tool = this.tools.get(name);
-    return tool?.requiresApproval ?? true;
-  }
-
-  /**
-   * Register all tool definitions from the definitions module
-   */
   private registerAllDefinitions(): void {
     for (const tool of allTools) {
       this.registerDefinition(tool);
@@ -189,8 +134,5 @@ class ToolRegistry {
   }
 }
 
-// Singleton instance
 export const toolRegistry = new ToolRegistry();
-
-// Export for testing
 export { ToolRegistry };

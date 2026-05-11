@@ -180,13 +180,19 @@ export const TreeNodeRow: React.FC<TreeNodeRowProps> = ({
         )}
       </div>
 
-      {/* Filename */}
+      {/* Filename
+          Font weight stays at 400 across selection states. Bumping to 500 on
+          selection causes glyph metrics to change (medium-weight letters are
+          slightly wider than regular), which makes the filename visibly
+          reflow on every click — the highlighted background sits still while
+          the text jitters. Selection emphasis is carried by the bg tint, the
+          left accent bar, and opacity instead. */}
       <span
         className="relative z-10 truncate text-[12px] leading-none"
         style={{
           color: "var(--aurora-sidebar-foreground)",
-          fontWeight: isSelected ? 500 : 400,
-          opacity: isSelected ? 1 : isHovered ? 0.96 : 0.88,
+          fontWeight: 400,
+          opacity: isSelected ? 1 : isHovered ? 0.95 : 0.78,
         }}
       >
         {name}

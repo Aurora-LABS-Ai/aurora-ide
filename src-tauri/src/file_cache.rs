@@ -25,6 +25,16 @@ pub struct CachedFile {
     pub mtime: u64,
 }
 
+/// File metadata returned to the frontend in a single round-trip alongside
+/// the content. Lets the editor mount a tab without needing a separate stat
+/// call for freshness tracking.
+#[derive(Clone, serde::Serialize)]
+pub struct FileMeta {
+    pub content: String,
+    pub size: usize,
+    pub mtime: u64,
+}
+
 /// Global file cache with LRU eviction
 pub struct FileCache {
     /// Path -> CachedFile mapping with LRU eviction
@@ -162,8 +172,11 @@ pub fn get_file_cache() -> &'static FileCache {
     FILE_CACHE.get_or_init(FileCache::new)
 }
 
-/// Get file modification time as unix timestamp
-fn get_file_mtime(path: &str) -> Option<u64> {
+/// Get file modification time as unix timestamp.
+///
+/// Public so editor freshness checks can compare a tab's recorded mtime
+/// against the current disk mtime without going through the cache machinery.
+pub fn get_file_mtime(path: &str) -> Option<u64> {
     let metadata = std::fs::metadata(path).ok()?;
     let mtime = metadata.modified().ok()?;
     Some(mtime.duration_since(UNIX_EPOCH).ok()?.as_secs())
@@ -196,6 +209,20 @@ pub fn read_file_cached(path: &str) -> Result<String, String> {
     cache.set(path, content.clone());
 
     Ok(content)
+}
+
+/// Read file content along with mtime/size metadata in a single call. The
+/// content path goes through the cache; mtime is taken from the same `stat`
+/// the cache uses for validation, so this never doubles disk I/O on hits.
+pub fn read_file_cached_with_meta(path: &str) -> Result<FileMeta, String> {
+    let content = read_file_cached(path)?;
+    let mtime = get_file_mtime(path).unwrap_or(0);
+    let size = content.len();
+    Ok(FileMeta {
+        content,
+        size,
+        mtime,
+    })
 }
 
 /// Read multiple files in batch with caching.

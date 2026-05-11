@@ -4,27 +4,10 @@ use super::types::{
 };
 use serde_json::{json, Value};
 
-pub(crate) fn parse_sse_json_line(line: &str) -> Option<Value> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() || trimmed.starts_with(':') {
-        return None;
-    }
-    if trimmed == "data: [DONE]" || trimmed == "[DONE]" {
-        return None;
-    }
-
-    let json_str = if let Some(rest) = trimmed.strip_prefix("data: ") {
-        rest
-    } else if let Some(rest) = trimmed.strip_prefix("data:") {
-        rest.trim()
-    } else if trimmed.starts_with('{') {
-        trimmed
-    } else {
-        return None;
-    };
-
-    serde_json::from_str(json_str).ok()
-}
+// Note: the legacy line-oriented `parse_sse_json_line` helper used by the
+// pre-Phase-5 streaming code was removed. SSE frame splitting now lives in
+// `streaming::SseFrameBuffer` and `streaming::frame_payloads`, which together
+// implement byte-level frame extraction with multi-byte UTF-8 safety.
 
 pub(crate) fn parse_openai_response(json: &Value) -> AuroraProviderResponse {
     let message = json

@@ -40,7 +40,6 @@ import {
 } from "../../services/prompt-assets";
 import { tokenService } from "../../services/token-service";
 import { toolRegistry } from "../../tools";
-import { registerAllExecutors } from "../../tools";
 import {
   buildAttachedContextBlock,
   buildQueryContext,
@@ -68,11 +67,12 @@ import type {
   TimelineEvent,
 } from "../../types";
 
-// Initialize executors on module load
+// Auto-load MCP servers on module load — every native tool now
+// dispatches in Rust, so only MCP server connections need
+// frontend-side bootstrap.
 let executorsInitialized = false;
 const initExecutors = () => {
   if (!executorsInitialized) {
-    registerAllExecutors();
     useMcpStore.getState().loadServers();
     executorsInitialized = true;
   }
@@ -113,7 +113,6 @@ export const AgentModeLayout: React.FC = () => {
   const {
     autoApproveTools,
     agentExecutionMode,
-    maxToolCallsPerRequest,
     getToolApproval,
     setToolApproval,
     getLLMConfig,
@@ -478,7 +477,11 @@ export const AgentModeLayout: React.FC = () => {
           },
           temperature,
           maxTokens,
-          maxToolIterations: maxToolCallsPerRequest,
+          // No artificial iteration cap — Aurora runs as long as the model
+          // keeps requesting tools (or the user stops the run). The legacy
+          // `maxToolCallsPerRequest` setting is intentionally not forwarded
+          // here so an IDE-style agentic session is never cut short.
+          maxToolIterations: undefined,
           getToolApproval,
         });
 
@@ -907,7 +910,6 @@ export const AgentModeLayout: React.FC = () => {
       setLoading,
       autoApproveTools,
       agentExecutionMode,
-      maxToolCallsPerRequest,
       getToolApproval,
       setPendingApproval,
       addTimelineEvent,

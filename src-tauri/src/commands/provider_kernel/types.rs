@@ -189,8 +189,24 @@ pub(crate) struct AnthropicContentBlock {
 #[derive(Debug, Deserialize)]
 pub(crate) struct AnthropicDelta {
     pub(crate) partial_json: Option<String>,
+    pub(crate) signature: Option<String>,
     pub(crate) text: Option<String>,
     pub(crate) thinking: Option<String>,
     #[serde(rename = "type")]
     pub(crate) delta_type: String,
+}
+
+/// Per-block thinking signature payload emitted on
+/// `aurora-provider-thinking-signature-{request_id}`.
+///
+/// Anthropic emits `signature_delta` events inside a `thinking` content block
+/// as the model finalizes its private chain of thought. The accumulated
+/// signature must be echoed back on the next turn or the API rejects the
+/// request with HTTP 400. This payload exposes the running signature for the
+/// active block index so the frontend can persist it alongside the message.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AuroraThinkingSignature {
+    pub index: i32,
+    pub signature: String,
 }

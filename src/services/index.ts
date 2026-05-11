@@ -23,11 +23,6 @@ export * from './agent-prompt';
 export * from './prompt-assets';
 export * from './skills';
 
-// Multi-File Service
-export { multiFileService, MultiFileService } from './multi-file-service';
-
-export type { FileReadResult, MultiFileReadResult } from './multi-file-service';
-
 // Thread Service (Rust-backed per-message persistence)
 export { threadService } from './thread-service';
 export type {

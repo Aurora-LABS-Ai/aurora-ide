@@ -22,13 +22,14 @@ use parking_lot::RwLock;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command as TokioCommand;
 
+pub mod agent_v2;
+pub mod agent_v2_permissions;
 pub mod browser;
 pub mod chat;
 pub mod checkpoints;
 pub mod editor_ops;
 pub mod git;
 pub mod local_providers;
-pub mod openai_native;
 pub mod provider_catalog;
 pub mod provider_kernel;
 pub mod settings;
@@ -875,6 +876,40 @@ pub async fn read_file_content(path: String) -> Result<String, String> {
     }
 }
 
+/// Read file content + metadata (size + mtime) in a single IPC round-trip.
+/// The editor uses this so a tab can be mounted with the canonical freshness
+/// stamp captured at read time, eliminating the need for a separate stat
+/// call after every open. Goes through the same mtime-validated cache as
+/// [`read_file_content`].
+#[tauri::command]
+pub async fn read_file_with_meta(path: String) -> Result<crate::file_cache::FileMeta, String> {
+    let read_path = path.clone();
+    let join = tokio::task::spawn_blocking(move || {
+        crate::file_cache::read_file_cached_with_meta(&read_path)
+    });
+
+    match tokio::time::timeout(std::time::Duration::from_millis(FILE_READ_TIMEOUT_MS), join).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(e)) => Err(format!("Failed to load file: {}", e)),
+        Err(_) => Err(format!(
+            "File read timed out after {}ms (path: {})",
+            FILE_READ_TIMEOUT_MS, path
+        )),
+    }
+}
+
+/// Cheap freshness probe. Returns the current disk mtime so the editor can
+/// decide whether a tab's already-rendered content is still in sync without
+/// re-reading the whole file. `None` is encoded as `0` so the frontend can
+/// treat "missing" and "epoch" as one degenerate case.
+#[tauri::command]
+pub async fn stat_file_mtime(path: String) -> Result<u64, String> {
+    let read_path = path.clone();
+    tokio::task::spawn_blocking(move || crate::file_cache::get_file_mtime(&read_path).unwrap_or(0))
+        .await
+        .map_err(|e| format!("mtime task failed: {}", e))
+}
+
 /// Write file content
 #[tauri::command]
 pub async fn write_file_content(path: String, content: String) -> Result<(), String> {
@@ -1517,6 +1552,61 @@ pub struct FsEventPayload {
     pub kind: String,
 }
 
+/// Subtrees that produce constant churn but never carry user-relevant
+/// content. Any path whose components contain one of these names is
+/// dropped before the watcher emits an `fs-changed` event.
+///
+/// Keep this list tight — anything we add here will go invisible to
+/// the file explorer's auto-refresh + the in-IDE git status reload.
+const WATCH_IGNORED_DIR_NAMES: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "build",
+    "dist",
+    ".next",
+    ".turbo",
+    ".cache",
+    ".vite",
+    ".parcel-cache",
+    ".pnpm-store",
+    ".yarn",
+];
+
+/// File suffixes that are always editor/build noise (lock files,
+/// SQLite WAL/SHM, sourcemap rebuilds, …). Filtering these costs us
+/// nothing because they're never opened in the editor.
+const WATCH_IGNORED_FILE_SUFFIXES: &[&str] = &[
+    ".lock",
+    ".tmp",
+    ".swp",
+    ".swo",
+    "~",
+    ".db-wal",
+    ".db-shm",
+    ".sqlite-wal",
+    ".sqlite-shm",
+];
+
+#[inline]
+pub fn is_ignored_watch_path(path: &Path) -> bool {
+    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+        if WATCH_IGNORED_FILE_SUFFIXES
+            .iter()
+            .any(|suffix| file_name.ends_with(suffix))
+        {
+            return true;
+        }
+    }
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .map(|name| WATCH_IGNORED_DIR_NAMES.contains(&name))
+            .unwrap_or(false)
+    })
+}
+
 /// Start a filesystem watcher that emits `fs-changed` events to the frontend.
 #[tauri::command]
 pub async fn start_fs_watcher(app: tauri::AppHandle, path: String) -> Result<(), String> {
@@ -1536,7 +1626,36 @@ pub async fn start_fs_watcher(app: tauri::AppHandle, path: String) -> Result<(),
     let app_handle = app.clone();
     let mut watcher = recommended_watcher(move |res: Result<Event, notify::Error>| {
         if let Ok(event) = res {
-            // Map event kind to string
+            // Skip Access events outright — they fire on every read
+            // (mtime/atime stat) and the frontend ignores them anyway.
+            // Without this filter, running `git status` or HMR scans
+            // alone produces thousands of IPC roundtrips per second.
+            if matches!(event.kind, EventKind::Access(_) | EventKind::Other) {
+                return;
+            }
+
+            // Drop events that touch only IGNORED subtrees (`.git/`,
+            // `node_modules/`, `target/`, `build/`, `dist/`, etc).
+            // Cargo, pnpm and Vite churn these directories thousands
+            // of times during a dev rebuild and every modification
+            // would otherwise:
+            //   1. Invalidate the Rust file cache for that path
+            //   2. Schedule a debounced `git_get_status` reload
+            // Both are pure overhead — none of those files are user
+            // content. We filter event-level (not path-level) so that
+            // a single mixed event still fires for the user-content
+            // paths it carries.
+            let kept_paths: Vec<String> = event
+                .paths
+                .iter()
+                .filter(|p| !is_ignored_watch_path(p))
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+
+            if kept_paths.is_empty() {
+                return;
+            }
+
             let kind_str = match event.kind {
                 EventKind::Create(_) => "create",
                 EventKind::Modify(_) => "modify",
@@ -1546,17 +1665,10 @@ pub async fn start_fs_watcher(app: tauri::AppHandle, path: String) -> Result<(),
                 EventKind::Other => "other",
             };
 
-            let paths: Vec<String> = event
-                .paths
-                .iter()
-                .map(|p| p.to_string_lossy().to_string())
-                .collect();
-
-            // Emit to frontend; ignore errors if no windows
             let _ = app_handle.emit(
                 "fs-changed",
                 FsEventPayload {
-                    paths,
+                    paths: kept_paths,
                     kind: kind_str.to_string(),
                 },
             );

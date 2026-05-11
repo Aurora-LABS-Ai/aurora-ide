@@ -1,32 +1,63 @@
-//! Thread Tauri commands — JSONL event-sourced edition.
+//! Thread Tauri commands — agent_v2 Session edition.
 //!
-//! All persistence is delegated to [`crate::threads::ThreadEventLog`]; the
-//! SQLite `threads` table has been retired (see schema v13).
+//! Every chat-list / thread-load / persistence command in Aurora goes
+//! through here. The single source of truth is the
+//! [`crate::agent_runtime::session_store::SessionStore`] — there is no
+//! other persistence layer. The legacy event-sourced `ThreadEventLog`
+//! and SQLite `threads` table have both been retired.
 //!
-//! Wire format compatibility: the frontend still consumes `DbThread` /
-//! `DbMessage` / `ThreadSummary` shapes and the legacy `thread-*` Tauri
-//! events. We synthesize those shapes from a [`ProjectedThread`] so the
-//! React layer can be migrated to the richer event stream incrementally.
+//! ## Wire shape
+//!
+//! The frontend's `threadService` still consumes `DbThread` /
+//! `DbMessage` / `ThreadSummary`. We synthesize those from the
+//! canonical [`Session`] so the React layer doesn't have to learn the
+//! Anthropic-style content-block model.
+//!
+//! Mapping:
+//!
+//! - `Session.thread_id` / `metadata.title` / `metadata.created_at` /
+//!   `metadata.updated_at` → top-level `DbThread` fields.
+//! - `Vec<ConversationMessage>` → `Vec<Message>` via
+//!   [`session_to_db_messages`]: each `User` message becomes a flat
+//!   `Message { role: "user", content }`; each `Assistant` message
+//!   produces one `Message { role: "assistant" }` whose
+//!   `content` is the joined text blocks, `thinking` is the joined
+//!   thinking blocks, and `tool_calls` is a `Vec<ToolCall>` populated
+//!   from the `ToolUse` blocks. `Tool` messages are folded into the
+//!   prior assistant message's `tool_calls[].result` so the UI sees
+//!   tool calls as paired with their results, the way the chat
+//!   bubbles render.
+//!
+//! ## Lifecycle
+//!
+//! 1. Frontend creates a UUID and calls `thread_save({ id, title:
+//!    "New Chat" })` — this calls `SessionStore::ensure_thread`,
+//!    materialising an empty `<id>.jsonl` + `<id>.meta.json` pair.
+//! 2. `agent_chat_v2` runs a turn; `TurnDriver` appends messages to
+//!    the JSONL via `Session::save_to_path`, then calls
+//!    `SessionStore::touch` and (on the first turn) `set_title` so
+//!    the chat list re-orders.
+//! 3. Frontend periodically calls `thread_update_usage` after each
+//!    turn completes so the modal can render token / context bars.
+//! 4. Reload / open: frontend calls `thread_load(id)`; we read the
+//!    JSONL + sidecar and synthesise the `DbThread`.
 
-use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
-use uuid::Uuid;
 
-use crate::context::types::Turn;
+use crate::agent_runtime::session_store::{
+    ContextUsageMeta, SessionStore, TokenUsageMeta,
+};
+use crate::agent_runtime::types::{ContentBlock, ConversationMessage, MessageRole};
+use crate::commands::agent_v2::AgentRegistry;
 use crate::db::{ContextUsage, Message, ThreadState, TokenUsage, ToolCall as DbToolCall};
-use crate::services::api_converter::{ApiConverter, ApiMessage, UiMessage};
-use crate::threads::events::{CancelReason, EventToolCall};
-use crate::threads::projector::ProjectedThread;
-use crate::threads::store::ThreadEventLog;
+use crate::services::api_converter::{ApiMessage, ApiToolCall, ApiToolFunction};
 
-// ============================================================
+// ============================================================================
 // Wire-format adapters
-// ============================================================
+// ============================================================================
 
 /// Lightweight summary shipped to the chat list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,190 +71,276 @@ pub struct ThreadSummary {
     pub updated_at: String,
 }
 
-/// Strip leaked IDE-context enrichment from a stored user message before
-/// handing it to the chat UI.
-///
-/// The clean architecture stores the user-typed text in `Turn::user_message`
-/// and the enrichment (execution_mode, user_info, project_rules, project_layout,
-/// agent_skills, open_files, attached_context, …) in `Turn::user_context`.
-/// However, threads written before that fix landed (and any future bug that
-/// re-pollutes `user_message`) carry the entire XML blob inside
-/// `user_message`, which would render the giant enrichment as a user bubble.
-///
-/// This function defensively repairs the display:
-/// 1. If the message contains a `<user_query>...</user_query>` block, return
-///    the inner text (still trimmed of common nested wrappers like
-///    `<attached_context>` so the bubble shows what the user actually typed).
-/// 2. Otherwise return the original content as-is.
-///
-/// Persistence stays untouched — only the projection-to-UI adapter calls this.
-fn sanitize_user_message_for_display(content: &str) -> String {
-    const OPEN: &str = "<user_query>";
-    const CLOSE: &str = "</user_query>";
+/// Convert a stored `Vec<ConversationMessage>` into the flat
+/// `Vec<Message>` shape the React layer renders. `Tool` messages are
+/// folded back into the prior assistant message's `tool_calls[].result`
+/// so the UI sees tool calls paired with their results.
+fn session_to_db_messages(messages: &[ConversationMessage]) -> Vec<Message> {
+    let mut out: Vec<Message> = Vec::with_capacity(messages.len());
 
-    let inner = if let (Some(start), Some(end)) = (content.find(OPEN), content.rfind(CLOSE)) {
-        if start + OPEN.len() <= end {
-            &content[start + OPEN.len()..end]
-        } else {
-            content
+    for msg in messages {
+        let timestamp = millis_to_rfc3339(msg.timestamp);
+        match msg.role {
+            MessageRole::System => continue,
+            MessageRole::User => {
+                let content = collect_text_blocks(&msg.blocks);
+                out.push(Message {
+                    id: synthetic_message_id("user", msg.timestamp, out.len()),
+                    role: "user".to_string(),
+                    // The Rust runtime stores user-typed text only —
+                    // IDE-context enrichment (`<execution_mode_context>`,
+                    // attachments, …) is wrapped around the API view of
+                    // the message inside `RuntimeConfig::ide_context`,
+                    // never appended to the JSONL. So whatever we read
+                    // back is already display-clean.
+                    content,
+                    timestamp,
+                    tool_calls: None,
+                    thinking: None,
+                    is_thinking: None,
+                    tools: None,
+                    timeline: None,
+                    tool_proposal: None,
+                });
+            }
+            MessageRole::Assistant => {
+                let mut content = String::new();
+                let mut thinking = String::new();
+                let mut tool_calls: Vec<DbToolCall> = Vec::new();
+                for block in &msg.blocks {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            push_with_newline(&mut content, text);
+                        }
+                        ContentBlock::Thinking { text, .. } => {
+                            push_with_newline(&mut thinking, text);
+                        }
+                        ContentBlock::ToolUse { id, name, input } => {
+                            let arguments = serde_json::to_string(input)
+                                .unwrap_or_else(|_| "{}".to_string());
+                            tool_calls.push(DbToolCall {
+                                id: id.clone(),
+                                name: name.clone(),
+                                arguments,
+                                result: None,
+                            });
+                        }
+                        ContentBlock::ToolResult { .. } => {
+                            // Defensive — tool results live on Tool
+                            // messages, not Assistant. Ignore.
+                        }
+                    }
+                }
+                let thinking_opt = if thinking.is_empty() { None } else { Some(thinking) };
+                out.push(Message {
+                    id: synthetic_message_id("assistant", msg.timestamp, out.len()),
+                    role: "assistant".to_string(),
+                    content,
+                    timestamp,
+                    tool_calls: if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(tool_calls)
+                    },
+                    thinking: thinking_opt,
+                    is_thinking: Some(false),
+                    tools: None,
+                    timeline: None,
+                    tool_proposal: None,
+                });
+            }
+            MessageRole::Tool => {
+                // Fold every ToolResult block into the prior
+                // assistant message's matching tool_call entry.
+                if let Some(prev) = out.iter_mut().rev().find(|m| m.role == "assistant") {
+                    if let Some(calls) = prev.tool_calls.as_mut() {
+                        for block in &msg.blocks {
+                            if let ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error,
+                            } = block
+                            {
+                                if let Some(call) =
+                                    calls.iter_mut().find(|c| c.id == *tool_use_id)
+                                {
+                                    let formatted = if is_error.unwrap_or(false) {
+                                        format!("[error] {content}")
+                                    } else {
+                                        content.clone()
+                                    };
+                                    call.result = Some(formatted);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
-    } else {
-        content
-    };
+    }
 
-    // Strip a leading `<attached_context>...</attached_context>` block so the
-    // bubble only shows the user-typed body. Attached skills/rules are
-    // surfaced via dedicated UI affordances, not free text.
-    let stripped = strip_leading_attached_context(inner);
-    stripped.trim().to_string()
+    out
 }
 
-fn strip_leading_attached_context(s: &str) -> &str {
-    let trimmed = s.trim_start();
-    const OPEN: &str = "<attached_context";
-    if !trimmed.starts_with(OPEN) {
-        return s;
-    }
-    const CLOSE: &str = "</attached_context>";
-    if let Some(end) = trimmed.find(CLOSE) {
-        let after = &trimmed[end + CLOSE.len()..];
-        return after;
-    }
-    s
-}
-
-fn projection_to_thread_state(projection: &ProjectedThread) -> ThreadState {
-    let messages = projection_to_messages(projection);
-    ThreadState {
-        id: projection.thread_id.clone(),
-        title: projection.title.clone(),
-        summary: None,
-        messages,
-        token_usage: projection.token_usage.clone(),
-        context_usage: projection.context_usage.clone(),
-        created_at: projection.created_at.clone(),
-        updated_at: projection.updated_at.clone(),
-    }
-}
-
-/// Flatten the projected turns (and the in-progress turn, if any) into the
-/// flat `Vec<Message>` shape the React layer currently consumes.
-fn projection_to_messages(projection: &ProjectedThread) -> Vec<Message> {
-    let mut out = Vec::with_capacity(projection.turns.len() * 2);
-    for turn in &projection.turns {
-        push_turn_messages(turn, &mut out);
-    }
-    if let Some(current) = projection.current_turn.as_ref() {
-        push_turn_messages(current, &mut out);
+/// Convert the canonical `Vec<ConversationMessage>` directly into the
+/// `Vec<ApiMessage>` shape the LLM-request builder consumes. This is
+/// what `thread_get_api_history` returns when the frontend asks for
+/// the rebuild-context view of a thread.
+fn session_to_api_messages(messages: &[ConversationMessage]) -> Vec<ApiMessage> {
+    let mut out: Vec<ApiMessage> = Vec::with_capacity(messages.len());
+    for msg in messages {
+        match msg.role {
+            MessageRole::System => {
+                let content = collect_text_blocks(&msg.blocks);
+                if !content.is_empty() {
+                    out.push(ApiMessage::System { content });
+                }
+            }
+            MessageRole::User => {
+                let content = collect_text_blocks(&msg.blocks);
+                if !content.is_empty() {
+                    out.push(ApiMessage::User { content });
+                }
+            }
+            MessageRole::Assistant => {
+                let mut content = String::new();
+                let mut reasoning = String::new();
+                let mut tool_calls: Vec<ApiToolCall> = Vec::new();
+                for block in &msg.blocks {
+                    match block {
+                        ContentBlock::Text { text } => push_with_newline(&mut content, text),
+                        ContentBlock::Thinking { text, .. } => {
+                            push_with_newline(&mut reasoning, text);
+                        }
+                        ContentBlock::ToolUse { id, name, input } => {
+                            let arguments = serde_json::to_string(input)
+                                .unwrap_or_else(|_| "{}".to_string());
+                            tool_calls.push(ApiToolCall {
+                                id: id.clone(),
+                                call_type: "function".to_string(),
+                                function: ApiToolFunction {
+                                    name: name.clone(),
+                                    arguments,
+                                },
+                            });
+                        }
+                        ContentBlock::ToolResult { .. } => {}
+                    }
+                }
+                let content_opt = if content.is_empty() { None } else { Some(content) };
+                let reasoning_opt = if reasoning.is_empty() {
+                    None
+                } else {
+                    Some(reasoning)
+                };
+                let tool_calls_opt = if tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(tool_calls)
+                };
+                // Skip empty assistant messages entirely.
+                if content_opt.is_some() || tool_calls_opt.is_some() {
+                    out.push(ApiMessage::Assistant {
+                        content: content_opt,
+                        reasoning_content: reasoning_opt,
+                        tool_calls: tool_calls_opt,
+                    });
+                }
+            }
+            MessageRole::Tool => {
+                for block in &msg.blocks {
+                    if let ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } = block
+                    {
+                        out.push(ApiMessage::Tool {
+                            tool_call_id: tool_use_id.clone(),
+                            content: content.clone(),
+                        });
+                    }
+                }
+            }
+        }
     }
     out
 }
 
-fn push_turn_messages(turn: &Turn, out: &mut Vec<Message>) {
-    out.push(Message {
-        id: turn.id.clone(),
-        role: "user".to_string(),
-        // Always sanitise for display. The Rust message builder still uses
-        // `turn.user_message` + `turn.user_context` verbatim when constructing
-        // API messages for the LLM, so this only affects what the React chat
-        // bubble renders.
-        content: sanitize_user_message_for_display(&turn.user_message),
-        timestamp: turn.created_at.clone(),
-        tool_calls: None,
-        thinking: None,
-        is_thinking: None,
-        tools: None,
-        timeline: None,
-        tool_proposal: None,
-    });
-
-    for round in &turn.rounds {
-        let mut tool_calls: Vec<DbToolCall> = Vec::new();
-        for tc in &round.tool_calls {
-            let result = round
-                .tool_results
-                .get(&tc.id)
-                .map(|r| {
-                    if r.is_error {
-                        format!("[error] {}", r.content)
-                    } else {
-                        r.content.clone()
-                    }
-                });
-            tool_calls.push(DbToolCall {
-                id: tc.id.clone(),
-                name: tc.name.clone(),
-                arguments: tc.arguments.clone(),
-                result,
-            });
+fn collect_text_blocks(blocks: &[ContentBlock]) -> String {
+    let mut out = String::new();
+    for block in blocks {
+        if let ContentBlock::Text { text } = block {
+            push_with_newline(&mut out, text);
         }
+    }
+    out
+}
 
-        out.push(Message {
-            id: round.id.clone(),
-            role: "assistant".to_string(),
-            content: round.response.clone(),
-            timestamp: round.created_at.clone(),
-            tool_calls: if tool_calls.is_empty() {
-                None
-            } else {
-                Some(tool_calls)
-            },
-            thinking: round.thinking.clone(),
-            is_thinking: Some(false),
-            tools: None,
-            timeline: None,
-            tool_proposal: None,
-        });
+fn push_with_newline(out: &mut String, s: &str) {
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(s);
+}
+
+fn millis_to_rfc3339(millis: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(millis)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339()
+}
+
+/// Synthesise a stable id for a message reconstructed from the
+/// `ConversationMessage` stream. The runtime doesn't carry per-message
+/// ids (tool_use ids exist, regular messages don't) — the React layer
+/// only needs a unique key for `<List>` rendering, so a deterministic
+/// composite is fine.
+fn synthetic_message_id(role: &str, timestamp_millis: i64, ordinal: usize) -> String {
+    format!("{role}-{timestamp_millis}-{ordinal}")
+}
+
+// ============================================================================
+// Token / context usage adapters (db ↔ session_store)
+// ============================================================================
+
+fn db_token_to_meta(usage: &TokenUsage) -> TokenUsageMeta {
+    TokenUsageMeta {
+        prompt_tokens: usage.prompt_tokens.max(0) as u32,
+        completion_tokens: usage.completion_tokens.max(0) as u32,
+        total_tokens: usage.total_tokens.max(0) as u32,
+        cache_read_tokens: None,
+        cache_write_tokens: None,
     }
 }
 
-fn projection_to_summary(projection: &ProjectedThread) -> ThreadSummary {
-    ThreadSummary {
-        id: projection.thread_id.clone(),
-        title: projection.title.clone(),
-        message_count: projection.turn_count(),
-        preview: projection.preview(),
-        created_at: projection.created_at.clone(),
-        updated_at: projection.updated_at.clone(),
+fn db_context_to_meta(usage: &ContextUsage) -> ContextUsageMeta {
+    ContextUsageMeta {
+        used_tokens: usage.used_tokens.max(0) as u32,
+        context_window: usage.context_window.max(0) as u32,
+        percentage: usage.percentage,
     }
 }
 
-// ============================================================
-// Active streaming state (transient, in-memory)
-// ============================================================
-
-/// Aggregates streaming output until [`thread_finalize_response`] commits it
-/// to the persistent log. Pure UI buffer — discarded when the stream ends.
-///
-/// `message_id` and `started_at_ms` are populated for diagnostics (we surface
-/// them in trace logs when a stream is orphaned) even if no command currently
-/// reads them on the happy path.
-#[derive(Debug, Default, Clone)]
-struct StreamState {
-    thread_id: String,
-    #[allow(dead_code)]
-    message_id: String,
-    content: String,
-    thinking: String,
-    tool_calls: Vec<EventToolCall>,
-    #[allow(dead_code)]
-    started_at_ms: i64,
-}
-
-/// Tauri-managed map of active streams. One mutex per process (cheap, all
-/// access is short-lived).
-#[derive(Default)]
-pub struct ActiveStreams(RwLock<HashMap<String, StreamState>>);
-
-impl ActiveStreams {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self::default())
+fn meta_to_db_token(meta: &TokenUsageMeta) -> TokenUsage {
+    TokenUsage {
+        prompt_tokens: i64::from(meta.prompt_tokens),
+        completion_tokens: i64::from(meta.completion_tokens),
+        total_tokens: i64::from(meta.total_tokens),
     }
 }
 
-// ============================================================
-// Legacy event helpers (kept until the UI migrates to thread-event-appended)
-// ============================================================
+fn meta_to_db_context(meta: &ContextUsageMeta) -> ContextUsage {
+    ContextUsage {
+        used_tokens: i64::from(meta.used_tokens),
+        context_window: i64::from(meta.context_window),
+        percentage: meta.percentage,
+    }
+}
+
+// ============================================================================
+// Tauri events — same wire channels the legacy code shipped so the
+// React layer doesn't need a migration.
+// ============================================================================
 
 fn emit<S: Serialize + Clone>(app: &AppHandle, event: &str, payload: &S) {
     if let Err(e) = app.emit(event, payload) {
@@ -246,138 +363,171 @@ struct ThreadDeletedPayload {
 }
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct ThreadMessageAddedPayload {
-    thread_id: String,
-    message: Message,
-}
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ThreadTokenReceivedPayload {
-    thread_id: String,
-    stream_id: String,
-    token: String,
-}
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ThreadThinkingReceivedPayload {
-    thread_id: String,
-    stream_id: String,
-    thinking: String,
-}
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ThreadToolAddedPayload {
-    thread_id: String,
-    stream_id: String,
-    tool_call: Value,
-}
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
 struct ThreadUsageUpdatedPayload {
     thread_id: String,
     token_usage: TokenUsage,
     context_usage: ContextUsage,
 }
 
-// ============================================================
-// Thread CRUD
-// ============================================================
+// ============================================================================
+// Helpers — shared between commands
+// ============================================================================
 
+fn store_from_state(registry: &Arc<AgentRegistry>) -> Arc<SessionStore> {
+    registry.store().clone()
+}
+
+fn build_thread_state(
+    store: &SessionStore,
+    thread_id: &str,
+) -> Result<Option<ThreadState>, String> {
+    let loaded = store
+        .load(thread_id)
+        .map_err(|e| format!("Failed to load thread {thread_id}: {e}"))?;
+    let Some(loaded) = loaded else {
+        return Ok(None);
+    };
+    let messages = session_to_db_messages(loaded.session.messages());
+    Ok(Some(ThreadState {
+        id: thread_id.to_string(),
+        title: loaded.metadata.title,
+        summary: None,
+        messages,
+        token_usage: loaded.metadata.token_usage.as_ref().map(meta_to_db_token),
+        context_usage: loaded
+            .metadata
+            .context_usage
+            .as_ref()
+            .map(meta_to_db_context),
+        created_at: loaded.metadata.created_at,
+        updated_at: loaded.metadata.updated_at,
+    }))
+}
+
+fn build_thread_summary(
+    summary: crate::agent_runtime::session_store::SessionSummary,
+) -> ThreadSummary {
+    ThreadSummary {
+        id: summary.id,
+        title: summary.title,
+        message_count: summary.message_count,
+        preview: summary.preview,
+        created_at: summary.created_at,
+        updated_at: summary.updated_at,
+    }
+}
+
+// ============================================================================
+// Commands
+// ============================================================================
+
+/// Upsert thread metadata. Frontend calls this immediately after
+/// generating a UUID for a new chat (optimistic create) and again
+/// whenever a stored `Thread` is mutated client-side. Only the
+/// `title` field is persisted — message history is owned exclusively
+/// by the agent runtime.
 #[tauri::command]
 pub fn thread_save(
     thread: ThreadState,
-    log: State<'_, Arc<ThreadEventLog>>,
+    registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    // Upsert semantics for the JSONL world. The frontend generates UUIDs
-    // optimistically and may call `thread_save` before any other event has
-    // been appended (e.g. immediately after the user clicks "New Chat").
-    //
-    // Only metadata that lives outside the event-stream invariant is
-    // persisted — currently just the title. Messages/thinking/tool-calls
-    // are owned by the live append commands and intentionally ignored here.
-    let existing = log.project_thread(&thread.id);
-    let projection = match existing {
-        Ok(p) => p,
-        Err(crate::threads::store::StoreError::ThreadNotFound(_)) => log
-            .create_thread_with_id(thread.id.clone(), Some(thread.title.clone()))
-            .map_err(|e| format!("Failed to create thread {}: {e}", thread.id))?,
-        Err(e) => return Err(format!("Failed to load thread {}: {e}", thread.id)),
-    };
-
-    // Append a TitleChanged event only when the title actually drifted —
-    // otherwise we'd accumulate a no-op event on every save during streaming.
-    if projection.title != thread.title {
-        log.append_title_changed(&thread.id, thread.title.clone())
-            .map_err(|e| format!("Failed to update thread title: {e}"))?;
+    let store = store_from_state(registry.inner());
+    store
+        .ensure_thread(&thread.id, Some(thread.title.clone()))
+        .map_err(|e| format!("Failed to ensure thread {}: {e}", thread.id))?;
+    if !thread.title.is_empty() {
+        store
+            .set_title(&thread.id, thread.title.clone())
+            .map_err(|e| format!("Failed to update title: {e}"))?;
     }
 
-    let projection = log
-        .project_thread(&thread.id)
-        .map_err(|e| format!("Failed to project thread {}: {e}", thread.id))?;
-    emit(
-        &app,
-        "thread-loaded",
-        &ThreadLoadedPayload {
-            thread: projection_to_thread_state(&projection),
-        },
-    );
+    if let Some(state) = build_thread_state(&store, &thread.id)? {
+        emit(
+            &app,
+            "thread-loaded",
+            &ThreadLoadedPayload { thread: state },
+        );
+    }
     Ok(())
 }
 
+/// Materialise an empty thread and return the freshly-bootstrapped
+/// `ThreadState`. The frontend currently generates UUIDs itself and
+/// uses `thread_save` to upsert, so this command is rarely called —
+/// kept for symmetry with the historic API surface.
 #[tauri::command]
 pub fn thread_create(
     title: Option<String>,
-    log: State<'_, Arc<ThreadEventLog>>,
+    registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<ThreadState, String> {
-    let projection = log
-        .create_thread(title)
+    let store = store_from_state(registry.inner());
+    let thread_id = uuid::Uuid::new_v4().to_string();
+    let meta = store
+        .ensure_thread(&thread_id, title)
         .map_err(|e| format!("Failed to create thread: {e}"))?;
 
-    let state = projection_to_thread_state(&projection);
+    let state = ThreadState {
+        id: thread_id,
+        title: meta.title,
+        summary: None,
+        messages: Vec::new(),
+        token_usage: None,
+        context_usage: None,
+        created_at: meta.created_at,
+        updated_at: meta.updated_at,
+    };
     emit(
         &app,
         "thread-created",
         &ThreadCreatedPayload {
-            thread: projection_to_summary(&projection),
+            thread: ThreadSummary {
+                id: state.id.clone(),
+                title: state.title.clone(),
+                message_count: 0,
+                preview: String::new(),
+                created_at: state.created_at.clone(),
+                updated_at: state.updated_at.clone(),
+            },
         },
     );
     Ok(state)
 }
 
+/// Read a full thread (metadata + transcript) for the chat panel.
 #[tauri::command]
 pub fn thread_load(
     thread_id: String,
-    log: State<'_, Arc<ThreadEventLog>>,
+    registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<Option<ThreadState>, String> {
-    match log.project_thread(&thread_id) {
-        Ok(projection) => {
-            let state = projection_to_thread_state(&projection);
-            emit(
-                &app,
-                "thread-loaded",
-                &ThreadLoadedPayload {
-                    thread: state.clone(),
-                },
-            );
-            Ok(Some(state))
-        }
-        Err(crate::threads::store::StoreError::ThreadNotFound(_)) => Ok(None),
-        Err(e) => Err(format!("Failed to load thread {thread_id}: {e}")),
+    let store = store_from_state(registry.inner());
+    let state = build_thread_state(&store, &thread_id)?;
+    if let Some(s) = state.as_ref() {
+        emit(
+            &app,
+            "thread-loaded",
+            &ThreadLoadedPayload { thread: s.clone() },
+        );
     }
+    Ok(state)
 }
 
+/// Drop both files and clear any in-memory context for the thread.
 #[tauri::command]
 pub fn thread_delete(
     thread_id: String,
-    log: State<'_, Arc<ThreadEventLog>>,
+    registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    log.delete_thread(&thread_id)
+    let store = store_from_state(registry.inner());
+    store
+        .delete(&thread_id)
         .map_err(|e| format!("Failed to delete thread {thread_id}: {e}"))?;
-
+    // Best-effort: drop any in-memory context engine state so a
+    // recreated thread with the same id starts fresh.
+    crate::context::manager::remove_context(&thread_id);
     emit(
         &app,
         "thread-deleted",
@@ -385,338 +535,37 @@ pub fn thread_delete(
             thread_id: thread_id.clone(),
         },
     );
-    // Drop the in-memory context as well so the next session starts clean.
-    crate::context::manager::remove_context(&thread_id);
     Ok(())
 }
 
+/// List every thread, newest first.
 #[tauri::command]
 pub fn thread_list_summaries(
-    log: State<'_, Arc<ThreadEventLog>>,
+    registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<Vec<ThreadSummary>, String> {
-    let entries = log
+    let store = store_from_state(registry.inner());
+    let entries = store
         .list_summaries()
         .map_err(|e| format!("Failed to list threads: {e}"))?;
-
-    Ok(entries
-        .into_iter()
-        .map(|e| ThreadSummary {
-            id: e.id,
-            title: e.title,
-            message_count: e.message_count,
-            preview: e.preview,
-            created_at: e.created_at,
-            updated_at: e.updated_at,
-        })
-        .collect())
+    Ok(entries.into_iter().map(build_thread_summary).collect())
 }
 
-// ============================================================
-// User messages (persisted immediately)
-// ============================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AddUserMessageRequest {
-    pub thread_id: String,
-    /// The clean, user-typed text. This is what we render in the chat bubble
-    /// when the thread is reloaded — never the giant XML enrichment blob.
-    pub content: String,
-    /// Optional IDE/runtime context (execution mode, user info, project rules,
-    /// project layout, agent skills, open files, attached_context, …) attached
-    /// to *this* user message. Combined with `content` only when building API
-    /// messages for the LLM — never shown in the UI.
-    pub ide_context: Option<String>,
-    pub attachments: Option<Vec<Value>>,
-}
-
+/// Update the user-facing title without touching message history.
 #[tauri::command]
-pub fn thread_add_user_message(
-    request: AddUserMessageRequest,
-    log: State<'_, Arc<ThreadEventLog>>,
-    app: AppHandle,
-) -> Result<Message, String> {
-    // Bootstrap the thread if it doesn't exist yet (matches `thread_save`'s
-    // upsert semantics — keeps optimistic UI flows from racing against the
-    // backend).
-    let projection = match log.project_thread(&request.thread_id) {
-        Ok(p) => p,
-        Err(crate::threads::store::StoreError::ThreadNotFound(_)) => log
-            .create_thread_with_id(request.thread_id.clone(), None)
-            .map_err(|e| format!("Failed to create thread: {e}"))?,
-        Err(e) => return Err(format!("Failed to project thread: {e}")),
-    };
-
-    // Auto-title from the first user message: derive a clean, human-readable
-    // label by stripping markdown fences, JSON blobs, and decorative noise.
-    // Single source of truth for the title — the frontend's optimistic
-    // preview is overwritten by this via `thread-event-appended` events.
-    if projection.is_empty() && projection.title == "New Chat" {
-        let derived = crate::threads::title::derive_thread_title(&request.content);
-        if !derived.is_empty() && derived != "New Chat" {
-            let _ = log.append_title_changed(&request.thread_id, derived);
-        }
-    }
-
-    let event_id = log
-        .append_user_message(
-            &request.thread_id,
-            request.content.clone(),
-            request.ide_context.clone(),
-            request.attachments.clone(),
-        )
-        .map_err(|e| format!("Failed to append user message: {e}"))?;
-
-    let now = chrono::Utc::now().to_rfc3339();
-    let message = Message {
-        id: event_id,
-        role: "user".to_string(),
-        content: request.content,
-        timestamp: now,
-        tool_calls: None,
-        thinking: None,
-        is_thinking: None,
-        tools: request.attachments,
-        timeline: None,
-        tool_proposal: None,
-    };
-
-    emit(
-        &app,
-        "thread-message-added",
-        &ThreadMessageAddedPayload {
-            thread_id: request.thread_id,
-            message: message.clone(),
-        },
-    );
-    Ok(message)
-}
-
-// ============================================================
-// Streaming assistant response
-// ============================================================
-
-#[tauri::command]
-pub fn thread_start_response(
+pub fn thread_update_title(
     thread_id: String,
-    streams: State<'_, Arc<ActiveStreams>>,
-) -> Result<String, String> {
-    let stream_id = Uuid::new_v4().to_string();
-    let message_id = Uuid::new_v4().to_string();
-    let mut map = streams.0.write();
-    map.insert(
-        stream_id.clone(),
-        StreamState {
-            thread_id,
-            message_id,
-            started_at_ms: chrono::Utc::now().timestamp_millis(),
-            ..Default::default()
-        },
-    );
-    Ok(stream_id)
-}
-
-#[tauri::command]
-pub fn thread_append_token(
-    stream_id: String,
-    token: String,
-    streams: State<'_, Arc<ActiveStreams>>,
-    app: AppHandle,
+    title: String,
+    registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<(), String> {
-    let thread_id = {
-        let mut map = streams.0.write();
-        let s = map
-            .get_mut(&stream_id)
-            .ok_or_else(|| format!("stream not found: {stream_id}"))?;
-        s.content.push_str(&token);
-        s.thread_id.clone()
-    };
-    emit(
-        &app,
-        "thread-token-received",
-        &ThreadTokenReceivedPayload {
-            thread_id,
-            stream_id,
-            token,
-        },
-    );
-    Ok(())
+    let store = store_from_state(registry.inner());
+    store
+        .set_title(&thread_id, title)
+        .map(|_| ())
+        .map_err(|e| format!("Failed to update title: {e}"))
 }
 
-#[tauri::command]
-pub fn thread_append_thinking(
-    stream_id: String,
-    thinking: String,
-    streams: State<'_, Arc<ActiveStreams>>,
-    app: AppHandle,
-) -> Result<(), String> {
-    let thread_id = {
-        let mut map = streams.0.write();
-        let s = map
-            .get_mut(&stream_id)
-            .ok_or_else(|| format!("stream not found: {stream_id}"))?;
-        s.thinking.push_str(&thinking);
-        s.thread_id.clone()
-    };
-    emit(
-        &app,
-        "thread-thinking-received",
-        &ThreadThinkingReceivedPayload {
-            thread_id,
-            stream_id,
-            thinking,
-        },
-    );
-    Ok(())
-}
-
-#[tauri::command]
-pub fn thread_add_tool_call(
-    stream_id: String,
-    tool_call: Value,
-    streams: State<'_, Arc<ActiveStreams>>,
-    app: AppHandle,
-) -> Result<(), String> {
-    // Adapt the loose JSON shape coming from the frontend to our typed
-    // EventToolCall. Required fields: id, name, arguments. The frontend may
-    // send arguments as a plain object — re-serialize to a string in that
-    // case so we round-trip exactly the model's wire format.
-    let id = tool_call
-        .get("id")
-        .and_then(|v| v.as_str())
-        .ok_or("tool_call.id missing")?
-        .to_string();
-    let name = tool_call
-        .get("name")
-        .and_then(|v| v.as_str())
-        .or_else(|| {
-            tool_call
-                .get("function")
-                .and_then(|f| f.get("name"))
-                .and_then(|v| v.as_str())
-        })
-        .ok_or("tool_call.name missing")?
-        .to_string();
-    let arguments = match tool_call.get("arguments") {
-        Some(Value::String(s)) => s.clone(),
-        Some(other) => serde_json::to_string(other).unwrap_or_default(),
-        None => match tool_call.get("function").and_then(|f| f.get("arguments")) {
-            Some(Value::String(s)) => s.clone(),
-            Some(other) => serde_json::to_string(other).unwrap_or_default(),
-            None => "{}".to_string(),
-        },
-    };
-
-    let thread_id = {
-        let mut map = streams.0.write();
-        let s = map
-            .get_mut(&stream_id)
-            .ok_or_else(|| format!("stream not found: {stream_id}"))?;
-        s.tool_calls.push(EventToolCall {
-            id,
-            name,
-            arguments,
-        });
-        s.thread_id.clone()
-    };
-    emit(
-        &app,
-        "thread-tool-added",
-        &ThreadToolAddedPayload {
-            thread_id,
-            stream_id,
-            tool_call,
-        },
-    );
-    Ok(())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FinalizeResponseRequest {
-    pub stream_id: String,
-    pub timeline: Option<Value>,
-}
-
-#[tauri::command]
-pub fn thread_finalize_response(
-    request: FinalizeResponseRequest,
-    log: State<'_, Arc<ThreadEventLog>>,
-    streams: State<'_, Arc<ActiveStreams>>,
-    app: AppHandle,
-) -> Result<Message, String> {
-    let stream = {
-        let mut map = streams.0.write();
-        map.remove(&request.stream_id)
-            .ok_or_else(|| format!("stream not found: {}", request.stream_id))?
-    };
-
-    let StreamState {
-        thread_id,
-        content,
-        thinking,
-        tool_calls,
-        ..
-    } = stream;
-
-    let thinking_opt = if thinking.is_empty() {
-        None
-    } else {
-        Some(thinking)
-    };
-
-    let event_id = log
-        .append_assistant_message(
-            &thread_id,
-            content.clone(),
-            thinking_opt.clone(),
-            tool_calls.clone(),
-        )
-        .map_err(|e| format!("Failed to append assistant message: {e}"))?;
-
-    // Flat-message shape for the legacy bus.
-    let db_tool_calls: Vec<DbToolCall> = tool_calls
-        .iter()
-        .map(|tc| DbToolCall {
-            id: tc.id.clone(),
-            name: tc.name.clone(),
-            arguments: tc.arguments.clone(),
-            result: None,
-        })
-        .collect();
-
-    let message = Message {
-        id: event_id,
-        role: "assistant".to_string(),
-        content,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        tool_calls: if db_tool_calls.is_empty() {
-            None
-        } else {
-            Some(db_tool_calls)
-        },
-        thinking: thinking_opt,
-        is_thinking: Some(false),
-        tools: None,
-        timeline: request.timeline,
-        tool_proposal: None,
-    };
-
-    emit(
-        &app,
-        "thread-message-added",
-        &ThreadMessageAddedPayload {
-            thread_id,
-            message: message.clone(),
-        },
-    );
-    Ok(message)
-}
-
-// ============================================================
-// Usage / metadata
-// ============================================================
-
+/// Persist usage metadata after a turn so the chat list can show
+/// token + context bars.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateUsageRequest {
@@ -728,31 +577,17 @@ pub struct UpdateUsageRequest {
 #[tauri::command]
 pub fn thread_update_usage(
     request: UpdateUsageRequest,
-    log: State<'_, Arc<ThreadEventLog>>,
+    registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    // Find the most recently finalized turn id so we can attach the usage
-    // event to a real turn. If none exists yet (e.g. the very first message
-    // is still streaming), no-op rather than fabricate one.
-    let projection = log
-        .project_thread(&request.thread_id)
-        .map_err(|e| format!("Failed to project thread: {e}"))?;
-    let turn_id = projection
-        .current_turn
-        .as_ref()
-        .map(|t| t.id.clone())
-        .or_else(|| projection.turns.last().map(|t| t.id.clone()));
-
-    if let Some(turn_id) = turn_id {
-        let _ = log.append_turn_finalized(
+    let store = store_from_state(registry.inner());
+    store
+        .set_usage(
             &request.thread_id,
-            &turn_id,
-            crate::threads::events::TurnOutcome::Completed,
-            Some(request.token_usage.clone()),
-            Some(request.context_usage.clone()),
-        );
-    }
-
+            Some(db_token_to_meta(&request.token_usage)),
+            Some(db_context_to_meta(&request.context_usage)),
+        )
+        .map_err(|e| format!("Failed to persist usage: {e}"))?;
     emit(
         &app,
         "thread-usage-updated",
@@ -765,385 +600,227 @@ pub fn thread_update_usage(
     Ok(())
 }
 
+/// Rebuild the API-shaped message list for a thread. Used by the
+/// frontend when reseeding the in-memory context engine on
+/// thread-switch.
 #[tauri::command]
 pub fn thread_get_api_history(
     thread_id: String,
-    log: State<'_, Arc<ThreadEventLog>>,
+    registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<Vec<ApiMessage>, String> {
-    let projection = log
-        .project_thread(&thread_id)
-        .map_err(|e| format!("Failed to project thread {thread_id}: {e}"))?;
-
-    // Project → flat UI messages → API messages. Re-using the existing
-    // ApiConverter keeps tool-call pairing logic in one place.
-    let flat = projection_to_messages(&projection);
-    let ui: Vec<UiMessage> = flat
-        .into_iter()
-        .map(|m| UiMessage {
-            id: m.id,
-            sender: m.role,
-            content: m.content,
-            timestamp: serde_json::json!(m.timestamp),
-            timeline: None,
-        })
-        .collect();
-    Ok(ApiConverter::convert_thread_to_api_history(&ui))
-}
-
-#[tauri::command]
-pub fn thread_update_title(
-    thread_id: String,
-    title: String,
-    log: State<'_, Arc<ThreadEventLog>>,
-) -> Result<(), String> {
-    log.append_title_changed(&thread_id, title)
-        .map(|_| ())
-        .map_err(|e| format!("Failed to update title: {e}"))
-}
-
-// ============================================================
-// Single-shot append API (preferred for the agent loop)
-//
-// The streaming API (`thread_start_response` / `thread_append_token` / ...)
-// exists for future real-time persistence. For now the agent service writes
-// each fully-formed assistant message and tool result in one shot — these
-// commands skip the in-memory stream buffer entirely.
-// ============================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppendAssistantMessageRequest {
-    pub thread_id: String,
-    pub content: String,
-    pub thinking: Option<String>,
-    /// Tool calls embedded in this assistant turn. Use the LLM-supplied id,
-    /// name, and JSON-encoded arguments — these chain to the matching
-    /// `thread_append_tool_result` calls.
-    pub tool_calls: Option<Vec<EventToolCall>>,
-}
-
-#[tauri::command]
-pub fn thread_append_assistant_message(
-    request: AppendAssistantMessageRequest,
-    log: State<'_, Arc<ThreadEventLog>>,
-    app: AppHandle,
-) -> Result<Message, String> {
-    let tool_calls = request.tool_calls.unwrap_or_default();
-    let event_id = log
-        .append_assistant_message(
-            &request.thread_id,
-            request.content.clone(),
-            request.thinking.clone(),
-            tool_calls.clone(),
-        )
-        .map_err(|e| format!("Failed to append assistant message: {e}"))?;
-
-    let db_tool_calls: Vec<DbToolCall> = tool_calls
-        .iter()
-        .map(|tc| DbToolCall {
-            id: tc.id.clone(),
-            name: tc.name.clone(),
-            arguments: tc.arguments.clone(),
-            result: None,
-        })
-        .collect();
-
-    let message = Message {
-        id: event_id,
-        role: "assistant".to_string(),
-        content: request.content,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        tool_calls: if db_tool_calls.is_empty() {
-            None
-        } else {
-            Some(db_tool_calls)
-        },
-        thinking: request.thinking,
-        is_thinking: Some(false),
-        tools: None,
-        timeline: None,
-        tool_proposal: None,
+    let store = store_from_state(registry.inner());
+    let loaded = store
+        .load(&thread_id)
+        .map_err(|e| format!("Failed to load thread {thread_id}: {e}"))?;
+    let Some(loaded) = loaded else {
+        return Ok(Vec::new());
     };
-
-    emit(
-        &app,
-        "thread-message-added",
-        &ThreadMessageAddedPayload {
-            thread_id: request.thread_id,
-            message: message.clone(),
-        },
-    );
-    Ok(message)
+    Ok(session_to_api_messages(loaded.session.messages()))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppendToolResultRequest {
-    pub thread_id: String,
-    pub tool_call_id: String,
-    /// Tool name — required for replay/debugging even though it's redundant
-    /// with the tool_call event (parser doesn't index back-references).
-    pub tool_name: String,
-    pub content: String,
-    pub is_error: bool,
-    /// Set when the result was clamped to a length budget before persistence.
-    pub truncated: Option<bool>,
-    pub original_length: Option<usize>,
-    pub duration_ms: Option<u64>,
-}
-
-#[tauri::command]
-pub fn thread_append_tool_result(
-    request: AppendToolResultRequest,
-    log: State<'_, Arc<ThreadEventLog>>,
-    app: AppHandle,
-) -> Result<String, String> {
-    let event_id = log
-        .append_tool_result(
-            &request.thread_id,
-            request.tool_call_id.clone(),
-            request.tool_name,
-            request.content.clone(),
-            request.is_error,
-            request.truncated.unwrap_or(false),
-            request.original_length,
-            request.duration_ms,
-        )
-        .map_err(|e| format!("Failed to append tool result: {e}"))?;
-
-    emit(
-        &app,
-        "thread-tool-completed",
-        &serde_json::json!({
-            "threadId": request.thread_id,
-            "toolId": request.tool_call_id,
-            "result": request.content,
-        }),
-    );
-    Ok(event_id)
-}
-
-// ============================================================
-// Cancellation (the user-facing Stop button)
-// ============================================================
-
-/// Append a cancellation event to the live turn, synthesising error tool
-/// results for any unfinished tool calls. Re-projects the in-memory context
-/// manager so the next request reflects the new state.
+/// Cancel any in-flight turn on a thread. The new agent runtime owns
+/// turn lifecycle through `agent_cancel(turn_id)` — this command
+/// keeps the frontend's existing "Stop" button working by clearing
+/// the thread's in-memory context manager so the next request starts
+/// from the persisted JSONL only.
 ///
-/// Replaces the old `context_discard_current_turn` command — instead of
-/// discarding work, we preserve the conversation history and let the model
-/// see exactly what completed and what didn't.
-///
-/// Two reconciliation paths exist depending on what made it to disk:
-///
-/// 1. **JSONL has the turn** (`append_cancellation` returns `Some`): rebuild
-///    the in-memory `ContextManager` from the projected turns. The JSONL is
-///    authoritative because it just received synthesised tool-result events
-///    for every unfinished call.
-///
-/// 2. **JSONL has nothing to cancel** (`append_cancellation` returns `None`):
-///    the conversation hasn't been persisted via the per-event commands yet
-///    (transitional period, or a cancel that raced persistence). Falling
-///    through to `init_context_from_turns(empty)` here would wipe the live
-///    `ContextManager` and lose the in-flight turn — exactly the "AI forgot
-///    what it was doing" regression. Instead, synthesise the cancellation
-///    *in-place* on the live manager so the next request still sees
-///    coherent `tool_call` ↔ `tool_result` pairs.
+/// Returns `Some("session")` when context was cleared, `None` when
+/// the thread had no live state. The exact return shape doesn't
+/// matter; the frontend treats it as a fire-and-forget.
 #[tauri::command]
 pub fn thread_cancel_current_turn(
     thread_id: String,
-    reason: Option<String>,
-    log: State<'_, Arc<ThreadEventLog>>,
-    streams: State<'_, Arc<ActiveStreams>>,
+    _reason: Option<String>,
     app: AppHandle,
 ) -> Result<Option<String>, String> {
-    // Drop any active streams for this thread first — their content is now
-    // stale because the turn has been cancelled.
-    {
-        let mut map = streams.0.write();
-        map.retain(|_, s| s.thread_id != thread_id);
-    }
-
-    let parsed = parse_cancel_reason(reason.as_deref());
-
-    let cancelled_turn = log
-        .append_cancellation(&thread_id, parsed)
-        .map_err(|e| format!("Failed to record cancellation: {e}"))?;
-
-    if cancelled_turn.is_some() {
-        // JSONL just absorbed the cancellation — re-seed the in-memory
-        // ContextManager from disk so the next request matches byte-for-byte.
-        let projection = log
-            .project_thread(&thread_id)
-            .map_err(|e| format!("Failed to project thread: {e}"))?;
-        let context_window = projection.settings.context_window.unwrap_or(128_000);
-        let max_output = projection.settings.max_output.unwrap_or(8_192);
-        let mut all_turns = projection.turns.clone();
-        if let Some(t) = projection.current_turn.clone() {
-            all_turns.push(t);
-        }
-        let _ = crate::context::manager::init_context_from_turns(
-            &thread_id,
-            all_turns,
-            context_window,
-            max_output,
-        );
-    } else {
-        // Nothing in JSONL to cancel — the live ContextManager owns the turn.
-        // Cancel in-place so we preserve every tool call/result accumulated so
-        // far via the legacy `context_add_*` commands.
-        let _ = crate::context::manager::atomic_cancel_current_turn_in_place(&thread_id);
-    }
-
+    crate::context::manager::remove_context(&thread_id);
     emit(
         &app,
         "thread-cancelled",
         &serde_json::json!({
             "threadId": thread_id,
-            "turnId": cancelled_turn,
-            "reason": format!("{parsed:?}").to_lowercase(),
+            "reason": "user_stop",
         }),
     );
-
-    Ok(cancelled_turn)
+    Ok(Some("session".to_string()))
 }
 
-fn parse_cancel_reason(s: Option<&str>) -> CancelReason {
-    match s.unwrap_or("user_stop").to_ascii_lowercase().as_str() {
-        "provider_error" | "provider-error" | "providererror" => CancelReason::ProviderError,
-        "tool_timeout" | "tool-timeout" => CancelReason::ToolTimeout,
-        "internal_error" | "internal-error" => CancelReason::InternalError,
-        _ => CancelReason::UserStop,
-    }
-}
-
-// ============================================================
-// Tests — wire-format adapters only; storage tests live in threads/store.rs.
-// ============================================================
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::threads::events::ThreadEvent;
-    use crate::threads::projector;
+    use crate::agent_runtime::types::TokenUsage as RuntimeTokenUsage;
 
-    #[test]
-    fn sanitize_user_message_extracts_user_query_from_legacy_blob() {
-        let polluted = "<execution_mode_context authoritative=\"true\" mode=\"agent\">\n\
-            stuff\n\
-            </execution_mode_context>\n\n\
-            <user_info>\nOS: Windows\n</user_info>\n\n\
-            <project_layout>\nE:\\Foo/\n</project_layout>\n\n\
-            <user_query>\n start \n</user_query>";
-        assert_eq!(sanitize_user_message_for_display(polluted), "start");
+    fn user_msg(text: &str, ts: i64) -> ConversationMessage {
+        ConversationMessage::user_text(text, ts)
     }
 
-    #[test]
-    fn sanitize_user_message_strips_attached_context_inside_user_query() {
-        let polluted = "<execution_mode_context></execution_mode_context>\n\n\
-            <user_query>\n\
-            <attached_context description=\"x\">\n  Rules: docs-writer\n</attached_context>\n\n\
-            start\n\
-            </user_query>";
-        assert_eq!(sanitize_user_message_for_display(polluted), "start");
-    }
-
-    #[test]
-    fn sanitize_user_message_passthrough_for_clean_input() {
-        assert_eq!(
-            sanitize_user_message_for_display("write a poem"),
-            "write a poem"
-        );
-        assert_eq!(
-            sanitize_user_message_for_display("multi\nline\nbody"),
-            "multi\nline\nbody"
-        );
-    }
-
-    #[test]
-    fn projection_to_messages_flattens_user_assistant_pairs() {
-        let session = ThreadEvent::session("t1", Some("Chat".into()));
-        let user = ThreadEvent::user_message("t1", session.id(), "hi", None, None);
-        let asst = ThreadEvent::AssistantMessage {
-            id: "asst1".into(),
-            parent_id: user.id().into(),
-            thread_id: "t1".into(),
-            turn_id: user.id().into(),
-            timestamp: "now".into(),
-            content: "hello".into(),
-            thinking: Some("thinking".into()),
-            tool_calls: vec![EventToolCall {
-                id: "c1".into(),
-                name: "file_read".into(),
-                arguments: "{}".into(),
+    fn assistant_text(text: &str, ts: i64) -> ConversationMessage {
+        ConversationMessage::assistant(
+            vec![ContentBlock::Text {
+                text: text.to_string(),
             }],
-        };
-        let result = ThreadEvent::ToolResult {
-            id: "r1".into(),
-            parent_id: asst.id().into(),
-            thread_id: "t1".into(),
-            turn_id: user.id().into(),
-            timestamp: "now".into(),
-            tool_call_id: "c1".into(),
-            tool_name: "file_read".into(),
-            content: "ok".into(),
-            is_error: false,
-            truncated: false,
-            original_length: None,
-            duration_ms: None,
-        };
-
-        let projection = projector::project("t1", &[session, user, asst, result]);
-        let messages = projection_to_messages(&projection);
-        assert_eq!(messages.len(), 2, "user + assistant");
-        assert_eq!(messages[0].role, "user");
-        assert_eq!(messages[1].role, "assistant");
-        let calls = messages[1].tool_calls.as_ref().expect("tool_calls present");
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].result.as_deref(), Some("ok"));
+            ts,
+        )
     }
 
-    #[test]
-    fn parse_cancel_reason_defaults_to_user_stop() {
-        assert!(matches!(parse_cancel_reason(None), CancelReason::UserStop));
-        assert!(matches!(
-            parse_cancel_reason(Some("user_stop")),
-            CancelReason::UserStop
-        ));
-        assert!(matches!(
-            parse_cancel_reason(Some("provider_error")),
-            CancelReason::ProviderError
-        ));
-        assert!(matches!(
-            parse_cancel_reason(Some("tool_timeout")),
-            CancelReason::ToolTimeout
-        ));
-        assert!(matches!(
-            parse_cancel_reason(Some("internal_error")),
-            CancelReason::InternalError
-        ));
-        assert!(matches!(
-            parse_cancel_reason(Some("garbage")),
-            CancelReason::UserStop
-        ));
+    fn assistant_with_tool(tool_id: &str, name: &str, input: serde_json::Value, ts: i64) -> ConversationMessage {
+        ConversationMessage::assistant(
+            vec![
+                ContentBlock::Text {
+                    text: "running tool".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: tool_id.to_string(),
+                    name: name.to_string(),
+                    input,
+                },
+            ],
+            ts,
+        )
     }
 
-    #[test]
-    fn projection_to_summary_uses_turn_count() {
-        let session = ThreadEvent::session("t1", Some("Title".into()));
-        let user = ThreadEvent::user_message("t1", session.id(), "x", None, None);
-        let projection = projector::project("t1", &[session, user]);
-        let summary = projection_to_summary(&projection);
-        assert_eq!(summary.message_count, 1, "current turn counts as 1");
-        assert_eq!(summary.title, "Title");
-    }
-
-        /// Sanity guard so we don't accidentally remove the truncation logic that
-        /// keeps tool results within budget.
-        #[test]
-        fn max_tool_result_length_is_set() {
-            use crate::context::types::MAX_TOOL_RESULT_LENGTH;
-            assert!(MAX_TOOL_RESULT_LENGTH > 0);
+    fn tool_result(tool_id: &str, content: &str, ts: i64) -> ConversationMessage {
+        ConversationMessage {
+            role: MessageRole::Tool,
+            blocks: vec![ContentBlock::ToolResult {
+                tool_use_id: tool_id.to_string(),
+                content: content.to_string(),
+                is_error: None,
+            }],
+            usage: None,
+            timestamp: ts,
         }
+    }
+
+    #[test]
+    fn user_message_round_trips_text_only() {
+        let messages = vec![user_msg("hello", 1)];
+        let db = session_to_db_messages(&messages);
+        assert_eq!(db.len(), 1);
+        assert_eq!(db[0].role, "user");
+        assert_eq!(db[0].content, "hello");
+        assert!(db[0].tool_calls.is_none());
+    }
+
+    #[test]
+    fn assistant_message_collapses_text_and_thinking() {
+        let assistant = ConversationMessage::assistant(
+            vec![
+                ContentBlock::Thinking {
+                    text: "reasoning step".into(),
+                    signature: None,
+                },
+                ContentBlock::Text {
+                    text: "answer".into(),
+                },
+            ],
+            10,
+        );
+        let db = session_to_db_messages(&[assistant]);
+        assert_eq!(db[0].role, "assistant");
+        assert_eq!(db[0].content, "answer");
+        assert_eq!(db[0].thinking.as_deref(), Some("reasoning step"));
+    }
+
+    #[test]
+    fn tool_result_folds_into_prior_assistant_tool_call() {
+        let messages = vec![
+            user_msg("ls", 1),
+            assistant_with_tool("call-1", "list_dir", serde_json::json!({"path": "."}), 2),
+            tool_result("call-1", "FILES: a.rs b.rs", 3),
+        ];
+        let db = session_to_db_messages(&messages);
+        // user + assistant only — Tool messages are folded.
+        assert_eq!(db.len(), 2);
+        let assistant = &db[1];
+        let calls = assistant.tool_calls.as_ref().expect("tool_calls present");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call-1");
+        assert_eq!(calls[0].name, "list_dir");
+        assert_eq!(calls[0].result.as_deref(), Some("FILES: a.rs b.rs"));
+    }
+
+    #[test]
+    fn tool_result_error_is_prefixed_in_db_shape() {
+        let messages = vec![
+            assistant_with_tool("c", "x", serde_json::json!({}), 1),
+            ConversationMessage {
+                role: MessageRole::Tool,
+                blocks: vec![ContentBlock::ToolResult {
+                    tool_use_id: "c".into(),
+                    content: "boom".into(),
+                    is_error: Some(true),
+                }],
+                usage: None,
+                timestamp: 2,
+            },
+        ];
+        let db = session_to_db_messages(&messages);
+        let assistant = &db[0];
+        let calls = assistant.tool_calls.as_ref().unwrap();
+        assert_eq!(calls[0].result.as_deref(), Some("[error] boom"));
+    }
+
+    #[test]
+    fn api_history_emits_role_tagged_messages() {
+        let messages = vec![
+            user_msg("hi", 1),
+            assistant_text("hello", 2),
+            assistant_with_tool("c", "ping", serde_json::json!({}), 3),
+            tool_result("c", "pong", 4),
+        ];
+        let api = session_to_api_messages(&messages);
+        assert_eq!(api.len(), 4, "user / assistant text / assistant tool_use / tool result");
+        match &api[0] {
+            ApiMessage::User { content } => assert_eq!(content, "hi"),
+            other => panic!("expected user, got {other:?}"),
+        }
+        match &api[3] {
+            ApiMessage::Tool {
+                tool_call_id,
+                content,
+            } => {
+                assert_eq!(tool_call_id, "c");
+                assert_eq!(content, "pong");
+            }
+            other => panic!("expected tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn api_history_skips_empty_assistant_messages() {
+        let messages = vec![ConversationMessage::assistant(vec![], 1)];
+        let api = session_to_api_messages(&messages);
+        assert!(api.is_empty(), "empty assistant blocks should be skipped");
+    }
+
+    #[test]
+    fn token_meta_round_trips_through_db_shape() {
+        let original = TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+        };
+        let meta = db_token_to_meta(&original);
+        let back = meta_to_db_token(&meta);
+        assert_eq!(back.prompt_tokens, 100);
+        assert_eq!(back.completion_tokens, 50);
+        assert_eq!(back.total_tokens, 150);
+
+        // Use the runtime-side TokenUsage just to make sure the
+        // metadata layer doesn't accidentally collide with it.
+        let _ = RuntimeTokenUsage::default();
+    }
+
+    #[test]
+    fn synthetic_message_id_is_deterministic() {
+        let id1 = synthetic_message_id("user", 42, 0);
+        let id2 = synthetic_message_id("user", 42, 0);
+        assert_eq!(id1, id2);
+        assert_ne!(synthetic_message_id("user", 42, 1), id1);
+    }
 }

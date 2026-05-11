@@ -38,6 +38,7 @@ import { OnboardingModal } from "./components/modals/OnboardingModal";
 import { QuickOpenModal } from "./components/modals/QuickOpenModal";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { initializeSystemInfo } from "./services/context-builder";
+import { installAgentIdeListeners } from "./services/agent-ide-events";
 import { useLocalProviderDetection } from "./hooks/useLocalProviderDetection";
 
 // Global handler to suppress Tauri stream cancellation errors
@@ -108,6 +109,23 @@ function App() {
     // Initialize system info cache for context builder
     initializeSystemInfo();
   }, [initializeFromDatabase, initializeSettings]);
+
+  // Subscribe to the Rust agent's IDE-event bus once the app mounts.
+  // These listeners wire `agent_editor_open` → Monaco, `agent_todo_write`
+  // → task store, and `agent_read_lints` → debug log. Without them the
+  // Rust `editor_open_file` / `todo_write` tools are no-ops in the UI.
+  useEffect(() => {
+    let dispose: (() => void) | null = null;
+    let cancelled = false;
+    void installAgentIdeListeners().then((cleanup) => {
+      if (cancelled) cleanup();
+      else dispose = cleanup;
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
 
   // Disable default context menu globally (except for text-selectable areas)
   useEffect(() => {

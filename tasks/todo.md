@@ -1,5 +1,26 @@
 # Task Checklist
 
+## Active Task: Tauri Dev Linker Cache Guard
+
+- [in_progress] Diagnose the recurring Windows `rust-lld` anonymous-symbol failure in `pnpm tauri dev`.
+- [pending] Add a targeted dev-build recovery path that avoids full dependency rebuilds.
+- [pending] Validate the wrapper behavior and TypeScript/Node syntax.
+- [pending] Record root cause, changes, and verification evidence.
+
+## Active Task: Rust Agent Tool Card Wiring
+
+- [completed] Trace Rust tool/permission event flow and frontend tool-card adapter.
+- [completed] Patch the minimal backend/frontend contract issues that break tool card lifecycle.
+- [completed] Add or update focused regression tests for tool events.
+- [completed] Run focused Rust/frontend validation and record the review trail.
+
+## Active Task: Agent Runtime Response Path Fix
+
+- [completed] Reproduce and locate where selected-model chat responses stop reaching the UI.
+- [completed] Patch the minimal Rust/TypeScript runtime wiring issue.
+- [completed] Run focused frontend and Rust validation.
+- [completed] Record root cause, changes, and verification evidence.
+
 ## Active Task: Theme Documentation and Bonus Theme
 
 - [completed] Inspect existing theme schema, docs, and theme examples.
@@ -478,3 +499,61 @@
 - Verification: `pnpm exec tsc --noEmit` passed.
 - Verification: `pnpm crispasr:package -- --help` passed.
 - Verification: `pnpm build` passed with only the existing chunk-size warning.
+
+## Active Task: Claw Code Rust Reference Analysis
+
+- [completed] Inspect the Claw Code Rust project structure, README, and local guidance.
+- [completed] Map its agent/tool/context architecture against Aurora's current implementation.
+- [completed] Identify portable patterns that could make Aurora's agent stronger without broad churn.
+- [completed] Update this review section with findings and next-step recommendations.
+
+# Review Addendum: Claw Code Rust Reference Analysis
+
+- Read Claw's Rust workspace README/PARITY/mock-harness docs plus the core runtime, provider, tool, permission, file, bash, MCP, prompt, compaction, session, and sub-agent paths under `E:\VOID-EDITOR\claw-code\rust`.
+- Aurora currently keeps the high-level agent loop and tool execution orchestration in TypeScript, while Claw centralizes the loop in Rust through `ConversationRuntime<C, T>` with explicit `ApiClient` and `ToolExecutor` traits.
+- The clearest Aurora gap found during comparison is context budgeting: Aurora's Rust `MessageBuilder` receives a token budget but does not prune to it; Claw adds provider preflight guards and compaction health checks around the request path.
+- Claw's most portable patterns are request preflight/context-window blocking, deterministic mock-provider parity scenarios, backend-owned permission policy/enforcement, dynamic tool allow-lists/tool search, hardened shell/file boundaries, and MCP timeout/lifecycle reporting.
+- Recommended first port is small and low churn: enforce Aurora context budgets before provider streaming, then add Claw-style mock provider scenarios for multi-tool turns, denial, cancellation, MCP timeout, and oversized-context behavior.
+
+## Active Task: Agent Runtime Response Path Fix
+
+- [completed] Reproduce and locate where selected-model chat responses stop reaching the UI.
+- [completed] Patch the minimal Rust runtime turn-id wiring issue.
+- [completed] Run focused frontend and Rust validation.
+- [completed] Record root cause, changes, and verification evidence.
+
+# Review Addendum: Agent Runtime Response Path Fix
+
+- Root cause: `agent_chat_v2` registered the frontend-created turn id, but `ConversationRuntime::run_turn` generated a separate backend turn id for streamed `agent_event` envelopes and the final `agent_turn_complete` payload.
+- Impact: `AgentRuntimeClient.chat()` filtered every token, thinking, tool, and completion event out as unrelated, so sending a message could leave the UI with no visible response even after the backend finished.
+- Fix: added `ConversationRuntime::run_turn_with_id` and updated the Tauri turn driver to pass the frontend turn id through the backend runtime.
+- Regression coverage: extended the happy-path backend test to assert streamed events and completion summaries keep the caller-provided turn id.
+- Verification: `rustfmt --edition 2021 --check src-tauri\src\agent_runtime\conversation.rs src-tauri\src\commands\agent_v2.rs` passed.
+- Verification: `pnpm exec tsc --noEmit -p tsconfig.app.json` passed.
+- Verification: `pnpm exec vitest run src/services/agent-runtime-client.test.ts` passed.
+- Verification: `cargo check --manifest-path src-tauri\Cargo.toml --no-default-features --features cpu-only` passed.
+- Verification: `cargo test --manifest-path src-tauri\Cargo.toml happy_path_emits_events_persists_session_no_tools --no-run --no-default-features --features cpu-only` passed.
+- Verification: `pnpm build` passed with only the existing Vite chunk-size warning.
+- Note: executing the focused Rust test binary is still blocked in this Windows shell by `STATUS_ENTRYPOINT_NOT_FOUND` from native DLL loading before the Rust test runs; compilation and type checking pass.
+
+## Active Task: Rust Agent Tool Card Wiring
+
+- [completed] Trace Rust tool/permission event flow and frontend tool-card adapter.
+- [completed] Patch the minimal backend/frontend contract issues that break tool card lifecycle.
+- [completed] Add or update focused regression tests for tool events.
+- [completed] Run focused Rust/frontend validation and record the review trail.
+
+# Review Addendum: Rust Agent Tool Card Wiring
+
+- Root cause: after the Rust migration, native tools emitted only the model `tool_use` intent. The UI created a pending card from that event, but native Rust execution never called the existing `onToolExecutionStart`, `onToolExecutionComplete`, or `onToolExecutionError` callbacks, so the final cleanup sweep marked cards as `Request ended before tool completed`.
+- Fix: added Rust `tool_execution_start` and `tool_execution_result` assistant events for native tools, and marked frontend bridge executors as lifecycle-owned by TypeScript so MCP bridge tools do not double-report.
+- Fix: mapped the new Rust lifecycle events in `AgentRuntimeClient` to the existing UI callbacks, including an idempotent `onToolCall` before native start so a card exists even if a provider adapter did not stream a separate `tool_use`.
+- Regression coverage: expanded the Rust conversation test to assert the native tool lifecycle sequence and expanded the runtime-client test to assert start, completion, and error callback routing.
+- Production cleanup: removed normal-turn `console.log` breadcrumbs from the runtime client; error diagnostics remain.
+- Verification: `rustfmt --edition 2021 --check src-tauri\src\agent_runtime\events.rs src-tauri\src\agent_runtime\tool_executor.rs src-tauri\src\agent_runtime\bridge.rs src-tauri\src\agent_runtime\conversation.rs` passed.
+- Verification: `pnpm exec tsc --noEmit -p tsconfig.app.json` passed.
+- Verification: `pnpm exec vitest run src/services/agent-runtime-client.test.ts` passed.
+- Verification: `pnpm exec eslint src\services\agent-runtime-client.ts` passed.
+- Verification: `cargo check --manifest-path src-tauri\Cargo.toml --no-default-features --features cpu-only` passed.
+- Verification: `pnpm build` passed with only the existing Vite chunk-size warning.
+- Note: `cargo test --manifest-path src-tauri\Cargo.toml run_turn_dispatches_tool_then_loops_for_final_text --no-run --no-default-features --features cpu-only` still fails during the Windows `rust-lld` link step for the test cdylib with undefined symbols from `core`/`serde_json`/Tauri plugin object code. This occurs after Rust compilation and is separate from the source-level `cargo check` path.

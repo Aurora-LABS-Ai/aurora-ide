@@ -28,11 +28,11 @@
 
 import React, { memo, useState, useCallback } from 'react';
 import type { FileNode } from '../../types';
-import { useWorkspaceStore, loadFileContent } from '../../store/useWorkspaceStore';
+import { useWorkspaceStore, loadFileMeta } from '../../store/useWorkspaceStore';
 import { useEditorStore } from '../../store/useEditorStore';
 import { useTerminalStore } from '../../store/useTerminalStore';
 import { ContextMenu } from '../ui/ContextMenu';
-import { fileCache } from '../../lib/file-cache';
+import { statFileMtime } from '../../lib/file-cache';
 import { createFile, createFolder, deletePath, renamePath, isTauri, revealInExplorer } from '../../lib/tauri';
 import { getLanguageFromExtension, joinPath } from '../../lib/file-utils';
 import {
@@ -114,7 +114,7 @@ const TreeNodeComponent: React.FC<TreeNodeProps> = ({
   const loadFreshContentIntoTab = useCallback(
     async (fileId: string, filename: string, language: string | undefined, requestId: number) => {
       try {
-        const content = await loadFileContent(nodePath);
+        const { content, mtime } = await loadFileMeta(nodePath);
 
         if (requestId !== latestLoadRequestId) {
           return;
@@ -126,6 +126,7 @@ const TreeNodeComponent: React.FC<TreeNodeProps> = ({
           content,
           language,
           false,
+          mtime,
         );
       } catch (err) {
         if (requestId !== latestLoadRequestId) {
@@ -170,18 +171,31 @@ const TreeNodeComponent: React.FC<TreeNodeProps> = ({
           return;
         }
 
-        // Fast-path: if the FE cache still has this file's content (mtime
-        // validated lazily on next miss), we can avoid a refresh-from-disk
-        // entirely. This was the source of the "loading and loading" symptom
-        // when the IPC channel was busy: every tab click queued a fresh read
-        // even when the tab was already perfectly up to date.
-        const cached = fileCache.get(nodePath);
-        if (cached !== null && cached === existingTab.content) {
+        // Fast path: if we know when this tab last loaded from disk, ask
+        // Rust for the current mtime in the background. The tab stays on
+        // screen with its existing content (no spinner, no flash) and we
+        // only kick a refresh when the disk is genuinely newer. This is
+        // what eliminates the "loading and loading" feel — clicks between
+        // already-open tabs are instant, and stale content is impossible
+        // because the fs watcher also invalidates the Rust cache.
+        if (typeof existingTab.mtime === "number") {
+          void statFileMtime(nodePath).then((currentMtime) => {
+            if (requestId !== latestLoadRequestId) return;
+            if (currentMtime !== 0 && currentMtime === existingTab.mtime) {
+              return;
+            }
+            void loadFreshContentIntoTab(
+              fileId,
+              existingTab.filename,
+              existingTab.language,
+              requestId,
+            );
+          });
           return;
         }
 
-        // Otherwise refresh from disk in the background but keep the current
-        // content visible (no spinner) so the user can read while we re-sync.
+        // No mtime recorded (legacy tab) — fall back to an unconditional
+        // background refresh, again keeping the current content visible.
         await loadFreshContentIntoTab(
           fileId,
           existingTab.filename,

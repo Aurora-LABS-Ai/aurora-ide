@@ -91,36 +91,48 @@ export const TabBar: React.FC = () => {
           borderColor: 'color-mix(in srgb, var(--aurora-common-border) 72%, transparent)',
         }}
       >
-      {/* Undo/Redo buttons - at the start where editor begins */}
-      <div className="flex shrink-0 items-center gap-1 border-r border-border px-2">
+      {/*
+        Undo / Redo controls.
+
+        These delegate directly to the active Monaco editor, which now owns
+        the canonical per-buffer undo stack (AI tool writes are routed
+        through `replaceMonacoFileContent`, so they appear as one entry on
+        the same stack — Ctrl+Z reverts a paste, an AI edit, or a manual
+        keystroke uniformly).
+
+        Visually they're flat ghost buttons that sit inside the tab strip's
+        chrome — no inset shadow or pill outline, so they don't draw the
+        eye away from the actual tabs.
+      */}
+      <div className="flex shrink-0 items-center gap-0.5 px-1">
         <button
+          type="button"
           onMouseDown={(e) => e.preventDefault()}
           onClick={triggerMonacoUndo}
-          className="flex h-7 w-7 items-center justify-center rounded-[6px] text-text-secondary transition-colors hover:text-text-primary"
-          style={{
-            background: 'color-mix(in srgb, var(--aurora-common-secondary) 72%, var(--aurora-title-bar-background) 28%)',
-            border: '1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)',
-            boxShadow:
-              'inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent)',
-          }}
+          className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-tabs-active hover:text-text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40"
           title="Undo (Ctrl+Z)"
+          aria-label="Undo"
         >
-          <Undo2 className="w-3.5 h-3.5" />
+          <Undo2 className="h-3.5 w-3.5" />
         </button>
         <button
+          type="button"
           onMouseDown={(e) => e.preventDefault()}
           onClick={triggerMonacoRedo}
-          className="flex h-7 w-7 items-center justify-center rounded-[6px] text-text-secondary transition-colors hover:text-text-primary"
-          style={{
-            background: 'color-mix(in srgb, var(--aurora-common-secondary) 72%, var(--aurora-title-bar-background) 28%)',
-            border: '1px solid color-mix(in srgb, var(--aurora-common-border) 58%, transparent)',
-            boxShadow:
-              'inset 0 1px 0 color-mix(in srgb, var(--aurora-common-primary-foreground) 4%, transparent)',
-          }}
+          className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-tabs-active hover:text-text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40"
           title="Redo (Ctrl+Y)"
+          aria-label="Redo"
         >
-          <Redo2 className="w-3.5 h-3.5" />
+          <Redo2 className="h-3.5 w-3.5" />
         </button>
+        <span
+          aria-hidden
+          className="mx-1 h-4 w-px"
+          style={{
+            backgroundColor:
+              'color-mix(in srgb, var(--aurora-common-border) 60%, transparent)',
+          }}
+        />
       </div>
       
       {/* Tabs - scrollable */}

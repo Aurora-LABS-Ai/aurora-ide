@@ -481,6 +481,22 @@ export const useThreadStore = create<ThreadState>()(
                 err,
               ),
             );
+
+          // Pre-register the thread in the Rust context engine so the
+          // first `syncFromRust(threadId)` call after the agent
+          // completes succeeds instead of erroring with
+          // "Context not found for thread". Empty `turns` is fine —
+          // the engine just gets an initialized manager keyed on this
+          // thread id; subsequent turns will fill it in.
+          useContextStore
+            .getState()
+            .initFromThread(threadId, [])
+            .catch((err) =>
+              console.error(
+                "[ThreadStore] Failed to pre-register context for new thread:",
+                err,
+              ),
+            );
         }
 
         return threadId;

@@ -29,11 +29,13 @@ interface EditorState {
     content: string,
     language?: string,
     isLoading?: boolean,
+    mtime?: number,
   ) => void;
   reloadTabContent: (
     tabId: string,
     content: string,
     isLoading?: boolean,
+    mtime?: number,
   ) => void;
   requestEditorReveal: (
     tabId: string,
@@ -83,7 +85,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   editorRevealRequest: null,
   fontSize: 14,
 
-  openFile: (fileId, filename, content, language, isLoading = false) => {
+  openFile: (fileId, filename, content, language, isLoading = false, mtime) => {
     const { tabs, setActiveTab, reloadTabContent } = get();
     const existingTab = tabs.find((t) => t.id === fileId);
 
@@ -92,9 +94,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       // so clear the loading state even when the content itself did not change.
       if (
         existingTab.content !== content ||
-        existingTab.isLoading !== isLoading
+        existingTab.isLoading !== isLoading ||
+        (typeof mtime === "number" && existingTab.mtime !== mtime)
       ) {
-        reloadTabContent(fileId, content, isLoading);
+        reloadTabContent(fileId, content, isLoading, mtime);
       }
       setActiveTab(fileId);
       return;
@@ -114,20 +117,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       isMediumFile,
       isLoading,
       language: effectiveLanguage,
+      mtime,
     };
 
     set({ tabs: [...tabs, newTab], activeTabId: fileId });
 
     if (!isLargeFile) {
-      // Initialize undo/redo tracking for this file
-      queueMicrotask(async () => {
-        try {
-          const { undoRedoService } = await import("../services/undo-redo");
-          await undoRedoService.initFile(fileId, content);
-        } catch {
-          // Ignore undo init errors
-        }
-      });
+      // Note: per-file undo/redo state is owned by Monaco's TextModel now.
+      // AI tool writes go through `replaceMonacoFileContent`, which uses
+      // `pushEditOperations` and lands as one entry on Monaco's native
+      // stack. The legacy Rust `undo_redo` service that used to be eagerly
+      // initialised here is no longer in the active path.
 
       // PERFORMANCE: Preload sibling files in background for faster subsequent opens
       // This makes clicking between files in the same folder instant
@@ -212,7 +212,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     })),
 
   // Reload content from external source (e.g., fs watcher) - doesn't mark dirty
-  reloadTabContent: (tabId, content, isLoading = false) => {
+  reloadTabContent: (tabId, content, isLoading = false, mtime) => {
     return set((state) => ({
       tabs: state.tabs.map((tab) => {
         if (tab.id !== tabId) return tab;
@@ -228,6 +228,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           isMediumFile,
           isLoading,
           language: isLargeFile ? "plaintext" : tab.language,
+          // Only override mtime when caller actually passed one. Undefined
+          // means "leave the existing value" so legacy reloaders don't
+          // accidentally drop a previously-recorded freshness stamp.
+          mtime: typeof mtime === "number" ? mtime : tab.mtime,
         };
       }),
     }));

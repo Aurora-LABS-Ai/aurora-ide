@@ -9,6 +9,7 @@ import type { ToolDefinition } from "../types";
 // ============================================
 export const folderCreateTool: ToolDefinition = {
   type: 'function',
+  nativeRustOwned: true,
   function: {
     name: 'folder_create',
     description: 'Create a new folder/directory at the specified path. Creates parent directories if they do not exist.',
@@ -55,6 +56,7 @@ export const folderMoveTool: ToolDefinition = {
 // ============================================
 export const folderDeleteTool: ToolDefinition = {
   type: 'function',
+  nativeRustOwned: true,
   function: {
     name: 'folder_delete',
     description: 'Delete a folder and all its contents. This action is irreversible.',
@@ -76,6 +78,7 @@ export const folderDeleteTool: ToolDefinition = {
 // ============================================
 export const workspaceTreeTool: ToolDefinition = {
   type: 'function',
+  nativeRustOwned: true,
   function: {
     name: 'workspace_tree',
     description: `Get the directory tree structure of the workspace or a specific directory. Returns a hierarchical view of files and folders.

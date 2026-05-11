@@ -11,6 +11,7 @@ import type { ToolDefinition } from "../types";
 // ============================================
 export const auroroWebSearchTool: ToolDefinition = {
   type: 'function',
+  nativeRustOwned: true,
   function: {
     name: 'auroro_websearch',
     description: `**NATIVE WEB SEARCH + PAGE FETCH** powered by Aurora WebSearch SDK (DuckDuckGo backend).

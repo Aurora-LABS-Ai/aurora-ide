@@ -7,6 +7,7 @@
 import { create } from "zustand";
 
 import { isTauri, readFileContent, writeFileContent } from "../lib/tauri";
+import { replaceMonacoFileContent } from "../lib/monaco-editor-ref";
 import { useSettingsStore } from "./useSettingsStore";
 
 interface PendingChangesState {
@@ -81,10 +82,15 @@ export const usePendingChangesStore = create<PendingChangesState>((set, get) => 
             // Auto-accept: don't add to pending, just log and return empty id
             console.log(`[PendingChanges] Auto-accepted: ${change.operation} ${change.filePath}`);
             
-            // Update editor tab if open (file is already written to disk)
+            // Update editor tab if open (file is already written to disk).
+            // Route through Monaco's undoable pipeline first so a native
+            // Ctrl+Z reverts the AI edit; the React state reload that
+            // follows is a no-op for Monaco (values match) and only
+            // resets the dirty flag.
             import('./useEditorStore').then(({ useEditorStore }) => {
                 const tab = useEditorStore.getState().tabs.find(t => t.path === change.filePath);
                 if (tab && change.content) {
+                    replaceMonacoFileContent(change.filePath, change.content);
                     useEditorStore.getState().reloadTabContent(tab.id, change.content);
                 }
             }).catch(() => {});
@@ -123,12 +129,14 @@ export const usePendingChangesStore = create<PendingChangesState>((set, get) => 
             return { success: false, error: 'Change already processed' };
         }
 
-        // File is already on disk (Cursor-style), reload editor to show the new content
+        // File is already on disk (Cursor-style). Route through Monaco's
+        // undoable edit so the user can press Ctrl+Z to revert this AI
+        // change as one entry on the buffer's native undo stack.
         try {
             const { useEditorStore } = await import('./useEditorStore');
             const tab = useEditorStore.getState().tabs.find(t => t.path === change.filePath);
             if (tab && change.content) {
-                // Reload tab with the new content that's now on disk
+                replaceMonacoFileContent(change.filePath, change.content);
                 useEditorStore.getState().reloadTabContent(tab.id, change.content);
                 console.log(`[PendingChanges] Reloaded editor content: ${change.filePath}`);
             }
@@ -170,10 +178,12 @@ export const usePendingChangesStore = create<PendingChangesState>((set, get) => 
                 await writeFileContent(change.filePath, change.originalContent);
                 console.log(`[PendingChanges] Rejected & reverted: ${change.filePath}`);
 
-                // Update editor tab content to show reverted content
+                // Update editor tab content to show reverted content.
+                // Apply through Monaco so the revert itself is undoable.
                 const { useEditorStore } = await import('./useEditorStore');
                 const tab = useEditorStore.getState().tabs.find(t => t.path === change.filePath);
                 if (tab) {
+                    replaceMonacoFileContent(change.filePath, change.originalContent);
                     useEditorStore.getState().reloadTabContent(tab.id, change.originalContent);
                 }
             }

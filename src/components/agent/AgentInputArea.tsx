@@ -143,6 +143,18 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     selectedModelOption?.label ||
     (availableModels.length > 0 ? "Select Model" : "No Models");
 
+  // Catalog of `/` prompt picker entries (rules + skills). Auto-refreshes when
+  // files in the prompt-asset folders change so newly-placed rules / skills
+  // show up immediately, and exposes `refreshCatalog()` for the open-slash
+  // safety net below (covers the global skills folder too).
+  // Must be declared BEFORE any memo that closes over `promptAssetCatalog`,
+  // otherwise the lexical binding is in TDZ when the memo factory first runs.
+  const { promptAssetCatalog, refreshCatalog } = usePromptAssetCatalog({
+    rootPath,
+    skillToggles,
+    skillsEnabled,
+  });
+
   const filteredPromptAssets = useMemo(() => {
     const activeQuery = (slashSearchQuery || slashQuery || "")
       .trim()
@@ -165,16 +177,6 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
       })
       .slice(0, 20);
   }, [attachedPromptAssets, promptAssetCatalog, slashQuery, slashSearchQuery]);
-
-  // Catalog of `/` prompt picker entries (rules + skills). Auto-refreshes when
-  // files in the prompt-asset folders change so newly-placed rules / skills
-  // show up immediately, and exposes `refreshCatalog()` for the open-slash
-  // safety net below (covers the global skills folder too).
-  const { promptAssetCatalog, refreshCatalog } = usePromptAssetCatalog({
-    rootPath,
-    skillToggles,
-    skillsEnabled,
-  });
 
   useEffect(() => {
     const { content: pending, replace } = consumePendingInput();

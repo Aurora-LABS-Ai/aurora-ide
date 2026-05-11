@@ -1,11 +1,17 @@
 /**
- * Thread Service - TypeScript wrapper for Rust thread operations
- * 
- * This service provides:
- * - Per-message persistence (messages saved immediately, not after streaming)
- * - Crash recovery (no data loss)
- * - Multi-window sync via Tauri events
- * - Accurate token counting via Rust tiktoken
+ * Thread Service - TypeScript wrapper for Rust thread operations.
+ *
+ * Backed by the agent_v2 SessionStore on the Rust side. Every command
+ * here delegates to a Tauri command in `commands::threads`, which in
+ * turn reads/writes the JSONL message log + metadata sidecar under
+ * `<app_data>/agent_v2/`.
+ *
+ * Thread events:
+ *   - `thread-created`       — fired by `thread_create`
+ *   - `thread-loaded`        — fired by `thread_load` / `thread_save`
+ *   - `thread-deleted`       — fired by `thread_delete`
+ *   - `thread-usage-updated` — fired by `thread_update_usage`
+ *   - `thread-cancelled`     — fired by `thread_cancel_current_turn`
  */
 
 import {
@@ -14,10 +20,8 @@ import {
   type AuroraUnlistenFn as UnlistenFn,
 } from '../lib/runtime';
 
-import type { Message } from '../types';
-
 // ============================================================
-// Types
+// Types — wire shapes returned by the Rust commands
 // ============================================================
 
 export interface ThreadSummary {
@@ -48,10 +52,17 @@ export interface DbMessage {
   role: string;
   content: string;
   timestamp: string;
-  tool_calls?: unknown[] | undefined;
-  thinking?: string;
-  isThinking?: boolean;
-  tools?: unknown[];
+  // serde renames the Rust `tool_calls` field through the
+  // `Message` model (which keeps snake_case for backwards-compat).
+  tool_calls?: Array<{
+    id: string;
+    name: string;
+    arguments: string;
+    result?: string | null;
+  }> | null;
+  thinking?: string | null;
+  isThinking?: boolean | null;
+  tools?: unknown[] | null;
   timeline?: unknown;
   toolProposal?: unknown;
 }
@@ -98,42 +109,6 @@ export interface ThreadDeletedEvent {
   threadId: string;
 }
 
-export interface ThreadMessageAddedEvent {
-  threadId: string;
-  message: DbMessage;
-}
-
-export interface ThreadMessageUpdatedEvent {
-  threadId: string;
-  messageId: string;
-  updates: Partial<Message>;
-}
-
-export interface ThreadTokenReceivedEvent {
-  threadId: string;
-  streamId: string;
-  token: string;
-}
-
-export interface ThreadThinkingReceivedEvent {
-  threadId: string;
-  streamId: string;
-  thinking: string;
-}
-
-export interface ThreadToolAddedEvent {
-  threadId: string;
-  streamId: string;
-  toolCall: unknown;
-}
-
-export interface ThreadToolCompletedEvent {
-  threadId: string;
-  streamId: string;
-  toolId: string;
-  result: string;
-}
-
 export interface ThreadUsageUpdatedEvent {
   threadId: string;
   tokenUsage: TokenUsage;
@@ -165,118 +140,28 @@ class ThreadServiceClass {
   private onThreadCreated?: (event: ThreadCreatedEvent) => void;
   private onThreadLoaded?: (event: ThreadLoadedEvent) => void;
   private onThreadDeleted?: (event: ThreadDeletedEvent) => void;
-  private onMessageAdded?: (event: ThreadMessageAddedEvent) => void;
-  private onMessageUpdated?: (event: ThreadMessageUpdatedEvent) => void;
-  private onTokenReceived?: (event: ThreadTokenReceivedEvent) => void;
-  private onThinkingReceived?: (event: ThreadThinkingReceivedEvent) => void;
-  private onToolAdded?: (event: ThreadToolAddedEvent) => void;
-  private onToolCompleted?: (event: ThreadToolCompletedEvent) => void;
   private onUsageUpdated?: (event: ThreadUsageUpdatedEvent) => void;
 
   // ============================================================
   // Thread Operations
   // ============================================================
 
-  /**
-   * Create a new thread
-   */
   async createThread(title?: string): Promise<DbThread> {
     return await invoke<DbThread>('thread_create', { title: title ?? null });
   }
 
-  /**
-   * Load a thread by ID
-   */
   async loadThread(threadId: string): Promise<DbThread | null> {
     return await invoke<DbThread | null>('thread_load', { threadId });
   }
 
-  /**
-   * Delete a thread
-   */
   async deleteThread(threadId: string): Promise<void> {
     await invoke('thread_delete', { threadId });
   }
 
-  /**
-   * List all threads (summaries for performance)
-   */
   async listThreads(): Promise<ThreadSummary[]> {
     return await invoke<ThreadSummary[]>('thread_list_summaries');
   }
 
-  /**
-   * Add a user message to thread (persists immediately).
-   *
-   * `content` MUST be the clean, user-typed text — this is what the chat
-   * bubble renders on reload. The IDE/runtime enrichment (execution_mode,
-   * user_info, project_rules, project_layout, agent_skills, open_files,
-   * attached_context, …) is passed separately via `ideContext` and combined
-   * with `content` only when constructing API messages for the LLM.
-   *
-   * Persisting them as separate fields prevents the entire XML enrichment
-   * from leaking into the user bubble when the thread is reloaded from JSONL.
-   */
-  async addUserMessage(
-    threadId: string,
-    content: string,
-    ideContext?: string | null,
-    attachments?: unknown[]
-  ): Promise<DbMessage> {
-    return await invoke<DbMessage>('thread_add_user_message', {
-      request: {
-        threadId,
-        content,
-        ideContext: ideContext ?? null,
-        attachments: attachments ?? null,
-      },
-    });
-  }
-
-  /**
-   * Start an assistant response stream
-   * Returns a stream_id for tracking subsequent updates
-   */
-  async startResponse(threadId: string): Promise<string> {
-    return await invoke<string>('thread_start_response', { threadId });
-  }
-
-  /**
-   * Append token to streaming response
-   */
-  async appendToken(streamId: string, token: string): Promise<void> {
-    await invoke('thread_append_token', { streamId, token });
-  }
-
-  /**
-   * Append thinking content to streaming response
-   */
-  async appendThinking(streamId: string, thinking: string): Promise<void> {
-    await invoke('thread_append_thinking', { streamId, thinking });
-  }
-
-  /**
-   * Add tool call to streaming response
-   */
-  async addToolCall(streamId: string, toolCall: unknown): Promise<void> {
-    await invoke('thread_add_tool_call', { streamId, toolCall });
-  }
-
-  /**
-   * Finalize response and persist to database
-   */
-  async finalizeResponse(streamId: string, timeline?: unknown): Promise<DbMessage> {
-    return await invoke<DbMessage>('thread_finalize_response', {
-      request: {
-        streamId,
-        timeline: timeline ?? null,
-      },
-    });
-  }
-
-  /**
-   * Update thread token/context usage
-   */
   async updateUsage(
     threadId: string,
     tokenUsage: TokenUsage,
@@ -292,85 +177,30 @@ class ThreadServiceClass {
   }
 
   /**
-   * Get API-formatted history for LLM requests
-   * This is used to reconstruct conversation history for the AI
+   * API-shaped history for reseeding the in-memory context engine on
+   * thread switch. Source: the same JSONL the agent loop writes.
    */
   async getApiHistory(threadId: string): Promise<ApiMessage[]> {
     return await invoke<ApiMessage[]>('thread_get_api_history', { threadId });
   }
 
-  /**
-   * Update thread title
-   */
   async updateTitle(threadId: string, title: string): Promise<void> {
     await invoke('thread_update_title', { threadId, title });
   }
 
   /**
-   * Save/update a full thread state to the database.
-   * Useful for bulk-persisting thread state after streaming completes.
+   * Upsert a thread row. The Rust side only persists `title` — the
+   * messages array is owned exclusively by the agent runtime and is
+   * ignored when present in the payload.
    */
   async saveThread(thread: DbThread): Promise<void> {
     await invoke('thread_save', { thread });
   }
 
   /**
-   * Append a fully-formed assistant message to the JSONL log in one shot.
-   *
-   * Preferred over the streaming API for the agent loop: writes content,
-   * thinking, and embedded tool_calls as a single AssistantMessage event.
-   * Returns the persisted message (id is the JSONL event id).
-   */
-  async appendAssistantMessage(
-    threadId: string,
-    content: string,
-    thinking?: string | null,
-    toolCalls?: Array<{ id: string; name: string; arguments: string }>,
-  ): Promise<DbMessage> {
-    return await invoke<DbMessage>('thread_append_assistant_message', {
-      request: {
-        threadId,
-        content,
-        thinking: thinking ?? null,
-        toolCalls: toolCalls ?? null,
-      },
-    });
-  }
-
-  /**
-   * Append a tool result event (chains to the most recent assistant message
-   * that issued a matching tool_call_id).
-   */
-  async appendToolResult(
-    threadId: string,
-    toolCallId: string,
-    toolName: string,
-    content: string,
-    isError: boolean,
-    options?: {
-      truncated?: boolean;
-      originalLength?: number;
-      durationMs?: number;
-    },
-  ): Promise<string> {
-    return await invoke<string>('thread_append_tool_result', {
-      request: {
-        threadId,
-        toolCallId,
-        toolName,
-        content,
-        isError,
-        truncated: options?.truncated ?? null,
-        originalLength: options?.originalLength ?? null,
-        durationMs: options?.durationMs ?? null,
-      },
-    });
-  }
-
-  /**
-   * Cancel the current in-progress turn. Synthesises error tool results for
-   * any unfinished tool calls and finalises the turn so the next request
-   * sees coherent history.
+   * Cancel any in-flight turn on a thread. Clears in-memory context
+   * engine state so the next request rebuilds from the persisted
+   * JSONL only.
    */
   async cancelCurrentTurn(
     threadId: string,
@@ -386,52 +216,34 @@ class ThreadServiceClass {
   // Token Counting (Real tokenizers via Rust)
   // ============================================================
 
-  /**
-   * Count tokens in text using real tokenizer
-   */
   async countTokens(text: string, model?: string): Promise<TokenCount> {
     return await invoke<TokenCount>('count_tokens', {
       request: { text, model: model ?? null, encoding: null },
     });
   }
 
-  /**
-   * Count tokens for a single chat message
-   */
   async countChatTokens(role: string, content: string, model: string): Promise<TokenCount> {
     return await invoke<TokenCount>('count_chat_tokens', {
       request: { role, content, model },
     });
   }
 
-  /**
-   * Count tokens for a conversation history
-   */
   async countMessagesTokens(messages: ChatMessageForCount[], model: string): Promise<TokenCount> {
     return await invoke<TokenCount>('count_messages_tokens', {
       request: { messages, model },
     });
   }
 
-  /**
-   * Quick estimate (no tokenizer load - fast fallback)
-   */
   async estimateTokensQuick(text: string): Promise<number> {
     return await invoke<number>('estimate_tokens_quick', { text });
   }
 
-  /**
-   * Truncate text to fit within token limit
-   */
   async truncateToTokens(text: string, maxTokens: number, model?: string): Promise<string> {
     return await invoke<string>('truncate_to_tokens', {
       request: { text, maxTokens, model: model ?? null },
     });
   }
 
-  /**
-   * Detect encoding type for a model
-   */
   async detectModelEncoding(model: string): Promise<string> {
     return await invoke<string>('detect_model_encoding', { model });
   }
@@ -440,48 +252,23 @@ class ThreadServiceClass {
   // Event Subscription
   // ============================================================
 
-  /**
-   * Subscribe to thread events for real-time sync
-   * Call this once when app starts
-   */
   async subscribeToEvents(handlers: {
     onThreadCreated?: (event: ThreadCreatedEvent) => void;
     onThreadLoaded?: (event: ThreadLoadedEvent) => void;
     onThreadDeleted?: (event: ThreadDeletedEvent) => void;
-    onMessageAdded?: (event: ThreadMessageAddedEvent) => void;
-    onMessageUpdated?: (event: ThreadMessageUpdatedEvent) => void;
-    onTokenReceived?: (event: ThreadTokenReceivedEvent) => void;
-    onThinkingReceived?: (event: ThreadThinkingReceivedEvent) => void;
-    onToolAdded?: (event: ThreadToolAddedEvent) => void;
-    onToolCompleted?: (event: ThreadToolCompletedEvent) => void;
     onUsageUpdated?: (event: ThreadUsageUpdatedEvent) => void;
   }): Promise<void> {
-    // Store handlers
     this.onThreadCreated = handlers.onThreadCreated;
     this.onThreadLoaded = handlers.onThreadLoaded;
     this.onThreadDeleted = handlers.onThreadDeleted;
-    this.onMessageAdded = handlers.onMessageAdded;
-    this.onMessageUpdated = handlers.onMessageUpdated;
-    this.onTokenReceived = handlers.onTokenReceived;
-    this.onThinkingReceived = handlers.onThinkingReceived;
-    this.onToolAdded = handlers.onToolAdded;
-    this.onToolCompleted = handlers.onToolCompleted;
     this.onUsageUpdated = handlers.onUsageUpdated;
 
-    // Clean up existing listeners
     await this.unsubscribeFromEvents();
 
-    // Set up new listeners
     const eventNames = [
       'thread-created',
       'thread-loaded',
       'thread-deleted',
-      'thread-message-added',
-      'thread-message-updated',
-      'thread-token-received',
-      'thread-thinking-received',
-      'thread-tool-added',
-      'thread-tool-completed',
       'thread-usage-updated',
     ];
 
@@ -493,9 +280,6 @@ class ThreadServiceClass {
     }
   }
 
-  /**
-   * Unsubscribe from all thread events
-   */
   async unsubscribeFromEvents(): Promise<void> {
     for (const unlisten of this.eventListeners) {
       unlisten();
@@ -503,9 +287,6 @@ class ThreadServiceClass {
     this.eventListeners = [];
   }
 
-  /**
-   * Handle incoming event
-   */
   private handleEvent(eventName: string, payload: unknown): void {
     switch (eventName) {
       case 'thread-created':
@@ -517,24 +298,6 @@ class ThreadServiceClass {
       case 'thread-deleted':
         this.onThreadDeleted?.(payload as ThreadDeletedEvent);
         break;
-      case 'thread-message-added':
-        this.onMessageAdded?.(payload as ThreadMessageAddedEvent);
-        break;
-      case 'thread-message-updated':
-        this.onMessageUpdated?.(payload as ThreadMessageUpdatedEvent);
-        break;
-      case 'thread-token-received':
-        this.onTokenReceived?.(payload as ThreadTokenReceivedEvent);
-        break;
-      case 'thread-thinking-received':
-        this.onThinkingReceived?.(payload as ThreadThinkingReceivedEvent);
-        break;
-      case 'thread-tool-added':
-        this.onToolAdded?.(payload as ThreadToolAddedEvent);
-        break;
-      case 'thread-tool-completed':
-        this.onToolCompleted?.(payload as ThreadToolCompletedEvent);
-        break;
       case 'thread-usage-updated':
         this.onUsageUpdated?.(payload as ThreadUsageUpdatedEvent);
         break;
@@ -544,4 +307,3 @@ class ThreadServiceClass {
 
 // Export singleton
 export const threadService = new ThreadServiceClass();
-

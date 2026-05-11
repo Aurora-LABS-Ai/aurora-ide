@@ -47,7 +47,6 @@ import {
 } from "../../services/prompt-assets";
 import { tokenService } from "../../services/token-service";
 import { toolRegistry } from "../../tools";
-import { registerAllExecutors } from "../../tools";
 import {
   buildAttachedContextBlock,
   buildQueryContext,
@@ -68,12 +67,13 @@ import type {
   TimelineEvent,
 } from "../../types";
 
-// Initialize executors and MCP servers on module load
+// Auto-load MCP servers once per session — every native tool now
+// dispatches in Rust, so the only "executors" we still wire are the
+// MCP servers (their tools round-trip through the frontend bridge in
+// `agent-runtime-client::dispatchToolPending`).
 let executorsInitialized = false;
 const initExecutors = () => {
   if (!executorsInitialized) {
-    registerAllExecutors();
-    // Also load MCP servers (will auto-connect servers with autoStart enabled)
     useMcpStore.getState().loadServers();
     executorsInitialized = true;
   }
@@ -111,7 +111,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
   const autoApproveTools = useSettingsStore((state) => state.autoApproveTools);
   const agentExecutionMode = useSettingsStore((state) => state.agentExecutionMode);
-  const maxToolCallsPerRequest = useSettingsStore((state) => state.maxToolCallsPerRequest);
   const getToolApproval = useSettingsStore((state) => state.getToolApproval);
   const setToolApproval = useSettingsStore((state) => state.setToolApproval);
   const getLLMConfig = useSettingsStore((state) => state.getLLMConfig);
@@ -488,7 +487,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
           },
           temperature,
           maxTokens,
-          maxToolIterations: maxToolCallsPerRequest,
+          // No artificial iteration cap — Aurora runs as long as the model
+          // keeps requesting tools (or the user stops the run). The legacy
+          // `maxToolCallsPerRequest` setting is intentionally not forwarded
+          // here so an IDE-style agentic session is never cut short.
+          maxToolIterations: undefined,
           getToolApproval,
         });
 
@@ -949,7 +952,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
       setLoading,
       autoApproveTools,
       agentExecutionMode,
-      maxToolCallsPerRequest,
       thinkingEnabled,
       temperature,
       maxTokens,

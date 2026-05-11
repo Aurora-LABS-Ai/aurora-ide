@@ -9,6 +9,7 @@ import type { ToolDefinition } from "../types";
 // ============================================
 export const fileCreateTool: ToolDefinition = {
   type: 'function',
+  nativeRustOwned: true,
   function: {
     name: 'file_create',
     description: `Create a NEW file that does not exist yet. Creates parent directories automatically if needed.
@@ -45,6 +46,7 @@ NOTE: This tool will FAIL if the file already exists. Use file_write to overwrit
 // ============================================
 export const fileDeleteTool: ToolDefinition = {
   type: 'function',
+  nativeRustOwned: true,
   function: {
     name: 'file_delete',
     description: 'Delete a file at the specified path. This action is irreversible.',
@@ -66,6 +68,7 @@ export const fileDeleteTool: ToolDefinition = {
 // ============================================
 export const fileReadTool: ToolDefinition = {
   type: 'function',
+  nativeRustOwned: true,
   function: {
     name: 'file_read',
     description: `Read file content safely. By default, small files are returned in full. Large files are never returned in full; the response marks largeFile=true and returns only a bounded line window so context is not flooded.
@@ -107,6 +110,7 @@ Returns JSON with content, totalLines, size, largeFile, range, and truncation me
 // ============================================
 export const fileWriteTool: ToolDefinition = {
   type: 'function',
+  nativeRustOwned: true,
   function: {
     name: 'file_write',
     description: `COMPLETELY REPLACE the entire content of a file. This tool OVERWRITES the whole file.
@@ -146,6 +150,7 @@ WARNING: This replaces ALL content. The entire file content must be provided.`,
 // ============================================
 export const grepTool: ToolDefinition = {
   type: 'function',
+  nativeRustOwned: true,
   function: {
     name: 'grep',
     description: `Search the codebase for exact text or regex patterns using real ripgrep.
@@ -218,6 +223,7 @@ Examples:
 // ============================================
 export const multiFileReadTool: ToolDefinition = {
   type: 'function',
+  nativeRustOwned: true,
   function: {
     name: 'multi_file_read',
     description: `Read multiple small/medium files in parallel (10-100x faster than reading files one by one).
@@ -250,6 +256,7 @@ Returns: JSON with file contents, errors, and performance metrics.`,
 // ============================================
 export const searchReplaceTool: ToolDefinition = {
   type: 'function',
+  nativeRustOwned: true,
   function: {
     name: 'search_replace',
     description: `Find and replace exact text in a file. This is the PREFERRED tool for making targeted edits.
@@ -321,6 +328,7 @@ new_string:
 // ============================================
 export const multiSearchReplaceTool: ToolDefinition = {
   type: 'function',
+  nativeRustOwned: true,
   function: {
     name: 'multi_search_replace',
     description: `Make MULTIPLE find-and-replace edits to a file in a SINGLE tool call. Much faster than calling search_replace multiple times.

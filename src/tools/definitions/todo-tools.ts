@@ -7,6 +7,7 @@ import type { ToolDefinition } from "../types";
 export const todoTools: ToolDefinition[] = [
   {
     type: 'function',
+    nativeRustOwned: true,
     function: {
       name: 'todo_write',
       description: `Create or update a task list to track progress on multi-step tasks.

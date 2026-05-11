@@ -1,10 +1,41 @@
 /**
- * Agent Service
- * Orchestrates AI interactions with tool calling and thinking
- * Uses Rust Context Engine for turn-based message management
+ * Agent Service (Phase 2.3 — façade)
+ * ==================================
+ *
+ * The legacy in-process loop (provider streaming, context engine sync,
+ * summarization, JSONL bookkeeping per round) has moved to the Rust
+ * `agent_chat_v2` runtime under `src-tauri/src/agent_runtime/`. This
+ * module is now a THIN façade that:
+ *
+ *   1. Preserves the public surface that `ChatPanel` / `AgentModeLayout`
+ *      already speak (`setProvider`, `setThreadId`, `updateConfig`,
+ *      `chat`, `stop`).
+ *   2. Composes the system prompt, IDE context, and tool catalogue on
+ *      the frontend (those still belong here for now — Sub-A consumes
+ *      them as opaque strings/arrays inside `AgentChatRequest`).
+ *   3. Delegates the actual turn to a per-call `AgentRuntimeClient`,
+ *      which subscribes to the four event channels and bridges
+ *      `agent_tool_pending` back through the existing
+ *      `AgentToolRunner` so user-facing tool approval keeps working
+ *      exactly as before.
+ *   4. Mirrors the legacy onComplete shape and persists final usage to
+ *      JSONL, so the existing UI keeps working without touching a
+ *      single callback.
+ *
+ * Deleted from the previous implementation:
+ *   - `prepareAgentContext` (the runtime persists itself)
+ *   - The provider iteration loop and `provider.streamChat` call
+ *   - `recordAssistantResponse`
+ *   - `runSummarizationIfNeeded` (Phase 4 reintroduces summarization)
+ *
+ * `getContextState` and `clearContext` are kept as thin pass-throughs
+ * to the existing `context_*` Rust commands — they remain valid (used
+ * indirectly by `useContextStore` and a handful of callers) and
+ * deleting them would needlessly widen the blast radius.
  */
 import { auroraInvoke } from "../lib/runtime";
 import { useTaskStore } from "../store/useTaskStore";
+import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import { getToolsForModel } from "../tools";
 import type { ToolDefinition as LegacyToolDefinition } from "../tools/types";
 import { threadService } from "./thread-service";
@@ -23,32 +54,18 @@ import type {
   AgentConfig,
   AgentResponse,
 } from "./agent-service.types";
-import { AgentToolRunner } from "./agent-tool-runner";
-import { getMcpToolDefinitions, getMcpToolsSummary } from "./mcp-tools";
 import {
-  type IProvider,
-  type ProviderConfig,
-  createProvider,
-} from "./providers";
+  AgentRuntimeClient,
+  type AgentRuntimeCallbacks,
+  type RuntimeToolDefinitionLike,
+} from "./agent-runtime-client";
+import { getMcpToolDefinitions, getMcpToolsSummary } from "./mcp-tools";
+import type { ProviderConfig } from "./providers";
 import type {
   AssistantMessage,
-  Message,
   TokenUsage,
-  ToolCallRequest,
   ToolDefinition,
 } from "./providers/types";
-
-interface ApiMessage {
-  role: "system" | "user" | "assistant" | "tool";
-  content: string;
-  reasoning_content?: string;
-  tool_calls?: Array<{
-    id: string;
-    type: string;
-    function: { name: string; arguments: string };
-  }>;
-  tool_call_id?: string;
-}
 
 interface ContextState {
   threadId: string;
@@ -62,45 +79,36 @@ interface ContextState {
   recentTurnsCount: number;
 }
 
-interface PreparedAgentContext {
-  availableTools: ToolDefinition[];
-  messages: Message[];
-  threadId: string;
-}
+const SENSIBLE_DEFAULTS: AgentConfig = {
+  systemPrompt: BASE_AGENT_SYSTEM_PROMPT,
+  executionMode: "agent",
+  thinkingEnabled: true,
+  autoApproveTools: false,
+  // No artificial cap on tool iterations — the Rust runtime decides
+  // when the model has stopped requesting tool calls. Honour a
+  // positive `maxToolIterations` for callers that explicitly opt in,
+  // but the default is "uncapped" to match the legacy IDE behaviour.
+  maxToolIterations: undefined,
+  temperature: 1.0,
+  maxTokens: 4096,
+};
 
 export class AgentService {
   private config: AgentConfig;
   private isRunning = false;
-  private provider: IProvider | null = null;
+  private currentClient: AgentRuntimeClient | null = null;
 
   constructor(config?: AgentConfig) {
-    this.config = {
-      systemPrompt: BASE_AGENT_SYSTEM_PROMPT,
-      executionMode: "agent",
-      thinkingEnabled: true,
-      autoApproveTools: false,
-      maxToolIterations: 25,
-      temperature: 1.0,
-      maxTokens: 4096,
-      ...config,
-    };
-
-    if (config?.providerConfig) {
-      this.provider = createProvider(config.providerConfig);
-    }
+    this.config = { ...SENSIBLE_DEFAULTS, ...config };
   }
 
   /**
-   * Run an agent turn.
+   * Run an agent turn against the Rust `agent_chat_v2` runtime.
    *
-   * `userMessage` MUST be the clean, user-typed text (e.g. "fix this bug").
-   * It is persisted verbatim to the JSONL log and rendered in the chat
-   * bubble. Any IDE/runtime enrichment (execution_mode, user_info,
-   * project_rules, project_layout, agent_skills, open_files,
-   * attached_context, …) MUST be passed via `ideContext` — the agent
-   * combines them only when constructing the API request to the provider,
-   * and persists them in a separate `ide_context` field on disk so the
-   * bubble never displays the giant XML blob.
+   * `userMessage` is the clean user-typed text (persisted verbatim to
+   * JSONL by the runtime). `ideContext` is the IDE/runtime enrichment
+   * block built by `context-builder.ts`; the execution-mode marker is
+   * prepended here so the LLM still sees authoritative mode state.
    */
   public async chat(
     userMessage: string,
@@ -110,113 +118,98 @@ export class AgentService {
     promptContext?: AgentPromptContext,
   ): Promise<AgentResponse> {
     this.isRunning = true;
-    const provider = this.getProvider();
-    const preparedContext = await this.prepareAgentContext(
-      userMessage,
-      tools,
-      ideContext ?? null,
-      promptContext,
-    );
-
-    let iteration = 0;
-    let finalContent = "";
-    let finalThinking = "";
-    let stoppedByIterationLimit = false;
     let taskFinalOutcome: "completed" | "cancelled" = "cancelled";
-    // Captures the most recent token usage emitted by the provider during this
-    // turn. Used after `context_finalize_turn` to persist a `TurnFinalized`
-    // event with usage so the JSONL log stays canonically replayable and we
-    // can show per-turn token breakdowns later.
-    let latestUsage: TokenUsage | undefined;
-    const executedToolCalls: NonNullable<AgentResponse["toolCalls"]> = [];
-    const { availableTools, messages, threadId } = preparedContext;
-    const toolRunner = new AgentToolRunner({
-      beforeToolExecution: this.config.beforeToolExecution,
-      callbacks,
-      config: this.config,
-      isRunning: () => this.isRunning,
-      threadId,
-    });
 
     try {
-      while (this.isRunning && iteration < this.config.maxToolIterations!) {
-        iteration++;
+      const threadId = this.requireThreadId();
+      const providerConfig = this.requireProviderConfig();
+      const executionMode = normalizeAgentExecutionMode(this.config.executionMode);
 
-        const response = await provider.streamChat(
-          {
-            messages,
-            tools: availableTools,
-            stream: true,
-            temperature: this.config.temperature,
-            maxTokens: this.config.maxTokens,
-            thinkingEnabled: this.config.thinkingEnabled,
-          },
-          {
-            onStart: callbacks.onStart,
-            onToken: callbacks.onToken,
-            onThinking: callbacks.onThinking,
-            onToolCall: callbacks.onToolCall,
-            onUsage: (usage) => {
-              // Capture latest usage for `TurnFinalized` persistence below.
-              // The provider streams usage via this callback (the
-              // `AssistantMessage` return value does not carry it).
-              latestUsage = usage;
-              callbacks.onUsage?.(usage);
-            },
-            onError: callbacks.onError,
-          },
+      const composedPrompt = await composeAgentSystemPrompt({
+        basePrompt: this.config.systemPrompt,
+        executionMode,
+        mcpSummary: getMcpToolsSummary(),
+        promptContext: promptContext ?? { userMessage },
+      });
+
+      if (composedPrompt.explicitSkills.length > 0) {
+        console.log(
+          "[AgentService] Required skills:",
+          composedPrompt.explicitSkills.map((skill) => skill.id),
         );
-
-        const responseContent = this.normalizeAssistantContent(response);
-        await this.recordAssistantResponse(threadId, responseContent, response);
-        messages.push(response);
-
-        if (responseContent) {
-          finalContent = responseContent;
-        }
-
-        if (response.reasoning_content) {
-          finalThinking = `${finalThinking}${response.reasoning_content}`;
-        }
-
-        // Check structured tool_calls first, then fallback to text extraction
-        let effectiveToolCalls = response.tool_calls;
-        if ((!effectiveToolCalls || effectiveToolCalls.length === 0) && responseContent) {
-          const extracted = extractToolCallsFromContent(responseContent);
-          if (extracted) {
-            console.log(`[AgentService] Extracted ${extracted.length} tool call(s) from content text`);
-            effectiveToolCalls = extracted;
-            // Patch the response so the message history contains proper tool_calls
-            response.tool_calls = extracted;
-            // Strip the raw tool call text from content so it doesn't echo to the user
-            response.content = responseContent
-              .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
-              .replace(/```(?:json)?\s*\n?\s*\{[\s\S]*?"name"[\s\S]*?\}\s*\n?\s*```/gi, '')
-              .trim();
-          }
-        }
-
-        if (effectiveToolCalls && effectiveToolCalls.length > 0) {
-          const toolBatch = await toolRunner.executeToolCalls(effectiveToolCalls);
-          messages.push(...toolBatch.messages);
-          executedToolCalls.push(...toolBatch.toolCalls);
-          callbacks.onIterationComplete?.(iteration);
-          continue;
-        }
-
-        break;
+      }
+      if (composedPrompt.activeSkills.length > 0) {
+        console.log(
+          "[AgentService] Active skills:",
+          composedPrompt.activeSkills.map((skill) => skill.id),
+        );
       }
 
-      if (iteration >= this.config.maxToolIterations! && this.isRunning) {
-        stoppedByIterationLimit = true;
-      }
+      // Execution-mode block always rides at the head of `ideContext`
+      // so the LLM treats it as authoritative IDE state, not user
+      // input. The legacy `prepareAgentContext` did the same thing —
+      // we keep that contract because the system prompt only describes
+      // *general* behaviour, not what mode this specific turn is in.
+      const executionModeBlock = formatAgentExecutionModeRuntimeContext(executionMode);
+      const composedIdeContext: string | null =
+        ideContext && ideContext.trim().length > 0
+          ? `${executionModeBlock}\n\n${ideContext}`
+          : executionModeBlock;
 
-      await auroraInvoke("context_finalize_turn", { threadId });
+      const availableTools = this.buildAvailableTools(tools);
+      const workspacePath = useWorkspaceStore.getState().rootPath || null;
 
-      // Persist a `TurnFinalized` event to the JSONL log so completed turns
-      // are canonically closed (mirroring the cancellation path) and per-turn
-      // token usage is recorded for the most recent assistant turn. Best
-      // effort — never fail the user-facing response if persistence stumbles.
+      // Wrap the caller's callbacks so the façade can synthesise a
+      // legacy-shaped `onComplete` payload (the UI uses it as a
+      // fallback when nothing streamed) and persist final usage to
+      // the JSONL log.
+      let finalContent = "";
+      let finalThinking = "";
+      let latestUsage: TokenUsage | undefined;
+      const wrappedCallbacks: AgentRuntimeCallbacks = {
+        ...callbacks,
+        onToken: (token) => {
+          finalContent += token;
+          callbacks.onToken?.(token);
+        },
+        onThinking: (text) => {
+          finalThinking += text;
+          callbacks.onThinking?.(text);
+        },
+        onUsage: (usage) => {
+          latestUsage = usage;
+          callbacks.onUsage?.(usage);
+        },
+      };
+
+      console.log("[AgentService] dispatching to AgentRuntimeClient", {
+        threadId,
+        provider: providerConfig.providerType,
+        model: providerConfig.model,
+        tools: availableTools.length,
+        workspace: workspacePath ?? "(none)",
+      });
+
+      const client = new AgentRuntimeClient({
+        callbacks: wrappedCallbacks,
+        config: this.config,
+        threadId,
+        providerConfig,
+        beforeToolExecution: this.config.beforeToolExecution,
+      });
+      this.currentClient = client;
+
+      const result = await client.chat({
+        userMessage,
+        systemPrompt: composedPrompt.systemPrompt,
+        ideContext: composedIdeContext,
+        tools: availableTools as RuntimeToolDefinitionLike[],
+        workspacePath,
+      });
+
+      // Best-effort: persist final usage to JSONL so per-turn token
+      // breakdowns survive a reload. Failure here must never bubble
+      // back into the user-facing response.
       if (latestUsage) {
         try {
           const ctxState = await this.getContextState();
@@ -234,25 +227,21 @@ export class AgentService {
         }
       }
 
-      await this.runSummarizationIfNeeded(threadId);
-
-      if (stoppedByIterationLimit && !finalContent) {
-        finalContent = `Stopped after ${this.config.maxToolIterations} tool iterations.`;
-      }
-
+      // Legacy-shape onComplete — `ChatPanel` uses it as a backstop
+      // when no streamed content arrived (e.g. some local models
+      // return everything via reasoning_content).
       callbacks.onComplete?.({
         role: "assistant",
         content: finalContent,
         reasoning_content: finalThinking || undefined,
       } as AssistantMessage);
 
-      taskFinalOutcome = stoppedByIterationLimit ? "cancelled" : "completed";
+      taskFinalOutcome = "completed";
 
       return {
         content: finalContent,
         thinking: finalThinking || undefined,
-        toolCalls: executedToolCalls.length > 0 ? executedToolCalls : undefined,
-        iterations: iteration,
+        iterations: result.iterations,
       };
     } catch (error) {
       const isCancelled =
@@ -262,25 +251,33 @@ export class AgentService {
           error.message.includes("cancelled"));
 
       if (isCancelled) {
-        // Append a Cancelled event to the JSONL log instead of discarding the
-        // turn. The Rust handler synthesises error tool results for any
-        // unfinished tool calls and reconciles the in-memory ContextManager
-        // so the next request sees a coherent history — preventing the "AI
-        // forgot what it was doing" regression after a stop.
-        await threadService
-          .cancelCurrentTurn(threadId, "user_stop")
-          .catch((err) => {
-            console.warn("[agent] thread_cancel_current_turn failed:", err);
-          });
+        // Mirror the legacy cancellation flow so the JSONL log gets a
+        // proper Cancelled marker (the Rust handler already
+        // synthesises tool-error replies for in-flight tools and
+        // reconciles the in-memory ContextManager).
+        const threadId = this.config.threadId;
+        if (threadId) {
+          await threadService
+            .cancelCurrentTurn(threadId, "user_stop")
+            .catch((err) => {
+              console.warn("[AgentService] thread_cancel_current_turn failed:", err);
+            });
+        }
       }
 
       throw error;
     } finally {
       useTaskStore.getState().finalizeActiveTasks(taskFinalOutcome);
       this.isRunning = false;
+      this.currentClient = null;
     }
   }
 
+  /**
+   * Pass-through to the Rust context engine for the active thread.
+   * Kept on the façade so callers (e.g. `useContextStore` consumers)
+   * don't have to know about the low-level command name.
+   */
   public async getContextState(): Promise<ContextState | null> {
     const threadId = this.config.threadId;
     if (!threadId) return null;
@@ -311,115 +308,34 @@ export class AgentService {
     this.config.threadId = threadId;
   }
 
+  /**
+   * Configure the active LLM provider. The runtime client builds its
+   * own per-turn snapshot from this config — we only stash it on
+   * `this.config` so subsequent `chat()` calls see the latest
+   * provider state.
+   */
   public setProvider(config: ProviderConfig): void {
-    this.provider = createProvider(config);
     this.config.providerConfig = config;
   }
 
+  /**
+   * Cancel any in-flight `agent_chat_v2` turn. The runtime
+   * acknowledges via `agent_turn_error` with `error: "cancelled"`,
+   * which the runtime client surfaces as an `AbortError` rejection
+   * from the awaited chat() promise.
+   */
   public stop(): void {
     this.isRunning = false;
-    this.provider?.cancelRequest();
+    void this.currentClient?.cancel();
   }
 
   public updateConfig(config: Partial<AgentConfig>): void {
     this.config = { ...this.config, ...config };
   }
 
-  private async prepareAgentContext(
-    userMessage: string,
-    tools: LegacyToolDefinition[] | undefined,
-    ideContext: string | null | undefined,
-    promptContext: AgentPromptContext | undefined,
-  ): Promise<PreparedAgentContext> {
-    const threadId = this.requireThreadId();
-    const { contextWindow, maxOutput } = this.getProviderLimits();
-    const executionMode = normalizeAgentExecutionMode(this.config.executionMode);
-
-    // The execution-mode block is a piece of authoritative IDE state, not
-    // user input. Fold it into `ideContext` so the LLM still sees it AT the
-    // top of the request, but the JSONL bubble shows the clean user message.
-    const executionModeBlock = formatAgentExecutionModeRuntimeContext(executionMode);
-    const composedIdeContext: string | null =
-      ideContext && ideContext.trim().length > 0
-        ? `${executionModeBlock}\n\n${ideContext}`
-        : executionModeBlock;
-
-    // Persist to JSONL first — the user message is the durable anchor for
-    // the entire turn. If the rest of the request fails, we still have the
-    // user's prompt on disk to reload the conversation.
-    //
-    // CRITICAL: persist the *clean* user-typed text in `content` and the
-    // enrichment in `ideContext` separately. Squashing them into a single
-    // string causes the entire XML blob to render as a user bubble on
-    // reload (see message-reveal.md / regression in early-2026 builds).
-    try {
-      await threadService.addUserMessage(
-        threadId,
-        userMessage,
-        composedIdeContext,
-      );
-    } catch (err) {
-      console.warn("[AgentService] thread_add_user_message failed:", err);
-    }
-
-    // Mirror into the in-memory ContextManager. The Rust message builder
-    // re-combines `content` + `ideContext` into the final user-role API
-    // message, so the LLM sees the same shape it always did.
-    await auroraInvoke("context_add_user_message", {
-      threadId,
-      content: userMessage,
-      ideContext: composedIdeContext,
-      contextWindow,
-      maxOutput,
-    });
-
-    const composedPrompt = await composeAgentSystemPrompt({
-      basePrompt: this.config.systemPrompt,
-      executionMode,
-      mcpSummary: getMcpToolsSummary(),
-      promptContext: promptContext ?? {
-        userMessage,
-      },
-    });
-
-    if (composedPrompt.explicitSkills.length > 0) {
-      console.log(
-        "[AgentService] Required skills:",
-        composedPrompt.explicitSkills.map((skill) => skill.id),
-      );
-    }
-    if (composedPrompt.activeSkills.length > 0) {
-      console.log(
-        "[AgentService] Active skills:",
-        composedPrompt.activeSkills.map((skill) => skill.id),
-      );
-    }
-
-    const availableTools = this.buildAvailableTools(tools);
-
-    // Estimate tokens consumed by tool definitions (~20 tokens per tool on average)
-    // Tool schemas are sent as a separate API field but still count against context window
-    const estimatedToolTokens = availableTools.length * 80;
-    const tokenBudget = contextWindow - maxOutput - estimatedToolTokens;
-
-    console.log(
-      `[AgentService] Token budget: ${contextWindow} context - ${maxOutput} output - ${estimatedToolTokens} tools = ${tokenBudget} available`,
-    );
-
-    const contextMessages = await auroraInvoke<ApiMessage[]>("context_build_messages", {
-      threadId,
-      systemPrompt: composedPrompt.systemPrompt,
-      tokenBudget,
-    });
-
-    return {
-      threadId,
-      messages: contextMessages.map((message) =>
-        this.mapContextMessageToProviderMessage(message),
-      ),
-      availableTools,
-    };
-  }
+  // ─────────────────────────────────────────────────────────────────
+  // Internal helpers
+  // ─────────────────────────────────────────────────────────────────
 
   private buildAvailableTools(
     tools: LegacyToolDefinition[] | undefined,
@@ -441,162 +357,26 @@ export class AgentService {
     );
   }
 
-  private getProvider(): IProvider {
-    if (!this.provider) {
-      throw new Error("Provider not initialized. Call setProvider first.");
-    }
-
-    return this.provider;
-  }
-
-  private getProviderLimits(): { contextWindow: number; maxOutput: number } {
-    const providerConfig = this.config.providerConfig;
-
-    return {
-      contextWindow: providerConfig?.contextWindow || 128000,
-      maxOutput: providerConfig?.maxOutputTokens || 8192,
-    };
-  }
-
-  private mapContextMessageToProviderMessage(message: ApiMessage): Message {
-    if (message.role === "tool") {
-      return {
-        role: "tool",
-        tool_call_id: message.tool_call_id!,
-        content: message.content,
-      } as Message;
-    }
-
-    if (message.role === "assistant") {
-      const mapped = {
-        role: "assistant" as const,
-        content: message.content,
-        tool_calls: message.tool_calls,
-        reasoning_content: message.reasoning_content,
-      };
-      return mapped as unknown as Message;
-    }
-
-    return {
-      role: message.role as "system" | "user",
-      content: message.content,
-    };
-  }
-
-  private normalizeAssistantContent(message: AssistantMessage): string {
-    if (Array.isArray(message.content)) {
-      return message.content
-        .map((block) => (block.type === "text" ? block.text : ""))
-        .join("");
-    }
-
-    return message.content || "";
-  }
-
-  private async recordAssistantResponse(
-    threadId: string,
-    content: string,
-    response: AssistantMessage,
-  ): Promise<void> {
-    // 1. Mirror into the in-memory ContextManager (drives live message
-    //    builds and tool-call/tool-result pairing for the active request).
-    await auroraInvoke("context_add_assistant_response", {
-      threadId,
-      content,
-      thinking: response.reasoning_content || null,
-    });
-
-    // 2. Persist to JSONL as a single AssistantMessage event with embedded
-    //    tool_calls. Subsequent ToolResult events will chain to this round.
-    try {
-      const toolCalls = (response.tool_calls ?? []).map((tc) => ({
-        id: tc.id,
-        name: tc.function.name,
-        arguments:
-          typeof tc.function.arguments === "string"
-            ? tc.function.arguments
-            : JSON.stringify(tc.function.arguments ?? {}),
-      }));
-      await threadService.appendAssistantMessage(
-        threadId,
-        content,
-        response.reasoning_content ?? null,
-        toolCalls.length > 0 ? toolCalls : undefined,
-      );
-    } catch (err) {
-      console.warn("[AgentService] thread_append_assistant_message failed:", err);
-    }
-  }
-
   private requireThreadId(): string {
     const threadId = this.config.threadId;
     if (!threadId) {
-      throw new Error("Thread ID required for context engine");
+      throw new Error("Thread ID required for agent runtime");
     }
-
     return threadId;
   }
 
-  /**
-   * Run summarization on oldest unsummarized turn if context usage is at 80%+.
-   * Uses the same provider to generate a concise summary, then stores it in the
-   * Rust context engine so future message builds use the summary instead of full content.
-   */
-  private async runSummarizationIfNeeded(threadId: string): Promise<void> {
-    try {
-      const needsSummarization = await auroraInvoke<boolean>(
-        "context_needs_summarization",
-        { threadId },
+  private requireProviderConfig(): ProviderConfig {
+    const providerConfig = this.config.providerConfig;
+    if (!providerConfig) {
+      throw new Error(
+        "Provider not configured. Call setProvider(...) before chat().",
       );
-
-      if (!needsSummarization) return;
-
-      const request = await auroraInvoke<{
-        turn_id: string;
-        turn_content: string;
-      } | null>("context_get_turn_to_summarize", { threadId });
-
-      if (!request) return;
-
-      const summarizationPrompt = await auroraInvoke<string>(
-        "context_get_summarization_prompt",
-      );
-
-      const provider = this.getProvider();
-
-      console.log(
-        `[AgentService] Summarizing turn ${request.turn_id} (context at 80%+)`,
-      );
-
-      const response = await provider.chat({
-        messages: [
-          { role: "system", content: summarizationPrompt } as Message,
-          { role: "user", content: request.turn_content } as Message,
-        ],
-        tools: [],
-        stream: false,
-        temperature: 0.3,
-        maxTokens: 300,
-        thinkingEnabled: false,
-      });
-
-      const summary = this.normalizeAssistantContent(response.message);
-
-      if (summary) {
-        await auroraInvoke("context_set_turn_summary", {
-          threadId,
-          turnId: request.turn_id,
-          summary,
-        });
-        console.log(
-          `[AgentService] Turn summarized: "${summary.substring(0, 80)}..."`,
-        );
-      }
-    } catch (error) {
-      console.warn("[AgentService] Summarization failed (non-fatal):", error);
     }
+    return providerConfig;
   }
 }
+
+let agentInstance: AgentService | null = null;
 
 export const getAgentService = (): AgentService => {
   if (!agentInstance) {
@@ -609,62 +389,5 @@ export const initAgentService = (config?: AgentConfig): AgentService => {
   agentInstance = new AgentService(config);
   return agentInstance;
 };
-
-let agentInstance: AgentService | null = null;
-
-/**
- * Extract tool calls that local models emit as plain text instead of structured
- * `tool_calls`. Supports `<tool_call>...</tool_call>` and fenced JSON blocks
- * with a recognisable `"name"` + `"arguments"` shape.
- */
-function extractToolCallsFromContent(content: string): ToolCallRequest[] | null {
-  const calls: ToolCallRequest[] = [];
-  let idCounter = 0;
-
-  // Pattern 1: <tool_call>{ "name": "...", "arguments": {...} }</tool_call>
-  const tagRe = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
-  let match: RegExpExecArray | null;
-  while ((match = tagRe.exec(content)) !== null) {
-    try {
-      const parsed = JSON.parse(match[1]);
-      if (parsed.name) {
-        calls.push({
-          id: `text_tc_${Date.now()}_${idCounter++}`,
-          type: 'function',
-          function: {
-            name: parsed.name,
-            arguments: typeof parsed.arguments === 'string'
-              ? parsed.arguments
-              : JSON.stringify(parsed.arguments ?? {}),
-          },
-        });
-      }
-    } catch { /* malformed JSON, skip */ }
-  }
-
-  // Pattern 2: ```json { "name": "...", "arguments": {...} } ``` (fenced blocks)
-  if (calls.length === 0) {
-    const fenceRe = /```(?:json)?\s*\n?\s*(\{[\s\S]*?\})\s*\n?\s*```/gi;
-    while ((match = fenceRe.exec(content)) !== null) {
-      try {
-        const parsed = JSON.parse(match[1]);
-        if (parsed.name && parsed.arguments !== undefined) {
-          calls.push({
-            id: `text_tc_${Date.now()}_${idCounter++}`,
-            type: 'function',
-            function: {
-              name: parsed.name,
-              arguments: typeof parsed.arguments === 'string'
-                ? parsed.arguments
-                : JSON.stringify(parsed.arguments ?? {}),
-            },
-          });
-        }
-      } catch { /* skip */ }
-    }
-  }
-
-  return calls.length > 0 ? calls : null;
-}
 
 export default AgentService;

@@ -221,6 +221,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     () => flattenFiles(workspaceFiles),
     [workspaceFiles],
   );
+
+  // Catalog of `/` prompt picker entries (rules + skills). Refreshes itself
+  // when the user adds or edits files inside the prompt-asset folders, and
+  // exposes `refreshCatalog()` for the imperative "freshen-on-open" path below.
+  // Must be declared BEFORE any memo that closes over `promptAssetCatalog`,
+  // otherwise the lexical binding is in TDZ when the memo factory first runs.
+  const { promptAssetCatalog, refreshCatalog } = usePromptAssetCatalog({
+    rootPath,
+    skillToggles,
+    skillsEnabled,
+  });
+
   const filteredPromptAssets = useMemo(() => {
     const activeQuery = (slashSearchQuery || slashQuery || "")
       .trim()
@@ -247,15 +259,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
       })
       .slice(0, 20);
   }, [attachedPromptAssets, promptAssetCatalog, slashQuery, slashSearchQuery]);
-
-  // Catalog of `/` prompt picker entries (rules + skills). Refreshes itself
-  // when the user adds or edits files inside the prompt-asset folders, and
-  // exposes `refreshCatalog()` for the imperative "freshen-on-open" path below.
-  const { promptAssetCatalog, refreshCatalog } = usePromptAssetCatalog({
-    rootPath,
-    skillToggles,
-    skillsEnabled,
-  });
 
   // Consume pending input from external sources (e.g., browser element inspector, suggested prompts)
   useEffect(() => {

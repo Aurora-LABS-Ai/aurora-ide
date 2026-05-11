@@ -1,6 +1,9 @@
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
+mod agent_runtime;
+mod agent_safety;
+mod api;
 mod checkpoints;
 pub mod cli;
 mod commands;
@@ -11,11 +14,141 @@ mod file_cache;
 pub mod icon_pack;
 mod mcp;
 mod services;
-mod threads;
+// Phase 3 native tool buckets. Sub-C lands `file_workspace_search`;
+// Sub-D adds `shell_editor_todo` + `permissions`; Sub-E composes
+// them into `register_builtin_tools` and wires the bucket into the
+// `agent_v2` `ToolRegistry`. The module is `pub` so the verify
+// crates under `target/__verify_phase3_*/` can mount it via
+// `#[path]` without dragging in heavy Tauri/ONNX deps.
+pub mod tools;
 mod undo_redo;
 
 use cli::{CliArgs, CliOpenRequest};
-use threads::ThreadEventLog;
+
+// ---------------------------------------------------------------------------
+// Phase 3 — production IDE event sink
+// ---------------------------------------------------------------------------
+//
+// `ProductionIdeEventSink` plugs Sub-D's `shell_editor_todo` bucket into
+// real Tauri events emitted on the main `AppHandle`. The three
+// fire-and-forget editor/todo tools (`editor_open_file`,
+// `read_lints`, `todo_write`) dispatch through `AppHandle::emit`; the
+// `shell_spawn` background launcher hands its work off to a
+// `tokio::spawn` running `commands::execute_command_stream` — the
+// same loop the legacy TS executor invoked via `invoke()`.
+//
+// The Phase 4 permission emitter is intentionally NOT wired here —
+// `agent_grant_permission` only needs the `Arc<PermissionRouter>` in
+// managed state to resolve oneshots. The parent agent's final-10%
+// step writes whatever shape it wants for the modal-emitting
+// `Permitter` (a `TauriPermitter` over an emitter that posts the
+// `"agent_permission_request"` channel) and attaches it to the
+// `ToolRegistry` via `with_permitter`.
+struct ProductionIdeEventSink {
+    app: tauri::AppHandle,
+}
+
+impl ProductionIdeEventSink {
+    fn new(app: tauri::AppHandle) -> Self {
+        Self { app }
+    }
+
+    fn emit_payload<T: serde::Serialize + Clone>(
+        &self,
+        channel: &str,
+        payload: T,
+    ) -> Result<(), String> {
+        self.app.emit(channel, payload).map_err(|e| e.to_string())
+    }
+}
+
+#[async_trait::async_trait]
+impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
+    fn emit_editor_open(
+        &self,
+        path: &str,
+        line: Option<u64>,
+        column: Option<u64>,
+    ) -> Result<(), String> {
+        #[derive(Clone, serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Payload<'a> {
+            path: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            line: Option<u64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            column: Option<u64>,
+        }
+        self.emit_payload("agent_editor_open", Payload { path, line, column })
+    }
+
+    fn emit_read_lints(&self, paths: &[String]) -> Result<(), String> {
+        #[derive(Clone, serde::Serialize)]
+        struct Payload<'a> {
+            paths: &'a [String],
+        }
+        self.emit_payload("agent_read_lints", Payload { paths })
+    }
+
+    fn emit_todo_write(&self, todos: &serde_json::Value) -> Result<(), String> {
+        #[derive(Clone, serde::Serialize)]
+        struct Payload<'a> {
+            todos: &'a serde_json::Value,
+        }
+        self.emit_payload("agent_todo_write", Payload { todos })
+    }
+
+    async fn spawn_shell_stream(
+        &self,
+        req: tools::shell_editor_todo::ide_event_sink::ShellStreamRequest,
+    ) -> Result<(), String> {
+        let app = self.app.clone();
+        // Mirrors the legacy TS executor: queue the streaming command
+        // and return immediately. The frontend already listens on
+        // `shell-stream-{request_id}` so events flow through the
+        // existing emit path.
+        tokio::spawn(async move {
+            let _ = commands::execute_command_stream(
+                app,
+                req.request_id,
+                req.command,
+                req.cwd,
+                req.shell,
+                req.timeout_ms,
+            )
+            .await;
+        });
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2.3 — agent_v2 wiring
+// ---------------------------------------------------------------------------
+//
+// `RealApiFactory` is the production glue between the Rust agent loop
+// (`commands::agent_v2`) and the existing provider adapters in
+// `crate::api`. The factory takes the `ProviderConfigSnapshot` carried
+// inside every `AgentChatRequest` (frontend → Rust via the Phase 2.3
+// camelCase IPC) and forwards it verbatim to `crate::api::build_api_client`.
+//
+// The adapter layer (`api/anthropic.rs`, `api/openai_compat.rs`) is the
+// only place that interprets `api_key`, `base_url`, `custom_headers`,
+// and `custom_params`. The factory is intentionally a thin shim — it
+// must NOT introduce its own provider-routing logic.
+struct RealApiFactory;
+
+impl commands::agent_v2::ApiFactory for RealApiFactory {
+    fn build(
+        &self,
+        config: &api::ProviderConfigSnapshot,
+    ) -> Result<
+        std::sync::Arc<dyn agent_runtime::api_client::StreamingApiClient>,
+        agent_runtime::error::RuntimeError,
+    > {
+        Ok(api::build_api_client(config))
+    }
+}
 
 /// Run Aurora with default (no CLI arguments)
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -40,6 +173,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             // File system commands
             commands::read_directory,
             commands::read_file_content,
+            commands::read_file_with_meta,
+            commands::stat_file_mtime,
             commands::write_file_content,
             commands::execute_command,
             commands::execute_command_stream,
@@ -99,23 +234,16 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::settings::get_all_tool_settings,
             commands::settings::set_tool_approval,
             commands::settings::save_all_tool_settings,
-            // Threads (chat history) commands
+            // Threads (chat history) commands — all backed by the
+            // agent_v2 SessionStore (see commands/threads.rs).
             commands::threads::thread_save,
             commands::threads::thread_create,
             commands::threads::thread_load,
             commands::threads::thread_delete,
             commands::threads::thread_list_summaries,
-            commands::threads::thread_add_user_message,
-            commands::threads::thread_start_response,
-            commands::threads::thread_append_token,
-            commands::threads::thread_append_thinking,
-            commands::threads::thread_add_tool_call,
-            commands::threads::thread_finalize_response,
             commands::threads::thread_update_usage,
             commands::threads::thread_get_api_history,
             commands::threads::thread_update_title,
-            commands::threads::thread_append_assistant_message,
-            commands::threads::thread_append_tool_result,
             commands::threads::thread_cancel_current_turn,
             // Token counting commands
             commands::tokens::count_tokens,
@@ -196,9 +324,6 @@ pub fn run_with_args(cli_args: CliArgs) {
             mcp::commands::mcp_call_tool,
             mcp::commands::mcp_get_all_tools,
             mcp::commands::mcp_get_config_path,
-            // OpenAI Native (async-openai) commands for LM Studio, Ollama, etc.
-            commands::openai_native::openai_native_stream,
-            commands::openai_native::openai_native_chat,
             // CLI commands (install/uninstall aurora command)
             commands::install_aurora_cli,
             commands::is_aurora_cli_installed,
@@ -250,6 +375,20 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::undo_redo::undo_get_state,
             commands::undo_redo::undo_clear_file,
             commands::undo_redo::undo_clear_all,
+            // Agent v2 — Rust-side ConversationRuntime entrypoint.
+            // Phase 2.3 swaps the StubApiFactory for `RealApiFactory`,
+            // which forwards each `ProviderConfigSnapshot` straight to
+            // `api::build_api_client`. The new `agent_post_tool_result`
+            // command lets the frontend close the loop on bridge tool
+            // calls (`FrontendBridgeExecutor`).
+            commands::agent_v2::agent_chat_v2,
+            commands::agent_v2::agent_cancel,
+            commands::agent_v2::agent_load_thread,
+            commands::agent_v2::agent_post_tool_result,
+            // Phase 4 permission gate — frontend modal posts the
+            // user's Allow/Deny verdict here. The router lives in
+            // managed state (see `setup` below).
+            commands::agent_v2_permissions::agent_grant_permission,
         ])
         .setup(move |app| {
             #[cfg(debug_assertions)]
@@ -271,18 +410,6 @@ pub fn run_with_args(cli_args: CliArgs) {
             // Store Rust-owned explorer state
             app.manage(explorer::ExplorerStateHandle::default());
 
-            // JSONL-backed thread event log — the new source of truth for all
-            // conversation persistence. Lives at
-            // %APPDATA%/Aurora-Agent-IDE/Agent/Threads/{id}.jsonl.
-            let thread_log = std::sync::Arc::new(
-                ThreadEventLog::new().expect("Failed to initialize ThreadEventLog"),
-            );
-            thread_log.set_app_handle(handle.clone());
-            app.manage(thread_log);
-
-            // Transient buffer for streaming assistant responses.
-            app.manage(commands::threads::ActiveStreams::new());
-
             // Store checkpoint state for file state snapshots
             let checkpoint_state = commands::checkpoints::CheckpointState::new();
             let app_data_dir = handle
@@ -294,6 +421,110 @@ pub fn run_with_args(cli_args: CliArgs) {
 
             // Store undo/redo state for per-file history
             app.manage(commands::undo_redo::UndoRedoState::new());
+
+            // Rust agent runtime registry — the single owner of all
+            // chat-history persistence.
+            //
+            // Sessions live in `<app_data>/agent_v2/{thread_id}.jsonl`
+            // with a metadata sidecar at `<thread_id>.meta.json`. The
+            // `SessionStore` (held inside the `AgentRegistry`) is the
+            // sole source of truth for everything the chat list and
+            // Thread History modal display — title, token/context
+            // usage, timestamps, message history. There is no other
+            // persistence layer.
+            //
+            // The `RealApiFactory` plugs the `api` adapters in for
+            // live LLM traffic; the registry's internal `BridgeRouter`
+            // powers the `agent_post_tool_result` round trip with the
+            // frontend tool runner.
+            let agent_v2_sessions_dir = handle
+                .path()
+                .app_data_dir()
+                .expect("Failed to get app data dir for agent_v2 sessions")
+                .join("agent_v2");
+            let agent_registry = std::sync::Arc::new(commands::agent_v2::AgentRegistry::new(
+                std::sync::Arc::new(RealApiFactory),
+                agent_v2_sessions_dir,
+            ));
+
+            // Phase 3 — pre-populate the AgentRegistry's ToolRegistry
+            // with all 22 native tools (Sub-C: file/workspace/search,
+            // Sub-D: shell/editor/todo). The registry uses interior
+            // mutability via DashMap, so we register through the
+            // shared Arc returned by `tools()` — the AgentRegistry's
+            // own view sees the same backing map.
+            //
+            // The production IDE event sink emits Tauri events for the
+            // four event-firing tools (`editor_open_file`,
+            // `read_lints`, `todo_write`) and re-enters
+            // `commands::execute_command_stream` from a `tokio::spawn`
+            // for `shell_spawn`, mirroring the legacy TS executor's
+            // `invoke()` shape.
+            let production_sink: std::sync::Arc<
+                dyn tools::shell_editor_todo::IdeEventSink,
+            > = std::sync::Arc::new(ProductionIdeEventSink::new(handle.clone()));
+            tools::register_builtin_tools(&agent_registry.tools(), production_sink);
+
+            // Phase 4 — production permission gate.
+            //
+            // Layered design (outer → inner):
+            //   SettingsAwarePermitter → TauriPermitter → modal
+            //
+            // 1. `SettingsAwarePermitter` consults the
+            //    `tool_settings` SQLite table on every call.
+            //    `auto`  → approve without asking (no event emitted).
+            //    `deny`  → deny without asking (no event emitted).
+            //    `always_ask` (or unset) → fall through to inner.
+            // 2. `TauriPermitter` registers a oneshot in the router,
+            //    fires the `"agent_permission_request"` event, and
+            //    parks until the frontend posts a verdict via
+            //    `agent_grant_permission`.
+            // 3. `PermissionGuardedExecutor` wraps every native tool
+            //    whose `requires_permission()` is `true` so the
+            //    runtime's gate-free `tool.execute(...)` path
+            //    transparently consults the chain — no changes to
+            //    `ConversationRuntime::run_turn`.
+            //
+            // The DB-backed resolver re-reads on every call, so
+            // toggling a setting in the UI takes effect immediately
+            // on the next tool dispatch.
+            let permission_router = std::sync::Arc::new(
+                tools::permissions::PermissionRouter::new(),
+            );
+            let permission_emitter: std::sync::Arc<
+                dyn tools::permissions::PermissionEmitter,
+            > = std::sync::Arc::new(
+                tools::permissions::TauriPermissionEmitter::new(handle.clone()),
+            );
+            let tauri_permitter: std::sync::Arc<
+                dyn agent_runtime::tool_executor::Permitter,
+            > = std::sync::Arc::new(
+                tools::permissions::TauriPermitter::new(
+                    permission_router.clone(),
+                    permission_emitter,
+                ),
+            );
+
+            // The resolver holds an `AppHandle` and pulls
+            // `Mutex<Database>` from managed state on each call —
+            // sharing the same SQLite connection used by the rest
+            // of the app.
+            let resolver: std::sync::Arc<dyn tools::permissions::SettingsResolver> =
+                std::sync::Arc::new(
+                    tools::permissions::DatabaseSettingsResolver::new(handle.clone()),
+                );
+            let settings_aware: std::sync::Arc<
+                dyn agent_runtime::tool_executor::Permitter,
+            > = std::sync::Arc::new(
+                tools::permissions::SettingsAwarePermitter::new(
+                    resolver,
+                    tauri_permitter,
+                ),
+            );
+            tools::install_permission_gate(&agent_registry.tools(), settings_aware);
+
+            app.manage(agent_registry);
+            app.manage(permission_router);
 
             // If CLI provided a path, emit event to frontend to open it
             // Clone open_request since we're in a move closure

@@ -55,7 +55,7 @@ pub async fn aurora_provider_stream(
     request_id: String,
     request: AuroraProviderRequest,
 ) -> Result<(), String> {
-    register_stream(&request_id);
+    let cancel_token = register_stream(&request_id);
 
     let preset = provider_preset(&request.provider);
     let url = get_chat_url(&request.provider.base_url, &preset);
@@ -88,10 +88,10 @@ pub async fn aurora_provider_stream(
 
     let result = match preset.format {
         ProviderFormat::OpenAi => {
-            stream_openai_compatible(app.clone(), &request_id, response).await
+            stream_openai_compatible(app.clone(), &request_id, response, cancel_token).await
         }
         ProviderFormat::Anthropic => {
-            stream_anthropic_compatible(app.clone(), &request_id, response).await
+            stream_anthropic_compatible(app.clone(), &request_id, response, cancel_token).await
         }
     };
 

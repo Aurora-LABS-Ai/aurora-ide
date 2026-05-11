@@ -47,6 +47,7 @@ CLAUDE.md
 target
 # AI/ML tool directories
 .claude/
+.claw/
 .codex/
 .cursor/
 

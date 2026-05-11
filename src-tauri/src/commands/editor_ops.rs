@@ -312,6 +312,20 @@ fn plan_multi_search_replace(
 
     let mut buffer = normalized_original;
     for range in &planned_ranges {
+        // Defensive: `String::replace_range` panics if `start` or `end` are
+        // not on UTF-8 char boundaries. For valid UTF-8 patterns matched
+        // by `memmem` against valid UTF-8 sources this is guaranteed to
+        // hold (the first byte of any UTF-8 pattern is either ASCII or a
+        // lead byte, which can never appear *inside* a multi-byte char in
+        // the source). The runtime check here is belt-and-suspenders so a
+        // future regression — or a pathological mixed-encoding file —
+        // surfaces as a `NotFound` error instead of an `abort()` that
+        // takes the entire IDE down.
+        if !buffer.is_char_boundary(range.start) || !buffer.is_char_boundary(range.end) {
+            return PlanResult::NotFound {
+                failed_at: range.replacement_index,
+            };
+        }
         buffer.replace_range(range.start..range.end, &range.new_text);
     }
 
@@ -349,28 +363,27 @@ fn normalize_line_endings(value: &str) -> String {
         return value.to_string();
     }
 
+    // Iterate by `char` rather than walking raw bytes. The previous byte-walk
+    // implementation inverted the UTF-8 continuation-byte logic and ended up
+    // slicing &str at non-char-boundaries — which panics. Because the
+    // crate's release profile sets `panic = "abort"`, every panic *aborts the
+    // entire Aurora process*, surfacing to the user as the "IDE crashed
+    // out of nowhere" report whenever search_replace touched a CRLF file
+    // containing any non-ASCII character (very common on Windows).
+    //
+    // Using the `chars()` iterator delegates UTF-8 boundary handling to the
+    // standard library — correct by construction, no manual bit twiddling.
     let mut out = String::with_capacity(value.len());
-    let bytes = value.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\r' {
-            // Skip the CR but emit the following LF (or a fresh LF for lone CR).
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == CR {
             out.push(LF);
-            if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-                i += 2;
-            } else {
-                i += 1;
+            // Coalesce CRLF — emit a single LF instead of "\n\n".
+            if chars.peek() == Some(&LF) {
+                chars.next();
             }
         } else {
-            // Safe: walk by UTF-8 char widths via slicing.
-            let ch_start = i;
-            while i < bytes.len() && (bytes[i] & 0xC0) == 0x80 {
-                i += 1;
-            }
-            i += 1;
-            // Append the original char by slicing the source — works because
-            // we only diverged for CR/CRLF above and didn't shift offsets.
-            out.push_str(&value[ch_start..i]);
+            out.push(ch);
         }
     }
     out
@@ -800,6 +813,124 @@ mod tests {
         let input = "alpha\r\nbeta\rgamma\ndelta";
         let out = normalize_line_endings(input);
         assert_eq!(out, "alpha\nbeta\ngamma\ndelta");
+    }
+
+    /// Regression: the old byte-walking implementation panicked with
+    /// "byte index N is not a char boundary" whenever a CRLF file
+    /// contained any non-ASCII character, which on `panic = "abort"`
+    /// builds aborted the whole IDE. This test exercises every common
+    /// non-ASCII path: 2-byte (Latin), 3-byte (CJK), and 4-byte (emoji)
+    /// UTF-8 sequences interleaved with CRLF and bare CR line endings.
+    #[test]
+    fn normalize_line_endings_does_not_panic_on_multibyte_utf8() {
+        // 2-byte UTF-8: ä, ö, ü
+        let two_byte = "ä\r\nö\r\nü\rdone";
+        assert_eq!(normalize_line_endings(two_byte), "ä\nö\nü\ndone");
+
+        // 3-byte UTF-8: CJK
+        let three_byte = "你好\r\n世界\r\n再见\rfoo";
+        assert_eq!(
+            normalize_line_endings(three_byte),
+            "你好\n世界\n再见\nfoo"
+        );
+
+        // 4-byte UTF-8: emoji
+        let four_byte = "🎉\r\n🚀\r\n💥\rship";
+        assert_eq!(normalize_line_endings(four_byte), "🎉\n🚀\n💥\nship");
+
+        // Mixed widths in a single string — the worst case for the old
+        // byte-walker (every char width changes).
+        let mixed = "a\r\nä\r\n你\r\n🎉\rdone";
+        assert_eq!(
+            normalize_line_endings(mixed),
+            "a\nä\n你\n🎉\ndone"
+        );
+
+        // Bare CR followed immediately by a multi-byte char must not
+        // confuse the lookahead.
+        let cr_then_multibyte = "x\rä\r\n你\rend";
+        assert_eq!(
+            normalize_line_endings(cr_then_multibyte),
+            "x\nä\n你\nend"
+        );
+    }
+
+    /// Regression: `apply_search_replace` on a CRLF-saved file containing
+    /// non-ASCII characters used to crash the IDE. This now succeeds
+    /// (or returns a structured error) — never panics.
+    #[test]
+    fn plan_search_replace_handles_crlf_plus_multibyte_utf8() {
+        let original = "fn greet() {\r\n    let name = \"José\";\r\n    println!(\"Hello, 世界! 🎉\");\r\n}\r\n";
+
+        let plan = plan_multi_search_replace(
+            original,
+            &[SearchReplaceItem {
+                old_string: "\"José\"".to_string(),
+                new_string: "\"Maria\"".to_string(),
+                replace_all: false,
+            }],
+        );
+
+        match plan {
+            PlanResult::Ok {
+                new_content,
+                line_ending_normalized,
+                ..
+            } => {
+                assert!(line_ending_normalized);
+                assert!(new_content.contains("\"Maria\""));
+                assert!(!new_content.contains("\"José\""));
+                // Output preserves CRLF endings of the source.
+                assert!(new_content.contains("\r\n"));
+                // Multi-byte content elsewhere is untouched.
+                assert!(new_content.contains("世界"));
+                assert!(new_content.contains("🎉"));
+            }
+            other => panic!("expected Ok plan, got {:?}", other_kind(&other)),
+        }
+    }
+
+    /// Same scenario via the multi-replacement variant — replace several
+    /// patterns that include multi-byte chars in both `old` and `new`.
+    #[test]
+    fn plan_multi_search_replace_handles_crlf_plus_multibyte_utf8() {
+        let original = "ä\r\nö\r\nü\r\n你好世界\r\n";
+
+        let plan = plan_multi_search_replace(
+            original,
+            &[
+                SearchReplaceItem {
+                    old_string: "ä".to_string(),
+                    new_string: "AE".to_string(),
+                    replace_all: false,
+                },
+                SearchReplaceItem {
+                    old_string: "你好世界".to_string(),
+                    new_string: "Hello, World 🎉".to_string(),
+                    replace_all: false,
+                },
+            ],
+        );
+
+        match plan {
+            PlanResult::Ok { new_content, .. } => {
+                assert!(new_content.contains("AE"));
+                assert!(new_content.contains("Hello, World 🎉"));
+                assert!(!new_content.contains("ä"));
+                assert!(!new_content.contains("你好世界"));
+                assert!(new_content.contains("\r\n"));
+            }
+            other => panic!("expected Ok plan, got {:?}", other_kind(&other)),
+        }
+    }
+
+    fn other_kind(plan: &PlanResult) -> &'static str {
+        match plan {
+            PlanResult::Ok { .. } => "Ok",
+            PlanResult::NotFound { .. } => "NotFound",
+            PlanResult::NotUnique { .. } => "NotUnique",
+            PlanResult::Overlap { .. } => "Overlap",
+        }
     }
 
     #[test]

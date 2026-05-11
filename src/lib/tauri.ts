@@ -322,7 +322,8 @@ export const readFileContent = async (path: string): Promise<string> => {
     console.warn('readFileContent: Aurora runtime unavailable');
     return '';
   }
-  // Use cached file reader for better performance
+  // Single source of truth lives in Rust (mtime-validated cache + 10s timeout).
+  // The frontend used to keep a duplicate LRU here; that layer is gone.
   const { readFileCached } = await import('./file-cache');
   return readFileCached(path);
 };
@@ -455,7 +456,8 @@ export const writeFileContent = async (path: string, content: string): Promise<v
     console.warn('writeFileContent: Aurora runtime unavailable');
     return;
   }
-  // Invalidate frontend cache before write (Rust backend handles its own cache)
+  // Drop any cached copy in Rust before the disk hits — the next read after
+  // this returns will re-stat and serve the new bytes.
   const { invalidateFileCache } = await import('./file-cache');
   invalidateFileCache(path);
   return invoke<void>('write_file_content', { path, content });
@@ -464,8 +466,15 @@ export const writeFileContent = async (path: string, content: string): Promise<v
 // PTY operations are now handled by tauri-plugin-pty
 // Import from 'tauri-pty' package instead
 
-// Re-export batch file operations for performance-critical code
-export { readFilesBatch, preloadFiles, getCacheStats } from './file-cache';
+// Re-export the Rust-backed file-cache helpers for performance-critical code.
+export {
+  getCacheStats,
+  preloadFiles,
+  readFileWithMeta,
+  readFilesBatch,
+  statFileMtime,
+} from './file-cache';
+export type { FileMeta } from './file-cache';
 
 // =============================================================================
 // CLI Installation Commands

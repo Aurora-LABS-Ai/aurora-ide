@@ -9,6 +9,7 @@ import type { ToolDefinition } from "../types";
 // ============================================
 export const shellExecuteTool: ToolDefinition = {
   type: "function",
+  nativeRustOwned: true,
   function: {
     name: "shell_execute",
     description:
@@ -49,6 +50,7 @@ export const shellExecuteTool: ToolDefinition = {
 // ============================================
 export const shellKillTool: ToolDefinition = {
   type: "function",
+  nativeRustOwned: true,
   function: {
     name: "shell_kill",
     description:
@@ -77,6 +79,7 @@ export const shellKillTool: ToolDefinition = {
 // ============================================
 export const shellListProcessesTool: ToolDefinition = {
   type: "function",
+  nativeRustOwned: true,
   function: {
     name: "shell_list_processes",
     description: "List all background processes spawned by the agent.",
@@ -93,6 +96,7 @@ export const shellListProcessesTool: ToolDefinition = {
 // ============================================
 export const shellSpawnTool: ToolDefinition = {
   type: "function",
+  nativeRustOwned: true,
   function: {
     name: "shell_spawn",
     description:

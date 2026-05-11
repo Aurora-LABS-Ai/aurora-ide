@@ -15,7 +15,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest --run --coverage",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "node scripts/tauri-dev-stable.mjs",
     "tauri:dev:cuda": "node scripts/tauri-cuda.mjs dev",
     "tauri:build": "tauri build",
     "tauri:build:cuda": "node scripts/tauri-cuda.mjs build"

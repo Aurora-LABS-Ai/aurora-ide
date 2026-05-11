@@ -27,7 +27,6 @@ import {
   FormBlock,
   StatusPill,
   ActionButton,
-  IdeSlider,
 } from './settings-primitives';
 import { settingsRowDividerColor } from './settings-shared';
 
@@ -133,8 +132,6 @@ export const ToolSettingsTab: React.FC = () => {
     setSyntaxValidationEnabled,
     projectLayoutEnabled,
     setProjectLayoutEnabled,
-    maxToolCallsPerRequest,
-    setMaxToolCallsPerRequest,
     toolApprovalSettings,
     setToolApproval,
   } = useSettingsStore();
@@ -219,30 +216,6 @@ export const ToolSettingsTab: React.FC = () => {
             ariaLabel="Toggle project file map"
             variant="success"
             size="sm"
-          />
-        </FormRowLast>
-      </Section>
-
-      {/* ============================================================ */}
-      {/* Limits                                                       */}
-      {/* ============================================================ */}
-      <Section
-        title="Limits"
-        description="Caps on agent execution to keep runs predictable."
-      >
-        <FormRowLast
-          label="Max tool calls per request"
-          hint="Maximum iterations the agent can take in a single conversation turn."
-        >
-          <IdeSlider
-            value={maxToolCallsPerRequest}
-            min={5}
-            max={50}
-            step={5}
-            onChange={setMaxToolCallsPerRequest}
-            ariaLabel="Max tool calls per request"
-            formatValue={(v) => `${v}`}
-            trackWidth={160}
           />
         </FormRowLast>
       </Section>

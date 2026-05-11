@@ -1,5 +1,5 @@
 import { parseToolArguments } from "../lib/tool-arguments";
-import type { SearchReplaceReplacement } from "../tools/executors/search-replace-utils";
+import type { SearchReplaceReplacement } from "../lib/search-replace-utils";
 
 export type LivePreviewToolName =
   | "file_create"

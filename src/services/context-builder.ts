@@ -226,13 +226,18 @@ Note: these files may or may not be relevant to the current conversation.
  */
 async function buildGitStatus(workspacePath: string): Promise<string> {
   try {
-    const isRepo = await invoke<boolean>('git_is_repository', { path: workspacePath });
+    // The Rust commands in `commands/git.rs` accept `workspace_path: String`,
+    // which Tauri exposes to the frontend as `workspacePath`. The legacy
+    // `path` key here was silently failing on every send (Tauri rejects
+    // missing required keys) and we'd swallow the error in the catch
+    // below — so we always shipped an empty <git_status> on first turn.
+    const isRepo = await invoke<boolean>('git_is_repository', { workspacePath });
     if (!isRepo) return '';
 
-    const statusFiles = await invoke<GitFileStatus[]>('git_get_status', { path: workspacePath });
+    const statusFiles = await invoke<GitFileStatus[]>('git_get_status', { workspacePath });
     let currentBranch = '';
     try {
-      currentBranch = await invoke<string>('git_current_branch', { path: workspacePath });
+      currentBranch = await invoke<string>('git_current_branch', { workspacePath });
     } catch {
       currentBranch = 'unknown';
     }

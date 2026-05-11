@@ -5,7 +5,7 @@ import {
   planMultiSearchReplace,
   planSearchReplace,
   type SearchReplaceReplacement,
-} from "../tools/executors/search-replace-utils";
+} from "../lib/search-replace-utils";
 import { resolvePath } from "../tools/utils/path-resolver";
 import type { ToolCallRequest } from "./providers/types";
 import {

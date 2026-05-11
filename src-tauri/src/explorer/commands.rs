@@ -4,7 +4,7 @@ use notify::{recommended_watcher, Config, Event, EventKind, RecursiveMode, Watch
 use tauri::State;
 use tauri::{AppHandle, Emitter};
 
-use crate::commands::FsEventPayload;
+use crate::commands::{is_ignored_watch_path, FsEventPayload};
 use crate::db::Database;
 
 use super::state::ExplorerStateHandle;
@@ -191,12 +191,33 @@ fn start_workspace_watcher(
             return;
         };
 
-        let kind = map_event_kind(&event.kind);
+        // Drop pure-metadata events (Access) and unclassified Other —
+        // they fire on every read and the frontend ignores them.
+        // Without this filter the watcher pumps thousands of useless
+        // IPC events per second when cargo / vite / git are active.
+        if matches!(event.kind, EventKind::Access(_) | EventKind::Other) {
+            return;
+        }
+
+        // Filter out churn-only subtrees (`.git/`, `node_modules/`,
+        // `target/`, `build/`, …). Keeping these would force the
+        // explorer + git status reload pipeline to recompute on every
+        // cargo rebuild and HMR cycle. The shared filter lives in
+        // `commands::is_ignored_watch_path` so both the legacy
+        // `start_fs_watcher` and this explorer-owned watcher behave
+        // identically.
         let paths: Vec<String> = event
             .paths
             .iter()
+            .filter(|path| !is_ignored_watch_path(path))
             .map(|path| path.to_string_lossy().to_string())
             .collect();
+
+        if paths.is_empty() {
+            return;
+        }
+
+        let kind = map_event_kind(&event.kind);
 
         emit_fs_event(&app_handle, paths.clone(), kind);
 

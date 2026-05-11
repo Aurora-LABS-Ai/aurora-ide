@@ -129,10 +129,12 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
         13 => {
             // Migration from v12 to v13: Drop the legacy `threads` table.
             //
-            // Conversations are now stored as append-only JSONL event logs
-            // under `%APPDATA%/Aurora-Agent-IDE/Agent/Threads/{id}.jsonl`
-            // (see `crate::threads`). No data is migrated — per product
-            // direction this is a clean break for the v1 release.
+            // Conversations are now stored as append-only JSONL message
+            // logs under `<app_data>/agent_v2/{thread_id}.jsonl` with a
+            // metadata sidecar at `<thread_id>.meta.json` (see
+            // `crate::agent_runtime::session_store::SessionStore`). No
+            // data is migrated — per product direction this is a clean
+            // break for the v1 release.
             migration_v13(conn)?;
             conn.execute("DELETE FROM schema_version", [])?;
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [13])?;
@@ -443,10 +445,12 @@ fn migration_v12(conn: &Connection) -> DbResult<()> {
 
 /// Migration v13: Drop the legacy `threads` table.
 ///
-/// Aurora's chat persistence moved to append-only JSONL event logs in the
-/// user's data directory (see `crate::threads`). The migration is destructive
-/// — by product direction we are not back-filling old SQLite rows into the
-/// new event log. Reclaim the storage and the supporting indexes.
+/// Aurora's chat persistence moved to append-only JSONL message logs
+/// under `<app_data>/agent_v2/` (see
+/// `crate::agent_runtime::session_store::SessionStore`). The migration
+/// is destructive — by product direction we are not back-filling old
+/// SQLite rows into the new store. Reclaim the storage and the
+/// supporting indexes.
 fn migration_v13(conn: &Connection) -> DbResult<()> {
     conn.execute("DROP INDEX IF EXISTS idx_threads_created_at", [])?;
     conn.execute("DROP INDEX IF EXISTS idx_threads_updated_at", [])?;

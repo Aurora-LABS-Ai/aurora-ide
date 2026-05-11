@@ -1,72 +1,39 @@
 /**
- * Tools Module
- * 
- * This module provides a modular tool system for the AI agent.
- * Tools are OpenAI-compatible function definitions that can be executed by the agent.
- * 
- * Structure:
- * - types.ts: Type definitions for tools
- * - definitions/: Tool definitions organized by category
- * - registry.ts: Central registry for tool management
- * - executors/: Tool executor implementations (to be implemented)
- * 
- * Usage:
- * 1. Import tool definitions for sending to the AI model
- * 2. Register executors for tools that need to be executed
- * 3. Use the registry to execute tool calls from the model
+ * Tools Module (post-Rust-migration)
+ * ==================================
+ *
+ * Tool definitions for the LLM. Executors live in the Rust runtime;
+ * this module only exposes:
+ *   - Tool definition catalogue (`getToolsForModel`)
+ *   - Risk-level metadata (`toolRequiresApproval`, `getRiskLevel` via registry)
+ *   - The frontend-side `toolRegistry` for UI tracking
+ *
+ * Removed (pure dead weight after Rust migration):
+ *   - `executeToolCall` — every native tool dispatches in Rust now
+ *   - `formatToolsForRequest` — `agent-service` builds its own tool array
+ *   - `registerAllExecutors` / `areExecutorsRegistered` — no executors to wire
  */
-
-// Export types
 import { allTools, getToolByName, getToolRiskLevel, toolCategories } from "./definitions";
-// Re-export commonly used items
 import { toolRegistry } from "./registry";
-import type { ToolCallRequest, ToolCallResult, ToolDefinition } from "./types";
+import type { ToolDefinition } from "./types";
 
-/**
- * Execute a tool call from the AI model
- */
-export const executeToolCall = async (toolCall: ToolCallRequest): Promise<ToolCallResult> => {
-  return toolRegistry.executeToolCall(toolCall);
-};
-
-/**
- * Format tools for OpenAI API request
- */
-export const formatToolsForRequest = (tools?: ToolDefinition[]): ToolDefinition[] => {
-  return tools || allTools;
-};
-
-/**
- * Get all tool definitions for sending to the AI model
- */
+/** All tool definitions for sending to the AI model. */
 export const getToolsForModel = (): ToolDefinition[] => {
   return toolRegistry.getToolDefinitions();
 };
 
-/**
- * Check if a tool requires user approval before execution
- */
+/** Whether a given tool requires human approval (risk-level driven). */
 export const toolRequiresApproval = (toolName: string): boolean => {
-  return toolRegistry.requiresApproval(toolName);
+  const tool = toolRegistry.getTool(toolName);
+  return tool?.requiresApproval ?? true;
 };
 
-export * from './types';
+export * from "./types";
+export * from "./definitions";
+export { toolRegistry, ToolRegistry } from "./registry";
+export { operationLog, FsOperationType } from "./operation-log";
+export type { FsOperation, OperationSummary } from "./operation-log";
 
-// Export definitions
-export * from './definitions';
-
-// Export registry
-export { toolRegistry, ToolRegistry } from './registry';
-
-// Export executors
-export { registerAllExecutors, areExecutorsRegistered } from './executors';
-
-// Export operation log
-export { operationLog, FsOperationType } from './operation-log';
-
-export type { FsOperation, OperationSummary } from './operation-log';
-
-// Default export for convenience
 export default {
   registry: toolRegistry,
   allTools,
@@ -74,6 +41,5 @@ export default {
   getToolRiskLevel,
   toolCategories,
   getToolsForModel,
-  executeToolCall,
   toolRequiresApproval,
 };

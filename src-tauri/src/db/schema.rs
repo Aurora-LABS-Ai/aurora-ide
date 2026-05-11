@@ -11,8 +11,9 @@ pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
     set_schema_version(conn, SCHEMA_VERSION)?;
 
     // Create tables. The `threads` table is intentionally absent — chat
-    // history now lives as JSONL event logs under
-    // `%APPDATA%/Aurora-Agent-IDE/Agent/Threads/`. See `crate::threads`.
+    // history now lives as JSONL message logs (plus a tiny metadata
+    // sidecar) under `<app_data>/agent_v2/`. See
+    // `crate::agent_runtime::session_store::SessionStore`.
     create_workspace_state_table(conn)?;
     create_editor_state_table(conn)?;
     create_explorer_state_table(conn)?;

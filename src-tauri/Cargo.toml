@@ -29,6 +29,8 @@ futures-util = "0.3"
 serde_json = "1"
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+async-trait = "0.1"            # `async fn` in traits with dyn-dispatch (agent_runtime)
 hostname = "0.4"
 notify = "6"
 grep = "0.3"
@@ -58,6 +60,7 @@ lazy_static = "1.4"
 
 # Cross-platform directories
 dirs = "5.0"
+dunce = "1"               # Strips Windows UNC \\?\ prefix for stable path comparisons (agent_safety)
 
 # Performance optimizations
 lru = "0.13"            # LRU cache for file contents
@@ -122,6 +125,17 @@ cpu-only = []
 
 # CLI mode - enables console window for CLI commands on Windows
 cli-mode = []
+
+# `verify_only` is consumed by the standalone verification crates under
+# `target/__verify_*` that mount Aurora's source via `#[path]` to test a
+# single module in isolation (the main `cargo test` binary cannot launch
+# on Windows because of an ONNX runtime DLL link order issue). Production
+# builds never enable it; the gated `#[cfg(feature = "verify_only")]`
+# blocks pivot to no-op stubs in that mode and the live Tauri/system
+# implementations otherwise. Declared here so rustc's `unexpected_cfgs`
+# lint accepts the cfg name without us having to scatter
+# `#[allow(unexpected_cfgs)]` across every module that touches it.
+verify_only = []
 
 # Dev profile: enable some optimizations for better dev mode performance
 [profile.dev]

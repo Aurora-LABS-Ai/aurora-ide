@@ -161,10 +161,22 @@ const ProviderGridCard: React.FC<ProviderGridCardProps> = ({
   const keyRequired = !isLocal && provider.requiresApiKey !== false;
 
   return (
-    <button
-      type="button"
+    // Card is rendered as a div + role="button" rather than a real
+    // <button> element because IdeSwitch (and any other interactive
+    // control inside) is itself a button — and HTML disallows nested
+    // buttons. We preserve a11y with role/tabIndex and a keydown
+    // handler that mirrors the native Enter/Space activation.
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onOpen}
-      className="group flex flex-col text-left transition-transform hover:-translate-y-px focus:outline-none"
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+      className="group flex flex-col text-left cursor-pointer transition-transform hover:-translate-y-px focus:outline-none"
       style={{
         ...cardOuterStyle,
         // Square-ish proportions; min height keeps short cards from
@@ -280,7 +292,7 @@ const ProviderGridCard: React.FC<ProviderGridCardProps> = ({
           <StatusPill variant="warning">No Key</StatusPill>
         )}
       </div>
-    </button>
+    </div>
   );
 };
 

@@ -82,9 +82,13 @@ interface ContextState {
 /**
  * Tools whose result the model can only act on if it accepts image
  * content blocks. We strip these from the schema we ship to the LLM
- * when the active provider's `supportsVision === false`, both to save
+ * when the active **model's** `supportsVision === false`, both to save
  * the schema's tokens AND to prevent the model from emitting a
- * tool_use call whose response it can't read.
+ * tool_use call whose response it can't read. As of schema v15 the
+ * vision flag lives on the per-model row (`LLMModel.supportsVision`)
+ * and reaches us via `ProviderConfigSnapshot.supportsVision`, which
+ * `useSettingsStore.getLLMConfig()` derives from the resolved active
+ * model.
  */
 const VISION_REQUIRED_TOOLS = new Set<string>(["browser_screenshot"]);
 

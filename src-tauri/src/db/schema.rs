@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 14;
+pub const SCHEMA_VERSION: i32 = 15;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -19,6 +19,7 @@ pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
     create_explorer_state_table(conn)?;
     create_app_settings_table(conn)?;
     create_llm_providers_table(conn)?;
+    create_provider_models_table(conn)?;
     create_tool_settings_table(conn)?;
     create_custom_themes_table(conn)?;
     create_checkpoints_table(conn)?;
@@ -143,6 +144,16 @@ fn create_app_settings_table(conn: &Connection) -> DbResult<()> {
 }
 
 /// Create llm_providers table (LLM provider configurations)
+///
+/// As of schema v15 the table holds **transport + auth + defaults
+/// only**. Per-model capabilities (vision, thinking, tool-stream) and
+/// per-model context/output overrides live in `provider_models` (see
+/// [`create_provider_models_table`]). The legacy columns
+/// `supports_thinking`, `supports_vision`, `custom_models`, and
+/// `model_aliases` are no longer read; the v15 migration moves their
+/// data into `provider_models`. We keep `model` as the **selected**
+/// model id for backward-compat reads — the source of truth for which
+/// model is active is still `app_settings.selectedModel`.
 fn create_llm_providers_table(conn: &Connection) -> DbResult<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS llm_providers (
@@ -154,13 +165,9 @@ fn create_llm_providers_table(conn: &Connection) -> DbResult<()> {
             model TEXT NOT NULL,
             context_window INTEGER NOT NULL DEFAULT 128000,
             max_output_tokens INTEGER NOT NULL DEFAULT 16384,
-            supports_thinking INTEGER NOT NULL DEFAULT 0,
             supports_tool_stream INTEGER NOT NULL DEFAULT 0,
-            supports_vision INTEGER NOT NULL DEFAULT 0,
             enabled INTEGER NOT NULL DEFAULT 1,
             is_custom INTEGER NOT NULL DEFAULT 0,
-            custom_models TEXT,           -- JSON array of model names
-            model_aliases TEXT,          -- JSON object of modelId -> display name
             custom_headers TEXT,          -- JSON object
             custom_params TEXT,           -- JSON object
             provider_type TEXT,           -- 'openai' | 'deepseek' | 'glm' | 'anthropic' | 'custom'
@@ -178,6 +185,45 @@ fn create_llm_providers_table(conn: &Connection) -> DbResult<()> {
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_llm_providers_sort
          ON llm_providers (sort_order ASC)",
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Create provider_models table (per-model capability profile under a provider).
+///
+/// One row per model exposed by a provider. Capabilities (vision,
+/// thinking, tool-stream) are always per-model — the same OpenAI key
+/// can address GPT-4o-mini (no vision) and GPT-4o (vision) and they
+/// must not share a single flag. Context window and max-output are
+/// nullable: NULL means "inherit the provider's default", a non-null
+/// value overrides it.
+fn create_provider_models_table(conn: &Connection) -> DbResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS provider_models (
+            id TEXT PRIMARY KEY,                     -- '{providerId}::{modelKey}'
+            provider_id TEXT NOT NULL,               -- FK -> llm_providers.id
+            model_key TEXT NOT NULL,                 -- the API model identifier
+            label TEXT,                              -- display name override (alias)
+            context_window INTEGER,                  -- NULL → inherit from provider
+            max_output_tokens INTEGER,               -- NULL → inherit from provider
+            supports_vision INTEGER NOT NULL DEFAULT 0,
+            supports_thinking INTEGER NOT NULL DEFAULT 0,
+            supports_tool_stream INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(provider_id, model_key),
+            FOREIGN KEY (provider_id) REFERENCES llm_providers(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_provider_models_provider
+         ON provider_models (provider_id, sort_order ASC)",
         [],
     )?;
 

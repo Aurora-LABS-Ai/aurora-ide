@@ -39,16 +39,20 @@ export interface AppSettings {
 }
 
 // ============================================================
-// LLM PROVIDER
+// LLM PROVIDER (transport + auth + defaults — v15+)
 // ============================================================
+//
+// As of schema v15 per-model capabilities (vision, thinking,
+// tool-stream) and per-model context/output overrides live on
+// `DbProviderModel` rows keyed by `providerId`. The `customModels`,
+// `modelAliases`, `supportsThinking`, and `supportsVision` fields
+// previously on this type are gone.
 export interface DbLLMProvider {
   apiKey: string;
   baseUrl: string;
   contextWindow: number;
   createdAt: string;
   customHeaders: Record<string, string> | null;
-  modelAliases: Record<string, string> | null;
-  customModels: string[] | null;
   customParams: Record<string, unknown> | null;
   defaultMaxTokens: number | null;
   defaultTemperature: number | null;
@@ -62,9 +66,31 @@ export interface DbLLMProvider {
   providerType: string | null;
   requiresApiKey: boolean;
   sortOrder: number;
+  supportsToolStream: boolean;
+  updatedAt: string;
+}
+
+// ============================================================
+// PROVIDER MODEL (per-model capability profile — v15+)
+// ============================================================
+//
+// One row per model exposed by a provider. `contextWindow` and
+// `maxOutputTokens` are nullable: `null` means "inherit the
+// provider's default", a non-null value overrides it.
+export interface DbProviderModel {
+  /** `${providerId}::${modelKey}` — primary key. */
+  id: string;
+  providerId: string;
+  modelKey: string;
+  label: string | null;
+  contextWindow: number | null;
+  maxOutputTokens: number | null;
+  supportsVision: boolean;
   supportsThinking: boolean;
   supportsToolStream: boolean;
-  supportsVision: boolean;
+  enabled: boolean;
+  sortOrder: number;
+  createdAt: string;
   updatedAt: string;
 }
 

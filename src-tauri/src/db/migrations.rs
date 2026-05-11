@@ -151,6 +151,18 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [14])?;
             Ok(())
         }
+        15 => {
+            // Migration from v14 to v15: Split per-model capabilities
+            // out of `llm_providers` into a new `provider_models` table.
+            // Capabilities (vision, thinking, tool-stream) are now
+            // per-model rather than per-provider, since the same
+            // provider can expose models with different capabilities
+            // (e.g. GPT-4o vs GPT-4o-mini).
+            migration_v15(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [15])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -466,6 +478,223 @@ fn migration_v13(conn: &Connection) -> DbResult<()> {
     conn.execute("DROP INDEX IF EXISTS idx_threads_created_at", [])?;
     conn.execute("DROP INDEX IF EXISTS idx_threads_updated_at", [])?;
     conn.execute("DROP TABLE IF EXISTS threads", [])?;
+    Ok(())
+}
+
+/// Migration v15: Split per-model capabilities out of `llm_providers`
+/// into a new `provider_models` table.
+///
+/// **Why**: vision/thinking/tool-stream and the context window are
+/// per-model concerns. Storing them on the provider row meant
+/// switching the active model didn't switch capabilities — e.g. the
+/// same OpenAI provider held one `supports_vision` flag for both
+/// GPT-4o and GPT-4o-mini, which is wrong.
+///
+/// **What it does**:
+///  1. Creates `provider_models` if missing.
+///  2. For every existing provider, expands its `customModels`
+///     JSON array into one model row each (or just the `model`
+///     column if the array is empty/null), copying `supports_vision`
+///     and `supports_thinking` from the provider as the initial
+///     capability values, and using `model_aliases` for the label.
+///  3. Rebuilds `llm_providers` without the `supports_vision`,
+///     `supports_thinking`, `custom_models`, and `model_aliases`
+///     columns. SQLite needs the create-copy-drop-rename dance.
+///
+/// Idempotent: if `provider_models` already has rows for a provider
+/// we skip the seed step for that provider; if the deprecated columns
+/// are already gone we skip the rebuild.
+fn migration_v15(conn: &Connection) -> DbResult<()> {
+    use serde_json::Value;
+
+    // ── Step 1: ensure provider_models exists ────────────────────────
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS provider_models (
+            id TEXT PRIMARY KEY,
+            provider_id TEXT NOT NULL,
+            model_key TEXT NOT NULL,
+            label TEXT,
+            context_window INTEGER,
+            max_output_tokens INTEGER,
+            supports_vision INTEGER NOT NULL DEFAULT 0,
+            supports_thinking INTEGER NOT NULL DEFAULT 0,
+            supports_tool_stream INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(provider_id, model_key)
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_provider_models_provider
+         ON provider_models (provider_id, sort_order ASC)",
+        [],
+    )?;
+
+    // ── Step 2: detect which legacy columns we still need to read ────
+    let legacy_columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(llm_providers)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        rows.flatten().collect()
+    };
+    let has_custom_models = legacy_columns.iter().any(|c| c == "custom_models");
+    let has_model_aliases = legacy_columns.iter().any(|c| c == "model_aliases");
+    let has_supports_vision = legacy_columns.iter().any(|c| c == "supports_vision");
+    let has_supports_thinking = legacy_columns.iter().any(|c| c == "supports_thinking");
+    let has_supports_tool_stream = legacy_columns.iter().any(|c| c == "supports_tool_stream");
+
+    // ── Step 3: seed provider_models from existing rows ──────────────
+    let now = chrono::Utc::now().to_rfc3339();
+    let select_sql = format!(
+        "SELECT id, model, {custom_models}, {model_aliases}, \
+                {supports_vision}, {supports_thinking}, {supports_tool_stream} \
+         FROM llm_providers",
+        custom_models = if has_custom_models { "custom_models" } else { "NULL" },
+        model_aliases = if has_model_aliases { "model_aliases" } else { "NULL" },
+        supports_vision = if has_supports_vision { "supports_vision" } else { "0" },
+        supports_thinking = if has_supports_thinking { "supports_thinking" } else { "0" },
+        supports_tool_stream = if has_supports_tool_stream {
+            "supports_tool_stream"
+        } else {
+            "0"
+        },
+    );
+
+    struct LegacyRow {
+        provider_id: String,
+        primary_model: String,
+        custom_models_json: Option<String>,
+        model_aliases_json: Option<String>,
+        supports_vision: i64,
+        supports_thinking: i64,
+        supports_tool_stream: i64,
+    }
+
+    let rows: Vec<LegacyRow> = {
+        let mut stmt = conn.prepare(&select_sql)?;
+        let iter = stmt.query_map([], |row| {
+            Ok(LegacyRow {
+                provider_id: row.get(0)?,
+                primary_model: row.get(1)?,
+                custom_models_json: row.get(2).ok(),
+                model_aliases_json: row.get(3).ok(),
+                supports_vision: row.get::<_, i64>(4).unwrap_or(0),
+                supports_thinking: row.get::<_, i64>(5).unwrap_or(0),
+                supports_tool_stream: row.get::<_, i64>(6).unwrap_or(0),
+            })
+        })?;
+        iter.filter_map(|r| r.ok()).collect()
+    };
+
+    for row in &rows {
+        // Collect model keys: customModels[] if present, else just `model`.
+        let mut model_keys: Vec<String> = row
+            .custom_models_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        if model_keys.is_empty() && !row.primary_model.trim().is_empty() {
+            model_keys.push(row.primary_model.clone());
+        }
+        // Dedupe while preserving order.
+        let mut seen = std::collections::HashSet::new();
+        model_keys.retain(|k| seen.insert(k.clone()));
+
+        let aliases: serde_json::Map<String, Value> = row
+            .model_aliases_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<serde_json::Map<String, Value>>(s).ok())
+            .unwrap_or_default();
+
+        for (idx, model_key) in model_keys.iter().enumerate() {
+            let row_id = format!("{}::{}", row.provider_id, model_key);
+            let label = aliases
+                .get(model_key)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            // INSERT OR IGNORE so re-running the migration on a
+            // partially-migrated DB is a no-op for already-seeded rows.
+            conn.execute(
+                "INSERT OR IGNORE INTO provider_models (
+                    id, provider_id, model_key, label, context_window, max_output_tokens,
+                    supports_vision, supports_thinking, supports_tool_stream,
+                    enabled, sort_order, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, 1, ?8, ?9, ?9)",
+                rusqlite::params![
+                    row_id,
+                    row.provider_id,
+                    model_key,
+                    label,
+                    row.supports_vision,
+                    row.supports_thinking,
+                    row.supports_tool_stream,
+                    idx as i64,
+                    now,
+                ],
+            )?;
+        }
+    }
+
+    // ── Step 4: rebuild llm_providers without deprecated columns ─────
+    let needs_rebuild = has_custom_models
+        || has_model_aliases
+        || has_supports_vision
+        || has_supports_thinking;
+
+    if needs_rebuild {
+        // SQLite < 3.35 lacks DROP COLUMN; even on newer versions the
+        // create-copy-drop-rename dance is the safe, supported path.
+        // Wrap in a transaction so a crash mid-rebuild doesn't strand
+        // the DB with a half-renamed table.
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE llm_providers_new (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                nickname TEXT,
+                base_url TEXT NOT NULL,
+                api_key TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL,
+                context_window INTEGER NOT NULL DEFAULT 128000,
+                max_output_tokens INTEGER NOT NULL DEFAULT 16384,
+                supports_tool_stream INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                is_custom INTEGER NOT NULL DEFAULT 0,
+                custom_headers TEXT,
+                custom_params TEXT,
+                provider_type TEXT,
+                default_temperature REAL,
+                default_max_tokens INTEGER,
+                requires_api_key INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+             );
+             INSERT INTO llm_providers_new (
+                id, name, nickname, base_url, api_key, model, context_window,
+                max_output_tokens, supports_tool_stream, enabled, is_custom,
+                custom_headers, custom_params, provider_type, default_temperature,
+                default_max_tokens, requires_api_key, sort_order, created_at, updated_at
+             )
+             SELECT id, name, nickname, base_url, api_key, model, context_window,
+                    max_output_tokens, supports_tool_stream, enabled, is_custom,
+                    custom_headers, custom_params, provider_type, default_temperature,
+                    default_max_tokens, requires_api_key, sort_order, created_at, updated_at
+             FROM llm_providers;
+             DROP INDEX IF EXISTS idx_llm_providers_sort;
+             DROP TABLE llm_providers;
+             ALTER TABLE llm_providers_new RENAME TO llm_providers;
+             CREATE INDEX IF NOT EXISTS idx_llm_providers_sort
+                ON llm_providers (sort_order ASC);
+             COMMIT;",
+        )?;
+    }
+
     Ok(())
 }
 

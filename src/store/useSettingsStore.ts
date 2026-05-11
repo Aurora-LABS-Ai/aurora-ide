@@ -20,7 +20,11 @@ import {
 import { providerCatalogService, type ProviderCatalogPreset } from "../services/provider-catalog";
 import type { ProviderConfig } from "../services/providers/types";
 import { MAX_ENABLED_SKILLS } from "../services/skills";
-import type { AppSettings as DbAppSettings, DbLLMProvider } from "../types/database";
+import type {
+  AppSettings as DbAppSettings,
+  DbLLMProvider,
+  DbProviderModel,
+} from "../types/database";
 import { useIconPackStore } from "./useIconPackStore";
 
 const countEnabledSkillToggles = (toggles: Record<string, boolean>): number => {
@@ -183,6 +187,26 @@ interface SettingsState {
 
   // Provider actions
   updateProvider: (id: string, updates: Partial<LLMProvider>) => void;
+
+  // ── Models slice (v15+) ─────────────────────────────────────────
+  models: LLMModel[];
+  modelsForProvider: (providerId: string) => LLMModel[];
+  /** Look up the active model from `selectedModel` (`providerId:modelKey`). */
+  getActiveModel: () => LLMModel | undefined;
+  /** Active model with overrides resolved against the provider's defaults. */
+  getResolvedActiveModel: () => ResolvedLLMModel | undefined;
+  addModel: (
+    providerId: string,
+    init: Omit<LLMModel, "id" | "providerId" | "sortOrder"> & { sortOrder?: number },
+  ) => string;
+  updateModel: (id: string, updates: Partial<Omit<LLMModel, "id" | "providerId">>) => void;
+  deleteModel: (id: string) => void;
+  /** Bulk replace the model list for a provider in one transaction. */
+  replaceModelsForProvider: (
+    providerId: string,
+    models: Array<Omit<LLMModel, "id" | "providerId" | "sortOrder">>,
+  ) => void;
+
   wrapMode: boolean;
 }
 
@@ -190,6 +214,18 @@ interface SettingsState {
 // ============================================
 // PROVIDER TYPES
 // ============================================
+//
+// As of schema v15 a provider holds **transport, auth, defaults
+// only**. Per-model capabilities and per-model context/output
+// overrides live on `LLMModel` rows in the `models` slice.
+//
+// The `customModels`, `modelAliases`, `supportsThinking`, and
+// `supportsVision` fields below are **synthesized in-memory** from
+// the models slice on every read so legacy UI (Fireworks tab,
+// LocalProviderPanel, the old ProviderCard) keeps reading the
+// shape it expects without changes. Writes through `updateProvider`
+// translate them back into models-slice operations. The fields are
+// never round-tripped to the `llm_providers` table.
 export interface LLMProvider {
   apiKey: string;
   baseUrl: string;
@@ -197,6 +233,7 @@ export interface LLMProvider {
 
   // Advanced configuration
   customHeaders?: Record<string, string>; // Extra headers to send
+  /** @deprecated v15 — synthesized from `models` slice. Reads work; writes via `updateProvider` are translated into model upserts. */
   customModels?: string[];
   customParams?: Record<string, unknown>; // Extra params in request body
   defaultMaxTokens?: number; // Provider-specific default max token request
@@ -206,27 +243,62 @@ export interface LLMProvider {
   isCustom?: boolean; // User-added provider
   maxOutputTokens: number;
   model: string;
+  /** @deprecated v15 — synthesized from `models` slice (model.label). */
   modelAliases?: Record<string, string>;
   name: string;
   nickname?: string;
   providerType?: "openai" | "fireworks" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "custom"; // Explicit provider type
   requiresApiKey?: boolean; // Whether API key is required (false for local)
+  /** @deprecated v15 — read the active `LLMModel.supportsThinking` instead. */
   supportsThinking: boolean;
   supportsToolStream?: boolean;
   /**
-   * Does the active model accept image content blocks (Claude 3+,
-   * GPT-4V, Llama-vision, …)? Drives `browser_screenshot` tool
-   * registration and switches the API adapter into multimodal
-   * tool_result mode (Anthropic native `image` block, OpenAI-compat
-   * `image_url` block).
+   * @deprecated v15 — read the active `LLMModel.supportsVision` instead.
+   * Synthesized from the `models` slice.
    */
   supportsVision?: boolean;
 }
 
 // ============================================
+// MODEL TYPES (v15+)
+// ============================================
+//
+// One row per model exposed by a provider. Capabilities are always
+// per-model (the same OpenAI key can address GPT-4o-mini and GPT-4o,
+// which have different vision support). `contextWindow` and
+// `maxOutputTokens` are nullable — `null` means "inherit from the
+// provider's default". Use `getResolvedModel()` to merge.
+export interface LLMModel {
+  /** `${providerId}::${modelKey}` — primary key. */
+  id: string;
+  providerId: string;
+  modelKey: string;
+  label?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  supportsVision: boolean;
+  supportsThinking: boolean;
+  supportsToolStream: boolean;
+  enabled: boolean;
+  sortOrder: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** A model with its per-row overrides resolved against provider defaults. */
+export interface ResolvedLLMModel extends LLMModel {
+  /** Always non-null after resolution (falls back to provider.contextWindow). */
+  resolvedContextWindow: number;
+  /** Always non-null after resolution (falls back to provider.maxOutputTokens). */
+  resolvedMaxOutputTokens: number;
+  /** Always non-null after resolution (falls back to model.modelKey). */
+  displayLabel: string;
+}
+
+// ============================================
 // DEFAULT VALUES
 // ============================================
-const DEFAULT_SELECTED_MODEL = "fireworks:accounts/fireworks/models/kimi-k2-instruct-0905";
+const DEFAULT_SELECTED_MODEL = "fireworks:accounts/fireworks/routers/kimi-k2p6-turbo";
 
 const presetToProvider = (preset: ProviderCatalogPreset): LLMProvider => ({
   id: preset.id,
@@ -253,15 +325,6 @@ const createDefaultProviders = (presets: ProviderCatalogPreset[]): LLMProvider[]
   return presets.map((preset) => presetToProvider(preset));
 };
 
-const mergeProviderModels = (
-  presetModels?: string[],
-  dbModels?: string[],
-): string[] | undefined => {
-  const merged = [...(presetModels || []), ...(dbModels || [])].filter(Boolean);
-  if (merged.length === 0) return undefined;
-  return Array.from(new Set(merged));
-};
-
 const getProviderModelList = (provider: LLMProvider): string[] => {
   const models = provider.customModels?.length ? provider.customModels : [provider.model];
   return Array.from(new Set(models.filter(Boolean)));
@@ -269,18 +332,6 @@ const getProviderModelList = (provider: LLMProvider): string[] => {
 
 const getProviderNickname = (provider: Pick<LLMProvider, "name" | "nickname">): string =>
   formatProviderNickname(provider.name, provider.nickname);
-
-const getModelAliasesForProvider = (
-  provider: Pick<LLMProvider, "customModels" | "model" | "modelAliases">,
-): Record<string, string> | undefined => {
-  const supportedModels = new Set(getProviderModelList(provider as LLMProvider));
-  const normalizedEntries = Object.entries(provider.modelAliases || {})
-    .map(([modelId, alias]) => [modelId, alias.trim()] as const)
-    .filter(([modelId, alias]) => supportedModels.has(modelId) && alias.length > 0);
-
-  if (normalizedEntries.length === 0) return undefined;
-  return Object.fromEntries(normalizedEntries);
-};
 
 const isProviderReady = (provider: LLMProvider): boolean => {
   if (!provider.enabled) return false;
@@ -358,6 +409,11 @@ const syncThinkingForSelectedModel = (
 };
 
 function dbToProvider(db: DbLLMProvider): LLMProvider {
+  // Note: legacy fields (customModels, modelAliases, supportsThinking,
+  // supportsVision) are populated post-hoc by `synthesizeLegacyProviderFields`
+  // after the models slice is loaded. We intentionally leave them
+  // unset here so a provider that loses all its models reflects an
+  // empty list rather than ghost data.
   return {
     id: db.id,
     name: db.name,
@@ -366,13 +422,11 @@ function dbToProvider(db: DbLLMProvider): LLMProvider {
     model: db.model,
     contextWindow: db.contextWindow,
     maxOutputTokens: db.maxOutputTokens,
-    supportsThinking: db.supportsThinking,
+    supportsThinking: false,
     supportsToolStream: db.supportsToolStream,
-    supportsVision: db.supportsVision ?? false,
+    supportsVision: false,
     enabled: db.enabled,
     isCustom: db.isCustom,
-    customModels: db.customModels || undefined,
-    modelAliases: db.modelAliases || undefined,
     customHeaders: db.customHeaders || undefined,
     customParams: db.customParams || undefined,
     nickname: db.nickname || undefined,
@@ -396,13 +450,9 @@ function providerToDb(provider: LLMProvider, sortOrder: number): DbLLMProvider {
     model: provider.model,
     contextWindow: provider.contextWindow,
     maxOutputTokens: provider.maxOutputTokens,
-    supportsThinking: provider.supportsThinking,
     supportsToolStream: provider.supportsToolStream || false,
-    supportsVision: provider.supportsVision ?? false,
     enabled: provider.enabled,
     isCustom: provider.isCustom || false,
-    customModels: provider.customModels || null,
-    modelAliases: getModelAliasesForProvider(provider) || null,
     customHeaders: provider.customHeaders || null,
     customParams: provider.customParams || null,
     nickname: provider.nickname?.trim() || null,
@@ -413,6 +463,139 @@ function providerToDb(provider: LLMProvider, sortOrder: number): DbLLMProvider {
     sortOrder,
     createdAt: now,
     updatedAt: now,
+  };
+}
+
+// ============================================
+// MODEL <-> DB CONVERTERS (v15+)
+// ============================================
+function dbToModel(row: DbProviderModel): LLMModel {
+  return {
+    id: row.id,
+    providerId: row.providerId,
+    modelKey: row.modelKey,
+    label: row.label || undefined,
+    contextWindow: row.contextWindow ?? undefined,
+    maxOutputTokens: row.maxOutputTokens ?? undefined,
+    supportsVision: !!row.supportsVision,
+    supportsThinking: !!row.supportsThinking,
+    supportsToolStream: !!row.supportsToolStream,
+    enabled: !!row.enabled,
+    sortOrder: row.sortOrder ?? 0,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function modelToDb(model: LLMModel): DbProviderModel {
+  const now = new Date().toISOString();
+  return {
+    id: model.id || `${model.providerId}::${model.modelKey}`,
+    providerId: model.providerId,
+    modelKey: model.modelKey,
+    label: model.label?.trim() || null,
+    contextWindow: model.contextWindow ?? null,
+    maxOutputTokens: model.maxOutputTokens ?? null,
+    supportsVision: model.supportsVision,
+    supportsThinking: model.supportsThinking,
+    supportsToolStream: model.supportsToolStream,
+    enabled: model.enabled,
+    sortOrder: model.sortOrder,
+    createdAt: model.createdAt || now,
+    updatedAt: now,
+  };
+}
+
+/**
+ * Build LLMModel rows from a preset's `customModels[]` + provider-level
+ * capability flags. Used on first-run when no rows exist in the
+ * `provider_models` table yet — the v15 DB migration handles the same
+ * thing for upgrades, this is the fresh-install path.
+ */
+function modelsFromPreset(preset: ProviderCatalogPreset): LLMModel[] {
+  const keys = preset.customModels?.length ? preset.customModels : [preset.model];
+  const aliases = preset.modelAliases || {};
+  return Array.from(new Set(keys.filter(Boolean))).map((modelKey, idx) => ({
+    id: `${preset.id}::${modelKey}`,
+    providerId: preset.id,
+    modelKey,
+    label: aliases[modelKey] || undefined,
+    contextWindow: undefined,
+    maxOutputTokens: undefined,
+    supportsVision: false,
+    supportsThinking: !!preset.supportsThinking,
+    supportsToolStream: !!preset.supportsToolStream,
+    enabled: true,
+    sortOrder: idx,
+  }));
+}
+
+/**
+ * Re-populate the `customModels`, `modelAliases`, `supportsThinking`,
+ * and `supportsVision` fields on `LLMProvider` from the `models`
+ * slice. Called after the models slice changes so legacy code that
+ * still reads these fields sees a consistent view. The synthesized
+ * `supportsThinking`/`supportsVision` reflect the **active** model
+ * (selected by the global `selectedModel`), not OR-aggregated across
+ * the whole provider — that's the correct behavior for capability
+ * gating downstream.
+ */
+function synthesizeLegacyProviderFields(
+  providers: LLMProvider[],
+  models: LLMModel[],
+  selectedModel: string,
+): LLMProvider[] {
+  const [activeProviderId, activeModelKey] = selectedModel.split(":");
+  return providers.map((provider) => {
+    const ownModels = models
+      .filter((m) => m.providerId === provider.id)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+    const customModels = ownModels.map((m) => m.modelKey);
+    const modelAliases = ownModels.reduce<Record<string, string>>((acc, m) => {
+      if (m.label && m.label.trim()) acc[m.modelKey] = m.label.trim();
+      return acc;
+    }, {});
+
+    let activeFlags: { supportsVision: boolean; supportsThinking: boolean } = {
+      supportsVision: false,
+      supportsThinking: false,
+    };
+    if (provider.id === activeProviderId) {
+      const active = ownModels.find((m) => m.modelKey === activeModelKey) ?? ownModels[0];
+      if (active) {
+        activeFlags = {
+          supportsVision: active.supportsVision,
+          supportsThinking: active.supportsThinking,
+        };
+      }
+    } else {
+      // For non-active providers, surface the OR over their models so
+      // the Settings UI can show capability badges. Capability gating
+      // for the runtime always uses the resolved active model below.
+      activeFlags = {
+        supportsVision: ownModels.some((m) => m.supportsVision),
+        supportsThinking: ownModels.some((m) => m.supportsThinking),
+      };
+    }
+
+    return {
+      ...provider,
+      customModels: customModels.length ? customModels : undefined,
+      modelAliases: Object.keys(modelAliases).length ? modelAliases : undefined,
+      supportsThinking: activeFlags.supportsThinking,
+      supportsVision: activeFlags.supportsVision,
+    };
+  });
+}
+
+/** Resolve a model's nullable overrides against its provider's defaults. */
+function resolveModel(model: LLMModel, provider: LLMProvider): ResolvedLLMModel {
+  return {
+    ...model,
+    resolvedContextWindow: model.contextWindow ?? provider.contextWindow,
+    resolvedMaxOutputTokens: model.maxOutputTokens ?? provider.maxOutputTokens,
+    displayLabel:
+      model.label?.trim() || formatModelDisplayName(model.modelKey),
   };
 }
 
@@ -457,6 +640,10 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   // Providers
   providers: [],
+  // Models slice (v15+) — per-model capability profiles. Hydrated in
+  // initializeFromDatabase from `provider_models`; legacy fields on
+  // LLMProvider are synthesized from this on every change.
+  models: [],
   selectedModel: DEFAULT_SELECTED_MODEL,
   explorerIconPack: DEFAULT_EXPLORER_ICON_PACK_ID,
 
@@ -546,16 +733,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
               ...dbProvider,
               isCustom: false,
               providerType: presetProvider.providerType,
-              supportsThinking: presetProvider.supportsThinking,
               supportsToolStream: presetProvider.supportsToolStream ?? dbProvider.supportsToolStream,
-              modelAliases: {
-                ...(presetProvider.modelAliases || {}),
-                ...(dbProvider.modelAliases || {}),
-              },
-              customModels: mergeProviderModels(
-                presetProvider.customModels,
-                dbProvider.customModels,
-              ),
               nickname: dbProvider.nickname || presetProvider.nickname,
             };
           }
@@ -568,13 +746,82 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           .map(p => ({ ...p, isCustom: true as const }));
         mergedProviders.push(...customProviders);
 
-        set({ providers: mergedProviders });
+        // ── Models slice (v15+) ────────────────────────────────────
+        // Load model rows for each provider, then merge with preset
+        // models (so newly-added presets get their model roster
+        // populated even if the user already has a v14-migrated DB).
+        const dbModels = await databaseService.listProviderModels();
+        const modelsFromDb = dbModels.map(dbToModel);
+        const mergedModels: LLMModel[] = [];
+        const seenIds = new Set<string>();
+        for (const m of modelsFromDb) {
+          if (!seenIds.has(m.id)) {
+            mergedModels.push(m);
+            seenIds.add(m.id);
+          }
+        }
+        // For each preset, ensure every model_key appears at least once.
+        // Preset-supplied capabilities only seed; user edits stick.
+        for (const preset of presetProviders) {
+          const presetModels = modelsFromPreset(preset);
+          for (const pm of presetModels) {
+            if (!seenIds.has(pm.id)) {
+              mergedModels.push(pm);
+              seenIds.add(pm.id);
+              // Persist the seeded preset model row.
+              databaseService.upsertProviderModel(modelToDb(pm)).catch(console.error);
+            }
+          }
+        }
+        // Custom providers may not have any model rows yet (e.g. a
+        // user upgraded from v14 with `model = 'foo'` and nothing in
+        // customModels[]). Seed one default row per custom provider
+        // that currently has zero models.
+        for (const provider of mergedProviders) {
+          if (!provider.isCustom) continue;
+          const hasAny = mergedModels.some((m) => m.providerId === provider.id);
+          if (!hasAny && provider.model.trim()) {
+            const seeded: LLMModel = {
+              id: `${provider.id}::${provider.model}`,
+              providerId: provider.id,
+              modelKey: provider.model,
+              supportsVision: false,
+              supportsThinking: provider.supportsThinking ?? false,
+              supportsToolStream: provider.supportsToolStream ?? false,
+              enabled: true,
+              sortOrder: 0,
+            };
+            mergedModels.push(seeded);
+            databaseService.upsertProviderModel(modelToDb(seeded)).catch(console.error);
+          }
+        }
+
+        // selectedModel hasn't been loaded from app_settings yet —
+        // synthesize against DEFAULT_SELECTED_MODEL for now; we'll
+        // re-synthesize once selectedModel resolves below.
+        const providersWithLegacy = synthesizeLegacyProviderFields(
+          mergedProviders,
+          mergedModels,
+          DEFAULT_SELECTED_MODEL,
+        );
+        set({ providers: providersWithLegacy, models: mergedModels });
       } else {
-        // First time: save default providers to database
+        // First time: save default providers AND seed the models
+        // slice from preset.customModels[].
         const defaultProviders = createDefaultProviders(presetProviders);
         const dbProviders = defaultProviders.map((p, i) => providerToDb(p, i));
         await databaseService.saveAllProviders(dbProviders);
-        set({ providers: defaultProviders });
+
+        const seededModels: LLMModel[] = presetProviders.flatMap(modelsFromPreset);
+        for (const m of seededModels) {
+          await databaseService.upsertProviderModel(modelToDb(m));
+        }
+        const providersWithLegacy = synthesizeLegacyProviderFields(
+          defaultProviders,
+          seededModels,
+          DEFAULT_SELECTED_MODEL,
+        );
+        set({ providers: providersWithLegacy, models: seededModels });
       }
 
       // Load app settings
@@ -636,6 +883,17 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
         setActiveExplorerIconPackId(explorerIconPack);
         applyUiPreferences(uiFontFamily, uiTextScale);
+
+        // Re-sync the legacy capability fields against the now-known
+        // selected model so legacy reads see the active model's
+        // vision/thinking flags rather than the OR-aggregate seeded
+        // above.
+        const reSynced = synthesizeLegacyProviderFields(
+          get().providers,
+          get().models,
+          selectedModel,
+        );
+        set({ providers: reSynced });
       }
 
 
@@ -735,29 +993,112 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // ============================================
 
   updateProvider: (id: string, updates: Partial<LLMProvider>) => {
+    // Translate writes to legacy fields back into models-slice ops.
+    // This keeps existing UI (Fireworks tab, LocalProviderPanel) and
+    // their `updateProvider({ customModels, modelAliases, supportsThinking,
+    // supportsVision })` calls working without per-call rewrites.
+    const {
+      customModels: nextCustomModels,
+      modelAliases: nextModelAliases,
+      supportsThinking: nextSupportsThinking,
+      supportsVision: nextSupportsVision,
+      ...providerUpdates
+    } = updates;
+
     set((state: SettingsState) => {
       const providers = state.providers.map((provider: LLMProvider) => {
         if (provider.id !== id) return provider;
 
         const nextProvider = {
           ...provider,
-          ...updates,
+          ...providerUpdates,
         };
 
         return {
           ...nextProvider,
-          modelAliases: getModelAliasesForProvider(nextProvider),
           nickname: nextProvider.nickname?.trim() || undefined,
         };
       });
+
+      // ── Reconcile legacy field writes against the models slice ──
+      let nextModels = state.models;
+      if (nextCustomModels !== undefined) {
+        const targetKeys = Array.from(
+          new Set((nextCustomModels || []).filter(Boolean)),
+        );
+        const existing = state.models.filter((m) => m.providerId === id);
+        const others = state.models.filter((m) => m.providerId !== id);
+        const reconciled = targetKeys.map((modelKey, idx) => {
+          const prior = existing.find((m) => m.modelKey === modelKey);
+          if (prior) return { ...prior, sortOrder: idx };
+          return {
+            id: `${id}::${modelKey}`,
+            providerId: id,
+            modelKey,
+            label: nextModelAliases?.[modelKey] || undefined,
+            contextWindow: undefined,
+            maxOutputTokens: undefined,
+            supportsVision: false,
+            supportsThinking: nextSupportsThinking ?? false,
+            supportsToolStream: false,
+            enabled: true,
+            sortOrder: idx,
+          } satisfies LLMModel;
+        });
+        nextModels = [...others, ...reconciled];
+        // Persist the new roster (fire-and-forget; UI doesn't block).
+        databaseService
+          .replaceProviderModels(id, reconciled.map(modelToDb))
+          .catch(console.error);
+      }
+
+      if (nextModelAliases !== undefined) {
+        nextModels = nextModels.map((m) => {
+          if (m.providerId !== id) return m;
+          const nextLabel = nextModelAliases[m.modelKey];
+          if (nextLabel === undefined && !m.label) return m;
+          if (nextLabel === m.label) return m;
+          const updated = { ...m, label: nextLabel?.trim() || undefined };
+          databaseService.upsertProviderModel(modelToDb(updated)).catch(console.error);
+          return updated;
+        });
+      }
+
+      // Provider-level capability writes propagate to the active
+      // model row (this is the closest match to the v14 semantics).
+      const [activeProviderId, activeModelKey] = state.selectedModel.split(":");
+      if (
+        (nextSupportsVision !== undefined || nextSupportsThinking !== undefined) &&
+        activeProviderId === id
+      ) {
+        nextModels = nextModels.map((m) => {
+          if (m.providerId !== id || m.modelKey !== activeModelKey) return m;
+          const updated: LLMModel = {
+            ...m,
+            supportsVision:
+              nextSupportsVision !== undefined ? nextSupportsVision : m.supportsVision,
+            supportsThinking:
+              nextSupportsThinking !== undefined ? nextSupportsThinking : m.supportsThinking,
+          };
+          databaseService.upsertProviderModel(modelToDb(updated)).catch(console.error);
+          return updated;
+        });
+      }
+
       const selectedModel = resolveSelectedModel(state.selectedModel, providers);
+      const synthesized = synthesizeLegacyProviderFields(
+        providers,
+        nextModels,
+        selectedModel,
+      );
 
       return {
-        providers,
+        providers: synthesized,
+        models: nextModels,
         selectedModel,
         thinkingEnabled: syncThinkingForSelectedModel(
           selectedModel,
-          providers,
+          synthesized,
           state.thinkingEnabled,
         ),
       };
@@ -772,13 +1113,50 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       ...provider,
       id,
       isCustom: true,
-      modelAliases: getModelAliasesForProvider(provider as LLMProvider),
       nickname: provider.nickname?.trim() || undefined,
     };
-    set((state: SettingsState) => ({
-      providers: [...state.providers, newProvider],
+
+    // Seed the models slice from the legacy fields the caller passed.
+    // Old AddProviderForm hands us `{ model, customModels: [model],
+    // supportsThinking, supportsVision }`; the new ProvidersHubTab
+    // calls `addModel` separately. Both paths land in the same place.
+    const seedKeys = Array.from(
+      new Set(
+        [provider.model, ...(provider.customModels || [])].filter(
+          (k): k is string => !!k && !!k.trim(),
+        ),
+      ),
+    );
+    const seededModels: LLMModel[] = seedKeys.map((modelKey, idx) => ({
+      id: `${id}::${modelKey}`,
+      providerId: id,
+      modelKey,
+      label: provider.modelAliases?.[modelKey] || undefined,
+      contextWindow: undefined,
+      maxOutputTokens: undefined,
+      supportsVision: !!provider.supportsVision,
+      supportsThinking: !!provider.supportsThinking,
+      supportsToolStream: !!provider.supportsToolStream,
+      enabled: true,
+      sortOrder: idx,
     }));
+
+    set((state: SettingsState) => {
+      const nextProviders = [...state.providers, newProvider];
+      const nextModels = [...state.models, ...seededModels];
+      const synthesized = synthesizeLegacyProviderFields(
+        nextProviders,
+        nextModels,
+        state.selectedModel,
+      );
+      return { providers: synthesized, models: nextModels };
+    });
+
+    // Persist provider + models.
     get().saveToDatabase();
+    for (const m of seededModels) {
+      databaseService.upsertProviderModel(modelToDb(m)).catch(console.error);
+    }
     return id;
   },
 
@@ -787,25 +1165,180 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     const provider = state.providers.find((p: LLMProvider) => p.id === id);
     // Only allow deleting custom providers
     if (provider?.isCustom) {
-      set((state: SettingsState) => ({
-        providers: state.providers.filter((p: LLMProvider) => p.id !== id),
-        // Reset selected model if it was from deleted provider
-        selectedModel: state.selectedModel.startsWith(id + ":")
+      set((state: SettingsState) => {
+        const nextProviders = state.providers.filter((p: LLMProvider) => p.id !== id);
+        const nextModels = state.models.filter((m) => m.providerId !== id);
+        const nextSelected = state.selectedModel.startsWith(id + ":")
           ? DEFAULT_SELECTED_MODEL
-          : state.selectedModel,
-      }));
-      // Delete from database
+          : state.selectedModel;
+        const synthesized = synthesizeLegacyProviderFields(
+          nextProviders,
+          nextModels,
+          nextSelected,
+        );
+        return {
+          providers: synthesized,
+          models: nextModels,
+          selectedModel: nextSelected,
+        };
+      });
+      // Delete from database. Models cascade via FK, but we also call
+      // the explicit delete to keep things tidy on platforms where
+      // foreign_keys is off.
       databaseService.deleteProvider(id).catch(console.error);
       get().saveToDatabase();
     }
   },
 
   setSelectedModel: (model: string) => {
-    set((state) => ({
-      selectedModel: model,
-      thinkingEnabled: syncThinkingForSelectedModel(model, state.providers, state.thinkingEnabled),
-    }));
+    set((state) => {
+      const synthesized = synthesizeLegacyProviderFields(
+        state.providers,
+        state.models,
+        model,
+      );
+      return {
+        selectedModel: model,
+        providers: synthesized,
+        thinkingEnabled: syncThinkingForSelectedModel(
+          model,
+          synthesized,
+          state.thinkingEnabled,
+        ),
+      };
+    });
     get().saveToDatabase();
+  },
+
+  // ============================================
+  // MODELS SLICE ACTIONS (v15+)
+  // ============================================
+
+  modelsForProvider: (providerId: string) => {
+    return get()
+      .models
+      .filter((m) => m.providerId === providerId)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+  },
+
+  getActiveModel: () => {
+    const state = get();
+    const [providerId, modelKey] = state.selectedModel.split(":");
+    if (!providerId || !modelKey) return undefined;
+    return state.models.find(
+      (m) => m.providerId === providerId && m.modelKey === modelKey,
+    );
+  },
+
+  getResolvedActiveModel: () => {
+    const state = get();
+    const [providerId] = state.selectedModel.split(":");
+    const provider = state.providers.find((p) => p.id === providerId);
+    const model = state.getActiveModel();
+    if (!provider || !model) return undefined;
+    return resolveModel(model, provider);
+  },
+
+  addModel: (providerId, init) => {
+    const id = `${providerId}::${init.modelKey}`;
+    const sortOrder =
+      init.sortOrder ?? get().models.filter((m) => m.providerId === providerId).length;
+    const newModel: LLMModel = {
+      id,
+      providerId,
+      sortOrder,
+      ...init,
+    };
+    set((state) => {
+      const nextModels = [...state.models.filter((m) => m.id !== id), newModel];
+      const synthesized = synthesizeLegacyProviderFields(
+        state.providers,
+        nextModels,
+        state.selectedModel,
+      );
+      return { models: nextModels, providers: synthesized };
+    });
+    databaseService.upsertProviderModel(modelToDb(newModel)).catch(console.error);
+    return id;
+  },
+
+  updateModel: (id, updates) => {
+    set((state) => {
+      let updatedRow: LLMModel | undefined;
+      const nextModels = state.models.map((m) => {
+        if (m.id !== id) return m;
+        const next: LLMModel = { ...m, ...updates };
+        updatedRow = next;
+        return next;
+      });
+      if (updatedRow) {
+        databaseService
+          .upsertProviderModel(modelToDb(updatedRow))
+          .catch(console.error);
+      }
+      const synthesized = synthesizeLegacyProviderFields(
+        state.providers,
+        nextModels,
+        state.selectedModel,
+      );
+      return { models: nextModels, providers: synthesized };
+    });
+  },
+
+  deleteModel: (id) => {
+    const state = get();
+    const target = state.models.find((m) => m.id === id);
+    if (!target) return;
+    const nextModels = state.models.filter((m) => m.id !== id);
+    databaseService
+      .deleteProviderModel(target.providerId, target.modelKey)
+      .catch(console.error);
+    // If the deleted model was selected, fall back to first available.
+    let nextSelected = state.selectedModel;
+    const [activeProviderId, activeModelKey] = state.selectedModel.split(":");
+    if (activeProviderId === target.providerId && activeModelKey === target.modelKey) {
+      const fallback = nextModels
+        .filter((m) => m.providerId === activeProviderId && m.enabled)
+        .sort((a, b) => a.sortOrder - b.sortOrder)[0];
+      if (fallback) {
+        nextSelected = `${fallback.providerId}:${fallback.modelKey}`;
+      } else {
+        // No models left under this provider — fall back across all.
+        const cross = nextModels
+          .filter((m) => m.enabled)
+          .sort((a, b) => a.sortOrder - b.sortOrder)[0];
+        if (cross) nextSelected = `${cross.providerId}:${cross.modelKey}`;
+      }
+    }
+    const synthesized = synthesizeLegacyProviderFields(
+      state.providers,
+      nextModels,
+      nextSelected,
+    );
+    set({ models: nextModels, selectedModel: nextSelected, providers: synthesized });
+    get().saveToDatabase();
+  },
+
+  replaceModelsForProvider: (providerId, init) => {
+    const reconciled: LLMModel[] = init.map((m, idx) => ({
+      ...m,
+      id: `${providerId}::${m.modelKey}`,
+      providerId,
+      sortOrder: idx,
+    }));
+    databaseService
+      .replaceProviderModels(providerId, reconciled.map(modelToDb))
+      .catch(console.error);
+    set((state) => {
+      const others = state.models.filter((m) => m.providerId !== providerId);
+      const nextModels = [...others, ...reconciled];
+      const synthesized = synthesizeLegacyProviderFields(
+        state.providers,
+        nextModels,
+        state.selectedModel,
+      );
+      return { models: nextModels, providers: synthesized };
+    });
   },
 
   getAvailableModels: () => {
@@ -1018,26 +1551,39 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     return state.toolApprovalSettings[toolName] || 'always_ask';
   },
 
-  // Get current LLM provider config based on selectedModel
+  // Get current LLM provider config based on selectedModel.
+  //
+  // v15+: capability flags (supportsVision, supportsThinking,
+  // supportsToolStream) and per-model context/output overrides come
+  // from the resolved active `LLMModel`, not from the provider row.
+  // This is what drives `browser_screenshot` tool gating in
+  // agent-service and `<aurora_image>` routing in the API adapters.
   getLLMConfig: () => {
     const state = get();
-    const [providerId, model] = state.selectedModel.split(":");
+    const [providerId, modelKey] = state.selectedModel.split(":");
     const provider = state.providers.find(
       (p: LLMProvider) => p.id === providerId,
     );
+    const activeModel =
+      provider &&
+      state.models.find(
+        (m) => m.providerId === providerId && m.modelKey === modelKey,
+      );
 
     if (provider) {
+      const resolved = activeModel ? resolveModel(activeModel, provider) : undefined;
       return {
         id: provider.id,
         name: provider.name,
         baseUrl: provider.baseUrl,
         apiKey: provider.apiKey,
-        model: model || provider.model,
-        maxOutputTokens: provider.maxOutputTokens,
-        contextWindow: provider.contextWindow,
-        supportsThinking: provider.supportsThinking,
-        supportsToolStream: provider.supportsToolStream ?? false,
-        supportsVision: false,
+        model: resolved?.modelKey || modelKey || provider.model,
+        maxOutputTokens: resolved?.resolvedMaxOutputTokens ?? provider.maxOutputTokens,
+        contextWindow: resolved?.resolvedContextWindow ?? provider.contextWindow,
+        supportsThinking: resolved?.supportsThinking ?? false,
+        supportsToolStream:
+          resolved?.supportsToolStream ?? provider.supportsToolStream ?? false,
+        supportsVision: resolved?.supportsVision ?? false,
         providerType: provider.providerType ?? "custom",
         customHeaders: provider.customHeaders,
         customParams: provider.customParams,
@@ -1052,17 +1598,24 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       (p: LLMProvider) => p.enabled && p.apiKey,
     );
     if (fallback) {
+      const fallbackModel = state.models
+        .filter((m) => m.providerId === fallback.id && m.enabled)
+        .sort((a, b) => a.sortOrder - b.sortOrder)[0];
+      const resolved = fallbackModel
+        ? resolveModel(fallbackModel, fallback)
+        : undefined;
       return {
         id: fallback.id,
         name: fallback.name,
         baseUrl: fallback.baseUrl,
         apiKey: fallback.apiKey,
-        model: fallback.model,
-        maxOutputTokens: fallback.maxOutputTokens,
-        contextWindow: fallback.contextWindow,
-        supportsThinking: fallback.supportsThinking,
-        supportsToolStream: fallback.supportsToolStream ?? false,
-        supportsVision: false,
+        model: resolved?.modelKey || fallback.model,
+        maxOutputTokens: resolved?.resolvedMaxOutputTokens ?? fallback.maxOutputTokens,
+        contextWindow: resolved?.resolvedContextWindow ?? fallback.contextWindow,
+        supportsThinking: resolved?.supportsThinking ?? false,
+        supportsToolStream:
+          resolved?.supportsToolStream ?? fallback.supportsToolStream ?? false,
+        supportsVision: resolved?.supportsVision ?? false,
         providerType: fallback.providerType ?? "custom",
         customHeaders: fallback.customHeaders,
         customParams: fallback.customParams,

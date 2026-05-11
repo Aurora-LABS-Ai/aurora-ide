@@ -1,5 +1,13 @@
 import { auroraInvoke } from "../lib/runtime";
-import type { AppSettings, DbLLMProvider, EditorState, ExplorerState, ToolSetting, WorkspaceState } from "../types/database";
+import type {
+  AppSettings,
+  DbLLMProvider,
+  DbProviderModel,
+  EditorState,
+  ExplorerState,
+  ToolSetting,
+  WorkspaceState,
+} from "../types/database";
 
 /**
  * Database service for persisting application state
@@ -214,6 +222,54 @@ class DatabaseService {
    */
   public async saveProvider(provider: DbLLMProvider): Promise<void> {
     await auroraInvoke('save_provider', { provider });
+  }
+
+  // ============================================================
+  // PROVIDER MODELS (v15+)
+  // ============================================================
+
+  /** Every model row across every provider. */
+  public async listProviderModels(): Promise<DbProviderModel[]> {
+    try {
+      return await auroraInvoke<DbProviderModel[]>('list_provider_models');
+    } catch (error) {
+      console.error('Failed to list provider models:', error);
+      return [];
+    }
+  }
+
+  /** Models for a single provider. */
+  public async listProviderModelsFor(providerId: string): Promise<DbProviderModel[]> {
+    try {
+      return await auroraInvoke<DbProviderModel[]>('list_provider_models_for', {
+        providerId,
+      });
+    } catch (error) {
+      console.error(`Failed to list models for provider ${providerId}:`, error);
+      return [];
+    }
+  }
+
+  /** Insert or update one model row. */
+  public async upsertProviderModel(model: DbProviderModel): Promise<void> {
+    await auroraInvoke('upsert_provider_model', { model });
+  }
+
+  /** Delete a single model row by `(providerId, modelKey)`. */
+  public async deleteProviderModel(providerId: string, modelKey: string): Promise<void> {
+    await auroraInvoke('delete_provider_model', { providerId, modelKey });
+  }
+
+  /**
+   * Replace the full model list for a provider in one transaction.
+   * Used by the unified Providers hub when the user finishes editing
+   * a provider's model roster.
+   */
+  public async replaceProviderModels(
+    providerId: string,
+    models: DbProviderModel[],
+  ): Promise<void> {
+    await auroraInvoke('replace_provider_models', { providerId, models });
   }
 
   // ============================================================

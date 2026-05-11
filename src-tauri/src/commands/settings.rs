@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 use tauri::State;
 
-use crate::db::{AppSettings, Database, LLMProvider, ToolSetting};
+use crate::db::{AppSettings, Database, LLMProvider, ProviderModel, ToolSetting};
 
 // ============================================================
 // APP SETTINGS COMMANDS
@@ -127,6 +127,79 @@ pub fn save_all_providers(
             .map_err(|e| format!("Failed to save provider: {:?}", e))?;
     }
     Ok(())
+}
+
+// ============================================================
+// PROVIDER MODELS COMMANDS (v15+)
+// ============================================================
+//
+// As of schema v15 per-model capabilities (vision, thinking,
+// tool-stream) and per-model context/output overrides live in the
+// `provider_models` table rather than on the provider row. These
+// commands expose the [`ModelsRepository`] surface to the frontend.
+
+/// List every provider_model row across every provider.
+#[tauri::command]
+pub fn list_provider_models(
+    db: State<'_, Mutex<Database>>,
+) -> Result<Vec<ProviderModel>, String> {
+    let db = db.lock().map_err(|e| e.to_string())?;
+    db.models()
+        .list_all()
+        .map_err(|e| format!("Failed to list provider models: {:?}", e))
+}
+
+/// List models for one provider.
+#[tauri::command]
+pub fn list_provider_models_for(
+    provider_id: String,
+    db: State<'_, Mutex<Database>>,
+) -> Result<Vec<ProviderModel>, String> {
+    let db = db.lock().map_err(|e| e.to_string())?;
+    db.models()
+        .list_by_provider(&provider_id)
+        .map_err(|e| format!("Failed to list provider models: {:?}", e))
+}
+
+/// Insert-or-update a single provider_model row.
+#[tauri::command]
+pub fn upsert_provider_model(
+    model: ProviderModel,
+    db: State<'_, Mutex<Database>>,
+) -> Result<(), String> {
+    let db = db.lock().map_err(|e| e.to_string())?;
+    db.models()
+        .upsert(&model)
+        .map_err(|e| format!("Failed to upsert provider model: {:?}", e))
+}
+
+/// Delete one provider_model row by `(provider_id, model_key)`.
+#[tauri::command]
+pub fn delete_provider_model(
+    provider_id: String,
+    model_key: String,
+    db: State<'_, Mutex<Database>>,
+) -> Result<(), String> {
+    let db = db.lock().map_err(|e| e.to_string())?;
+    db.models()
+        .delete(&provider_id, &model_key)
+        .map_err(|e| format!("Failed to delete provider model: {:?}", e))
+}
+
+/// Replace the full model list for a provider in one transaction —
+/// used by the unified Providers hub when the user finishes editing
+/// a provider's model roster or accepts a Discover Local Servers
+/// result.
+#[tauri::command]
+pub fn replace_provider_models(
+    provider_id: String,
+    models: Vec<ProviderModel>,
+    db: State<'_, Mutex<Database>>,
+) -> Result<(), String> {
+    let db = db.lock().map_err(|e| e.to_string())?;
+    db.models()
+        .replace_for_provider(&provider_id, &models)
+        .map_err(|e| format!("Failed to replace provider models: {:?}", e))
 }
 
 // ============================================================

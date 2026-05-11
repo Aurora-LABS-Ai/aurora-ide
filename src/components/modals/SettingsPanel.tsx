@@ -22,25 +22,18 @@
 
 import React, { useState } from 'react';
 import { useUiStore } from '../../store/useUiStore';
-import { useSettingsStore, type LLMProvider } from '../../store/useSettingsStore';
-import { formatModelDisplayName, formatProviderNickname } from '../../lib/provider-display';
+import { useSettingsStore } from '../../store/useSettingsStore';
 import { getAppVersion, PACKAGE_VERSION } from '../../lib/app-version';
 import {
   X,
   Server,
   Layout,
   Shield,
-  Eye,
-  EyeOff,
-  Plus,
-  Trash2,
-  ChevronDown,
   Palette,
   Plug,
   Info,
   Sparkles,
   Flame,
-  HardDrive,
   Mic,
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -52,24 +45,11 @@ import { SkillsSettingsTab } from './SkillsSettingsTab';
 import { GeneralSettingsTab } from './GeneralSettingsTab';
 import { AboutSettingsTab } from './AboutSettingsTab';
 import { FireworksSettingsTab } from './FireworksSettingsTab';
-import { IdeSwitch } from '../ui/IdeSwitch';
-import { IdeSelect } from '../ui/IdeSelect';
-import { LocalProviderPanel } from '../settings/LocalProviderPanel';
+import { ProvidersHubTab } from './ProvidersHubTab';
 import {
   settingsShellStyle,
   settingsRowDividerColor,
 } from './settings-shared';
-import {
-  Section,
-  FormRow,
-  FormRowLast,
-  FormBlock,
-  StatusPill,
-  ActionButton,
-  IconButton,
-  IdeTextInput,
-  FieldLabel,
-} from './settings-primitives';
 
 // ============================================
 // SETTINGS SHELL CHROME
@@ -85,659 +65,6 @@ const headerStyle: React.CSSProperties = {
   borderBottom: '1px solid color-mix(in srgb, var(--aurora-common-border) 70%, transparent)',
 };
 
-// ============================================
-// ADD PROVIDER FORM
-// ============================================
-
-interface AddProviderFormProps {
-  onSave: (provider: Omit<LLMProvider, 'id' | 'isCustom'>) => void;
-  onCancel: () => void;
-}
-
-const AddProviderForm: React.FC<AddProviderFormProps> = ({ onSave, onCancel }) => {
-  const [name, setName] = useState('');
-  const [nickname, setNickname] = useState('');
-  const [baseUrl, setBaseUrl] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  const [model, setModel] = useState('');
-  const [contextWindow, setContextWindow] = useState(200000);
-  const [maxOutputTokens, setMaxOutputTokens] = useState(8192);
-  const [supportsThinking, setSupportsThinking] = useState(false);
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [providerType, setProviderType] = useState<'openai' | 'anthropic' | 'custom'>('openai');
-
-  const handleSubmit = () => {
-    if (!name.trim() || !baseUrl.trim() || !model.trim()) return;
-    onSave({
-      name: name.trim(),
-      nickname: nickname.trim() || name.trim(),
-      baseUrl: baseUrl.trim().replace(/\/$/, ''),
-      apiKey: apiKey.trim(),
-      model: model.trim(),
-      contextWindow,
-      maxOutputTokens,
-      supportsThinking,
-      enabled: true,
-      customModels: [model.trim()],
-      providerType,
-    });
-  };
-
-  const isValid = name.trim() && baseUrl.trim() && model.trim();
-
-  return (
-    <Section
-      title="Add Custom Provider"
-      description="Create a new provider profile with its API format, endpoint, model IDs, and limits."
-      badge={<StatusPill variant="info" dot={false}>Draft</StatusPill>}
-    >
-      <FormBlock>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <FieldLabel className="mb-1">Name *</FieldLabel>
-            <IdeTextInput
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="My Local LLM"
-            />
-          </div>
-          <div>
-            <FieldLabel className="mb-1">Selector Name</FieldLabel>
-            <IdeTextInput
-              value={nickname}
-              onChange={(e) => setNickname(e.target.value)}
-              placeholder="Local"
-            />
-          </div>
-        </div>
-      </FormBlock>
-
-      <FormBlock>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <FieldLabel className="mb-1">API Format *</FieldLabel>
-            <IdeSelect
-              ariaLabel="Select provider API format"
-              options={[
-                { label: 'OpenAI Compatible', value: 'openai' },
-                { label: 'Anthropic Compatible', value: 'anthropic' },
-                { label: 'Custom (OpenAI-like)', value: 'custom' },
-              ]}
-              onChange={(nextValue) =>
-                setProviderType(String(nextValue) as 'openai' | 'anthropic' | 'custom')
-              }
-              value={providerType}
-            />
-          </div>
-          <div>
-            <FieldLabel className="mb-1">Default Model *</FieldLabel>
-            <IdeTextInput
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder="llama3.2"
-              style={{ fontFamily: 'monospace' }}
-            />
-          </div>
-        </div>
-      </FormBlock>
-
-      <FormBlock>
-        <FieldLabel className="mb-1">Base URL *</FieldLabel>
-        <IdeTextInput
-          value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
-          placeholder="http://localhost:11434/v1"
-          style={{ fontFamily: 'monospace' }}
-        />
-      </FormBlock>
-
-      <FormBlock>
-        <FieldLabel className="mb-1">API Key (optional)</FieldLabel>
-        <div className="flex gap-1.5">
-          <div className="flex-1">
-            <IdeTextInput
-              type={showApiKey ? 'text' : 'password'}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="Leave empty for local providers"
-            />
-          </div>
-          <IconButton
-            ariaLabel={showApiKey ? 'Hide key' : 'Show key'}
-            onClick={() => setShowApiKey(!showApiKey)}
-          >
-            {showApiKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-          </IconButton>
-        </div>
-      </FormBlock>
-
-      <FormBlock>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <FieldLabel className="mb-1">Context Window</FieldLabel>
-            <IdeTextInput
-              type="number"
-              value={contextWindow}
-              onChange={(e) => setContextWindow(parseInt(e.target.value) || 200000)}
-              placeholder="200000"
-              style={{ fontFamily: 'monospace' }}
-            />
-          </div>
-          <div>
-            <FieldLabel className="mb-1">Max Output Tokens</FieldLabel>
-            <IdeTextInput
-              type="number"
-              value={maxOutputTokens}
-              onChange={(e) => setMaxOutputTokens(parseInt(e.target.value) || 8192)}
-              placeholder="8192"
-              style={{ fontFamily: 'monospace' }}
-            />
-          </div>
-        </div>
-      </FormBlock>
-
-      <FormRow
-        label="Supports thinking / reasoning mode"
-        hint="Enable when this provider exposes a `reasoning_content` or thinking blocks field."
-      >
-        <IdeSwitch
-          checked={supportsThinking}
-          onChange={setSupportsThinking}
-          ariaLabel="Toggle thinking support"
-          variant="primary"
-          size="sm"
-        />
-      </FormRow>
-
-      <FormRowLast
-        label="Save provider"
-        hint={isValid ? 'Profile is ready to be added.' : 'Name, Base URL, and Default Model are required.'}
-      >
-        <div className="flex gap-2">
-          <ActionButton variant="secondary" onClick={onCancel}>
-            Cancel
-          </ActionButton>
-          <ActionButton variant="primary" onClick={handleSubmit} disabled={!isValid}>
-            Add Provider
-          </ActionButton>
-        </div>
-      </FormRowLast>
-    </Section>
-  );
-};
-
-// ============================================
-// PROVIDER CARD
-// ============================================
-
-interface ProviderCardProps {
-  provider: LLMProvider;
-  isExpanded: boolean;
-  onToggleExpand: () => void;
-  showApiKey: boolean;
-  onToggleApiKey: () => void;
-}
-
-const providerCardOuterStyle: React.CSSProperties = {
-  backgroundColor:
-    'color-mix(in srgb, var(--aurora-title-bar-background) 56%, var(--aurora-sidebar-background) 44%)',
-  border: '1px solid color-mix(in srgb, var(--aurora-common-border) 70%, transparent)',
-  borderRadius: 8,
-};
-
-const ProviderCard: React.FC<ProviderCardProps> = ({
-  provider,
-  isExpanded,
-  onToggleExpand,
-  showApiKey,
-  onToggleApiKey,
-}) => {
-  const { updateProvider, deleteProvider } = useSettingsStore();
-  const [newModelId, setNewModelId] = useState('');
-  const isLocal = provider.baseUrl.includes('localhost') || provider.baseUrl.includes('127.0.0.1');
-  const hasKey = !!provider.apiKey;
-  const isReady = isLocal || hasKey;
-  const isRecommendedProvider = provider.id === 'fireworks';
-  const selectorName = formatProviderNickname(provider.name, provider.nickname);
-
-  const handleAddModel = () => {
-    if (!newModelId.trim()) return;
-    const currentModels = provider.customModels || [provider.model];
-    if (currentModels.includes(newModelId.trim())) {
-      setNewModelId('');
-      return;
-    }
-    updateProvider(provider.id, {
-      customModels: [...currentModels, newModelId.trim()],
-    });
-    setNewModelId('');
-  };
-
-  const handleRemoveModel = (modelToRemove: string) => {
-    const currentModels = provider.customModels || [provider.model];
-    if (currentModels.length <= 1) return;
-    updateProvider(provider.id, {
-      customModels: currentModels.filter((m) => m !== modelToRemove),
-      model:
-        provider.model === modelToRemove
-          ? currentModels.find((m) => m !== modelToRemove) || provider.model
-          : provider.model,
-    });
-  };
-
-  const handleModelAliasChange = (modelId: string, alias: string) => {
-    const nextAliases = { ...(provider.modelAliases || {}) };
-    const trimmedAlias = alias.trim();
-    if (trimmedAlias) {
-      nextAliases[modelId] = trimmedAlias;
-    } else {
-      delete nextAliases[modelId];
-    }
-    updateProvider(provider.id, {
-      modelAliases: Object.keys(nextAliases).length > 0 ? nextAliases : undefined,
-    });
-  };
-
-  return (
-    <div className="overflow-hidden" style={providerCardOuterStyle}>
-      {/* Header row */}
-      <div
-        className="flex cursor-pointer items-center justify-between gap-3 px-3.5 py-2.5 transition-colors"
-        onClick={onToggleExpand}
-      >
-        <div className="flex min-w-0 items-center gap-2.5">
-          <ChevronDown
-            className={clsx(
-              'h-3 w-3 shrink-0 text-text-disabled transition-transform',
-              isExpanded && 'rotate-180',
-            )}
-          />
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-[12.5px] font-semibold text-text-primary">{provider.name}</span>
-              {provider.isCustom && (
-                <StatusPill variant="info" dot={false}>
-                  Custom
-                </StatusPill>
-              )}
-              {isRecommendedProvider && (
-                <StatusPill variant="info" dot={false}>
-                  Recommended
-                </StatusPill>
-              )}
-              {isReady && provider.enabled && (
-                <StatusPill variant="success">Ready</StatusPill>
-              )}
-              {!isReady && <StatusPill variant="warning">No Key</StatusPill>}
-            </div>
-            <p className="mt-0.5 truncate text-[11px] leading-snug text-text-secondary">
-              {selectorName} · {provider.baseUrl.replace(/^https?:\/\//, '')}
-            </p>
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2" onClick={(e) => e.stopPropagation()}>
-          {provider.isCustom && (
-            <IconButton
-              ariaLabel={`Delete ${provider.name}`}
-              variant="danger"
-              onClick={() => deleteProvider(provider.id)}
-            >
-              <Trash2 className="h-3 w-3" />
-            </IconButton>
-          )}
-          <IdeSwitch
-            checked={provider.enabled}
-            onChange={(next) => updateProvider(provider.id, { enabled: next })}
-            ariaLabel={`Toggle ${provider.name}`}
-            variant="primary"
-            size="sm"
-          />
-        </div>
-      </div>
-
-      {/* Expanded body */}
-      {isExpanded && (
-        <div style={{ borderTop: `1px solid ${settingsRowDividerColor}` }}>
-          {isRecommendedProvider && (
-            <div
-              className="px-4 py-2.5 text-[11.5px] leading-relaxed"
-              style={{
-                backgroundColor:
-                  'color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)',
-                borderBottom: `1px solid ${settingsRowDividerColor}`,
-                color: 'var(--aurora-editor-foreground)',
-              }}
-            >
-              <span style={{ color: 'var(--aurora-common-primary)', fontWeight: 600 }}>
-                Recommended.
-              </span>{' '}
-              Fireworks is preconfigured as Aurora&apos;s default provider. Paste a Fireworks API
-              key below and you can start using agent mode immediately.
-            </div>
-          )}
-
-          {provider.isCustom && (
-            <FormRow label="API Format" hint="Determines how Aurora signs and structures requests.">
-              <div className="w-[220px]">
-                <IdeSelect
-                  ariaLabel="Select provider API format"
-                  options={[
-                    { label: 'OpenAI Compatible', value: 'openai' },
-                    { label: 'Anthropic Compatible', value: 'anthropic' },
-                    { label: 'Custom (OpenAI-like)', value: 'custom' },
-                  ]}
-                  onChange={(nextValue) =>
-                    updateProvider(provider.id, {
-                      providerType: String(nextValue) as LLMProvider['providerType'],
-                    })
-                  }
-                  value={provider.providerType || 'openai'}
-                />
-              </div>
-            </FormRow>
-          )}
-
-          <FormBlock>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <FieldLabel className="mb-1">Provider Name</FieldLabel>
-                <IdeTextInput
-                  value={provider.name}
-                  onChange={(e) => updateProvider(provider.id, { name: e.target.value })}
-                  disabled={!provider.isCustom}
-                />
-              </div>
-              <div>
-                <FieldLabel className="mb-1">Selector Name</FieldLabel>
-                <IdeTextInput
-                  value={provider.nickname || ''}
-                  onChange={(e) => updateProvider(provider.id, { nickname: e.target.value })}
-                  placeholder={provider.name}
-                />
-              </div>
-            </div>
-          </FormBlock>
-
-          <FormBlock>
-            <FieldLabel className="mb-1">Base URL</FieldLabel>
-            <IdeTextInput
-              value={provider.baseUrl}
-              onChange={(e) => updateProvider(provider.id, { baseUrl: e.target.value.trim() })}
-              style={{ fontFamily: 'monospace' }}
-            />
-          </FormBlock>
-
-          <FormBlock>
-            <FieldLabel className="mb-1">
-              API Key {isLocal && <span className="font-normal lowercase tracking-normal text-text-disabled">— optional for local</span>}
-            </FieldLabel>
-            <div className="flex gap-1.5">
-              <div className="flex-1">
-                <IdeTextInput
-                  type={showApiKey ? 'text' : 'password'}
-                  value={provider.apiKey}
-                  onChange={(e) => updateProvider(provider.id, { apiKey: e.target.value })}
-                  placeholder={isLocal ? 'Not required' : 'Enter API key…'}
-                  style={{ fontFamily: 'monospace' }}
-                />
-              </div>
-              <IconButton ariaLabel={showApiKey ? 'Hide key' : 'Show key'} onClick={onToggleApiKey}>
-                {showApiKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-              </IconButton>
-            </div>
-          </FormBlock>
-
-          <FormBlock>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <FieldLabel className="mb-1">Context Window</FieldLabel>
-                <IdeTextInput
-                  type="number"
-                  value={provider.contextWindow}
-                  onChange={(e) =>
-                    updateProvider(provider.id, {
-                      contextWindow: parseInt(e.target.value) || 32000,
-                    })
-                  }
-                  style={{ fontFamily: 'monospace' }}
-                />
-              </div>
-              <div>
-                <FieldLabel className="mb-1">Max Output Tokens</FieldLabel>
-                <IdeTextInput
-                  type="number"
-                  value={provider.maxOutputTokens}
-                  onChange={(e) =>
-                    updateProvider(provider.id, {
-                      maxOutputTokens: parseInt(e.target.value) || 4096,
-                    })
-                  }
-                  style={{ fontFamily: 'monospace' }}
-                />
-              </div>
-            </div>
-          </FormBlock>
-
-          <FormRow
-            label="Supports thinking / reasoning mode"
-            hint="Enable when this provider exposes reasoning_content or native thinking blocks."
-          >
-            <IdeSwitch
-              checked={!!provider.supportsThinking}
-              onChange={(next) => updateProvider(provider.id, { supportsThinking: next })}
-              ariaLabel="Toggle thinking support"
-              variant="primary"
-              size="sm"
-            />
-          </FormRow>
-
-          <FormRow
-            label="Vision capable"
-            hint="Tick if the active model accepts image inputs (Claude 3+, GPT-4V, Llama-vision, etc.). When on, the agent gains the browser_screenshot tool and screenshot tool results are sent as real images so the model can see the page."
-          >
-            <IdeSwitch
-              checked={!!provider.supportsVision}
-              onChange={(next) => updateProvider(provider.id, { supportsVision: next })}
-              ariaLabel="Toggle vision support"
-              variant="primary"
-              size="sm"
-            />
-          </FormRow>
-
-          {/* Models section */}
-          <FormBlock>
-            <FieldLabel className="mb-2">Add Model ID</FieldLabel>
-            <div className="flex gap-1.5">
-              <div className="flex-1">
-                <IdeTextInput
-                  value={newModelId}
-                  onChange={(e) => setNewModelId(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleAddModel()}
-                  placeholder="e.g. gpt-4-turbo, llama3.2:70b"
-                  style={{ fontFamily: 'monospace' }}
-                />
-              </div>
-              <ActionButton
-                variant="primary"
-                onClick={handleAddModel}
-                disabled={!newModelId.trim()}
-                icon={<Plus className="h-3 w-3" />}
-              >
-                Add
-              </ActionButton>
-            </div>
-          </FormBlock>
-
-          <FormBlock divided={false}>
-            <FieldLabel className="mb-2">Available Models</FieldLabel>
-            <div className="space-y-1.5">
-              {(provider.customModels || [provider.model]).map((model) => (
-                <div
-                  key={model}
-                  className="grid grid-cols-[minmax(0,1.3fr)_minmax(160px,0.8fr)_auto] items-center gap-2 px-2.5 py-2"
-                  style={{
-                    backgroundColor:
-                      'color-mix(in srgb, var(--aurora-editor-background) 50%, var(--aurora-sidebar-background) 50%)',
-                    border: '1px solid color-mix(in srgb, var(--aurora-common-border) 50%, transparent)',
-                    borderRadius: 6,
-                  }}
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-[11.5px] font-medium text-text-primary">
-                      {formatModelDisplayName(model, provider.modelAliases?.[model])}
-                    </div>
-                    <div className="truncate font-mono text-[10px] text-text-secondary">
-                      {model}
-                    </div>
-                  </div>
-                  <IdeTextInput
-                    value={provider.modelAliases?.[model] || ''}
-                    onChange={(e) => handleModelAliasChange(model, e.target.value)}
-                    placeholder={formatModelDisplayName(model)}
-                  />
-                  {(provider.customModels?.length || 1) > 1 && (
-                    <IconButton
-                      ariaLabel="Remove model"
-                      title="Remove model"
-                      variant="danger"
-                      onClick={() => handleRemoveModel(model)}
-                    >
-                      <X className="h-3 w-3" />
-                    </IconButton>
-                  )}
-                </div>
-              ))}
-            </div>
-          </FormBlock>
-        </div>
-      )}
-    </div>
-  );
-};
-
-// ============================================
-// PROVIDERS TAB
-// ============================================
-
-interface ProvidersTabProps {
-  fireworksTabEnabled: boolean;
-  setFireworksTabEnabled: (next: boolean) => void;
-  setActiveTab: (tab: SettingsTabKey) => void;
-  isAddingProvider: boolean;
-  setIsAddingProvider: (next: boolean) => void;
-  onAddProvider: (provider: Omit<LLMProvider, 'id' | 'isCustom'>) => void;
-  providers: LLMProvider[];
-  expandedProvider: string | null;
-  setExpandedProvider: (id: string | null) => void;
-  showApiKey: Record<string, boolean>;
-  toggleApiKeyVisibility: (id: string) => void;
-}
-
-const ProvidersTab: React.FC<ProvidersTabProps> = ({
-  fireworksTabEnabled,
-  setFireworksTabEnabled,
-  setActiveTab,
-  isAddingProvider,
-  setIsAddingProvider,
-  onAddProvider,
-  providers,
-  expandedProvider,
-  setExpandedProvider,
-  showApiKey,
-  toggleApiKeyVisibility,
-}) => {
-  const enabledCount = providers.filter((p) => p.enabled).length;
-  const readyCount = providers.filter((p) => {
-    const isLocal = p.baseUrl.includes('localhost') || p.baseUrl.includes('127.0.0.1');
-    return p.enabled && (isLocal || !!p.apiKey);
-  }).length;
-
-  return (
-    <div className="space-y-6 pb-2">
-      <Section
-        title="Provider Stack"
-        description="Configure the LLM providers Aurora can route to. Expand any provider to edit endpoint, credentials, models, and limits."
-        badge={
-          <div className="flex gap-1.5">
-            <StatusPill variant="success">{readyCount} Ready</StatusPill>
-            <StatusPill variant="neutral" dot={false}>
-              {enabledCount} / {providers.length} On
-            </StatusPill>
-          </div>
-        }
-      >
-        <FormRowLast
-          label="Add a new provider"
-          hint="Create a custom provider profile alongside the built-in catalog."
-        >
-          <ActionButton
-            variant="primary"
-            icon={<Plus className="h-3 w-3" />}
-            onClick={() => setIsAddingProvider(true)}
-          >
-            Add Provider
-          </ActionButton>
-        </FormRowLast>
-      </Section>
-
-      <Section
-        title="Fireworks Control Center"
-        description="Expose the dedicated Fireworks tab for richer overview and model catalog management."
-      >
-        <FormRowLast
-          label="Show Fireworks tab"
-          hint="Turn off to keep the Settings modal lean. Fireworks remains available as a regular provider."
-        >
-          <IdeSwitch
-            checked={fireworksTabEnabled}
-            onChange={(next) => {
-              setFireworksTabEnabled(next);
-              if (!next) setActiveTab('providers');
-            }}
-            ariaLabel="Toggle Fireworks Control Center"
-            variant="primary"
-            size="sm"
-          />
-        </FormRowLast>
-      </Section>
-
-      {isAddingProvider && (
-        <AddProviderForm
-          onSave={onAddProvider}
-          onCancel={() => setIsAddingProvider(false)}
-        />
-      )}
-
-      <Section
-        title="Configured Providers"
-        description="Click a provider to expand and edit. Use the toggle to enable or disable without losing settings."
-      >
-        <div
-          className="space-y-1.5 p-1.5"
-          style={{
-            backgroundColor:
-              'color-mix(in srgb, var(--aurora-sidebar-background) 50%, transparent)',
-          }}
-        >
-          {providers.map((provider) => (
-            <ProviderCard
-              key={provider.id}
-              provider={provider}
-              isExpanded={expandedProvider === provider.id}
-              onToggleExpand={() =>
-                setExpandedProvider(
-                  expandedProvider === provider.id ? null : provider.id,
-                )
-              }
-              showApiKey={showApiKey[provider.id] || false}
-              onToggleApiKey={() => toggleApiKeyVisibility(provider.id)}
-            />
-          ))}
-        </div>
-      </Section>
-    </div>
-  );
-};
 
 // ============================================
 // MAIN SETTINGS PANEL
@@ -745,7 +72,6 @@ const ProvidersTab: React.FC<ProvidersTabProps> = ({
 
 type SettingsTabKey =
   | 'providers'
-  | 'local'
   | 'fireworks'
   | 'tools'
   | 'general'
@@ -765,13 +91,8 @@ interface SidebarItem {
 const TAB_TITLES: Record<SettingsTabKey, { eyebrow: string; title: string; description: string }> = {
   providers: {
     eyebrow: 'Connectivity',
-    title: 'LLM Providers',
-    description: 'Manage cloud and local model providers, API keys, and selector models.',
-  },
-  local: {
-    eyebrow: 'Connectivity',
-    title: 'Local Models',
-    description: 'Detect and configure Ollama, LM Studio, and custom OpenAI-compatible servers.',
+    title: 'Providers & Models',
+    description: 'Cloud, local, and custom providers in one place. Per-model capabilities (vision, thinking) live on each model row.',
   },
   fireworks: {
     eyebrow: 'Connectivity',
@@ -830,8 +151,6 @@ export const SettingsPanel: React.FC = () => {
     setFireworksTabEnabled,
     wrapMode,
     setWrapMode,
-    providers,
-    addCustomProvider,
     autoSave,
     setAutoSave,
     uiFontFamily,
@@ -846,7 +165,13 @@ export const SettingsPanel: React.FC = () => {
 
   React.useEffect(() => {
     if (isSettingsOpen && settingsInitialTab) {
-      setActiveTab(settingsInitialTab);
+      // The legacy 'local' tab was folded into 'providers' in v15.
+      // Redirect any caller that still requests it so deep-links keep working.
+      const target =
+        settingsInitialTab === 'local'
+          ? 'providers'
+          : (settingsInitialTab as SettingsTabKey);
+      setActiveTab(target);
       consumeSettingsInitialTab();
     }
   }, [isSettingsOpen, settingsInitialTab, consumeSettingsInitialTab]);
@@ -856,24 +181,10 @@ export const SettingsPanel: React.FC = () => {
     getAppVersion().then(setAppVersion).catch(() => setAppVersion(PACKAGE_VERSION));
   }, []);
 
-  const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
-  const [expandedProvider, setExpandedProvider] = useState<string | null>('fireworks');
-  const [isAddingProvider, setIsAddingProvider] = useState(false);
-
   if (!isSettingsOpen) return null;
-
-  const toggleApiKeyVisibility = (id: string) => {
-    setShowApiKey((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
-
-  const handleAddProvider = (provider: Omit<LLMProvider, 'id' | 'isCustom'>) => {
-    addCustomProvider(provider);
-    setIsAddingProvider(false);
-  };
 
   const sidebarItems: SidebarItem[] = [
     { id: 'providers', label: 'Providers', icon: Server, group: 'connect' },
-    { id: 'local', label: 'Local Models', icon: HardDrive, group: 'connect' },
     ...(fireworksTabEnabled
       ? ([{ id: 'fireworks' as const, label: 'Fireworks', icon: Flame, group: 'connect' as const }])
       : []),
@@ -1028,24 +339,14 @@ export const SettingsPanel: React.FC = () => {
                 'color-mix(in srgb, var(--aurora-editor-background) 60%, var(--aurora-sidebar-background) 40%)',
             }}
           >
-            {/* PROVIDERS TAB */}
+            {/* PROVIDERS TAB — unified hub (cloud + local + custom) */}
             {activeTab === 'providers' && (
-              <ProvidersTab
+              <ProvidersHubTab
                 fireworksTabEnabled={fireworksTabEnabled}
                 setFireworksTabEnabled={setFireworksTabEnabled}
-                setActiveTab={setActiveTab}
-                isAddingProvider={isAddingProvider}
-                setIsAddingProvider={setIsAddingProvider}
-                onAddProvider={handleAddProvider}
-                providers={providers}
-                expandedProvider={expandedProvider}
-                setExpandedProvider={setExpandedProvider}
-                showApiKey={showApiKey}
-                toggleApiKeyVisibility={toggleApiKeyVisibility}
               />
             )}
 
-            {activeTab === 'local' && <LocalProviderPanel />}
             {activeTab === 'fireworks' && fireworksTabEnabled && <FireworksSettingsTab />}
             {activeTab === 'mcp' && <McpSettingsTab />}
             {activeTab === 'skills' && <SkillsSettingsTab />}

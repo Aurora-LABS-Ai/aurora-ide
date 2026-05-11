@@ -2,6 +2,20 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use time::OffsetDateTime;
 
+#[allow(dead_code)]
+fn deserialize_ignored<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    // Accept and discard a value. Used to swallow legacy fields the
+    // frontend may still send during the v15 cutover (custom_models,
+    // model_aliases, supports_vision, supports_thinking) without
+    // forcing a frontend-then-backend deploy order.
+    let _ = serde::de::IgnoredAny::deserialize(deserializer)?;
+    Ok(None)
+}
+
 // ============================================================
 // WORKSPACE STATE
 // ============================================================
@@ -175,7 +189,16 @@ pub struct AppSetting {
 // LLM PROVIDER
 // ============================================================
 
-/// LLM Provider configuration
+/// LLM Provider configuration.
+///
+/// As of schema v15 a provider holds **transport, auth, and defaults**
+/// only. Per-model capabilities (vision, thinking, tool-stream) and
+/// per-model context/output overrides live on [`ProviderModel`] rows
+/// keyed by `provider_id`. The legacy fields on this struct
+/// (`supports_thinking`, `supports_vision`, `custom_models`,
+/// `model_aliases`) are accepted on input but ignored — kept here so
+/// the IPC layer doesn't reject older frontend payloads during a hot
+/// reload, but never round-tripped to the database.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LLMProvider {
@@ -187,18 +210,9 @@ pub struct LLMProvider {
     pub model: String,
     pub context_window: i64,
     pub max_output_tokens: i64,
-    pub supports_thinking: bool,
     pub supports_tool_stream: bool,
-    /// Does the active model accept image content blocks? Set per-model
-    /// via the Vision-capable checkbox in provider settings. Drives
-    /// `browser_screenshot` registration AND multimodal tool_result
-    /// encoding in the API adapters.
-    #[serde(default)]
-    pub supports_vision: bool,
     pub enabled: bool,
     pub is_custom: bool,
-    pub custom_models: Option<Vec<String>>,
-    pub model_aliases: Option<HashMap<String, String>>,
     pub custom_headers: Option<serde_json::Value>,
     pub custom_params: Option<serde_json::Value>,
     pub provider_type: Option<String>,
@@ -208,6 +222,82 @@ pub struct LLMProvider {
     pub sort_order: i32,
     pub created_at: String,
     pub updated_at: String,
+    // ── Legacy v14 fields ──────────────────────────────────────────
+    // Accepted on input so an out-of-date frontend payload doesn't
+    // make `save_provider` fail; never written or returned. The data
+    // these once held now lives in `provider_models`.
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "deserialize_ignored",
+        rename = "supportsThinking"
+    )]
+    #[allow(dead_code)]
+    pub _legacy_supports_thinking: Option<bool>,
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "deserialize_ignored",
+        rename = "supportsVision"
+    )]
+    #[allow(dead_code)]
+    pub _legacy_supports_vision: Option<bool>,
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "deserialize_ignored",
+        rename = "customModels"
+    )]
+    #[allow(dead_code)]
+    pub _legacy_custom_models: Option<Vec<String>>,
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "deserialize_ignored",
+        rename = "modelAliases"
+    )]
+    #[allow(dead_code)]
+    pub _legacy_model_aliases: Option<HashMap<String, String>>,
+}
+
+// ============================================================
+// PROVIDER MODEL (per-model capability profile)
+// ============================================================
+
+/// One model exposed by a provider.
+///
+/// `context_window` and `max_output_tokens` are nullable: `None` means
+/// "inherit the provider's default". Capability flags are always
+/// per-model — that's the whole point of splitting them out of
+/// [`LLMProvider`] in v15.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderModel {
+    /// `{providerId}::{modelKey}` — primary key on the table.
+    pub id: String,
+    pub provider_id: String,
+    pub model_key: String,
+    pub label: Option<String>,
+    pub context_window: Option<i64>,
+    pub max_output_tokens: Option<i64>,
+    #[serde(default)]
+    pub supports_vision: bool,
+    #[serde(default)]
+    pub supports_thinking: bool,
+    #[serde(default)]
+    pub supports_tool_stream: bool,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub sort_order: i32,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 // ============================================================
@@ -274,7 +364,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            selected_model: "fireworks:accounts/fireworks/models/kimi-k2-instruct-0905".to_string(),
+            selected_model: "fireworks:accounts/fireworks/routers/kimi-k2p6-turbo".to_string(),
             agent_execution_mode: "agent".to_string(),
             auto_approve_tools: false,
             auto_accept_changes: false,

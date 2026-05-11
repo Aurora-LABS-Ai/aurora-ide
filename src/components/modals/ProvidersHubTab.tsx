@@ -1,7 +1,7 @@
-import React, { useMemo, useState } from 'react';
-import clsx from 'clsx';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  ChevronDown,
+  ArrowLeft,
+  CheckCircle2,
   Cloud,
   Eye,
   EyeOff,
@@ -15,6 +15,7 @@ import {
   Trash2,
   Wrench,
   X,
+  XCircle,
 } from 'lucide-react';
 
 import { useSettingsStore, type LLMModel, type LLMProvider } from '../../store/useSettingsStore';
@@ -38,22 +39,49 @@ import {
   StatusPill,
 } from './settings-primitives';
 import { ModelEditorDialog, type ModelDraft } from './ModelEditorDialog';
+import {
+  ProviderEditorDialog,
+  type ProviderDraft,
+} from './ProviderEditorDialog';
 
 /**
- * Unified Providers hub — replaces the old `Providers` + `Local Models`
- * tabs. Cloud, custom, and locally-detected providers all live in the
- * same list because the schema treats them the same: a `baseUrl`,
- * optional `apiKey`, and a roster of `provider_models` rows. The
- * Fireworks tab stays separate (billing/usage/CLI is a different
- * surface entirely).
+ * Unified Providers hub.
+ *
+ * Two-level navigation inside one Settings tab:
+ *
+ *   Level 1 (grid)   — every provider as a square card. Each card
+ *                      shows model count, API-key status, kind
+ *                      (Cloud/Local), and an enable toggle. Click
+ *                      anywhere on the card to drill in. The last
+ *                      tile is "Add custom provider" (opens the
+ *                      ProviderEditorDialog modal).
+ *
+ *   Level 2 (detail) — focused view for one provider with a back
+ *                      button, the connection settings (endpoint,
+ *                      key, format, defaults), and a card grid of
+ *                      every model under it. Adding / editing models
+ *                      uses ModelEditorDialog.
+ *
+ * Cloud, custom, and locally-detected providers all live in the same
+ * grid because the schema treats them the same: a `baseUrl`, optional
+ * `apiKey`, and a roster of `provider_models` rows. Fireworks stays
+ * as its own Settings tab (billing/usage/CLI is a different surface).
  */
 
 type ProviderFilter = 'all' | 'cloud' | 'local' | 'disabled';
+
+type View =
+  | { kind: 'grid' }
+  | { kind: 'detail'; providerId: string };
 
 interface ProvidersHubTabProps {
   fireworksTabEnabled: boolean;
   setFireworksTabEnabled: (next: boolean) => void;
 }
+
+// ---------------------------------------------------------------------------
+// Shared style tokens
+// ---------------------------------------------------------------------------
 
 const cardOuterStyle: React.CSSProperties = {
   backgroundColor:
@@ -62,11 +90,11 @@ const cardOuterStyle: React.CSSProperties = {
   borderRadius: 8,
 };
 
-const modelRowStyle: React.CSSProperties = {
+const modelCardStyle: React.CSSProperties = {
   backgroundColor:
     'color-mix(in srgb, var(--aurora-editor-background) 50%, var(--aurora-sidebar-background) 50%)',
   border: '1px solid color-mix(in srgb, var(--aurora-common-border) 50%, transparent)',
-  borderRadius: 6,
+  borderRadius: 8,
 };
 
 function isLocalBaseUrl(baseUrl: string): boolean {
@@ -82,7 +110,7 @@ function isProviderReady(provider: LLMProvider): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Capability badges
+// Small leaf components
 // ---------------------------------------------------------------------------
 
 const CapabilityBadge: React.FC<{
@@ -112,172 +140,195 @@ const CapabilityBadge: React.FC<{
 );
 
 // ---------------------------------------------------------------------------
-// Add cloud provider — slim inline form (transport + auth only).
-//
-// Per-model capabilities and ctx/output overrides land in ModelEditorDialog.
-// The provider gets seeded with a single model row using `model` as the
-// initial key; the user can then add more via the "Add Model" button on the
-// expanded provider card.
+// Provider grid card (Level 1)
 // ---------------------------------------------------------------------------
 
-interface AddProviderInlineProps {
-  onSave: (init: Omit<LLMProvider, 'id' | 'isCustom'>) => void;
-  onCancel: () => void;
+interface ProviderGridCardProps {
+  provider: LLMProvider;
+  modelCount: number;
+  onOpen: () => void;
 }
 
-const AddProviderInline: React.FC<AddProviderInlineProps> = ({ onSave, onCancel }) => {
-  const [name, setName] = useState('');
-  const [nickname, setNickname] = useState('');
-  const [providerType, setProviderType] = useState<'openai' | 'anthropic' | 'custom'>('openai');
-  const [baseUrl, setBaseUrl] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [model, setModel] = useState('');
-  const [contextWindow, setContextWindow] = useState(200000);
-  const [maxOutputTokens, setMaxOutputTokens] = useState(8192);
-
-  const handleSave = () => {
-    if (!name.trim() || !baseUrl.trim() || !model.trim()) return;
-    onSave({
-      name: name.trim(),
-      nickname: nickname.trim() || name.trim(),
-      baseUrl: baseUrl.trim().replace(/\/$/, ''),
-      apiKey: apiKey.trim(),
-      model: model.trim(),
-      contextWindow,
-      maxOutputTokens,
-      supportsThinking: false,
-      enabled: true,
-      providerType,
-    });
-  };
-
-  const isValid = !!(name.trim() && baseUrl.trim() && model.trim());
+const ProviderGridCard: React.FC<ProviderGridCardProps> = ({
+  provider,
+  modelCount,
+  onOpen,
+}) => {
+  const updateProvider = useSettingsStore((s) => s.updateProvider);
+  const isLocal = isLocalBaseUrl(provider.baseUrl);
+  const ready = isProviderReady(provider);
+  const hasKey = provider.apiKey.trim().length > 0;
+  const keyRequired = !isLocal && provider.requiresApiKey !== false;
 
   return (
-    <Section
-      title="Add cloud provider"
-      description="Endpoint, auth, and defaults. Capabilities (vision, thinking) are set on each model after creation."
-      badge={<StatusPill variant="info" dot={false}>Draft</StatusPill>}
+    <button
+      type="button"
+      onClick={onOpen}
+      className="group flex flex-col text-left transition-transform hover:-translate-y-px focus:outline-none"
+      style={{
+        ...cardOuterStyle,
+        // Square-ish proportions; min height keeps short cards from
+        // collapsing under the model-count badge.
+        minHeight: 168,
+      }}
     >
-      <FormBlock>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <FieldLabel className="mb-1">Name *</FieldLabel>
-            <IdeTextInput
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="My OpenRouter"
-            />
-          </div>
-          <div>
-            <FieldLabel className="mb-1">Selector name</FieldLabel>
-            <IdeTextInput
-              value={nickname}
-              onChange={(event) => setNickname(event.target.value)}
-              placeholder={name || 'OpenRouter'}
-            />
-          </div>
-        </div>
-      </FormBlock>
-      <FormBlock>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <FieldLabel className="mb-1">API format *</FieldLabel>
-            <IdeSelect
-              ariaLabel="Select provider API format"
-              options={[
-                { label: 'OpenAI Compatible', value: 'openai' },
-                { label: 'Anthropic Compatible', value: 'anthropic' },
-                { label: 'Custom (OpenAI-like)', value: 'custom' },
-              ]}
-              onChange={(next) => setProviderType(String(next) as typeof providerType)}
-              value={providerType}
-            />
-          </div>
-          <div>
-            <FieldLabel className="mb-1">Initial model ID *</FieldLabel>
-            <IdeTextInput
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-              placeholder="gpt-4o-mini"
-              style={{ fontFamily: 'monospace' }}
-            />
-          </div>
-        </div>
-      </FormBlock>
-      <FormBlock>
-        <FieldLabel className="mb-1">Base URL *</FieldLabel>
-        <IdeTextInput
-          value={baseUrl}
-          onChange={(event) => setBaseUrl(event.target.value)}
-          placeholder="https://api.openrouter.ai/v1"
-          style={{ fontFamily: 'monospace' }}
-        />
-      </FormBlock>
-      <FormBlock>
-        <FieldLabel className="mb-1">API key (optional for local)</FieldLabel>
-        <div className="flex gap-1.5">
-          <div className="flex-1">
-            <IdeTextInput
-              type={showApiKey ? 'text' : 'password'}
-              value={apiKey}
-              onChange={(event) => setApiKey(event.target.value)}
-              placeholder="sk-…"
-            />
-          </div>
-          <IconButton
-            ariaLabel={showApiKey ? 'Hide key' : 'Show key'}
-            onClick={() => setShowApiKey(!showApiKey)}
-          >
-            {showApiKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-          </IconButton>
-        </div>
-      </FormBlock>
-      <FormBlock>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <FieldLabel className="mb-1">Default context window</FieldLabel>
-            <IdeTextInput
-              type="number"
-              value={contextWindow}
-              onChange={(event) => setContextWindow(Number.parseInt(event.target.value, 10) || 200000)}
-              style={{ fontFamily: 'monospace' }}
-            />
-          </div>
-          <div>
-            <FieldLabel className="mb-1">Default max output</FieldLabel>
-            <IdeTextInput
-              type="number"
-              value={maxOutputTokens}
-              onChange={(event) => setMaxOutputTokens(Number.parseInt(event.target.value, 10) || 8192)}
-              style={{ fontFamily: 'monospace' }}
-            />
-          </div>
-        </div>
-      </FormBlock>
-      <FormRowLast
-        label="Save provider"
-        hint={isValid ? 'Provider seeded with one model — add more from its card.' : 'Name, Base URL, and Initial model ID are required.'}
+      {/* Header: name + enable toggle. The toggle is interactive so we
+          stop propagation to keep clicks from also drilling into detail. */}
+      <div
+        className="flex items-start justify-between gap-2 px-3.5 pt-3"
       >
-        <div className="flex gap-2">
-          <ActionButton variant="secondary" onClick={onCancel}>
-            Cancel
-          </ActionButton>
-          <ActionButton variant="primary" onClick={handleSave} disabled={!isValid}>
-            Add provider
-          </ActionButton>
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[13px] font-semibold text-text-primary truncate">
+              {provider.name}
+            </span>
+            {provider.id === 'fireworks' && (
+              <StatusPill variant="info" dot={false}>★</StatusPill>
+            )}
+          </div>
+          <div className="mt-0.5 truncate text-[10.5px] text-text-secondary">
+            {formatProviderNickname(provider.name, provider.nickname)}
+          </div>
         </div>
-      </FormRowLast>
-    </Section>
+        <div onClick={(e) => e.stopPropagation()}>
+          <IdeSwitch
+            checked={provider.enabled}
+            onChange={(next) => updateProvider(provider.id, { enabled: next })}
+            ariaLabel={`Toggle ${provider.name}`}
+            variant="primary"
+            size="sm"
+          />
+        </div>
+      </div>
+
+      {/* Body: counts + key status */}
+      <div className="flex-1 px-3.5 pt-3 pb-2 space-y-2">
+        <div className="flex items-center gap-2">
+          <span
+            className="inline-block h-1.5 w-1.5 rounded-full"
+            style={{
+              backgroundColor:
+                modelCount > 0
+                  ? 'var(--aurora-common-primary)'
+                  : 'var(--aurora-editor-foreground-muted, var(--aurora-text-disabled))',
+            }}
+          />
+          <span className="text-[11.5px] text-text-primary">
+            {modelCount} model{modelCount === 1 ? '' : 's'}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {hasKey ? (
+            <CheckCircle2
+              className="h-3 w-3"
+              style={{ color: 'var(--aurora-common-success)' }}
+            />
+          ) : (
+            <XCircle
+              className="h-3 w-3"
+              style={{
+                color: keyRequired
+                  ? 'var(--aurora-common-warning)'
+                  : 'var(--aurora-editor-foreground-muted, var(--aurora-text-disabled))',
+              }}
+            />
+          )}
+          <span
+            className="text-[11px]"
+            style={{
+              color: hasKey
+                ? 'var(--aurora-editor-foreground)'
+                : keyRequired
+                  ? 'var(--aurora-common-warning)'
+                  : 'var(--aurora-editor-foreground-muted, var(--aurora-text-disabled))',
+            }}
+          >
+            {hasKey ? 'API key set' : keyRequired ? 'No API key' : 'No key needed'}
+          </span>
+        </div>
+      </div>
+
+      {/* Footer: kind + status pill */}
+      <div
+        className="flex items-center justify-between gap-2 px-3.5 py-2.5"
+        style={{ borderTop: `1px solid ${settingsRowDividerColor}` }}
+      >
+        <div className="flex items-center gap-1.5">
+          {isLocal ? (
+            <span
+              className="inline-flex items-center gap-1 text-[10.5px] font-medium uppercase tracking-[0.08em]"
+              style={{ color: 'var(--aurora-common-primary)' }}
+            >
+              <HardDrive className="h-2.5 w-2.5" />
+              Local
+            </span>
+          ) : (
+            <span
+              className="inline-flex items-center gap-1 text-[10.5px] font-medium uppercase tracking-[0.08em]"
+              style={{ color: 'var(--aurora-editor-foreground)' }}
+            >
+              <Cloud className="h-2.5 w-2.5" />
+              Cloud
+            </span>
+          )}
+        </div>
+        {ready && provider.enabled ? (
+          <StatusPill variant="success">Ready</StatusPill>
+        ) : !provider.enabled ? (
+          <StatusPill variant="neutral">Off</StatusPill>
+        ) : (
+          <StatusPill variant="warning">No Key</StatusPill>
+        )}
+      </div>
+    </button>
   );
 };
 
 // ---------------------------------------------------------------------------
-// Discover local servers — runs `detectLocalProviders` and surfaces hits.
-// User picks which detected provider to import; the import seeds models
-// from the detector's response (capability flags inferred from model
-// metadata where available).
+// "Add provider" tile — sits at the end of the grid as if it were a card.
+// ---------------------------------------------------------------------------
+
+interface AddProviderTileProps {
+  onClick: () => void;
+}
+
+const AddProviderTile: React.FC<AddProviderTileProps> = ({ onClick }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className="flex flex-col items-center justify-center gap-2 text-center transition-colors focus:outline-none"
+    style={{
+      minHeight: 168,
+      borderRadius: 8,
+      border: `1px dashed color-mix(in srgb, var(--aurora-common-border) 80%, transparent)`,
+      backgroundColor: 'transparent',
+      color: 'var(--aurora-editor-foreground-muted, var(--aurora-text-secondary))',
+    }}
+  >
+    <div
+      className="flex h-9 w-9 items-center justify-center rounded-full"
+      style={{
+        backgroundColor:
+          'color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)',
+        color: 'var(--aurora-common-primary)',
+      }}
+    >
+      <Plus className="h-4 w-4" />
+    </div>
+    <div className="space-y-0.5">
+      <div
+        className="text-[12px] font-semibold"
+        style={{ color: 'var(--aurora-editor-foreground)' }}
+      >
+        Add provider
+      </div>
+      <div className="text-[10.5px]">Custom OpenAI / Anthropic / local</div>
+    </div>
+  </button>
+);
+
+// ---------------------------------------------------------------------------
+// Discover Local Servers — runs detector, surfaces hits as draft cards.
 // ---------------------------------------------------------------------------
 
 interface DiscoverPanelProps {
@@ -308,7 +359,7 @@ const DiscoverPanel: React.FC<DiscoverPanelProps> = ({
     }
   };
 
-  React.useEffect(() => {
+  useEffect(() => {
     runScan();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -316,7 +367,7 @@ const DiscoverPanel: React.FC<DiscoverPanelProps> = ({
   return (
     <Section
       title="Discover local servers"
-      description="Probes Ollama (11434) and LM Studio (1234). Accept a row to add it as a regular provider with all its detected models seeded."
+      description="Probes Ollama (11434) and LM Studio (1234). Accept a row to add it as a regular provider with all detected models seeded."
       badge={
         <div className="flex gap-1.5">
           <ActionButton
@@ -337,7 +388,8 @@ const DiscoverPanel: React.FC<DiscoverPanelProps> = ({
         <div
           className="px-4 py-2.5 text-[11.5px]"
           style={{
-            backgroundColor: 'color-mix(in srgb, var(--aurora-common-danger) 10%, transparent)',
+            backgroundColor:
+              'color-mix(in srgb, var(--aurora-common-danger) 10%, transparent)',
             color: 'var(--aurora-common-danger)',
             borderBottom: `1px solid ${settingsRowDividerColor}`,
           }}
@@ -378,7 +430,8 @@ const DiscoverPanel: React.FC<DiscoverPanelProps> = ({
                   {provider.baseUrl}
                 </div>
                 <div className="mt-1 text-[11px] text-text-secondary">
-                  {provider.models.length} model{provider.models.length === 1 ? '' : 's'}: {provider.models
+                  {provider.models.length} model
+                  {provider.models.length === 1 ? '' : 's'}: {provider.models
                     .slice(0, 3)
                     .map((m) => m.name || m.id)
                     .join(', ')}
@@ -402,23 +455,21 @@ const DiscoverPanel: React.FC<DiscoverPanelProps> = ({
 };
 
 // ---------------------------------------------------------------------------
-// Provider card with model roster
+// Provider detail view (Level 2)
 // ---------------------------------------------------------------------------
 
-interface ProviderCardProps {
+interface ProviderDetailViewProps {
   provider: LLMProvider;
   models: LLMModel[];
-  isExpanded: boolean;
-  onToggleExpand: () => void;
+  onBack: () => void;
   onEditModel: (model: LLMModel) => void;
   onAddModel: () => void;
 }
 
-const ProviderCardWithModels: React.FC<ProviderCardProps> = ({
+const ProviderDetailView: React.FC<ProviderDetailViewProps> = ({
   provider,
   models,
-  isExpanded,
-  onToggleExpand,
+  onBack,
   onEditModel,
   onAddModel,
 }) => {
@@ -432,66 +483,26 @@ const ProviderCardWithModels: React.FC<ProviderCardProps> = ({
   const isLocal = isLocalBaseUrl(provider.baseUrl);
   const ready = isProviderReady(provider);
   const isRecommended = provider.id === 'fireworks';
-  const selectorName = formatProviderNickname(provider.name, provider.nickname);
   const [activeProviderId, activeModelKey] = selectedModel.split(':');
 
   return (
-    <div className="overflow-hidden" style={cardOuterStyle}>
-      {/* Header */}
-      <div
-        className="flex cursor-pointer items-center justify-between gap-3 px-3.5 py-2.5"
-        onClick={onToggleExpand}
-      >
-        <div className="flex min-w-0 items-center gap-2.5">
-          <ChevronDown
-            className={clsx(
-              'h-3 w-3 shrink-0 text-text-disabled transition-transform',
-              isExpanded && 'rotate-180',
-            )}
-          />
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-[12.5px] font-semibold text-text-primary">
-                {provider.name}
-              </span>
-              {isLocal ? (
-                <StatusPill variant="info" dot={false}>
-                  <HardDrive className="h-2.5 w-2.5" />
-                  Local
-                </StatusPill>
-              ) : (
-                <StatusPill variant="neutral" dot={false}>
-                  <Cloud className="h-2.5 w-2.5" />
-                  Cloud
-                </StatusPill>
-              )}
-              {provider.isCustom && (
-                <StatusPill variant="info" dot={false}>Custom</StatusPill>
-              )}
-              {isRecommended && (
-                <StatusPill variant="info" dot={false}>Recommended</StatusPill>
-              )}
-              {ready && provider.enabled && <StatusPill variant="success">Ready</StatusPill>}
-              {!ready && provider.enabled && (
-                <StatusPill variant="warning">No Key</StatusPill>
-              )}
-              {!provider.enabled && <StatusPill variant="neutral">Off</StatusPill>}
-            </div>
-            <p className="mt-0.5 truncate text-[11px] leading-snug text-text-secondary">
-              {selectorName} · {provider.baseUrl.replace(/^https?:\/\//, '')} · {models.length} model{models.length === 1 ? '' : 's'}
-            </p>
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2" onClick={(e) => e.stopPropagation()}>
-          {provider.isCustom && (
-            <IconButton
-              ariaLabel={`Delete ${provider.name}`}
-              variant="danger"
-              onClick={() => deleteProvider(provider.id)}
-            >
-              <Trash2 className="h-3 w-3" />
-            </IconButton>
-          )}
+    <div className="space-y-5 pb-2">
+      {/* Breadcrumb / header */}
+      <div className="flex items-center justify-between gap-3">
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex items-center gap-1.5 text-[11.5px] text-text-secondary transition-colors hover:text-text-primary"
+        >
+          <ArrowLeft className="h-3 w-3" />
+          <span>Providers</span>
+          <span className="text-text-disabled">/</span>
+          <span className="font-semibold text-text-primary">{provider.name}</span>
+        </button>
+        <div className="flex items-center gap-2">
+          {ready && provider.enabled && <StatusPill variant="success">Ready</StatusPill>}
+          {!ready && provider.enabled && <StatusPill variant="warning">No Key</StatusPill>}
+          {!provider.enabled && <StatusPill variant="neutral">Off</StatusPill>}
           <IdeSwitch
             checked={provider.enabled}
             onChange={(next) => updateProvider(provider.id, { enabled: next })}
@@ -499,187 +510,211 @@ const ProviderCardWithModels: React.FC<ProviderCardProps> = ({
             variant="primary"
             size="sm"
           />
+          {provider.isCustom && (
+            <IconButton
+              ariaLabel={`Delete ${provider.name}`}
+              variant="danger"
+              onClick={() => {
+                deleteProvider(provider.id);
+                onBack();
+              }}
+            >
+              <Trash2 className="h-3 w-3" />
+            </IconButton>
+          )}
         </div>
       </div>
 
-      {/* Expanded body */}
-      {isExpanded && (
-        <div style={{ borderTop: `1px solid ${settingsRowDividerColor}` }}>
-          {isRecommended && (
+      {isRecommended && (
+        <div
+          className="rounded-md px-3.5 py-2.5 text-[11.5px] leading-relaxed"
+          style={{
+            backgroundColor:
+              'color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)',
+            border:
+              '1px solid color-mix(in srgb, var(--aurora-common-primary) 24%, transparent)',
+          }}
+        >
+          <span style={{ color: 'var(--aurora-common-primary)', fontWeight: 600 }}>
+            Recommended.
+          </span>{' '}
+          Fireworks is preconfigured. Paste a Fireworks API key below and Aurora is ready to chat.
+        </div>
+      )}
+
+      <Section title="Connection">
+        {provider.isCustom && (
+          <FormRow label="API format" hint="Determines how Aurora signs and structures requests.">
+            <div className="w-[220px]">
+              <IdeSelect
+                ariaLabel="Select provider API format"
+                options={[
+                  { label: 'OpenAI Compatible', value: 'openai' },
+                  { label: 'Anthropic Compatible', value: 'anthropic' },
+                  { label: 'Custom (OpenAI-like)', value: 'custom' },
+                ]}
+                onChange={(next) =>
+                  updateProvider(provider.id, {
+                    providerType: String(next) as LLMProvider['providerType'],
+                  })
+                }
+                value={provider.providerType || 'openai'}
+              />
+            </div>
+          </FormRow>
+        )}
+
+        <FormBlock>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <FieldLabel className="mb-1">Provider name</FieldLabel>
+              <IdeTextInput
+                value={provider.name}
+                onChange={(event) => updateProvider(provider.id, { name: event.target.value })}
+                disabled={!provider.isCustom}
+              />
+            </div>
+            <div>
+              <FieldLabel className="mb-1">Selector name</FieldLabel>
+              <IdeTextInput
+                value={provider.nickname || ''}
+                onChange={(event) =>
+                  updateProvider(provider.id, { nickname: event.target.value })
+                }
+                placeholder={provider.name}
+              />
+            </div>
+          </div>
+        </FormBlock>
+
+        <FormBlock>
+          <FieldLabel className="mb-1">Base URL</FieldLabel>
+          <IdeTextInput
+            value={provider.baseUrl}
+            onChange={(event) =>
+              updateProvider(provider.id, { baseUrl: event.target.value.trim() })
+            }
+            style={{ fontFamily: 'monospace' }}
+          />
+        </FormBlock>
+
+        <FormBlock>
+          <FieldLabel className="mb-1">
+            API key{' '}
+            {isLocal && (
+              <span className="font-normal lowercase tracking-normal text-text-disabled">
+                — optional for local
+              </span>
+            )}
+          </FieldLabel>
+          <div className="flex gap-1.5">
+            <div className="flex-1">
+              <IdeTextInput
+                type={showApiKey ? 'text' : 'password'}
+                value={provider.apiKey}
+                onChange={(event) =>
+                  updateProvider(provider.id, { apiKey: event.target.value })
+                }
+                placeholder={isLocal ? 'Not required' : 'Enter API key…'}
+                style={{ fontFamily: 'monospace' }}
+              />
+            </div>
+            <IconButton
+              ariaLabel={showApiKey ? 'Hide key' : 'Show key'}
+              onClick={() => setShowApiKey(!showApiKey)}
+            >
+              {showApiKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+            </IconButton>
+          </div>
+        </FormBlock>
+
+        <FormBlock divided={false}>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <FieldLabel className="mb-1">Default context window</FieldLabel>
+              <IdeTextInput
+                type="number"
+                value={provider.contextWindow}
+                onChange={(event) =>
+                  updateProvider(provider.id, {
+                    contextWindow: Number.parseInt(event.target.value, 10) || 32000,
+                  })
+                }
+                style={{ fontFamily: 'monospace' }}
+              />
+            </div>
+            <div>
+              <FieldLabel className="mb-1">Default max output</FieldLabel>
+              <IdeTextInput
+                type="number"
+                value={provider.maxOutputTokens}
+                onChange={(event) =>
+                  updateProvider(provider.id, {
+                    maxOutputTokens: Number.parseInt(event.target.value, 10) || 4096,
+                  })
+                }
+                style={{ fontFamily: 'monospace' }}
+              />
+            </div>
+          </div>
+        </FormBlock>
+      </Section>
+
+      <Section
+        title={`Models (${models.length})`}
+        description="Capabilities (vision, thinking, tool-stream) and per-model context/output overrides live on each card."
+        badge={
+          <ActionButton
+            variant="primary"
+            icon={<Plus className="h-3 w-3" />}
+            onClick={onAddModel}
+          >
+            Add model
+          </ActionButton>
+        }
+      >
+        <FormBlock divided={false}>
+          {models.length === 0 ? (
             <div
-              className="px-4 py-2.5 text-[11.5px] leading-relaxed"
+              className="px-3 py-6 text-center text-[11.5px] text-text-secondary"
               style={{
-                backgroundColor: 'color-mix(in srgb, var(--aurora-common-primary) 8%, transparent)',
-                borderBottom: `1px solid ${settingsRowDividerColor}`,
+                border: `1px dashed ${settingsRowDividerColor}`,
+                borderRadius: 6,
               }}
             >
-              <span style={{ color: 'var(--aurora-common-primary)', fontWeight: 600 }}>
-                Recommended.
-              </span>{' '}
-              Fireworks is preconfigured. Paste a Fireworks API key below and Aurora is ready to chat.
+              No models yet. Click <span className="font-semibold">Add model</span> to register one.
             </div>
-          )}
-
-          {provider.isCustom && (
-            <FormRow label="API format" hint="Determines how Aurora signs and structures requests.">
-              <div className="w-[220px]">
-                <IdeSelect
-                  ariaLabel="Select provider API format"
-                  options={[
-                    { label: 'OpenAI Compatible', value: 'openai' },
-                    { label: 'Anthropic Compatible', value: 'anthropic' },
-                    { label: 'Custom (OpenAI-like)', value: 'custom' },
-                  ]}
-                  onChange={(next) =>
-                    updateProvider(provider.id, {
-                      providerType: String(next) as LLMProvider['providerType'],
-                    })
-                  }
-                  value={provider.providerType || 'openai'}
-                />
-              </div>
-            </FormRow>
-          )}
-
-          <FormBlock>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <FieldLabel className="mb-1">Provider name</FieldLabel>
-                <IdeTextInput
-                  value={provider.name}
-                  onChange={(event) => updateProvider(provider.id, { name: event.target.value })}
-                  disabled={!provider.isCustom}
-                />
-              </div>
-              <div>
-                <FieldLabel className="mb-1">Selector name</FieldLabel>
-                <IdeTextInput
-                  value={provider.nickname || ''}
-                  onChange={(event) => updateProvider(provider.id, { nickname: event.target.value })}
-                  placeholder={provider.name}
-                />
-              </div>
-            </div>
-          </FormBlock>
-
-          <FormBlock>
-            <FieldLabel className="mb-1">Base URL</FieldLabel>
-            <IdeTextInput
-              value={provider.baseUrl}
-              onChange={(event) => updateProvider(provider.id, { baseUrl: event.target.value.trim() })}
-              style={{ fontFamily: 'monospace' }}
-            />
-          </FormBlock>
-
-          <FormBlock>
-            <FieldLabel className="mb-1">
-              API key{' '}
-              {isLocal && (
-                <span className="font-normal lowercase tracking-normal text-text-disabled">
-                  — optional for local
-                </span>
-              )}
-            </FieldLabel>
-            <div className="flex gap-1.5">
-              <div className="flex-1">
-                <IdeTextInput
-                  type={showApiKey ? 'text' : 'password'}
-                  value={provider.apiKey}
-                  onChange={(event) => updateProvider(provider.id, { apiKey: event.target.value })}
-                  placeholder={isLocal ? 'Not required' : 'Enter API key…'}
-                  style={{ fontFamily: 'monospace' }}
-                />
-              </div>
-              <IconButton
-                ariaLabel={showApiKey ? 'Hide key' : 'Show key'}
-                onClick={() => setShowApiKey(!showApiKey)}
-              >
-                {showApiKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-              </IconButton>
-            </div>
-          </FormBlock>
-
-          <FormBlock>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <FieldLabel className="mb-1">Default context window</FieldLabel>
-                <IdeTextInput
-                  type="number"
-                  value={provider.contextWindow}
-                  onChange={(event) =>
-                    updateProvider(provider.id, {
-                      contextWindow: Number.parseInt(event.target.value, 10) || 32000,
-                    })
-                  }
-                  style={{ fontFamily: 'monospace' }}
-                />
-              </div>
-              <div>
-                <FieldLabel className="mb-1">Default max output</FieldLabel>
-                <IdeTextInput
-                  type="number"
-                  value={provider.maxOutputTokens}
-                  onChange={(event) =>
-                    updateProvider(provider.id, {
-                      maxOutputTokens: Number.parseInt(event.target.value, 10) || 4096,
-                    })
-                  }
-                  style={{ fontFamily: 'monospace' }}
-                />
-              </div>
-            </div>
-          </FormBlock>
-
-          {/* ── Models ───────────────────────────────────────── */}
-          <FormBlock>
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <div>
-                <FieldLabel>Models</FieldLabel>
-                <p className="mt-1 text-[11px] text-text-secondary">
-                  Capabilities (vision, thinking, tool-stream) and limits are per-model.
-                  The selected model determines what tools the agent gets.
-                </p>
-              </div>
-              <ActionButton
-                variant="primary"
-                onClick={onAddModel}
-                icon={<Plus className="h-3 w-3" />}
-              >
-                Add model
-              </ActionButton>
-            </div>
-            <div className="space-y-1.5">
-              {models.length === 0 && (
-                <div
-                  className="px-2.5 py-3 text-center text-[11px] text-text-secondary"
-                  style={{
-                    border: `1px dashed ${settingsRowDividerColor}`,
-                    borderRadius: 6,
-                  }}
-                >
-                  No models yet. Click <span className="font-semibold">Add model</span> to register one.
-                </div>
-              )}
+          ) : (
+            <div
+              className="grid gap-2.5"
+              style={{
+                gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+              }}
+            >
               {models.map((model) => {
                 const isActive =
                   provider.id === activeProviderId && model.modelKey === activeModelKey;
+                const ctx =
+                  model.contextWindow ?? provider.contextWindow;
                 return (
                   <div
                     key={model.id}
-                    className="grid grid-cols-[minmax(0,1.25fr)_minmax(180px,auto)_auto_auto] items-center gap-2 px-2.5 py-2"
+                    className="flex flex-col gap-2 px-3 py-2.5"
                     style={{
-                      ...modelRowStyle,
+                      ...modelCardStyle,
                       borderColor: isActive
                         ? 'color-mix(in srgb, var(--aurora-common-primary) 50%, transparent)'
-                        : modelRowStyle.border?.toString(),
+                        : modelCardStyle.border?.toString(),
                     }}
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
-                        <span className="truncate text-[11.5px] font-medium text-text-primary">
+                        <span className="truncate text-[12px] font-semibold text-text-primary">
                           {formatModelDisplayName(model.modelKey, model.label)}
                         </span>
-                        {isActive && <StatusPill variant="success" dot={false}>Active</StatusPill>}
+                        {isActive && (
+                          <StatusPill variant="success" dot={false}>Active</StatusPill>
+                        )}
                         {!model.enabled && (
                           <StatusPill variant="neutral" dot={false}>Off</StatusPill>
                         )}
@@ -688,52 +723,66 @@ const ProviderCardWithModels: React.FC<ProviderCardProps> = ({
                         {model.modelKey}
                       </div>
                     </div>
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 flex-wrap">
                       <CapabilityBadge icon={ImageIcon} label="Vision" active={model.supportsVision} />
                       <CapabilityBadge icon={Sparkles} label="Think" active={model.supportsThinking} />
                       <CapabilityBadge icon={Wrench} label="Stream" active={model.supportsToolStream} />
                     </div>
-                    <ActionButton
-                      variant="secondary"
-                      onClick={() =>
-                        setSelectedModel(`${provider.id}:${model.modelKey}`)
-                      }
-                      disabled={isActive || !model.enabled || !ready}
-                      title={
-                        !ready
-                          ? 'Provider not ready — add an API key first'
-                          : !model.enabled
-                            ? 'Model is disabled'
-                            : 'Use this model'
-                      }
+                    <div
+                      className="text-[10.5px] text-text-secondary"
+                      style={{ fontFamily: 'monospace' }}
                     >
-                      {isActive ? 'In use' : 'Use'}
-                    </ActionButton>
-                    <div className="flex items-center gap-1">
-                      <IconButton
-                        ariaLabel="Edit model"
-                        title="Edit model"
-                        onClick={() => onEditModel(model)}
+                      ctx {ctx.toLocaleString()}
+                      {model.contextWindow !== undefined && (
+                        <span className="ml-1 text-text-disabled">(override)</span>
+                      )}
+                    </div>
+                    <div
+                      className="flex items-center justify-between gap-1.5 pt-1.5"
+                      style={{ borderTop: `1px solid ${settingsRowDividerColor}` }}
+                    >
+                      <ActionButton
+                        variant="secondary"
+                        onClick={() =>
+                          setSelectedModel(`${provider.id}:${model.modelKey}`)
+                        }
+                        disabled={isActive || !model.enabled || !ready}
+                        title={
+                          !ready
+                            ? 'Provider not ready — add an API key first'
+                            : !model.enabled
+                              ? 'Model is disabled'
+                              : 'Use this model'
+                        }
                       >
-                        <Wrench className="h-3 w-3" />
-                      </IconButton>
-                      <IconButton
-                        ariaLabel="Delete model"
-                        title="Delete model"
-                        variant="danger"
-                        onClick={() => deleteModel(model.id)}
-                        disabled={models.length <= 1}
-                      >
-                        <X className="h-3 w-3" />
-                      </IconButton>
+                        {isActive ? 'In use' : 'Use'}
+                      </ActionButton>
+                      <div className="flex items-center gap-1">
+                        <IconButton
+                          ariaLabel="Edit model"
+                          title="Edit model"
+                          onClick={() => onEditModel(model)}
+                        >
+                          <Wrench className="h-3 w-3" />
+                        </IconButton>
+                        <IconButton
+                          ariaLabel="Delete model"
+                          title="Delete model"
+                          variant="danger"
+                          onClick={() => deleteModel(model.id)}
+                          disabled={models.length <= 1}
+                        >
+                          <X className="h-3 w-3" />
+                        </IconButton>
+                      </div>
                     </div>
                   </div>
                 );
               })}
             </div>
-          </FormBlock>
-        </div>
-      )}
+          )}
+        </FormBlock>
+      </Section>
     </div>
   );
 };
@@ -752,13 +801,13 @@ export const ProvidersHubTab: React.FC<ProvidersHubTabProps> = ({
   const addModel = useSettingsStore((s) => s.addModel);
   const updateModel = useSettingsStore((s) => s.updateModel);
 
+  const [view, setView] = useState<View>({ kind: 'grid' });
   const [filter, setFilter] = useState<ProviderFilter>('all');
   const [search, setSearch] = useState('');
   const [isAddingProvider, setIsAddingProvider] = useState(false);
   const [isDiscovering, setIsDiscovering] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  // Model editor state
+  // Model editor state (used from the detail view).
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorProviderId, setEditorProviderId] = useState<string | null>(null);
   const [editorInitial, setEditorInitial] = useState<LLMModel | undefined>(undefined);
@@ -767,6 +816,19 @@ export const ProvidersHubTab: React.FC<ProvidersHubTabProps> = ({
     () => new Set(providers.map((p) => p.baseUrl.toLowerCase())),
     [providers],
   );
+
+  const modelsByProvider = useMemo(() => {
+    const map = new Map<string, LLMModel[]>();
+    for (const m of models) {
+      const list = map.get(m.providerId) ?? [];
+      list.push(m);
+      map.set(m.providerId, list);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => a.sortOrder - b.sortOrder);
+    }
+    return map;
+  }, [models]);
 
   const filteredProviders = useMemo(() => {
     const lowered = search.trim().toLowerCase();
@@ -790,16 +852,38 @@ export const ProvidersHubTab: React.FC<ProvidersHubTabProps> = ({
     return { enabledCount, readyCount, cloudCount, localCount, total: providers.length };
   }, [providers]);
 
-  const handleAddProvider = (init: Omit<LLMProvider, 'id' | 'isCustom'>) => {
-    addCustomProvider(init);
+  // ── Detail-view bookkeeping: drop the user back to the grid if the
+  // provider they were viewing gets deleted underneath them. ──────────
+  useEffect(() => {
+    if (view.kind !== 'detail') return;
+    if (!providers.some((p) => p.id === view.providerId)) {
+      setView({ kind: 'grid' });
+    }
+  }, [view, providers]);
+
+  // ── Action handlers ────────────────────────────────────────────────
+  const handleAddProvider = (draft: ProviderDraft) => {
+    const init: Omit<LLMProvider, 'id' | 'isCustom'> = {
+      name: draft.name,
+      nickname: draft.nickname,
+      baseUrl: draft.baseUrl,
+      apiKey: draft.apiKey,
+      model: draft.initialModelKey,
+      contextWindow: draft.contextWindow,
+      maxOutputTokens: draft.maxOutputTokens,
+      supportsThinking: false,
+      enabled: true,
+      providerType: draft.providerType,
+    };
+    const newId = addCustomProvider(init);
     setIsAddingProvider(false);
+    // Drop into the new provider's detail view immediately so the
+    // user can finish setup (add more models, tweak defaults) without
+    // having to find their card in the grid first.
+    setView({ kind: 'detail', providerId: newId });
   };
 
   const handleAcceptDiscovered = (detected: LocalProvider) => {
-    // Build an LLMProvider seed that addCustomProvider can ingest.
-    // The seeded models slice is populated via the legacy
-    // `customModels` field; addCustomProvider's reconciler turns
-    // that into ProviderModel rows with capabilities preserved.
     const aliases: Record<string, string> = {};
     for (const m of detected.models) {
       if (m.name && m.name !== m.id) aliases[m.id] = m.name;
@@ -822,10 +906,7 @@ export const ProvidersHubTab: React.FC<ProvidersHubTabProps> = ({
     addCustomProvider(init);
     setIsDiscovering(false);
 
-    // After the provider is created, walk back through the detected
-    // models and stamp per-model capability flags using the detector's
-    // metadata (vision, supportsThinking). This is a separate pass so
-    // we don't have to extend addCustomProvider's signature.
+    // Stamp per-model capability flags from the detector metadata.
     setTimeout(() => {
       const created = useSettingsStore
         .getState()
@@ -895,6 +976,35 @@ export const ProvidersHubTab: React.FC<ProvidersHubTabProps> = ({
       .map((m) => m.modelKey);
   }, [editorProviderId, models]);
 
+  // ── Render: detail view? ──────────────────────────────────────────
+  if (view.kind === 'detail') {
+    const provider = providers.find((p) => p.id === view.providerId);
+    if (!provider) return null;
+    const ownModels = modelsByProvider.get(provider.id) ?? [];
+    return (
+      <>
+        <ProviderDetailView
+          provider={provider}
+          models={ownModels}
+          onBack={() => setView({ kind: 'grid' })}
+          onAddModel={() => openAddModel(provider.id)}
+          onEditModel={(model) => openEditModel(provider.id, model)}
+        />
+        <ModelEditorDialog
+          isOpen={editorOpen}
+          initial={editorInitial}
+          providerName={editorProvider?.name ?? ''}
+          providerContextWindow={editorProvider?.contextWindow ?? 128000}
+          providerMaxOutput={editorProvider?.maxOutputTokens ?? 8192}
+          existingKeys={editorExistingKeys}
+          onClose={() => setEditorOpen(false)}
+          onSave={saveModel}
+        />
+      </>
+    );
+  }
+
+  // ── Render: grid view (default) ───────────────────────────────────
   const FILTER_OPTIONS: Array<{ id: ProviderFilter; label: string; count?: number }> = [
     { id: 'all', label: 'All', count: counts.total },
     { id: 'cloud', label: 'Cloud', count: counts.cloudCount },
@@ -903,47 +1013,124 @@ export const ProvidersHubTab: React.FC<ProvidersHubTabProps> = ({
   ];
 
   return (
-    <div className="space-y-6 pb-2">
-      <Section
-        title="Provider stack"
-        description="Cloud, custom, and local-detected providers all live here. Per-model capabilities (vision, thinking) are set on each model row inside a provider."
-        badge={
-          <div className="flex gap-1.5">
-            <StatusPill variant="success">{counts.readyCount} Ready</StatusPill>
-            <StatusPill variant="neutral" dot={false}>
-              {counts.enabledCount} / {counts.total} On
-            </StatusPill>
-          </div>
-        }
+    <div className="space-y-5 pb-2">
+      {/* Header strip: counts + actions */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <h2 className="text-[14px] font-semibold text-text-primary">Providers</h2>
+          <StatusPill variant="success">{counts.readyCount} Ready</StatusPill>
+          <StatusPill variant="neutral" dot={false}>
+            {counts.enabledCount} / {counts.total} On
+          </StatusPill>
+        </div>
+        <div className="flex items-center gap-2">
+          <ActionButton
+            variant="secondary"
+            icon={<Search className="h-3 w-3" />}
+            onClick={() => {
+              setIsDiscovering(true);
+              setIsAddingProvider(false);
+            }}
+          >
+            Discover local
+          </ActionButton>
+          <ActionButton
+            variant="primary"
+            icon={<Plus className="h-3 w-3" />}
+            onClick={() => {
+              setIsAddingProvider(true);
+              setIsDiscovering(false);
+            }}
+          >
+            Add provider
+          </ActionButton>
+        </div>
+      </div>
+
+      {/* Filter chips + search */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-1">
+          {FILTER_OPTIONS.map((option) => {
+            const isActive = filter === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => setFilter(option.id)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium transition-colors"
+                style={{
+                  color: isActive
+                    ? 'var(--aurora-common-primary)'
+                    : 'var(--aurora-editor-foreground)',
+                  backgroundColor: isActive
+                    ? 'color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)'
+                    : 'color-mix(in srgb, var(--aurora-editor-background) 50%, transparent)',
+                  border: `1px solid ${isActive
+                    ? 'color-mix(in srgb, var(--aurora-common-primary) 35%, transparent)'
+                    : 'color-mix(in srgb, var(--aurora-common-border) 60%, transparent)'}`,
+                  borderRadius: 4,
+                }}
+              >
+                {option.label}
+                {typeof option.count === 'number' && (
+                  <span className="font-mono text-[10px] opacity-70">
+                    {option.count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ width: 220 }}>
+          <IdeTextInput
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Filter by name, nickname, URL…"
+          />
+        </div>
+      </div>
+
+      {/* Discover panel (inline above the grid when active) */}
+      {isDiscovering && (
+        <DiscoverPanel
+          knownBaseUrls={knownBaseUrls}
+          onAccept={handleAcceptDiscovered}
+          onCancel={() => setIsDiscovering(false)}
+        />
+      )}
+
+      {/* The grid */}
+      <div
+        className="grid gap-3"
+        style={{
+          gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+        }}
       >
-        <FormRowLast
-          label="Add or detect"
-          hint="Create a custom provider or scan your machine for running Ollama / LM Studio servers."
-        >
-          <div className="flex gap-2">
-            <ActionButton
-              variant="secondary"
-              icon={<Search className="h-3 w-3" />}
-              onClick={() => {
-                setIsDiscovering(true);
-                setIsAddingProvider(false);
-              }}
-            >
-              Discover local servers
-            </ActionButton>
-            <ActionButton
-              variant="primary"
-              icon={<Plus className="h-3 w-3" />}
-              onClick={() => {
-                setIsAddingProvider(true);
-                setIsDiscovering(false);
-              }}
-            >
-              Add provider
-            </ActionButton>
+        {filteredProviders.map((provider) => (
+          <ProviderGridCard
+            key={provider.id}
+            provider={provider}
+            modelCount={modelsByProvider.get(provider.id)?.length ?? 0}
+            onOpen={() => setView({ kind: 'detail', providerId: provider.id })}
+          />
+        ))}
+        {/* Add tile — only show on the unfiltered "all" view so it
+            doesn't visually conflict with a "Disabled" filter etc. */}
+        {filter === 'all' && !search && (
+          <AddProviderTile onClick={() => setIsAddingProvider(true)} />
+        )}
+        {filteredProviders.length === 0 && (filter !== 'all' || search) && (
+          <div
+            className="col-span-full px-3 py-6 text-center text-[11.5px] text-text-secondary"
+            style={{
+              border: `1px dashed ${settingsRowDividerColor}`,
+              borderRadius: 6,
+            }}
+          >
+            No providers match this filter.
           </div>
-        </FormRowLast>
-      </Section>
+        )}
+      </div>
 
       <Section
         title="Fireworks Control Center"
@@ -951,7 +1138,7 @@ export const ProvidersHubTab: React.FC<ProvidersHubTabProps> = ({
       >
         <FormRowLast
           label="Show Fireworks tab"
-          hint="Turn off to keep the Settings modal lean. Fireworks remains available as a regular provider."
+          hint="Turn off to keep the Settings modal lean. Fireworks remains available as a regular provider in the grid above."
         >
           <IdeSwitch
             checked={fireworksTabEnabled}
@@ -963,115 +1150,10 @@ export const ProvidersHubTab: React.FC<ProvidersHubTabProps> = ({
         </FormRowLast>
       </Section>
 
-      {isAddingProvider && (
-        <AddProviderInline
-          onSave={handleAddProvider}
-          onCancel={() => setIsAddingProvider(false)}
-        />
-      )}
-
-      {isDiscovering && (
-        <DiscoverPanel
-          knownBaseUrls={knownBaseUrls}
-          onAccept={handleAcceptDiscovered}
-          onCancel={() => setIsDiscovering(false)}
-        />
-      )}
-
-      <Section
-        title="Configured providers"
-        description="Click a provider to expand and edit endpoint, credentials, and model roster."
-      >
-        {/* Filter / search bar */}
-        <div
-          className="flex flex-wrap items-center justify-between gap-2 px-4 py-3"
-          style={{ borderBottom: `1px solid ${settingsRowDividerColor}` }}
-        >
-          <div className="flex flex-wrap gap-1">
-            {FILTER_OPTIONS.map((option) => {
-              const isActive = filter === option.id;
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  onClick={() => setFilter(option.id)}
-                  className={clsx(
-                    'inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium transition-colors',
-                  )}
-                  style={{
-                    color: isActive
-                      ? 'var(--aurora-common-primary)'
-                      : 'var(--aurora-editor-foreground)',
-                    backgroundColor: isActive
-                      ? 'color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)'
-                      : 'color-mix(in srgb, var(--aurora-editor-background) 50%, transparent)',
-                    border: `1px solid ${isActive
-                      ? 'color-mix(in srgb, var(--aurora-common-primary) 35%, transparent)'
-                      : 'color-mix(in srgb, var(--aurora-common-border) 60%, transparent)'}`,
-                    borderRadius: 4,
-                  }}
-                >
-                  {option.label}
-                  {typeof option.count === 'number' && (
-                    <span className="font-mono text-[10px] opacity-70">
-                      {option.count}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-          <div style={{ width: 220 }}>
-            <IdeTextInput
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Filter by name, nickname, URL…"
-            />
-          </div>
-        </div>
-
-        <div
-          className="space-y-1.5 p-1.5"
-          style={{
-            backgroundColor:
-              'color-mix(in srgb, var(--aurora-sidebar-background) 50%, transparent)',
-          }}
-        >
-          {filteredProviders.length === 0 && (
-            <div className="px-3 py-6 text-center text-[11.5px] text-text-secondary">
-              No providers match this filter.
-            </div>
-          )}
-          {filteredProviders.map((provider) => {
-            const ownModels = models
-              .filter((m) => m.providerId === provider.id)
-              .sort((a, b) => a.sortOrder - b.sortOrder);
-            return (
-              <ProviderCardWithModels
-                key={provider.id}
-                provider={provider}
-                models={ownModels}
-                isExpanded={expandedId === provider.id}
-                onToggleExpand={() =>
-                  setExpandedId(expandedId === provider.id ? null : provider.id)
-                }
-                onAddModel={() => openAddModel(provider.id)}
-                onEditModel={(model) => openEditModel(provider.id, model)}
-              />
-            );
-          })}
-        </div>
-      </Section>
-
-      <ModelEditorDialog
-        isOpen={editorOpen}
-        initial={editorInitial}
-        providerName={editorProvider?.name ?? ''}
-        providerContextWindow={editorProvider?.contextWindow ?? 128000}
-        providerMaxOutput={editorProvider?.maxOutputTokens ?? 8192}
-        existingKeys={editorExistingKeys}
-        onClose={() => setEditorOpen(false)}
-        onSave={saveModel}
+      <ProviderEditorDialog
+        isOpen={isAddingProvider}
+        onClose={() => setIsAddingProvider(false)}
+        onSave={handleAddProvider}
       />
     </div>
   );

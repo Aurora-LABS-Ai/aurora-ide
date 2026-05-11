@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Eye, ImageIcon, Sparkles, Wrench, X } from 'lucide-react';
 
 import type { LLMModel } from '../../store/useSettingsStore';
@@ -96,7 +97,27 @@ export const ModelEditorDialog: React.FC<ModelEditorDialogProps> = ({
     setEnabled(initial?.enabled ?? true);
   }, [isOpen, initial]);
 
+  // ESC closes the dialog. Bound to the document so it works even
+  // when focus is inside an input.
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
+  // The Settings panel that hosts us is itself a centered modal whose
+  // outer container creates a new containing block (transform / filter
+  // ancestors are common in those kinds of shells). That bounds any
+  // `position: fixed` descendants to the modal's box and clips them
+  // top/bottom. Render via portal to escape into <body>.
+  if (typeof document === 'undefined') return null;
 
   const trimmedKey = modelKey.trim();
   const duplicate =
@@ -119,13 +140,13 @@ export const ModelEditorDialog: React.FC<ModelEditorDialogProps> = ({
     });
   };
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/65 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-[560px] overflow-hidden"
+        className="w-full max-w-[560px] max-h-[calc(100vh-32px)] overflow-y-auto scrollbar-thin"
         style={dialogShellStyle}
         onClick={(event) => event.stopPropagation()}
       >
@@ -320,6 +341,7 @@ export const ModelEditorDialog: React.FC<ModelEditorDialogProps> = ({
           </ActionButton>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 };

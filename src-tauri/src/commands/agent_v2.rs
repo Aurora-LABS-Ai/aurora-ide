@@ -676,6 +676,11 @@ fn build_runtime_config(request: &AgentChatRequest) -> RuntimeConfig {
             .unwrap_or(defaults.thinking_enabled),
         default_temperature: request.temperature.or(defaults.default_temperature),
         ide_context: request.ide_context.clone(),
+        // Budget-aware trim engages only when the frontend supplies the
+        // active provider's window. `None` keeps the legacy "send the
+        // whole session every turn" behaviour, so callers that don't
+        // know their window (e.g. test mocks) are unaffected.
+        context_window: request.context_window.or(defaults.context_window),
     }
 }
 
@@ -1166,6 +1171,7 @@ mod tests {
             temperature: None,
             max_output_tokens: None,
             thinking_enabled: None,
+            context_window: None,
         }
     }
 

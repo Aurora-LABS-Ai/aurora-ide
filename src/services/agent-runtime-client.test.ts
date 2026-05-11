@@ -175,6 +175,12 @@ describe("AgentRuntimeClient.buildRequest", () => {
         parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
       },
     ]);
+
+    // The Rust runtime uses `contextWindow` to apply a budget-aware
+    // trim before each API call. Sourced from the active provider's
+    // advertised window so the trim aligns with the chat-header
+    // indicator already shown to the user.
+    expect(request.contextWindow).toBe(128000);
   });
 
   it("nulls empty system prompt and ide context per contract", () => {
@@ -191,6 +197,25 @@ describe("AgentRuntimeClient.buildRequest", () => {
     expect(request.temperature).toBeNull();
     expect(request.maxOutputTokens).toBeNull();
     expect(request.thinkingEnabled).toBeNull();
+    // Provider's window still flows through even with a minimal config.
+    expect(request.contextWindow).toBe(128000);
+  });
+
+  it("nulls contextWindow when the provider doesn't advertise one", () => {
+    const providerWithoutWindow = {
+      ...sampleProviderConfig,
+      contextWindow: undefined as unknown as number,
+    };
+    const request = AgentRuntimeClient.buildRequest({
+      turnId: "t",
+      threadId: "thread-1",
+      input: sampleInput,
+      providerConfig: providerWithoutWindow,
+      config: {},
+    });
+    // null on the wire means "no enforcement" — the Rust runtime
+    // falls back to the legacy whole-session behaviour.
+    expect(request.contextWindow).toBeNull();
   });
 });
 

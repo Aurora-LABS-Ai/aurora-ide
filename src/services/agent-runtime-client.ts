@@ -104,6 +104,17 @@ export interface AgentChatRequest {
   temperature: number | null;
   maxOutputTokens: number | null;
   thinkingEnabled: boolean | null;
+  /**
+   * Provider's advertised total context window (input + output tokens) for
+   * the chosen model. When set, the Rust runtime applies a budget-aware
+   * trim before each API call so older messages get dropped from the API
+   * view (the persisted JSONL stays intact). `null` disables trimming —
+   * the legacy "send the whole session every turn" behaviour.
+   *
+   * Sourced from `useSettingsStore.getLLMConfig().contextWindow` so the
+   * runtime always uses the same value the chat header already shows.
+   */
+  contextWindow: number | null;
 }
 
 /**
@@ -401,6 +412,13 @@ export class AgentRuntimeClient {
       maxOutputTokens: typeof config.maxTokens === "number" ? config.maxTokens : null,
       thinkingEnabled: typeof config.thinkingEnabled === "boolean"
         ? config.thinkingEnabled
+        : null,
+      // Pass the active provider's advertised window so the Rust runtime
+      // can budget-trim older messages before each API call. Falls back
+      // to null when the provider config doesn't carry a window value
+      // (the runtime treats null as "no enforcement" — legacy behaviour).
+      contextWindow: typeof providerConfig.contextWindow === "number"
+        ? providerConfig.contextWindow
         : null,
     };
   }

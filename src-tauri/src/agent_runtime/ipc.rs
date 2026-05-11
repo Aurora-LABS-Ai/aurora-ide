@@ -118,6 +118,19 @@ pub struct AgentChatRequest {
     /// drops it otherwise. `None` means "use the default" (`false`).
     #[serde(default)]
     pub thinking_enabled: Option<bool>,
+
+    /// Provider's advertised total context window (input + output) for
+    /// the chosen model, in tokens. When set, the runtime applies a
+    /// budget-aware trim before each API call: older turns get dropped
+    /// (from oldest first, always preserving the last two user-anchored
+    /// turns) once the persisted session would exceed ~75% of
+    /// `(context_window - max_output_tokens * 1.1)`. The persisted JSONL
+    /// is untouched — only the API view is trimmed.
+    ///
+    /// `None` disables trimming entirely. Callers that don't pass a
+    /// window get the legacy behaviour (whole session sent every turn).
+    #[serde(default)]
+    pub context_window: Option<u32>,
 }
 
 /// One tool entry in [`AgentChatRequest::tools`].
@@ -193,6 +206,7 @@ mod tests {
             temperature: Some(0.7),
             max_output_tokens: Some(4096),
             thinking_enabled: Some(true),
+            context_window: Some(200_000),
         }
     }
 
@@ -337,6 +351,7 @@ mod tests {
             temperature: None,
             max_output_tokens: None,
             thinking_enabled: None,
+            context_window: None,
         };
         let s = serde_json::to_string(&req).expect("serialize");
         // Phase 2.3 contract: camelCase, no skip_serializing_if on

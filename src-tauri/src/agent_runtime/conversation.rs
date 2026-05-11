@@ -107,6 +107,17 @@ pub struct RuntimeConfig {
     /// message verbatim. Empty/`None` means "no IDE context for
     /// this turn".
     pub ide_context: Option<String>,
+
+    /// Provider's advertised context window for the chosen model.
+    /// `None` disables budget-aware trimming entirely (legacy
+    /// behaviour: send the whole session every iteration).
+    ///
+    /// When `Some(window)`, the runtime trims older messages from the
+    /// API view before each call so the request stays under
+    /// ~75% of `window - default_max_output_tokens * 1.1`. The
+    /// persisted JSONL is untouched — trim is purely an API-view
+    /// concern, mirroring how `ide_context` injection works.
+    pub context_window: Option<u32>,
 }
 
 impl Default for RuntimeConfig {
@@ -118,6 +129,7 @@ impl Default for RuntimeConfig {
             thinking_enabled: false,
             default_temperature: None,
             ide_context: None,
+            context_window: None,
         }
     }
 }
@@ -267,13 +279,39 @@ impl ConversationRuntime {
                     Some(ctx) => Some(inject_ide_context(session.messages(), ctx)),
                     None => None,
                 };
-            let messages_for_api: &[ConversationMessage] = owned_messages
-                .as_deref()
-                .unwrap_or_else(|| session.messages());
+
+            // Budget-aware trim. Same API-view-only contract as
+            // `inject_ide_context`: persisted session stays whole, only
+            // the request body shrinks. Disabled (no-op) when
+            // `context_window` is `None`.
+            let trim_input: Vec<ConversationMessage> = owned_messages
+                .unwrap_or_else(|| session.messages().to_vec());
+            let trim_outcome = trim_to_budget(
+                trim_input,
+                self.config.context_window,
+                self.config.default_max_output_tokens,
+                self.config.system_prompt.as_deref().unwrap_or(""),
+            );
+            let messages_for_api: &[ConversationMessage] = &trim_outcome.messages;
+
+            // When the trim dropped messages, append a small notice to
+            // the system prompt so the model knows the early conversation
+            // has been omitted (and won't hallucinate having seen it).
+            // The original `config.system_prompt` is left untouched.
+            let trim_notice: String;
+            let system_prompt: Option<&str> = if trim_outcome.dropped > 0 {
+                trim_notice = build_trim_notice(
+                    self.config.system_prompt.as_deref().unwrap_or(""),
+                    trim_outcome.dropped,
+                );
+                Some(trim_notice.as_str())
+            } else {
+                self.config.system_prompt.as_deref()
+            };
 
             let request = ApiRequest {
                 model: &model,
-                system_prompt: self.config.system_prompt.as_deref(),
+                system_prompt,
                 messages: messages_for_api,
                 tools: &tool_schemas,
                 temperature: self.config.default_temperature,
@@ -501,6 +539,219 @@ struct PendingToolCall {
     id: String,
     name: String,
     input: serde_json::Value,
+}
+
+/// Outcome of [`trim_to_budget`]: the (possibly shrunken) message list
+/// the runtime should send to the API plus the count of messages that
+/// were dropped from the head so the caller can build a user-facing
+/// notice.
+struct TrimOutcome {
+    messages: Vec<ConversationMessage>,
+    dropped: usize,
+}
+
+/// How much of the post-reserve budget we want to use before trimming
+/// kicks in. 75% leaves headroom for the assistant's reply plus tool
+/// results that arrive *during* the upcoming round.
+const TRIM_THRESHOLD_PCT: u32 = 75;
+
+/// Multiplier applied to `default_max_output_tokens` when reserving
+/// space for the response. Models occasionally produce slightly more
+/// than the requested cap; the 10% cushion keeps us out of the
+/// 400-too-many-tokens window.
+const OUTPUT_RESERVE_NUMER: u32 = 11;
+const OUTPUT_RESERVE_DENOM: u32 = 10;
+
+/// Number of trailing user-anchored turns the trim refuses to drop.
+/// A "user-anchored turn" starts at a `MessageRole::User` message and
+/// runs until the next `User` (or end of list). Keeping the last two
+/// preserves the in-flight question + the immediately previous one
+/// (often where the user gave context the model now needs).
+const PRESERVE_LAST_USER_TURNS: usize = 2;
+
+/// Trim the API-view of the session to fit a token budget.
+///
+/// Pure function: takes ownership of `messages`, returns the kept
+/// suffix plus a count of dropped messages. The persisted session is
+/// untouched — callers operate on a freshly cloned vector (mirroring
+/// the IDE-context injection pattern).
+///
+/// Algorithm:
+/// 1. Compute `budget = context_window - max_output * 1.1` (the
+///    space left for the prompt after reserving for the response).
+/// 2. Compute `threshold = budget * 0.75`.
+/// 3. Count tokens of `system_prompt` plus every message via tiktoken
+///    (cl100k). If the sum is within threshold, return unchanged.
+/// 4. Find the cut point: the start of the (`PRESERVE_LAST_USER_TURNS`-th
+///    from last) `User` message. Everything before that index gets
+///    dropped. Cutting at a `User` boundary preserves tool_use ↔
+///    tool_result coherence (a tool result never appears before its
+///    own user-rooted turn) and keeps the alternation rule both
+///    Anthropic and OpenAI APIs require.
+/// 5. If there are fewer than `PRESERVE_LAST_USER_TURNS + 1` user
+///    messages, no safe cut exists — return unchanged with `dropped: 0`.
+///
+/// `context_window == None` is the "no budget enforced" case and
+/// short-circuits to no-op.
+fn trim_to_budget(
+    messages: Vec<ConversationMessage>,
+    context_window: Option<u32>,
+    max_output: u32,
+    system_prompt: &str,
+) -> TrimOutcome {
+    let Some(window) = context_window else {
+        return TrimOutcome {
+            messages,
+            dropped: 0,
+        };
+    };
+
+    let reserve = max_output
+        .saturating_mul(OUTPUT_RESERVE_NUMER)
+        .saturating_div(OUTPUT_RESERVE_DENOM);
+    let budget = window.saturating_sub(reserve);
+    if budget == 0 {
+        // Pathological config (max_output >= window). Don't trim — let
+        // the provider reject so the user sees the real error instead
+        // of mysterious empty turns.
+        return TrimOutcome {
+            messages,
+            dropped: 0,
+        };
+    }
+    let threshold = budget.saturating_mul(TRIM_THRESHOLD_PCT) / 100;
+
+    let system_tokens = estimate_text_tokens(system_prompt);
+    let per_msg_tokens: Vec<u32> = messages.iter().map(estimate_message_tokens).collect();
+    let total: u32 = per_msg_tokens
+        .iter()
+        .copied()
+        .fold(system_tokens, u32::saturating_add);
+
+    if total <= threshold {
+        return TrimOutcome {
+            messages,
+            dropped: 0,
+        };
+    }
+
+    // Find the indices of all User messages. We cut at one of these
+    // boundaries to keep tool_use/tool_result pairing intact.
+    let user_indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| matches!(m.role, MessageRole::User).then_some(i))
+        .collect();
+
+    if user_indices.len() <= PRESERVE_LAST_USER_TURNS {
+        // Nothing safe to drop — the budget is overrun by the most
+        // recent turns themselves. Send as-is and let the provider
+        // surface the real over-limit error.
+        return TrimOutcome {
+            messages,
+            dropped: 0,
+        };
+    }
+
+    // Greedy: pick the latest cut point that gets us under threshold.
+    // Walking from oldest user-boundary to newest preserves "drop the
+    // smallest amount of history needed".
+    let max_cut = user_indices.len() - PRESERVE_LAST_USER_TURNS;
+    let mut best_cut_msg_idx = 0;
+    let mut running = total;
+    for &cut_idx in &user_indices[..max_cut] {
+        // If we cut here we drop messages [0..cut_idx).
+        // Subtract their token counts from `running`.
+        // (We've previously subtracted everything up to the *previous*
+        // candidate, so just subtract the new range incrementally.)
+        let prev = best_cut_msg_idx;
+        for tokens in per_msg_tokens.iter().take(cut_idx).skip(prev) {
+            running = running.saturating_sub(*tokens);
+        }
+        best_cut_msg_idx = cut_idx;
+        if running <= threshold {
+            break;
+        }
+    }
+
+    if best_cut_msg_idx == 0 {
+        // No user boundary was past index 0 — nothing to drop.
+        return TrimOutcome {
+            messages,
+            dropped: 0,
+        };
+    }
+
+    // The notice we'll inject costs a few tokens too. Don't bother
+    // accounting precisely — the threshold's 25% cushion absorbs it.
+    let kept: Vec<ConversationMessage> = messages.into_iter().skip(best_cut_msg_idx).collect();
+    TrimOutcome {
+        messages: kept,
+        dropped: best_cut_msg_idx,
+    }
+}
+
+/// Append a `<context_trim_notice>` block to the system prompt so the
+/// model knows it's seeing a partial transcript. Kept short and
+/// machine-readable so it doesn't bias the assistant's tone.
+fn build_trim_notice(base_prompt: &str, dropped: usize) -> String {
+    let notice = format!(
+        "<context_trim_notice>\n{dropped} earlier message(s) in this thread were trimmed from this request to keep it within the model's context window. The recent conversation is preserved verbatim. If the user asks about something that was in the trimmed history, ask them to restate it.\n</context_trim_notice>",
+    );
+    if base_prompt.is_empty() {
+        notice
+    } else {
+        format!("{base_prompt}\n\n{notice}")
+    }
+}
+
+/// Estimate token count of a plain string using cl100k (the encoding
+/// the existing context engine uses). Falls back to a 4-chars-per-token
+/// approximation if tiktoken initialization fails — the trim is
+/// best-effort, not load-bearing for correctness.
+fn estimate_text_tokens(text: &str) -> u32 {
+    if text.is_empty() {
+        return 0;
+    }
+    use crate::services::token_service::{EncodingType, TokenService};
+    TokenService::count_tokens(text, EncodingType::Cl100k)
+        .map(|c| c.tokens as u32)
+        .unwrap_or_else(|_| (text.len() as u32 + 3) / 4)
+}
+
+/// Estimate the token cost of one [`ConversationMessage`].
+///
+/// Sums every block's textual content plus a small per-message and
+/// per-block overhead matching the heuristic the legacy
+/// `context::manager::ContextManager::count_round_tokens` uses (so the
+/// trim's view of "how big is this turn" lines up with what the chat
+/// indicator displayed under the old engine).
+fn estimate_message_tokens(message: &ConversationMessage) -> u32 {
+    let mut total: u32 = 4; // per-message overhead
+    for block in &message.blocks {
+        match block {
+            ContentBlock::Text { text } => {
+                total = total.saturating_add(estimate_text_tokens(text));
+            }
+            ContentBlock::Thinking { text, signature } => {
+                total = total.saturating_add(estimate_text_tokens(text));
+                if let Some(sig) = signature {
+                    total = total.saturating_add(estimate_text_tokens(sig));
+                }
+            }
+            ContentBlock::ToolUse { name, input, .. } => {
+                total = total.saturating_add(estimate_text_tokens(name));
+                let json = input.to_string();
+                total = total.saturating_add(estimate_text_tokens(&json));
+                total = total.saturating_add(3); // tool-call overhead
+            }
+            ContentBlock::ToolResult { content, .. } => {
+                total = total.saturating_add(estimate_text_tokens(content));
+                total = total.saturating_add(4); // tool-result overhead
+            }
+        }
+    }
+    total
 }
 
 /// Clone the message list and prepend the IDE context block to the
@@ -1526,5 +1777,337 @@ mod tests {
             }
             other => panic!("expected Error event, got {other:?}"),
         }
+    }
+
+    // ── Budget-aware trim tests ────────────────────────────────────────
+    //
+    // Pure unit tests for `trim_to_budget` / `build_trim_notice` plus an
+    // integration test that asserts the runtime forwards a trimmed
+    // message slice + an augmented system prompt to the API once a
+    // session blows past the configured window.
+
+    fn user_with_text(text: &str, ts: i64) -> ConversationMessage {
+        ConversationMessage::user_text(text, ts)
+    }
+
+    fn assistant_with_text(text: &str, ts: i64) -> ConversationMessage {
+        ConversationMessage::assistant(
+            vec![ContentBlock::Text { text: text.into() }],
+            ts,
+        )
+    }
+
+    /// Building block for trim tests: 60 char text yields ~15 tokens
+    /// under cl100k. Used to construct sessions whose total token count
+    /// is predictable enough to compare against a budget.
+    const FILLER_60: &str =
+        "0123456789012345678901234567890123456789012345678901234567";
+
+    #[test]
+    fn trim_is_noop_when_context_window_is_none() {
+        let messages = vec![user_with_text("hi", 0), assistant_with_text("ok", 1)];
+        let outcome = trim_to_budget(messages.clone(), None, 4096, "");
+        assert_eq!(outcome.dropped, 0);
+        assert_eq!(outcome.messages, messages);
+    }
+
+    #[test]
+    fn trim_is_noop_when_under_threshold() {
+        // 200k window minus 4096 reserved → ~195k budget; threshold is
+        // ~146k. Two short messages don't come close.
+        let messages = vec![user_with_text("hi", 0), assistant_with_text("ok", 1)];
+        let outcome = trim_to_budget(messages.clone(), Some(200_000), 4096, "system");
+        assert_eq!(outcome.dropped, 0);
+        assert_eq!(outcome.messages.len(), 2);
+    }
+
+    #[test]
+    fn trim_drops_oldest_user_turn_when_over_threshold() {
+        // Tiny window (1000 tokens) with a 100-token reserve → budget
+        // 890, threshold ~667. Each big_text is ~250 tokens; three
+        // user-anchored turns will exceed the threshold.
+        let big = FILLER_60.repeat(60); // ~900 chars → ~225 tokens cl100k
+        let messages = vec![
+            user_with_text(&big, 0),         // turn 1
+            assistant_with_text(&big, 1),
+            user_with_text(&big, 2),         // turn 2
+            assistant_with_text(&big, 3),
+            user_with_text("latest", 4),     // turn 3 (latest)
+            assistant_with_text("reply", 5),
+        ];
+
+        let outcome = trim_to_budget(messages, Some(1000), 100, "");
+
+        // Should drop the first turn (user + assistant = 2 messages),
+        // keep the last 2 user-anchored turns intact.
+        assert_eq!(outcome.dropped, 2, "must drop the oldest turn");
+        assert_eq!(outcome.messages.len(), 4);
+        // First kept message must be a User (we cut at a user boundary).
+        assert_eq!(outcome.messages[0].role, MessageRole::User);
+        // The latest turn is intact.
+        assert!(matches!(
+            &outcome.messages[2].blocks[0],
+            ContentBlock::Text { text } if text == "latest"
+        ));
+    }
+
+    #[test]
+    fn trim_refuses_to_drop_below_preserve_floor() {
+        // Only two user-rooted turns total; PRESERVE_LAST_USER_TURNS = 2,
+        // so there's nothing safe to drop even if we're over budget.
+        let big = FILLER_60.repeat(200); // ~750 tokens
+        let messages = vec![
+            user_with_text(&big, 0),
+            assistant_with_text(&big, 1),
+            user_with_text(&big, 2),
+            assistant_with_text(&big, 3),
+        ];
+
+        let outcome = trim_to_budget(messages.clone(), Some(1000), 100, "");
+
+        assert_eq!(outcome.dropped, 0, "no safe cut → no-op");
+        assert_eq!(outcome.messages.len(), 4);
+    }
+
+    #[test]
+    fn trim_keeps_tool_use_and_tool_result_paired() {
+        // Cut at a User boundary so a Tool message never lands at index
+        // 0 of the kept slice (which would orphan its tool_use_id).
+        let big = FILLER_60.repeat(60);
+        let tool_use = ConversationMessage::assistant(
+            vec![ContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "echo".into(),
+                input: serde_json::json!({"x": 1}),
+            }],
+            10,
+        );
+        let tool_result = ConversationMessage {
+            role: MessageRole::Tool,
+            blocks: vec![ContentBlock::ToolResult {
+                tool_use_id: "call-1".into(),
+                content: big.clone(),
+                is_error: None,
+            }],
+            usage: None,
+            timestamp: 11,
+        };
+        let messages = vec![
+            user_with_text(&big, 0),
+            tool_use,
+            tool_result,
+            user_with_text(&big, 12),
+            assistant_with_text(&big, 13),
+            user_with_text("now", 14),
+            assistant_with_text("done", 15),
+        ];
+
+        let outcome = trim_to_budget(messages, Some(1000), 100, "");
+
+        // Whatever gets dropped, the first kept message MUST be a User.
+        assert!(outcome.dropped > 0, "expected at least one drop");
+        assert_eq!(
+            outcome.messages[0].role,
+            MessageRole::User,
+            "trim must cut on a user boundary so tool pairs stay intact"
+        );
+        // No orphaned Tool message at index 0.
+        for msg in &outcome.messages {
+            if msg.role == MessageRole::Tool {
+                // Every Tool message must follow an Assistant in the kept
+                // slice — find the preceding tool_use by id.
+                let rid = match &msg.blocks[0] {
+                    ContentBlock::ToolResult { tool_use_id, .. } => tool_use_id.clone(),
+                    _ => panic!("tool message must carry a ToolResult block"),
+                };
+                let has_matching_use = outcome
+                    .messages
+                    .iter()
+                    .any(|m| m.blocks.iter().any(|b| matches!(b,
+                        ContentBlock::ToolUse { id, .. } if id == &rid)));
+                assert!(
+                    has_matching_use,
+                    "tool_result {rid} must have its tool_use in the kept slice"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn trim_handles_pathological_max_output_greater_than_window() {
+        // Window 1000, max_output 5000 → reserve = 5500 > window.
+        // budget saturates to 0; we should bail out without touching
+        // the message list (let the provider surface the real error).
+        let messages = vec![user_with_text("hi", 0), assistant_with_text("ok", 1)];
+        let outcome = trim_to_budget(messages.clone(), Some(1000), 5000, "");
+        assert_eq!(outcome.dropped, 0);
+        assert_eq!(outcome.messages, messages);
+    }
+
+    #[test]
+    fn build_trim_notice_appends_to_existing_prompt() {
+        let out = build_trim_notice("you are aurora", 7);
+        assert!(out.starts_with("you are aurora"));
+        assert!(out.contains("<context_trim_notice>"));
+        assert!(out.contains("7 earlier message(s)"));
+        assert!(out.ends_with("</context_trim_notice>"));
+    }
+
+    #[test]
+    fn build_trim_notice_handles_empty_base_prompt() {
+        let out = build_trim_notice("", 3);
+        assert!(out.starts_with("<context_trim_notice>"));
+        assert!(out.contains("3 earlier message(s)"));
+    }
+
+    #[test]
+    fn estimate_message_tokens_includes_per_message_overhead() {
+        let m = user_with_text("", 0);
+        // Empty text + 4 per-message overhead.
+        assert_eq!(estimate_message_tokens(&m), 4);
+    }
+
+    #[test]
+    fn estimate_message_tokens_accounts_for_tool_use_arguments() {
+        let m = ConversationMessage::assistant(
+            vec![ContentBlock::ToolUse {
+                id: "x".into(),
+                name: "shell".into(),
+                input: serde_json::json!({"cmd": "ls -la /tmp"}),
+            }],
+            0,
+        );
+        // 4 (msg) + ≥1 (name) + ≥4 (json) + 3 (tool overhead)
+        assert!(estimate_message_tokens(&m) >= 12);
+    }
+
+    /// API mock that records every messages slice it sees so we can
+    /// assert what was actually trimmed.
+    #[derive(Default)]
+    struct CapturingTrimApi {
+        captured: Mutex<Vec<(Option<String>, Vec<ConversationMessage>)>>,
+    }
+
+    #[async_trait]
+    impl StreamingApiClient for CapturingTrimApi {
+        async fn stream(
+            &self,
+            request: ApiRequest<'_>,
+            _event_sink: mpsc::Sender<AssistantEvent>,
+            _cancel_token: CancellationToken,
+        ) -> Result<TurnUsage, ApiError> {
+            self.captured.lock().expect("captured").push((
+                request.system_prompt.map(str::to_string),
+                request.messages.to_vec(),
+            ));
+            Ok(turn_usage(assistant_text("ok"), "end_turn"))
+        }
+    }
+
+    #[tokio::test]
+    async fn run_turn_trims_session_and_appends_trim_notice_when_over_budget() {
+        // Pre-seed a session with three user-rooted turns where the
+        // first two are large enough to exceed a tight budget.
+        let big = FILLER_60.repeat(60); // ~225 tokens cl100k
+        let mut session = Session::new("t");
+        session.append_message(user_with_text(&big, 0));
+        session.append_message(assistant_with_text(&big, 1));
+        session.append_message(user_with_text(&big, 2));
+        session.append_message(assistant_with_text(&big, 3));
+        // Third user message comes from `run_turn` itself.
+
+        let api = Arc::new(CapturingTrimApi::default());
+        let runtime = ConversationRuntime::new(
+            api.clone(),
+            Arc::new(ToolRegistry::new()),
+            RuntimeConfig {
+                system_prompt: Some("you are aurora".into()),
+                default_max_output_tokens: 100,
+                context_window: Some(1000),
+                ..RuntimeConfig::default()
+            },
+        );
+
+        let (tx, _rx) = mpsc::channel(32);
+        runtime
+            .run_turn(
+                &mut session,
+                user_msg("now"),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .expect("ok");
+
+        let captured = api.captured.lock().expect("captured");
+        let (sys, msgs) = captured.first().expect("api was called");
+
+        // Trim notice was appended to the system prompt.
+        let sys = sys.as_deref().expect("system prompt was set");
+        assert!(
+            sys.contains("<context_trim_notice>"),
+            "system prompt should carry trim notice, got: {sys}"
+        );
+        assert!(
+            sys.contains("you are aurora"),
+            "original prompt must be preserved, got: {sys}"
+        );
+
+        // The first kept message must be a User (cut at user boundary).
+        assert_eq!(msgs[0].role, MessageRole::User);
+        // The latest user message ("now") must still be present.
+        assert!(
+            msgs.iter().any(|m| matches!(
+                &m.blocks[0],
+                ContentBlock::Text { text } if text == "now"
+            )),
+            "latest user message must survive trim"
+        );
+
+        // Persisted session is untouched — still 5 messages (4 seeded + 1
+        // appended user + 1 appended assistant from MockApi return).
+        assert_eq!(session.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn run_turn_does_not_trim_when_context_window_is_none() {
+        // No window set → legacy behaviour: send everything every turn.
+        let big = FILLER_60.repeat(60);
+        let mut session = Session::new("t");
+        session.append_message(user_with_text(&big, 0));
+        session.append_message(assistant_with_text(&big, 1));
+        session.append_message(user_with_text(&big, 2));
+        session.append_message(assistant_with_text(&big, 3));
+
+        let api = Arc::new(CapturingTrimApi::default());
+        let runtime = ConversationRuntime::new(
+            api.clone(),
+            Arc::new(ToolRegistry::new()),
+            RuntimeConfig {
+                system_prompt: Some("you are aurora".into()),
+                default_max_output_tokens: 100,
+                context_window: None,
+                ..RuntimeConfig::default()
+            },
+        );
+
+        let (tx, _rx) = mpsc::channel(32);
+        runtime
+            .run_turn(
+                &mut session,
+                user_msg("now"),
+                tx,
+                CancellationToken::new(),
+            )
+            .await
+            .expect("ok");
+
+        let captured = api.captured.lock().expect("captured");
+        let (sys, msgs) = captured.first().expect("api was called");
+
+        // System prompt unmodified.
+        assert_eq!(sys.as_deref(), Some("you are aurora"));
+        // All 5 messages (4 seeded + the new user) reach the API.
+        assert_eq!(msgs.len(), 5, "no trim → full session sent");
     }
 }

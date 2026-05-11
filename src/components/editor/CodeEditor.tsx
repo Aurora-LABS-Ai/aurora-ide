@@ -332,6 +332,7 @@ export const CodeEditor: React.FC = () => {
       <BrowserTab
         tabId={activeTab.id}
         url={activeTab.url || 'about:blank'}
+        adoptedLabel={activeTab.adoptedBrowserLabel}
       />
     );
   }

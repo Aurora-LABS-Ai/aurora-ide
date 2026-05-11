@@ -15,8 +15,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::services::browser_runtime::{
-    BrowserManager, BrowserResultPayload, BrowserThemeTokens, CreateBrowserWindow,
-    PickedElementPayload,
+    BrowserManager, BrowserResultPayload, BrowserThemeTokens, BrowserWindowSummary,
+    CreateBrowserWindow, PickedElementPayload,
 };
 
 #[tauri::command]
@@ -33,6 +33,16 @@ pub async fn close_browser_webview(
     label: String,
 ) -> Result<(), String> {
     state.close(&label)
+}
+
+/// List every live browser window the BrowserManager knows about.
+/// Frontend uses this both as the initial hydrate for the live-windows
+/// store and as a refresh fallback.
+#[tauri::command]
+pub async fn list_browser_windows(
+    state: State<'_, BrowserManager>,
+) -> Result<Vec<BrowserWindowSummary>, String> {
+    Ok(state.list_windows())
 }
 
 #[tauri::command]

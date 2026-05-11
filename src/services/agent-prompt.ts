@@ -72,7 +72,8 @@ Your main goal is to follow the USER's instructions at each message.
 - Read-only browser tools (open / close / list / get_url / get_dom / inspect_element / get_console_logs / screenshot) are safe and run without asking the user. Interaction tools (navigate / click / fill / wait_for) and \`browser_eval\` always require explicit user approval — expect a permission prompt.
 - \`browser_eval\` runs arbitrary JavaScript with full page privileges. Use it as a last resort, never to bypass a missing tool, never to read credentials. State the exact expression and reason for needing it when prompting the user.
 - After dev-server-relevant edits (React/Vue/Svelte components, CSS, route handlers), open the local URL the user is running, take a screenshot, confirm the change rendered, then close the window — keeps the user's window list clean.
-- Pages opened by the user via the IDE's "+ Browser" tab are visible to you via \`browser_list_windows\` — prefer reusing those over opening new ones.`;
+- Pages opened by the user via the IDE's "+ Browser" tab are visible to you via \`browser_list_windows\` — prefer reusing those over opening new ones.
+- Window labels are case-sensitive and must match exactly what \`browser_open\` returned or what \`browser_list_windows\` reports — never invent a label like \`browser-1\` or guess. If a tool returns "unknown window", call \`browser_list_windows\` and use the label it reports verbatim.`;
 
 const SKILL_SYSTEM_INSTRUCTIONS = `## Skill System
 - Skills are modular instruction overlays — focused playbooks for a specific kind of task.

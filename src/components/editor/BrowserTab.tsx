@@ -24,10 +24,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
+  ChevronDown,
   Clock,
   ExternalLink,
   Globe,
   Home,
+  Layers,
   Lock,
   MousePointer2,
   RotateCw,
@@ -56,25 +58,41 @@ import {
   COMMON_DEV_PORTS,
   useBrowserHistoryStore,
 } from '../../store/useBrowserHistoryStore';
+import { useBrowserWindowsStore } from '../../store/useBrowserWindowsStore';
 import { useChatStore } from '../../store/useChatStore';
 import { useEditorStore } from '../../store/useEditorStore';
 
 interface BrowserTabProps {
   tabId: string;
   url: string;
+  /**
+   * When set, this tab adopts an existing native window with that
+   * label rather than creating a fresh `browser-<tabId>` one. Lifecycle
+   * inverts: closing the tab leaves the window alive (the agent might
+   * still be using it). The user can explicitly close the window via
+   * the "Close window" toolbar button.
+   */
+  adoptedLabel?: string;
 }
 
 type InspectorMode = 'off' | 'inspector' | 'stagewise';
 
-export const BrowserTab: React.FC<BrowserTabProps> = ({ tabId, url: initialUrl }) => {
+export const BrowserTab: React.FC<BrowserTabProps> = ({
+  tabId,
+  url: initialUrl,
+  adoptedLabel,
+}) => {
   const [currentUrl, setCurrentUrl] = useState(initialUrl || '');
   const [inputUrl, setInputUrl] = useState(initialUrl || '');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
-  const [nativeOpen, setNativeOpen] = useState(false);
+  // Adopted windows are already open by definition; pre-set nativeOpen
+  // so the placeholder renders correctly on first paint.
+  const [nativeOpen, setNativeOpen] = useState<boolean>(!!adoptedLabel);
   const [inspectorMode, setInspectorMode] = useState<InspectorMode>('off');
+  const [showWindowPicker, setShowWindowPicker] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -85,6 +103,8 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({ tabId, url: initialUrl }
   const recordVisit = useBrowserHistoryStore((s) => s.recordVisit);
   const hydrateHistory = useBrowserHistoryStore((s) => s.hydrate);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const liveWindows = useBrowserWindowsStore((s) => s.windows);
+  const hydrateWindows = useBrowserWindowsStore((s) => s.hydrate);
 
   // Pull persisted history once per tab mount. The store guards itself
   // against repeat hydration so this is cheap on subsequent calls.
@@ -92,7 +112,19 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({ tabId, url: initialUrl }
     void hydrateHistory();
   }, [hydrateHistory]);
 
-  const nativeLabel = useMemo(() => browserWindowLabelFor(tabId), [tabId]);
+  // Keep the live-windows registry warm for the in-tab selector.
+  useEffect(() => {
+    void hydrateWindows();
+  }, [hydrateWindows]);
+
+  // The native window label this tab is currently bound to. Either
+  // an adopted label (agent-opened window the tab is supervising) or
+  // the conventional `browser-<tabId>` (this tab opened it).
+  const nativeLabel = useMemo(
+    () => adoptedLabel ?? browserWindowLabelFor(tabId),
+    [tabId, adoptedLabel],
+  );
+  const isAdopted = !!adoptedLabel;
 
   // Mode the user *wants* to be in. The actual injected scripts get
   // wiped on every page navigation, so we keep this ref outside React
@@ -424,6 +456,42 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({ tabId, url: initialUrl }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Adopted windows: pull the current URL from the live registry
+  // (the agent navigated, we didn't), and auto-arm Stagewise so the
+  // user can immediately pick. Falls through silently if the window
+  // is gone — the close listener will sync state.
+  useEffect(() => {
+    if (!isAdopted) return;
+    const summary = liveWindows.find((w) => w.label === nativeLabel);
+    if (summary) {
+      const normalized = normalizeUrl(summary.url);
+      if (normalized && normalized !== currentUrl) {
+        setCurrentUrl(normalized);
+        setInputUrl(normalized);
+        setHistory([normalized]);
+        setHistoryIndex(0);
+        updateBrowserTab(tabId, { url: normalized, filename: extractTitle(normalized) });
+      }
+      // Auto-activate Stagewise on adoption so picks land in chat
+      // immediately. The user's first action after adopting is
+      // almost always "pick something", so this skips a click.
+      if (!summary.stagewiseActive && desiredModeRef.current === 'off') {
+        desiredModeRef.current = 'stagewise';
+        activateStagewise(nativeLabel, readBrowserThemeTokens())
+          .then(() => setInspectorMode('stagewise'))
+          .catch((err) => {
+            console.warn('[BrowserTab] adopt: stagewise activation failed:', err);
+            desiredModeRef.current = 'off';
+          });
+      } else if (summary.stagewiseActive) {
+        setInspectorMode('stagewise');
+      } else if (summary.inspectorActive) {
+        setInspectorMode('inspector');
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdopted, nativeLabel, liveWindows.length]);
+
   // Listen for picked elements + native window close events.
   //
   // The previous version pushed `unlisten` handles into a closure
@@ -486,12 +554,16 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({ tabId, url: initialUrl }
     };
   }, [addSelectedElement, nativeLabel]);
 
-  // Close the native window when the tab unmounts
+  // Close the native window when the tab unmounts — UNLESS the tab
+  // is supervising an adopted window. Adopted windows belong to the
+  // agent (or to whoever opened them); detaching the tab must not
+  // tear them down or the next agent tool call would 404.
   useEffect(() => {
+    if (isAdopted) return;
     return () => {
       closeBrowserWindow(nativeLabel).catch(() => {});
     };
-  }, [nativeLabel]);
+  }, [nativeLabel, isAdopted]);
 
   // Iframe handlers
   const handleIframeLoad = () => {
@@ -639,6 +711,16 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({ tabId, url: initialUrl }
         </form>
 
         <div className="flex items-center gap-0.5">
+          {/* Window selector — surfaces all live native browser windows
+              so this tab can be re-targeted at the agent's window
+              without closing and reopening. */}
+          <WindowSelectorChip
+            currentLabel={nativeLabel}
+            isAdopted={isAdopted}
+            isOpen={showWindowPicker}
+            onToggle={() => setShowWindowPicker((v) => !v)}
+            onClose={() => setShowWindowPicker(false)}
+          />
           <button
             onClick={toggleInspector}
             disabled={!currentUrl}
@@ -694,6 +776,20 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({ tabId, url: initialUrl }
           >
             <ExternalLink size={16} />
           </button>
+          {nativeOpen && (
+            <button
+              onClick={closeNative}
+              className="p-1.5 rounded-md transition-colors hover:bg-[var(--aurora-sidebar-item-hover)]"
+              style={{ color: 'var(--aurora-common-error, var(--aurora-editor-foreground))' }}
+              title={
+                isAdopted
+                  ? 'Close the underlying browser window (kills the agent’s working state too)'
+                  : 'Close the native window'
+              }
+            >
+              <X size={16} />
+            </button>
+          )}
         </div>
       </div>
 
@@ -771,6 +867,186 @@ export const BrowserTab: React.FC<BrowserTabProps> = ({ tabId, url: initialUrl }
           100% { transform: translateX(400%); }
         }
       `}</style>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// WindowSelectorChip — re-target this tab at a different live native window.
+//
+// Surfaces every entry in `useBrowserWindowsStore` plus a "Detach" action.
+// Clicking a row opens (or focuses) a tab adopting that window and closes
+// the current tab. We deliberately don't try to do an in-place swap of the
+// tab's nativeLabel — that's stateful gymnastics and the user expectation
+// of "this tab now points at that window" is clearer when we just open a
+// new tab and close the old one.
+// ---------------------------------------------------------------------------
+
+interface WindowSelectorChipProps {
+  currentLabel: string;
+  isAdopted: boolean;
+  isOpen: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+}
+
+const WindowSelectorChip: React.FC<WindowSelectorChipProps> = ({
+  currentLabel,
+  isAdopted,
+  isOpen,
+  onToggle,
+  onClose,
+}) => {
+  const windows = useBrowserWindowsStore((s) => s.windows);
+  const refresh = useBrowserWindowsStore((s) => s.refresh);
+  const openBrowserTab = useEditorStore((s) => s.openBrowserTab);
+  const closeTab = useEditorStore((s) => s.closeTab);
+  const activeTabId = useEditorStore((s) => s.activeTabId);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Click-outside close.
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (event: MouseEvent) => {
+      if (!containerRef.current) return;
+      if (!containerRef.current.contains(event.target as Node)) {
+        onClose();
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [isOpen, onClose]);
+
+  // Sort: current first, then alphabetical.
+  const sorted = [...windows].sort((a, b) => {
+    if (a.label === currentLabel) return -1;
+    if (b.label === currentLabel) return 1;
+    return a.label.localeCompare(b.label);
+  });
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button
+        onClick={() => {
+          void refresh();
+          onToggle();
+        }}
+        className="flex items-center gap-1 px-2 py-1.5 rounded-md text-xs transition-colors hover:bg-[var(--aurora-sidebar-item-hover)]"
+        style={{
+          color: 'var(--aurora-editor-foreground)',
+          fontFamily: 'monospace',
+        }}
+        title={
+          isAdopted
+            ? `Tab is adopting window '${currentLabel}'. Switch to another window?`
+            : 'Switch this tab to a different native browser window'
+        }
+      >
+        <Layers size={14} />
+        <span className="max-w-[120px] truncate">{currentLabel}</span>
+        <ChevronDown size={12} />
+      </button>
+      {isOpen && (
+        <div
+          className="absolute right-0 top-full mt-1 z-50 w-[320px] overflow-hidden rounded-md shadow-lg"
+          style={{
+            backgroundColor: 'var(--aurora-sidebar-background)',
+            border: '1px solid var(--aurora-common-border)',
+          }}
+        >
+          <div
+            className="px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.16em]"
+            style={{
+              color: 'var(--aurora-editor-foreground-muted, var(--aurora-text-disabled))',
+              borderBottom: '1px solid var(--aurora-common-border)',
+            }}
+          >
+            Live browser windows
+          </div>
+          <div className="max-h-[280px] overflow-y-auto py-1">
+            {sorted.length === 0 && (
+              <div
+                className="px-3 py-3 text-[11.5px]"
+                style={{ color: 'var(--aurora-editor-foreground)', opacity: 0.6 }}
+              >
+                No live windows. The agent or user must open one first.
+              </div>
+            )}
+            {sorted.map((w) => {
+              const isCurrent = w.label === currentLabel;
+              return (
+                <button
+                  key={w.label}
+                  onClick={() => {
+                    onClose();
+                    if (isCurrent) return;
+                    openBrowserTab(w.url, { adoptedLabel: w.label });
+                    if (activeTabId) closeTab(activeTabId, { skipUnsavedWarning: true });
+                  }}
+                  className="w-full text-left px-3 py-2 transition-colors hover:bg-[var(--aurora-sidebar-item-hover)]"
+                  style={{
+                    color: 'var(--aurora-editor-foreground)',
+                    backgroundColor: isCurrent
+                      ? 'color-mix(in srgb, var(--aurora-common-primary) 12%, transparent)'
+                      : undefined,
+                  }}
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="text-[11.5px] font-mono truncate"
+                      style={{
+                        color: isCurrent
+                          ? 'var(--aurora-common-primary)'
+                          : 'var(--aurora-editor-foreground)',
+                      }}
+                    >
+                      {w.label}
+                    </span>
+                    {w.stagewiseActive && (
+                      <span
+                        className="text-[9px] px-1 py-0.5 rounded uppercase tracking-wider"
+                        style={{
+                          color: 'var(--aurora-common-primary)',
+                          backgroundColor:
+                            'color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)',
+                        }}
+                      >
+                        Stage
+                      </span>
+                    )}
+                    {w.inspectorActive && (
+                      <span
+                        className="text-[9px] px-1 py-0.5 rounded uppercase tracking-wider"
+                        style={{
+                          color: 'var(--aurora-common-primary)',
+                          backgroundColor:
+                            'color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)',
+                        }}
+                      >
+                        Pick
+                      </span>
+                    )}
+                    {isCurrent && (
+                      <span
+                        className="text-[9px] uppercase tracking-wider"
+                        style={{ color: 'var(--aurora-common-primary)' }}
+                      >
+                        current
+                      </span>
+                    )}
+                  </div>
+                  <div
+                    className="text-[10.5px] truncate mt-0.5"
+                    style={{ color: 'var(--aurora-editor-foreground)', opacity: 0.7 }}
+                  >
+                    {w.url || '(blank)'}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

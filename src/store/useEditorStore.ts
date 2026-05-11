@@ -11,6 +11,16 @@ import type {
 } from "../types/database";
 import { useCheckpointStore } from "./useCheckpointStore";
 
+/**
+ * Options for {@link EditorState.openBrowserTab}. When `adoptedLabel`
+ * is set the new tab adopts an existing native WebView window (the
+ * agent's, typically) instead of spawning a fresh one. The tab's
+ * lifecycle no longer owns the window — closing the tab detaches.
+ */
+export interface OpenBrowserTabOptions {
+  adoptedLabel?: string;
+}
+
 interface EditorState {
   activeTabId: string | null;
   closeTab: (tabId: string, options?: { skipUnsavedWarning?: boolean }) => void;
@@ -20,7 +30,7 @@ interface EditorState {
   markTabAsDeleted: (tabId: string) => void;
 
   // Browser tab actions
-  openBrowserTab: (url?: string) => void;
+  openBrowserTab: (url?: string, options?: OpenBrowserTabOptions) => void;
 
   // Actions
   openFile: (
@@ -259,7 +269,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setFontSize: (fontSize) => set({ fontSize }),
 
   // Browser tab actions
-  openBrowserTab: (url = "about:blank") => {
+  openBrowserTab: (url = "about:blank", options?: OpenBrowserTabOptions) => {
+    const adoptedLabel = options?.adoptedLabel;
+    // If the user is adopting an already-open window, see if a tab
+    // is already bound to that label and just focus it instead of
+    // duplicating. Two BrowserTabs targeting the same window would
+    // race each other on every inspector toggle.
+    if (adoptedLabel) {
+      const existing = get().tabs.find(
+        (t) => t.type === 'browser' && t.adoptedBrowserLabel === adoptedLabel,
+      );
+      if (existing) {
+        set({ activeTabId: existing.id });
+        return;
+      }
+    }
+
     const tabId = `browser-${Date.now()}`;
     const filename =
       url === "about:blank"
@@ -290,6 +315,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       url,
       canGoBack: false,
       canGoForward: false,
+      adoptedBrowserLabel: adoptedLabel,
     };
 
     set((state) => ({

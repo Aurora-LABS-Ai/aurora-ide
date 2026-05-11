@@ -156,6 +156,19 @@ impl BrowserManager {
             },
         );
 
+        // Tell the frontend a new window is now adoptable so the
+        // TitleBar popover and any open BrowserTab selector can
+        // refresh without polling.
+        let _ = self.app.emit(
+            "aurora:browser-window-opened",
+            BrowserWindowOpenedPayload {
+                label: label.clone(),
+                url: opts.url.clone(),
+                inspector_active: false,
+                stagewise_active: false,
+            },
+        );
+
         // When the window is destroyed externally (X button, Alt-F4)
         // drop our state and tell the frontend so the tab can show a
         // closed-state badge.
@@ -230,7 +243,25 @@ impl BrowserManager {
         self.windows
             .get(label)
             .map(|entry| entry.current_url.clone())
-            .ok_or_else(|| format!("unknown window '{label}'"))
+            .ok_or_else(|| self.unknown_window_error(label))
+    }
+
+    /// Format an "unknown window" error that lists the labels that
+    /// *do* exist so the agent can self-correct on the next turn
+    /// instead of hallucinating again. Cheap — DashMap iteration over
+    /// what is at most a few entries.
+    fn unknown_window_error(&self, label: &str) -> String {
+        let mut available: Vec<String> =
+            self.windows.iter().map(|e| e.key().clone()).collect();
+        available.sort();
+        if available.is_empty() {
+            format!("unknown window '{label}' (no browser windows are open)")
+        } else {
+            format!(
+                "unknown window '{label}' (available: {})",
+                available.join(", ")
+            )
+        }
     }
 
     pub fn set_size(&self, label: &str, width: f64, height: f64) -> Result<(), String> {
@@ -291,7 +322,7 @@ impl BrowserManager {
     fn window(&self, label: &str) -> Result<WebviewWindow, String> {
         self.app
             .get_webview_window(label)
-            .ok_or_else(|| format!("unknown window '{label}'"))
+            .ok_or_else(|| self.unknown_window_error(label))
     }
 
     // -----------------------------------------------------------------
@@ -662,6 +693,19 @@ pub struct CreateBrowserWindow {
 #[serde(rename_all = "camelCase")]
 struct BrowserWindowClosedPayload {
     label: String,
+}
+
+/// Payload emitted on `aurora:browser-window-opened` whenever
+/// `BrowserManager::create_window` builds a new WebviewWindow.
+/// Mirrors `BrowserWindowSummary` so the frontend's live-windows
+/// store can use the same shape for list + opened deltas.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserWindowOpenedPayload {
+    label: String,
+    url: String,
+    inspector_active: bool,
+    stagewise_active: bool,
 }
 
 /// Payload posted by the inspector / Stagewise script via the

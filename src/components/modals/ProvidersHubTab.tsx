@@ -756,7 +756,7 @@ export const ProvidersHubTab: React.FC<ProvidersHubTabProps> = ({
   const [search, setSearch] = useState('');
   const [isAddingProvider, setIsAddingProvider] = useState(false);
   const [isDiscovering, setIsDiscovering] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>('fireworks');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   // Model editor state
   const [editorOpen, setEditorOpen] = useState(false);

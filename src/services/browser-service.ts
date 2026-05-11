@@ -47,6 +47,34 @@ export interface BrowserWindowClosedEvent {
   label: string;
 }
 
+/**
+ * Mirror of `BrowserWindowSummary` on the Rust side. Used by the
+ * live-windows store, the TitleBar adopt-popover, and the in-tab
+ * window selector.
+ */
+export interface BrowserWindowSummary {
+  label: string;
+  url: string;
+  inspectorActive: boolean;
+  stagewiseActive: boolean;
+}
+
+export interface BrowserWindowOpenedEvent extends BrowserWindowSummary {}
+
+export async function listBrowserWindows(): Promise<BrowserWindowSummary[]> {
+  return auroraInvoke<BrowserWindowSummary[]>('list_browser_windows');
+}
+
+export async function onBrowserWindowOpened(
+  callback: (event: BrowserWindowOpenedEvent) => void,
+): Promise<() => void> {
+  const unlisten = await listen<BrowserWindowOpenedEvent>(
+    'aurora:browser-window-opened',
+    (event) => callback(event.payload),
+  );
+  return unlisten;
+}
+
 export interface CreateBrowserWindowOptions {
   label: string;
   url: string;

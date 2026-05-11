@@ -317,6 +317,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::browser::browser_deactivate_stagewise,
             commands::browser::browser_eval,
             commands::browser::close_browser_webview,
+            commands::browser::list_browser_windows,
             commands::browser::browser_refresh,
             commands::browser::browser_get_url,
             commands::browser::browser_set_size,

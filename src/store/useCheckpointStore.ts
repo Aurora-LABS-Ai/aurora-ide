@@ -170,7 +170,13 @@ export const useCheckpointStore = create<CheckpointState & CheckpointActions>(
           // never sees pre-restore content. Done concurrently —
           // ordering between tabs doesn't matter.
           try {
-            const [{ useEditorStore }, { loadFileContent }, monacoRef] =
+            // `loadFileContent` lives on the workspace store (it
+            // routes through the file cache); `lib/tauri` exposes
+            // the lower-level `readFileContent` IPC wrapper, which
+            // is fine for the post-restore reload since the
+            // checkpoint mutation already invalidated every cached
+            // entry under the workspace root.
+            const [{ useEditorStore }, { readFileContent }, monacoRef] =
               await Promise.all([
                 import("./useEditorStore"),
                 import("../lib/tauri"),
@@ -181,7 +187,7 @@ export const useCheckpointStore = create<CheckpointState & CheckpointActions>(
               .filter((tab) => !tab.isDirty && tab.type !== "browser")
               .map(async (tab) => {
                 try {
-                  const newContent = await loadFileContent(tab.path);
+                  const newContent = await readFileContent(tab.path);
                   // Route through Monaco first so the restored
                   // content lands as one undoable entry (Ctrl+Z would
                   // bring back the pre-restore state, which matches

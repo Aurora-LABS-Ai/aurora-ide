@@ -80,12 +80,7 @@ export const ToolItem: React.FC<ToolItemProps> = React.memo(
   }) => {
     const isFileModifyTool = FILE_MODIFY_TOOLS.has(tool.name);
     const isFolderTool = FOLDER_TOOLS.has(tool.name);
-    // File-modifying tools auto-expand so the user can watch the
-    // realtime streaming content as the LLM emits it — matches how
-    // file_create displays during its streaming window. Without this
-    // a long file_write (multi-KB content) sat in a collapsed "Queued"
-    // pill with no visible preview until the user clicked to expand.
-    const [isOpen, setIsOpen] = useState(() => isFileModifyTool);
+    const [isOpen, setIsOpen] = useState(false);
     const [showApprovalDetails, setShowApprovalDetails] = useState(false);
 
     // If the tool claims to be running but we're NOT actively streaming,

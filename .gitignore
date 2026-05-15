@@ -84,3 +84,13 @@ desktop.ini
 *.temp
 nul
 .gitnexus
+
+# Third-party IDE / agentic tooling state (Refact.ai buddy, etc.) that
+# lives inside the workspace but isn't part of the project source.
+.refact/
+
+# Loose screenshots dropped at the repo root while debugging — not source.
+/image.png
+/image-*.png
+/screenshot.png
+/screenshot-*.png

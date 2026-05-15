@@ -1,8 +1,4 @@
 import { getFilename, getLanguageFromExtension } from "../lib/file-utils";
-import {
-  getMonacoEditorForPath,
-  streamPreviewMonacoFileContent,
-} from "../lib/monaco-editor-ref";
 import { readFileContent } from "../lib/tauri";
 import { useEditorStore } from "../store/useEditorStore";
 import {
@@ -66,32 +62,24 @@ const scheduleEditorPreview = (
       return;
     }
 
-    const { tabs, openFile, requestEditorReveal } = useEditorStore.getState();
-    const existingTab = tabs.find((tab) => tab.path === latestSession.filePath);
+    const { openFile, requestEditorReveal } = useEditorStore.getState();
 
-    // If the tab is open AND Monaco is mounted for it, push the chunk
-    // straight into the model via `applyEdits` so the user sees the
-    // file typing in live without thrashing the React tab state or
-    // touching Monaco's undo stack. The final committed state lands
-    // through the `agent_file_changed` listener as one undoable edit.
-    const monacoEditor = getMonacoEditorForPath(latestSession.filePath);
-    if (existingTab && monacoEditor) {
-      streamPreviewMonacoFileContent(latestSession.filePath, latestContent);
-      // Auto-scroll while writing so the user can watch new content
-      // appear instead of staring at the top of a long file.
-      requestEditorReveal(latestSession.filePath, {
-        mode: "bottom",
-        focus: false,
-      });
-      return;
-    }
-
-    // No Monaco mount yet (file wasn't open when the tool started).
-    // Fall back to the Zustand `openFile` path — it will create the
-    // tab and, on its next render, the Editor component will pick up
-    // the current content. The final commit through
-    // `agent_file_changed` will still arrive after the Rust write
-    // finishes and lay down a clean undo entry.
+    // ALWAYS route streamed chunks through `openFile` (which dedupes
+    // by path: existing tab → `reloadTabContent`, missing tab →
+    // create + activate). This drives the @monaco-editor/react value
+    // prop, which the wrapper diffs against the model and triggers
+    // `setValue` for a visible update on every chunk. Works for both
+    // `file_create` (no tab yet) and `file_write` (tab already open)
+    // uniformly.
+    //
+    // We previously tried to optimise the "tab already open" case
+    // with `streamPreviewMonacoFileContent` (raw `model.applyEdits`,
+    // no React update), but with React state out of sync the wrapper
+    // would occasionally roll the model back to the stale tab.content
+    // value during an unrelated re-render — silently undoing the
+    // streamed chunk. The visible Zustand-driven path is the one
+    // that was already shipping for `file_create`, and it's the
+    // single behaviour we want both tools to use.
     openFile(
       latestSession.filePath,
       latestSession.fileName,

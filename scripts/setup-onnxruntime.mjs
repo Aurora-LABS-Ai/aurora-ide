@@ -17,7 +17,7 @@
  * Skips the download if the target dir already has `onnxruntime.dll`,
  * so re-runs are cheap on dev machines.
  */
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -125,7 +125,7 @@ let copied = 0;
 for (const dll of dlls) {
   const src = join(libDir, dll);
   const dst = join(targetDir, dll);
-  renameSync(src, dst);
+  copyFileSync(src, dst);
   copied += 1;
   console.log(`[setup-onnxruntime]  + ${dll}`);
 }

@@ -45,14 +45,37 @@ CLAUDE.md
 .aurora/
 *.aurora
 target
-# AI/ML tool directories
+# AI/ML tool directories — agent state, skill packs, IDE extensions,
+# never part of source. These are all per-developer; checking them in
+# means our git history catches every keystroke another tool makes.
 .claude/
 .claw/
 .codex/
 .cursor/
+.zed/
+.agents/
+.refact/
+.gitnexus/
+
+# Agentic / IDE assistant instruction files that live at the repo
+# root. They're personal config for whoever's machine the IDE is on
+# — not project source.
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+CODEX.md
 
 # Local scratch / pasted snippets (not app source)
 example.txt
+
+# Junk dirs created by misconfigured tools writing to `undefined/...`
+# (literal "undefined" string from `path.join(process.env.MISSING, ...)`).
+# We've shipped at least one HuggingFace cache into here by accident.
+/undefined/
+
+# Agent task notes (lessons learned, todo lists) that live next to
+# the code but aren't project source.
+/tasks/
 
 # OS files
 .DS_Store

@@ -2,8 +2,8 @@
 
 Aurora is a Tauri desktop IDE with a React/TypeScript frontend and a Rust backend. The current architecture is centered on a Rust-owned provider pipeline: frontend chat code talks to one provider bridge, and Rust owns provider catalog data, request shaping, streaming, cancellation, and local-provider detection.
 
-**Version:** 1.5.0  
-**Validated against branch state:** 2026-03-29
+**Version:** 2.0.0  
+**Validated against branch state:** 2026-05-15
 
 ## 1. System Overview
 

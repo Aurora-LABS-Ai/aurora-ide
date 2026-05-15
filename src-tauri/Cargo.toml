@@ -1,6 +1,12 @@
 [package]
 name = "aurora"
-version = "1.5.0"
+# Source of truth for the user-visible app version is `package.json`
+# (`tauri.conf.json` reads it via the `"../package.json"` shorthand,
+# the frontend imports it through `src/lib/app-version.ts`). This
+# Cargo.toml entry is for the Rust crate's own metadata only —
+# nothing user-facing — but we keep it in lockstep with package.json
+# to avoid surprising `cargo` consumers. Bump both together.
+version = "2.0.0"
 description = "Aurora - AI-Powered Agentic Code Editor"
 authors = ["Aurora Team"]
 edition = "2021"

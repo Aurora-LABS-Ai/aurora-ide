@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/version-1.5.0-blue)](https://github.com/Aurora-LABS-Ai/aurora-ide)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue)](https://github.com/Aurora-LABS-Ai/aurora-ide)
 [![License](https://img.shields.io/badge/license-Source%20Available-8b5cf6)](LICENSE)
 [![Tauri](https://img.shields.io/badge/Tauri-2.x-orange)](https://tauri.app)
 [![React](https://img.shields.io/badge/React-18-cyan)](https://reactjs.org)

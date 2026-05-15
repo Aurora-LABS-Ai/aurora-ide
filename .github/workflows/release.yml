@@ -34,6 +34,16 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # Fetch ONNX Runtime CPU DLLs into `src-tauri/runtime/onnxruntime/`.
+      # The bundle's `resources` glob picks them up at build time; the
+      # DLLs themselves aren't checked in (each developer / CI run
+      # populates the dir lazily — see `.gitignore`). Defaults to a
+      # pinned win-x64 CPU build, no DirectML / CUDA — matches the
+      # default Cargo feature set (`cpu-only`).
+      - name: Fetch ONNX Runtime (CPU)
+        shell: pwsh
+        run: node scripts/setup-onnxruntime.mjs
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -44,4 +54,7 @@ jobs:
           releaseBody: "Windows installer (CPU-only semantic search). Download the bundle below."
           releaseDraft: true
           prerelease: false
-          args: "-- --no-default-features --features cpu-only"
+          # `Cargo.toml` already sets `default = ["cpu-only"]`, so a
+          # plain `tauri build` produces a CPU-only bundle. No extra
+          # feature flags needed — opt-in to CUDA via the dedicated
+          # `pnpm tauri:build:cuda` script (uses --features cuda).

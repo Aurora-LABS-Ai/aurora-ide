@@ -48,8 +48,7 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "runtime/onnxruntime/onnxruntime*.dll": "",
-      "runtime/onnxruntime/DirectML*.dll": ""
+      "runtime/onnxruntime/*.dll": ""
     },
     "windows": {
       "webviewInstallMode": {

@@ -1,12 +1,31 @@
 name: Release
 
-# Windows-only release. Tag first: git tag v1.0.0 && git push origin v1.0.0
-# App version in tauri.conf.json / Cargo.toml must match (v__VERSION__ → 1.0.0).
+# Auto-builds and publishes a Windows installer when a `v*` tag is
+# pushed. The single source of truth for the app version is
+# `package.json`; `tauri.conf.json` reads `"../package.json"`, so
+# bumping the package + pushing a matching tag is the whole release
+# ritual:
+#
+#   1. Bump `package.json` (`version: "2.0.0"`).
+#   2. Commit, push to main.
+#   3. `git tag v2.0.0 && git push origin v2.0.0`.
+#
+# The action fetches ONNX Runtime CPU DLLs, builds the CPU-only
+# bundle, and publishes a non-draft release with the .msi/.exe
+# installers attached. `workflow_dispatch` is also exposed so a
+# maintainer can trigger a manual build from the Actions tab without
+# pushing a tag.
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v2.0.0). Optional when re-running for an existing tag."
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -16,6 +35,11 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Manual dispatch can target an arbitrary ref. When no tag
+          # is supplied we fall back to whatever ref the workflow
+          # was launched against (usually `main`).
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: pnpm/action-setup@v4
         with:
@@ -49,10 +73,26 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: src-tauri
+          # `__VERSION__` is replaced by tauri-action with the
+          # version resolved from `tauri.conf.json` (which itself
+          # reads from `../package.json` — see version single-source
+          # chain).
           tagName: v__VERSION__
           releaseName: "Aurora v__VERSION__"
-          releaseBody: "Windows installer (CPU-only semantic search). Download the bundle below."
-          releaseDraft: true
+          releaseBody: |
+            Aurora v__VERSION__ — Windows installer (CPU-only build).
+
+            **What's in the box:**
+            - `.msi` and `.exe` installers below.
+            - CPU-only ONNX Runtime for semantic search; no GPU drivers required.
+            - Self-contained bundle (Webview2 bootstrapper, ONNX DLLs, app binary).
+
+            **Install:** download the `.msi` (recommended) or `.exe`, run it, follow the wizard.
+            **Requires:** Windows 10/11 x64.
+
+            Built automatically from the `v__VERSION__` tag via the `Release` workflow.
+          # Auto-publish — no manual "publish draft" step needed.
+          releaseDraft: false
           prerelease: false
           # `Cargo.toml` already sets `default = ["cpu-only"]`, so a
           # plain `tauri build` produces a CPU-only bundle. No extra

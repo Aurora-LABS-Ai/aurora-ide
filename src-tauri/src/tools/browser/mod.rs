@@ -1,23 +1,33 @@
-//! Browser tools bucket — Phase 6.
+//! Browser tools bucket — minimal, professional surface.
 //!
-//! 13 native [`ToolExecutor`] impls that drive a Tauri WebView via the
-//! [`crate::services::browser_runtime::BrowserManager`]. Tiered by
-//! risk:
+//! The agent gets eight tools (down from thirteen). Each one maps to
+//! a real user-facing action ("Click Element", "Scroll Page") so the
+//! chat timeline reads like a recipe, not a debugger session.
 //!
-//! * **Tier 1 (read-only, `requires_permission == false`)**:
-//!   `browser_open`, `browser_close`, `browser_list_windows`,
-//!   `browser_get_url`, `browser_get_dom`, `browser_inspect_element`,
-//!   `browser_get_console_logs`, `browser_screenshot`.
-//! * **Tier 2 (page interaction, `requires_permission == true`)**:
+//! * **Read-only** (`requires_permission == false`): `browser_open`,
+//!   `browser_close`, `browser_screenshot`, `browser_get_console_logs`.
+//! * **Page interaction** (`requires_permission == true`):
 //!   `browser_navigate`, `browser_click`, `browser_fill`,
-//!   `browser_wait_for`.
-//! * **Tier 3 (powerful, `requires_permission == true`)**:
-//!   `browser_eval`.
+//!   `browser_scroll`.
+//!
+//! Deliberately dropped from the agent surface:
+//!
+//! * `browser_eval` — arbitrary JS in the user's page is a foot-gun
+//!   no agent loop should be allowed to point at itself. The Rust
+//!   `BrowserManager` still uses it internally to implement every
+//!   other tool, but the model can no longer call it directly.
+//! * `browser_get_dom` — returned up to 200 KB per call and burned
+//!   context. The agent should screenshot or scroll instead.
+//! * `browser_get_url`, `browser_list_windows`,
+//!   `browser_inspect_element`, `browser_wait_for` — folded into the
+//!   tools that need them. `browser_click` now auto-waits internally;
+//!   `browser_screenshot` already returns the current URL in its
+//!   caption. The IDE itself can still call these via the Tauri IPC
+//!   commands when the *user* drives the browser tab.
 //!
 //! `browser_close`'s `requires_permission` is `false` by design — it
-//! *destroys* a window the agent itself opened, so leaving it gated
-//! would force a permission prompt on every cleanup at the end of an
-//! agent loop.
+//! destroys a window the agent itself opened, so leaving it gated
+//! would force a permission prompt on every cleanup.
 //!
 //! `browser_screenshot` returns a structured string containing an
 //! `<aurora_image media_type="image/png">BASE64</aurora_image>` marker
@@ -41,17 +51,12 @@ use crate::services::browser_runtime::{BrowserManager, BrowserResult, CreateBrow
 pub const TOOL_NAMES: &[&str] = &[
     "browser_open",
     "browser_close",
-    "browser_list_windows",
-    "browser_get_url",
-    "browser_get_dom",
-    "browser_inspect_element",
-    "browser_get_console_logs",
     "browser_screenshot",
+    "browser_get_console_logs",
     "browser_navigate",
     "browser_click",
     "browser_fill",
-    "browser_wait_for",
-    "browser_eval",
+    "browser_scroll",
 ];
 
 /// Tools that opt into the Phase 4 permission gate.
@@ -59,25 +64,27 @@ pub const TOOLS_REQUIRING_PERMISSION: &[&str] = &[
     "browser_navigate",
     "browser_click",
     "browser_fill",
-    "browser_wait_for",
-    "browser_eval",
+    "browser_scroll",
 ];
 
 /// Mount every tool in this bucket onto `reg`. Idempotent.
+///
+/// `BrowserListWindowsTool`, `BrowserGetUrlTool`, `BrowserGetDomTool`,
+/// `BrowserInspectElementTool`, `BrowserWaitForTool`, and
+/// `BrowserEvalTool` were retired from the agent surface — see the
+/// module doc for the rationale. The structs themselves are still
+/// compiled (and the IPC layer keeps calling the underlying manager
+/// methods) so the human-driven browser tab UI does not lose any
+/// capability.
 pub fn register(reg: &mut ToolRegistry, manager: Arc<BrowserManager>) {
     reg.register(Arc::new(BrowserOpenTool::new(manager.clone())));
     reg.register(Arc::new(BrowserCloseTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserListWindowsTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserGetUrlTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserGetDomTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserInspectElementTool::new(manager.clone())));
     reg.register(Arc::new(BrowserGetConsoleLogsTool::new(manager.clone())));
     reg.register(Arc::new(BrowserScreenshotTool::new(manager.clone())));
     reg.register(Arc::new(BrowserNavigateTool::new(manager.clone())));
     reg.register(Arc::new(BrowserClickTool::new(manager.clone())));
     reg.register(Arc::new(BrowserFillTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserWaitForTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserEvalTool::new(manager)));
+    reg.register(Arc::new(BrowserScrollTool::new(manager)));
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +100,24 @@ fn extract_label(input: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .or_else(|| input.get("windowLabel").and_then(Value::as_str))
         .map(str::to_string)
+}
+
+/// Pick the label the tool should act on. Tries (in order):
+///   1. `label` / `windowLabel` from the tool arguments
+///   2. The manager's `last_active_label` (last opened or navigated)
+///
+/// Returns an `InvalidInput` error only when no window has ever been
+/// opened — agents that don't track labels still work as long as
+/// there is exactly one window open, which is the common case.
+fn resolve_label(input: &Value, manager: &BrowserManager) -> Result<String, ToolError> {
+    if let Some(label) = extract_label(input) {
+        return Ok(label);
+    }
+    manager.last_active_label().ok_or_else(|| {
+        ToolError::InvalidInput(
+            "no browser window is open — call browser_open first or pass `label`".into(),
+        )
+    })
 }
 
 fn require_label(input: &Value) -> Result<String, ToolError> {
@@ -187,18 +212,19 @@ impl ToolExecutor for BrowserCloseTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_close".into(),
-            description: "Close a browser window opened by the agent. Cleans up state and \
-                emits aurora:browser-window-closed to the IDE.".into(),
+            description: "Close a browser window opened by the agent. \
+                `label` is optional — when omitted, closes the most \
+                recently used window.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": { "label": {"type": "string"} },
-                "required": ["label"]
+                "required": []
             }),
         }
     }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-        let label = require_label(&input)?;
+        let label = resolve_label(&input, &self.manager)?;
         self.manager.close(&label).map_err(ToolError::Execution)?;
         Ok(json!({ "ok": true, "label": label }).to_string())
     }
@@ -362,17 +388,17 @@ impl ToolExecutor for BrowserGetConsoleLogsTool {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "label": {"type": "string"},
+                    "label": {"type": "string", "description": "Optional. Defaults to the most recently used window."},
                     "level": {"type": "string", "enum": ["log","info","warn","error","debug"]},
                     "sinceMs": {"type": "number", "description": "Drop entries older than this (milliseconds)."}
                 },
-                "required": ["label"]
+                "required": []
             }),
         }
     }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-        let label = require_label(&input)?;
+        let label = resolve_label(&input, &self.manager)?;
         let level = input.get("level").and_then(Value::as_str);
         let since = input.get("sinceMs").and_then(Value::as_u64);
         let result = self
@@ -405,16 +431,16 @@ impl ToolExecutor for BrowserScreenshotTool {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "label": {"type": "string"},
+                    "label": {"type": "string", "description": "Optional. Defaults to the most recently used window."},
                     "selector": {"type": "string", "description": "Optional CSS selector — captures just that element. Omit for full <body>."}
                 },
-                "required": ["label"]
+                "required": []
             }),
         }
     }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-        let label = require_label(&input)?;
+        let label = resolve_label(&input, &self.manager)?;
         let selector = input.get("selector").and_then(Value::as_str);
         let result = self
             .manager
@@ -472,17 +498,17 @@ impl ToolExecutor for BrowserNavigateTool {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "label": {"type": "string"},
+                    "label": {"type": "string", "description": "Optional. Defaults to the most recently used window."},
                     "url": {"type": "string"}
                 },
-                "required": ["label", "url"]
+                "required": ["url"]
             }),
         }
     }
     fn requires_permission(&self) -> bool { true }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-        let label = require_label(&input)?;
+        let label = resolve_label(&input, &self.manager)?;
         let url = require_string(&input, "url")?;
         self.manager
             .navigate(&label, url)
@@ -503,23 +529,33 @@ impl ToolExecutor for BrowserClickTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_click".into(),
-            description: "Click the first element matching `selector`. Scrolls it into \
-                view first. Errors if no element matches.".into(),
+            description: "Click the first element matching `selector`. \
+                Automatically scrolls it into view and waits up to 4 \
+                seconds for it to appear, so most async-rendered \
+                buttons don't need a separate wait step. `label` is \
+                optional — defaults to the most recently used window.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "label": {"type": "string"},
                     "selector": {"type": "string"}
                 },
-                "required": ["label", "selector"]
+                "required": ["selector"]
             }),
         }
     }
     fn requires_permission(&self) -> bool { true }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-        let label = require_label(&input)?;
+        let label = resolve_label(&input, &self.manager)?;
         let selector = require_string(&input, "selector")?;
+        // Built-in auto-wait: poll for the element for up to 4 seconds
+        // before clicking. This subsumes the dropped `browser_wait_for`
+        // tool for the 95% case (waiting just before clicking).
+        let _ = self
+            .manager
+            .wait_for(&label, selector, Some(4_000))
+            .await;
         let result = self
             .manager
             .click(&label, selector)
@@ -548,19 +584,19 @@ impl ToolExecutor for BrowserFillTool {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "label": {"type": "string"},
+                    "label": {"type": "string", "description": "Optional. Defaults to the most recently used window."},
                     "selector": {"type": "string"},
                     "value": {"type": "string"},
                     "submit": {"type": "boolean", "default": false}
                 },
-                "required": ["label", "selector", "value"]
+                "required": ["selector", "value"]
             }),
         }
     }
     fn requires_permission(&self) -> bool { true }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-        let label = require_label(&input)?;
+        let label = resolve_label(&input, &self.manager)?;
         let selector = require_string(&input, "selector")?;
         let value = input
             .get("value")
@@ -617,8 +653,76 @@ impl ToolExecutor for BrowserWaitForTool {
     }
 }
 
+/// Scroll the page in a cardinal direction or bring a specific
+/// element into view. Replaces the only legitimate use-case agents
+/// had for `browser_eval` — programmatic scrolling — without exposing
+/// the broader eval foot-gun.
+pub struct BrowserScrollTool {
+    manager: Arc<BrowserManager>,
+}
+impl BrowserScrollTool {
+    pub fn new(manager: Arc<BrowserManager>) -> Self { Self { manager } }
+}
+#[async_trait]
+impl ToolExecutor for BrowserScrollTool {
+    fn name(&self) -> &str { "browser_scroll" }
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "browser_scroll".into(),
+            description: "Scroll the page up, down, to top, to bottom, \
+                or until a specific element is visible. Returns the \
+                before/after scroll position and whether the page is \
+                now at the top/bottom — so a follow-up screenshot \
+                isn't needed just to confirm the scroll landed."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "Optional. Defaults to the most recently used window."
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down", "top", "bottom"],
+                        "description": "Vertical scroll direction. Ignored when `selector` is supplied."
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector to scroll into view. Takes priority over `direction`."
+                    },
+                    "amountPx": {
+                        "type": "number",
+                        "description": "Pixels for relative scroll (up/down). Defaults to ~80% of the viewport height."
+                    }
+                },
+                "required": []
+            }),
+        }
+    }
+    fn requires_permission(&self) -> bool { true }
+    async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
+        ctx.bail_if_cancelled()?;
+        let label = resolve_label(&input, &self.manager)?;
+        let direction = input.get("direction").and_then(Value::as_str);
+        let selector = input.get("selector").and_then(Value::as_str);
+        let amount = input
+            .get("amountPx")
+            .or_else(|| input.get("amount_px"))
+            .and_then(Value::as_i64);
+        let result = self
+            .manager
+            .scroll(&label, direction, selector, amount)
+            .await
+            .map_err(ToolError::Execution)?;
+        let value = unwrap_browser_result(result)?;
+        Ok(json!({ "label": label, "scroll": value }).to_string())
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Tier 3 — eval (requires permission, dangerous)
+// Compiled-but-unregistered tools (kept for IPC-driven IDE features and
+// for completeness; the agent surface no longer advertises them).
 // ---------------------------------------------------------------------------
 
 pub struct BrowserEvalTool {
@@ -674,7 +778,27 @@ mod tests {
 
     #[test]
     fn tool_name_roster_count() {
-        assert_eq!(TOOL_NAMES.len(), 13);
+        // Eight tools — the minimal-surface refactor.
+        assert_eq!(TOOL_NAMES.len(), 8);
+    }
+
+    #[test]
+    fn dangerous_tools_are_unregistered() {
+        // Explicitly assert the foot-gun tools are not exposed to the
+        // agent surface. Catches accidental re-registration.
+        for hidden in [
+            "browser_eval",
+            "browser_get_dom",
+            "browser_get_url",
+            "browser_inspect_element",
+            "browser_list_windows",
+            "browser_wait_for",
+        ] {
+            assert!(
+                !TOOL_NAMES.contains(&hidden),
+                "{hidden} must not be advertised to the agent"
+            );
+        }
     }
 
     #[test]

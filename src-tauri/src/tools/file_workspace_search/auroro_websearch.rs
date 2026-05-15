@@ -91,9 +91,16 @@ impl ToolExecutor for AuroroWebSearchTool {
 
         match aurora_websearch(request).await {
             Ok(response) => {
-                let value = serde_json::to_value(&response).map_err(|e| {
+                let mut value = serde_json::to_value(&response).map_err(|e| {
                     ToolError::Execution(format!("failed to serialize web search response: {e}"))
                 })?;
+                // Cap fetched page content so a single long article can't
+                // single-handedly blow the model's context window. The
+                // runtime applies a second hard cap on the final tool
+                // string, but trimming here keeps the JSON envelope shape
+                // intact (search results stay structured; only the
+                // body-text payload of an `action="fetch"` gets clipped).
+                trim_oversized_fetch_content(&mut value);
                 Ok(serde_json::to_string(&value).unwrap())
             }
             Err(err) => Ok(serde_json::to_string(&json!({
@@ -103,6 +110,45 @@ impl ToolExecutor for AuroroWebSearchTool {
             .unwrap()),
         }
     }
+}
+
+/// Maximum byte length of the `content.content` body text returned by a
+/// `fetch` action. 64 KiB is roughly five chapters of normal prose —
+/// well above what any model will use productively but small enough
+/// that two or three concurrent fetches can't push the conversation
+/// past a million tokens.
+const FETCH_CONTENT_BODY_MAX: usize = 64 * 1024;
+
+fn trim_oversized_fetch_content(value: &mut Value) {
+    // Shape produced by `aurora_websearch::extract_content`:
+    //   { success: true, action: "fetch", content: { title, url, content: "<body>" }, ... }
+    let Some(content_outer) = value.get_mut("content") else {
+        return;
+    };
+    let Some(content_obj) = content_outer.as_object_mut() else {
+        return;
+    };
+    let Some(body) = content_obj.get_mut("content") else {
+        return;
+    };
+    let Some(body_str) = body.as_str() else {
+        return;
+    };
+    if body_str.len() <= FETCH_CONTENT_BODY_MAX {
+        return;
+    }
+    let original_len = body_str.len();
+    let mut cut = FETCH_CONTENT_BODY_MAX;
+    while cut > 0 && !body_str.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let trimmed = format!(
+        "{}\n\n[truncated {} bytes — original page was {} bytes]",
+        &body_str[..cut],
+        original_len.saturating_sub(cut),
+        original_len,
+    );
+    *body = Value::String(trimmed);
 }
 
 #[cfg(test)]

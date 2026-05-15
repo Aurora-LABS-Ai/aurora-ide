@@ -33,7 +33,7 @@
 //! `tauri.conf.json`) so `window.__TAURI_INTERNALS__.invoke(...)` is
 //! reachable in any window we create.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -67,6 +67,17 @@ struct BrowserWindowState {
 /// `register_builtin_tools` (so the agent tool bucket holds an `Arc`
 /// to the same map) and put a second clone into Tauri's managed
 /// state (so the IPC commands see the same windows).
+/// One pending two-way IPC call. We track the `label` alongside the
+/// sender so we can invalidate every in-flight call for a given window
+/// when the page navigates or the window closes — without this, a
+/// screenshot or DOM read that was issued just before a hot-reload
+/// sits idle for the full 30s timeout because the page-side
+/// `window.__aurora.respond` was wiped by the navigation.
+struct PendingRequest {
+    label: String,
+    sender: oneshot::Sender<BrowserResult>,
+}
+
 #[derive(Clone)]
 pub struct BrowserManager {
     app: AppHandle,
@@ -75,7 +86,12 @@ pub struct BrowserManager {
     /// a browser webview (eval, screenshot, get_dom, …). The injected
     /// page-side helper resolves these via the
     /// `aurora_record_browser_result` Tauri command.
-    pending: Arc<DashMap<String, oneshot::Sender<BrowserResult>>>,
+    pending: Arc<DashMap<String, PendingRequest>>,
+    /// Last window the agent (or the IDE) successfully addressed.
+    /// Tools accept `label` as optional and fall back to this so
+    /// agents that omit/forget the label don't hit the "unknown
+    /// window" error path.
+    last_active_label: Arc<StdMutex<Option<String>>>,
 }
 
 /// Default ceiling for two-way IPC waits. Long enough for a slow page
@@ -89,6 +105,7 @@ impl BrowserManager {
             app,
             windows: Arc::new(DashMap::new()),
             pending: Arc::new(DashMap::new()),
+            last_active_label: Arc::new(StdMutex::new(None)),
         }
     }
 
@@ -96,8 +113,48 @@ impl BrowserManager {
     /// Called from the `aurora_record_browser_result` Tauri command
     /// when the page-side helper posts a value back.
     pub fn resolve_result(&self, request_id: &str, result: BrowserResult) {
-        if let Some((_, sender)) = self.pending.remove(request_id) {
-            let _ = sender.send(result);
+        if let Some((_, request)) = self.pending.remove(request_id) {
+            let _ = request.sender.send(result);
+        }
+    }
+
+    /// Last label any tool successfully addressed. Used as the fallback
+    /// when an agent calls a browser tool without a `label` argument.
+    pub fn last_active_label(&self) -> Option<String> {
+        self.last_active_label.lock().ok()?.clone()
+    }
+
+    /// Record `label` as the most-recently-used window so subsequent
+    /// label-less tool calls target it. Cheap; no-op when the lock
+    /// can't be acquired (panic recovery).
+    fn touch_active(&self, label: &str) {
+        if let Ok(mut guard) = self.last_active_label.lock() {
+            *guard = Some(label.to_string());
+        }
+    }
+
+    /// Drain every pending request for `label` and reply with a
+    /// synthetic `ok=false`. Called from `close()` and `navigate()`
+    /// so a screenshot/get_dom that was waiting on the about-to-be-
+    /// destroyed page fails fast with an actionable message rather
+    /// than timing out at the 30s ceiling.
+    fn drain_pending_for_label(&self, label: &str, reason: &str) {
+        let mut to_drop = Vec::new();
+        for entry in self.pending.iter() {
+            if entry.value().label == label {
+                to_drop.push(entry.key().clone());
+            }
+        }
+        for id in to_drop {
+            if let Some((_, request)) = self.pending.remove(&id) {
+                let _ = request.sender.send(BrowserResult {
+                    ok: false,
+                    value: None,
+                    error: Some(format!(
+                        "browser request superseded — {reason} for '{label}'"
+                    )),
+                });
+            }
         }
     }
 
@@ -170,14 +227,42 @@ impl BrowserManager {
         );
 
         // When the window is destroyed externally (X button, Alt-F4)
-        // drop our state and tell the frontend so the tab can show a
+        // drop our state, fail any pending two-way IPC requests bound
+        // to this window, and tell the frontend so the tab can show a
         // closed-state badge.
         let app = self.app.clone();
         let windows = self.windows.clone();
+        let pending = self.pending.clone();
+        let last_active = self.last_active_label.clone();
         let label_for_close = label.clone();
         window.on_window_event(move |event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
+                // Drain in-flight requests so callers don't sit for
+                // 30s waiting on a page-side helper that's gone.
+                let mut to_drop = Vec::new();
+                for entry in pending.iter() {
+                    if entry.value().label == label_for_close {
+                        to_drop.push(entry.key().clone());
+                    }
+                }
+                for id in to_drop {
+                    if let Some((_, request)) = pending.remove(&id) {
+                        let _ = request.sender.send(BrowserResult {
+                            ok: false,
+                            value: None,
+                            error: Some(format!(
+                                "browser request superseded — window closed for '{}'",
+                                label_for_close
+                            )),
+                        });
+                    }
+                }
                 windows.remove(&label_for_close);
+                if let Ok(mut guard) = last_active.lock() {
+                    if guard.as_deref() == Some(label_for_close.as_str()) {
+                        *guard = None;
+                    }
+                }
                 let _ = app.emit(
                     "aurora:browser-window-closed",
                     BrowserWindowClosedPayload {
@@ -187,6 +272,7 @@ impl BrowserManager {
             }
         });
 
+        self.touch_active(&label);
         Ok(())
     }
 
@@ -198,6 +284,11 @@ impl BrowserManager {
         let parsed = url
             .parse()
             .map_err(|e| format!("invalid url '{url}': {e}"))?;
+        // Pre-emptively fail any pending request bound to this label.
+        // The about-to-load page wipes the page-side `window.__aurora`
+        // helper, so a screenshot/get_dom/eval that's already in
+        // flight would otherwise wait the full 30s before timing out.
+        self.drain_pending_for_label(label, "page navigated");
         window
             .navigate(parsed)
             .map_err(|e| format!("navigate failed: {e}"))?;
@@ -209,6 +300,7 @@ impl BrowserManager {
             entry.inspector_active = false;
             entry.stagewise_active = false;
         }
+        self.touch_active(label);
         Ok(())
     }
 
@@ -232,10 +324,23 @@ impl BrowserManager {
     }
 
     pub fn close(&self, label: &str) -> Result<(), String> {
+        // Drain before the OS-side close so the senders all wake up
+        // with a clean error instead of dangling. Mirrors what the
+        // `Destroyed` window-event handler would have done; doing it
+        // here covers programmatic close (close button never fires).
+        self.drain_pending_for_label(label, "window closed");
         if let Some(window) = self.app.get_webview_window(label) {
             let _ = window.close();
         }
         self.windows.remove(label);
+        // Clear `last_active_label` if it pointed at the window we
+        // just killed — otherwise the next label-less tool call would
+        // route to a dead label.
+        if let Ok(mut guard) = self.last_active_label.lock() {
+            if guard.as_deref() == Some(label) {
+                *guard = None;
+            }
+        }
         Ok(())
     }
 
@@ -347,10 +452,22 @@ impl BrowserManager {
     /// `__aurora.respond("<request_id>", value)`; the sender resolves
     /// when the page-side helper posts back via the
     /// `aurora_record_browser_result` Tauri command.
-    fn issue_request(&self) -> (String, oneshot::Receiver<BrowserResult>) {
+    ///
+    /// We bind each request to the `label` that originated it so
+    /// `drain_pending_for_label` can short-circuit waits when the
+    /// page navigates or the window closes — without that, a request
+    /// issued just before a SPA hot-reload sits idle for the full
+    /// 30s timeout because `window.__aurora.respond` was wiped.
+    fn issue_request(&self, label: &str) -> (String, oneshot::Receiver<BrowserResult>) {
         let id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
-        self.pending.insert(id.clone(), tx);
+        self.pending.insert(
+            id.clone(),
+            PendingRequest {
+                label: label.to_string(),
+                sender: tx,
+            },
+        );
         (id, rx)
     }
 
@@ -388,7 +505,7 @@ impl BrowserManager {
         label: &str,
         expression: &str,
     ) -> Result<BrowserResult, String> {
-        let (request_id, rx) = self.issue_request();
+        let (request_id, rx) = self.issue_request(label);
         let script = format!(
             r#"(async () => {{
                 try {{
@@ -561,7 +678,7 @@ impl BrowserManager {
         );
         // Add a Rust-side buffer over the JS deadline so the channel
         // never times out before the page-side polling does.
-        let (request_id, rx) = self.issue_request();
+        let (request_id, rx) = self.issue_request(label);
         let script = format!(
             r#"(async () => {{
                 try {{
@@ -577,6 +694,89 @@ impl BrowserManager {
         self.eval(label, &script)?;
         let buffered = Duration::from_millis(timeout + 2000);
         self.await_result(request_id, rx, buffered).await
+    }
+
+    /// Scroll the page in a direction (`"up"`, `"down"`, `"top"`,
+    /// `"bottom"`) or to an element by CSS selector. Returns the
+    /// before/after scroll offsets plus a viewport summary so the
+    /// chat-card view can render a meaningful "scrolled X to Y"
+    /// status without a follow-up tool call.
+    pub async fn scroll(
+        &self,
+        label: &str,
+        direction: Option<&str>,
+        selector: Option<&str>,
+        amount_px: Option<i64>,
+    ) -> Result<BrowserResult, String> {
+        // Default delta for a relative scroll: ~80% viewport height,
+        // matching how PageDown behaves in Chrome. Clamped to a sane
+        // range so an agent that passes a wildly negative number can
+        // still recover.
+        let amount = amount_px.unwrap_or(0).clamp(-50_000, 50_000);
+        let dir = direction.unwrap_or("down");
+        let expr = if let Some(sel) = selector {
+            format!(
+                r#"(() => {{
+                    const sel = {s};
+                    const el = document.querySelector(sel);
+                    if (!el) throw new Error('no element matches ' + sel);
+                    const before = {{ x: window.scrollX, y: window.scrollY }};
+                    el.scrollIntoView({{ behavior: 'instant', block: 'center', inline: 'center' }});
+                    return {{
+                        ok: true,
+                        mode: 'to_selector',
+                        selector: sel,
+                        before,
+                        after: {{ x: window.scrollX, y: window.scrollY }},
+                        viewport: {{
+                            width: window.innerWidth,
+                            height: window.innerHeight,
+                            documentHeight: document.documentElement.scrollHeight,
+                        }},
+                        atTop: window.scrollY <= 0,
+                        atBottom: (window.innerHeight + window.scrollY) >= (document.documentElement.scrollHeight - 1),
+                    }};
+                }})()"#,
+                s = json!(sel),
+            )
+        } else {
+            format!(
+                r#"(() => {{
+                    const before = {{ x: window.scrollX, y: window.scrollY }};
+                    const dir = {d};
+                    const delta = {amt};
+                    const vh = window.innerHeight;
+                    let dy = 0;
+                    if (dir === 'top') {{ window.scrollTo({{ top: 0, behavior: 'instant' }}); }}
+                    else if (dir === 'bottom') {{ window.scrollTo({{ top: document.documentElement.scrollHeight, behavior: 'instant' }}); }}
+                    else {{
+                        dy = delta !== 0 ? delta : Math.round(vh * 0.8);
+                        if (dir === 'up') dy = -Math.abs(dy);
+                        else dy = Math.abs(dy);
+                        window.scrollBy({{ top: dy, behavior: 'instant' }});
+                    }}
+                    const after = {{ x: window.scrollX, y: window.scrollY }};
+                    return {{
+                        ok: true,
+                        mode: 'direction',
+                        direction: dir,
+                        deltaY: after.y - before.y,
+                        before,
+                        after,
+                        viewport: {{
+                            width: window.innerWidth,
+                            height: window.innerHeight,
+                            documentHeight: document.documentElement.scrollHeight,
+                        }},
+                        atTop: after.y <= 0,
+                        atBottom: (window.innerHeight + after.y) >= (document.documentElement.scrollHeight - 1),
+                    }};
+                }})()"#,
+                d = json!(dir),
+                amt = amount,
+            )
+        };
+        self.eval_with_result(label, &expr).await
     }
 
     /// Capture a PNG screenshot of the page (or one element). Uses an

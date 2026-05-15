@@ -52,15 +52,14 @@ fn default_true() -> bool {
 }
 
 impl McpConfig {
-    /// Get the MCP config file path
-    /// Returns ~/.aurora/mcp.json
+    /// Get the MCP config file path — `<AuroraIDE>/config/mcp.json`.
     pub fn config_path() -> Option<PathBuf> {
-        dirs::home_dir().map(|home| home.join(".aurora").join("mcp.json"))
+        Some(crate::paths::mcp_config_file())
     }
 
     /// Load MCP config from file
     pub fn load() -> Result<Self, String> {
-        let path = Self::config_path().ok_or("Could not determine home directory")?;
+        let path = crate::paths::mcp_config_file();
 
         if !path.exists() {
             // Return empty config if file doesn't exist
@@ -75,13 +74,8 @@ impl McpConfig {
 
     /// Save MCP config to file
     pub fn save(&self) -> Result<(), String> {
-        let path = Self::config_path().ok_or("Could not determine home directory")?;
-
-        // Ensure .aurora directory exists
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create .aurora directory: {}", e))?;
-        }
+        // `paths::mcp_config_file()` ensures the `config/` parent exists.
+        let path = crate::paths::mcp_config_file();
 
         let content = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize MCP config: {}", e))?;

@@ -5,6 +5,39 @@ import clsx from "clsx";
 import { speechService } from "../../services/speech";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
+
+/**
+ * Key for remembering that the user has explicitly granted microphone
+ * access through our in-app confirmation modal. We never call
+ * `getUserMedia` without an in-app `Allow` (so the user is never
+ * surprised by the WebView's native permission prompt), but on
+ * subsequent recordings we skip our modal entirely if this flag is set.
+ *
+ * Persisted per-installation in `localStorage` so a fresh app launch
+ * remembers the choice without a database round-trip.
+ */
+const MIC_PERMISSION_KEY = "aurora.speech.permissionGranted";
+
+const readMicPermissionRemembered = (): boolean => {
+  try {
+    return localStorage.getItem(MIC_PERMISSION_KEY) === "true";
+  } catch {
+    return false;
+  }
+};
+
+const writeMicPermissionRemembered = (granted: boolean): void => {
+  try {
+    if (granted) {
+      localStorage.setItem(MIC_PERMISSION_KEY, "true");
+    } else {
+      localStorage.removeItem(MIC_PERMISSION_KEY);
+    }
+  } catch {
+    // Some embeddings disable storage; the modal will keep asking — fine.
+  }
+};
 
 interface SpeechInputButtonProps {
   disabled?: boolean;
@@ -116,6 +149,8 @@ export const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isHovered, setIsHovered] = useState(false);
+  const [permissionPromptOpen, setPermissionPromptOpen] = useState(false);
+  const [rememberPermission, setRememberPermission] = useState(true);
 
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationRef = useRef<number | null>(null);
@@ -279,7 +314,15 @@ export const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
     ],
   );
 
-  const startRecording = useCallback(async () => {
+  /**
+   * Inner mic-access flow. Only call this *after* the user has
+   * explicitly confirmed through the in-app permission modal (or has a
+   * remembered prior confirmation). The native WebView prompt may still
+   * pop on the first call per session — Tauri's release build can
+   * pre-authorise via config, but the dev server at `localhost:5173`
+   * runs under Chromium's own permission gate and always prompts.
+   */
+  const actuallyStartRecording = useCallback(async () => {
     setError(null);
 
     if (!speechModelPath.trim()) {
@@ -360,6 +403,35 @@ export const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
     speechDevicePreference,
     speechModelPath,
   ]);
+
+  /**
+   * Public entry point bound to the mic button. Asks the user for
+   * microphone access through our IDE-styled `ConfirmDialog` before
+   * the WebView's native permission prompt has a chance to appear.
+   * Once the user has remembered the choice, subsequent recordings
+   * skip the modal and call `actuallyStartRecording` directly.
+   */
+  const startRecording = useCallback(async () => {
+    setError(null);
+    if (readMicPermissionRemembered()) {
+      await actuallyStartRecording();
+      return;
+    }
+    setRememberPermission(true);
+    setPermissionPromptOpen(true);
+  }, [actuallyStartRecording]);
+
+  const handlePermissionConfirm = useCallback(() => {
+    setPermissionPromptOpen(false);
+    if (rememberPermission) {
+      writeMicPermissionRemembered(true);
+    }
+    void actuallyStartRecording();
+  }, [actuallyStartRecording, rememberPermission]);
+
+  const handlePermissionCancel = useCallback(() => {
+    setPermissionPromptOpen(false);
+  }, []);
 
   const stopRecording = useCallback(async () => {
     const sourceRate = audioContextRef.current?.sampleRate || TARGET_SAMPLE_RATE;
@@ -479,6 +551,38 @@ export const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
           <Mic size={14} />
         )}
       </button>
+
+      {/* IDE-styled permission gate. Shown the first time the user
+          clicks the mic button (or any time after they revoke). On
+          confirm we stash a `localStorage` flag so subsequent runs go
+          straight to `actuallyStartRecording`. */}
+      <ConfirmDialog
+        isOpen={permissionPromptOpen}
+        variant="info"
+        icon={Mic}
+        title="Allow microphone access"
+        description={
+          <>
+            Aurora records audio locally to transcribe what you say into the chat
+            input. Audio is processed on this machine via the configured speech
+            engine; nothing is uploaded.
+          </>
+        }
+        confirmLabel="Allow microphone"
+        cancelLabel="Not now"
+        onConfirm={handlePermissionConfirm}
+        onCancel={handlePermissionCancel}
+      >
+        <label className="flex items-center gap-2 text-[12px] text-text-secondary cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={rememberPermission}
+            onChange={(e) => setRememberPermission(e.target.checked)}
+            className="h-3.5 w-3.5 accent-primary cursor-pointer"
+          />
+          <span>Remember this choice on this machine</span>
+        </label>
+      </ConfirmDialog>
     </div>
   );
 };

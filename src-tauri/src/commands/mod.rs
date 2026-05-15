@@ -724,16 +724,33 @@ pub async fn aurora_websearch(
         .build()
         .map_err(|e| format!("Failed to create search client: {}", e))?;
 
+    // Hard wall-clock cap for any single web operation. Without this a
+    // hung DDG endpoint or a slow page stalls the bridge oneshot until
+    // the user manually cancels the turn, which presents as a freeze.
+    const AURORA_WEBSEARCH_TIMEOUT: std::time::Duration =
+        std::time::Duration::from_secs(30);
+
     if action == "fetch" {
         let url = request
             .url
             .clone()
             .ok_or_else(|| "URL is required for fetch".to_string())?;
 
-        let content = aurora
-            .extract_content(&url)
-            .await
-            .map_err(|e| format!("Web fetch failed: {}", e))?;
+        let content = match tokio::time::timeout(
+            AURORA_WEBSEARCH_TIMEOUT,
+            aurora.extract_content(&url),
+        )
+        .await
+        {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => return Err(format!("Web fetch failed: {}", e)),
+            Err(_) => {
+                return Err(format!(
+                    "Web fetch timed out after {}s",
+                    AURORA_WEBSEARCH_TIMEOUT.as_secs()
+                ))
+            }
+        };
 
         let content_value = serde_json::to_value(&content)
             .map_err(|e| format!("Failed to serialize fetch response: {}", e))?;
@@ -756,10 +773,21 @@ pub async fn aurora_websearch(
         .ok_or_else(|| "Query is required for search".to_string())?;
     let limit = request.num_results.unwrap_or(10) as usize;
 
-    let results = aurora
-        .search_with_limit(&query, limit)
-        .await
-        .map_err(|e| format!("Web search failed: {}", e))?;
+    let results = match tokio::time::timeout(
+        AURORA_WEBSEARCH_TIMEOUT,
+        aurora.search_with_limit(&query, limit),
+    )
+    .await
+    {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return Err(format!("Web search failed: {}", e)),
+        Err(_) => {
+            return Err(format!(
+                "Web search timed out after {}s",
+                AURORA_WEBSEARCH_TIMEOUT.as_secs()
+            ))
+        }
+    };
 
     let results_value = serde_json::to_value(&results)
         .map_err(|e| format!("Failed to serialize search response: {}", e))?;

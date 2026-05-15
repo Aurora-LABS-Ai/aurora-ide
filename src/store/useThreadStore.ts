@@ -15,8 +15,31 @@ import {
   type DbThread,
   type ThreadSummary as ServiceThreadSummary,
 } from "../services/thread-service";
-import type { Message } from "../types";
+import type { Message, ToolCall } from "../types";
 import { useContextStore } from "./useContextStore";
+
+/**
+ * Shape of one tool call as persisted by the Rust `agent_v2` SessionStore.
+ *
+ * The agent runtime writes a flattened envelope to its JSONL log (see
+ * `commands::threads::session_to_db_messages`): `arguments` is a JSON
+ * STRING (not an object) and there is no `status`/`args` field — the
+ * runtime infers those from `result` presence and an `[error]` prefix
+ * on the content.
+ *
+ * The live UI consumes [`ToolCall`] (in `src/types`) which carries
+ * `args: Record<string, unknown>` and a `status` enum. Without a
+ * conversion step, the chat-card render path looks for `tool.args.path`
+ * and `tool.status`, both of which are undefined on a rehydrated tool
+ * — which is why thread reload used to lose the file-name badge and
+ * the executing/complete indicator.
+ */
+type PersistedDbToolCall = {
+  id: string;
+  name: string;
+  arguments?: string;
+  result?: string | null;
+};
 
 type PersistedMessageShape = {
   isThinking?: boolean;
@@ -24,9 +47,88 @@ type PersistedMessageShape = {
   sender?: Message["sender"] | string;
   thinking?: string;
   timeline?: Message["timeline"];
-  tool_calls?: Message["tools"];
+  // Persisted-DB shape (from agent_v2 JSONL): `arguments: string`,
+  // optional `result`, no `status`. Distinct from the live `tools` shape.
+  tool_calls?: PersistedDbToolCall[];
   toolProposal?: Message["toolProposal"];
-  tools?: Message["tools"];
+  // Live in-memory shape: already a `ToolCall[]` with `args` and `status`.
+  // Older dev-mode JSON files persisted this directly; we still accept it.
+  tools?: ToolCall[];
+};
+
+/**
+ * Convert one persisted DB tool-call into the live [`ToolCall`] shape
+ * the chat UI expects.
+ *
+ * - `arguments` (JSON string) → `args` (object). A `result` field
+ *   often re-states the input args under a `request` key, but we
+ *   intentionally never read from there because the rehydrated tool
+ *   should faithfully reproduce what was sent, not what came back.
+ * - The original raw string survives as `rawArgs` so the streaming
+ *   preview path (live partial JSON) still has a hook.
+ * - `status` is inferred from the persisted `result`:
+ *     • `result` starts with `[error]` (the Rust runtime's convention
+ *       for `is_error: true` blocks)         → `"failed"`
+ *     • `result` is present                  → `"complete"`
+ *     • otherwise                            → `"complete"` (no result
+ *       only happens for fire-and-forget tools where the absence of an
+ *       error is itself success — `todo_write` is the main one).
+ */
+const rehydrateDbToolCall = (raw: PersistedDbToolCall): ToolCall => {
+  let parsedArgs: Record<string, unknown> = {};
+  if (typeof raw.arguments === "string" && raw.arguments.length > 0) {
+    try {
+      const parsed = JSON.parse(raw.arguments);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        parsedArgs = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Leave args empty; rawArgs below preserves the original.
+    }
+  }
+
+  const rawResult =
+    typeof raw.result === "string" && raw.result.length > 0
+      ? raw.result
+      : undefined;
+  const isError =
+    typeof rawResult === "string" && rawResult.startsWith("[error]");
+
+  return {
+    id: raw.id,
+    name: raw.name,
+    args: parsedArgs,
+    rawArgs: raw.arguments,
+    result: rawResult,
+    error: isError ? rawResult?.replace(/^\[error\]\s*/, "") : undefined,
+    status: isError ? "failed" : "complete",
+  };
+};
+
+/** Detect which persisted shape a tool entry uses. */
+const looksLikeLiveToolCall = (value: unknown): value is ToolCall =>
+  !!value &&
+  typeof value === "object" &&
+  "args" in (value as Record<string, unknown>) &&
+  "status" in (value as Record<string, unknown>);
+
+const rehydrateToolList = (
+  persisted: PersistedMessageShape,
+): ToolCall[] | undefined => {
+  // 1. Live shape already on disk (older dev-mode JSON dumps) — pass through.
+  if (Array.isArray(persisted.tools) && persisted.tools.length > 0) {
+    return persisted.tools;
+  }
+  // 2. Persisted DB shape from agent_v2 JSONL — convert each entry.
+  if (Array.isArray(persisted.tool_calls) && persisted.tool_calls.length > 0) {
+    // Be defensive: a future writer might mix shapes in the same array.
+    return persisted.tool_calls.map((entry) =>
+      looksLikeLiveToolCall(entry)
+        ? (entry as unknown as ToolCall)
+        : rehydrateDbToolCall(entry as PersistedDbToolCall),
+    );
+  }
+  return undefined;
 };
 
 interface ThreadState {
@@ -118,7 +220,7 @@ const fromDbThread = (dbThread: DbThread): Thread => ({
       timestamp: Date.parse(m.timestamp) || Date.now(),
       thinking: persisted.thinking,
       isThinking: persisted.isThinking,
-      tools: persisted.tools || persisted.tool_calls,
+      tools: rehydrateToolList(persisted),
       timeline: persisted.timeline,
       toolProposal: persisted.toolProposal,
     };

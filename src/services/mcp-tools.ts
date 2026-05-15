@@ -17,6 +17,17 @@ interface ParsedMcpToolName {
 }
 
 /**
+ * Hard wall-clock cap on a single MCP tool invocation.
+ *
+ * Without a timeout, an MCP server that is alive at the socket level but
+ * stuck (deadlocked stdio child, hung remote service behind an SSE
+ * transport) parks the Rust agent runtime's bridge oneshot forever —
+ * presenting to the user as a frozen agent that only recovers on
+ * manual cancel.
+ */
+const MCP_TOOL_TIMEOUT_MS = 60_000;
+
+/**
  * Execute an MCP tool call
  */
 export async function executeMcpTool(
@@ -41,11 +52,31 @@ export async function executeMcpTool(
     throw new Error(`MCP server ${server.config.name} is not connected`);
   }
 
-  const result = await callTool({
-    serverId,
-    toolName: originalToolName,
-    arguments: args,
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(
+        new Error(
+          `MCP tool '${originalToolName}' on server '${server.config.name}' ` +
+            `did not respond within ${MCP_TOOL_TIMEOUT_MS / 1000}s`,
+        ),
+      );
+    }, MCP_TOOL_TIMEOUT_MS);
   });
+
+  let result;
+  try {
+    result = await Promise.race([
+      callTool({
+        serverId,
+        toolName: originalToolName,
+        arguments: args,
+      }),
+      timeoutPromise,
+    ]);
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+  }
 
   if (!result) {
     throw new Error("Failed to call MCP tool: No result returned");

@@ -13,6 +13,7 @@ mod explorer;
 mod file_cache;
 pub mod icon_pack;
 mod mcp;
+mod paths;
 mod services;
 // Phase 3 native tool buckets. Sub-C lands `file_workspace_search`;
 // Sub-D adds `shell_editor_todo` + `permissions`; Sub-E composes
@@ -404,15 +405,46 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::agent_v2_permissions::agent_grant_permission,
         ])
         .setup(move |app| {
-            #[cfg(debug_assertions)]
-            {
-                let window = app.get_webview_window("main").unwrap();
-                window.open_devtools();
-            }
+            // Devtools stay available in every build (the `devtools`
+            // Cargo feature is on for the `tauri` crate), but we no
+            // longer auto-open them. The WebView's native shortcut
+            // works in both dev and release:
+            //   Windows: F12
+            //   macOS:   Cmd+Option+I
+            //   Linux:   Ctrl+Shift+I
 
-            // Initialize database
+            // Initialize database.
+            //
+            // A failure here is recoverable in principle (we could disable
+            // any feature that touches the DB and run as a stateless editor),
+            // but the IDE in its current form depends on the DB for
+            // settings, threads, custom themes, MCP config, etc., so we
+            // log a clear diagnostic and emit it to the frontend before
+            // bailing — instead of the previous `.expect()` which hard-
+            // crashed the process and produced a useless dialog.
             let handle = app.handle();
-            let db = db::Database::init(&handle).expect("Failed to initialize database");
+            let db = match db::Database::init(&handle) {
+                Ok(db) => db,
+                Err(err) => {
+                    let resolved = paths::db_file();
+                    let message = format!(
+                        "Aurora IDE failed to initialize its database at {}.\n\n\
+                         Error: {}\n\n\
+                         The application cannot start without a working SQLite store. \
+                         Common causes: the AuroraIDE data folder is read-only, on a \
+                         network drive that doesn't allow SQLite WAL, or the parent \
+                         path is missing write permissions for the current user.",
+                        resolved.display(),
+                        err,
+                    );
+                    eprintln!("[aurora] {message}");
+                    // Try to surface this in the main window before exit.
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.emit("aurora_fatal_init_error", &message);
+                    }
+                    return Err(Box::<dyn std::error::Error>::from(message));
+                }
+            };
 
             // Store database in app state (wrapped in Mutex for thread safety)
             app.manage(Mutex::new(db));
@@ -425,11 +457,7 @@ pub fn run_with_args(cli_args: CliArgs) {
 
             // Store checkpoint state for file state snapshots
             let checkpoint_state = commands::checkpoints::CheckpointState::new();
-            let app_data_dir = handle
-                .path()
-                .app_data_dir()
-                .expect("Failed to get app data dir");
-            checkpoint_state.init(app_data_dir);
+            checkpoint_state.init(paths::checkpoints_dir());
             app.manage(checkpoint_state);
 
             // Store undo/redo state for per-file history
@@ -450,14 +478,9 @@ pub fn run_with_args(cli_args: CliArgs) {
             // live LLM traffic; the registry's internal `BridgeRouter`
             // powers the `agent_post_tool_result` round trip with the
             // frontend tool runner.
-            let agent_v2_sessions_dir = handle
-                .path()
-                .app_data_dir()
-                .expect("Failed to get app data dir for agent_v2 sessions")
-                .join("agent_v2");
             let agent_registry = std::sync::Arc::new(commands::agent_v2::AgentRegistry::new(
                 std::sync::Arc::new(RealApiFactory),
-                agent_v2_sessions_dir,
+                paths::sessions_dir(),
             ));
 
             // Phase 3 — pre-populate the AgentRegistry's ToolRegistry

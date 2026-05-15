@@ -813,17 +813,28 @@ export class AgentRuntimeClient {
       const message = err instanceof Error ? err.message : String(err);
       content = JSON.stringify({ error: message, tool: toolName });
       isError = true;
-      this.options.callbacks.onToolExecutionError?.(
-        {
-          id: toolUseId,
-          type: "function",
-          function: {
-            name: toolName,
-            arguments: safeStringify(payload.input),
+      // Defensive: a throw inside the UI's error callback (React render
+      // crash, store mutation throwing, etc.) would unwind us before
+      // `postToolResult` runs and leave the Rust bridge oneshot parked
+      // forever. Wrap it so the bridge always closes the loop.
+      try {
+        this.options.callbacks.onToolExecutionError?.(
+          {
+            id: toolUseId,
+            type: "function",
+            function: {
+              name: toolName,
+              arguments: safeStringify(payload.input),
+            },
           },
-        },
-        message,
-      );
+          message,
+        );
+      } catch (callbackErr) {
+        console.warn(
+          "[agent-runtime-client] onToolExecutionError callback threw:",
+          callbackErr,
+        );
+      }
     }
 
     await this.postToolResult(turnId, toolUseId, content, isError);

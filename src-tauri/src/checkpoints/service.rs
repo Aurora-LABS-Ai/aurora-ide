@@ -23,17 +23,17 @@ use super::types::{Checkpoint, CheckpointError, CheckpointResult};
 /// SAFETY: This implementation is designed to NEVER delete user files.
 /// It only tracks changes made AFTER checkpoint creation.
 pub struct CheckpointService {
-    /// App data directory for storing shadow repos
+    /// Directory where shadow repos live (one subdir per workspace hash).
+    /// Callers pass the already-final path — the service does not
+    /// append any subfolder of its own.
     app_data_dir: PathBuf,
     /// Cache of initialized repositories (workspace_path -> repo path)
     repos: Mutex<HashMap<String, PathBuf>>,
 }
 
 impl CheckpointService {
-    /// Create a new checkpoint service
-    pub fn new(app_data_dir: PathBuf) -> Self {
-        let checkpoints_dir = app_data_dir.join("checkpoints");
-        // Ensure checkpoints directory exists
+    /// Create a new checkpoint service rooted at `checkpoints_dir`.
+    pub fn new(checkpoints_dir: PathBuf) -> Self {
         let _ = fs::create_dir_all(&checkpoints_dir);
 
         Self {

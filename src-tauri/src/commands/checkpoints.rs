@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::State;
 
 use crate::checkpoints::{Checkpoint, CheckpointService};
 use crate::db::Database;
+use crate::paths;
 
 /// Checkpoint service state wrapper
 pub struct CheckpointState {
@@ -51,15 +52,10 @@ pub struct RestoreResponse {
 /// Initialize checkpoint service (called on app startup)
 #[tauri::command]
 pub async fn checkpoint_init(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     checkpoint_state: State<'_, CheckpointState>,
 ) -> Result<(), String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-
-    checkpoint_state.init(app_data_dir);
+    checkpoint_state.init(paths::checkpoints_dir());
     Ok(())
 }
 

@@ -561,6 +561,7 @@ mod tests {
         let granted = m
             .request(
                 "t-1",
+                "toolu_1",
                 "shell_execute",
                 &serde_json::json!({"command": "ls"}),
                 CancellationToken::new(),
@@ -791,11 +792,13 @@ mod tests {
     fn permission_request_payload_serializes_to_camel_case() {
         let payload = PermissionRequestPayload {
             turn_id: "t-1".into(),
+            tool_use_id: "toolu_1".into(),
             tool_name: "shell_execute".into(),
             input: serde_json::json!({"command":"ls"}),
         };
         let s = serde_json::to_string(&payload).expect("serialize");
         assert!(s.contains("\"turnId\":\"t-1\""), "got: {s}");
+        assert!(s.contains("\"toolUseId\":\"toolu_1\""), "got: {s}");
         assert!(s.contains("\"toolName\":\"shell_execute\""), "got: {s}");
         assert!(!s.contains("\"turn_id\""), "snake_case leaked: {s}");
     }

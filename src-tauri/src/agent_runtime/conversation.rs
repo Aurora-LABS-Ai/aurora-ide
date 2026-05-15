@@ -496,10 +496,21 @@ impl ConversationRuntime {
                 return Err(RuntimeError::Cancelled);
             }
 
-            let (content, is_error) = match outcome {
+            let (raw_content, is_error) = match outcome {
                 Ok(s) => (s, None),
                 Err(e) => (e.to_string(), Some(true)),
             };
+
+            // Decouple the UI event payload from the model-history payload.
+            // The 8 KiB clamp protects the conversation history / JSONL log /
+            // API request body from megabyte-scale tool output, but ride-sharing
+            // the same string with the UI event chops structured JSON results
+            // (workspace_tree, grep, multi_file_read) mid-string. The frontend
+            // then fails `JSON.parse` and falls back to dumping the raw
+            // truncated bytes — that's the "sometimes tree, sometimes raw JSON"
+            // artifact users see. Send the full payload to the UI; only the
+            // history copy is truncated.
+            let history_content = truncate_tool_content(raw_content.clone());
 
             if !uses_frontend_lifecycle {
                 emit_native_tool_event(
@@ -510,7 +521,7 @@ impl ConversationRuntime {
                         id: id.clone(),
                         name,
                         input,
-                        content: content.clone(),
+                        content: raw_content,
                         is_error: is_error.unwrap_or(false),
                     },
                 )
@@ -519,7 +530,7 @@ impl ConversationRuntime {
 
             result_blocks.push(ContentBlock::ToolResult {
                 tool_use_id: id,
-                content,
+                content: history_content,
                 is_error,
             });
         }
@@ -568,6 +579,42 @@ const OUTPUT_RESERVE_DENOM: u32 = 10;
 /// preserves the in-flight question + the immediately previous one
 /// (often where the user gave context the model now needs).
 const PRESERVE_LAST_USER_TURNS: usize = 2;
+
+/// Hard cap on a single tool result before it enters the conversation
+/// history, the API request body, and the streamed Tauri event payload.
+/// Search-heavy tools (grep, multi_file_read, auroro_websearch fetch)
+/// can otherwise return megabytes of text, which blows the model's
+/// context window, bloats the JSONL log, and pressures the WebView2
+/// IPC channel. Picked to match the legacy `context::manager` truncator
+/// at four kilobytes, with extra slack for tools that return JSON
+/// (whose formatting overhead burns characters without adding signal).
+const MAX_TOOL_RESULT_LENGTH: usize = 8_192;
+
+/// Clamp a tool's stringified result to [`MAX_TOOL_RESULT_LENGTH`] and
+/// append a `[truncated N bytes]` marker so the model knows the tail
+/// was dropped. Operates on char boundaries (not byte boundaries) so a
+/// truncation point inside a multi-byte UTF-8 sequence cannot produce
+/// invalid UTF-8.
+fn truncate_tool_content(s: String) -> String {
+    if s.len() <= MAX_TOOL_RESULT_LENGTH {
+        return s;
+    }
+    let original_len = s.len();
+    // Walk char boundaries to find a safe slice point <= MAX_TOOL_RESULT_LENGTH.
+    let mut cut = MAX_TOOL_RESULT_LENGTH;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut out = String::with_capacity(cut + 64);
+    out.push_str(&s[..cut]);
+    out.push_str(&format!(
+        "\n\n[truncated {} bytes — tool returned {} bytes total, kept first {}]",
+        original_len.saturating_sub(cut),
+        original_len,
+        cut,
+    ));
+    out
+}
 
 /// Trim the API-view of the session to fit a token budget.
 ///

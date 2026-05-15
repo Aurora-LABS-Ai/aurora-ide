@@ -1,0 +1,174 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "competitor": "claude_code",
+      "kind": "skill",
+      "source_path": "\\\\?\\E:\\VOID-EDITOR\\Aurora-Agent-IDE\\.claude\\skills\\vite",
+      "source_hash": "0ba64f9a7150cb28fae0bf6dfd5945cc66cb72e2728617f02e917ae17f9819a2",
+      "dest_path": "\\\\?\\E:\\VOID-EDITOR\\Aurora-Agent-IDE\\.refact\\skills\\vite",
+      "dest_hash": "0ba64f9a7150cb28fae0bf6dfd5945cc66cb72e2728617f02e917ae17f9819a2",
+      "importer_version": "competitor_import_v2",
+      "last_imported_at": "2026-05-15T13:42:54.617498300Z",
+      "metadata": {
+        "original_name": "vite",
+        "generated_name": "vite",
+        "original_description": "Vite build tool configuration, plugin API, SSR, and Vite 8 Rolldown migration. Use when working with Vite projects, vite.config.ts, Vite plugins, or building libraries/SSR apps with Vite.",
+        "rewrote_skill_md": true
+      }
+    }
+  ],
+  "last_report": {
+    "generated_at": "2026-05-15T13:42:54.459237300+00:00",
+    "completed_at": "2026-05-15T13:42:54.618889200+00:00",
+    "reported_scopes": [
+      {
+        "scope_kind": "project",
+        "scope_id": "a275a2ebabe6f371",
+        "label": "project workspace"
+      }
+    ],
+    "reported_sources": [
+      {
+        "competitor": "claude_code",
+        "scope_kind": "project",
+        "scope_id": "a275a2ebabe6f371",
+        "source_label": ".claude"
+      },
+      {
+        "competitor": "open_code",
+        "scope_kind": "project",
+        "scope_id": "a275a2ebabe6f371",
+        "source_label": ".opencode"
+      },
+      {
+        "competitor": "kilo_code",
+        "scope_kind": "project",
+        "scope_id": "a275a2ebabe6f371",
+        "source_label": ".kilo"
+      },
+      {
+        "competitor": "kilo_code",
+        "scope_kind": "project",
+        "scope_id": "a275a2ebabe6f371",
+        "source_label": ".kilocode"
+      },
+      {
+        "competitor": "continue_dev",
+        "scope_kind": "project",
+        "scope_id": "a275a2ebabe6f371",
+        "source_label": ".continue"
+      }
+    ],
+    "discovered_candidates": 1,
+    "status_counts": {
+      "created": 1,
+      "unsupported": 4
+    },
+    "competitor_counts": {
+      "claude_code": {
+        "discovered": 1,
+        "created": 1,
+        "updated": 0,
+        "unchanged": 0,
+        "stale": 0,
+        "conflicts": 0,
+        "user_modified": 0,
+        "unsupported": 0,
+        "errors": 0
+      },
+      "kilo_code": {
+        "discovered": 0,
+        "created": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "stale": 0,
+        "conflicts": 0,
+        "user_modified": 0,
+        "unsupported": 2,
+        "errors": 0
+      },
+      "continue_dev": {
+        "discovered": 0,
+        "created": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "stale": 0,
+        "conflicts": 0,
+        "user_modified": 0,
+        "unsupported": 2,
+        "errors": 0
+      }
+    },
+    "kind_counts": {
+      "skill": {
+        "discovered": 1,
+        "created": 1,
+        "updated": 0,
+        "unchanged": 0,
+        "stale": 0,
+        "conflicts": 0,
+        "user_modified": 0,
+        "unsupported": 0,
+        "errors": 0
+      },
+      "unsupported_rules": {
+        "discovered": 0,
+        "created": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "stale": 0,
+        "conflicts": 0,
+        "user_modified": 0,
+        "unsupported": 4,
+        "errors": 0
+      }
+    },
+    "top_issues": [
+      {
+        "competitor": "kilo_code",
+        "kind": "unsupported_rules",
+        "scope": {
+          "type": "project",
+          "root": "<redacted>"
+        },
+        "path": "<redacted>/.../AGENTS.md",
+        "status": "unsupported",
+        "message": "Kilo Code rules and instruction files are report-only in v1"
+      },
+      {
+        "competitor": "kilo_code",
+        "kind": "unsupported_rules",
+        "scope": {
+          "type": "project",
+          "root": "<redacted>"
+        },
+        "path": "<redacted>/.../CLAUDE.md",
+        "status": "unsupported",
+        "message": "Kilo Code rules and instruction files are report-only in v1"
+      },
+      {
+        "competitor": "continue_dev",
+        "kind": "unsupported_rules",
+        "scope": {
+          "type": "project",
+          "root": "<redacted>"
+        },
+        "path": "<redacted>/.../AGENTS.md",
+        "status": "unsupported",
+        "message": "Continue rules and instruction files are report-only in v1"
+      },
+      {
+        "competitor": "continue_dev",
+        "kind": "unsupported_rules",
+        "scope": {
+          "type": "project",
+          "root": "<redacted>"
+        },
+        "path": "<redacted>/.../CLAUDE.md",
+        "status": "unsupported",
+        "message": "Continue rules and instruction files are report-only in v1"
+      }
+    ]
+  }
+}

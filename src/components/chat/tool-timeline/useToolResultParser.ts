@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import type { ToolCall } from "../../../types";
+import { extractStreamingStringField } from "../../../services/live-file-preview-utils";
 import { summarizeShellCommand } from "./helpers";
 import { salvageTruncatedToolResult } from "./salvage";
 import type {
@@ -95,6 +96,17 @@ export function useToolResultParser(tool: ToolCall): ParsedToolResult {
         }));
       }
     } else if (isFileModifyTool || tool.name === "file_read") {
+      // Prefer fully-parsed args when the LLM has finished streaming
+      // the tool call. While the args are still streaming the parsed
+      // `tool.args` is empty (the JSON isn't valid yet), so we fall
+      // back to walking the raw streaming buffer with the proper
+      // escape-aware scanner from live-file-preview-utils. The old
+      // regex-based extraction ate escaped quotes inside the content
+      // (anything like `\"` in long files broke it), which is why
+      // big `file_write` calls showed an empty preview during the
+      // queue / streaming phase.
+      const contentFieldName =
+        tool.name === "file_patch" ? "newContent" : "content";
       const contentField =
         tool.name === "file_patch"
           ? tool.args?.newContent
@@ -102,10 +114,11 @@ export function useToolResultParser(tool: ToolCall): ParsedToolResult {
       if (contentField) {
         raw = contentField as string;
       } else if (tool.rawArgs) {
-        const m = tool.rawArgs.match(
-          /"content"\s*:\s*"([\s\S]*?)(?:"\s*[,}]|$)/,
+        const streamed = extractStreamingStringField(
+          tool.rawArgs,
+          contentFieldName,
         );
-        if (m) raw = m[1];
+        if (streamed) raw = streamed.value;
       }
 
       if (tool.name === "file_read" && tool.result) {

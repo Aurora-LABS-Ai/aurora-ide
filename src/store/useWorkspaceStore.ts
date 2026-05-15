@@ -205,6 +205,39 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
     lastSetRootPath = cleanPath;
 
+    // If we're SWITCHING workspaces (currentRootPath non-empty AND
+    // differs from the target), flush every dirty tab to disk first.
+    // Previously these were silently lost — the tab list got cleared
+    // and the in-memory edits went with it. Matches VS Code's
+    // workspace-switch behaviour: dirty buffers auto-save rather
+    // than blocking on a modal.
+    if (
+      currentRootPath &&
+      currentRootPath !== cleanPath &&
+      isAuroraRuntimeAvailable()
+    ) {
+      const editorStore = useEditorStore.getState();
+      const dirtyTabs = editorStore.tabs.filter(
+        (tab) => tab.isDirty && tab.type !== "browser",
+      );
+      if (dirtyTabs.length > 0) {
+        console.log(
+          `[WorkspaceStore] Saving ${dirtyTabs.length} dirty tab(s) before workspace switch`,
+        );
+        // Fire-and-forget; we don't block the switch on disk I/O.
+        // Each save independently logs on failure so a single
+        // unwritable tab doesn't poison the rest.
+        for (const tab of dirtyTabs) {
+          editorStore.saveTabToDisk(tab.id).catch((err) => {
+            console.error(
+              `[WorkspaceStore] Failed to auto-save ${tab.path} before workspace switch:`,
+              err,
+            );
+          });
+        }
+      }
+    }
+
     set({ rootPath: cleanPath });
 
     // Update editor store with workspace path
@@ -293,6 +326,23 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
                     if (matchingTab && !matchingTab.isDirty) {
                       try {
                         const newContent = await loadFileContent(changedPath);
+                        // Route through Monaco's `pushEditOperations`
+                        // FIRST so an external change (git checkout,
+                        // formatter, terminal `echo > file`) lands as
+                        // one undoable entry on the user's buffer —
+                        // matches VS Code's "external change merged"
+                        // behaviour. The subsequent reloadTabContent
+                        // call updates Zustand; the @monaco-editor/react
+                        // value-prop diff will see the model already
+                        // matches and skip its own `setValue` (which
+                        // would clobber undo).
+                        const { replaceMonacoFileContent } = await import(
+                          "../lib/monaco-editor-ref"
+                        );
+                        replaceMonacoFileContent(
+                          matchingTab.path,
+                          newContent,
+                        );
                         editorStore.reloadTabContent(
                           matchingTab.id,
                           newContent,
@@ -468,6 +518,24 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }),
 
   clearWorkspace: () => {
+    // Flush dirty tabs to disk before clearing — same rationale as
+    // the switch path in `setRootPath`. Without this, "close
+    // workspace" silently throws away unsaved edits.
+    if (isAuroraRuntimeAvailable()) {
+      const editorStore = useEditorStore.getState();
+      const dirtyTabs = editorStore.tabs.filter(
+        (tab) => tab.isDirty && tab.type !== "browser",
+      );
+      for (const tab of dirtyTabs) {
+        editorStore.saveTabToDisk(tab.id).catch((err) => {
+          console.error(
+            `[WorkspaceStore] Failed to auto-save ${tab.path} on workspace clear:`,
+            err,
+          );
+        });
+      }
+    }
+
     lastSetRootPath = null;
     pendingLoadPath = null;
     isLoadingDirectory = false;

@@ -2,16 +2,27 @@
 //! Wraps `crate::commands::create_folder`.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
+use crate::tools::shell_editor_todo::{FileChangedPayload, IdeEventSink};
 
 use super::resolve_path_for_create;
 
-pub struct FolderCreateTool;
+pub struct FolderCreateTool {
+    sink: Arc<dyn IdeEventSink>,
+}
+
+impl FolderCreateTool {
+    #[must_use]
+    pub fn new(sink: Arc<dyn IdeEventSink>) -> Self {
+        Self { sink }
+    }
+}
 
 #[async_trait]
 impl ToolExecutor for FolderCreateTool {
@@ -64,13 +75,26 @@ impl ToolExecutor for FolderCreateTool {
         .map_err(|err| ToolError::Execution(format!("folder_create task panicked: {err}")))?;
 
         match result {
-            Ok(()) => Ok(serde_json::to_string(&json!({
-                "success": true,
-                "message": format!("Folder created: {raw_path}"),
-                "path": raw_path,
-                "fullPath": resolved.to_string_lossy(),
-            }))
-            .unwrap()),
+            Ok(()) => {
+                let payload = FileChangedPayload::folder_created(
+                    resolved.to_string_lossy().to_string(),
+                    "folder_create",
+                )
+                .with_tool_call_id(ctx.tool_call_id.clone());
+                if let Err(emit_err) = self.sink.emit_file_changed(&payload) {
+                    eprintln!(
+                        "[folder_create] emit_file_changed failed for {raw_path}: {emit_err}"
+                    );
+                }
+
+                Ok(serde_json::to_string(&json!({
+                    "success": true,
+                    "message": format!("Folder created: {raw_path}"),
+                    "path": raw_path,
+                    "fullPath": resolved.to_string_lossy(),
+                }))
+                .unwrap())
+            }
             Err(err) => Ok(serde_json::to_string(&json!({
                 "success": false,
                 "error": err,
@@ -102,7 +126,9 @@ mod tests {
     #[tokio::test]
     async fn creates_nested_folders() {
         let tmp = tempfile::tempdir().unwrap();
-        let tool: Arc<dyn ToolExecutor> = Arc::new(FolderCreateTool);
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FolderCreateTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
         let out = tool
             .execute(
                 serde_json::json!({ "path": "a/b/c" }),
@@ -119,7 +145,9 @@ mod tests {
     async fn fails_when_folder_exists() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("dup")).unwrap();
-        let tool: Arc<dyn ToolExecutor> = Arc::new(FolderCreateTool);
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FolderCreateTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
         let out = tool
             .execute(
                 serde_json::json!({ "path": "dup" }),

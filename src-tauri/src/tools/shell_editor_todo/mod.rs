@@ -66,7 +66,10 @@ pub mod shell_list_processes;
 pub mod shell_spawn;
 pub mod todo_write;
 
-pub use ide_event_sink::{IdeEventSink, NoopIdeEventSink, RecordingIdeEventSink};
+pub use ide_event_sink::{
+    FileChangeKind, FileChangedPayload, IdeEventSink, NoopIdeEventSink, RecordedEvent,
+    RecordingIdeEventSink, FILE_CHANGED_EVENT,
+};
 
 /// Names of every tool this bucket registers, in roster order.
 ///

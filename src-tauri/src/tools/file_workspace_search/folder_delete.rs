@@ -3,16 +3,27 @@
 //! (use `file_delete` instead).
 
 use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
+use crate::tools::shell_editor_todo::{FileChangedPayload, IdeEventSink};
 
 use super::resolve_path;
 
-pub struct FolderDeleteTool;
+pub struct FolderDeleteTool {
+    sink: Arc<dyn IdeEventSink>,
+}
+
+impl FolderDeleteTool {
+    #[must_use]
+    pub fn new(sink: Arc<dyn IdeEventSink>) -> Self {
+        Self { sink }
+    }
+}
 
 #[async_trait]
 impl ToolExecutor for FolderDeleteTool {
@@ -81,13 +92,27 @@ impl ToolExecutor for FolderDeleteTool {
         .map_err(|err| ToolError::Execution(format!("folder_delete task panicked: {err}")))?;
 
         match result {
-            Ok(()) => Ok(serde_json::to_string(&json!({
-                "success": true,
-                "message": format!("Folder deleted: {raw_path}"),
-                "path": raw_path,
-                "fullPath": resolved.to_string_lossy(),
-            }))
-            .unwrap()),
+            Ok(()) => {
+                let payload = FileChangedPayload::deleted(
+                    resolved.to_string_lossy().to_string(),
+                    true,
+                    "folder_delete",
+                )
+                .with_tool_call_id(ctx.tool_call_id.clone());
+                if let Err(emit_err) = self.sink.emit_file_changed(&payload) {
+                    eprintln!(
+                        "[folder_delete] emit_file_changed failed for {raw_path}: {emit_err}"
+                    );
+                }
+
+                Ok(serde_json::to_string(&json!({
+                    "success": true,
+                    "message": format!("Folder deleted: {raw_path}"),
+                    "path": raw_path,
+                    "fullPath": resolved.to_string_lossy(),
+                }))
+                .unwrap())
+            }
             Err(err) => Ok(serde_json::to_string(&json!({
                 "success": false,
                 "error": err,
@@ -121,7 +146,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("sub/inner")).unwrap();
         std::fs::write(tmp.path().join("sub/inner/file.txt"), "x").unwrap();
-        let tool: Arc<dyn ToolExecutor> = Arc::new(FolderDeleteTool);
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FolderDeleteTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
         let out = tool
             .execute(
                 serde_json::json!({ "path": "sub" }),
@@ -138,7 +165,9 @@ mod tests {
     async fn refuses_file() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("a.txt"), "x").unwrap();
-        let tool: Arc<dyn ToolExecutor> = Arc::new(FolderDeleteTool);
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FolderDeleteTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
         let out = tool
             .execute(
                 serde_json::json!({ "path": "a.txt" }),

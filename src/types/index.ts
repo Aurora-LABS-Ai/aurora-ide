@@ -75,6 +75,13 @@ export interface Tab {
   isDirty: boolean;
   isLargeFile?: boolean;
   isMediumFile?: boolean;
+  /**
+   * Content scanning detected this file as binary (null bytes in the
+   * first sample). The editor shows a "binary file" card instead of
+   * letting Monaco mangle the bytes. Image extensions are still
+   * routed to the image preview path (see `CodeEditor` IMAGE_EXTS).
+   */
+  isBinary?: boolean;
   isLoading?: boolean;
   language: string;
   /**

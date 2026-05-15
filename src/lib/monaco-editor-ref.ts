@@ -120,6 +120,120 @@ export const replaceMonacoFileContent = (
   return true;
 };
 
+/**
+ * Visual-only (NON-undoable) write for the live-streaming preview path.
+ *
+ * `replaceMonacoFileContent` pushes an undo entry on every call — fine for
+ * the *final* commit, but during the streaming phase the agent's tool args
+ * arrive in dozens of chunks. Pushing one undo entry per chunk would mean
+ * the user has to Ctrl+Z 50 times to revert a single AI write.
+ *
+ * Solution: during streaming use `model.applyEdits`, which mutates the
+ * model in place without touching the undo stack. The user sees the
+ * file content fill in live but Monaco's undo history is untouched.
+ * Once the Rust runtime emits the post-write `agent_file_changed` event,
+ * the global file-sync handler calls `replaceMonacoFileContent` to lay
+ * down the final state as ONE undoable entry — restoring the
+ * "Ctrl+Z reverts the AI edit" contract.
+ *
+ * Returns `true` when the model was found and the edit applied;
+ * `false` when no editor is mounted for `path` (caller can fall back
+ * to the Zustand tab state, which the live-preview service already does).
+ */
+export const streamPreviewMonacoFileContent = (
+  path: string,
+  partialContent: string,
+): boolean => {
+  const editorInstance = getMonacoEditorForPath(path);
+  if (!editorInstance) return false;
+
+  const model = editorInstance.getModel();
+  if (!model) return false;
+
+  if (model.getValue() === partialContent) return true;
+
+  // `applyEdits` does NOT push to the undo stack — that's the whole
+  // point of using it here over `pushEditOperations`. The intermediate
+  // streaming chunks should be invisible to undo; only the final
+  // committed state (applied via `replaceMonacoFileContent` from the
+  // file_changed handler) deserves an undo entry.
+  model.applyEdits([
+    {
+      range: model.getFullModelRange(),
+      text: partialContent,
+      forceMoveMarkers: true,
+    },
+  ]);
+  return true;
+};
+
+/**
+ * Commit a finalised AI edit that was previously previewed via
+ * `streamPreviewMonacoFileContent`.
+ *
+ * The model is currently at the "preview" state (last streamed chunk).
+ * To make the AI edit one clean undo entry — Ctrl+Z reverts the entire
+ * AI write, not just the last chunk — we:
+ *
+ *   1. Silently snap the model back to `originalContent` via
+ *      `applyEdits` (no undo entry).
+ *   2. Push the final content through `pushEditOperations` (one undo
+ *      entry).
+ *
+ * Both happen in the same synchronous tick, so the user never sees the
+ * intermediate "back to original" flash — Monaco coalesces the two
+ * mutations into a single repaint.
+ *
+ * Returns `true` when applied, `false` when no editor is mounted for
+ * `path` (the caller's Zustand fallback handles that case).
+ */
+export const commitStreamedMonacoFileContent = (
+  path: string,
+  originalContent: string,
+  finalContent: string,
+): boolean => {
+  const editorInstance = getMonacoEditorForPath(path);
+  if (!editorInstance) return false;
+
+  const model = editorInstance.getModel();
+  if (!model) return false;
+
+  if (model.getValue() === finalContent && originalContent === finalContent) {
+    return true;
+  }
+
+  // Step 1 — silently restore the pre-AI-edit content. `applyEdits`
+  // mutates the model without touching the undo stack, so the user
+  // can't tell this happened.
+  if (model.getValue() !== originalContent) {
+    model.applyEdits([
+      {
+        range: model.getFullModelRange(),
+        text: originalContent,
+        forceMoveMarkers: true,
+      },
+    ]);
+  }
+
+  // Step 2 — push the final content as ONE undoable edit. Ctrl+Z
+  // reverts the AI write back to `originalContent`.
+  if (originalContent !== finalContent) {
+    model.pushEditOperations(
+      editorInstance.getSelections() ?? null,
+      [
+        {
+          range: model.getFullModelRange(),
+          text: finalContent,
+          forceMoveMarkers: true,
+        },
+      ],
+      () => null,
+    );
+  }
+
+  return true;
+};
+
 export const triggerMonacoUndo = () => {
   if (activeEditor) {
     activeEditor.focus();

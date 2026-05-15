@@ -121,6 +121,20 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
         });
         Ok(())
     }
+
+    fn emit_file_changed(
+        &self,
+        payload: &tools::shell_editor_todo::FileChangedPayload,
+    ) -> Result<(), String> {
+        // Forward the full payload verbatim. `FileChangedPayload`
+        // is `serde(rename_all = "camelCase")` so the frontend reads
+        // `kind`, `isDirectory`, `oldPath`, `sourceTool`, `toolCallId`
+        // without case juggling.
+        self.emit_payload(
+            tools::shell_editor_todo::FILE_CHANGED_EVENT,
+            payload.clone(),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------

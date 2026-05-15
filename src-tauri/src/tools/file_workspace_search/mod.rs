@@ -69,27 +69,41 @@ pub mod workspace_tree;
 /// re-registration overwrites the existing entry (this is what the
 /// underlying `ToolRegistry` does).
 ///
+/// `sink` is shared across every mutating tool (`file_write`,
+/// `file_create`, `file_patch`, `search_replace`,
+/// `multi_search_replace`, `file_delete`, `folder_create`,
+/// `folder_delete`) so they can fire the `agent_file_changed` Tauri
+/// event after a successful disk write — that's how open Monaco
+/// buffers, the explorer tree, and the pending-changes diff UI find
+/// out that disk just moved. Pass [`NoopIdeEventSink`] in unit tests
+/// that don't care about emissions.
+///
 /// The contract names this `pub fn register(reg: &mut ToolRegistry)`,
 /// but [`ToolRegistry::register`] takes `&self` (the registry is an
 /// `Arc<DashMap>` under the hood). We keep `&mut` on the public
 /// signature so the contract still type-checks against an exclusive
 /// borrow Sub-E may have, and we just don't need the `mut` ourselves.
-pub fn register(reg: &mut ToolRegistry) {
+pub fn register(
+    reg: &mut ToolRegistry,
+    sink: std::sync::Arc<dyn crate::tools::shell_editor_todo::IdeEventSink>,
+) {
     use std::sync::Arc;
 
     reg.register(Arc::new(file_read::FileReadTool));
-    reg.register(Arc::new(file_write::FileWriteTool));
-    reg.register(Arc::new(file_patch::FilePatchTool));
-    reg.register(Arc::new(file_create::FileCreateTool));
-    reg.register(Arc::new(file_delete::FileDeleteTool));
+    reg.register(Arc::new(file_write::FileWriteTool::new(sink.clone())));
+    reg.register(Arc::new(file_patch::FilePatchTool::new(sink.clone())));
+    reg.register(Arc::new(file_create::FileCreateTool::new(sink.clone())));
+    reg.register(Arc::new(file_delete::FileDeleteTool::new(sink.clone())));
     reg.register(Arc::new(file_exists::FileExistsTool));
     reg.register(Arc::new(grep::GrepTool));
     reg.register(Arc::new(multi_file_read::MultiFileReadTool));
-    reg.register(Arc::new(search_replace::SearchReplaceTool));
-    reg.register(Arc::new(multi_search_replace::MultiSearchReplaceTool));
+    reg.register(Arc::new(search_replace::SearchReplaceTool::new(sink.clone())));
+    reg.register(Arc::new(multi_search_replace::MultiSearchReplaceTool::new(
+        sink.clone(),
+    )));
     reg.register(Arc::new(workspace_tree::WorkspaceTreeTool));
-    reg.register(Arc::new(folder_create::FolderCreateTool));
-    reg.register(Arc::new(folder_delete::FolderDeleteTool));
+    reg.register(Arc::new(folder_create::FolderCreateTool::new(sink.clone())));
+    reg.register(Arc::new(folder_delete::FolderDeleteTool::new(sink)));
     reg.register(Arc::new(aurora_search::AuroraSearchTool));
     reg.register(Arc::new(auroro_websearch::AuroroWebSearchTool));
 }
@@ -238,16 +252,189 @@ pub(crate) fn map_path_error(error: PathSafetyError) -> ToolError {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CRLF / BOM preservation
+// ---------------------------------------------------------------------------
+//
+// LLMs return file content as plain UTF-8 with `\n` line endings. Writing
+// that verbatim onto an existing Windows source file (CRLF) silently
+// flips every line, which:
+//   - Triggers a giant noisy diff in git blame.
+//   - Confuses editors / tools that key off mtime+content equality.
+//   - Breaks tools that depend on CRLF (some Windows VS / .NET tooling).
+//
+// We mirror VS Code / Cursor / JetBrains here: detect the line ending
+// the file currently uses, then normalize the new content to match
+// before writing. Same dance for the UTF-8 BOM (`EF BB BF`) — if the
+// original starts with one and the new content doesn't, prepend it.
+
+const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
+
+/// What line endings does this byte slice predominantly use?
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LineEnding {
+    /// `\n` only — Unix-style.
+    Lf,
+    /// `\r\n` — Windows-style.
+    Crlf,
+}
+
+/// Heuristic: scan the first ~8 KiB and count CRLF vs LF. Whichever
+/// wins is treated as the file's convention. Ties go to LF (most
+/// modern editors default there). Returns `None` when no newlines
+/// were seen in the sampled window (binary or single-line file).
+pub(crate) fn detect_line_ending(bytes: &[u8]) -> Option<LineEnding> {
+    let window = &bytes[..bytes.len().min(8 * 1024)];
+    let mut lf = 0u32;
+    let mut crlf = 0u32;
+    let mut i = 0;
+    while i < window.len() {
+        let b = window[i];
+        if b == b'\n' {
+            // CRLF only counts if the preceding byte was \r.
+            if i > 0 && window[i - 1] == b'\r' {
+                crlf += 1;
+            } else {
+                lf += 1;
+            }
+        }
+        i += 1;
+    }
+    if lf == 0 && crlf == 0 {
+        return None;
+    }
+    if crlf > lf {
+        Some(LineEnding::Crlf)
+    } else {
+        Some(LineEnding::Lf)
+    }
+}
+
+/// Convert `content` so its line endings match `target`. No-op if
+/// `target` is `None` (no newlines seen, so we don't care). Always
+/// normalises mixed input first by stripping `\r` before `\n`, then
+/// re-emitting in the target style — that way we don't accidentally
+/// double-`\r` on a file that already had CRLF.
+pub(crate) fn normalize_line_endings(content: &str, target: Option<LineEnding>) -> String {
+    let Some(target) = target else {
+        return content.to_string();
+    };
+    let normalized: String = content.replace("\r\n", "\n");
+    match target {
+        LineEnding::Lf => normalized,
+        LineEnding::Crlf => normalized.replace('\n', "\r\n"),
+    }
+}
+
+/// Read the file at `path` (if it exists) and return:
+///   - the LF/CRLF convention to honour on the next write
+///   - whether the file currently starts with a UTF-8 BOM
+///
+/// Errors and non-existence both resolve to `(None, false)` — those
+/// cases shouldn't fail the caller; they just mean "no convention to
+/// preserve, write what you have".
+pub(crate) fn detect_write_conventions(path: &std::path::Path) -> (Option<LineEnding>, bool) {
+    let Ok(bytes) = std::fs::read(path) else {
+        return (None, false);
+    };
+    let has_bom = bytes.starts_with(UTF8_BOM);
+    let body = if has_bom { &bytes[UTF8_BOM.len()..] } else { &bytes[..] };
+    (detect_line_ending(body), has_bom)
+}
+
+/// Apply `(line_ending, bom)` conventions to `new_content` and return
+/// the byte sequence ready for `std::fs::write`.
+pub(crate) fn apply_write_conventions(
+    new_content: &str,
+    line_ending: Option<LineEnding>,
+    bom: bool,
+) -> Vec<u8> {
+    let normalized = normalize_line_endings(new_content, line_ending);
+    if bom && !normalized.as_bytes().starts_with(UTF8_BOM) {
+        let mut out = Vec::with_capacity(UTF8_BOM.len() + normalized.len());
+        out.extend_from_slice(UTF8_BOM);
+        out.extend_from_slice(normalized.as_bytes());
+        out
+    } else {
+        normalized.into_bytes()
+    }
+}
+
+#[cfg(test)]
+mod write_convention_tests {
+    use super::*;
+
+    #[test]
+    fn detects_crlf() {
+        assert_eq!(detect_line_ending(b"a\r\nb\r\nc"), Some(LineEnding::Crlf));
+    }
+
+    #[test]
+    fn detects_lf() {
+        assert_eq!(detect_line_ending(b"a\nb\nc"), Some(LineEnding::Lf));
+    }
+
+    #[test]
+    fn no_newlines_returns_none() {
+        assert_eq!(detect_line_ending(b"single line"), None);
+    }
+
+    #[test]
+    fn mixed_prefers_majority() {
+        // 2 CRLF + 1 LF → CRLF wins
+        assert_eq!(detect_line_ending(b"a\r\nb\nc\r\n"), Some(LineEnding::Crlf));
+    }
+
+    #[test]
+    fn normalize_to_crlf_idempotent() {
+        let already = "a\r\nb\r\n";
+        assert_eq!(
+            normalize_line_endings(already, Some(LineEnding::Crlf)),
+            already
+        );
+    }
+
+    #[test]
+    fn normalize_lf_input_to_crlf() {
+        assert_eq!(
+            normalize_line_endings("a\nb\nc", Some(LineEnding::Crlf)),
+            "a\r\nb\r\nc"
+        );
+    }
+
+    #[test]
+    fn apply_conventions_preserves_bom() {
+        let out = apply_write_conventions("hello", None, true);
+        assert!(out.starts_with(UTF8_BOM));
+        assert_eq!(&out[UTF8_BOM.len()..], b"hello");
+    }
+
+    #[test]
+    fn apply_conventions_does_not_double_bom() {
+        let with_bom = format!("\u{feff}hello");
+        let out = apply_write_conventions(&with_bom, None, true);
+        // Exactly one BOM at the start.
+        assert!(out.starts_with(UTF8_BOM));
+        assert!(!out[UTF8_BOM.len()..].starts_with(UTF8_BOM));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent_runtime::tool_executor::ToolRegistry;
+    use crate::tools::shell_editor_todo::NoopIdeEventSink;
     use std::collections::HashSet;
+    use std::sync::Arc;
+
+    fn test_sink() -> Arc<dyn crate::tools::shell_editor_todo::IdeEventSink> {
+        Arc::new(NoopIdeEventSink)
+    }
 
     #[test]
     fn register_mounts_all_15_tools() {
         let mut reg = ToolRegistry::new();
-        register(&mut reg);
+        register(&mut reg, test_sink());
         assert_eq!(reg.len(), TOOL_NAMES.len(), "expected 15 tools in bucket");
 
         let registered: HashSet<String> = reg.names().into_iter().collect();
@@ -262,7 +449,7 @@ mod tests {
     #[test]
     fn schemas_match_tool_names() {
         let mut reg = ToolRegistry::new();
-        register(&mut reg);
+        register(&mut reg, test_sink());
         for &name in TOOL_NAMES {
             let tool = reg.get(name).unwrap_or_else(|| panic!("{name} missing"));
             let schema = tool.schema();

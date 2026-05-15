@@ -28,11 +28,23 @@ import { triggerMonacoUndo, triggerMonacoRedo } from '../../lib/monaco-editor-re
 import clsx from 'clsx';
 import { FileIcon } from '../explorer/FileIcons';
 
+// HTML5 dataTransfer key. The TabBar drag handlers tag the payload
+// with this MIME type so the explorer (which has its own internal
+// drag system that ALSO uses 'text/plain') can't accidentally match
+// it — only TabBar drops respond to a TabBar drag.
+const TAB_DRAG_MIME = "application/x-aurora-tab-id";
+
 export const TabBar: React.FC = () => {
-  const { tabs, activeTabId, setActiveTab, closeTab, openBrowserTab, saveTabToDisk } = useEditorStore();
+  const { tabs, activeTabId, setActiveTab, closeTab, openBrowserTab, saveTabToDisk, reorderTab } = useEditorStore();
   const autoSave = useSettingsStore((state) => state.autoSave);
   const [pendingUnsavedTabId, setPendingUnsavedTabId] = useState<string | null>(null);
   const [isSavingPendingClose, setIsSavingPendingClose] = useState(false);
+  // The id of the tab currently being dragged + the id of the
+  // current drop target. Used for the visual drop indicator and to
+  // refuse a self-drop (which would no-op anyway but causes a
+  // pointless re-render).
+  const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
   const pendingUnsavedTab = pendingUnsavedTabId
     ? tabs.find((tab) => tab.id === pendingUnsavedTabId) ?? null
@@ -136,15 +148,79 @@ export const TabBar: React.FC = () => {
       </div>
       
       {/* Tabs - scrollable */}
-      <div className="flex flex-1 overflow-x-auto overflow-y-hidden scrollbar-none">
+      <div
+        className="flex flex-1 overflow-x-auto overflow-y-hidden scrollbar-none"
+        onDragOver={(e) => {
+          // Allow drop on the empty tail of the tab strip — drops the
+          // dragged tab at the end. Only handles tab-MIME drops, so
+          // the explorer's file-drag-into-editor case still falls
+          // through to whatever it was bound to before.
+          if (e.dataTransfer.types.includes(TAB_DRAG_MIME)) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+          }
+        }}
+        onDrop={(e) => {
+          const draggedId = e.dataTransfer.getData(TAB_DRAG_MIME);
+          if (!draggedId) return;
+          e.preventDefault();
+          reorderTab(draggedId, null);
+          setDraggingTabId(null);
+          setDropTargetId(null);
+        }}
+      >
         {tabs.map(tab => (
           <div
             key={tab.id}
+            draggable={!tab.isLoading}
+            onDragStart={(e) => {
+              e.dataTransfer.effectAllowed = "move";
+              e.dataTransfer.setData(TAB_DRAG_MIME, tab.id);
+              // Also set a fallback text/plain payload so external
+              // drop targets (e.g. drag to a file manager) get a
+              // sensible label rather than an empty drop.
+              if (tab.path) {
+                e.dataTransfer.setData("text/plain", tab.path);
+              }
+              setDraggingTabId(tab.id);
+            }}
+            onDragEnd={() => {
+              setDraggingTabId(null);
+              setDropTargetId(null);
+            }}
+            onDragOver={(e) => {
+              if (!e.dataTransfer.types.includes(TAB_DRAG_MIME)) return;
+              if (draggingTabId === tab.id) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              if (dropTargetId !== tab.id) setDropTargetId(tab.id);
+            }}
+            onDragLeave={(e) => {
+              // Only clear if leaving to outside the tab itself.
+              // dragLeave fires when crossing child boundaries too.
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                if (dropTargetId === tab.id) setDropTargetId(null);
+              }
+            }}
+            onDrop={(e) => {
+              const draggedId = e.dataTransfer.getData(TAB_DRAG_MIME);
+              if (!draggedId || draggedId === tab.id) {
+                setDraggingTabId(null);
+                setDropTargetId(null);
+                return;
+              }
+              e.preventDefault();
+              e.stopPropagation();
+              reorderTab(draggedId, tab.id);
+              setDraggingTabId(null);
+              setDropTargetId(null);
+            }}
             className={clsx(
               "group relative flex h-full shrink-0 items-center gap-1.5 border-r border-border px-3 cursor-pointer select-none transition-colors",
               activeTabId === tab.id
                 ? "text-text-primary"
                 : "text-text-secondary hover:text-text-primary",
+              draggingTabId === tab.id && "opacity-40",
             )}
             style={{
               // Active tab visually "becomes" the editor surface (VS Code style)
@@ -171,6 +247,12 @@ export const TabBar: React.FC = () => {
             onClick={() => setActiveTab(tab.id)}
             title={tab.isDeleted ? `${tab.filename} (deleted)` : tab.filename}
           >
+            {dropTargetId === tab.id && draggingTabId && draggingTabId !== tab.id && (
+              <span
+                className="absolute left-0 top-0 bottom-0 w-[2px] pointer-events-none"
+                style={{ background: 'var(--aurora-common-primary)' }}
+              />
+            )}
             {activeTabId === tab.id && (
               <span
                 className="absolute inset-x-0 top-0 h-[2px]"

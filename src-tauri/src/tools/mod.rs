@@ -100,7 +100,7 @@ pub fn register_builtin_tools(
     // only through a cloned Arc). `ToolRegistry::register` takes
     // `&self`, so the transfer is a normal interior-mutating insert.
     let mut staging = ToolRegistry::new();
-    file_workspace_search::register(&mut staging);
+    file_workspace_search::register(&mut staging, sink.clone());
     shell_editor_todo::register(&mut staging, sink);
     if let Some(manager) = browser_manager {
         browser::register(&mut staging, manager);

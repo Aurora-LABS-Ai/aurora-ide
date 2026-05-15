@@ -52,6 +52,14 @@ interface EditorState {
     request: Omit<EditorRevealRequest, "requestId" | "tabId">,
   ) => void;
 
+  /**
+   * Move `tabId` so it lands at the position currently occupied by
+   * `beforeTabId` (drop-on-target semantics). When `beforeTabId` is
+   * `null`, the tab moves to the end. Used by the TabBar drag-drop
+   * reordering handlers.
+   */
+  reorderTab: (tabId: string, beforeTabId: string | null) => void;
+
   // Database actions
   restoreWorkspace: () => Promise<void>;
   saveTabToDisk: (tabId: string) => Promise<void>;
@@ -89,6 +97,27 @@ let nextRevealRequestId = 1;
 const LARGE_FILE_THRESHOLD = 100 * 1024; // 100KB - disable most features, use plaintext
 const MEDIUM_FILE_THRESHOLD = 50 * 1024; // 50KB - disable some features but keep syntax highlighting
 
+/**
+ * Heuristic binary-file detector. A real binary read through the
+ * Tauri `read_file_content` command comes back full of replacement
+ * characters and embedded NUL bytes; we sample the first 8 KiB so
+ * the cost stays flat regardless of file size. NUL is the canonical
+ * "definitely binary" signal — text files don't contain raw NULs —
+ * and a high ratio of U+FFFD replacement characters indicates the
+ * source bytes didn't decode cleanly as UTF-8.
+ */
+const isLikelyBinaryContent = (content: string): boolean => {
+  if (content.length === 0) return false;
+  const sample = content.slice(0, 8 * 1024);
+  let replacement = 0;
+  for (let i = 0; i < sample.length; i++) {
+    const code = sample.charCodeAt(i);
+    if (code === 0) return true;
+    if (code === 0xfffd) replacement++;
+  }
+  return replacement / sample.length > 0.3;
+};
+
 export const useEditorStore = create<EditorState>((set, get) => ({
   tabs: [],
   activeTabId: null,
@@ -115,6 +144,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
     const isLargeFile = content.length > LARGE_FILE_THRESHOLD;
     const isMediumFile = !isLargeFile && content.length > MEDIUM_FILE_THRESHOLD;
+    // Detect binary content (NUL bytes / mass replacement chars) so
+    // the CodeEditor can show a "binary file" card instead of dumping
+    // garbled bytes into Monaco. Skip loading placeholders so the
+    // initial empty content doesn't false-positive.
+    const isBinary = !isLoading && isLikelyBinaryContent(content);
     const resolvedLanguage = language || getLanguageFromExtension(filename);
     const effectiveLanguage = isLargeFile ? "plaintext" : resolvedLanguage;
     const newTab: Tab = {
@@ -125,6 +159,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       isDirty: false,
       isLargeFile,
       isMediumFile,
+      isBinary,
       isLoading,
       language: effectiveLanguage,
       mtime,
@@ -203,6 +238,36 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     // NO saveWorkspace() here - save only on window close
   },
 
+  reorderTab: (tabId, beforeTabId) => {
+    set((state) => {
+      const fromIndex = state.tabs.findIndex((t) => t.id === tabId);
+      if (fromIndex === -1) return state;
+      const tab = state.tabs[fromIndex];
+
+      // Compute the destination index. `beforeTabId === null` means
+      // "drop at the end". Otherwise, look up the target's index in
+      // the array WITHOUT the source removed; we splice the source
+      // out first, then re-insert.
+      const without = state.tabs.filter((t) => t.id !== tabId);
+      let toIndex = without.length;
+      if (beforeTabId !== null) {
+        const beforeIndex = without.findIndex((t) => t.id === beforeTabId);
+        if (beforeIndex !== -1) toIndex = beforeIndex;
+      }
+
+      // Same slot — bail to avoid an unnecessary state churn that
+      // would re-render every TabBar item and the active editor.
+      if (fromIndex === toIndex) return state;
+
+      const reordered = [
+        ...without.slice(0, toIndex),
+        tab,
+        ...without.slice(toIndex),
+      ];
+      return { tabs: reordered };
+    });
+  },
+
   updateTabContent: (tabId, content) =>
     set((state) => ({
       tabs: state.tabs.map((tab) => {
@@ -229,6 +294,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         const isLargeFile = content.length > LARGE_FILE_THRESHOLD;
         const isMediumFile =
           !isLargeFile && content.length > MEDIUM_FILE_THRESHOLD;
+        const isBinary = !isLoading && isLikelyBinaryContent(content);
         return {
           ...tab,
           content,
@@ -236,6 +302,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           isDeleted: false, // File exists again, clear deleted flag
           isLargeFile,
           isMediumFile,
+          isBinary,
           isLoading,
           language: isLargeFile ? "plaintext" : tab.language,
           // Only override mtime when caller actually passed one. Undefined

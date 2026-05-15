@@ -38,6 +38,138 @@ pub const READ_LINTS_EVENT: &str = "agent_read_lints";
 /// Tauri event channel emitted by [`crate::tools::shell_editor_todo::todo_write`].
 pub const TODO_WRITE_EVENT: &str = "agent_todo_write";
 
+/// Tauri event channel fired after every successful file/folder mutation
+/// by an agent tool (`file_write`, `file_create`, `file_patch`,
+/// `search_replace`, `multi_search_replace`, `file_delete`,
+/// `folder_create`, `folder_delete`). The frontend listens on this
+/// channel to keep open Monaco buffers, the explorer tree, and the
+/// pending-changes diff UI in sync with disk.
+///
+/// Payload shape lives in [`FileChangedPayload`]; serialised in
+/// camelCase to match the frontend convention.
+pub const FILE_CHANGED_EVENT: &str = "agent_file_changed";
+
+/// What kind of filesystem mutation just happened.
+///
+/// Serialised as a lowercase string so the frontend can `switch` on it:
+/// `"created"`, `"modified"`, `"deleted"`, `"renamed"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileChangeKind {
+    Created,
+    Modified,
+    Deleted,
+    Renamed,
+}
+
+/// One-shot payload for a single completed file/folder mutation.
+///
+/// - `path` — final absolute path on disk after the mutation. For
+///   `Renamed`, this is the new path; the previous path is in `old_path`.
+/// - `kind` — see [`FileChangeKind`].
+/// - `content` — for `Created` and `Modified`, the *full* new content
+///   the tool just wrote. The frontend uses this to refresh the
+///   Monaco model without a second disk read (`agent_file_changed`
+///   would otherwise race with the file_cache invalidation). `None`
+///   for binary files, for folder operations, and for `Deleted`/
+///   `Renamed`.
+/// - `is_directory` — `true` when the path refers to a folder, so the
+///   frontend can skip Monaco buffer updates and only touch the
+///   explorer tree.
+/// - `old_path` — only set for `Renamed`. Holds the path the tab was
+///   previously bound to so the frontend can find and update the
+///   in-memory tab.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileChangedPayload {
+    pub path: String,
+    pub kind: FileChangeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    pub is_directory: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
+    /// Optional human label for the tool that produced the change
+    /// (`"file_write"`, `"search_replace"`, …). Surfaced in the
+    /// pending-changes card; safe to ignore.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_tool: Option<String>,
+    /// Optional tool call id so the frontend can correlate the final
+    /// commit with the live-preview session that was streaming
+    /// partial content for this same call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+impl FileChangedPayload {
+    /// Convenience: "file_write/file_patch/search_replace just wrote
+    /// `content` to `path`". The most common case.
+    #[must_use]
+    pub fn modified(path: impl Into<String>, content: String, source_tool: &str) -> Self {
+        Self {
+            path: path.into(),
+            kind: FileChangeKind::Modified,
+            content: Some(content),
+            is_directory: false,
+            old_path: None,
+            source_tool: Some(source_tool.to_string()),
+            tool_call_id: None,
+        }
+    }
+
+    /// Convenience: "file_create just produced this new file".
+    #[must_use]
+    pub fn created(path: impl Into<String>, content: String, source_tool: &str) -> Self {
+        Self {
+            path: path.into(),
+            kind: FileChangeKind::Created,
+            content: Some(content),
+            is_directory: false,
+            old_path: None,
+            source_tool: Some(source_tool.to_string()),
+            tool_call_id: None,
+        }
+    }
+
+    /// Convenience: "file_delete removed this path".
+    #[must_use]
+    pub fn deleted(path: impl Into<String>, is_directory: bool, source_tool: &str) -> Self {
+        Self {
+            path: path.into(),
+            kind: FileChangeKind::Deleted,
+            content: None,
+            is_directory,
+            old_path: None,
+            source_tool: Some(source_tool.to_string()),
+            tool_call_id: None,
+        }
+    }
+
+    /// Convenience: "folder_create made this folder".
+    #[must_use]
+    pub fn folder_created(path: impl Into<String>, source_tool: &str) -> Self {
+        Self {
+            path: path.into(),
+            kind: FileChangeKind::Created,
+            content: None,
+            is_directory: true,
+            old_path: None,
+            source_tool: Some(source_tool.to_string()),
+            tool_call_id: None,
+        }
+    }
+
+    /// Attach the originating tool_use_id so the frontend can match
+    /// this final commit against the in-flight live-preview session
+    /// (avoids a flash when the streamed preview content equals the
+    /// final committed content).
+    #[must_use]
+    pub fn with_tool_call_id(mut self, id: impl Into<String>) -> Self {
+        self.tool_call_id = Some(id.into());
+        self
+    }
+}
+
 /// One in-flight shell stream request handed to [`IdeEventSink::spawn_shell_stream`].
 ///
 /// The production sink uses these to call
@@ -53,12 +185,29 @@ pub struct ShellStreamRequest {
 }
 
 /// Recorded emission for the verify crate.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RecordedEvent {
     EditorOpen { path: String, line: Option<u64>, column: Option<u64> },
     ReadLints { paths: Vec<String> },
     TodoWrite { todos: Value },
     ShellStream(ShellStreamRequest),
+    FileChanged(FileChangedPayload),
+}
+
+// Manual `Eq` impl is impossible because `FileChangedPayload` owns
+// `Option<String>` content that may differ — we instead derive
+// `PartialEq` for testing convenience and drop `Eq`. Tests can still
+// `assert_eq!` on `Vec<RecordedEvent>`.
+impl PartialEq for FileChangedPayload {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+            && self.kind == other.kind
+            && self.content == other.content
+            && self.is_directory == other.is_directory
+            && self.old_path == other.old_path
+            && self.source_tool == other.source_tool
+            && self.tool_call_id == other.tool_call_id
+    }
 }
 
 #[async_trait]
@@ -86,6 +235,14 @@ pub trait IdeEventSink: Send + Sync + 'static {
     /// becomes the channel suffix the frontend already listens on
     /// (`shell-stream-{request_id}`). Tests just record the request.
     async fn spawn_shell_stream(&self, req: ShellStreamRequest) -> Result<(), String>;
+
+    /// Emit the [`FILE_CHANGED_EVENT`] Tauri event so the frontend can
+    /// refresh open Monaco buffers, the explorer tree, and the
+    /// pending-changes diff UI after a successful tool-driven file
+    /// mutation. Fire-and-forget — failure to emit is surfaced as
+    /// `Err` but tool callers map it to a soft warning rather than
+    /// failing the tool itself (the file is already safely on disk).
+    fn emit_file_changed(&self, payload: &FileChangedPayload) -> Result<(), String>;
 }
 
 /// No-op sink for unit tests that don't care about emissions.
@@ -114,6 +271,10 @@ impl IdeEventSink for NoopIdeEventSink {
     }
 
     async fn spawn_shell_stream(&self, _req: ShellStreamRequest) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn emit_file_changed(&self, _payload: &FileChangedPayload) -> Result<(), String> {
         Ok(())
     }
 }
@@ -190,6 +351,10 @@ impl IdeEventSink for RecordingIdeEventSink {
 
     async fn spawn_shell_stream(&self, req: ShellStreamRequest) -> Result<(), String> {
         self.record(RecordedEvent::ShellStream(req))
+    }
+
+    fn emit_file_changed(&self, payload: &FileChangedPayload) -> Result<(), String> {
+        self.record(RecordedEvent::FileChanged(payload.clone()))
     }
 }
 

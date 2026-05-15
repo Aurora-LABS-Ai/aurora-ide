@@ -9,6 +9,8 @@
 //! `apply_multi_search_replace` calls and reuses the response
 //! renderer in [`super::search_replace::render_response`].
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -16,13 +18,23 @@ use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 use crate::commands::editor_ops::{
     apply_multi_search_replace, apply_search_replace, ApplyMultiSearchReplaceRequest,
-    ApplySearchReplaceRequest, SearchReplaceItem,
+    ApplySearchReplaceRequest, SearchReplaceItem, SearchReplaceResponse,
 };
+use crate::tools::shell_editor_todo::IdeEventSink;
 
 use super::resolve_path;
-use super::search_replace::render_response;
+use super::search_replace::{emit_post_write, render_response};
 
-pub struct FilePatchTool;
+pub struct FilePatchTool {
+    sink: Arc<dyn IdeEventSink>,
+}
+
+impl FilePatchTool {
+    #[must_use]
+    pub fn new(sink: Arc<dyn IdeEventSink>) -> Self {
+        Self { sink }
+    }
+}
 
 #[async_trait]
 impl ToolExecutor for FilePatchTool {
@@ -132,6 +144,15 @@ impl ToolExecutor for FilePatchTool {
             })
             .await
             .map_err(ToolError::Execution)?;
+            if matches!(response, SearchReplaceResponse::Ok { .. }) {
+                emit_post_write(
+                    &*self.sink,
+                    &resolved_str,
+                    "file_patch",
+                    &ctx.tool_call_id,
+                )
+                .await;
+            }
             return Ok(render_response(&raw_path, &resolved_str, response, true));
         }
 
@@ -171,6 +192,10 @@ impl ToolExecutor for FilePatchTool {
         .await
         .map_err(ToolError::Execution)?;
 
+        if matches!(response, SearchReplaceResponse::Ok { .. }) {
+            emit_post_write(&*self.sink, &resolved_str, "file_patch", &ctx.tool_call_id).await;
+        }
+
         Ok(render_response(&raw_path, &resolved_str, response, false))
     }
 }
@@ -196,7 +221,9 @@ mod tests {
     async fn single_form_matches_search_replace() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("a.txt"), "alpha\n").unwrap();
-        let tool: Arc<dyn ToolExecutor> = Arc::new(FilePatchTool);
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FilePatchTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
         let out = tool
             .execute(
                 serde_json::json!({
@@ -217,7 +244,9 @@ mod tests {
     async fn batch_form_matches_multi_search_replace() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("b.txt"), "one\ntwo\n").unwrap();
-        let tool: Arc<dyn ToolExecutor> = Arc::new(FilePatchTool);
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FilePatchTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
         let out = tool
             .execute(
                 serde_json::json!({
@@ -238,7 +267,9 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_empty_input() {
-        let tool: Arc<dyn ToolExecutor> = Arc::new(FilePatchTool);
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FilePatchTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
         let err = tool
             .execute(serde_json::json!({ "path": "x" }), &ctx_for(None))
             .await

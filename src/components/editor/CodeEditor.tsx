@@ -29,7 +29,7 @@ import { useUiStore } from '../../store/useUiStore';
 import { themeService, getMonacoThemeId } from '../../services/theme-service';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { isTauri } from '../../lib/tauri';
-import { Search, Settings, Eye, FileCode, Columns, AlertTriangle } from 'lucide-react';
+import { Search, Settings, Eye, FileCode, Columns, AlertTriangle, FileWarning } from 'lucide-react';
 import { BrowserTab } from './BrowserTab';
 import { MarkdownPreview } from './MarkdownPreview';
 import {
@@ -322,6 +322,37 @@ export const CodeEditor: React.FC = () => {
             Image preview unavailable outside the desktop app.
           </div>
         )}
+      </div>
+    );
+  }
+
+  // Binary file guard. The Tauri `read_file_content` command always
+  // decodes as UTF-8, so a real binary (`.exe`, `.dll`, `.pdf`, large
+  // archive, packed model weights, …) comes back full of replacement
+  // characters or embedded NULs. Letting Monaco render that produces
+  // tens of thousands of "synthetic" tokens, freezes the layout, and
+  // can crash the WebView on really large blobs. Show a friendly card
+  // instead and let the user reveal-in-explorer to handle it
+  // out-of-band.
+  if (activeTab.isBinary && !activeTab.isLoading) {
+    return (
+      <div className="flex-1 bg-editor overflow-auto flex items-center justify-center">
+        <div className="text-center max-w-md px-6">
+          <FileWarning
+            size={48}
+            className="mx-auto mb-4 text-yellow-500/70"
+          />
+          <p className="text-sm text-text-primary mb-1">
+            {activeTab.filename}
+          </p>
+          <p className="text-xs text-text-secondary">
+            Binary file — refusing to open as text.
+          </p>
+          <p className="text-[11px] text-text-disabled mt-3">
+            {(activeTab.content.length / 1024).toFixed(0)} KB •
+            {' '}contains non-text bytes
+          </p>
+        </div>
       </div>
     );
   }

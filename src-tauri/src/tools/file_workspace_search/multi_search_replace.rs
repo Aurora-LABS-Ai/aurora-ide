@@ -4,6 +4,8 @@
 //! with `write: true`. All replacements share the original file
 //! snapshot and either all apply or none do.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -11,12 +13,23 @@ use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 use crate::commands::editor_ops::{
     apply_multi_search_replace, ApplyMultiSearchReplaceRequest, SearchReplaceItem,
+    SearchReplaceResponse,
 };
+use crate::tools::shell_editor_todo::IdeEventSink;
 
 use super::resolve_path;
-use super::search_replace::render_response;
+use super::search_replace::{emit_post_write, render_response};
 
-pub struct MultiSearchReplaceTool;
+pub struct MultiSearchReplaceTool {
+    sink: Arc<dyn IdeEventSink>,
+}
+
+impl MultiSearchReplaceTool {
+    #[must_use]
+    pub fn new(sink: Arc<dyn IdeEventSink>) -> Self {
+        Self { sink }
+    }
+}
 
 #[async_trait]
 impl ToolExecutor for MultiSearchReplaceTool {
@@ -133,6 +146,16 @@ impl ToolExecutor for MultiSearchReplaceTool {
         .await
         .map_err(ToolError::Execution)?;
 
+        if matches!(response, SearchReplaceResponse::Ok { .. }) {
+            emit_post_write(
+                &*self.sink,
+                &resolved_str,
+                "multi_search_replace",
+                &ctx.tool_call_id,
+            )
+            .await;
+        }
+
         Ok(render_response(&raw_path, &resolved_str, response, true))
     }
 }
@@ -159,7 +182,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("f.rs"), "let a = 1;\nlet b = 2;\n").unwrap();
 
-        let tool: Arc<dyn ToolExecutor> = Arc::new(MultiSearchReplaceTool);
+        let tool: Arc<dyn ToolExecutor> = Arc::new(MultiSearchReplaceTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
         let result = tool
             .execute(
                 serde_json::json!({
@@ -182,7 +207,9 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_empty_replacement_array() {
-        let tool: Arc<dyn ToolExecutor> = Arc::new(MultiSearchReplaceTool);
+        let tool: Arc<dyn ToolExecutor> = Arc::new(MultiSearchReplaceTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
         let err = tool
             .execute(
                 serde_json::json!({ "path": "any.txt", "replacements": [] }),

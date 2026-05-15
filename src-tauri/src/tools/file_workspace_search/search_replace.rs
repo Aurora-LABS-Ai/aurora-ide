@@ -6,6 +6,8 @@
 //! count, or one of the structured `not_found` / `not_unique` /
 //! `overlap` failures).
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -14,10 +16,20 @@ use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 use crate::commands::editor_ops::{
     apply_search_replace, ApplySearchReplaceRequest, SearchReplaceItem, SearchReplaceResponse,
 };
+use crate::tools::shell_editor_todo::{FileChangedPayload, IdeEventSink};
 
 use super::resolve_path;
 
-pub struct SearchReplaceTool;
+pub struct SearchReplaceTool {
+    sink: Arc<dyn IdeEventSink>,
+}
+
+impl SearchReplaceTool {
+    #[must_use]
+    pub fn new(sink: Arc<dyn IdeEventSink>) -> Self {
+        Self { sink }
+    }
+}
 
 #[async_trait]
 impl ToolExecutor for SearchReplaceTool {
@@ -95,7 +107,61 @@ impl ToolExecutor for SearchReplaceTool {
             .await
             .map_err(ToolError::Execution)?;
 
+        // On success, emit `agent_file_changed` with the freshly-written
+        // file contents so open Monaco buffers can update in place.
+        // We do a single async read after the patch lands rather than
+        // teaching `apply_search_replace` to return its post-write
+        // content — keeps the editor_ops contract narrow and avoids
+        // shipping the buffer twice (the response struct already
+        // carries lines_added/lines_removed/total_replacements for the
+        // UI summary).
+        if matches!(response, SearchReplaceResponse::Ok { .. }) {
+            emit_post_write(
+                &*self.sink,
+                &resolved_str,
+                "search_replace",
+                &ctx.tool_call_id,
+            )
+            .await;
+        }
+
         Ok(render_response(&raw_path, &resolved_str, response, false))
+    }
+}
+
+/// Read the just-written file off disk and emit a `Modified`
+/// `agent_file_changed`. Soft-fails on every step — the file is
+/// already correctly on disk, so a missing UI refresh is preferable
+/// to surfacing a tool failure.
+pub(crate) async fn emit_post_write(
+    sink: &dyn IdeEventSink,
+    resolved_str: &str,
+    source_tool: &str,
+    tool_call_id: &str,
+) {
+    let path = resolved_str.to_string();
+    let read = tokio::task::spawn_blocking(move || std::fs::read_to_string(&path)).await;
+    let content = match read {
+        Ok(Ok(s)) => s,
+        Ok(Err(io_err)) => {
+            eprintln!(
+                "[{source_tool}] post-write read failed for {resolved_str}: {io_err}"
+            );
+            return;
+        }
+        Err(join_err) => {
+            eprintln!(
+                "[{source_tool}] post-write read task panicked for {resolved_str}: {join_err}"
+            );
+            return;
+        }
+    };
+    let payload = FileChangedPayload::modified(resolved_str, content, source_tool)
+        .with_tool_call_id(tool_call_id);
+    if let Err(emit_err) = sink.emit_file_changed(&payload) {
+        eprintln!(
+            "[{source_tool}] emit_file_changed failed for {resolved_str}: {emit_err}"
+        );
     }
 }
 
@@ -225,7 +291,9 @@ mod tests {
     async fn replaces_unique_match() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("a.txt"), "hello world\n").unwrap();
-        let tool: Arc<dyn ToolExecutor> = Arc::new(SearchReplaceTool);
+        let tool: Arc<dyn ToolExecutor> = Arc::new(SearchReplaceTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
         let result = tool
             .execute(
                 serde_json::json!({
@@ -247,7 +315,9 @@ mod tests {
     async fn reports_not_found_as_structured_failure() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("a.txt"), "hello\n").unwrap();
-        let tool: Arc<dyn ToolExecutor> = Arc::new(SearchReplaceTool);
+        let tool: Arc<dyn ToolExecutor> = Arc::new(SearchReplaceTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
         let result = tool
             .execute(
                 serde_json::json!({

@@ -6,16 +6,27 @@
 //! "must-not-exist" precondition, then writes the initial content.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
+use crate::tools::shell_editor_todo::{FileChangedPayload, IdeEventSink};
 
 use super::resolve_path_for_create;
 
-pub struct FileCreateTool;
+pub struct FileCreateTool {
+    sink: Arc<dyn IdeEventSink>,
+}
+
+impl FileCreateTool {
+    #[must_use]
+    pub fn new(sink: Arc<dyn IdeEventSink>) -> Self {
+        Self { sink }
+    }
+}
 
 #[async_trait]
 impl ToolExecutor for FileCreateTool {
@@ -67,6 +78,7 @@ impl ToolExecutor for FileCreateTool {
         let raw_path = path.to_string();
         let bytes = content.len();
 
+        let content_for_event = content.clone();
         let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
             let file_path = Path::new(&resolved_str);
             if file_path.exists() {
@@ -87,15 +99,29 @@ impl ToolExecutor for FileCreateTool {
         .map_err(|err| ToolError::Execution(format!("file_create task panicked: {err}")))?;
 
         match result {
-            Ok(()) => Ok(serde_json::to_string(&json!({
-                "success": true,
-                "pending": false,
-                "message": format!("File created: {raw_path}"),
-                "path": raw_path,
-                "fullPath": resolved.to_string_lossy(),
-                "bytes": bytes,
-            }))
-            .unwrap()),
+            Ok(()) => {
+                let payload = FileChangedPayload::created(
+                    resolved.to_string_lossy().to_string(),
+                    content_for_event,
+                    "file_create",
+                )
+                .with_tool_call_id(ctx.tool_call_id.clone());
+                if let Err(emit_err) = self.sink.emit_file_changed(&payload) {
+                    eprintln!(
+                        "[file_create] emit_file_changed failed for {raw_path}: {emit_err}"
+                    );
+                }
+
+                Ok(serde_json::to_string(&json!({
+                    "success": true,
+                    "pending": false,
+                    "message": format!("File created: {raw_path}"),
+                    "path": raw_path,
+                    "fullPath": resolved.to_string_lossy(),
+                    "bytes": bytes,
+                }))
+                .unwrap())
+            }
             Err(err) => Ok(serde_json::to_string(&json!({
                 "success": false,
                 "error": err,
@@ -127,7 +153,9 @@ mod tests {
     #[tokio::test]
     async fn creates_new_file_with_content() {
         let tmp = tempfile::tempdir().unwrap();
-        let tool: Arc<dyn ToolExecutor> = Arc::new(FileCreateTool);
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileCreateTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
         let result = tool
             .execute(
                 serde_json::json!({ "path": "new.txt", "content": "hi" }),
@@ -144,7 +172,9 @@ mod tests {
     async fn fails_when_file_exists() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("x.txt"), "old").unwrap();
-        let tool: Arc<dyn ToolExecutor> = Arc::new(FileCreateTool);
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileCreateTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
         let result = tool
             .execute(
                 serde_json::json!({ "path": "x.txt", "content": "new" }),

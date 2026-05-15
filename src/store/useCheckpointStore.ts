@@ -160,6 +160,52 @@ export const useCheckpointStore = create<CheckpointState & CheckpointActions>(
             return { checkpoints: newCheckpoints };
           });
 
+          // After a successful restore the workspace files were
+          // rewritten by `git reset --hard` underneath us. The FS
+          // watcher CAN see those changes, but in practice the burst
+          // of writes during a hard reset is large enough that some
+          // platforms (Windows in particular) batch / coalesce events
+          // and we end up with stale Monaco buffers + a stale file
+          // cache. Force a reload of every open tab here so the user
+          // never sees pre-restore content. Done concurrently —
+          // ordering between tabs doesn't matter.
+          try {
+            const [{ useEditorStore }, { loadFileContent }, monacoRef] =
+              await Promise.all([
+                import("./useEditorStore"),
+                import("../lib/tauri"),
+                import("../lib/monaco-editor-ref"),
+              ]);
+            const editorStore = useEditorStore.getState();
+            const reloadJobs = editorStore.tabs
+              .filter((tab) => !tab.isDirty && tab.type !== "browser")
+              .map(async (tab) => {
+                try {
+                  const newContent = await loadFileContent(tab.path);
+                  // Route through Monaco first so the restored
+                  // content lands as one undoable entry (Ctrl+Z would
+                  // bring back the pre-restore state, which matches
+                  // the user's mental model of "checkpoint restore").
+                  monacoRef.replaceMonacoFileContent(tab.path, newContent);
+                  editorStore.reloadTabContent(tab.id, newContent);
+                } catch (err) {
+                  // File might have been deleted by the restore — mark
+                  // the tab so the UI shows the "deleted" banner.
+                  console.warn(
+                    `[CheckpointStore] Failed to reload ${tab.path} after restore:`,
+                    err,
+                  );
+                  editorStore.markTabAsDeleted(tab.id);
+                }
+              });
+            await Promise.allSettled(reloadJobs);
+          } catch (err) {
+            console.warn(
+              "[CheckpointStore] Post-restore tab reload setup failed:",
+              err,
+            );
+          }
+
           return response.deletedMessageIds;
         }
 

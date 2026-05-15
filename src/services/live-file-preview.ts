@@ -1,4 +1,8 @@
 import { getFilename, getLanguageFromExtension } from "../lib/file-utils";
+import {
+  getMonacoEditorForPath,
+  streamPreviewMonacoFileContent,
+} from "../lib/monaco-editor-ref";
 import { readFileContent } from "../lib/tauri";
 import { useEditorStore } from "../store/useEditorStore";
 import {
@@ -62,15 +66,39 @@ const scheduleEditorPreview = (
       return;
     }
 
-    useEditorStore
-      .getState()
-      .openFile(
-        latestSession.filePath,
-        latestSession.fileName,
-        latestContent,
-        getLanguageFromExtension(latestSession.fileName),
-      );
-    useEditorStore.getState().requestEditorReveal(latestSession.filePath, {
+    const { tabs, openFile, requestEditorReveal } = useEditorStore.getState();
+    const existingTab = tabs.find((tab) => tab.path === latestSession.filePath);
+
+    // If the tab is open AND Monaco is mounted for it, push the chunk
+    // straight into the model via `applyEdits` so the user sees the
+    // file typing in live without thrashing the React tab state or
+    // touching Monaco's undo stack. The final committed state lands
+    // through the `agent_file_changed` listener as one undoable edit.
+    const monacoEditor = getMonacoEditorForPath(latestSession.filePath);
+    if (existingTab && monacoEditor) {
+      streamPreviewMonacoFileContent(latestSession.filePath, latestContent);
+      // Auto-scroll while writing so the user can watch new content
+      // appear instead of staring at the top of a long file.
+      requestEditorReveal(latestSession.filePath, {
+        mode: "bottom",
+        focus: false,
+      });
+      return;
+    }
+
+    // No Monaco mount yet (file wasn't open when the tool started).
+    // Fall back to the Zustand `openFile` path — it will create the
+    // tab and, on its next render, the Editor component will pick up
+    // the current content. The final commit through
+    // `agent_file_changed` will still arrive after the Rust write
+    // finishes and lay down a clean undo entry.
+    openFile(
+      latestSession.filePath,
+      latestSession.fileName,
+      latestContent,
+      getLanguageFromExtension(latestSession.fileName),
+    );
+    requestEditorReveal(latestSession.filePath, {
       mode: "bottom",
       focus: false,
     });
@@ -268,12 +296,52 @@ const updateFromToolCall = async (toolCall: ToolCallRequest) => {
   await previewMultiSearchReplaceTool(toolCall, rawArguments);
 };
 
+/**
+ * Public snapshot of a live-preview session for downstream consumers
+ * (the `agent_file_changed` sync handler in particular) that need the
+ * original (pre-AI) content so the final committed write can be
+ * pushed onto Monaco's undo stack as a single entry against the
+ * original baseline rather than against the last streamed chunk.
+ */
+export interface LiveFilePreviewSnapshot {
+  filePath: string;
+  toolName: LivePreviewToolName;
+  lastPreviewContent: string;
+  /** Pre-AI content as seen on disk when the session began. */
+  originalContent?: string;
+  /** Pre-AI in-memory tab content (may differ from disk if dirty). */
+  originalTabContent?: string;
+  /** Did this session create the tab itself? */
+  openedByPreview: boolean;
+}
+
+const toSnapshot = (
+  session: LiveFilePreviewSession,
+): LiveFilePreviewSnapshot => ({
+  filePath: session.filePath,
+  toolName: session.toolName,
+  lastPreviewContent: session.lastPreviewContent,
+  originalContent: session.originalContent,
+  originalTabContent: session.originalTabContent,
+  openedByPreview: session.openedByPreview,
+});
+
 export const liveFilePreviewService = {
   cancelAllActive: () => {
     for (const session of sessions.values()) {
       rollbackSessionPreview(session);
     }
     sessions.clear();
+  },
+
+  /**
+   * Look up the active session for a tool_use_id without mutating it.
+   * The `agent_file_changed` handler uses this to grab the original
+   * baseline content so the final commit lands as one undo entry.
+   */
+  getSessionSnapshot: (toolCallId: string): LiveFilePreviewSnapshot | null => {
+    const session = sessions.get(toolCallId);
+    return session ? toSnapshot(session) : null;
   },
 
   complete: (toolCallId: string) => {

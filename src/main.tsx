@@ -31,12 +31,22 @@ import '@fontsource/manrope/600.css'
 import './index.css'
 import App from './App.tsx'
 import { disableNativeTooltips } from './lib/disable-native-tooltips'
+import { startAgentFileSync } from './services/agent-file-sync'
 
 // Kill all browser-native `title=""` tooltips at the document level so
 // the OS chrome tooltip never appears on top of our themed UI. See the
 // module's docstring for rationale and trade-offs. Buttons that should
 // have hover hints can still use the themed <Tooltip /> wrapper.
 disableNativeTooltips()
+
+// Subscribe to the Rust runtime's `agent_file_changed` event so every
+// agent file write reaches Monaco, the tab store, and the explorer
+// without waiting for a tab close/reopen. Fire-and-forget — the
+// service is idempotent, so a hot-reload that re-runs main.tsx won't
+// double-subscribe.
+void startAgentFileSync().catch((err) => {
+  console.warn('[main] startAgentFileSync failed:', err)
+})
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

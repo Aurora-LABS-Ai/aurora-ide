@@ -17,7 +17,7 @@
 
 ![Agent mode: tools and timeline in the loop](public/showcase/agent-in-loop.png)
 
-*Agent mode — assistant runs in the loop with tools, timeline, and file context.*
+*Agent mode in action — the assistant drives a full edit-test-refine loop with the timeline pinned beside Monaco. Every tool call (file reads, search-and-replace, shell commands, MCP) streams in real time so you watch the agent work rather than guess at it.*
 
 </div>
 
@@ -31,27 +31,28 @@
 
 ![Default workspace layout](public/showcase/default-look.png)
 
-*Default layout — editor, sidebar, chat, and integrated terminal.*
+*Default workspace — the layout that opens on first launch. File explorer, Monaco editor with native tabs, integrated PTY terminal, and the agent panel docked to the right. Themed end-to-end through a single CSS-variable token system so every surface (Monaco, sidebar, terminal, chat, dialogs) stays in sync when you swap themes.*
 
 </div>
 
 ### Highlights
 
-- **Agent & tools** — 25+ built-in tools, MCP, approvals, agent mode UI  
-- **Themes** — token-based CSS variables, built-in dark/light and custom JSON themes, Monaco sync  
-- **Project** — Git panel, checkpoints, undo/redo for AI edits, detachable chat  
-- **Models** — OpenAI-compatible and Anthropic-style providers, thinking modes where supported  
-- **Search** — optional semantic (embeddings) plus lexical search  
+- **Agent and tools** — 25+ native Rust tools (file ops, shell, grep, semantic search, browser, todo), MCP server bridge, per-tool approval modes (auto / always-ask / deny), live streaming preview into Monaco as the agent writes.
+- **Themes** — token-based CSS variables, built-in dark/light packs, importable JSON themes, full Monaco token sync.
+- **Project workflow** — Git panel (status, stage, commit, diff, branches), per-message workspace checkpoints with one-click restore, per-file undo/redo backed by Monaco's stack, detachable chat windows.
+- **Models** — OpenAI-compatible and Anthropic-style providers (Fireworks, GLM, DeepSeek, MiniMax, LM Studio, Ollama, OpenAI, Anthropic, custom). Thinking modes wired up where the provider supports them.
+- **Search** — optional ONNX semantic search (hybrid lexical + embeddings) alongside ripgrep-backed text search.
+- **Browser tools** — native Tauri WebView windows the agent can drive (click, eval, DOM capture, console logs, element inspection).
 
-### Theme system
+### Built-in browser inspector
 
-Themes are data-driven (`src/themes/`, imported JSON). The settings UI includes a built-in theme workflow aligned with the editor.
+The agent can open and inspect real WebView windows. Picked elements, computed styles, console logs, and screenshots flow back into the chat as structured tool results — useful for UI work where the agent needs to see what's actually on screen.
 
 <div align="center">
 
-![Built-in theme editor](public/showcase/built-in-theme-editor.png)
+![Built-in browser inspector — element picker and computed styles](public/showcase/built-in-browser-inspector.png)
 
-*Theme library and built-in editor — pick or import JSON themes with live tokens.*
+*Browser inspector — click any element in the agent's preview window and the picker emits the selector, bounding rect, computed styles, and attribute table straight into the next agent turn. The agent can also navigate, scroll, evaluate JavaScript, and capture the DOM without leaving the IDE.*
 
 </div>
 
@@ -136,21 +137,23 @@ See **`CLAUDE.md`** / **`AGENTS.md`** and **`DOCS/`** for architecture, stores, 
 
 ---
 
-## Contributing
+## Project status and feedback
 
-Issues and PRs are welcome. Follow **`DOCS/03-EXPANSION-GUIDE.md`** and existing patterns (theme tokens, store actions, no hardcoded IDE colors in UI).
+Aurora is being built in the open by a very small team — most of the heavy lifting happens between other commitments, so the issue tracker is intentionally quiet. **Please do not open issues for bugs or feature requests right now.** Anything you would normally file there will be resolved as part of the regular work-in-progress cycle once we get back to it.
+
+If something blocks you and you cannot wait, the source-available license lets you fork the repo and customise it for your own use. Patches that fit the existing patterns (token-based theming, Zustand store actions, Rust-side tool plumbing) are welcome later when the tracker reopens.
 
 ---
 
 ## License
 
-This project is **source-available** under the [Aurora Source-Available License](LICENSE): you may use and contribute for **personal and non-commercial** purposes. **Commercial use, enterprise deployment, sale, or paid/hosted offerings require prior written permission** from the copyright holders. Contact the maintainers (e.g. via [Issues](https://github.com/Aurora-LABS-Ai/aurora-ide/issues)) to request a commercial license.
+This project is **source-available** under the [Aurora Source-Available License](LICENSE): you may use and contribute for **personal and non-commercial** purposes. **Commercial use, enterprise deployment, sale, or paid/hosted offerings require prior written permission** from the copyright holders. Contact the maintainers to request a commercial license.
 
 ---
 
 ## Acknowledgments
 
-Built with [Tauri](https://tauri.app), [Monaco Editor](https://github.com/microsoft/monaco-editor), [React](https://react.dev), and the broader open-source ecosystem.
+Aurora is developed by **[Aurora Labs](https://github.com/Aurora-LABS-Ai)** with substantial assistance from agentic coding tools — most of the codebase was written, refactored, and reviewed across loops in **[Cursor](https://www.cursor.com/)**, **[Claude Code](https://docs.claude.com/en/docs/claude-code)** (Anthropic), and **[Codex](https://openai.com/codex/)** (OpenAI). The desktop shell, editor, and broader runtime stand on **[Tauri](https://tauri.app)**, **[Monaco Editor](https://github.com/microsoft/monaco-editor)**, **[React](https://react.dev)**, and the wider open-source ecosystem.
 
 ---
 
@@ -158,6 +161,6 @@ Built with [Tauri](https://tauri.app), [Monaco Editor](https://github.com/micros
 
 **Aurora**
 
-[Documentation](DOCS/) · [Issues](https://github.com/Aurora-LABS-Ai/aurora-ide/issues)
+[Documentation](DOCS/)
 
 </div>

@@ -35,20 +35,23 @@ import { FileIcon } from '../explorer/FileIcons';
 import { User, Copy, Check, BookOpen, Zap, MousePointer2 } from 'lucide-react';
 import { getProfessionalToolName } from '../../services/tool-display';
 import { Tooltip } from '../ui/Tooltip';
+import { writeClipboardText } from '../../lib/clipboard';
 
-// Copy button component with feedback
+// Copy button component with feedback. Uses the robust
+// `writeClipboardText` helper so the Tauri WebView2 origin actually
+// updates the OS clipboard (plain `navigator.clipboard.writeText`
+// frequently resolves without writing in that context — see
+// `src/lib/clipboard.ts` for the full rationale).
 const CopyButton: React.FC<{ text: string; className?: string }> = ({ text, className = '' }) => {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
-    }
+    if (!text) return;
+    const ok = await writeClipboardText(text);
+    if (!ok) return;
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
   }, [text]);
 
   return (
@@ -131,9 +134,7 @@ const TimelineEventItem: React.FC<{
 
     case 'content':
       return event.content ? (
-        <div className="py-1">
-          <MarkdownRenderer content={event.content} isStreaming={isStreaming} />
-        </div>
+        <MarkdownRenderer content={event.content} isStreaming={isStreaming} />
       ) : null;
 
     default:
@@ -342,7 +343,7 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: "easeOut" }}
-      className={hideAssistantHeader ? "px-4 pt-0 pb-4 group relative" : "px-4 py-4 group relative"}
+      className={hideAssistantHeader ? "px-4 pt-0 pb-1 group relative" : "px-4 pt-4 pb-1 group relative"}
     >
       {/* Avatar column — hidden on continuation rows so consecutive
           assistant messages render as a single visual bubble. */}
@@ -380,7 +381,7 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
           </span>
         </div>
 
-        <div className="space-y-1 select-text cursor-text">
+        <div className="select-text cursor-text">
           {hasTimeline ? (
             message.timeline!.map((event, idx) => (
               <TimelineEventItem

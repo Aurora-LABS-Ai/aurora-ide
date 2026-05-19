@@ -14,6 +14,7 @@
 //! - `crate::services::api_converter::ApiConverter` - Message format conversion
 
 pub mod api_converter;
+pub mod browser_native_capture;
 pub mod browser_runtime;
 pub mod token_service;
 

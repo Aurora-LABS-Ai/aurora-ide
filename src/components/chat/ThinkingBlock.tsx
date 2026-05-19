@@ -61,7 +61,7 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ content, isGenerat
     // No wrapper background, no border, no rounded shell. The dropdown is
     // structured purely by the two slim vertical guide lines that bracket the
     // expanded body — see the inline comments below.
-    <div className="my-1.5 ml-3">
+    <div className="ml-3">
       <button
         onClick={() => setIsManuallyExpanded(!isExpanded)}
         aria-expanded={isExpanded}

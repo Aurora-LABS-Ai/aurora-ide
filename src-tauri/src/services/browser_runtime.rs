@@ -99,6 +99,25 @@ pub struct BrowserManager {
 /// loop is never blocked indefinitely on a misbehaving page.
 const DEFAULT_RESULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Defensively clean a CSS selector that came from an LLM tool call.
+///
+/// Some providers (notably Deepseek-style chat-completion proxies)
+/// occasionally leak a stop-sequence fragment such as `</` or a
+/// half-emitted closing XML tag into the tail of a selector
+/// argument — the model "thinks" it's about to close a `<parameter>`
+/// block and the substring ends up inside the JSON value. Browsers
+/// reject the malformed selector and the agent's `Screenshot Page`
+/// step fails repeatedly.
+///
+/// CSS selectors never legitimately contain `<`, so we truncate at
+/// the first `<` and trim surrounding whitespace. This is a
+/// best-effort guardrail: if the model also stops mid-token the
+/// selector still won't match, but it will at least produce a
+/// well-formed `querySelector` error rather than a parser exception.
+fn sanitize_selector(raw: &str) -> String {
+    raw.split('<').next().unwrap_or("").trim().to_string()
+}
+
 impl BrowserManager {
     pub fn new(app: AppHandle) -> Self {
         Self {
@@ -530,7 +549,8 @@ impl BrowserManager {
         label: &str,
         selector: Option<&str>,
     ) -> Result<BrowserResult, String> {
-        let expr = match selector {
+        let cleaned = selector.map(sanitize_selector);
+        let expr = match cleaned.as_deref().filter(|s| !s.is_empty()) {
             Some(sel) => format!(
                 "(() => {{ const el = document.querySelector({s}); return el ? (el.outerHTML || '').slice(0, 200000) : null; }})()",
                 s = json!(sel)
@@ -547,6 +567,7 @@ impl BrowserManager {
         label: &str,
         selector: &str,
     ) -> Result<BrowserResult, String> {
+        let selector = sanitize_selector(selector);
         let expr = format!(
             r#"(() => {{
                 const el = document.querySelector({s});
@@ -597,6 +618,7 @@ impl BrowserManager {
     /// Click the first element matching `selector`. Returns `{ ok,
     /// selector, tagName }` on success.
     pub async fn click(&self, label: &str, selector: &str) -> Result<BrowserResult, String> {
+        let selector = sanitize_selector(selector);
         let expr = format!(
             r#"(() => {{
                 const el = document.querySelector({s});
@@ -621,6 +643,7 @@ impl BrowserManager {
         value: &str,
         submit: bool,
     ) -> Result<BrowserResult, String> {
+        let selector = sanitize_selector(selector);
         let expr = format!(
             r#"(() => {{
                 const el = document.querySelector({s});
@@ -656,6 +679,7 @@ impl BrowserManager {
         selector: &str,
         timeout_ms: Option<u64>,
     ) -> Result<BrowserResult, String> {
+        let selector = sanitize_selector(selector);
         let timeout = timeout_ms.unwrap_or(8000).min(60_000);
         let expr = format!(
             r#"(async () => {{
@@ -714,7 +738,8 @@ impl BrowserManager {
         // still recover.
         let amount = amount_px.unwrap_or(0).clamp(-50_000, 50_000);
         let dir = direction.unwrap_or("down");
-        let expr = if let Some(sel) = selector {
+        let cleaned_selector = selector.map(sanitize_selector);
+        let expr = if let Some(sel) = cleaned_selector.as_deref().filter(|s| !s.is_empty()) {
             format!(
                 r#"(() => {{
                     const sel = {s};
@@ -779,15 +804,77 @@ impl BrowserManager {
         self.eval_with_result(label, &expr).await
     }
 
-    /// Capture a PNG screenshot of the page (or one element). Uses an
-    /// inline foreignObject SVG renderer so we don't need to vendor
-    /// html2canvas. Returns `{ ok, base64, mediaType: "image/png" }`.
+    /// Capture a PNG screenshot of the page (or one element).
+    ///
+    /// Two-track implementation, native-first:
+    ///
+    ///   1. When `selector` is `None` and the platform has a native
+    ///      WebView snapshot API (Windows via `ICoreWebView2::CapturePreview`),
+    ///      capture the live WebView surface in one COM call. This is
+    ///      what users want 95% of the time and it sidesteps every
+    ///      failure mode of the JS path (cross-origin canvas taint,
+    ///      `<canvas>` content, shadow DOM, CSP blocking data: URLs).
+    ///   2. Otherwise — element screenshot, native path unimplemented
+    ///      on this platform, or native path failed — fall back to the
+    ///      `foreignObject` SVG renderer below. The fallback is also
+    ///      what runs on macOS/Linux until those backends are wired in.
+    ///
+    /// Returns `{ ok, base64, mediaType: "image/png", width, height,
+    /// capturePath: "native"|"svg" }`.
     pub async fn screenshot(
         &self,
         label: &str,
         selector: Option<&str>,
     ) -> Result<BrowserResult, String> {
-        let target = match selector {
+        let cleaned = selector.map(sanitize_selector);
+
+        // Native path: only attempt when the caller is asking for a
+        // whole-window snapshot. CapturePreview always captures the
+        // viewport, so an element-scoped selector falls straight
+        // through to the JS path which can scope to `querySelector`.
+        let element_scope = cleaned.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
+        if !element_scope {
+            if let Ok(window) = self.window(label) {
+                match crate::services::browser_native_capture::capture_webview_png(&window).await {
+                    Ok(Some(png_bytes)) => {
+                        // Frontend expects `{ ok, base64, mediaType, width, height }`.
+                        // We don't know width/height at this layer — Windows
+                        // CapturePreview encodes the WebView's current
+                        // viewport — but the SVG path's reported width/height
+                        // is also viewport-derived, so 0/0 here is honest
+                        // and we let the agent's image vision layer infer
+                        // from the actual PNG dimensions.
+                        use base64::Engine;
+                        let base64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+                        return Ok(BrowserResult {
+                            ok: true,
+                            value: Some(json!({
+                                "base64": base64,
+                                "mediaType": "image/png",
+                                "width": 0,
+                                "height": 0,
+                                "capturePath": "native"
+                            })),
+                            error: None,
+                        });
+                    }
+                    Ok(None) => {
+                        // Platform unsupported — fall through to SVG path
+                        // without logging (this is expected on macOS/Linux).
+                    }
+                    Err(err) => {
+                        // Native attempt failed for a real reason. Log and
+                        // fall back so the agent still gets *some* image
+                        // instead of an opaque error.
+                        eprintln!(
+                            "[browser_native_capture] '{label}' native screenshot failed, falling back to SVG: {err}"
+                        );
+                    }
+                }
+            }
+        }
+
+        let target = match cleaned.as_deref().filter(|s| !s.is_empty()) {
             Some(sel) => format!("document.querySelector({s})", s = json!(sel)),
             None => "document.body".into(),
         };
@@ -847,7 +934,7 @@ impl BrowserManager {
 
                 const dataUrl = canvas.toDataURL('image/png');
                 const base64 = dataUrl.split(',')[1] || '';
-                return {{ ok: true, base64, mediaType: 'image/png', width, height }};
+                return {{ ok: true, base64, mediaType: 'image/png', width, height, capturePath: 'svg' }};
             }})()"#,
             target = target
         );

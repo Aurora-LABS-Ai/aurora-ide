@@ -28,74 +28,11 @@ import { oneLight, vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/
 import mermaid from 'mermaid';
 import { Check, Copy } from 'lucide-react';
 import { useThemeStore } from '../../store/useThemeStore';
-import { isTauri } from '../../lib/tauri';
+import { writeClipboardText } from '../../lib/clipboard';
 
 interface MarkdownPreviewProps {
   content: string;
   className?: string;
-}
-
-/**
- * Robust clipboard write that works inside the Tauri webview.
- *
- * The plain `navigator.clipboard.writeText` call frequently rejects in a
- * Tauri/WebView2 context because the runtime treats the webview origin as
- * insecure for the async Clipboard API. Production-grade fix is to prefer
- * Tauri's native clipboard plugin (which has explicit permission wired in
- * `src-tauri/capabilities/default.json`) and only fall back to the web
- * APIs for non-Tauri environments (tests, dev preview server, etc.).
- *
- * Order:
- *   1. Tauri `@tauri-apps/plugin-clipboard-manager` — always works in app.
- *   2. `navigator.clipboard.writeText` — modern web browsers.
- *   3. Hidden textarea + `document.execCommand('copy')` — last-resort
- *      legacy path for environments where neither of the above are usable.
- *
- * Returns true on success; never throws (frees callers from try/catch).
- */
-async function writeClipboardText(text: string): Promise<boolean> {
-  if (isTauri()) {
-    try {
-      const { writeText } = await import('@tauri-apps/plugin-clipboard-manager');
-      await writeText(text);
-      return true;
-    } catch (err) {
-      console.warn('[clipboard] Tauri plugin failed, falling back:', err);
-    }
-  }
-
-  try {
-    if (
-      typeof navigator !== 'undefined' &&
-      navigator.clipboard &&
-      typeof navigator.clipboard.writeText === 'function'
-    ) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch (err) {
-    console.warn('[clipboard] navigator.clipboard failed, falling back:', err);
-  }
-
-  try {
-    if (typeof document === 'undefined') return false;
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.setAttribute('readonly', '');
-    textarea.style.position = 'fixed';
-    textarea.style.top = '0';
-    textarea.style.left = '0';
-    textarea.style.opacity = '0';
-    textarea.style.pointerEvents = 'none';
-    document.body.appendChild(textarea);
-    textarea.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(textarea);
-    return ok;
-  } catch (err) {
-    console.error('[clipboard] All clipboard write strategies failed:', err);
-    return false;
-  }
 }
 
 /**

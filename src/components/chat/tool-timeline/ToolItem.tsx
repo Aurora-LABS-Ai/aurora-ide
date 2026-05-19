@@ -149,7 +149,7 @@ export const ToolItem: React.FC<ToolItemProps> = React.memo(
     } = useToolResultParser(tool);
 
     return (
-      <div className="group relative flex gap-3 pb-1">
+      <div className="group relative flex gap-3">
         {/* Timeline Track */}
         <div className="flex flex-col items-center w-4 flex-shrink-0 relative">
           <div
@@ -161,11 +161,17 @@ export const ToolItem: React.FC<ToolItemProps> = React.memo(
             )}
           />
 
+          {/* Status dot. Failed tools intentionally use the warning
+              (amber) palette rather than full error red — a single
+              tool failing inside an agent run is "this didn't work,
+              recoverable" not "compiler error, stop the world". The
+              `X` glyph still carries the "did not complete" signal so
+              the colour can stay warm without losing meaning. */}
           <div
             className={cn(
               "relative z-10 flex h-3 w-3 items-center justify-center rounded-full mt-2.5 transition-all text-[8px] leading-none",
               isError
-                ? "bg-error/20 text-error ring-2 ring-error/10"
+                ? "bg-warning/20 text-warning ring-2 ring-warning/10"
                 : isRunning
                   ? "bg-task-progress/20 text-task-progress ring-2 ring-task-progress/10"
                   : "bg-success/20 text-success ring-2 ring-success/10",
@@ -182,7 +188,7 @@ export const ToolItem: React.FC<ToolItemProps> = React.memo(
         </div>
 
         {/* Content */}
-        <div className="min-w-0 flex-1 pt-1.5 pb-2">
+        <div className="min-w-0 flex-1 pt-1 pb-1">
           <div className="flex items-start gap-2">
             <button
               onClick={() => setIsOpen(!isOpen)}
@@ -194,7 +200,12 @@ export const ToolItem: React.FC<ToolItemProps> = React.memo(
                 </span>
 
                 {isError ? (
-                  <span className="text-[11px] font-medium tracking-tight text-error">
+                  // Failed cards de-emphasize the title rather than
+                  // painting it red — the warm badge to the right is
+                  // the canonical "this didn't work" signal, and the
+                  // title in secondary tone reads as "skipped" instead
+                  // of "broken".
+                  <span className="text-[11px] font-medium tracking-tight text-text-secondary">
                     {displayTitle}
                   </span>
                 ) : isRunning ? (
@@ -212,7 +223,7 @@ export const ToolItem: React.FC<ToolItemProps> = React.memo(
                     className={cn(
                       "inline-flex items-center rounded-full border px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide",
                       isError
-                        ? "border-error/30 bg-error/10 text-error"
+                        ? "border-warning/35 bg-warning/10 text-warning"
                         : "border-task-progress/30 bg-task-progress/10 text-task-progress",
                     )}
                   >
@@ -223,7 +234,7 @@ export const ToolItem: React.FC<ToolItemProps> = React.memo(
                         : effectiveStatus === "pending"
                           ? "Queued"
                           : effectiveStatus === "failed"
-                            ? "Failed"
+                            ? "Didn't complete"
                             : "Not Approved"}
                   </span>
                 )}

@@ -1,0 +1,5 @@
+undefined
+
+# Agent task notes (lessons learned, todo lists) that live next to
+# the code but aren't project source.
+tasks/

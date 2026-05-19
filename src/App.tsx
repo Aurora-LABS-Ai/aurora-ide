@@ -40,6 +40,7 @@ import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { initializeSystemInfo } from "./services/context-builder";
 import { installAgentIdeListeners } from "./services/agent-ide-events";
 import { useLocalProviderDetection } from "./hooks/useLocalProviderDetection";
+import { useMcpStore } from "./store/useMcpStore";
 
 // Global handler to suppress Tauri stream cancellation errors
 // These are expected when user clicks stop during AI streaming
@@ -109,6 +110,18 @@ function App() {
     // Initialize system info cache for context builder
     initializeSystemInfo();
   }, [initializeFromDatabase, initializeSettings]);
+
+  // Boot MCP servers at the app-shell level so the `autoStart` toggle
+  // is honoured regardless of which view the user lands on first —
+  // settings tab, agent mode, or chat. The store guards itself against
+  // duplicate calls (`initialized` flag), so this is safe even though
+  // ChatPanel / AgentModeLayout also call `loadServers` defensively.
+  // Skipped for the detached chat window (it inherits state from the
+  // main process via Zustand subscriptions, no second load needed).
+  useEffect(() => {
+    if (isDetachedWindow) return;
+    void useMcpStore.getState().loadServers();
+  }, [isDetachedWindow]);
 
   // Subscribe to the Rust agent's IDE-event bus once the app mounts.
   // These listeners wire `agent_editor_open` → Monaco, `agent_todo_write`

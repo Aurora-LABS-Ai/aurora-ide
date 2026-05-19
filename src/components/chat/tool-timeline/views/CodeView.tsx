@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { AlertTriangle } from "lucide-react";
 import { useThemeStore } from "../../../../store/useThemeStore";
 import { extToShikiLang, useShikiTokens } from "../../useShikiTokens";
 import { cn, unescapeContent } from "../helpers";
@@ -96,10 +97,27 @@ export const CodeView: React.FC<CodeViewProps> = ({
   }, [data, isStreaming]);
 
   if (error) {
+    // Warm callout instead of a red alarm banner. The icon + heading
+    // do the "this didn't work" work; the actual message renders in
+    // text-primary so it reads as information rather than an
+    // emergency. Surface uses the warning (amber) palette at low
+    // opacity — same family as the "Didn't complete" pill upstream
+    // so the whole failed card hangs together visually.
     return (
-      <div className="mt-2 rounded-md bg-error/10 p-2 border border-error/20">
-        <div className="font-mono text-[10px] text-error whitespace-pre-wrap">
-          <span className="font-bold">Error:</span> {error}
+      <div className="mt-2 rounded-md border border-warning/25 bg-warning/[0.06] px-2.5 py-2">
+        <div className="flex items-start gap-2">
+          <AlertTriangle
+            size={12}
+            className="mt-0.5 flex-shrink-0 text-warning"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] font-medium uppercase tracking-wide text-warning/90">
+              Tool didn't complete
+            </div>
+            <div className="mt-1 font-mono text-[10.5px] leading-[1.55] text-text-primary whitespace-pre-wrap break-words">
+              {error}
+            </div>
+          </div>
         </div>
       </div>
     );

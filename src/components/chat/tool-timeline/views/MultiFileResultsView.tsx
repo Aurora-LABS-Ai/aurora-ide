@@ -43,7 +43,7 @@ export const MultiFileResultsView: React.FC<MultiFileResultsViewProps> = ({
               {file.success ? (
                 <Check size={10} className="text-success shrink-0" />
               ) : (
-                <X size={10} className="text-error shrink-0" />
+                <X size={10} className="text-warning shrink-0" />
               )}
               <ExplorerFileAssetIcon
                 fileName={fileName}

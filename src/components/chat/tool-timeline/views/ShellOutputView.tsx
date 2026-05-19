@@ -45,7 +45,7 @@ export const ShellOutputView: React.FC<ShellOutputViewProps> = ({
               "rounded border px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide",
               success
                 ? "border-success/30 bg-success/10 text-success"
-                : "border-error/30 bg-error/10 text-error",
+                : "border-warning/35 bg-warning/10 text-warning",
             )}
           >
             {success ? "Success" : "Failed"}

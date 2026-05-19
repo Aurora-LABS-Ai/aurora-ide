@@ -1,14 +1,22 @@
 //! Browser tools bucket — minimal, professional surface.
 //!
-//! The agent gets eight tools (down from thirteen). Each one maps to
+//! The agent gets nine tools (down from thirteen). Each one maps to
 //! a real user-facing action ("Click Element", "Scroll Page") so the
 //! chat timeline reads like a recipe, not a debugger session.
 //!
 //! * **Read-only** (`requires_permission == false`): `browser_open`,
-//!   `browser_close`, `browser_screenshot`, `browser_get_console_logs`.
+//!   `browser_close`, `browser_list_windows`, `browser_screenshot`,
+//!   `browser_get_console_logs`.
 //! * **Page interaction** (`requires_permission == true`):
 //!   `browser_navigate`, `browser_click`, `browser_fill`,
 //!   `browser_scroll`.
+//!
+//! `browser_list_windows` is the only enumeration tool — the agent
+//! needs it to detect existing windows (opened by the user via the
+//! "+ Browser" tab, or by a previous turn) so it can reuse them
+//! instead of stacking duplicate windows on every browser-related
+//! task. Without it, an agent that's told to "verify the dev server"
+//! repeatedly spawns fresh `browser-agent-<uuid>` windows.
 //!
 //! Deliberately dropped from the agent surface:
 //!
@@ -18,12 +26,12 @@
 //!   other tool, but the model can no longer call it directly.
 //! * `browser_get_dom` — returned up to 200 KB per call and burned
 //!   context. The agent should screenshot or scroll instead.
-//! * `browser_get_url`, `browser_list_windows`,
-//!   `browser_inspect_element`, `browser_wait_for` — folded into the
-//!   tools that need them. `browser_click` now auto-waits internally;
-//!   `browser_screenshot` already returns the current URL in its
-//!   caption. The IDE itself can still call these via the Tauri IPC
-//!   commands when the *user* drives the browser tab.
+//! * `browser_get_url`, `browser_inspect_element`,
+//!   `browser_wait_for` — folded into the tools that need them.
+//!   `browser_click` now auto-waits internally; `browser_screenshot`
+//!   already returns the current URL in its caption. The IDE itself
+//!   can still call these via the Tauri IPC commands when the *user*
+//!   drives the browser tab.
 //!
 //! `browser_close`'s `requires_permission` is `false` by design — it
 //! destroys a window the agent itself opened, so leaving it gated
@@ -48,9 +56,20 @@ use crate::services::browser_runtime::{BrowserManager, BrowserResult, CreateBrow
 
 /// Names of every tool this bucket registers, in roster order. Pinned
 /// by the bucket-level test below.
+///
+/// `browser_list_windows` was re-added (it had been retired alongside
+/// `browser_eval` / `browser_get_dom`) because the agent system prompt
+/// directs the model to call it before opening a new window — without
+/// it, the model would call `browser_list_windows`, get a "tool not
+/// found" error, panic, and call `browser_open` again, spawning a
+/// duplicate window per turn. This is the one read-only tool the agent
+/// actually needs to deduplicate windows; the other hidden tools
+/// (`browser_eval`, `browser_get_dom`, `browser_inspect_element`)
+/// remain unregistered.
 pub const TOOL_NAMES: &[&str] = &[
     "browser_open",
     "browser_close",
+    "browser_list_windows",
     "browser_screenshot",
     "browser_get_console_logs",
     "browser_navigate",
@@ -69,16 +88,16 @@ pub const TOOLS_REQUIRING_PERMISSION: &[&str] = &[
 
 /// Mount every tool in this bucket onto `reg`. Idempotent.
 ///
-/// `BrowserListWindowsTool`, `BrowserGetUrlTool`, `BrowserGetDomTool`,
-/// `BrowserInspectElementTool`, `BrowserWaitForTool`, and
-/// `BrowserEvalTool` were retired from the agent surface — see the
-/// module doc for the rationale. The structs themselves are still
-/// compiled (and the IPC layer keeps calling the underlying manager
-/// methods) so the human-driven browser tab UI does not lose any
-/// capability.
+/// `BrowserGetUrlTool`, `BrowserGetDomTool`, `BrowserInspectElementTool`,
+/// `BrowserWaitForTool`, and `BrowserEvalTool` remain retired from the
+/// agent surface — see the module doc for the rationale. The structs
+/// themselves are still compiled (and the IPC layer keeps calling the
+/// underlying manager methods) so the human-driven browser tab UI does
+/// not lose any capability.
 pub fn register(reg: &mut ToolRegistry, manager: Arc<BrowserManager>) {
     reg.register(Arc::new(BrowserOpenTool::new(manager.clone())));
     reg.register(Arc::new(BrowserCloseTool::new(manager.clone())));
+    reg.register(Arc::new(BrowserListWindowsTool::new(manager.clone())));
     reg.register(Arc::new(BrowserGetConsoleLogsTool::new(manager.clone())));
     reg.register(Arc::new(BrowserScreenshotTool::new(manager.clone())));
     reg.register(Arc::new(BrowserNavigateTool::new(manager.clone())));
@@ -242,8 +261,14 @@ impl ToolExecutor for BrowserListWindowsTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_list_windows".into(),
-            description: "List every browser preview window currently open, with its label, \
-                URL, and inspector/stagewise state.".into(),
+            description: "List every browser preview window currently open, with its \
+                label, URL, and inspector/stagewise state. Call this BEFORE \
+                browser_open whenever the task is about a page that might already \
+                be open (the user's running dev server, a previous turn's window, a \
+                page the user opened via the IDE's '+ Browser' tab). If the URL you \
+                want is already in the result, pass that label to browser_navigate / \
+                browser_screenshot / browser_click instead of opening a new window."
+                .into(),
             input_schema: json!({ "type": "object", "properties": {} }),
         }
     }
@@ -778,20 +803,23 @@ mod tests {
 
     #[test]
     fn tool_name_roster_count() {
-        // Eight tools — the minimal-surface refactor.
-        assert_eq!(TOOL_NAMES.len(), 8);
+        // Nine tools after re-adding `browser_list_windows` so the agent
+        // can deduplicate windows.
+        assert_eq!(TOOL_NAMES.len(), 9);
     }
 
     #[test]
     fn dangerous_tools_are_unregistered() {
         // Explicitly assert the foot-gun tools are not exposed to the
         // agent surface. Catches accidental re-registration.
+        // `browser_list_windows` is deliberately omitted from this list
+        // — it's a read-only enumeration that the agent needs to avoid
+        // spawning duplicate windows.
         for hidden in [
             "browser_eval",
             "browser_get_dom",
             "browser_get_url",
             "browser_inspect_element",
-            "browser_list_windows",
             "browser_wait_for",
         ] {
             assert!(

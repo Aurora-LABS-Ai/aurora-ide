@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { StreamingDotMatrix } from "../ui/StreamingDotMatrix";
 import { useThemeStore } from "../../store/useThemeStore";
+import { writeClipboardText } from "../../lib/clipboard";
 
 interface MarkdownRendererProps {
   content: string;
@@ -134,26 +135,63 @@ const getLanguageDisplayName = (lang: string): string => {
   return langMap[lang.toLowerCase()] || lang.toUpperCase();
 };
 
-// Copy button component with feedback
-const CopyButton: React.FC<{ text: string; size?: "sm" | "md" }> = ({
-  text,
-  size = "sm",
-}) => {
+/**
+ * Copy button for code blocks.
+ *
+ * Two production fixes vs the previous implementation:
+ *
+ * 1. **Reads text at click time** via `getText()` rather than from a
+ *    prop. The previous version relied on a `text` prop captured at
+ *    render — but `CodeBlockWrapper` only knows the code's textContent
+ *    *after* the effect runs (because Streamdown's rendered tree
+ *    doesn't expose a raw string until the DOM is mounted). On fast
+ *    clicks the prop was still `""`, so we called
+ *    `writeText("")` — clipboard happily "succeeded" with empty
+ *    string, the green check flashed, paste produced nothing.
+ *
+ * 2. **Routes through `writeClipboardText`** which prefers the Tauri
+ *    clipboard plugin (`@tauri-apps/plugin-clipboard-manager`).
+ *    `navigator.clipboard.writeText` is unreliable in the Tauri
+ *    WebView2 origin — it often resolves without actually updating the
+ *    OS clipboard. The Tauri plugin has explicit permission wired in
+ *    `src-tauri/capabilities/default.json` and always works.
+ *
+ * Visual: the old version filled the whole button with the success
+ * colour on copy, which read as an MS-Paint blob. New treatment just
+ * swaps the icon (Copy → green Check) and dims/brightens on hover,
+ * matching the message-level copy affordance elsewhere in the chat
+ * pane.
+ */
+const CopyButton: React.FC<{
+  getText: () => string;
+  size?: "sm" | "md";
+}> = ({ getText, size = "sm" }) => {
   const [copied, setCopied] = useState(false);
+  const timeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
 
   const handleCopy = useCallback(
     async (e: React.MouseEvent) => {
       e.stopPropagation();
       e.preventDefault();
-      try {
-        await navigator.clipboard.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      } catch (err) {
-        console.error("Failed to copy:", err);
+      const text = getText();
+      if (!text) return;
+      const ok = await writeClipboardText(text);
+      if (!ok) return;
+      setCopied(true);
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
       }
+      timeoutRef.current = window.setTimeout(() => setCopied(false), 1800);
     },
-    [text],
+    [getText],
   );
 
   const iconSize = size === "sm" ? "w-3 h-3" : "w-3.5 h-3.5";
@@ -162,31 +200,23 @@ const CopyButton: React.FC<{ text: string; size?: "sm" | "md" }> = ({
   return (
     <button
       onClick={handleCopy}
-      className={`${padding} rounded transition-all duration-200 flex items-center gap-1`}
-      style={{
-        background: copied ? "var(--aurora-common-success)" : "transparent",
-        color: copied
-          ? "var(--aurora-common-success-foreground)"
-          : "var(--aurora-editor-foreground)",
-        opacity: copied ? 1 : 0.5,
-      }}
-      onMouseEnter={(e) => {
-        if (!copied) e.currentTarget.style.opacity = "0.9";
-      }}
-      onMouseLeave={(e) => {
-        if (!copied) e.currentTarget.style.opacity = "0.5";
-      }}
+      className={`${padding} rounded transition-colors flex items-center gap-1 hover:bg-sidebar-item-hover`}
       title={copied ? "Copied!" : "Copy code"}
+      aria-label={copied ? "Code copied" : "Copy code"}
     >
       {copied ? (
         <>
-          <Check className={iconSize} />
+          <Check className={`${iconSize} text-success`} />
           {size === "md" && (
-            <span className="text-[10px] font-medium">Copied</span>
+            <span className="text-[10px] font-medium text-success">
+              Copied
+            </span>
           )}
         </>
       ) : (
-        <Copy className={iconSize} />
+        <Copy
+          className={`${iconSize} text-text-disabled hover:text-text-primary transition-colors`}
+        />
       )}
     </button>
   );
@@ -199,18 +229,18 @@ const CodeBlockWrapper: React.FC<{
   rawCode?: string;
 }> = ({ children, language, rawCode }) => {
   const codeRef = useRef<HTMLDivElement>(null);
-  const [codeText, setCodeText] = useState(rawCode || "");
 
-  useEffect(() => {
-    if (!rawCode && codeRef.current) {
-      // Extract text content from the code block
-      const text = codeRef.current.textContent || "";
-      const rafId = window.requestAnimationFrame(() => {
-        setCodeText(text);
-      });
-      return () => window.cancelAnimationFrame(rafId);
-    }
-  }, [rawCode, children]);
+  // Resolve the actual text *at click time*, not at render time. The
+  // previous implementation cached the textContent into state inside
+  // a useEffect — but during streaming the tree mutates frequently
+  // and the cache could be empty when the user clicked Copy, which
+  // looked like a successful copy (green flash) followed by an empty
+  // paste. Reading from the live ref + falling back to the captured
+  // raw string is always correct.
+  const getCodeText = useCallback(() => {
+    if (rawCode && rawCode.trim().length > 0) return rawCode;
+    return codeRef.current?.textContent ?? "";
+  }, [rawCode]);
 
   const hasLanguage =
     language && language !== "text" && language !== "plaintext";
@@ -261,7 +291,7 @@ const CodeBlockWrapper: React.FC<{
             </>
           )}
         </div>
-        <CopyButton text={codeText || rawCode || ""} size="sm" />
+        <CopyButton getText={getCodeText} size="sm" />
       </div>
 
       {/* Code content */}
@@ -280,14 +310,40 @@ const components = {
     let language = "";
     let rawCode = "";
 
+    // Recursively concatenate string descendants. react-markdown can
+    // hand us the code text as a single string, an array of strings,
+    // or a tree of text nodes depending on how the markdown was
+    // tokenised. The previous implementation only handled the flat
+    // string case — every other shape produced an empty rawCode and
+    // the copy button fell back to DOM textContent (which is fine,
+    // but unnecessarily lossy when the source string is right here).
+    const collectText = (node: React.ReactNode): void => {
+      if (node == null || typeof node === "boolean") return;
+      if (typeof node === "string" || typeof node === "number") {
+        rawCode += String(node);
+        return;
+      }
+      if (Array.isArray(node)) {
+        node.forEach(collectText);
+        return;
+      }
+      if (React.isValidElement(node)) {
+        const childProps = node.props as { children?: React.ReactNode };
+        collectText(childProps?.children);
+      }
+    };
+
     React.Children.forEach(children, (child) => {
-      if (React.isValidElement(child) && child.props?.className) {
-        const match = child.props.className.match(/language-(\w+)/);
-        if (match) language = match[1];
-        // Try to get raw code from children
-        if (typeof child.props.children === "string") {
-          rawCode = child.props.children;
+      if (React.isValidElement(child)) {
+        const childProps = child.props as {
+          className?: string;
+          children?: React.ReactNode;
+        };
+        if (childProps?.className) {
+          const match = childProps.className.match(/language-(\w+)/);
+          if (match) language = match[1];
         }
+        collectText(childProps?.children);
       }
     });
 
@@ -359,7 +415,7 @@ const components = {
   // Paragraphs
   p: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
     <p
-      className="my-2 text-[14px] leading-[1.65] tracking-[0.01em]"
+      className="my-1 text-[14px] leading-[1.65] tracking-[0.01em]"
       style={{ color: "var(--aurora-common-text-primary)" }}
       {...props}
     >

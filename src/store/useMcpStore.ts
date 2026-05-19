@@ -111,6 +111,46 @@ export type McpServerStatus = 'disconnected' | 'connecting' | 'connected' | 'err
 export type McpTransportType = 'stdio' | 'sse';
 
 // ============================================
+// AUTO-START HELPER
+// ============================================
+//
+// Called after every mutation that could turn a server into an
+// "Auto + Enabled + Disconnected" tuple. We can't put this logic
+// inside `connectServer` itself because connect is also the user's
+// manual play-button path, and we don't want to gate that behind a
+// config check. Centralising it here keeps the rule "saving an
+// `autoStart` server connects it" in one place across addServer,
+// updateServer, and toggleServer.
+//
+// The function:
+//   * is a no-op unless `enabled && autoStart && status === 'disconnected'`;
+//   * catches connection errors and lets `connectServer` write them
+//     into the server's `status === 'error'` so the UI surfaces the
+//     reason instead of pretending the connect never happened;
+//   * returns the latest state from the store so the caller can
+//     surface the up-to-date status without re-fetching.
+async function attemptAutoStart(
+  get: () => McpStoreState,
+  saved: McpServerState
+): Promise<McpServerState> {
+  const { config, status } = saved;
+  if (!config.enabled || !config.autoStart || status !== 'disconnected') {
+    return saved;
+  }
+  try {
+    const connected = await get().connectServer(config.id);
+    return connected ?? saved;
+  } catch (err) {
+    // connectServer already writes the error into the store; we only
+    // log here so the failure shows up in dev tools alongside the
+    // server name (without it, the only visible signal is a red
+    // status pill).
+    console.error(`[MCP] auto-start after save failed for ${config.name}:`, err);
+    return get().getServer(config.id) ?? saved;
+  }
+}
+
+// ============================================
 // STORE IMPLEMENTATION
 // ============================================
 export const useMcpStore = create<McpStoreState>((set, get) => ({
@@ -202,10 +242,17 @@ export const useMcpStore = create<McpStoreState>((set, get) => ({
       // Generate unique ID
       const id = `mcp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       const fullConfig: McpServerConfig = { ...config, id };
-      
+
       const state = await invoke<McpServerState>('mcp_add_server', { config: fullConfig });
       set((s) => ({ servers: [...s.servers, state] }));
-      return state;
+      // If the new server is flagged `autoStart` (and enabled), honour
+      // that immediately — otherwise the toggle is decorative until the
+      // user restarts the IDE, which is the exact bug we ran into where
+      // freshly-added servers sat in `disconnected` despite "Auto" being
+      // on. `attemptAutoStart` swallows connection failures into the
+      // server's `error` state so a bad command can't reject this
+      // promise.
+      return attemptAutoStart(get, state);
     } catch (error) {
       console.error('[MCP] Failed to add server:', error);
       set({ error: String(error) });
@@ -219,7 +266,13 @@ export const useMcpStore = create<McpStoreState>((set, get) => ({
       set((s) => ({
         servers: s.servers.map((srv) => (srv.config.id === config.id ? state : srv)),
       }));
-      return state;
+      // Same as addServer: if the user just turned on Auto or edited a
+      // server that was already flagged Auto, kick the connect now. The
+      // Rust `update_server` resets status to `disconnected` whenever
+      // transport-affecting fields change, so checking the returned
+      // status is the cheapest way to avoid reconnecting a connection
+      // that survived the edit.
+      return attemptAutoStart(get, state);
     } catch (error) {
       console.error('[MCP] Failed to update server:', error);
       set({ error: String(error) });
@@ -245,6 +298,13 @@ export const useMcpStore = create<McpStoreState>((set, get) => ({
       set((s) => ({
         servers: s.servers.map((srv) => (srv.config.id === id ? state : srv)),
       }));
+      // Re-enabling a server that's flagged Auto should auto-connect it
+      // — the user expects "Enabled + Auto" to behave like "Enabled +
+      // Auto on every cold boot". Disabling is a pure tear-down so the
+      // Rust side already disconnected.
+      if (enabled) {
+        return attemptAutoStart(get, state);
+      }
       return state;
     } catch (error) {
       console.error('[MCP] Failed to toggle server:', error);

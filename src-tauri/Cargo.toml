@@ -101,6 +101,20 @@ single-instance = "0.3"
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# Higher-level COM-friendly bindings used by the WebView2-native screenshot
+# path in `services::browser_native_capture::windows`. The version is pinned
+# to whatever `webview2-com` itself depends on so we share one copy of the
+# generated COM bindings instead of pulling a parallel duplicate.
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+] }
+# Direct dependency on webview2-com so we can call `ICoreWebView2::CapturePreview`
+# via Tauri's `Webview::with_webview` platform escape hatch. It was already a
+# transitive dep through wry; promoting it to a direct dep just lets us name
+# the types in our own code.
+webview2-com = "0.38"
 
 [dev-dependencies]
 # Isolated tempdirs for filesystem tests (threads JSONL, paths, writer/reader).

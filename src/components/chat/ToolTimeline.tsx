@@ -49,7 +49,7 @@ export const ToolTimeline: React.FC<ToolTimelineProps> = ({
   if (!tools || tools.length === 0) return null;
 
   return (
-    <div className="w-full mt-2 pl-2">
+    <div className="w-full pl-2">
       {tools.map((tool, idx) => (
         <ToolItem
           key={`${variant}-${tool.id}`}

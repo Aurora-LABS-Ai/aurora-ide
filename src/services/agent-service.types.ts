@@ -8,6 +8,15 @@ export interface AgentCallbacks extends ProviderStreamCallbacks {
   onToolExecutionError?: (toolCall: ToolCallRequest, error: string) => void;
   onToolExecutionStart?: (toolCall: ToolCallRequest) => void;
   onToolRejected?: (toolCall: ToolCallRequest, reason: string) => void;
+  /**
+   * Fires when the Rust runtime drained the mid-turn queue and
+   * stapled the user's queued text to the just-built tool message.
+   * Panels use this to drop an inline `user_injection` timeline
+   * event into the streaming assistant message — no separate user
+   * bubble, since the bubble would land after the streaming message
+   * and visually invert the order.
+   */
+  onQueuedMessageInjected?: (text: string) => void;
 }
 
 export interface AgentConfig {

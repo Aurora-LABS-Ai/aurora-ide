@@ -153,7 +153,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[150] flex items-center justify-center bg-black/55"
+      className="fixed inset-0 z-[150] flex items-center justify-center bg-scrim"
       onClick={onCancel}
       role="presentation"
     >
@@ -161,7 +161,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
         role="dialog"
         aria-modal="true"
         aria-labelledby="aurora-confirm-title"
-        className="w-[420px] max-w-[calc(100vw-32px)] overflow-hidden rounded-md border border-border bg-sidebar shadow-[0_8px_24px_rgba(0,0,0,0.35)] animate-in fade-in zoom-in-95 duration-100"
+        className="w-[420px] max-w-[calc(100vw-32px)] overflow-hidden rounded-md border border-border bg-sidebar shadow-[0_8px_24px_var(--aurora-common-shadow-elevated)] animate-in fade-in zoom-in-95 duration-100"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

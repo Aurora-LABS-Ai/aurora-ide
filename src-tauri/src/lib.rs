@@ -359,6 +359,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::install_aurora_context_menu,
             commands::is_aurora_context_menu_installed,
             commands::uninstall_aurora_context_menu,
+            commands::cli_take_pending_open_request,
             commands::aurora_websearch,
             commands::ripgrep_search,
             commands::validate_structured_document,
@@ -413,6 +414,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::agent_v2::agent_cancel,
             commands::agent_v2::agent_load_thread,
             commands::agent_v2::agent_post_tool_result,
+            commands::agent_v2::agent_enqueue_message,
+            commands::agent_v2::agent_cancel_queued_message,
             // Phase 4 permission gate — frontend modal posts the
             // user's Allow/Deny verdict here. The router lives in
             // managed state (see `setup` below).
@@ -600,20 +603,52 @@ pub fn run_with_args(cli_args: CliArgs) {
             // and vice-versa.
             app.manage((*browser_manager).clone());
 
-            // If CLI provided a path, emit event to frontend to open it
-            // Clone open_request since we're in a move closure
+            // CLI / context-menu open: stash the request in app state so
+            // the frontend's workspace-bootstrap effect can pull it
+            // synchronously on mount. The previous "sleep 500ms then
+            // emit cli-open" design lost the event whenever the JS
+            // bundle hadn't finished hydrating in time — Tauri events
+            // are NOT buffered, so a listener registered after `.emit`
+            // never sees it, and the "restore last workspace" path
+            // silently won the race.
+            //
+            // We also still emit the `cli-open` event for the live case
+            // (e.g. a future single-instance handoff where Aurora is
+            // already running and the user invokes `aurora .` again).
+            // The frontend bootstrap consumes the state slot exactly
+            // once; live events only fire after mount, so there's no
+            // double-application.
             let request = open_request.clone();
+            let pending = commands::PendingCliOpenState(Mutex::new(
+                if request.workspace_path.is_some() || request.file_path.is_some() {
+                    Some(request.clone())
+                } else {
+                    None
+                },
+            ));
+            app.manage(pending);
+
             if request.workspace_path.is_some() || request.file_path.is_some() {
-                let window = app.get_webview_window("main");
-                if let Some(win) = window {
-                    // Emit after a short delay to ensure frontend is ready
-                    let win_clone = win.clone();
-                    std::thread::spawn(move || {
-                        // Wait for frontend to initialize
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                        let _ = win_clone.emit("cli-open", &request);
-                        println!("[Aurora CLI] Emitted open request: {:?}", request);
-                    });
+                if let Some(win) = app.get_webview_window("main") {
+                    // Best-effort live event for any listener already
+                    // registered (e.g. when this proves useful for a
+                    // future single-instance flow). Cold-start no
+                    // longer depends on this firing in time.
+                    let _ = win.emit("cli-open", &request);
+                }
+            }
+
+            // Auto-grant the WebView's native microphone permission so
+            // Aurora's own IDE-styled "Allow microphone access" modal
+            // is the only prompt the user ever sees. Without this the
+            // WebView2 (Windows) shows its own browser-style
+            // "localhost:5173 wants to Use your microphones" toast on
+            // top of our gate, which looks broken — see the speech
+            // input modal in `src/components/chat/SpeechInputButton.tsx`
+            // for the user-facing half of this contract.
+            if let Some(win) = app.get_webview_window("main") {
+                if let Err(err) = services::webview_permissions::install_permission_handler(&win) {
+                    eprintln!("[aurora] failed to install webview permission handler: {err}");
                 }
             }
 

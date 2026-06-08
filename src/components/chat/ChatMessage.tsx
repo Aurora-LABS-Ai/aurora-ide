@@ -75,7 +75,11 @@ const extractTimelineText = (timeline: TimelineEvent[]): string => {
   const parts: string[] = [];
 
   for (const event of timeline) {
-    if (event.type === 'content' && event.content) {
+    if (event.type === 'user_injection' && event.userInjection) {
+      // include the user's injected note in the extracted text so
+      // copy/paste of the message reads as a faithful transcript.
+      parts.push(`[You]: ${event.userInjection}`);
+    } else if (event.type === 'content' && event.content) {
       parts.push(event.content);
     } else if (event.type === 'thinking' && event.thinking) {
       // Include thinking content (user might want to copy reasoning)
@@ -94,8 +98,8 @@ const extractTimelineText = (timeline: TimelineEvent[]): string => {
 };
 
 // Render a single timeline event
-const TimelineEventItem: React.FC<{ 
-  event: TimelineEvent; 
+interface TimelineEventItemProps {
+  event: TimelineEvent;
   isStreaming?: boolean;
   isActivelyStreaming?: boolean;
   toolVariant?: 'timeline' | 'cards';
@@ -103,7 +107,9 @@ const TimelineEventItem: React.FC<{
   onApprovePending?: () => void;
   onRejectPending?: () => void;
   onApprovePendingRemember?: () => void;
-}> = ({
+}
+
+const TimelineEventItemComponent: React.FC<TimelineEventItemProps> = ({
   event,
   isStreaming = false,
   isActivelyStreaming = false,
@@ -137,10 +143,81 @@ const TimelineEventItem: React.FC<{
         <MarkdownRenderer content={event.content} isStreaming={isStreaming} />
       ) : null;
 
+    case 'user_injection':
+      return event.userInjection ? (
+        <div
+          className="my-2 flex items-start gap-2 px-3 py-2 rounded-lg"
+          style={{
+            backgroundColor:
+              "color-mix(in srgb, var(--aurora-common-shadow) 14%, var(--aurora-chat-input-background) 86%)",
+            border:
+              "1px solid color-mix(in srgb, var(--aurora-chat-input-border) 70%, transparent)",
+          }}
+        >
+          <span
+            className="text-[10px] font-semibold uppercase tracking-[0.08em] mt-[3px] shrink-0"
+            style={{
+              color:
+                "color-mix(in srgb, var(--aurora-common-text-primary) 55%, transparent)",
+            }}
+          >
+            You
+          </span>
+          <span
+            className="text-[13px] leading-relaxed whitespace-pre-wrap break-words"
+            style={{ color: "var(--aurora-common-text-primary)" }}
+          >
+            {event.userInjection}
+          </span>
+        </div>
+      ) : null;
+
     default:
       return null;
   }
 };
+
+/**
+ * Timeline rows are remounted on every streaming RAF tick because the
+ * parent message object is replaced each frame. Without this memo every
+ * completed content block re-runs its markdown/Shiki render and every
+ * completed tool card re-parses its result on each token — O(N) work per
+ * frame that scales with conversation length and drives the frame drops.
+ *
+ * `event` keeps a stable reference for rows that didn't change (the
+ * timeline updater only clones the one event it touches), so reference
+ * equality is enough. Approval state + its callbacks only change what a
+ * row renders when the approval gate is parked on *this* row's tool, so
+ * every other row is allowed to bail regardless of callback identity.
+ */
+const areTimelineEventPropsEqual = (
+  prev: TimelineEventItemProps,
+  next: TimelineEventItemProps,
+): boolean => {
+  if (prev.event !== next.event) return false;
+  if (prev.isStreaming !== next.isStreaming) return false;
+  if (prev.isActivelyStreaming !== next.isActivelyStreaming) return false;
+  if (prev.toolVariant !== next.toolVariant) return false;
+
+  const toolId = prev.event.tool?.id;
+  const prevTargets = Boolean(toolId) && prev.pendingApproval?.id === toolId;
+  const nextTargets = Boolean(toolId) && next.pendingApproval?.id === toolId;
+  if (prevTargets !== nextTargets) return false;
+  if (nextTargets) {
+    if (prev.pendingApproval !== next.pendingApproval) return false;
+    if (prev.onApprovePending !== next.onApprovePending) return false;
+    if (prev.onRejectPending !== next.onRejectPending) return false;
+    if (prev.onApprovePendingRemember !== next.onApprovePendingRemember)
+      return false;
+  }
+  return true;
+};
+
+const TimelineEventItem = React.memo(
+  TimelineEventItemComponent,
+  areTimelineEventPropsEqual,
+);
+TimelineEventItem.displayName = 'TimelineEventItem';
 
 interface ChatMessageProps {
   message: Message;
@@ -363,7 +440,7 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
             <span
               className="text-[11px] font-bold tracking-wide aurora-shimmer"
               style={{
-                background: 'linear-gradient(90deg, var(--aurora-common-primary) 0%, var(--aurora-common-primary) 40%, #ffffff 50%, var(--aurora-common-primary) 60%, var(--aurora-common-primary) 100%)',
+                background: 'linear-gradient(90deg, var(--aurora-common-primary) 0%, var(--aurora-common-primary) 40%, var(--aurora-common-primary-foreground) 50%, var(--aurora-common-primary) 60%, var(--aurora-common-primary) 100%)',
                 backgroundSize: '200% 100%',
                 WebkitBackgroundClip: 'text',
                 backgroundClip: 'text',

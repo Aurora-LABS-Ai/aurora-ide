@@ -382,7 +382,7 @@ impl ConversationRuntime {
                 return Err(RuntimeError::Cancelled);
             }
 
-            let tool_msg = self
+            let mut tool_msg = self
                 .execute_tool_calls(
                     pending_tools,
                     session,
@@ -392,6 +392,44 @@ impl ConversationRuntime {
                     &mut seq,
                 )
                 .await?;
+
+            // ── Mid-turn user message injection ─────────────────────
+            //
+            // If the user typed a new prompt while this turn was
+            // streaming (`agent_enqueue_message` IPC), drain the slot
+            // now and ride the queued text in on the next user message
+            // by appending it as a Text block to the tool_msg we just
+            // built. The provider adapters know to surface this:
+            //
+            //   - Anthropic: the Tool role maps to "role": "user" with
+            //     a content array, so the tool_result blocks and the
+            //     injected text block sit side-by-side in a single
+            //     valid user message.
+            //   - OpenAI-compat: the adapter splits Tool blocks into
+            //     one `role: "tool"` message per tool_result plus a
+            //     follow-up `role: "user"` for any text blocks (this
+            //     is the patched behaviour added alongside the queue).
+            //
+            // Emit a dedicated event so the frontend can clear the
+            // pending pill and append a visible user bubble in the
+            // chat list — the model sees the merged user-role message
+            // on the next API call, the human sees it as a normal
+            // message in the timeline.
+            if let Some(queued) = session.take_queued_message() {
+                tool_msg.blocks.push(ContentBlock::Text {
+                    text: queued.text.clone(),
+                });
+                let envelope = AgentEventEnvelope {
+                    turn_id: turn_id.clone(),
+                    seq,
+                    event: AssistantEvent::QueuedMessageInjected {
+                        text: queued.text,
+                    },
+                };
+                seq = seq.saturating_add(1);
+                let _ = event_sink.send(envelope).await;
+            }
+
             session.append_message(tool_msg.clone());
             tool_results.push(tool_msg);
 
@@ -521,7 +559,7 @@ impl ConversationRuntime {
                         id: id.clone(),
                         name,
                         input,
-                        content: raw_content,
+                        content: truncate_tool_content_for_ui(raw_content),
                         is_error: is_error.unwrap_or(false),
                     },
                 )
@@ -614,6 +652,87 @@ fn truncate_tool_content(s: String) -> String {
         cut,
     ));
     out
+}
+
+/// Backstop for the UI event payload. The model-history copy is hard
+/// clamped at [`MAX_TOOL_RESULT_LENGTH`], but the UI deliberately gets
+/// the *full* result so the rich renderers (workspace_tree, grep, shell
+/// output) can parse complete JSON — a blind byte clamp chops the JSON
+/// mid-string and the frontend falls back to dumping raw bytes.
+///
+/// Normal-sized results pass through untouched, preserving that
+/// behavior. Only pathological payloads (multi-megabyte `cat`, verbose
+/// build logs) are trimmed, and we do it JSON-aware: parse the value and
+/// shrink its large *string* fields in place so the envelope stays valid
+/// JSON the frontend can still parse. If it isn't JSON, fall back to a
+/// plain char-boundary clamp (safe to chop — there's no structure to
+/// break). This keeps megabyte blobs off the WebView2 IPC channel and
+/// out of the thread store without reintroducing the raw-dump artifact.
+const MAX_UI_TOOL_RESULT_LENGTH: usize = 512 * 1024; // 512 KiB
+const MAX_UI_JSON_FIELD_LENGTH: usize = 128 * 1024; // 128 KiB per string field
+
+fn truncate_tool_content_for_ui(s: String) -> String {
+    if s.len() <= MAX_UI_TOOL_RESULT_LENGTH {
+        return s;
+    }
+
+    // Try to keep the payload valid JSON by trimming oversized string
+    // fields rather than the serialized envelope.
+    if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&s) {
+        shrink_json_strings(&mut value);
+        if let Ok(compacted) = serde_json::to_string(&value) {
+            return compacted;
+        }
+    }
+
+    // Not JSON (or re-serialization failed): plain text is safe to chop.
+    let original_len = s.len();
+    let mut cut = MAX_UI_TOOL_RESULT_LENGTH;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut out = String::with_capacity(cut + 64);
+    out.push_str(&s[..cut]);
+    out.push_str(&format!(
+        "\n\n[truncated {} bytes for display — tool returned {} bytes total]",
+        original_len.saturating_sub(cut),
+        original_len,
+    ));
+    out
+}
+
+/// Recursively clamp every string in a JSON value to
+/// [`MAX_UI_JSON_FIELD_LENGTH`], appending a marker so the UI can show
+/// the field was trimmed. Truncates on char boundaries to keep the
+/// string valid UTF-8.
+fn shrink_json_strings(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            if text.len() > MAX_UI_JSON_FIELD_LENGTH {
+                let original_len = text.len();
+                let mut cut = MAX_UI_JSON_FIELD_LENGTH;
+                while cut > 0 && !text.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                text.truncate(cut);
+                text.push_str(&format!(
+                    "\n\n[truncated {} bytes for display]",
+                    original_len.saturating_sub(cut),
+                ));
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                shrink_json_strings(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (_, v) in map.iter_mut() {
+                shrink_json_strings(v);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Trim the API-view of the session to fit a token budget.

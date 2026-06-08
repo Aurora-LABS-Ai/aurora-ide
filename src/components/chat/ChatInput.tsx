@@ -34,11 +34,13 @@ import {
   ArrowUp,
   AlertCircle,
   MousePointer2,
+  Clock,
 } from "lucide-react";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useChatStore } from "../../store/useChatStore";
 import type { SelectedElementEntry } from "../../store/useChatStore";
+import { useThreadStore } from "../../store/useThreadStore";
 import {
   useWorkspaceStore,
   loadFileContent,
@@ -183,8 +185,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { setSettingsOpen } = useUiStore();
-  const { isLoading, stopGeneration, consumePendingInput, pendingInputNonce } =
-    useChatStore();
+  const {
+    isLoading,
+    stopGeneration,
+    consumePendingInput,
+    pendingInputNonce,
+    queuedMessage,
+    enqueueMessage,
+    cancelQueuedMessage,
+  } = useChatStore();
   const { files: workspaceFiles, rootPath } = useWorkspaceStore();
   const { openFile } = useEditorStore();
   const { tasks, isVisible } = useTaskStore();
@@ -202,22 +211,38 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
   useEffect(() => {
     setDraftAttachedPromptAssets(attachedPromptAssets);
   }, [attachedPromptAssets, setDraftAttachedPromptAssets]);
-  const {
-    selectedModel,
-    setSelectedModel,
-    getAvailableModels,
-    getLLMConfig,
-    skillToggles,
-    skillsEnabled,
-    agentExecutionMode,
-    setAgentExecutionMode,
-  } = useSettingsStore();
+  // Slice the store: subscribe to each slot individually so settings
+  // changes in unrelated slices (e.g. tool approval prefs, theme) do
+  // NOT re-render the composer. The previous `useSettingsStore()`
+  // form re-rendered on every settings mutation.
+  const selectedModel = useSettingsStore((s) => s.selectedModel);
+  const setSelectedModel = useSettingsStore((s) => s.setSelectedModel);
+  const skillToggles = useSettingsStore((s) => s.skillToggles);
+  const skillsEnabled = useSettingsStore((s) => s.skillsEnabled);
+  const agentExecutionMode = useSettingsStore((s) => s.agentExecutionMode);
+  const setAgentExecutionMode = useSettingsStore((s) => s.setAgentExecutionMode);
+  // Provider/model slices — subscribed so `availableModels` recomputes
+  // when the user adds or edits a provider, NOT when an unrelated
+  // setting changes.
+  const providers = useSettingsStore((s) => s.providers);
+  const models = useSettingsStore((s) => s.models);
 
-  const llmConfig = getLLMConfig();
+  // Memoized derived data — these previously rebuilt on every render,
+  // blowing the `useMemo` for `selectedModelOption` and forcing the
+  // dropdown to re-key its items. Recompute only when the underlying
+  // store slices change.
+  const availableModels = useMemo(
+    () => useSettingsStore.getState().getAvailableModels(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [providers, models],
+  );
+  const llmConfig = useMemo(
+    () => useSettingsStore.getState().getLLMConfig(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [providers, models, selectedModel],
+  );
   const providerReady = llmConfig !== null;
 
-  // Re-compute available models when providers change
-  const availableModels = getAvailableModels();
   const selectedModelOption = useMemo(
     () =>
       availableModels.find(
@@ -468,6 +493,33 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     setHasInteracted(true);
   };
 
+  /**
+   * Resolve the active thread id at call time. We deliberately don't
+   * subscribe via a selector because the value is only read inside
+   * imperative handlers (queue-message / cancel-queue), never rendered.
+   */
+  const getActiveThreadId = (): string | null =>
+    useThreadStore.getState().currentThreadId;
+
+  const handleQueueMessage = async () => {
+    if (!hasComposerContent) return;
+    const threadId = getActiveThreadId();
+    if (!threadId) return;
+    try {
+      await enqueueMessage(threadId, content);
+      // Clear the composer immediately — same UX as a normal send so
+      // the user can keep typing the message after this one if they
+      // want to (queue replaces on second push).
+      setContentLocal("");
+      setAttachedFilesLocal([]);
+      setAttachedPromptAssetsLocal([]);
+      clearSelectedElements();
+      clearDraft();
+    } catch (err) {
+      console.error("[ChatInput] Failed to queue message:", err);
+    }
+  };
+
   const handleStopOrSend = (e?: React.MouseEvent) => {
     if (e) {
       e.preventDefault();
@@ -475,7 +527,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     }
 
     if (isLoading) {
-      stopGeneration();
+      // Mid-stream Send becomes Queue. The button visually stayed on
+      // its "Stop" affordance, but if the user has typed something we
+      // interpret the click as "queue this for injection at the next
+      // tool-result boundary" instead of stopping generation. If the
+      // composer is empty, fall back to the original Stop behaviour.
+      if (hasComposerContent) {
+        void handleQueueMessage();
+      } else {
+        stopGeneration();
+      }
     } else {
       handleSubmit();
     }
@@ -552,7 +613,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
 
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSubmit();
+      // Streaming + non-empty composer → queue instead of submit.
+      // Same routing as the action button so Enter behaves identically.
+      if (isLoading) {
+        const text = content.trim();
+        if (text.length > 0) {
+          void handleQueueMessage();
+        }
+      } else {
+        handleSubmit();
+      }
       return;
     }
 
@@ -805,6 +875,84 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
           <span className="text-[12px] font-semibold tracking-tight">
             Drop to attach
           </span>
+        </div>
+      )}
+
+      {/* Floating queued-message bar — its OWN layer, separate from
+          the composer shell. Sits above the input with a 6px gap so
+          it reads as a status strip, not a chrome of the input. The
+          background is the input background mixed with ~14% of the
+          shadow token so it always reads as "same family, slightly
+          darker" — no primary/blue tint, just a quiet status strip. */}
+      {queuedMessage && (
+        <div
+          className="mb-1.5 flex items-center gap-2 px-2.5 animate-in fade-in slide-in-from-bottom-1 duration-150"
+          style={{
+            height: 26,
+            borderRadius: 8,
+            backgroundColor:
+              "color-mix(in srgb, var(--aurora-common-shadow) 14%, var(--aurora-chat-input-background) 86%)",
+            border:
+              "1px solid color-mix(in srgb, var(--aurora-chat-input-border) 70%, transparent)",
+            boxShadow:
+              "0 1px 2px color-mix(in srgb, var(--aurora-common-shadow) 22%, transparent)",
+          }}
+        >
+          <Clock
+            size={10}
+            strokeWidth={2.4}
+            style={{
+              color:
+                "color-mix(in srgb, var(--aurora-common-text-primary) 55%, transparent)",
+            }}
+            className="shrink-0"
+          />
+          <span
+            className="text-[10px] font-semibold uppercase tracking-[0.08em] shrink-0"
+            style={{
+              color:
+                "color-mix(in srgb, var(--aurora-common-text-primary) 60%, transparent)",
+            }}
+          >
+            Queued
+          </span>
+          <span
+            className="text-[11.5px] font-normal truncate min-w-0 flex-1"
+            style={{ color: "var(--aurora-common-text-primary)" }}
+            title={queuedMessage.text}
+          >
+            {queuedMessage.text}
+          </span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              const threadId = getActiveThreadId();
+              if (threadId) void cancelQueuedMessage(threadId);
+            }}
+            className="shrink-0 flex items-center justify-center rounded transition-colors"
+            style={{
+              width: 16,
+              height: 16,
+              color:
+                "color-mix(in srgb, var(--aurora-common-text-primary) 50%, transparent)",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor =
+                "color-mix(in srgb, var(--aurora-common-shadow) 30%, transparent)";
+              e.currentTarget.style.color =
+                "var(--aurora-common-text-primary)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "transparent";
+              e.currentTarget.style.color =
+                "color-mix(in srgb, var(--aurora-common-text-primary) 50%, transparent)";
+            }}
+            title="Cancel queued message"
+            aria-label="Cancel queued message"
+          >
+            <X size={10} strokeWidth={2.6} />
+          </button>
         </div>
       )}
 
@@ -1069,7 +1217,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
             onBlur={() => setIsFocused(false)}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            disabled={disabled || isLoading || !providerReady}
+            // Stays editable even when no provider is configured so
+            // the user can compose their first prompt while opening
+            // Settings in another window. The send button is gated
+            // separately via `sendDisabled`; Enter routes through
+            // `handleSubmit` which respects `disabled`. Also stays
+            // editable during streaming so the user can draft their
+            // next prompt or queue a mid-turn injection.
             placeholder={
               !providerReady
                 ? "Add an API key in Settings to get started…"
@@ -1099,29 +1253,45 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
             className="flex h-7 w-7 items-center justify-center transition-all duration-150 outline-none focus:outline-none disabled:cursor-not-allowed"
             style={{
               backgroundColor: isLoading
-                ? "color-mix(in srgb, var(--aurora-common-error) 16%, transparent)"
+                ? hasComposerContent
+                  ? "color-mix(in srgb, var(--aurora-common-primary) 16%, transparent)"
+                  : "color-mix(in srgb, var(--aurora-common-error) 16%, transparent)"
                 : hasComposerContent
                   ? "var(--aurora-common-primary)"
                   : "color-mix(in srgb, var(--aurora-chat-surface) 92%, transparent)",
               border: `1px solid ${
                 isLoading
-                  ? "color-mix(in srgb, var(--aurora-common-error) 36%, transparent)"
+                  ? hasComposerContent
+                    ? "color-mix(in srgb, var(--aurora-common-primary) 36%, transparent)"
+                    : "color-mix(in srgb, var(--aurora-common-error) 36%, transparent)"
                   : hasComposerContent
                     ? "color-mix(in srgb, var(--aurora-common-primary) 50%, transparent)"
                     : "color-mix(in srgb, var(--aurora-chat-surface-border) 80%, transparent)"
               }`,
               color: isLoading
-                ? "var(--aurora-common-error)"
+                ? hasComposerContent
+                  ? "var(--aurora-common-primary)"
+                  : "var(--aurora-common-error)"
                 : hasComposerContent
                   ? "var(--aurora-common-primary-foreground)"
                   : "var(--aurora-text-disabled, var(--aurora-editor-foreground))",
               borderRadius: 7,
               opacity: sendDisabled && !isLoading ? 0.65 : 1,
             }}
-            title={isLoading ? "Stop generation" : "Send message"}
+            title={
+              isLoading
+                ? hasComposerContent
+                  ? "Queue message for next tool result"
+                  : "Stop generation"
+                : "Send message"
+            }
           >
             {isLoading ? (
-              <Square size={11} fill="currentColor" />
+              hasComposerContent ? (
+                <Clock size={12} strokeWidth={2.4} />
+              ) : (
+                <Square size={11} fill="currentColor" />
+              )
             ) : (
               <ArrowUp
                 size={14}

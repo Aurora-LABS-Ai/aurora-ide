@@ -302,7 +302,7 @@ export const TabBar: React.FC = () => {
 
       {pendingUnsavedTab && (
         <div
-          className="fixed inset-0 z-[160] flex items-center justify-center bg-black/65 backdrop-blur-[1px]"
+          className="fixed inset-0 z-[160] flex items-center justify-center bg-scrim backdrop-blur-[1px]"
           onClick={handleCancelUnsavedClose}
         >
           <div

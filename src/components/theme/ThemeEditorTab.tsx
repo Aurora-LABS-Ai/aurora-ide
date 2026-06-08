@@ -19,16 +19,70 @@ type FlatColorMap = Record<
   { path: string; value: string; category: string }
 >;
 
+/**
+ * Visual editor sections expose the most-used tokens grouped by surface.
+ * Order matters: the first section is shown first in the scroll list.
+ *
+ * Coverage rule: every section should include enough tokens that a user
+ * can recolor the surface without dropping to JSON. The full token
+ * contract (121 tokens) is documented in DOCS/theme-dev.md.
+ */
 const VISUAL_EDITOR_SECTIONS = [
   {
-    id: "core",
-    title: "Core",
+    id: "core-text",
+    title: "App Text & Surfaces",
     paths: [
-      "common.primary",
       "common.textPrimary",
       "common.textSecondary",
-      "common.border",
+      "common.textDisabled",
       "common.muted",
+      "common.mutedForeground",
+      "common.border",
+      "common.borderHover",
+    ],
+  },
+  {
+    id: "core-action",
+    title: "Primary & Accent",
+    paths: [
+      "common.primary",
+      "common.primaryHover",
+      "common.primaryForeground",
+      "common.secondary",
+      "common.secondaryHover",
+      "common.secondaryForeground",
+      "common.accent",
+      "common.accentForeground",
+      "common.accentMuted",
+    ],
+  },
+  {
+    id: "core-state",
+    title: "Semantic States",
+    paths: [
+      "common.success",
+      "common.successForeground",
+      "common.warning",
+      "common.warningForeground",
+      "common.error",
+      "common.errorForeground",
+      "common.info",
+      "common.infoForeground",
+      "common.destructive",
+      "common.destructiveForeground",
+    ],
+  },
+  {
+    id: "core-effects",
+    title: "Shadows, Scrim & Focus",
+    paths: [
+      "common.shadow",
+      "common.shadowElevated",
+      "common.overlay",
+      "common.scrim",
+      "common.focusRing",
+      "common.scrollbar",
+      "common.scrollbarHover",
     ],
   },
   {
@@ -37,32 +91,53 @@ const VISUAL_EDITOR_SECTIONS = [
     paths: [
       "editor.background",
       "editor.foreground",
-      "editor.lineNumbers",
-      "editor.selection",
+      "editor.cursor",
       "editor.cursorLine",
+      "editor.lineNumbers",
+      "editor.lineNumbersActive",
+      "editor.selection",
+      "editor.selectionHighlight",
+      "editor.wordHighlight",
+      "editor.findMatch",
+      "editor.findMatchHighlight",
+      "editor.matchingBracket",
+      "editor.indentGuide",
+      "editor.whitespace",
     ],
   },
   {
     id: "sidebar",
-    title: "Left Panel",
+    title: "Sidebar / Explorer",
     paths: [
       "sidebar.background",
       "sidebar.foreground",
       "sidebar.border",
+      "sidebar.sectionHeader",
       "sidebar.itemHover",
+      "sidebar.itemActive",
       "sidebar.itemSelected",
     ],
   },
   {
     id: "chat",
-    title: "Chat",
+    title: "Chat / Agent",
     paths: [
       "chat.background",
       "chat.surface",
+      "chat.surfaceBorder",
+      "chat.surfaceMuted",
       "chat.inputBackground",
       "chat.inputBorder",
       "chat.userMessage",
       "chat.assistantMessage",
+      "chat.thinkingBackground",
+      "chat.thinkingBorder",
+      "chat.toolCallBackground",
+      "chat.toolCallBorder",
+      "chat.codeBlock",
+      "chat.usageLow",
+      "chat.usageMedium",
+      "chat.usageHigh",
     ],
   },
   {
@@ -72,6 +147,7 @@ const VISUAL_EDITOR_SECTIONS = [
       "titleBar.background",
       "titleBar.foreground",
       "titleBar.border",
+      "titleBar.buttonHover",
     ],
   },
   {
@@ -82,6 +158,79 @@ const VISUAL_EDITOR_SECTIONS = [
       "statusBar.foreground",
       "statusBar.border",
       "statusBar.itemHover",
+    ],
+  },
+  {
+    id: "diff",
+    title: "Git Diff",
+    paths: [
+      "common.diffAdded",
+      "common.diffAddedForeground",
+      "common.diffRemoved",
+      "common.diffRemovedForeground",
+      "common.diffModified",
+      "common.diffModifiedForeground",
+    ],
+  },
+  {
+    id: "status-task",
+    title: "Status & Tasks",
+    paths: [
+      "common.statusActive",
+      "common.statusInactive",
+      "common.statusError",
+      "common.statusWarning",
+      "common.taskPending",
+      "common.taskInProgress",
+      "common.taskCompleted",
+      "common.taskCancelled",
+      "common.checkpoint",
+      "common.checkpointForeground",
+    ],
+  },
+  {
+    id: "connection-action",
+    title: "Connection & Quick Actions",
+    paths: [
+      "common.secureConnection",
+      "common.insecureConnection",
+      "common.localConnection",
+      "common.actionAnalyze",
+      "common.actionDebug",
+      "common.actionGenerate",
+      "common.actionTest",
+    ],
+  },
+  {
+    id: "terminal-base",
+    title: "Terminal — Base",
+    paths: [
+      "terminal.background",
+      "terminal.foreground",
+      "terminal.cursor",
+      "terminal.selection",
+    ],
+  },
+  {
+    id: "terminal-ansi",
+    title: "Terminal — ANSI Palette",
+    paths: [
+      "terminal.black",
+      "terminal.red",
+      "terminal.green",
+      "terminal.yellow",
+      "terminal.blue",
+      "terminal.magenta",
+      "terminal.cyan",
+      "terminal.white",
+      "terminal.brightBlack",
+      "terminal.brightRed",
+      "terminal.brightGreen",
+      "terminal.brightYellow",
+      "terminal.brightBlue",
+      "terminal.brightMagenta",
+      "terminal.brightCyan",
+      "terminal.brightWhite",
     ],
   },
 ] as const;
@@ -130,6 +279,11 @@ export const ThemeEditorTab: React.FC<ThemeEditorTabProps> = ({
   const flatColors = useMemo(() => {
     const colors: FlatColorMap = {};
 
+    const isColorString = (v: string): boolean => {
+      const t = v.trim().toLowerCase();
+      return t.startsWith("#") || t.startsWith("rgb(") || t.startsWith("rgba(");
+    };
+
     const flatten = (
       obj: ThemeJsonMap,
       prefix = "",
@@ -138,7 +292,10 @@ export const ThemeEditorTab: React.FC<ThemeEditorTabProps> = ({
       for (const key in obj) {
         const value = obj[key];
         const fullPath = prefix ? `${prefix}.${key}` : key;
-        if (typeof value === "string" && value.startsWith("#")) {
+        // Accept hex, rgb(), and rgba() — anything matching our color
+        // grammar — so partial themes with alpha tokens (e.g. "#00000080"
+        // or "rgba(0,0,0,.4)") are editable instead of silently dropped.
+        if (typeof value === "string" && isColorString(value)) {
           colors[fullPath] = { path: fullPath, value, category };
         } else if (
           typeof value === "object" &&
@@ -153,6 +310,31 @@ export const ThemeEditorTab: React.FC<ThemeEditorTabProps> = ({
     flatten(themeColors as ThemeJsonMap);
     return colors;
   }, [themeColors]);
+
+  /**
+   * `<input type="color">` only accepts `#RRGGBB`. Strip alpha and coerce
+   * rgb()/rgba() to a hex preview so the swatch renders. The text field
+   * still shows the raw value so users can edit alpha directly.
+   */
+  const toHexForPicker = (value: string): string => {
+    const t = value.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(t)) return t;
+    if (/^#[0-9a-fA-F]{8}$/.test(t)) return t.slice(0, 7);
+    if (/^#[0-9a-fA-F]{3}$/.test(t)) {
+      return `#${t[1]}${t[1]}${t[2]}${t[2]}${t[3]}${t[3]}`;
+    }
+    if (/^#[0-9a-fA-F]{4}$/.test(t)) {
+      return `#${t[1]}${t[1]}${t[2]}${t[2]}${t[3]}${t[3]}`;
+    }
+    const m = t.match(/^rgba?\(\s*(\d+)\s*[,\s]\s*(\d+)\s*[,\s]\s*(\d+)/i);
+    if (m) {
+      const r = Math.min(255, parseInt(m[1], 10)).toString(16).padStart(2, "0");
+      const g = Math.min(255, parseInt(m[2], 10)).toString(16).padStart(2, "0");
+      const b = Math.min(255, parseInt(m[3], 10)).toString(16).padStart(2, "0");
+      return `#${r}${g}${b}`;
+    }
+    return "#000000";
+  };
 
   const handleColorChange = (path: string, value: string) => {
     setEditedColors((previous) => ({ ...previous, [path]: value }));
@@ -267,7 +449,7 @@ export const ThemeEditorTab: React.FC<ThemeEditorTabProps> = ({
                     >
                       <input
                         type="color"
-                        value={currentValue}
+                        value={toHexForPicker(currentValue)}
                         onChange={(event) =>
                           handleColorChange(color.path, event.target.value)
                         }

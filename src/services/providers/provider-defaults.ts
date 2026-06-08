@@ -12,8 +12,12 @@ export const DEFAULT_CONTEXT_WINDOWS: Record<string, number> = {
   'claude-3-opus': 200000,
   'claude-3-sonnet': 200000,
   'claude-3-haiku': 200000,
-  'deepseek-chat': 64000,
-  'deepseek-reasoner': 64000,
+  'deepseek-chat': 128000,
+  'deepseek-reasoner': 128000,
+  // DeepSeek V4 ships a 1M-token context window (per the official
+  // model card / pricing page). The V3 family above stays at 128K.
+  'deepseek-v4-pro': 1000000,
+  'deepseek-v4-flash': 1000000,
   'glm-4.7': 200000,
   'glm-4.6': 200000,
   'glm-4.5': 128000,
@@ -26,7 +30,9 @@ export const DEFAULT_CONTEXT_WINDOWS: Record<string, number> = {
 const PROVIDER_DEFAULTS: Record<string, { contextWindow: number; maxOutput: number }> = {
   anthropic: { contextWindow: 200000, maxOutput: 8192 },
   custom: { contextWindow: 128000, maxOutput: 8192 },
-  deepseek: { contextWindow: 64000, maxOutput: 64000 },
+  // DeepSeek V4 — 1M context, 384K max output. V3 models with a
+  // tighter window inherit via DEFAULT_CONTEXT_WINDOWS lookup above.
+  deepseek: { contextWindow: 1000000, maxOutput: 384000 },
   fireworks: { contextWindow: 200000, maxOutput: 32768 },
   glm: { contextWindow: 200000, maxOutput: 128000 },
   lmstudio: { contextWindow: 128000, maxOutput: 8192 },

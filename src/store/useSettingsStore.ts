@@ -281,6 +281,16 @@ export interface LLMModel {
   supportsToolStream: boolean;
   enabled: boolean;
   sortOrder: number;
+  /**
+   * Pricing (USD per 1M tokens). All four fields are optional; the
+   * usage badge only displays cost when both `cacheMiss` and `output`
+   * are set. `cacheHit` falls back to `cacheMiss` if unset (no discount
+   * assumed). `currency` defaults to `"USD"` when missing.
+   */
+  priceCacheHitPerMtok?: number;
+  priceCacheMissPerMtok?: number;
+  priceOutputPerMtok?: number;
+  priceCurrency?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -391,18 +401,55 @@ const resolveSelectedModel = (
   return `${firstAvailable.providerId}:${firstAvailable.model}`;
 };
 
+/**
+ * Reconcile `thinkingEnabled` with whatever model the user just
+ * selected. Two distinct behaviors:
+ *
+ *  1. Capability gate — if the active model can't think at all, force
+ *     the toggle OFF so the UI reflects what the runtime will do.
+ *     Previously the function returned the *unchanged* value here,
+ *     leaving the toggle stuck "on" after the user switched from a
+ *     thinking-capable model (e.g. claude-sonnet-thinking) to a plain
+ *     model (e.g. gpt-4o).
+ *
+ *  2. Pair swap — for providers that ship paired thinking/non-thinking
+ *     variants of the same model family, set the flag to match the
+ *     selected variant so the toggle UI looks right (the click that
+ *     selected the variant is what flips the flag — not the user
+ *     toggling thinking).
+ *
+ * `models` is the LLMModel slice — when non-empty it's the authoritative
+ * capability source. We fall back to the synthesized provider flag when
+ * the slice hasn't loaded yet (initial-load path).
+ */
 const syncThinkingForSelectedModel = (
   selectedModel: string,
   providers: LLMProvider[],
+  models: LLMModel[],
   currentThinkingEnabled: boolean
 ): boolean => {
-  const [providerId, model] = selectedModel.split(":");
-  if (!providerId || !model) return currentThinkingEnabled;
+  const [providerId, modelKey] = selectedModel.split(":");
+  if (!providerId || !modelKey) return currentThinkingEnabled;
 
   const provider = providers.find((p) => p.id === providerId);
-  if (!provider || !provider.supportsThinking) return currentThinkingEnabled;
+  if (!provider) return currentThinkingEnabled;
 
-  const pair = resolveThinkingModelPair(model, getProviderModelList(provider));
+  // Capability gate. Prefer the LLMModel row when available — it's
+  // the per-model truth; the provider-level flag is just a synthesized
+  // OR/active mirror that may lag the slice for non-active models.
+  const activeModel = models.find(
+    (m) => m.providerId === providerId && m.modelKey === modelKey,
+  );
+  const modelSupportsThinking = activeModel
+    ? activeModel.supportsThinking
+    : provider.supportsThinking ?? false;
+
+  if (!modelSupportsThinking) {
+    return false;
+  }
+
+  // Pair swap.
+  const pair = resolveThinkingModelPair(modelKey, getProviderModelList(provider));
   if (!pair) return currentThinkingEnabled;
 
   return pair.currentModelIsThinking;
@@ -482,6 +529,10 @@ function dbToModel(row: DbProviderModel): LLMModel {
     supportsToolStream: !!row.supportsToolStream,
     enabled: !!row.enabled,
     sortOrder: row.sortOrder ?? 0,
+    priceCacheHitPerMtok: row.priceCacheHitPerMtok ?? undefined,
+    priceCacheMissPerMtok: row.priceCacheMissPerMtok ?? undefined,
+    priceOutputPerMtok: row.priceOutputPerMtok ?? undefined,
+    priceCurrency: row.priceCurrency ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -501,6 +552,10 @@ function modelToDb(model: LLMModel): DbProviderModel {
     supportsToolStream: model.supportsToolStream,
     enabled: model.enabled,
     sortOrder: model.sortOrder,
+    priceCacheHitPerMtok: model.priceCacheHitPerMtok ?? null,
+    priceCacheMissPerMtok: model.priceCacheMissPerMtok ?? null,
+    priceOutputPerMtok: model.priceOutputPerMtok ?? null,
+    priceCurrency: model.priceCurrency ?? null,
     createdAt: model.createdAt || now,
     updatedAt: now,
   };
@@ -515,19 +570,27 @@ function modelToDb(model: LLMModel): DbProviderModel {
 function modelsFromPreset(preset: ProviderCatalogPreset): LLMModel[] {
   const keys = preset.customModels?.length ? preset.customModels : [preset.model];
   const aliases = preset.modelAliases || {};
-  return Array.from(new Set(keys.filter(Boolean))).map((modelKey, idx) => ({
-    id: `${preset.id}::${modelKey}`,
-    providerId: preset.id,
-    modelKey,
-    label: aliases[modelKey] || undefined,
-    contextWindow: undefined,
-    maxOutputTokens: undefined,
-    supportsVision: false,
-    supportsThinking: !!preset.supportsThinking,
-    supportsToolStream: !!preset.supportsToolStream,
-    enabled: true,
-    sortOrder: idx,
-  }));
+  const pricing = preset.modelPricing || {};
+  return Array.from(new Set(keys.filter(Boolean))).map((modelKey, idx) => {
+    const p = pricing[modelKey];
+    return {
+      id: `${preset.id}::${modelKey}`,
+      providerId: preset.id,
+      modelKey,
+      label: aliases[modelKey] || undefined,
+      contextWindow: undefined,
+      maxOutputTokens: undefined,
+      supportsVision: false,
+      supportsThinking: !!preset.supportsThinking,
+      supportsToolStream: !!preset.supportsToolStream,
+      enabled: true,
+      sortOrder: idx,
+      priceCacheHitPerMtok: p?.cacheHitPerMtok,
+      priceCacheMissPerMtok: p?.cacheMissPerMtok,
+      priceOutputPerMtok: p?.outputPerMtok,
+      priceCurrency: p ? 'USD' : undefined,
+    } satisfies LLMModel;
+  });
 }
 
 /**
@@ -845,6 +908,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         const syncedThinkingEnabled = syncThinkingForSelectedModel(
           selectedModel,
           get().providers,
+          get().models,
           persistedThinkingEnabled
         );
 
@@ -1099,6 +1163,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         thinkingEnabled: syncThinkingForSelectedModel(
           selectedModel,
           synthesized,
+          nextModels,
           state.thinkingEnabled,
         ),
       };
@@ -1203,6 +1268,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         thinkingEnabled: syncThinkingForSelectedModel(
           model,
           synthesized,
+          state.models,
           state.thinkingEnabled,
         ),
       };

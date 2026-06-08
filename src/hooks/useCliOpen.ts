@@ -1,13 +1,15 @@
 /**
  * CLI Open Hook
- * 
- * Listens for `cli-open` events from the Rust backend when Aurora is launched
- * with command-line arguments (e.g., `aurora .` or `aurora /path/to/folder`).
- * 
- * This provides VS Code-like CLI functionality:
- * - `aurora .` opens the current directory
- * - `aurora /path/to/folder` opens a specific folder
- * - `aurora file.txt` opens a file (and its parent folder as workspace)
+ *
+ * Live `cli-open` event listener. The cold-start path is handled by
+ * `useWorkspaceBootstrap`, which pulls the pending request synchronously
+ * via the `cli_take_pending_open_request` IPC command (race-free).
+ *
+ * This hook stays in place for live re-opens — e.g. a future
+ * single-instance handoff where Aurora is already running and the user
+ * invokes `aurora .` or clicks "Open Aurora" from the Explorer context
+ * menu again. In that case Rust still emits `cli-open` and this
+ * listener applies the request to the running window.
  */
 
 import { useEffect } from 'react';
@@ -30,13 +32,7 @@ export interface CliOpenRequest {
   diff_files: [string, string] | null;
 }
 
-/**
- * Hook to handle CLI open requests from the Rust backend
- */
 export function useCliOpen() {
-  const { setRootPath, rootPath } = useWorkspaceStore();
-  const { openFile } = useEditorStore();
-
   useEffect(() => {
     if (!isTauri()) return;
 
@@ -46,55 +42,54 @@ export function useCliOpen() {
       try {
         unlisten = await listen<CliOpenRequest>('cli-open', async (event) => {
           const request = event.payload;
-          console.log('[useCliOpen] Received CLI open request:', request);
+          console.log('[useCliOpen] Received live CLI open request:', request);
 
-          // Open workspace if provided and different from current
-          if (request.workspace_path && request.workspace_path !== rootPath) {
-            console.log('[useCliOpen] Opening workspace:', request.workspace_path);
-            setRootPath(request.workspace_path);
+          // Read fresh state from the store rather than closing over a
+          // stale `rootPath` (the previous version captured `rootPath`
+          // from render, which could be empty during the cold-start
+          // race window and cause a no-op or duplicate switch).
+          const currentRoot = useWorkspaceStore.getState().rootPath;
+
+          if (request.workspace_path && request.workspace_path !== currentRoot) {
+            console.log('[useCliOpen] Switching workspace:', request.workspace_path);
+            useWorkspaceStore.getState().setRootPath(request.workspace_path);
           }
 
-          // Open file if provided
           if (request.file_path) {
-            console.log('[useCliOpen] Opening file:', request.file_path);
             try {
               const content = await readFileContent(request.file_path);
-              const filename = request.file_path.split(/[/\\]/).pop() || request.file_path;
-              const language = getLanguageFromExtension(filename);
-              
-              openFile(request.file_path, filename, content, language);
-
-              // TODO: If goto_line is provided, scroll to that line
-              // This would require Monaco editor integration
+              const filename =
+                request.file_path.split(/[/\\]/).pop() || request.file_path;
+              useEditorStore.getState().openFile(
+                request.file_path,
+                filename,
+                content,
+                getLanguageFromExtension(filename),
+              );
               if (request.goto_line) {
-                console.log('[useCliOpen] Would go to line:', request.goto_line);
-                // Future: Integrate with Monaco editor to scroll to line
+                // Future: integrate with Monaco to scroll to line.
+                console.log('[useCliOpen] goto_line requested:', request.goto_line);
               }
             } catch (error) {
               console.error('[useCliOpen] Failed to open file:', error);
             }
           }
 
-          // TODO: Handle diff_files for diff view
           if (request.diff_files) {
             console.log('[useCliOpen] Diff view requested:', request.diff_files);
-            // Future: Implement diff view
+            // Future: implement diff view.
           }
         });
-
-        console.log('[useCliOpen] Listening for CLI open events');
       } catch (error) {
         console.error('[useCliOpen] Failed to setup listener:', error);
       }
     };
 
-    setupListener();
+    void setupListener();
 
     return () => {
-      if (unlisten) {
-        unlisten();
-      }
+      unlisten?.();
     };
-  }, [setRootPath, rootPath, openFile]);
+  }, []);
 }
 

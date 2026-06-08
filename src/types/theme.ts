@@ -67,6 +67,12 @@ export interface CommonTokens {
   secondaryForeground: string;
   secondaryHover: string;
   shadow: string;
+  /** Heavier drop-shadow color used by elevated surfaces (dialogs, popovers). */
+  shadowElevated: string;
+  /** Modal/dialog backdrop scrim color (typically a translucent black). */
+  scrim: string;
+  /** Accessible focus-ring color, independent of primary. */
+  focusRing: string;
   success: string;
   successForeground: string;
   warning: string;

@@ -20,7 +20,14 @@
  * See: src/services/theme-service.ts for theme utilities
  */
 
-import React, { memo, useState, useCallback, useRef, useEffect } from "react";
+import React, {
+  memo,
+  useState,
+  useCallback,
+  useMemo,
+  useRef,
+  useEffect,
+} from "react";
 import { Streamdown } from "streamdown";
 import {
   Copy,
@@ -730,12 +737,18 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(
         state.themes.find((theme) => theme.id === state.activeThemeId)?.type ??
         "dark",
     );
-    const shikiTheme:
-      | ["github-light", "github-light"]
-      | ["github-dark", "github-dark"] =
-      activeThemeType === "light"
-        ? ["github-light", "github-light"]
-        : ["github-dark", "github-dark"];
+    // Memoize the tuple: a fresh array literal every render is a new
+    // reference, which defeats Streamdown's internal memoization and
+    // forces a markdown re-parse + re-highlight on each streaming tick.
+    const shikiTheme = useMemo<
+      ["github-light", "github-light"] | ["github-dark", "github-dark"]
+    >(
+      () =>
+        activeThemeType === "light"
+          ? ["github-light", "github-light"]
+          : ["github-dark", "github-dark"],
+      [activeThemeType],
+    );
 
     if (!content) return null;
 

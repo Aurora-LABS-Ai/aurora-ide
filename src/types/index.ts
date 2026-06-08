@@ -119,6 +119,13 @@ export interface TimelineEvent {
 
   // For tool events
   tool?: ToolCall;
+
+  // For user_injection events — the mid-turn queued message the user
+  // typed while the agent was streaming. Rendered inline within the
+  // assistant message, right after the tool result the runtime
+  // stapled it to, so the visual order matches what the model sees.
+  userInjection?: string;
+
   type: TimelineEventType;
 }
 
@@ -145,7 +152,7 @@ export interface ToolProposal {
 }
 
 // Timeline event types for sequential display
-export type TimelineEventType = 'thinking' | 'tool' | 'content';
+export type TimelineEventType = 'thinking' | 'tool' | 'content' | 'user_injection';
 
 // Re-export theme types
 export * from './theme';

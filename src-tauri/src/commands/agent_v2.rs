@@ -205,6 +205,15 @@ pub struct AgentRegistry {
     /// thread. Subsequent calls hit the cache.
     sessions: DashMap<String, Arc<Mutex<Session>>>,
 
+    /// Mid-turn queued-message slots keyed by `thread_id`. The
+    /// `agent_enqueue_message` IPC writes here WITHOUT touching the
+    /// session mutex (which is held for the entire turn by
+    /// `run_turn`). The corresponding `Session` shares the same `Arc`
+    /// — both ends point to the same `Option<QueuedUserMessage>`, so
+    /// a write here is immediately visible to `take_queued_message`
+    /// called from inside the running turn.
+    queue_slots: DashMap<String, crate::agent_runtime::session::QueueSlot>,
+
     /// Cancellation tokens keyed by `turn_id`. Inserted when
     /// [`TurnDriver::run_turn`] starts; removed on completion (Ok or
     /// Err) or via [`AgentRegistry::cancel`].
@@ -258,12 +267,28 @@ impl AgentRegistry {
     pub fn new(api_factory: Arc<dyn ApiFactory>, sessions_dir: PathBuf) -> Self {
         Self {
             sessions: DashMap::new(),
+            queue_slots: DashMap::new(),
             in_flight: DashMap::new(),
             api_factory,
             tools: Arc::new(ToolRegistry::new()),
             bridge_router: Arc::new(BridgeRouter::new()),
             store: Arc::new(SessionStore::new(sessions_dir)),
         }
+    }
+
+    /// Get-or-create the queued-message slot for a thread. Returns an
+    /// `Arc` clone — the registry keeps one copy, the corresponding
+    /// `Session` keeps another, and both point to the same
+    /// `Option<QueuedUserMessage>`.
+    fn get_or_create_queue_slot(
+        &self,
+        thread_id: &str,
+    ) -> crate::agent_runtime::session::QueueSlot {
+        self.queue_slots
+            .entry(thread_id.to_string())
+            .or_insert_with(crate::agent_runtime::session::empty_queue_slot)
+            .value()
+            .clone()
     }
 
     /// Borrow the session store so Tauri thread commands can read /
@@ -300,6 +325,49 @@ impl AgentRegistry {
         }
     }
 
+    /// Enqueue a user message to be injected into the conversation at
+    /// the next tool-result boundary. Single-slot: a second call before
+    /// the first is drained replaces the previous text.
+    ///
+    /// CRITICAL: writes ONLY to the registry-level queue slot, never
+    /// touches the session mutex. `run_turn` holds the session mutex
+    /// for the entire turn, so any attempt to lock it from here would
+    /// block until the turn ended — at which point every tool-result
+    /// boundary in the turn would have already passed with an empty
+    /// slot. The slot is an `Arc<std::sync::Mutex<Option<…>>>` shared
+    /// with the `Session`, so a write here is immediately visible to
+    /// `session.take_queued_message()` running inside the turn.
+    pub async fn enqueue_message(
+        &self,
+        thread_id: &str,
+        text: String,
+    ) -> Result<(), String> {
+        if text.trim().is_empty() {
+            return Err("queued message text cannot be empty".to_string());
+        }
+        let slot = self.get_or_create_queue_slot(thread_id);
+        let mut guard = slot
+            .lock()
+            .map_err(|e| format!("queue slot mutex poisoned: {e}"))?;
+        *guard = Some(crate::agent_runtime::session::QueuedUserMessage {
+            text,
+            queued_at_ms: chrono::Utc::now().timestamp_millis(),
+        });
+        Ok(())
+    }
+
+    /// Clear the queued message for a session without consuming it.
+    /// Called by the frontend's Cancel button on the pill. Same
+    /// constraint as `enqueue_message`: must not lock the session.
+    pub async fn cancel_queued_message(&self, thread_id: &str) -> Result<(), String> {
+        if let Some(entry) = self.queue_slots.get(thread_id) {
+            if let Ok(mut g) = entry.value().lock() {
+                *g = None;
+            }
+        }
+        Ok(())
+    }
+
     /// On-disk path for a given thread's session JSONL. Delegates to
     /// the [`SessionStore`] so tests and runtime see the same paths.
     #[must_use]
@@ -319,13 +387,21 @@ impl AgentRegistry {
         }
 
         let path = self.session_path(thread_id);
-        let session = match Session::load_from_path(thread_id, &path) {
+        let mut session = match Session::load_from_path(thread_id, &path) {
             Ok(s) => s,
             Err(RuntimeError::Io(io_err)) if io_err.kind() == std::io::ErrorKind::NotFound => {
                 Session::new(thread_id)
             }
             Err(other) => return Err(other),
         };
+
+        // Bind the session to the registry-level queue slot. If the
+        // user already enqueued a mid-turn message *before* the first
+        // turn ever started for this thread, the slot already holds
+        // it; the session inherits the populated slot and the next
+        // turn's tool boundary drains it as normal.
+        let slot = self.get_or_create_queue_slot(thread_id);
+        session.set_queue_slot(slot);
 
         // `entry().or_insert_with(...)` makes the cache insert atomic
         // against a racing concurrent `load_or_create_session` for the
@@ -852,6 +928,31 @@ mod tauri_layer {
         is_error: bool,
     ) -> Result<(), String> {
         state.post_tool_result(&turn_id, &tool_use_id, content, is_error)
+    }
+
+    /// Enqueue a user message to ride in on the next tool-result the
+    /// agent receives. Single-slot per thread: a second call replaces
+    /// the previously queued text. Returns immediately — the actual
+    /// injection is event-driven (`QueuedMessageInjected`) and happens
+    /// the next time the conversation loop drains a tool batch.
+    #[tauri::command]
+    pub async fn agent_enqueue_message(
+        state: State<'_, Arc<AgentRegistry>>,
+        thread_id: String,
+        text: String,
+    ) -> Result<(), String> {
+        state.enqueue_message(&thread_id, text).await
+    }
+
+    /// Cancel the queued message for `thread_id` (if any). Never fails:
+    /// returns Ok even when the slot was already empty so the
+    /// frontend's pill-clear is idempotent.
+    #[tauri::command]
+    pub async fn agent_cancel_queued_message(
+        state: State<'_, Arc<AgentRegistry>>,
+        thread_id: String,
+    ) -> Result<(), String> {
+        state.cancel_queued_message(&thread_id).await
     }
 }
 

@@ -85,7 +85,7 @@ export const ToolApprovalBanner: React.FC<ToolApprovalBannerProps> = ({
   return (
     <div
       className={clsx(
-        'mx-3 mb-2 rounded-2xl border border-border bg-sidebar/95 backdrop-blur shadow-[0_18px_35px_rgba(0,0,0,0.45)]'
+        'mx-3 mb-2 rounded-2xl border border-border bg-sidebar/95 backdrop-blur shadow-[0_18px_35px_var(--aurora-common-shadow-elevated)]'
       )}
     >
       <div className="px-3.5 py-3">

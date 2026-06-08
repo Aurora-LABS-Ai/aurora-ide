@@ -114,18 +114,20 @@ export const MenuBarMenu: React.FC<MenuBarMenuProps> = ({
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") closeMenu();
     };
-    const handleScroll = () => closeMenu();
+    // Do NOT close on arbitrary scroll. Capture-phase doc-wide scroll
+    // fires on every agent-streaming chunk / editor scroll / terminal
+    // output, which dismissed open menubar dropdowns within a frame.
+    // Click-outside + Escape + resize are the right dismissal signals
+    // for a fixed top-bar menu.
     const handleResize = () => closeMenu();
 
     document.addEventListener("mousedown", handleClickOutside);
     document.addEventListener("keydown", handleKey);
-    document.addEventListener("scroll", handleScroll, true);
     window.addEventListener("resize", handleResize);
 
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleKey);
-      document.removeEventListener("scroll", handleScroll, true);
       window.removeEventListener("resize", handleResize);
     };
   }, [isOpen, closeMenu]);

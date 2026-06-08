@@ -23,12 +23,53 @@
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use chrono::Utc;
 use uuid::Uuid;
 
 use super::error::RuntimeError;
 use super::types::ConversationMessage;
+
+/// Shared, lock-free-from-the-session-mutex slot for the mid-turn
+/// queued user message. Held both by the [`Session`] (so the
+/// conversation runtime can drain it at tool boundaries) and by the
+/// [`crate::commands::agent_v2::AgentRegistry`] (so the
+/// `agent_enqueue_message` IPC can write to it WITHOUT contending on
+/// the session's tokio `Mutex`, which is held for the entire turn).
+///
+/// Uses `std::sync::Mutex` because the critical section is two-line
+/// `take()`/assign and never `.await`s. This is the whole point —
+/// previously the slot lived inside `Session` and enqueueing while a
+/// turn was streaming blocked on the session lock, so the queue was
+/// never drained.
+pub type QueueSlot = Arc<StdMutex<Option<QueuedUserMessage>>>;
+
+/// Build a fresh empty queue slot.
+#[must_use]
+pub fn empty_queue_slot() -> QueueSlot {
+    Arc::new(StdMutex::new(None))
+}
+
+/// One user-typed message waiting to ride in on the next tool result.
+///
+/// Single-slot, replace-on-set. The runtime drains this slot at the
+/// end of every tool-call batch (between iterations of the assistant
+/// loop) and appends the `text` as a `ContentBlock::Text` block to the
+/// just-built tool message — Anthropic sees a single user message
+/// containing both the tool_result blocks and the queued text; the
+/// OpenAI-compat adapter splits the text into a follow-up `role: user`
+/// message after the `role: tool` entries.
+///
+/// Not persisted: lives only on the in-memory `Session` so it cannot
+/// outlive the agent process. If the user cancels mid-stream the slot
+/// is cleared with the rest of the session.
+#[derive(Debug, Clone)]
+pub struct QueuedUserMessage {
+    pub text: String,
+    /// Unix epoch milliseconds when the user hit Send.
+    pub queued_at_ms: i64,
+}
 
 /// In-memory conversation state for one open chat thread.
 ///
@@ -59,6 +100,14 @@ pub struct Session {
     /// `"anthropic:claude-3-7-sonnet"`). The runtime can swap models
     /// mid-conversation; this records what the session opened with.
     pub model: Option<String>,
+    /// Mid-turn user-message queue. Lives behind a `std::sync::Mutex`
+    /// in an `Arc` so the registry can also hold a clone of the slot
+    /// and write to it WITHOUT acquiring the session's tokio mutex —
+    /// the session mutex is held by `run_turn` for the entire turn,
+    /// so any path that needs to write during a turn must avoid it.
+    /// Single-slot: a second enqueue replaces the previous one
+    /// (matches the UI's "type to replace" pill behaviour).
+    pub queued_message: QueueSlot,
 }
 
 impl Session {
@@ -74,7 +123,59 @@ impl Session {
             updated_at: now,
             workspace_root: None,
             model: None,
+            queued_message: empty_queue_slot(),
         }
+    }
+
+    /// Replace the queue slot with one created (or already populated)
+    /// by the registry. Lets the registry-level
+    /// `agent_enqueue_message` IPC write into the same slot the
+    /// runtime drains, without going through the session mutex.
+    pub fn set_queue_slot(&mut self, slot: QueueSlot) {
+        self.queued_message = slot;
+    }
+
+    /// Clone-share the queue slot. The registry calls this once when
+    /// it first builds a Session so the IPC handler can hold its own
+    /// `Arc` and write to it without locking the session.
+    #[must_use]
+    pub fn queue_slot(&self) -> QueueSlot {
+        self.queued_message.clone()
+    }
+
+    /// Enqueue a user message to be injected at the next tool-result
+    /// boundary. Single-slot: replaces any previously queued message.
+    /// Now `&self` because the slot lives behind its own mutex.
+    pub fn enqueue_message(&self, msg: QueuedUserMessage) {
+        if let Ok(mut g) = self.queued_message.lock() {
+            *g = Some(msg);
+        }
+    }
+
+    /// Take the queued message, leaving the slot empty. Called by the
+    /// conversation runtime when it's about to inject.
+    pub fn take_queued_message(&self) -> Option<QueuedUserMessage> {
+        self.queued_message
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take())
+    }
+
+    /// Clear the queued message without consuming it. Called by the
+    /// frontend's Cancel button.
+    pub fn cancel_queued_message(&self) {
+        if let Ok(mut g) = self.queued_message.lock() {
+            *g = None;
+        }
+    }
+
+    /// Read the queued message without taking it. For diagnostics.
+    #[must_use]
+    pub fn peek_queued_message(&self) -> Option<QueuedUserMessage> {
+        self.queued_message
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
     }
 
     /// Bind this session to a workspace root path.

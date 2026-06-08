@@ -26,6 +26,7 @@ use serde_json::Value;
 use crate::agent_runtime::api_client::StreamingApiClient;
 
 use super::anthropic::AnthropicAdapter;
+use super::deepseek::DeepSeekAdapter;
 use super::openai_compat::OpenAICompatAdapter;
 
 /// Frozen view of one Aurora provider's configuration as the API client
@@ -70,10 +71,16 @@ pub struct ProviderConfigSnapshot {
 }
 
 /// Wire-shape kind chosen by the factory. Distinct from `provider_id`
-/// because two ids share the Anthropic shape (`anthropic`, `minimax`).
+/// because (a) two ids share the Anthropic shape (`anthropic`,
+/// `minimax`) and (b) DeepSeek is technically OpenAI-compatible but
+/// has enough provider-specific wire tweaks (thinking-mode
+/// `reasoning_effort`, `user_id` KVCache isolation, strict-mode beta
+/// branch, prompt-cache token normalization) that we hand it a
+/// dedicated adapter. See [`super::deepseek::DeepSeekAdapter`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
     Anthropic,
+    DeepSeek,
     OpenAICompat,
 }
 
@@ -83,6 +90,7 @@ impl ProviderKind {
     pub fn detect(provider_id: &str) -> Self {
         match provider_id.trim() {
             "anthropic" | "minimax" => ProviderKind::Anthropic,
+            "deepseek" => ProviderKind::DeepSeek,
             _ => ProviderKind::OpenAICompat,
         }
     }
@@ -100,6 +108,7 @@ impl ProviderKind {
 pub fn build_api_client(config: &ProviderConfigSnapshot) -> Arc<dyn StreamingApiClient> {
     match ProviderKind::detect(&config.provider_id) {
         ProviderKind::Anthropic => Arc::new(AnthropicAdapter::new(config.clone())),
+        ProviderKind::DeepSeek => Arc::new(DeepSeekAdapter::new(config.clone())),
         ProviderKind::OpenAICompat => Arc::new(OpenAICompatAdapter::new(config.clone())),
     }
 }
@@ -134,9 +143,13 @@ mod tests {
     }
 
     #[test]
+    fn detect_deepseek_routes_to_dedicated_adapter() {
+        assert_eq!(ProviderKind::detect("deepseek"), ProviderKind::DeepSeek);
+    }
+
+    #[test]
     fn detect_openai_compat_for_others() {
         for id in [
-            "deepseek",
             "glm",
             "openai",
             "fireworks",

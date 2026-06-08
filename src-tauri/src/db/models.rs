@@ -270,6 +270,9 @@ pub struct LLMProvider {
 /// "inherit the provider's default". Capability flags are always
 /// per-model — that's the whole point of splitting them out of
 /// [`LLMProvider`] in v15.
+///
+/// `price_*_per_mtok` columns (v16+) are USD per one million tokens,
+/// `None` means "unset — don't display cost in the UI for this model."
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModel {
@@ -290,6 +293,19 @@ pub struct ProviderModel {
     pub enabled: bool,
     #[serde(default)]
     pub sort_order: i32,
+    /// Pricing (USD per 1M tokens). All four fields are optional; the
+    /// UI only displays cost when at least `price_cache_miss_per_mtok`
+    /// and `price_output_per_mtok` are populated.
+    #[serde(default)]
+    pub price_cache_hit_per_mtok: Option<f64>,
+    #[serde(default)]
+    pub price_cache_miss_per_mtok: Option<f64>,
+    #[serde(default)]
+    pub price_output_per_mtok: Option<f64>,
+    /// Currency code. `None` is treated as `"USD"`. Reserved for
+    /// future EUR/GBP support — today the UI always renders `$`.
+    #[serde(default)]
+    pub price_currency: Option<String>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]

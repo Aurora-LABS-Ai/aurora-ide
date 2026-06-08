@@ -144,18 +144,21 @@ export const Tooltip: React.FC<TooltipProps> = ({
     setPosition({ left, top, placed: true, placement: resolved });
   }, [open, label, placement, offset]);
 
-  // Hide on any scroll/resize/escape — feels right and avoids stale positions.
+  // Hide on resize / Escape. Previously we also hid on any capture-
+  // phase scroll, but in an IDE shell that fires constantly during
+  // agent streaming / editor scrolling / terminal output — every
+  // tooltip vanished within a frame of being shown. The mouse leaving
+  // the trigger is the primary dismissal signal; resize covers the
+  // genuine "anchor moved" case.
   useEffect(() => {
     if (!open) return;
     const handleHide = () => hide();
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") hide();
     };
-    window.addEventListener("scroll", handleHide, true);
     window.addEventListener("resize", handleHide);
     window.addEventListener("keydown", handleKey);
     return () => {
-      window.removeEventListener("scroll", handleHide, true);
       window.removeEventListener("resize", handleHide);
       window.removeEventListener("keydown", handleKey);
     };

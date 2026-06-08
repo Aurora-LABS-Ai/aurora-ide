@@ -962,6 +962,10 @@ export const ProvidersHubTab: React.FC<ProvidersHubTabProps> = ({
         supportsThinking: draft.supportsThinking,
         supportsToolStream: draft.supportsToolStream,
         enabled: draft.enabled,
+        priceCacheHitPerMtok: draft.priceCacheHitPerMtok,
+        priceCacheMissPerMtok: draft.priceCacheMissPerMtok,
+        priceOutputPerMtok: draft.priceOutputPerMtok,
+        priceCurrency: draft.priceCurrency,
       });
     } else {
       addModel(editorProviderId, {
@@ -973,6 +977,10 @@ export const ProvidersHubTab: React.FC<ProvidersHubTabProps> = ({
         supportsThinking: draft.supportsThinking,
         supportsToolStream: draft.supportsToolStream,
         enabled: draft.enabled,
+        priceCacheHitPerMtok: draft.priceCacheHitPerMtok,
+        priceCacheMissPerMtok: draft.priceCacheMissPerMtok,
+        priceOutputPerMtok: draft.priceOutputPerMtok,
+        priceCurrency: draft.priceCurrency,
       });
     }
     setEditorOpen(false);

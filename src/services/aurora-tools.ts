@@ -1,0 +1,186 @@
+/**
+ * Frontend-native Aurora tool executor.
+ *
+ * Background
+ * ----------
+ * Most tools in the agent loop are owned by the Rust `ToolRegistry`
+ * (`src-tauri/src/tools/`). MCP tools (`mcp_*`) are owned by the
+ * frontend bridge (`src/services/mcp-tools.ts`) because they call
+ * out to user-configured MCP servers.
+ *
+ * Skill discovery (`aurora_skill_search`, `aurora_skill_load`) is a
+ * third category: it is genuinely frontend-native. The skill catalog
+ * lives in `src/services/skills.ts` — built-in skills are hardcoded
+ * TS literals, workspace skills are discovered by scanning
+ * `.aurora/skills/` and `.agents/skills/` through Tauri `fs` IPC,
+ * frontmatter parsing happens in JS, and the same code powers the
+ * `SkillsSettingsTab` UI plus the agent prompt skill-injection path.
+ * Porting all of that to Rust would be a parallel implementation
+ * with no behavioural gain, so we instead extend the frontend
+ * bridge to also dispatch these tools.
+ *
+ * This file is the dispatcher: it knows which tool names are
+ * frontend-native Aurora tools and how to run them. The bridge
+ * (`agent-runtime-client.ts > dispatchToolPending`) is the only
+ * caller.
+ *
+ * Contract
+ * --------
+ * `executeAuroraFrontendTool` returns a JSON-serialized string —
+ * the same shape `executeMcpTool` returns — so the Rust runtime
+ * sees a uniform tool-result payload regardless of which executor
+ * actually ran. Failures throw; the bridge wraps the thrown
+ * message in the standard `{ error, tool }` envelope and posts
+ * `isError=true` via `agent_post_tool_result`.
+ *
+ * Risk
+ * ----
+ * Both currently registered tools are read-only (see
+ * `risk-levels-enhanced.ts` — both classified `low`) so the
+ * bridge auto-approves them without surfacing the tool-approval
+ * modal.
+ */
+import { findSkillById, searchSkillCandidates } from "./skills";
+import { useWorkspaceStore } from "../store/useWorkspaceStore";
+
+/**
+ * Names of Aurora tools that are implemented in TypeScript on the
+ * frontend rather than in the Rust runtime.
+ *
+ * Keep this list narrow: each entry is intentionally read-only and
+ * runs without the tool-approval modal. Anything that mutates state
+ * or talks to an external service should live in the Rust runtime
+ * (or be an MCP server) so it benefits from the runtime's safety
+ * checks, audit logging, and cancellation handling.
+ */
+const AURORA_FRONTEND_TOOLS = new Set<string>([
+  "aurora_skill_search",
+  "aurora_skill_load",
+]);
+
+/**
+ * `true` when `toolName` should be dispatched through the frontend
+ * Aurora executor rather than the Rust runtime or MCP bridge.
+ */
+export function isAuroraFrontendTool(toolName: string): boolean {
+  return AURORA_FRONTEND_TOOLS.has(toolName);
+}
+
+/**
+ * `true` for frontend Aurora tools that are read-only and safe to
+ * run without the approval modal.
+ *
+ * Currently every entry in {@link AURORA_FRONTEND_TOOLS} qualifies,
+ * but we keep the predicate separate so a future tool that needs
+ * explicit consent can be added without changing the dispatch
+ * logic.
+ */
+export function shouldAutoApproveAuroraFrontendTool(toolName: string): boolean {
+  return AURORA_FRONTEND_TOOLS.has(toolName);
+}
+
+interface SkillSearchArgs {
+  query?: unknown;
+  limit?: unknown;
+  source?: unknown;
+}
+
+interface SkillLoadArgs {
+  id?: unknown;
+}
+
+function readWorkspacePath(): string | null {
+  // Read the workspace root straight from the store. The bridge has
+  // no parameter for it, but `useWorkspaceStore` is a singleton so
+  // any active workspace is reflected here. `rootPath` is the empty
+  // string when no workspace is loaded — normalise that to `null`
+  // so downstream code can short-circuit cleanly.
+  const raw = useWorkspaceStore.getState().rootPath;
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return null;
+  }
+  return raw;
+}
+
+function coerceLimit(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return 30;
+}
+
+async function runSkillSearch(rawArgs: Record<string, unknown>): Promise<string> {
+  const args = rawArgs as SkillSearchArgs;
+  const query = typeof args.query === "string" ? args.query : undefined;
+  const limit = coerceLimit(args.limit);
+  const source =
+    args.source === "builtin" || args.source === "workspace" || args.source === "global"
+      ? args.source
+      : undefined;
+
+  const workspacePath = readWorkspacePath();
+  const results = await searchSkillCandidates(query ?? null, limit, { workspacePath });
+
+  const filtered = source ? results.filter((r) => r.source === source) : results;
+
+  return JSON.stringify({
+    count: filtered.length,
+    query: query ?? null,
+    results: filtered,
+  });
+}
+
+async function runSkillLoad(rawArgs: Record<string, unknown>): Promise<string> {
+  const args = rawArgs as SkillLoadArgs;
+  const id = typeof args.id === "string" ? args.id.trim() : "";
+  if (!id) {
+    throw new Error("aurora_skill_load: `id` is required");
+  }
+
+  const workspacePath = readWorkspacePath();
+  const skill = await findSkillById(id, { workspacePath });
+
+  if (!skill) {
+    throw new Error(`Skill not found: '${id}'`);
+  }
+
+  // Mirror the shape the agent prompt uses so the model gets a
+  // predictable envelope: { id, name, description, source, path,
+  // triggers, content }.
+  return JSON.stringify({
+    id: skill.id,
+    name: skill.name,
+    description: skill.description,
+    source: skill.source,
+    path: skill.sourcePath ?? null,
+    triggers: skill.triggers,
+    content: skill.content,
+  });
+}
+
+/**
+ * Dispatch a frontend-native Aurora tool. Returns the JSON-stringified
+ * tool result on success; throws on any failure (the bridge wraps the
+ * thrown message in the standard `{ error, tool }` envelope).
+ */
+export async function executeAuroraFrontendTool(
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<string> {
+  switch (toolName) {
+    case "aurora_skill_search":
+      return runSkillSearch(args);
+    case "aurora_skill_load":
+      return runSkillLoad(args);
+    default:
+      // Defensive: the bridge gates on `isAuroraFrontendTool` before
+      // calling us, so this branch only fires if the two lists drift.
+      throw new Error(`Aurora frontend tool '${toolName}' has no executor`);
+  }
+}

@@ -136,17 +136,27 @@ pub(crate) fn parse_anthropic_response(json: &Value) -> AuroraProviderResponse {
 }
 
 pub(crate) fn parse_openai_usage(usage: &Value) -> AuroraUsage {
+    let prompt_tokens = usage
+        .get("prompt_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or_default() as u32;
+    // DeepSeek surfaces `prompt_cache_hit_tokens` as a subset of
+    // `prompt_tokens`. Mirror the streaming path's normalization so the
+    // UI displays the same numbers whether the call streamed or not.
+    let cache_hit = usage
+        .get("prompt_cache_hit_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or_default() as u32;
+    let prompt_excluding_cache = prompt_tokens.saturating_sub(cache_hit);
+    let cache_read_tokens = if cache_hit > 0 { Some(cache_hit) } else { None };
     AuroraUsage {
-        cache_read_tokens: None,
+        cache_read_tokens,
         cache_write_tokens: None,
         completion_tokens: usage
             .get("completion_tokens")
             .and_then(Value::as_u64)
             .unwrap_or_default() as u32,
-        prompt_tokens: usage
-            .get("prompt_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or_default() as u32,
+        prompt_tokens: prompt_excluding_cache,
         total_tokens: usage
             .get("total_tokens")
             .and_then(Value::as_u64)

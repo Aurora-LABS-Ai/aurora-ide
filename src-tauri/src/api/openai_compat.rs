@@ -163,6 +163,22 @@ where
                 if let Some(u) = parsed.usage {
                     usage.input_tokens = u.prompt_tokens;
                     usage.output_tokens = u.completion_tokens;
+                    // DeepSeek context caching: `prompt_cache_hit_tokens`
+                    // is a SUBSET of `prompt_tokens` (the cached
+                    // portion served from disk). Aurora's UI math
+                    // (`useContextStore.updateUsage`) follows Anthropic
+                    // semantics where the cache-read field is ADDITIVE
+                    // to `input_tokens`, so we subtract the hit count
+                    // from `input_tokens` here to keep the addition
+                    // correct on both providers. The original
+                    // prompt_tokens stays implicitly available as
+                    // `input_tokens + cache_read_input_tokens`.
+                    if let Some(hit) = u.prompt_cache_hit_tokens {
+                        if hit > 0 {
+                            usage.cache_read_input_tokens = Some(hit);
+                            usage.input_tokens = usage.input_tokens.saturating_sub(hit);
+                        }
+                    }
                     let _ = event_sink.send(AssistantEvent::Usage(usage.clone())).await;
                 }
 

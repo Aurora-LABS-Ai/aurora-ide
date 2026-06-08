@@ -159,7 +159,7 @@ const AuditEntryCard: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
             <summary className="text-[10px] text-muted-foreground cursor-pointer hover:text-text-secondary">
               View result
             </summary>
-            <div className="mt-1 p-2 bg-black/20 rounded text-[10px] text-text-secondary font-mono max-h-20 overflow-auto">
+            <div className="mt-1 p-2 bg-shadow/40 rounded text-[10px] text-text-secondary font-mono max-h-20 overflow-auto">
               {entry.result}
             </div>
           </details>
@@ -187,7 +187,7 @@ export const AuditTimeline: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-150">
+    <div className="fixed inset-0 bg-scrim backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-150">
       <div className="bg-sidebar border border-border rounded-xl shadow-2xl shadow-black/50 w-[550px] h-[70vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="h-12 border-b border-border flex items-center justify-between px-4 bg-input/30">

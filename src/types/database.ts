@@ -90,6 +90,12 @@ export interface DbProviderModel {
   supportsToolStream: boolean;
   enabled: boolean;
   sortOrder: number;
+  // Pricing (v16+) — USD per 1M tokens, null means "unset".
+  priceCacheHitPerMtok: number | null;
+  priceCacheMissPerMtok: number | null;
+  priceOutputPerMtok: number | null;
+  /** Currency ISO code. `null` is treated as `"USD"` by the UI. */
+  priceCurrency: string | null;
   createdAt: string;
   updatedAt: string;
 }

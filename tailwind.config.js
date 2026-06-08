@@ -132,12 +132,19 @@ export default {
         // === Overlay/Shadow ===
         overlay: auroraColor('--aurora-common-overlay'),
         shadow: auroraColor('--aurora-common-shadow'),
+        'shadow-elevated': auroraColor('--aurora-common-shadow-elevated'),
+        scrim: auroraColor('--aurora-common-scrim'),
+        'focus-ring': auroraColor('--aurora-common-focus-ring'),
 
         // === Text Hierarchy ===
-        'text-primary': auroraColor('--aurora-editor-foreground'),
-        'text-secondary': auroraColor('--aurora-sidebar-foreground'),
+        // Aurora's global text contract lives in common.text*, NOT in
+        // editor/sidebar.foreground (which are scoped to those surfaces).
+        // Wiring text-text-* to common.text* keeps app-wide text edits
+        // independent of editor / sidebar foreground changes.
+        'text-primary': auroraColor('--aurora-common-text-primary'),
+        'text-secondary': auroraColor('--aurora-common-text-secondary'),
         'text-muted': auroraColor('--aurora-common-muted-foreground'),
-        'text-disabled': auroraColor('--aurora-common-muted-foreground'),
+        'text-disabled': auroraColor('--aurora-common-text-disabled'),
         'text-bright': auroraColor('--aurora-common-primary-foreground'),
 
         // === Chat Specific ===

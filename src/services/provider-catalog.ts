@@ -1,5 +1,17 @@
 import { auroraInvoke as invoke } from "../lib/runtime";
 
+/**
+ * Per-model default pricing (USD per 1M tokens). Mirrors the Rust
+ * `ModelPricing` struct in `provider_catalog/types.rs`. Used to seed
+ * new provider_model rows on first-run; existing rows in SQLite take
+ * precedence over these defaults.
+ */
+export interface ProviderCatalogModelPricing {
+  cacheHitPerMtok: number;
+  cacheMissPerMtok: number;
+  outputPerMtok: number;
+}
+
 export interface ProviderCatalogPreset {
   id: string;
   name: string;
@@ -16,6 +28,8 @@ export interface ProviderCatalogPreset {
   defaultTemperature?: number;
   defaultMaxTokens?: number;
   requiresApiKey: boolean;
+  /** Keyed by API model id; missing entries fall back to user input. */
+  modelPricing?: Record<string, ProviderCatalogModelPricing>;
 }
 
 class ProviderCatalogService {

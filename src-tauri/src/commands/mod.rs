@@ -1957,3 +1957,30 @@ pub async fn uninstall_aurora_context_menu() -> Result<String, String> {
     crate::cli::install::uninstall_context_menu()
         .map(|_| "Aurora context menu removed successfully".to_string())
 }
+
+/// App-state slot holding the CLI open request that this process was
+/// launched with (if any). Populated once at startup in
+/// `aurora_lib::run_with_args` and consumed exactly once by the
+/// frontend's bootstrap effect via [`cli_take_pending_open_request`].
+///
+/// The slot exists because the prior design pushed a `cli-open` event
+/// 500 ms after window creation — but Tauri events are not buffered, so
+/// if the JS bundle wasn't ready in time the event was silently dropped
+/// and "last workspace" restore won the race. Pull-on-mount eliminates
+/// that race entirely.
+#[derive(Default)]
+pub struct PendingCliOpenState(pub Mutex<Option<crate::cli::CliOpenRequest>>);
+
+/// Take (and clear) the pending CLI open request for this process.
+///
+/// Returns `Some(request)` on the first call after the app was launched
+/// with a path/file arg, then `None` on every subsequent call. The
+/// frontend uses this from its bootstrap effect to decide whether to
+/// honour a CLI-supplied workspace or fall back to the saved
+/// "last workspace" in the database.
+#[tauri::command]
+pub fn cli_take_pending_open_request(
+    state: tauri::State<'_, PendingCliOpenState>,
+) -> Option<crate::cli::CliOpenRequest> {
+    state.0.lock().ok().and_then(|mut g| g.take())
+}

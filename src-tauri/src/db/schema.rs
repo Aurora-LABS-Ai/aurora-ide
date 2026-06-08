@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 15;
+pub const SCHEMA_VERSION: i32 = 16;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -200,6 +200,19 @@ fn create_llm_providers_table(conn: &Connection) -> DbResult<()> {
 /// nullable: NULL means "inherit the provider's default", a non-null
 /// value overrides it.
 fn create_provider_models_table(conn: &Connection) -> DbResult<()> {
+    // Pricing columns (v16+) — `*_per_mtok` is the USD price per
+    // one-million-tokens, stored as REAL so fractional cents survive
+    // round-trips. All three are NULLable so the column is "unset"
+    // for users who haven't configured pricing for a model. The UI
+    // gracefully hides the cost row when any of the three is null.
+    //
+    // We keep these as separate columns rather than a JSON blob so
+    // we can later add aggregations (e.g. "total spend this thread")
+    // without parsing a JSON string per row.
+    //
+    // `price_currency` is a forward-compat column. Today the UI
+    // displays USD only; the column lets us add EUR/GBP later
+    // without another migration. NULL is treated as "USD".
     conn.execute(
         "CREATE TABLE IF NOT EXISTS provider_models (
             id TEXT PRIMARY KEY,                     -- '{providerId}::{modelKey}'
@@ -213,6 +226,10 @@ fn create_provider_models_table(conn: &Connection) -> DbResult<()> {
             supports_tool_stream INTEGER NOT NULL DEFAULT 0,
             enabled INTEGER NOT NULL DEFAULT 1,
             sort_order INTEGER NOT NULL DEFAULT 0,
+            price_cache_hit_per_mtok REAL,           -- USD per 1M cached input tokens
+            price_cache_miss_per_mtok REAL,          -- USD per 1M fresh input tokens
+            price_output_per_mtok REAL,              -- USD per 1M output tokens
+            price_currency TEXT,                     -- NULL → USD
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(provider_id, model_key),

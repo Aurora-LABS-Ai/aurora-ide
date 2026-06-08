@@ -44,6 +44,11 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     width: 320,
     placement: "above" as DropdownPlacement,
   });
+  // True once the dropdown has been measured AT ITS REAL HEIGHT after
+  // mount and snapped to the corrected position. Until then we keep
+  // the panel invisible so the user never sees the half-frame flash
+  // between the height estimate and the measured height.
+  const [positionReady, setPositionReady] = useState(false);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -122,7 +127,15 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   useLayoutEffect(() => {
     if (!isOpen) return;
 
+    // First synchronous measurement uses the just-mounted dropdownRef
+    // height. This runs BEFORE the browser paints the first frame, so
+    // the user only ever sees the corrected position. The single
+    // setState is the entire point of the measure-then-show pattern;
+    // the linter's "cascading renders" warning is a false positive
+    // here — there's exactly one paint after this commit.
     updateDropdownPosition();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPositionReady(true);
 
     const handleWindowChange = () => {
       updateDropdownPosition();
@@ -136,6 +149,13 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       window.removeEventListener("scroll", handleWindowChange, true);
     };
   }, [isOpen, updateDropdownPosition]);
+
+  // Reset positionReady on close so the next open starts invisible
+  // and waits for measurement. Same single-commit pattern as above.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!isOpen) setPositionReady(false);
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen || availableModels.length === 0) return;
@@ -189,7 +209,12 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       return;
     }
 
-    updateDropdownPosition();
+    // No pre-mount position calc here — the dropdownRef isn't attached
+    // yet, so we'd be computing with a stale fallback height and the
+    // useLayoutEffect would snap on first paint. We instead open the
+    // dropdown invisibly (positionReady=false → opacity 0) and let the
+    // useLayoutEffect take the real measurement before the user ever
+    // sees a frame.
     setIsOpen(true);
   };
 
@@ -201,20 +226,36 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   // ──────────────────────────────────────────────────────────────────────────
   // Trigger button styling — compact pill that still reads as "chat", but
   // thinned to enterprise weight (no inset gradient stack, no heavy shadow).
+  //
+  // When the user has zero models configured the trigger flips to a warning
+  // accent so the empty composer state ("No Models") reads as actionable
+  // (click to configure) instead of "off". Without this, the disabled send
+  // button was the only hint that something was missing.
   // ──────────────────────────────────────────────────────────────────────────
+  const noModelsConfigured = availableModels.length === 0;
+  const accentToken = noModelsConfigured
+    ? "var(--aurora-common-warning)"
+    : "var(--aurora-common-primary)";
   const triggerStyle: React.CSSProperties = {
-    backgroundColor: isOpen
-      ? "color-mix(in srgb, var(--aurora-common-primary) 12%, var(--aurora-chat-surface) 88%)"
-      : isHovered
-        ? "color-mix(in srgb, var(--aurora-common-primary) 6%, var(--aurora-chat-surface) 94%)"
-        : "color-mix(in srgb, var(--aurora-chat-surface) 92%, transparent)",
+    backgroundColor: noModelsConfigured
+      ? "color-mix(in srgb, var(--aurora-common-warning) 10%, var(--aurora-chat-surface) 90%)"
+      : isOpen
+        ? "color-mix(in srgb, var(--aurora-common-primary) 12%, var(--aurora-chat-surface) 88%)"
+        : isHovered
+          ? "color-mix(in srgb, var(--aurora-common-primary) 6%, var(--aurora-chat-surface) 94%)"
+          : "color-mix(in srgb, var(--aurora-chat-surface) 92%, transparent)",
     border: `1px solid ${
-      isOpen
-        ? "color-mix(in srgb, var(--aurora-common-primary) 35%, transparent)"
-        : "color-mix(in srgb, var(--aurora-chat-surface-border) 80%, transparent)"
+      noModelsConfigured
+        ? "color-mix(in srgb, var(--aurora-common-warning) 35%, transparent)"
+        : isOpen
+          ? "color-mix(in srgb, var(--aurora-common-primary) 35%, transparent)"
+          : "color-mix(in srgb, var(--aurora-chat-surface-border) 80%, transparent)"
     }`,
+    color: noModelsConfigured
+      ? "var(--aurora-common-warning)"
+      : "var(--aurora-text-primary, var(--aurora-editor-foreground))",
     borderRadius: 7,
-    transition: "background-color 140ms ease, border-color 140ms ease",
+    transition: "background-color 140ms ease, border-color 140ms ease, color 140ms ease",
   };
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -244,7 +285,12 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
             opacity: 0,
             y: dropdownPosition.placement === "above" ? 4 : -4,
           }}
-          animate={{ opacity: 1, y: 0 }}
+          // Hold the panel at opacity 0 until the layout effect has
+          // measured the real dropdown height and snapped to the
+          // correct position. This eliminates the pre-fix flash where
+          // the dropdown briefly painted at the fallback-estimated
+          // position before snapping.
+          animate={{ opacity: positionReady ? 1 : 0, y: 0 }}
           exit={{
             opacity: 0,
             y: dropdownPosition.placement === "above" ? 4 : -4,
@@ -253,7 +299,13 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
           transition={{ duration: 0.12, ease: [0.16, 1, 0.3, 1] }}
           id="model-selector-dropdown"
           className="fixed z-[10000] overflow-hidden"
-          style={dropdownPanelStyle}
+          style={{
+            ...dropdownPanelStyle,
+            // Belt-and-braces: also block pointer events while the
+            // panel is still being positioned so a quick double-click
+            // can't land on a hidden option.
+            pointerEvents: positionReady ? "auto" : "none",
+          }}
         >
           {/* Header */}
           <div
@@ -465,18 +517,21 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         onClick={handleToggle}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
-        className="flex h-7 items-center gap-1.5 px-2 pr-1.5 text-[11px] font-medium text-text-primary"
+        className="flex h-7 items-center gap-1.5 px-2 pr-1.5 text-[11px] font-medium"
         style={triggerStyle}
         aria-expanded={isOpen}
         aria-haspopup="listbox"
-        title={currentModelLabel}
+        title={
+          noModelsConfigured
+            ? "No models configured — click to open Settings"
+            : currentModelLabel
+        }
       >
         <span
           className="flex h-4 w-4 shrink-0 items-center justify-center"
           style={{
-            backgroundColor:
-              "color-mix(in srgb, var(--aurora-common-primary) 14%, transparent)",
-            color: "var(--aurora-common-primary)",
+            backgroundColor: `color-mix(in srgb, ${accentToken} 14%, transparent)`,
+            color: accentToken,
             borderRadius: 3,
           }}
         >

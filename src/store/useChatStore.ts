@@ -1,9 +1,21 @@
 import { create } from "zustand";
 
+import { auroraInvoke as invoke } from "../lib/runtime";
 import { getAgentService } from "../services/agent-service";
 import type { PickedElement } from "../services/browser-service";
 import type { PromptAttachment } from "../services/prompt-assets";
 import type { Message, ToolCall, ToolProposal } from "../types";
+
+/**
+ * One user-typed message waiting to ride in on the next tool result.
+ * Single slot; a second enqueue replaces the first. Cleared either by
+ * the user (Cancel button) or by the runtime (QueuedMessageInjected
+ * event fires once the agent receives it).
+ */
+export interface QueuedUserMessage {
+  text: string;
+  queuedAt: number;
+}
 
 export interface DraftAttachedFile {
   path: string;
@@ -68,6 +80,17 @@ interface ChatState {
   addSelectedElement: (element: PickedElement) => void;
   removeSelectedElement: (id: string) => void;
   clearSelectedElements: () => void;
+
+  // Mid-turn user-message queue. Single slot — when the user sends
+  // while the agent is streaming we push to the Rust session queue
+  // (`agent_enqueue_message`) and mirror it here for the pill UI.
+  // The Rust side drains the slot at the next tool-result boundary
+  // and fires a `queued_message_injected` AssistantEvent; the
+  // agent-runtime-client listens for that and clears this slot.
+  queuedMessage: QueuedUserMessage | null;
+  enqueueMessage: (threadId: string, text: string) => Promise<void>;
+  cancelQueuedMessage: (threadId: string) => Promise<void>;
+  clearQueuedMessageLocal: () => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -208,4 +231,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
     return { selectedElements: next };
   }),
   clearSelectedElements: () => set({ selectedElements: [] }),
+
+  queuedMessage: null,
+  enqueueMessage: async (threadId: string, text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    // Optimistic: show the pill before the IPC round-trip resolves so
+    // the UI feels instant. If the Rust call fails we revert.
+    const prior = get().queuedMessage;
+    set({ queuedMessage: { text: trimmed, queuedAt: Date.now() } });
+    try {
+      await invoke("agent_enqueue_message", { threadId, text: trimmed });
+    } catch (err) {
+      console.error("[useChatStore] agent_enqueue_message failed:", err);
+      set({ queuedMessage: prior });
+      throw err;
+    }
+  },
+  cancelQueuedMessage: async (threadId: string) => {
+    // Clear locally first — the UI must dismiss instantly even if the
+    // IPC is slow. The Rust side is idempotent (Ok on empty slot).
+    set({ queuedMessage: null });
+    try {
+      await invoke("agent_cancel_queued_message", { threadId });
+    } catch (err) {
+      console.error("[useChatStore] agent_cancel_queued_message failed:", err);
+    }
+  },
+  clearQueuedMessageLocal: () => set({ queuedMessage: null }),
 }));

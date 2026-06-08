@@ -26,10 +26,12 @@ import {
   Paperclip,
   AlertCircle,
   MousePointer2,
+  Clock,
 } from "lucide-react";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useChatStore } from "../../store/useChatStore";
+import { useThreadStore } from "../../store/useThreadStore";
 import {
   loadFileContent,
   useWorkspaceStore,
@@ -106,10 +108,36 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
   const [selectedPromptAssetIndex, setSelectedPromptAssetIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const { isLoading, stopGeneration, consumePendingInput, pendingInputNonce } =
-    useChatStore();
+  const {
+    isLoading,
+    stopGeneration,
+    consumePendingInput,
+    pendingInputNonce,
+    queuedMessage,
+    enqueueMessage,
+    cancelQueuedMessage,
+  } = useChatStore();
   const { setSettingsOpen } = useUiStore();
   const rootPath = useWorkspaceStore((state) => state.rootPath);
+
+  const getActiveThreadId = (): string | null =>
+    useThreadStore.getState().currentThreadId;
+
+  const handleQueueMessage = async () => {
+    if (!hasComposerContent) return;
+    const threadId = getActiveThreadId();
+    if (!threadId) return;
+    try {
+      await enqueueMessage(threadId, content);
+      setContentLocal("");
+      setAttachedFilesLocal([]);
+      setAttachedPromptAssetsLocal([]);
+      clearSelectedElements();
+      clearDraft();
+    } catch (err) {
+      console.error("[AgentInputArea] Failed to queue message:", err);
+    }
+  };
 
   useEffect(() => {
     setDraftInput(content);
@@ -125,20 +153,33 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
     setDraftAttachedPromptAssets(attachedPromptAssets);
   }, [attachedPromptAssets, setDraftAttachedPromptAssets]);
 
-  const {
-    selectedModel,
-    setSelectedModel,
-    getAvailableModels,
-    getLLMConfig,
-    skillToggles,
-    skillsEnabled,
-    agentExecutionMode,
-    setAgentExecutionMode,
-  } = useSettingsStore();
+  // Slice the store: subscribe per slot so unrelated settings changes
+  // do not re-render the composer (the previous `useSettingsStore()`
+  // form re-rendered on every settings mutation).
+  const selectedModel = useSettingsStore((s) => s.selectedModel);
+  const setSelectedModel = useSettingsStore((s) => s.setSelectedModel);
+  const skillToggles = useSettingsStore((s) => s.skillToggles);
+  const skillsEnabled = useSettingsStore((s) => s.skillsEnabled);
+  const agentExecutionMode = useSettingsStore((s) => s.agentExecutionMode);
+  const setAgentExecutionMode = useSettingsStore((s) => s.setAgentExecutionMode);
+  // Provider/model slices — subscribed so `availableModels` recomputes
+  // when the user adds or edits a provider, NOT when an unrelated
+  // setting changes.
+  const providers = useSettingsStore((s) => s.providers);
+  const models = useSettingsStore((s) => s.models);
 
-  const llmConfig = getLLMConfig();
+  // Memoized derived data.
+  const availableModels = useMemo(
+    () => useSettingsStore.getState().getAvailableModels(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [providers, models],
+  );
+  const llmConfig = useMemo(
+    () => useSettingsStore.getState().getLLMConfig(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [providers, models, selectedModel],
+  );
   const providerReady = llmConfig !== null;
-  const availableModels = getAvailableModels();
   const selectedModelOption = useMemo(
     () =>
       availableModels.find(
@@ -253,7 +294,14 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
 
   const handleStopOrSend = () => {
     if (isLoading) {
-      stopGeneration();
+      // Mid-stream click: queue the message for injection at the next
+      // tool-result boundary if the composer has content; otherwise
+      // fall back to stopping generation.
+      if (hasComposerContent) {
+        void handleQueueMessage();
+      } else {
+        stopGeneration();
+      }
     } else {
       handleSubmit();
     }
@@ -305,9 +353,17 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
       }
     }
 
-    if (e.key === "Enter" && !e.shiftKey && !isLoading) {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSubmit();
+      // Streaming + non-empty composer → queue. Otherwise normal submit.
+      // Empty + streaming → no-op (matches the Stop button's empty case).
+      if (isLoading) {
+        if (content.trim().length > 0) {
+          void handleQueueMessage();
+        }
+      } else {
+        handleSubmit();
+      }
       return;
     }
 
@@ -512,6 +568,81 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
           <span className="text-[12px] font-semibold tracking-tight">
             Drop to attach
           </span>
+        </div>
+      )}
+
+      {/* Floating queued-message bar — its own slim layer ABOVE the
+          composer shell, with a real gap. Same family as the input,
+          slightly darker, no primary/blue tint. */}
+      {queuedMessage && (
+        <div
+          className="mb-1.5 flex items-center gap-2 px-2.5 animate-in fade-in slide-in-from-bottom-1 duration-150"
+          style={{
+            height: 26,
+            borderRadius: 8,
+            backgroundColor:
+              "color-mix(in srgb, var(--aurora-common-shadow) 14%, var(--aurora-chat-input-background) 86%)",
+            border:
+              "1px solid color-mix(in srgb, var(--aurora-chat-input-border) 70%, transparent)",
+            boxShadow:
+              "0 1px 2px color-mix(in srgb, var(--aurora-common-shadow) 22%, transparent)",
+          }}
+        >
+          <Clock
+            size={10}
+            strokeWidth={2.4}
+            style={{
+              color:
+                "color-mix(in srgb, var(--aurora-common-text-primary) 55%, transparent)",
+            }}
+            className="shrink-0"
+          />
+          <span
+            className="text-[10px] font-semibold uppercase tracking-[0.08em] shrink-0"
+            style={{
+              color:
+                "color-mix(in srgb, var(--aurora-common-text-primary) 60%, transparent)",
+            }}
+          >
+            Queued
+          </span>
+          <span
+            className="text-[11.5px] font-normal truncate min-w-0 flex-1"
+            style={{ color: "var(--aurora-common-text-primary)" }}
+            title={queuedMessage.text}
+          >
+            {queuedMessage.text}
+          </span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              const threadId = getActiveThreadId();
+              if (threadId) void cancelQueuedMessage(threadId);
+            }}
+            className="shrink-0 flex items-center justify-center rounded transition-colors"
+            style={{
+              width: 16,
+              height: 16,
+              color:
+                "color-mix(in srgb, var(--aurora-common-text-primary) 50%, transparent)",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor =
+                "color-mix(in srgb, var(--aurora-common-shadow) 30%, transparent)";
+              e.currentTarget.style.color =
+                "var(--aurora-common-text-primary)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "transparent";
+              e.currentTarget.style.color =
+                "color-mix(in srgb, var(--aurora-common-text-primary) 50%, transparent)";
+            }}
+            title="Cancel queued message"
+            aria-label="Cancel queued message"
+          >
+            <X size={10} strokeWidth={2.6} />
+          </button>
         </div>
       )}
 
@@ -765,7 +896,13 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
             onBlur={() => setIsFocused(false)}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            disabled={disabled || isLoading || !providerReady}
+            // Stays editable even when no provider is configured so the
+            // user can compose their first prompt while opening Settings
+            // in another window. The send button is gated separately via
+            // `sendDisabled`, and Enter routes through `handleSubmit`
+            // which respects `disabled`. Also stays editable during
+            // streaming so the user can draft their next prompt or
+            // queue a mid-turn injection.
             placeholder={
               !providerReady
                 ? "Add an API key in Settings to get started…"
@@ -790,29 +927,45 @@ export const AgentInputArea: React.FC<AgentInputAreaProps> = ({
             className="flex h-7 w-7 items-center justify-center transition-all duration-150 outline-none focus:outline-none disabled:cursor-not-allowed"
             style={{
               backgroundColor: isLoading
-                ? "color-mix(in srgb, var(--aurora-common-error) 16%, transparent)"
+                ? hasComposerContent
+                  ? "color-mix(in srgb, var(--aurora-common-primary) 16%, transparent)"
+                  : "color-mix(in srgb, var(--aurora-common-error) 16%, transparent)"
                 : hasComposerContent
                   ? "var(--aurora-common-primary)"
                   : "color-mix(in srgb, var(--aurora-chat-surface) 92%, transparent)",
               border: `1px solid ${
                 isLoading
-                  ? "color-mix(in srgb, var(--aurora-common-error) 36%, transparent)"
+                  ? hasComposerContent
+                    ? "color-mix(in srgb, var(--aurora-common-primary) 36%, transparent)"
+                    : "color-mix(in srgb, var(--aurora-common-error) 36%, transparent)"
                   : hasComposerContent
                     ? "color-mix(in srgb, var(--aurora-common-primary) 50%, transparent)"
                     : "color-mix(in srgb, var(--aurora-chat-surface-border) 80%, transparent)"
               }`,
               color: isLoading
-                ? "var(--aurora-common-error)"
+                ? hasComposerContent
+                  ? "var(--aurora-common-primary)"
+                  : "var(--aurora-common-error)"
                 : hasComposerContent
                   ? "var(--aurora-common-primary-foreground)"
                   : "var(--aurora-text-disabled, var(--aurora-editor-foreground))",
               borderRadius: 7,
               opacity: sendDisabled && !isLoading ? 0.65 : 1,
             }}
-            title={isLoading ? "Stop generation" : "Send message"}
+            title={
+              isLoading
+                ? hasComposerContent
+                  ? "Queue message for next tool result"
+                  : "Stop generation"
+                : "Send message"
+            }
           >
             {isLoading ? (
-              <Square size={11} fill="currentColor" />
+              hasComposerContent ? (
+                <Clock size={12} strokeWidth={2.4} />
+              ) : (
+                <Square size={11} fill="currentColor" />
+              )
             ) : (
               <ArrowUp
                 size={14}

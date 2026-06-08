@@ -181,6 +181,22 @@ pub struct OpenAiUsageData {
     pub completion_tokens: u32,
     #[serde(default)]
     pub total_tokens: u32,
+    /// DeepSeek context-cache telemetry. `prompt_cache_hit_tokens` is the
+    /// portion of `prompt_tokens` that was served from DeepSeek's disk
+    /// cache (zero cost on their billing) — `prompt_cache_miss_tokens`
+    /// is the freshly-computed remainder. Mapped onto Aurora's
+    /// `TokenUsage.cache_read_input_tokens` so the existing UI badges
+    /// surface DeepSeek hits the same way they surface Anthropic ones.
+    ///
+    /// Important: unlike Anthropic, where `cache_read_input_tokens` is
+    /// *additive* to `input_tokens`, DeepSeek's hit count is a *subset*
+    /// of `prompt_tokens`. The DeepSeek adapter normalizes this before
+    /// emitting `Usage` events so the context store math (which adds
+    /// `cacheReadTokens` to `promptTokens`) stays correct for both.
+    #[serde(default)]
+    pub prompt_cache_hit_tokens: Option<u32>,
+    #[serde(default)]
+    pub prompt_cache_miss_tokens: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -540,7 +556,11 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
     body.insert("model".to_string(), Value::String(model.to_string()));
     body.insert(
         "messages".to_string(),
-        Value::Array(openai_messages(request, config.supports_vision)),
+        Value::Array(openai_messages(
+            request,
+            config.supports_vision,
+            &config.provider_id,
+        )),
     );
     body.insert("stream".to_string(), Value::Bool(true));
     body.insert("max_tokens".to_string(), Value::from(max_tokens));
@@ -572,6 +592,19 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
         );
     }
 
+    // Ask the provider to emit `usage` on the final stream chunk.
+    // Without this OpenAI / DeepSeek / GLM all skip the closing usage
+    // event entirely, which is why pre-Phase-2.2 runs reported zero
+    // tokens and never surfaced DeepSeek's `prompt_cache_hit_tokens`.
+    // Fireworks, Ollama and "custom" providers can reject unknown body
+    // fields with HTTP 400 — gate by provider_id.
+    if should_request_stream_usage(&config.provider_id) {
+        body.insert(
+            "stream_options".to_string(),
+            json!({ "include_usage": true }),
+        );
+    }
+
     if let Some(custom) = &config.custom_params {
         for (key, value) in custom {
             body.insert(key.clone(), value.clone());
@@ -581,7 +614,47 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
     Value::Object(body)
 }
 
-fn openai_messages(request: &ApiRequest<'_>, supports_vision: bool) -> Vec<Value> {
+/// Which OpenAI-compatible providers accept `stream_options:
+/// {include_usage: true}` without rejecting the request. Mirrors the
+/// legacy `provider_kernel::presets::ProviderPreset.include_stream_options`
+/// matrix — keeping the two stacks aligned avoids a regression when
+/// Phase 5 retires the legacy kernel.
+pub(crate) fn should_request_stream_usage(provider_id: &str) -> bool {
+    matches!(
+        provider_id.to_ascii_lowercase().as_str(),
+        "deepseek" | "glm" | "zhipu" | "z-ai" | "zai" | "openai" | "lmstudio" | "lm-studio"
+    )
+}
+
+/// Which key (if any) a given provider expects for replayed
+/// reasoning. OpenAI-compat is a tribe, not a spec — Fireworks
+/// rejects unknown fields with HTTP 400, so we cannot just spray
+/// both keys at every backend.
+///
+/// Returns `Some("reasoning_content")`, `Some("reasoning")`, or
+/// `None` (= drop reasoning entirely from outgoing messages).
+fn reasoning_field_for(provider_id: &str) -> Option<&'static str> {
+    match provider_id.to_ascii_lowercase().as_str() {
+        // DeepSeek + GLM thinking-mode models *require* the original
+        // `reasoning_content` to be replayed or the API returns 400.
+        "deepseek" | "glm" | "zhipu" | "z-ai" | "zai" => Some("reasoning_content"),
+        // OpenRouter and LM Studio surface the legacy `reasoning` key.
+        // Including it is safe; omitting it is also safe (the model
+        // just re-thinks). Match real behaviour and emit it.
+        "openrouter" | "lmstudio" | "lm-studio" => Some("reasoning"),
+        // Fireworks, OpenAI proper, MiniMax, Ollama, "custom" and
+        // everyone else: NEVER include reasoning fields. Fireworks in
+        // particular validates schema strictly and rejects the request
+        // with "Extra inputs are not permitted, field: …".
+        _ => None,
+    }
+}
+
+fn openai_messages(
+    request: &ApiRequest<'_>,
+    supports_vision: bool,
+    provider_id: &str,
+) -> Vec<Value> {
     let mut output: Vec<Value> = Vec::new();
 
     if let Some(prompt) = request.system_prompt {
@@ -608,6 +681,7 @@ fn openai_messages(request: &ApiRequest<'_>, supports_vision: bool) -> Vec<Value
             MessageRole::Assistant => {
                 let text = collect_text(&message.blocks);
                 let tool_calls = openai_tool_calls(&message.blocks);
+                let reasoning = collect_reasoning(&message.blocks);
                 let mut payload = Map::new();
                 payload.insert("role".into(), Value::String("assistant".into()));
                 if !text.is_empty() {
@@ -620,35 +694,68 @@ fn openai_messages(request: &ApiRequest<'_>, supports_vision: bool) -> Vec<Value
                 if !tool_calls.is_empty() {
                     payload.insert("tool_calls".into(), Value::Array(tool_calls));
                 }
+                // Reasoning replay is provider-specific. DeepSeek/GLM
+                // *require* `reasoning_content` to be present (HTTP
+                // 400 otherwise). Fireworks *rejects* both `reasoning`
+                // and `reasoning_content` as unknown fields (HTTP
+                // 400). OpenAI-compat is a tribe, not a spec — emit
+                // whichever key (if any) the actual provider accepts.
+                if !reasoning.is_empty() {
+                    if let Some(key) = reasoning_field_for(provider_id) {
+                        payload.insert(key.into(), Value::String(reasoning));
+                    }
+                }
                 output.push(Value::Object(payload));
             }
             MessageRole::Tool => {
+                // Tool-role messages can now carry an extra Text block
+                // alongside the tool_result blocks — that's how the
+                // mid-turn user-message queue rides in (see
+                // `ConversationRuntime::run_turn_with_id` injection
+                // point). OpenAI's wire format has no concept of a
+                // text body on a `role: "tool"` entry, so we emit one
+                // `role: "tool"` per tool_result and a final
+                // `role: "user"` for the concatenated text blocks. The
+                // text follows the tool messages, preserving the
+                // human-intended ordering ("here's the result, and
+                // also …").
+                let mut injected_text = String::new();
                 for block in &message.blocks {
-                    if let ContentBlock::ToolResult {
-                        tool_use_id,
-                        content,
-                        ..
-                    } = block
-                    {
-                        // Vision-capable OpenAI-compat providers
-                        // (Fireworks LLaVA/Llama-4-vision, Together,
-                        // GPT-4V, Groq vision models, OpenRouter)
-                        // accept image content blocks in the `tool`
-                        // role via the `content: [{type:"text"…},
-                        // {type:"image_url",image_url:{url:"data:..."}}]`
-                        // shape. Non-vision models get the placeholder
-                        // string only.
-                        let content_value = if supports_vision {
-                            openai_tool_result_content(content)
-                        } else {
-                            Value::String(strip_aurora_images_for_text(content))
-                        };
-                        output.push(json!({
-                            "role": "tool",
-                            "tool_call_id": tool_use_id,
-                            "content": content_value,
-                        }));
+                    match block {
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            ..
+                        } => {
+                            let content_value = if supports_vision {
+                                openai_tool_result_content(content)
+                            } else {
+                                Value::String(strip_aurora_images_for_text(content))
+                            };
+                            output.push(json!({
+                                "role": "tool",
+                                "tool_call_id": tool_use_id,
+                                "content": content_value,
+                            }));
+                        }
+                        ContentBlock::Text { text } => {
+                            if !injected_text.is_empty() {
+                                injected_text.push_str("\n\n");
+                            }
+                            injected_text.push_str(text);
+                        }
+                        _ => {
+                            // ToolUse / Thinking inside a Tool message
+                            // would be a runtime bug — drop silently so
+                            // we don't corrupt the request.
+                        }
                     }
+                }
+                if !injected_text.is_empty() {
+                    output.push(json!({
+                        "role": "user",
+                        "content": injected_text,
+                    }));
                 }
             }
         }
@@ -662,6 +769,20 @@ fn collect_text(blocks: &[ContentBlock]) -> String {
         .iter()
         .filter_map(|b| match b {
             ContentBlock::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// Concatenate every `Thinking` block in a message into a single
+/// reasoning string. Used to re-emit `reasoning_content` on OpenAI
+/// assistant payloads (DeepSeek thinking mode demands it).
+fn collect_reasoning(blocks: &[ContentBlock]) -> String {
+    blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Thinking { text, .. } => Some(text.clone()),
             _ => None,
         })
         .collect::<Vec<_>>()

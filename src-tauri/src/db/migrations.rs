@@ -163,6 +163,15 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [15])?;
             Ok(())
         }
+        16 => {
+            // Migration from v15 to v16: Add per-model pricing columns
+            // to `provider_models` so users can track input/cache/output
+            // cost per model. Seed DeepSeek V4 prices on existing rows.
+            migration_v16(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [16])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -692,6 +701,87 @@ fn migration_v15(conn: &Connection) -> DbResult<()> {
              CREATE INDEX IF NOT EXISTS idx_llm_providers_sort
                 ON llm_providers (sort_order ASC);
              COMMIT;",
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Migration v16: Add per-model pricing columns to `provider_models`.
+///
+/// Adds four nullable columns:
+///   - `price_cache_hit_per_mtok REAL`   — USD per 1M cached input tokens
+///   - `price_cache_miss_per_mtok REAL`  — USD per 1M fresh input tokens
+///   - `price_output_per_mtok REAL`      — USD per 1M output tokens
+///   - `price_currency TEXT`             — defaults to NULL = USD
+///
+/// After adding the columns, seeds the documented DeepSeek V4 prices
+/// (per `deepseek.md`) on any existing rows so users who already had
+/// DeepSeek configured don't have to re-enter them. Other providers
+/// are left null; users opt in via the Model Editor.
+///
+/// Idempotent: column adds are guarded with a PRAGMA table_info sniff
+/// so re-running the migration on a hand-patched DB is safe. The seed
+/// step uses `WHERE price_cache_miss_per_mtok IS NULL` so it only
+/// fills in rows that haven't been customized yet.
+fn migration_v16(conn: &Connection) -> DbResult<()> {
+    let existing: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(provider_models)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        rows.flatten().collect()
+    };
+    let needs = |col: &str| !existing.iter().any(|c| c == col);
+
+    if needs("price_cache_hit_per_mtok") {
+        conn.execute(
+            "ALTER TABLE provider_models ADD COLUMN price_cache_hit_per_mtok REAL",
+            [],
+        )?;
+    }
+    if needs("price_cache_miss_per_mtok") {
+        conn.execute(
+            "ALTER TABLE provider_models ADD COLUMN price_cache_miss_per_mtok REAL",
+            [],
+        )?;
+    }
+    if needs("price_output_per_mtok") {
+        conn.execute(
+            "ALTER TABLE provider_models ADD COLUMN price_output_per_mtok REAL",
+            [],
+        )?;
+    }
+    if needs("price_currency") {
+        conn.execute(
+            "ALTER TABLE provider_models ADD COLUMN price_currency TEXT",
+            [],
+        )?;
+    }
+
+    // Seed DeepSeek V4 / V3 pricing (source: deepseek.md "Pricing"
+    // section). These mirror the catalog defaults below, applied
+    // **only** to rows that haven't been priced yet so re-running
+    // the migration never clobbers user edits.
+    //
+    // Numbers are USD per 1M tokens. V4 Pro uses the post-discount
+    // rate (75% off until DeepSeek raises it); list price is in the
+    // catalog as a comment for traceability.
+    let seeds: &[(&str, f64, f64, f64)] = &[
+        // model_key,                cache_hit, cache_miss, output  (USD / 1M tok)
+        ("deepseek-v4-pro",          0.003625,  0.435,      0.87),
+        ("deepseek-v4-flash",        0.0028,    0.14,       0.28),
+        // V3 family keeps its historical pricing; user can override.
+        ("deepseek-chat",            0.07,      0.27,       1.10),
+        ("deepseek-reasoner",        0.14,      0.55,       2.19),
+    ];
+    for (model_key, cache_hit, cache_miss, output) in seeds {
+        conn.execute(
+            "UPDATE provider_models
+             SET price_cache_hit_per_mtok = ?1,
+                 price_cache_miss_per_mtok = ?2,
+                 price_output_per_mtok = ?3
+             WHERE model_key = ?4
+               AND price_cache_miss_per_mtok IS NULL",
+            rusqlite::params![cache_hit, cache_miss, output, model_key],
         )?;
     }
 

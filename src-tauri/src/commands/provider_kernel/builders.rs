@@ -515,7 +515,15 @@ fn is_deepseek_reasoner(preset: &ProviderPreset, model: &str) -> bool {
 fn apply_openai_thinking_params(body: &mut Map<String, Value>, preset: &ProviderPreset) {
     match preset.thinking_mode {
         ThinkingMode::OpenAiThinkingEnabled => {
+            // DeepSeek wire shape: `thinking: {type:"enabled"}` plus a
+            // `reasoning_effort` knob. Per the DeepSeek docs, `low`
+            // and `medium` server-side collapse to `high`, so we
+            // always send `high` for regular requests. Users who want
+            // heavy-agent `max` effort should override via
+            // `customParams.reasoning_effort`.
             body.insert("thinking".to_string(), json!({ "type": "enabled" }));
+            body.entry("reasoning_effort".to_string())
+                .or_insert_with(|| Value::String("high".to_string()));
         }
         ThinkingMode::OpenAiThinkingPreserved => {
             body.insert(

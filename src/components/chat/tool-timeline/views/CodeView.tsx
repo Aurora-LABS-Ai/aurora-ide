@@ -5,6 +5,14 @@ import { extToShikiLang, useShikiTokens } from "../../useShikiTokens";
 import { cn, unescapeContent } from "../helpers";
 import { ExplorerFileAssetIcon } from "../ExplorerFileAssetIcon";
 
+// Upper bound on how many characters of a tool result we run through
+// unescape + split + render. file_read / fetch results can be hundreds
+// of KB; even though we only paint 8 lines while collapsed, the full
+// string still gets unescaped and split on every render. Clamp the
+// working copy so a giant result can't stall the main thread — the
+// model still received the (separately truncated) full payload.
+const MAX_CODEVIEW_CHARS = 200_000;
+
 interface CodeViewProps {
   data?: boolean | number | object | string | null;
   error?: string;
@@ -46,12 +54,16 @@ export const CodeView: React.FC<CodeViewProps> = ({
   // hooks). When `data` is missing we feed the hook empty strings; it
   // short-circuits to `null` internally.
   const isStringData = typeof data === "string";
-  const rawContent =
+  const fullRawContent =
     data === null || data === undefined
       ? ""
       : isStringData
         ? (data as string)
         : JSON.stringify(data, null, 2);
+  const isContentClamped = fullRawContent.length > MAX_CODEVIEW_CHARS;
+  const rawContent = isContentClamped
+    ? fullRawContent.slice(0, MAX_CODEVIEW_CHARS)
+    : fullRawContent;
   const content = unescapeContent(rawContent);
   const ext = fileName?.split(".").pop()?.toLowerCase() || "";
   const isCode = [
@@ -272,6 +284,13 @@ export const CodeView: React.FC<CodeViewProps> = ({
           </tbody>
         </table>
       </div>
+
+      {isContentClamped && (
+        <div className="border-t border-border/50 bg-code-block px-3 py-1 text-[9px] text-text-disabled">
+          Preview clamped to {Math.round(MAX_CODEVIEW_CHARS / 1000)} KB — open
+          the file to see everything.
+        </div>
+      )}
 
       {isLongContent && (
         <button

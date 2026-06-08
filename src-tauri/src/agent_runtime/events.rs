@@ -115,6 +115,19 @@ pub enum AssistantEvent {
     /// translation table.
     MessageStop { stop_reason: String },
 
+    /// A user-queued message was injected into the conversation at the
+    /// next tool-result boundary. Emitted once per drain so the
+    /// frontend can clear its pending pill and append a normal user
+    /// bubble to the message list — visually the user's note arrives
+    /// in the chat right after the tool result it rode in with.
+    ///
+    /// Carries the verbatim text the user queued so the frontend doesn't
+    /// need to track the in-flight slot separately. The implicit
+    /// contract: this event fires AFTER the text has been appended to
+    /// the tool message in the session, so the persisted conversation
+    /// already reflects the injection by the time the frontend sees it.
+    QueuedMessageInjected { text: String },
+
     /// Stream-level error. `recoverable` tells the frontend whether a
     /// retry is sensible (e.g. transient HTTP 5xx) or whether the user
     /// must intervene (e.g. invalid API key).

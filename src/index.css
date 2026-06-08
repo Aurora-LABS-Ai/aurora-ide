@@ -30,6 +30,17 @@
         Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
 }
 
+/* Theme service toggles [data-theme="light"|"dark"] on <html>; align native
+ * form-control rendering (scrollbars, dropdowns, autofill, date picker) with
+ * the active theme so OS chrome stops fighting our palette. */
+html[data-theme="light"] {
+    color-scheme: light;
+}
+
+html[data-theme="dark"] {
+    color-scheme: dark;
+}
+
 html,
 body,
 #root {
@@ -41,8 +52,12 @@ body,
 }
 
 body {
+    /* Global app background uses editor.background by design (the editor
+     * is the dominant surface), but text inherits from common.textPrimary
+     * — NOT editor.foreground — so changing the editor's text color does
+     * not silently restyle every panel, modal, button, and label. */
     background-color: var(--aurora-editor-background, #1e1e1e);
-    color: var(--aurora-editor-foreground, #d4d4d4);
+    color: var(--aurora-common-text-primary, var(--aurora-editor-foreground, #d4d4d4));
     font-family: var(--aurora-ui-font-family);
     font-size: calc(14px * var(--aurora-ui-text-scale));
     -webkit-font-smoothing: antialiased;
@@ -92,7 +107,7 @@ button:focus {
 
 select:focus-visible,
 button:focus-visible {
-    outline: 1px solid var(--aurora-common-primary, #0ea5e9);
+    outline: 1px solid var(--aurora-common-focus-ring, var(--aurora-common-primary, #0ea5e9));
     outline-offset: 0;
 }
 
@@ -423,20 +438,27 @@ button:focus-visible {
     -webkit-backdrop-filter: blur(20px) saturate(200%);
 }
 
-/* === PREMIUM SHADOWS (using theme shadow) === */
+/* === PREMIUM SHADOWS (using theme shadow + theme-aware highlight) ===
+ *
+ * The inner highlight (`0 0 0 1px ...` and inset hairlines) was previously
+ * `rgba(255,255,255,...)` which only worked on dark themes — on light themes
+ * the white-on-light hairline disappeared. We now derive it from
+ * `--aurora-editor-foreground` so the rim is a low-alpha tint of the
+ * theme's text color, which reads correctly on both dark and light.
+ */
 .shadow-premium {
     box-shadow:
-        0 0 0 1px rgba(255, 255, 255, 0.03),
+        0 0 0 1px color-mix(in srgb, var(--aurora-editor-foreground) 3%, transparent),
         0 4px 12px -2px var(--aurora-common-shadow),
-        0 2px 6px -1px rgba(0, 0, 0, 0.15);
+        0 2px 6px -1px var(--aurora-common-shadow);
 }
 
 .shadow-premium-lg {
     box-shadow:
-        0 0 0 1px rgba(255, 255, 255, 0.04),
-        0 10px 24px -4px var(--aurora-common-shadow),
-        0 4px 8px -2px rgba(0, 0, 0, 0.2),
-        inset 0 1px 0 rgba(255, 255, 255, 0.03);
+        0 0 0 1px color-mix(in srgb, var(--aurora-editor-foreground) 4%, transparent),
+        0 10px 24px -4px var(--aurora-common-shadow-elevated),
+        0 4px 8px -2px var(--aurora-common-shadow),
+        inset 0 1px 0 color-mix(in srgb, var(--aurora-editor-foreground) 3%, transparent);
 }
 
 .shadow-premium-glow {
@@ -444,7 +466,7 @@ button:focus-visible {
         0 0 0 1px var(--aurora-common-border),
         0 8px 20px -3px var(--aurora-common-primary),
         0 0 48px -12px var(--aurora-common-primary),
-        inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        inset 0 1px 0 color-mix(in srgb, var(--aurora-editor-foreground) 5%, transparent);
 }
 
 /* === UTILITY ANIMATION CLASSES === */
@@ -511,11 +533,11 @@ button:focus-visible {
 
 /* Code block container - CodeBlockWrapper styles */
 .markdown-content .group\/code {
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    box-shadow: 0 2px 8px var(--aurora-common-shadow);
 }
 
 .markdown-content .group\/code:hover {
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 4px 12px var(--aurora-common-shadow-elevated);
 }
 
 /* Code blocks with syntax highlighting */
@@ -630,7 +652,7 @@ button:focus-visible {
     border-left: 3px solid var(--aurora-common-primary, #60a5fa);
     margin: 12px 0;
     padding: 8px 16px;
-    background: rgba(96, 165, 250, 0.05);
+    background: color-mix(in srgb, var(--aurora-common-primary) 5%, transparent);
     border-radius: 0 8px 8px 0;
 }
 

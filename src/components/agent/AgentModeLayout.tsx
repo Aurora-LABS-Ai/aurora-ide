@@ -9,63 +9,27 @@
  * See: DOCS/theme-dev.md for full token reference
  */
 
-import React, { useRef, useCallback, useState, useEffect } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import {
-  Minimize2,
-  Plus,
-  History,
-  PanelRightOpen,
-} from "lucide-react";
-import { classifyError } from '../../lib/error-classifier';
+import { Minimize2, Plus, History, PanelRightOpen } from "lucide-react";
 import { StreamingDotMatrix } from "../ui/StreamingDotMatrix";
 import { useUiStore } from "../../store/useUiStore";
-import { useThreadStore, setStreamingState } from "../../store/useThreadStore";
-import type { ToolCallRequest } from "../../tools/types";
+import { useThreadStore } from "../../store/useThreadStore";
 import { useChatStore } from "../../store/useChatStore";
 import { useSmoothAutoScroll } from "../../hooks/useSmoothAutoScroll";
-import { useSettingsStore } from "../../store/useSettingsStore";
+import { useAgentSend } from "../../hooks/useAgentSend";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { useContextStore } from "../../store/useContextStore";
 import { useAuditStore } from "../../store/useAuditStore";
 import { useCheckpointStore } from "../../store/useCheckpointStore";
-import { useTaskStore } from "../../store/useTaskStore";
 import { useMcpStore } from "../../store/useMcpStore";
-import { getAgentService, type ProviderConfig } from "../../services";
-import type { AgentPromptContext } from "../../services/agent-prompt";
-import {
-  filterProjectRulesByAttachment,
-  getPromptAttachmentSelection,
-  type PromptAttachment,
-} from "../../services/prompt-assets";
-import { tokenService } from "../../services/token-service";
-import { toolRegistry } from "../../tools";
-import {
-  buildAttachedContextBlock,
-  buildQueryContext,
-  getIDEContext,
-  getIDEContextLight,
-  loadProjectRules,
-} from "../../services/context-builder";
 import { chatSyncBroadcast } from "../../hooks/useRustChatSync";
-import {
-  parseToolArguments,
-  parseToolArgumentsForDisplay,
-} from "../../lib/tool-arguments";
-import { liveFilePreviewService } from "../../services/live-file-preview";
-import { getProfessionalToolName } from "../../services/tool-display";
 import { AgentChangesTree } from "./AgentChangesTree";
-import { AgentInputArea, type AttachedFile } from "./AgentInputArea";
+import { AgentInputArea } from "./AgentInputArea";
 import { ChatMessage } from "../chat/ChatMessage";
 import { ThreadHistory } from "../chat/ThreadHistory";
 import { WorkspaceAwareEmptyState } from "../chat/WorkspaceAwareEmptyState";
 import { AppIcon } from "../ui/AppIcon";
-import type {
-  ToolProposal,
-  ToolCall,
-  Message,
-  TimelineEvent,
-} from "../../types";
 
 // Auto-load MCP servers on module load — every native tool now
 // dispatches in Rust, so only MCP server connections need
@@ -77,9 +41,6 @@ const initExecutors = () => {
     executorsInitialized = true;
   }
 };
-
-// Generate unique ID
-const generateId = () => Math.random().toString(36).substr(2, 9);
 
 // Get theme colors at runtime from CSS variables
 const getContextColor = (varName: string, fallback: string): string => {
@@ -97,59 +58,31 @@ const getContextColors = () => ({
 });
 
 export const AgentModeLayout: React.FC = () => {
-  const { toggleAgentMode } = useUiStore();
-  const { setLoading, isLoading, pendingApproval, setPendingApproval, setInputContent } =
-    useChatStore();
-  const {
-    currentThreadId,
-    threads,
-    createThread,
-    addMessageToThread,
-    updateMessageInThread,
-    updateThreadUsage,
-    clearCurrentThread,
-  } = useThreadStore();
-  const { refreshDirectory, rootPath } = useWorkspaceStore();
-  const {
-    autoApproveTools,
-    agentExecutionMode,
-    getToolApproval,
-    setToolApproval,
-    getLLMConfig,
-  } = useSettingsStore();
-  const { thinkingEnabled: userThinkingEnabled } = useSettingsStore();
-  const llmConfig = getLLMConfig();
-  const thinkingEnabled =
-    userThinkingEnabled && (llmConfig?.supportsThinking ?? false);
-  const temperature = llmConfig?.defaultTemperature ?? 1.0;
-  const maxTokens =
-    llmConfig?.defaultMaxTokens ?? llmConfig?.maxOutputTokens ?? 8192;
+  const toggleAgentMode = useUiStore((s) => s.toggleAgentMode);
+  const isLoading = useChatStore((s) => s.isLoading);
+  const pendingApproval = useChatStore((s) => s.pendingApproval);
+  const setInputContent = useChatStore((s) => s.setInputContent);
+
+  const currentThreadId = useThreadStore((s) => s.currentThreadId);
+  const threads = useThreadStore((s) => s.threads);
+  const clearCurrentThread = useThreadStore((s) => s.clearCurrentThread);
+
+  const rootPath = useWorkspaceStore((s) => s.rootPath);
 
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   // Track the user's preference for the changes panel separately from
   // whether there are any changes at all. The panel/toggle only appear
   // when both: (a) the agent has actually touched files for the current
   // thread, AND (b) the user hasn't explicitly hidden it.
-  //
-  // Default `true` so that the very first file edit auto-reveals the
-  // panel. After the user collapses it, this flips to `false` and stays
-  // false until they re-open it (or until they start a new chat, where
-  // we reset it — see handleNewChat).
   const [isChangesPanelVisible, setIsChangesPanelVisible] = useState(true);
+
+  // Single source of truth for the send pipeline.
+  const { handleSend, handleApprove, handleApproveRemember, handleReject } =
+    useAgentSend();
 
   // ───────────────────────────────────────────────────────────────────
   // Show the agent-changes panel ONLY when the agent has actually
-  // modified files in the current thread. Without this guard the panel
-  // (and the floating "Changes" toggle button) are visible by default
-  // even on a brand-new empty chat — which feels unprofessional and
-  // wastes horizontal space.
-  //
-  // We filter the audit entries by current thread so that switching
-  // threads (or starting a new chat) hides the panel until that
-  // thread's agent actually edits something.
-  //
-  // The criteria mirror AgentChangesTree's internal filter — keep them
-  // in sync if the list of file-mutating tool names ever changes.
+  // modified files in the current thread.
   // ───────────────────────────────────────────────────────────────────
   const auditEntries = useAuditStore((s) => s.entries);
   const hasAgentFileChanges = React.useMemo(() => {
@@ -171,15 +104,9 @@ export const AgentModeLayout: React.FC = () => {
     );
   }, [auditEntries, currentThreadId]);
 
-  // Composite states the layout actually consumes.
   const showChangesPanel = hasAgentFileChanges && isChangesPanelVisible;
   const showChangesToggle = hasAgentFileChanges && !isChangesPanelVisible;
-  const currentMessageIdRef = useRef<string | null>(null);
-  const pendingToolCallRef = useRef<{
-    resolve: ((approved: boolean) => void) | null;
-    toolCall: ToolCallRequest;
-  } | null>(null);
-  const timelineRef = useRef<TimelineEvent[]>([]);
+
   const { containerRef, contentRef, bottomRef, jumpToBottom } =
     useSmoothAutoScroll({
       isStreaming: isLoading,
@@ -253,746 +180,6 @@ export const AgentModeLayout: React.FC = () => {
     setIsChangesPanelVisible(true);
   }, [clearCurrentThread]);
 
-  // RAF-based timeline update
-  const pendingRAF = useRef<number | null>(null);
-
-  const flushTimelineUpdate = useCallback(() => {
-    if (pendingRAF.current) {
-      cancelAnimationFrame(pendingRAF.current);
-      pendingRAF.current = null;
-    }
-    if (currentMessageIdRef.current) {
-      updateMessageInThread(currentMessageIdRef.current, {
-        timeline: [...timelineRef.current],
-      });
-    }
-  }, [updateMessageInThread]);
-
-  const addTimelineEvent = useCallback(
-    (event: Omit<TimelineEvent, "id" | "timestamp">) => {
-      const newEvent: TimelineEvent = {
-        ...event,
-        id: generateId(),
-        timestamp: Date.now(),
-      };
-      timelineRef.current = [...timelineRef.current, newEvent];
-      if (currentMessageIdRef.current) {
-        updateMessageInThread(currentMessageIdRef.current, {
-          timeline: [...timelineRef.current],
-        });
-      }
-      return newEvent.id;
-    },
-    [updateMessageInThread],
-  );
-
-  const updateTimelineEvent = useCallback(
-    (eventId: string, updates: Partial<TimelineEvent>, immediate = false) => {
-      timelineRef.current = timelineRef.current.map((e) =>
-        e.id === eventId ? { ...e, ...updates } : e,
-      );
-      if (immediate) {
-        flushTimelineUpdate();
-        return;
-      }
-      if (!pendingRAF.current) {
-        pendingRAF.current = requestAnimationFrame(() => {
-          pendingRAF.current = null;
-          if (currentMessageIdRef.current) {
-            updateMessageInThread(currentMessageIdRef.current, {
-              timeline: [...timelineRef.current],
-            });
-          }
-        });
-      }
-    },
-    [updateMessageInThread, flushTimelineUpdate],
-  );
-
-  const refreshFileExplorer = useCallback(() => {
-    if (rootPath) {
-      console.log("Refreshing file explorer for:", rootPath);
-    }
-    refreshDirectory();
-  }, [rootPath, refreshDirectory]);
-
-  // Handle send (reusing ChatPanel logic)
-  const handleSend = useCallback(
-    async (
-      content: string,
-      attachedFiles?: AttachedFile[],
-      promptAttachments?: PromptAttachment[],
-      selectedElements?: import("../../store/useChatStore").SelectedElementEntry[],
-    ) => {
-      timelineRef.current = [];
-      let threadId = currentThreadId;
-      let isNewThread = false;
-      const threadExists = threadId && threads[threadId];
-
-      if (!threadId || !threadExists) {
-        useTaskStore.getState().clearTasks();
-        threadId = createThread();
-        isNewThread = true;
-      }
-
-      const userMessage: Message = {
-        id: generateId(),
-        sender: "user",
-        content,
-        timestamp: Date.now(),
-        attachedFiles: attachedFiles?.map(f => ({ path: f.path, name: f.name })),
-        attachedPromptAssets: promptAttachments?.map(a => ({ key: a.key, type: a.type, title: a.title })),
-        attachedSelectedElements: selectedElements?.map((entry) => ({
-          index: entry.index,
-          selector: entry.element.selector,
-          tagName: entry.element.tagName,
-          url: entry.element.url,
-          text: entry.element.text,
-          source: entry.element.source,
-          note: entry.element.note,
-        })),
-      };
-      addMessageToThread(userMessage);
-
-      const checkpointReady =
-        rootPath && threadId
-          ? useCheckpointStore
-              .getState()
-              .createCheckpoint(userMessage.id, threadId)
-          : Promise.resolve(true);
-
-      const isFirstMessage =
-        isNewThread ||
-        !currentThread?.messages ||
-        currentThread.messages.length === 0;
-      const projectLayoutEnabled =
-        useSettingsStore.getState().projectLayoutEnabled;
-      const shouldIncludeLayout = isFirstMessage && projectLayoutEnabled;
-      const ideContext = shouldIncludeLayout
-        ? getIDEContext(true)
-        : getIDEContextLight();
-      const promptSelection = getPromptAttachmentSelection(
-        promptAttachments ?? [],
-      );
-      const selectedRules =
-        rootPath && promptSelection.ruleFilenames.length > 0
-          ? filterProjectRulesByAttachment(
-              await loadProjectRules(rootPath),
-              promptAttachments ?? [],
-            )
-          : undefined;
-
-      // Build the standalone <attached_context> block separately so the
-      // user-typed text stays clean — see the long comment in ChatPanel.tsx
-      // for why the bubble must not contain enrichment XML.
-      const attachedContextBlock = buildAttachedContextBlock(
-        promptAttachments?.map(a => ({ type: a.type, title: a.title, key: a.key })),
-      );
-
-      const { ideContext: bareIdeContext } = await buildQueryContext(
-        content,
-        attachedFiles,
-        {
-          ...ideContext,
-          projectRules: selectedRules,
-          selectedElements: selectedElements?.map((entry) => entry.element),
-        },
-      );
-
-      // Compose the enrichment passed alongside the clean user message.
-      const composedIdeContext: string | null = (() => {
-        const parts: string[] = [];
-        if (bareIdeContext) parts.push(bareIdeContext);
-        if (attachedContextBlock) parts.push(attachedContextBlock);
-        return parts.length > 0 ? parts.join("\n\n") : null;
-      })();
-      const promptContext: AgentPromptContext = {
-        explicitSkillKeys: promptSelection.explicitSkillKeys,
-        userMessage: content,
-        workspacePath: rootPath || undefined,
-      };
-
-      setLoading(true);
-      chatSyncBroadcast.setLoading(true);
-      setStreamingState(true);
-
-      const llmConfig = getLLMConfig();
-      if (!llmConfig) {
-        const errorMessage: Message = {
-          id: generateId(),
-          sender: "assistant",
-          content: "No models configured. Please add an API key in Settings.",
-          timestamp: Date.now(),
-        };
-        addMessageToThread(errorMessage);
-        setLoading(false);
-        return;
-      }
-
-      const providerConfig: ProviderConfig = {
-        id: llmConfig.id,
-        name: llmConfig.name,
-        providerType:
-          (llmConfig.providerType as ProviderConfig["providerType"]) ||
-          "custom",
-        baseUrl: llmConfig.baseUrl,
-        apiKey: llmConfig.apiKey,
-        model: llmConfig.model,
-        contextWindow: llmConfig.contextWindow || 128000,
-        maxOutputTokens: llmConfig.maxOutputTokens || 8192,
-        supportsThinking: llmConfig.supportsThinking ?? false,
-        supportsToolStream: llmConfig.supportsToolStream ?? false,
-        supportsVision: llmConfig.supportsVision ?? false,
-        defaultTemperature: llmConfig.defaultTemperature,
-        defaultMaxTokens: llmConfig.defaultMaxTokens,
-        customHeaders: llmConfig.customHeaders,
-        customParams: llmConfig.customParams,
-      };
-
-      const agent = getAgentService();
-      agent.setProvider(providerConfig);
-      agent.setThreadId(threadId!);
-
-      const contextStore = useContextStore.getState();
-      contextStore.setContextWindow(
-        providerConfig.contextWindow,
-        providerConfig.maxOutputTokens,
-      );
-
-      const assistantMessageId = generateId();
-      currentMessageIdRef.current = assistantMessageId;
-
-      const assistantMessage: Message = {
-        id: assistantMessageId,
-        sender: "assistant",
-        content: "",
-        timestamp: Date.now(),
-        timeline: [],
-      };
-      addMessageToThread(assistantMessage);
-
-      let currentThinkingEventId: string | null = null;
-      let currentContentEventId: string | null = null;
-      let hasFileOperation = false;
-      let usageReceivedFromAPI = false;
-      const auditStore = useAuditStore.getState();
-      const auditEntryIds = new Map<string, string>();
-
-      try {
-        agent.updateConfig({
-          thinkingEnabled,
-          executionMode: agentExecutionMode,
-          autoApproveTools,
-          beforeToolExecution: async () => {
-            await checkpointReady;
-          },
-          temperature,
-          maxTokens,
-          // No artificial iteration cap — Aurora runs as long as the model
-          // keeps requesting tools (or the user stops the run). The legacy
-          // `maxToolCallsPerRequest` setting is intentionally not forwarded
-          // here so an IDE-style agentic session is never cut short.
-          maxToolIterations: undefined,
-          getToolApproval,
-        });
-
-        await agent.chat(
-          content,
-          {
-            onToken: (token) => {
-              if (currentThinkingEventId) {
-                updateTimelineEvent(currentThinkingEventId, {
-                  isThinking: false,
-                });
-                currentThinkingEventId = null;
-              }
-              if (!currentContentEventId) {
-                currentContentEventId = addTimelineEvent({
-                  type: "content",
-                  content: token,
-                });
-              } else {
-                const existingEvent = timelineRef.current.find(
-                  (e) => e.id === currentContentEventId,
-                );
-                if (existingEvent) {
-                  updateTimelineEvent(currentContentEventId, {
-                    content: (existingEvent.content || "") + token,
-                  });
-                }
-              }
-            },
-            onThinking: (thinking) => {
-              if (!currentThinkingEventId) {
-                currentThinkingEventId = addTimelineEvent({
-                  type: "thinking",
-                  thinking: thinking,
-                  isThinking: true,
-                });
-              } else {
-                const existingEvent = timelineRef.current.find(
-                  (e) => e.id === currentThinkingEventId,
-                );
-                if (existingEvent) {
-                  updateTimelineEvent(currentThinkingEventId, {
-                    thinking: (existingEvent.thinking || "") + thinking,
-                  });
-                }
-              }
-            },
-            onToolCall: (toolCall) => {
-              if (currentThinkingEventId) {
-                updateTimelineEvent(currentThinkingEventId, {
-                  isThinking: false,
-                });
-                currentThinkingEventId = null;
-              }
-              currentContentEventId = null;
-
-              const existingToolEvent = timelineRef.current.find(
-                (e) => e.type === "tool" && e.tool?.id === toolCall.id,
-              );
-
-              if (!existingToolEvent) {
-                const newToolCall: ToolCall = {
-                  id: toolCall.id,
-                  name: toolCall.function.name,
-                  status: "pending",
-                  args: {},
-                };
-                newToolCall.args = parseToolArgumentsForDisplay(
-                  toolCall.function.arguments,
-                );
-                addTimelineEvent({ type: "tool", tool: newToolCall });
-
-                if (
-                  [
-                    "file_create",
-                    "file_write",
-                    "search_replace",
-                    "multi_search_replace",
-                    "file_delete",
-                    "folder_create",
-                    "folder_move",
-                    "folder_delete",
-                  ].includes(toolCall.function.name)
-                ) {
-                  hasFileOperation = true;
-                }
-              } else {
-                const rawArgs = toolCall.function.arguments || "";
-                let parsedArgs = existingToolEvent.tool!.args || {};
-                const parseResult = parseToolArguments(rawArgs);
-                if (parseResult.status !== "invalid") {
-                  parsedArgs = parseResult.args;
-                }
-                const updatedTool = {
-                  ...existingToolEvent.tool!,
-                  args: parsedArgs,
-                  rawArgs,
-                };
-                updateTimelineEvent(existingToolEvent.id, {
-                  tool: updatedTool,
-                });
-              }
-
-              liveFilePreviewService.updateFromToolCall(toolCall);
-            },
-            onToolApprovalRequired: async (toolCall) => {
-              const toolName = toolCall.function.name;
-              const toolSetting = getToolApproval(toolName);
-              if (toolSetting === "auto") return true;
-              if (toolSetting === "deny") return false;
-
-              const proposal: ToolProposal = {
-                id: toolCall.id,
-                toolName: toolName,
-                description: `Execute ${getProfessionalToolName(toolName)}`,
-                riskLevel:
-                  toolName.startsWith("shell_") || toolName.includes("delete")
-                    ? "high"
-                    : "medium",
-                status: "pending",
-                parameters: parseToolArgumentsForDisplay(
-                  toolCall.function.arguments,
-                ),
-              };
-
-              const pendingToolCall: {
-                resolve: ((approved: boolean) => void) | null;
-                toolCall: ToolCallRequest;
-              } = { toolCall, resolve: null };
-              pendingToolCallRef.current = pendingToolCall;
-              return new Promise<boolean>((resolve) => {
-                pendingToolCall.resolve = resolve;
-                setPendingApproval(proposal);
-              });
-            },
-            onToolExecutionStart: (toolCall) => {
-              const toolName = toolCall.function.name;
-              const parsedArgs = parseToolArgumentsForDisplay(
-                toolCall.function.arguments,
-              );
-              liveFilePreviewService.markApplying(toolCall.id);
-              const riskLevel = toolRegistry.getRiskLevel(toolName);
-              const auditId = auditStore.addEntry({
-                toolName,
-                args: parsedArgs,
-                status: "executing",
-                riskLevel,
-                threadId: threadId || undefined,
-              });
-              auditEntryIds.set(toolCall.id, auditId);
-
-              const toolEvent = timelineRef.current.find(
-                (e) => e.type === "tool" && e.tool?.id === toolCall.id,
-              );
-              if (toolEvent) {
-                updateTimelineEvent(
-                  toolEvent.id,
-                  { tool: { ...toolEvent.tool!, status: "executing" } },
-                  true,
-                );
-              }
-            },
-            onToolExecutionComplete: (toolCall, result) => {
-              liveFilePreviewService.complete(toolCall.id);
-
-              const auditId = auditEntryIds.get(toolCall.id);
-              if (auditId) {
-                const entry = auditStore.entries.find((e) => e.id === auditId);
-                const duration = entry
-                  ? Date.now() - entry.timestamp
-                  : undefined;
-                auditStore.updateEntry(auditId, {
-                  status: "executed",
-                  result: result.substring(0, 500),
-                  duration,
-                });
-              }
-
-              const toolEvent = timelineRef.current.find(
-                (e) => e.type === "tool" && e.tool?.id === toolCall.id,
-              );
-              if (toolEvent) {
-                updateTimelineEvent(
-                  toolEvent.id,
-                  { tool: { ...toolEvent.tool!, status: "complete", result } },
-                  true,
-                );
-              }
-              if (hasFileOperation) {
-                setTimeout(() => refreshFileExplorer(), 100);
-              }
-            },
-            onToolExecutionError: (toolCall, error) => {
-              liveFilePreviewService.fail(toolCall.id);
-
-              const auditId = auditEntryIds.get(toolCall.id);
-              if (auditId) {
-                const entry = auditStore.entries.find((e) => e.id === auditId);
-                const duration = entry
-                  ? Date.now() - entry.timestamp
-                  : undefined;
-                auditStore.updateEntry(auditId, {
-                  status: "failed",
-                  result: error.substring(0, 500),
-                  duration,
-                });
-              }
-
-              const toolEvent = timelineRef.current.find(
-                (e) => e.type === "tool" && e.tool?.id === toolCall.id,
-              );
-              if (toolEvent) {
-                updateTimelineEvent(
-                  toolEvent.id,
-                  { tool: { ...toolEvent.tool!, status: "failed", error } },
-                  true,
-                );
-              }
-            },
-            onToolRejected: (toolCall, reason) => {
-              liveFilePreviewService.fail(toolCall.id);
-
-              const toolEvent = timelineRef.current.find(
-                (e) => e.type === "tool" && e.tool?.id === toolCall.id,
-              );
-              if (toolEvent) {
-                updateTimelineEvent(
-                  toolEvent.id,
-                  {
-                    tool: {
-                      ...toolEvent.tool!,
-                      status: "rejected",
-                      result: reason,
-                    },
-                  },
-                  true,
-                );
-              }
-            },
-            onUsage: (usage) => {
-              usageReceivedFromAPI = true;
-              const contextStore = useContextStore.getState();
-              contextStore.updateUsage({
-                promptTokens: usage.promptTokens,
-                completionTokens: usage.completionTokens,
-                totalTokens: usage.totalTokens,
-                cacheReadTokens: usage.cacheReadTokens,
-                cacheWriteTokens: usage.cacheWriteTokens,
-              });
-              const newContextState = useContextStore.getState();
-              updateThreadUsage(
-                {
-                  promptTokens: usage.promptTokens,
-                  completionTokens: usage.completionTokens,
-                  totalTokens: usage.totalTokens,
-                  cacheReadTokens: usage.cacheReadTokens,
-                  cacheWriteTokens: usage.cacheWriteTokens,
-                },
-                {
-                  usedTokens: newContextState.usedContextTokens,
-                  contextWindow: newContextState.contextWindow,
-                  percentage: newContextState.usagePercentage,
-                },
-              );
-            },
-            onComplete: (finalMessage) => {
-              const hasContentEvent = timelineRef.current.some(
-                (e) => e.type === "content" && e.content,
-              );
-              const hasToolCalls = timelineRef.current.some(
-                (e) => e.type === "tool",
-              );
-
-              if (currentThinkingEventId) {
-                updateTimelineEvent(currentThinkingEventId, {
-                  isThinking: false,
-                });
-                currentThinkingEventId = null;
-              }
-
-              if (finalMessage?.content && !hasContentEvent) {
-                const contentStr =
-                  typeof finalMessage.content === "string"
-                    ? finalMessage.content
-                    : Array.isArray(finalMessage.content)
-                      ? finalMessage.content
-                          .map((b) =>
-                            "text" in b
-                              ? (b as { text?: string }).text || ""
-                              : "",
-                          )
-                          .join("")
-                      : "";
-                if (contentStr) {
-                  addTimelineEvent({ type: "content", content: contentStr });
-                }
-              } else if (!hasContentEvent && hasToolCalls) {
-                const thinkingEvents = timelineRef.current.filter(
-                  (e) => e.type === "thinking" && e.thinking,
-                );
-                if (thinkingEvents.length > 0) {
-                  const lastThinking =
-                    thinkingEvents[thinkingEvents.length - 1];
-                  const thinkingText = lastThinking.thinking!;
-                  if (thinkingText.length > 30) {
-                    updateTimelineEvent(lastThinking.id, {
-                      type: "content",
-                      content: thinkingText,
-                      thinking: undefined,
-                      isThinking: false,
-                    });
-                  }
-                }
-              }
-
-              if (hasFileOperation) {
-                refreshFileExplorer();
-              }
-
-              if (!usageReceivedFromAPI) {
-                const contextStore = useContextStore.getState();
-                let responseTokens = 0;
-                for (const event of timelineRef.current) {
-                  if (event.type === "content" && event.content) {
-                    responseTokens += tokenService.quickEstimate(
-                      event.content,
-                    ).tokens;
-                  } else if (event.type === "thinking" && event.thinking) {
-                    responseTokens += tokenService.quickEstimate(
-                      event.thinking,
-                    ).tokens;
-                  } else if (event.type === "tool" && event.tool?.result) {
-                    responseTokens += tokenService.quickEstimate(
-                      event.tool.result,
-                    ).tokens;
-                  }
-                }
-                const currentContext = contextStore.usedContextTokens;
-                contextStore.setEstimatedContext(
-                  currentContext + responseTokens,
-                );
-              }
-            },
-            onError: (error) => {
-              const isCancelled =
-                error.message === "Request cancelled" ||
-                error.name === "AbortError" ||
-                error.message.includes("aborted");
-              if (!isCancelled) {
-                const classified = classifyError(error);
-                addTimelineEvent({
-                  type: "content",
-                  content: `**${classified.title}**\n\n${classified.message}\n\n💡 ${classified.suggestion}`,
-                });
-              }
-              if (currentThinkingEventId) {
-                updateTimelineEvent(currentThinkingEventId, {
-                  isThinking: false,
-                });
-              }
-            },
-          },
-          undefined,
-          composedIdeContext,
-          promptContext,
-        );
-      } catch (error) {
-        const isCancelled =
-          error instanceof Error &&
-          (error.message === "Request cancelled" ||
-            error.name === "AbortError" ||
-            error.message.includes("aborted"));
-        if (currentThinkingEventId) {
-          updateTimelineEvent(currentThinkingEventId, { isThinking: false });
-        }
-        if (!isCancelled) {
-          console.error("Chat error:", error);
-          const classified = classifyError(error instanceof Error ? error : new Error(String(error)));
-          addTimelineEvent({
-            type: "content",
-            content: `**${classified.title}**\n\n${classified.message}\n\n💡 ${classified.suggestion}`,
-          });
-        }
-      } finally {
-        // Sweep: mark any tools still in pending/executing as failed.
-        for (const event of timelineRef.current) {
-          if (
-            event.type === "tool" &&
-            event.tool &&
-            (event.tool.status === "pending" ||
-              event.tool.status === "executing")
-          ) {
-            updateTimelineEvent(
-              event.id,
-              {
-                tool: {
-                  ...event.tool,
-                  status: "failed",
-                  error:
-                    event.tool.error || "Request ended before tool completed",
-                },
-              },
-              true,
-            );
-          }
-        }
-
-        liveFilePreviewService.cancelAllActive();
-
-        flushTimelineUpdate();
-        if (threadId) {
-          useContextStore.getState().syncFromRust(threadId);
-        }
-        setLoading(false);
-        chatSyncBroadcast.setLoading(false);
-        setStreamingState(false);
-        currentMessageIdRef.current = null;
-      }
-    },
-    [
-      currentThreadId,
-      currentThread,
-      createThread,
-      addMessageToThread,
-      updateThreadUsage,
-      setLoading,
-      autoApproveTools,
-      agentExecutionMode,
-      getToolApproval,
-      setPendingApproval,
-      addTimelineEvent,
-      updateTimelineEvent,
-      flushTimelineUpdate,
-      refreshFileExplorer,
-      getLLMConfig,
-      thinkingEnabled,
-      temperature,
-      maxTokens,
-      threads,
-      rootPath,
-    ],
-  );
-
-  const handleApprove = useCallback(() => {
-    if (pendingToolCallRef.current?.resolve) {
-      pendingToolCallRef.current.resolve(true);
-      pendingToolCallRef.current = null;
-    }
-    setPendingApproval(null);
-  }, [setPendingApproval]);
-
-  const handleApproveRemember = useCallback(() => {
-    if (!pendingApproval) return;
-    setToolApproval(pendingApproval.toolName, "auto");
-    handleApprove();
-  }, [handleApprove, pendingApproval, setToolApproval]);
-
-  const handleReject = useCallback(() => {
-    const pending = pendingToolCallRef.current;
-    if (pending?.toolCall) {
-      const toolName = pending.toolCall.function.name;
-      const parsedArgs = parseToolArgumentsForDisplay(
-        pending.toolCall.function.arguments,
-      );
-      const auditStore = useAuditStore.getState();
-      const riskLevel = toolRegistry.getRiskLevel(toolName);
-      auditStore.addEntry({
-        toolName,
-        args: parsedArgs,
-        status: "rejected",
-        riskLevel,
-        threadId: currentThreadId || undefined,
-      });
-
-      const toolEvent = timelineRef.current.find(
-        (e) => e.type === "tool" && e.tool?.id === pending.toolCall.id,
-      );
-      if (toolEvent) {
-        updateTimelineEvent(
-          toolEvent.id,
-          {
-            tool: {
-              ...toolEvent.tool!,
-              status: "rejected",
-              result: "User rejected this tool call.",
-            },
-          },
-          true,
-        );
-      }
-
-      liveFilePreviewService.fail(pending.toolCall.id);
-    }
-    if (pending?.resolve) {
-      pending.resolve(false);
-      pendingToolCallRef.current = null;
-    }
-    setPendingApproval(null);
-  }, [setPendingApproval, updateTimelineEvent, currentThreadId]);
-
   const getUsageColor = () => {
     if (isOverLimit || usagePercentage >= 80) return contextColors.high;
     if (usagePercentage >= 30) return contextColors.medium;
@@ -1008,7 +195,6 @@ export const AgentModeLayout: React.FC = () => {
   const isEmpty = messages.length === 0;
 
   // Slim, wrapperless header buttons. Idle has no chrome — just the icon.
-  // Hover applies a subtle primary tint background.
   const renderHeaderButton = (
     onClick: () => void,
     icon: React.ReactNode,
@@ -1242,9 +428,7 @@ export const AgentModeLayout: React.FC = () => {
 
           {/* Right side panel — only rendered when the agent has actually
               edited files in this thread AND the user hasn't collapsed
-              the panel. Both conditions must be true; otherwise nothing
-              on the right side is rendered (no panel, no resize handle,
-              no floating toggle). */}
+              the panel. */}
           {showChangesPanel && (
             <>
               <PanelResizeHandle
@@ -1269,9 +453,7 @@ export const AgentModeLayout: React.FC = () => {
         </PanelGroup>
 
         {/* Floating "show changes" tab — only when the agent has touched
-            files AND the user collapsed the panel. On a fresh chat (no
-            file ops yet) this is hidden too, so the chat view stays
-            uncluttered. */}
+            files AND the user collapsed the panel. */}
         {showChangesToggle && (
           <button
             onClick={() => setIsChangesPanelVisible(true)}

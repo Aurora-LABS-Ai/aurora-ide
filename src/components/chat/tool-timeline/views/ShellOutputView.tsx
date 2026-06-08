@@ -1,9 +1,18 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { Terminal } from "lucide-react";
 import { cn } from "../helpers";
 import type { ShellOutputData } from "../types";
 
 type ShellOutputViewProps = ShellOutputData;
+
+// Cap how much shell output we paint into the DOM. A runaway command
+// (build logs, `cat` of a large file, a chatty test runner) can return
+// megabytes; dumping it all into a `whitespace-pre-wrap break-all` <pre>
+// forces the browser to lay out every single character, which freezes
+// the entire renderer process — editor, terminal and all. We keep the
+// tail, where exit summaries and errors live, and note what we hid.
+const MAX_SHELL_OUTPUT_CHARS = 60_000;
+const MAX_SHELL_OUTPUT_LINES = 600;
 
 /**
  * Render `shell_execute` results: a header chip with mode/success/exit
@@ -20,6 +29,24 @@ export const ShellOutputView: React.FC<ShellOutputViewProps> = ({
   success,
 }) => {
   const contentRef = useRef<HTMLDivElement>(null);
+
+  const { displayOutput, hiddenChars, hiddenLines } = useMemo(() => {
+    let working = output ?? "";
+    let hiddenChars = 0;
+    if (working.length > MAX_SHELL_OUTPUT_CHARS) {
+      hiddenChars = working.length - MAX_SHELL_OUTPUT_CHARS;
+      working = working.slice(working.length - MAX_SHELL_OUTPUT_CHARS);
+    }
+    let hiddenLines = 0;
+    const lines = working.split("\n");
+    if (lines.length > MAX_SHELL_OUTPUT_LINES) {
+      hiddenLines = lines.length - MAX_SHELL_OUTPUT_LINES;
+      working = lines.slice(lines.length - MAX_SHELL_OUTPUT_LINES).join("\n");
+    }
+    return { displayOutput: working, hiddenChars, hiddenLines };
+  }, [output]);
+
+  const isTruncated = hiddenChars > 0 || hiddenLines > 0;
 
   useEffect(() => {
     if (contentRef.current) {
@@ -86,12 +113,20 @@ export const ShellOutputView: React.FC<ShellOutputViewProps> = ({
         </div>
       )}
 
+      {isTruncated && (
+        <div className="border-b border-border/40 bg-warning/[0.06] px-3 py-1 text-[9px] text-warning/90">
+          {hiddenLines > 0
+            ? `Trimmed for display — ${hiddenLines.toLocaleString()} earlier lines hidden. Showing the last ${MAX_SHELL_OUTPUT_LINES.toLocaleString()}.`
+            : `Trimmed for display — ${Math.round(hiddenChars / 1024).toLocaleString()} KB of earlier output hidden.`}
+        </div>
+      )}
+
       <div
         ref={contentRef}
         className="max-h-[240px] overflow-auto scrollbar-thin scrollbar-thumb-scrollbar scrollbar-track-transparent"
       >
         <pre className="min-w-full whitespace-pre-wrap break-all px-3 py-2 font-mono text-[10.5px] leading-[1.6] text-text-secondary">
-          <code>{output || "No output"}</code>
+          <code>{displayOutput || "No output"}</code>
         </pre>
       </div>
     </div>

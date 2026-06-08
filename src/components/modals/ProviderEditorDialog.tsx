@@ -49,7 +49,7 @@ const dialogShellStyle: React.CSSProperties = {
   backgroundColor: 'var(--aurora-sidebar-background)',
   border: '1px solid color-mix(in srgb, var(--aurora-common-border) 70%, transparent)',
   borderRadius: 8,
-  boxShadow: '0 12px 48px rgba(0,0,0,0.45)',
+  boxShadow: '0 12px 48px var(--aurora-common-shadow-elevated)',
 };
 
 export const ProviderEditorDialog: React.FC<ProviderEditorDialogProps> = ({
@@ -121,17 +121,17 @@ export const ProviderEditorDialog: React.FC<ProviderEditorDialogProps> = ({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/65 backdrop-blur-sm"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-scrim backdrop-blur-sm p-6"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-[600px] max-h-[calc(100vh-32px)] overflow-y-auto scrollbar-thin"
+        className="flex w-full max-w-[820px] max-h-[calc(100vh-48px)] flex-col"
         style={dialogShellStyle}
         onClick={(event) => event.stopPropagation()}
       >
         {/* Header */}
         <div
-          className="flex items-center justify-between gap-3 px-4 py-3"
+          className="flex shrink-0 items-center justify-between gap-3 px-5 py-3"
           style={{
             borderBottom:
               '1px solid color-mix(in srgb, var(--aurora-common-border) 70%, transparent)',
@@ -152,137 +152,141 @@ export const ProviderEditorDialog: React.FC<ProviderEditorDialogProps> = ({
           </IconButton>
         </div>
 
-        {/* Body */}
-        <div className="space-y-3 p-4">
-          <Section title="Identity">
-            <FormBlock>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <FieldLabel className="mb-1">Name *</FieldLabel>
+        {/* Body — 2-column grid */}
+        <div className="flex-1 overflow-y-auto scrollbar-thin px-5 py-4">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-4">
+            {/* Identity — left column */}
+            <div className="min-w-0">
+              <Section title="Identity">
+                <FormBlock>
+                  <FieldLabel className="mb-1.5">Name *</FieldLabel>
                   <IdeTextInput
                     value={name}
                     onChange={(event) => setName(event.target.value)}
                     placeholder="My OpenRouter"
                     autoFocus
                   />
-                </div>
-                <div>
-                  <FieldLabel className="mb-1">Selector name</FieldLabel>
+                </FormBlock>
+                <FormBlock>
+                  <FieldLabel className="mb-1.5">Selector name</FieldLabel>
                   <IdeTextInput
                     value={nickname}
                     onChange={(event) => setNickname(event.target.value)}
                     placeholder={name || 'OpenRouter'}
                   />
-                </div>
-              </div>
-            </FormBlock>
-            <FormBlock divided={false}>
-              <FieldLabel className="mb-1">API format *</FieldLabel>
-              <IdeSelect
-                ariaLabel="Select provider API format"
-                options={[
-                  { label: 'OpenAI compatible', value: 'openai' },
-                  { label: 'Anthropic compatible', value: 'anthropic' },
-                  { label: 'Custom (OpenAI-like)', value: 'custom' },
-                ]}
-                onChange={(next) => setProviderType(String(next) as typeof providerType)}
-                value={providerType}
-              />
-            </FormBlock>
-          </Section>
+                </FormBlock>
+                <FormBlock divided={false}>
+                  <FieldLabel className="mb-1.5">API format *</FieldLabel>
+                  <IdeSelect
+                    ariaLabel="Select provider API format"
+                    options={[
+                      { label: 'OpenAI compatible', value: 'openai' },
+                      { label: 'Anthropic compatible', value: 'anthropic' },
+                      { label: 'Custom (OpenAI-like)', value: 'custom' },
+                    ]}
+                    onChange={(next) => setProviderType(String(next) as typeof providerType)}
+                    value={providerType}
+                  />
+                </FormBlock>
+              </Section>
+            </div>
 
-          <Section
-            title="Connection"
-            description="Where Aurora will route requests for this provider."
-            badge={
-              <StatusPill variant="neutral" dot={false}>
-                <Globe className="h-2.5 w-2.5" />
-                {providerType === 'anthropic' ? 'Anthropic' : 'OpenAI-compat'}
-              </StatusPill>
-            }
-          >
-            <FormBlock>
-              <FieldLabel className="mb-1">Base URL *</FieldLabel>
-              <IdeTextInput
-                value={baseUrl}
-                onChange={(event) => setBaseUrl(event.target.value)}
-                placeholder={
-                  providerType === 'anthropic'
-                    ? 'https://api.anthropic.com'
-                    : 'https://api.openrouter.ai/v1'
+            {/* Connection — right column */}
+            <div className="min-w-0">
+              <Section
+                title="Connection"
+                badge={
+                  <StatusPill variant="neutral" dot={false}>
+                    <Globe className="h-2.5 w-2.5" />
+                    {providerType === 'anthropic' ? 'Anthropic' : 'OpenAI-compat'}
+                  </StatusPill>
                 }
-                style={{ fontFamily: 'monospace' }}
-              />
-            </FormBlock>
-            <FormBlock divided={false}>
-              <FieldLabel className="mb-1">API key</FieldLabel>
-              <div className="flex gap-1.5">
-                <div className="flex-1">
+              >
+                <FormBlock>
+                  <FieldLabel className="mb-1.5">Base URL *</FieldLabel>
                   <IdeTextInput
-                    type={showApiKey ? 'text' : 'password'}
-                    value={apiKey}
-                    onChange={(event) => setApiKey(event.target.value)}
-                    placeholder="sk-…  (leave blank for local servers)"
+                    value={baseUrl}
+                    onChange={(event) => setBaseUrl(event.target.value)}
+                    placeholder={
+                      providerType === 'anthropic'
+                        ? 'https://api.anthropic.com'
+                        : 'https://api.openrouter.ai/v1'
+                    }
                     style={{ fontFamily: 'monospace' }}
                   />
-                </div>
-                <IconButton
-                  ariaLabel={showApiKey ? 'Hide key' : 'Show key'}
-                  onClick={() => setShowApiKey(!showApiKey)}
-                >
-                  {showApiKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-                </IconButton>
-              </div>
-            </FormBlock>
-          </Section>
+                </FormBlock>
+                <FormBlock divided={false}>
+                  <FieldLabel className="mb-1.5">API key</FieldLabel>
+                  <div className="flex gap-1.5">
+                    <div className="min-w-0 flex-1">
+                      <IdeTextInput
+                        type={showApiKey ? 'text' : 'password'}
+                        value={apiKey}
+                        onChange={(event) => setApiKey(event.target.value)}
+                        placeholder="sk-…  (blank for local)"
+                        style={{ fontFamily: 'monospace' }}
+                      />
+                    </div>
+                    <IconButton
+                      ariaLabel={showApiKey ? 'Hide key' : 'Show key'}
+                      onClick={() => setShowApiKey(!showApiKey)}
+                    >
+                      {showApiKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                    </IconButton>
+                  </div>
+                </FormBlock>
+              </Section>
+            </div>
 
-          <Section
-            title="First model"
-            description="A provider needs at least one model. Capabilities (vision, thinking) are configured on the model after creation."
-            badge={
-              <StatusPill variant="info" dot={false}>
-                <Server className="h-2.5 w-2.5" />
-                Required
-              </StatusPill>
-            }
-          >
-            <FormBlock>
-              <FieldLabel className="mb-1">Model ID *</FieldLabel>
-              <IdeTextInput
-                value={model}
-                onChange={(event) => setModel(event.target.value)}
-                placeholder="gpt-4o-mini, llama3.2:70b, accounts/.../qwen3-coder"
-                style={{ fontFamily: 'monospace' }}
-              />
-            </FormBlock>
-            <FormBlock divided={false}>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <FieldLabel className="mb-1">Default context window</FieldLabel>
-                  <IdeTextInput
-                    type="number"
-                    value={contextWindow}
-                    onChange={(event) => setContextWindow(event.target.value)}
-                    style={{ fontFamily: 'monospace' }}
-                  />
+            {/* First model — full width */}
+            <div className="col-span-2">
+              <Section
+                title="First model"
+                description="A provider needs at least one model. Capabilities (vision, thinking) are configured on the model after creation."
+                badge={
+                  <StatusPill variant="info" dot={false}>
+                    <Server className="h-2.5 w-2.5" />
+                    Required
+                  </StatusPill>
+                }
+              >
+                <div className="grid grid-cols-[2fr_1fr_1fr] gap-x-4 px-4 py-3.5">
+                  <div className="min-w-0">
+                    <FieldLabel className="mb-1.5">Model ID *</FieldLabel>
+                    <IdeTextInput
+                      value={model}
+                      onChange={(event) => setModel(event.target.value)}
+                      placeholder="gpt-4o-mini, llama3.2:70b, …"
+                      style={{ fontFamily: 'monospace' }}
+                    />
+                  </div>
+                  <div className="min-w-0">
+                    <FieldLabel className="mb-1.5">Context window</FieldLabel>
+                    <IdeTextInput
+                      type="number"
+                      value={contextWindow}
+                      onChange={(event) => setContextWindow(event.target.value)}
+                      style={{ fontFamily: 'monospace' }}
+                    />
+                  </div>
+                  <div className="min-w-0">
+                    <FieldLabel className="mb-1.5">Max output</FieldLabel>
+                    <IdeTextInput
+                      type="number"
+                      value={maxOutputTokens}
+                      onChange={(event) => setMaxOutputTokens(event.target.value)}
+                      style={{ fontFamily: 'monospace' }}
+                    />
+                  </div>
                 </div>
-                <div>
-                  <FieldLabel className="mb-1">Default max output</FieldLabel>
-                  <IdeTextInput
-                    type="number"
-                    value={maxOutputTokens}
-                    onChange={(event) => setMaxOutputTokens(event.target.value)}
-                    style={{ fontFamily: 'monospace' }}
-                  />
-                </div>
-              </div>
-            </FormBlock>
-          </Section>
+              </Section>
+            </div>
+          </div>
         </div>
 
         {/* Footer */}
         <div
-          className="flex items-center justify-end gap-2 px-4 py-3"
+          className="flex shrink-0 items-center justify-end gap-2 px-5 py-3"
           style={{
             borderTop:
               '1px solid color-mix(in srgb, var(--aurora-common-border) 70%, transparent)',

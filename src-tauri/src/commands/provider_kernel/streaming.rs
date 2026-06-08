@@ -192,13 +192,24 @@ pub(crate) async fn stream_openai_compatible(
                 };
 
                 if let Some(usage) = parsed.usage {
+                    // DeepSeek's `prompt_cache_hit_tokens` is a subset
+                    // of `prompt_tokens`. To keep the Aurora UI math
+                    // (which sums `prompt_tokens + cache_read_tokens`)
+                    // numerically correct for both DeepSeek and
+                    // Anthropic, we subtract the hit count out of
+                    // `prompt_tokens` before surfacing it and report
+                    // the hits as `cache_read_tokens`. Total tokens
+                    // stays whatever the provider sent.
+                    let hit = usage.prompt_cache_hit_tokens.unwrap_or(0);
+                    let prompt_excluding_cache = usage.prompt_tokens.saturating_sub(hit);
+                    let cache_read_tokens = if hit > 0 { Some(hit) } else { None };
                     let _ = app.emit(
                         &format!("aurora-provider-usage-{request_id}"),
                         AuroraUsage {
-                            cache_read_tokens: None,
+                            cache_read_tokens,
                             cache_write_tokens: None,
                             completion_tokens: usage.completion_tokens,
-                            prompt_tokens: usage.prompt_tokens,
+                            prompt_tokens: prompt_excluding_cache,
                             total_tokens: usage.total_tokens,
                         },
                     );

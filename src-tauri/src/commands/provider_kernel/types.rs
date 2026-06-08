@@ -152,6 +152,23 @@ pub(crate) struct OpenAiUsageData {
     pub(crate) completion_tokens: u32,
     pub(crate) prompt_tokens: u32,
     pub(crate) total_tokens: u32,
+    /// DeepSeek-only context cache telemetry. `prompt_cache_hit_tokens`
+    /// is the cached subset of `prompt_tokens`; `prompt_cache_miss_tokens`
+    /// is the freshly-computed remainder. Both are optional because
+    /// other OpenAI-compat providers don't emit them.
+    ///
+    /// We currently only consume `prompt_cache_hit_tokens` (it drives
+    /// the normalization that maps DeepSeek's subset semantics onto
+    /// Aurora's additive `cache_read_input_tokens` field). The miss
+    /// count is parsed into the struct for forward-compat telemetry
+    /// (planned: surface cache-savings $$$ in the usage badge) but the
+    /// derive can't see that yet — keep `#[allow(dead_code)]` until
+    /// the read site lands.
+    #[serde(default)]
+    pub(crate) prompt_cache_hit_tokens: Option<u32>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub(crate) prompt_cache_miss_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

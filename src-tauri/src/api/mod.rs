@@ -44,6 +44,7 @@
 
 pub mod anthropic;
 pub mod client;
+pub mod deepseek;
 pub mod openai_compat;
 pub mod provider_kernel_adapter;
 pub mod sse;

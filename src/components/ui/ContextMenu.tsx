@@ -76,18 +76,24 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       if (e.key === "Escape") onClose();
     };
 
-    const handleScroll = () => onClose();
+    // Close on viewport resize (menu position would become wrong) but
+    // NOT on arbitrary scroll. The previous `document.addEventListener
+    // ("scroll", handleScroll, true)` was too aggressive: capture-phase
+    // doc-wide scroll fires on every chat-stream chunk, editor scroll,
+    // terminal output, etc., so opening a right-click menu during agent
+    // streaming closed it within a frame. The IDE shell uses a fixed
+    // layout, so window-level scroll isn't a real concern; if the menu
+    // ever ends up genuinely stale, click-outside + Escape will dismiss
+    // it within one user action.
     const handleResize = () => onClose();
 
     document.addEventListener("mousedown", handleClickOutside);
     document.addEventListener("keydown", handleEscape);
-    document.addEventListener("scroll", handleScroll, true);
     window.addEventListener("resize", handleResize);
 
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleEscape);
-      document.removeEventListener("scroll", handleScroll, true);
       window.removeEventListener("resize", handleResize);
     };
   }, [onClose]);

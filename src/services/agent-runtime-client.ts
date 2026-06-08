@@ -33,6 +33,11 @@ import {
   isMcpTool,
   shouldAutoApproveMcpTool,
 } from "./mcp-tools";
+import {
+  executeAuroraFrontendTool,
+  isAuroraFrontendTool,
+  shouldAutoApproveAuroraFrontendTool,
+} from "./aurora-tools";
 
 /**
  * Loose tool-definition shape so we can accept either the
@@ -153,6 +158,7 @@ export type AssistantEvent =
       cache_read_input_tokens?: number | null;
     }
   | { type: "message_stop"; stop_reason: string }
+  | { type: "queued_message_injected"; text: string }
   | { type: "error"; message: string; recoverable: boolean };
 
 /**
@@ -235,6 +241,15 @@ interface WireTokenUsage {
 export interface AgentRuntimeCallbacks extends AgentCallbacks {
   /** Fires when the runtime closes out the assistant message. */
   onMessageStop?: (stopReason: string) => void;
+  /**
+   * Fires when a user-queued mid-turn message gets injected at the
+   * next tool-result boundary. The Rust runtime appends the queued
+   * text as a Text content block on the tool message; this callback
+   * lets the UI clear the pending pill and render a regular user
+   * bubble in the chat list (so the timeline reads in human order:
+   * tool result → user note → assistant continuation).
+   */
+  onQueuedMessageInjected?: (text: string) => void;
   /** Fires once on success — typically right before the chat() promise resolves. */
   onTurnComplete?: (summary: TurnCompletionPayload) => void;
   /** Fires once on error / cancellation — typically right before the chat() promise rejects. */
@@ -672,6 +687,9 @@ export class AgentRuntimeClient {
       case "message_stop":
         callbacks.onMessageStop?.(event.stop_reason);
         break;
+      case "queued_message_injected":
+        callbacks.onQueuedMessageInjected?.(event.text);
+        break;
       case "error":
         callbacks.onError?.(new Error(event.message));
         break;
@@ -687,15 +705,27 @@ export class AgentRuntimeClient {
 
   /**
    * Bridge listener: when Rust asks the frontend to execute a tool,
-   * we only handle MCP (`mcp_*`) tools — every other tool is owned
-   * by the Rust ToolRegistry and should never reach this listener.
-   * If a non-MCP tool does fall through (registry mis-spelling,
-   * missing registration), we synthesise a hard error so the model
-   * sees a deterministic failure instead of a silent stall.
+   * we route it to one of two frontend executors:
    *
-   * Approval flow for MCP tools:
-   *   1. `shouldAutoApproveMcpTool(name)` from per-server config →
-   *      auto-approve, skip the modal.
+   *   - MCP tools (`mcp_*`)        → `executeMcpTool` (mcp-tools.ts)
+   *   - Aurora frontend tools      → `executeAuroraFrontendTool`
+   *     (aurora-tools.ts; currently `aurora_skill_search` and
+   *     `aurora_skill_load`, both read-only)
+   *
+   * Every other tool is owned by the Rust ToolRegistry and should
+   * never reach this listener. If one does fall through (registry
+   * mis-spelling, missing registration, or a tool definition that
+   * advertises a name no executor knows about), we synthesise a
+   * hard error so the model sees a deterministic failure instead
+   * of a silent stall. The error envelope is the same shape used
+   * by every other tool failure: `{ error, tool }` JSON with
+   * `isError=true` on the `agent_post_tool_result` call.
+   *
+   * Approval flow:
+   *   1. `shouldAutoApprove*Tool(name)` → auto-approve, skip the
+   *      modal. For MCP this is sourced from per-server config; for
+   *      Aurora frontend tools it's intrinsic (they're all
+   *      read-only by construction).
    *   2. Otherwise, route through `onToolApprovalRequired` (same UI
    *      modal native Rust tools use via the
    *      `agent_permission_request` channel). Denying here surfaces
@@ -717,20 +747,23 @@ export class AgentRuntimeClient {
 
     const toolName = payload.name;
     const isMcp = isMcpTool(toolName);
+    const isAuroraFrontend = !isMcp && isAuroraFrontendTool(toolName);
 
     let content = "";
     let isError = false;
 
-    if (!isMcp) {
-      // Non-MCP tool fell through to the frontend bridge. After the
-      // Rust migration this should never happen — every native tool
-      // is registered server-side. Surface it as a hard tool error so
-      // the model sees a deterministic failure and can recover.
+    if (!isMcp && !isAuroraFrontend) {
+      // Tool fell through to the frontend bridge but no frontend
+      // executor recognises it. This is a registration gap: the
+      // Rust ToolRegistry doesn't have it either, or its definition
+      // would never have reached this listener. Surface it as a
+      // hard tool error so the model sees a deterministic failure
+      // and can recover.
       console.error(
-        `[agent-runtime-client] non-MCP tool '${toolName}' reached the bridge — Rust ToolRegistry missing this executor?`,
+        `[agent-runtime-client] tool '${toolName}' reached the bridge with no frontend or Rust executor — registry gap?`,
       );
       content = JSON.stringify({
-        error: `Tool '${toolName}' is not registered in the Rust runtime and is not an MCP tool. The frontend bridge only handles 'mcp_*' tools.`,
+        error: `Tool '${toolName}' is not registered. The Rust runtime has no executor for it, and the frontend bridge only handles MCP tools ('mcp_*') and Aurora frontend tools (aurora_skill_search, aurora_skill_load).`,
         tool: toolName,
       });
       isError = true;
@@ -749,9 +782,12 @@ export class AgentRuntimeClient {
           ? parsed.args
           : (payload.input as Record<string, unknown>);
 
-      // Approval gate for MCP tools (mirrors legacy
-      // `AgentToolRunner::resolveApproval` for the MCP branch).
-      const autoApproved = shouldAutoApproveMcpTool(toolName);
+      // Approval gate. MCP tools use the per-server config; Aurora
+      // frontend tools auto-approve because they're all read-only
+      // by construction (see `aurora-tools.ts` for the full list).
+      const autoApproved = isAuroraFrontend
+        ? shouldAutoApproveAuroraFrontendTool(toolName)
+        : shouldAutoApproveMcpTool(toolName);
       if (!autoApproved) {
         const callback = this.options.callbacks.onToolApprovalRequired;
         if (callback) {
@@ -797,7 +833,9 @@ export class AgentRuntimeClient {
         },
       });
 
-      content = await executeMcpTool(toolName, args);
+      content = isAuroraFrontend
+        ? await executeAuroraFrontendTool(toolName, args)
+        : await executeMcpTool(toolName, args);
       this.options.callbacks.onToolExecutionComplete?.(
         {
           id: toolUseId,

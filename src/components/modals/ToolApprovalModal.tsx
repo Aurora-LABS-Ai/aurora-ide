@@ -59,7 +59,7 @@ export const ToolApprovalModal: React.FC = () => {
   const modified = proposal.modifiedContent || '';
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-scrim flex items-center justify-center z-50">
       <div className="bg-sidebar border border-border rounded-lg shadow-2xl w-[90vw] h-[85vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="px-5 py-3 border-b border-border flex items-center justify-between bg-panel-header">

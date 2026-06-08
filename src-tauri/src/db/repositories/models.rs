@@ -20,7 +20,8 @@ impl<'a> ModelsRepository<'a> {
         let mut stmt = self.conn.prepare(
             "SELECT id, provider_id, model_key, label, context_window, max_output_tokens,
                     supports_vision, supports_thinking, supports_tool_stream, enabled,
-                    sort_order, created_at, updated_at
+                    sort_order, price_cache_hit_per_mtok, price_cache_miss_per_mtok,
+                    price_output_per_mtok, price_currency, created_at, updated_at
              FROM provider_models
              ORDER BY provider_id ASC, sort_order ASC, model_key ASC",
         )?;
@@ -37,7 +38,8 @@ impl<'a> ModelsRepository<'a> {
         let mut stmt = self.conn.prepare(
             "SELECT id, provider_id, model_key, label, context_window, max_output_tokens,
                     supports_vision, supports_thinking, supports_tool_stream, enabled,
-                    sort_order, created_at, updated_at
+                    sort_order, price_cache_hit_per_mtok, price_cache_miss_per_mtok,
+                    price_output_per_mtok, price_currency, created_at, updated_at
              FROM provider_models
              WHERE provider_id = ?1
              ORDER BY sort_order ASC, model_key ASC",
@@ -58,7 +60,8 @@ impl<'a> ModelsRepository<'a> {
         let mut stmt = self.conn.prepare(
             "SELECT id, provider_id, model_key, label, context_window, max_output_tokens,
                     supports_vision, supports_thinking, supports_tool_stream, enabled,
-                    sort_order, created_at, updated_at
+                    sort_order, price_cache_hit_per_mtok, price_cache_miss_per_mtok,
+                    price_output_per_mtok, price_currency, created_at, updated_at
              FROM provider_models
              WHERE provider_id = ?1 AND model_key = ?2",
         )?;
@@ -90,12 +93,16 @@ impl<'a> ModelsRepository<'a> {
             "INSERT INTO provider_models (
                 id, provider_id, model_key, label, context_window, max_output_tokens,
                 supports_vision, supports_thinking, supports_tool_stream, enabled,
-                sort_order, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                sort_order, price_cache_hit_per_mtok, price_cache_miss_per_mtok,
+                price_output_per_mtok, price_currency, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
              ON CONFLICT(id) DO UPDATE SET
                 model_key = ?3, label = ?4, context_window = ?5, max_output_tokens = ?6,
                 supports_vision = ?7, supports_thinking = ?8, supports_tool_stream = ?9,
-                enabled = ?10, sort_order = ?11, updated_at = ?13",
+                enabled = ?10, sort_order = ?11,
+                price_cache_hit_per_mtok = ?12, price_cache_miss_per_mtok = ?13,
+                price_output_per_mtok = ?14, price_currency = ?15,
+                updated_at = ?17",
             params![
                 id,
                 model.provider_id,
@@ -108,6 +115,10 @@ impl<'a> ModelsRepository<'a> {
                 model.supports_tool_stream as i32,
                 model.enabled as i32,
                 model.sort_order,
+                model.price_cache_hit_per_mtok,
+                model.price_cache_miss_per_mtok,
+                model.price_output_per_mtok,
+                model.price_currency,
                 created_at,
                 now,
             ],
@@ -189,7 +200,11 @@ fn row_to_model(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProviderModel> {
         supports_tool_stream: row.get::<_, i32>(8)? != 0,
         enabled: row.get::<_, i32>(9)? != 0,
         sort_order: row.get(10)?,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
+        price_cache_hit_per_mtok: row.get(11)?,
+        price_cache_miss_per_mtok: row.get(12)?,
+        price_output_per_mtok: row.get(13)?,
+        price_currency: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
     })
 }

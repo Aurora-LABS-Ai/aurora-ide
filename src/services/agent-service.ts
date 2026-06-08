@@ -193,6 +193,25 @@ export class AgentService {
           latestUsage = usage;
           callbacks.onUsage?.(usage);
         },
+        onQueuedMessageInjected: (text) => {
+          // The Rust runtime just drained the queue slot and stapled
+          // this text to the tool message about to be sent to the
+          // model. UI: clear the pill, then let the panel-level
+          // callback (which owns the streaming message id) drop a
+          // `user_injection` timeline event into the in-flight
+          // assistant message. That way the injected user note
+          // renders inline — after the tool result, before the
+          // continuing assistant text — matching what the API sees.
+          // We do NOT append a separate user bubble: that would land
+          // after the still-streaming assistant message and read as
+          // if the agent replied before the user spoke.
+          //
+          // Lazy import avoids the chat-store ↔ agent-service cycle.
+          void import("../store/useChatStore").then(({ useChatStore }) => {
+            useChatStore.getState().clearQueuedMessageLocal();
+          });
+          callbacks.onQueuedMessageInjected?.(text);
+        },
       };
 
       console.log("[AgentService] dispatching to AgentRuntimeClient", {

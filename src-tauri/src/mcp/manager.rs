@@ -48,6 +48,9 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+#[cfg(windows)]
+use std::path::{Path, PathBuf};
+
 use super::config::McpConfig;
 use super::types::*;
 
@@ -301,8 +304,18 @@ impl McpManager {
             .as_ref()
             .ok_or_else(|| "No command specified for stdio transport".to_string())?;
 
-        let mut cmd = Command::new(command);
-        cmd.args(&config.args)
+        // Windows: resolve PATHEXT-style extensions and wrap shell scripts
+        // through their interpreter. On non-Windows this is the identity.
+        // Without this, `Command::new("httptoolkit-server")` returns
+        // os error 2 because `CreateProcessW` only matches the exact
+        // filename and `.exe` on PATH — not the `.cmd`/`.bat`/`.ps1`
+        // shims most Node/Python/Rust CLIs install on Windows.
+        let (program, prefix_args) = resolve_command(command)
+            .map_err(|e| format!("Failed to spawn MCP server '{}': {}", id, e))?;
+
+        let mut cmd = Command::new(&program);
+        cmd.args(&prefix_args)
+            .args(&config.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -320,7 +333,7 @@ impl McpManager {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("Failed to spawn MCP server '{}': {}", id, e))?;
+            .map_err(|e| format!("Failed to spawn MCP server '{}' ({}): {}", id, program, e))?;
         let stdin = child
             .stdin
             .take()
@@ -873,6 +886,118 @@ async fn sse_actor(
 // =============================================================================
 // Helpers
 // =============================================================================
+
+/// Resolve a user-configured `command` to a runnable `(program, prefix_args)`
+/// pair. On non-Windows this is the identity. On Windows it:
+///
+///   1. Probes PATHEXT extensions (`.exe`, `.cmd`, `.bat`, `.ps1`) when the
+///      given path has no extension or doesn't exist as-typed. This matches
+///      what users expect from typing `httptoolkit-server` instead of
+///      `httptoolkit-server.cmd`.
+///   2. If the command is a bare name (no path separator) and isn't an
+///      absolute path, walks `$PATH` doing the same extension probe so
+///      `npx`, `uvx`, `python`, etc. work without a full path.
+///   3. Wraps `.cmd` / `.bat` through `cmd.exe /c` and `.ps1` through
+///      `powershell.exe -File` because batch and PowerShell scripts
+///      cannot be spawned directly by `CreateProcessW` — they're not PE
+///      binaries, they're scripts that need an interpreter.
+///
+/// Returns the program to launch and any prefix args (e.g. `["/c",
+/// "C:\\...\\foo.cmd"]`). The caller's own args are appended after.
+#[cfg(not(windows))]
+fn resolve_command(command: &str) -> Result<(String, Vec<String>), String> {
+    Ok((command.to_string(), Vec::new()))
+}
+
+#[cfg(windows)]
+fn resolve_command(command: &str) -> Result<(String, Vec<String>), String> {
+    // Extensions tried in PATHEXT-ish order. Direct-executable ones first
+    // so we don't gratuitously wrap a real `.exe` through cmd.exe.
+    const TRY_EXTENSIONS: &[&str] = &["exe", "cmd", "bat", "ps1"];
+
+    let resolved = resolve_windows_path(command, TRY_EXTENSIONS).ok_or_else(|| {
+        format!(
+            "command '{}' not found (tried as-typed and with extensions {:?}; \
+             check the path or specify the full filename including extension)",
+            command, TRY_EXTENSIONS
+        )
+    })?;
+
+    let ext = resolved
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    let path_str = resolved.to_string_lossy().into_owned();
+
+    match ext.as_deref() {
+        // Batch wrappers need cmd.exe. `/c` runs and exits. `/d` disables
+        // AutoRun. We pre-quote the path so spaces in `C:\Program Files\…`
+        // survive — cmd.exe is famously picky about this.
+        Some("cmd") | Some("bat") => Ok((
+            "cmd.exe".to_string(),
+            vec!["/d".into(), "/c".into(), path_str],
+        )),
+        // PowerShell scripts via powershell.exe with execution policy
+        // bypass for this single invocation (does not touch system policy).
+        Some("ps1") => Ok((
+            "powershell.exe".to_string(),
+            vec![
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-File".into(),
+                path_str,
+            ],
+        )),
+        // .exe (and anything else with a direct extension) → run as-is.
+        _ => Ok((path_str, Vec::new())),
+    }
+}
+
+/// Try `command` as written; if it doesn't exist on disk, append each
+/// extension in `extensions` and try again. For relative / bare names,
+/// walk `$PATH` doing the same probe so users can type `npx` instead of
+/// the full `C:\Program Files\nodejs\npx.cmd`.
+#[cfg(windows)]
+fn resolve_windows_path(command: &str, extensions: &[&str]) -> Option<PathBuf> {
+    let as_typed = Path::new(command);
+
+    // Case 1: a path (absolute or contains a separator) — resolve from that
+    // path directly, optionally probing extensions if the file isn't there.
+    if as_typed.is_absolute() || command.contains('\\') || command.contains('/') {
+        if as_typed.is_file() {
+            return Some(as_typed.to_path_buf());
+        }
+        for ext in extensions {
+            let mut candidate = as_typed.to_path_buf();
+            candidate.set_extension(ext);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        return None;
+    }
+
+    // Case 2: bare name — walk PATH. Each PATH entry, probe each extension.
+    if let Ok(path_env) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_env) {
+            // First try the literal name in case it already has an extension.
+            let direct = dir.join(command);
+            if direct.is_file() {
+                return Some(direct);
+            }
+            for ext in extensions {
+                let mut candidate = dir.join(command);
+                candidate.set_extension(ext);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
+}
 
 async fn write_frame(stdin: &mut ChildStdin, frame: &Value) -> Result<(), String> {
     let mut bytes = serde_json::to_vec(frame)

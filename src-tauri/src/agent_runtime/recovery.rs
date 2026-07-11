@@ -365,10 +365,7 @@ mod tests {
             classify_error("turn was cancelled"),
             Some(RecoveryHint::Cancelled),
         );
-        assert_eq!(
-            classify_error("Cancelled"),
-            Some(RecoveryHint::Cancelled),
-        );
+        assert_eq!(classify_error("Cancelled"), Some(RecoveryHint::Cancelled),);
     }
 
     #[test]

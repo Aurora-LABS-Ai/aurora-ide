@@ -1,146 +1,220 @@
 /**
- * File System Tools - Definitions
- * Tools for file operations: create, read, write, delete
+ * File System Tools — Definitions
+ *
+ * Refined 8→6: one reader (`file_read`, single or batch), one writer
+ * (`file_write`, content required), one editor (`file_edit`, single or
+ * atomic batch), plus `move_path` / `delete_path` (file-or-folder) and
+ * `grep`. The old `file_create` / `file_delete` / `search_replace` /
+ * `multi_search_replace` / `multi_file_read` tools are gone — folded into
+ * these. Schemas mirror the native Rust executors in
+ * `src-tauri/src/tools/file_workspace_search/`.
  */
 import type { ToolDefinition } from "../types";
 
 // ============================================
-// FILE CREATE TOOL
-// ============================================
-export const fileCreateTool: ToolDefinition = {
-  type: 'function',
-  nativeRustOwned: true,
-  function: {
-    name: 'file_create',
-    description: `Create a NEW file that does not exist yet. Creates parent directories automatically if needed.
-
-WHEN TO USE file_create:
-- Creating a brand new file that doesn't exist
-- Setting up new components, modules, or config files
-
-WHEN NOT TO USE:
-- If the file already exists (use file_write or file_patch instead)
-- For editing existing files
-
-NOTE: This tool will FAIL if the file already exists. Use file_write to overwrite existing files.`,
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: 'The full path where the NEW file should be created (e.g., "src/components/Button.tsx")',
-        },
-        content: {
-          type: 'string',
-          description: 'The initial content for the new file. Defaults to empty string if not provided.',
-          default: '',
-        },
-      },
-      required: ['path'],
-    },
-  },
-};
-
-// ============================================
-// FILE DELETE TOOL
-// ============================================
-export const fileDeleteTool: ToolDefinition = {
-  type: 'function',
-  nativeRustOwned: true,
-  function: {
-    name: 'file_delete',
-    description: 'Delete a file at the specified path. This action is irreversible.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: 'The full path of the file to delete',
-        },
-      },
-      required: ['path'],
-    },
-  },
-};
-
-// ============================================
-// FILE READ TOOL
+// FILE READ TOOL (single or parallel batch)
 // ============================================
 export const fileReadTool: ToolDefinition = {
   type: 'function',
   nativeRustOwned: true,
   function: {
     name: 'file_read',
-    description: `Read file content safely. By default, small files are returned in full. Large files are never returned in full; the response marks largeFile=true and returns only a bounded line window so context is not flooded.
-
-Use start_line and end_line for precise 1-based inclusive line reads, especially after workspace_tree reports a large lineCount. Maximum returned range is capped for safety.
+    description: `Read file content safely. Pass "path" to read ONE file (with an optional start_line/end_line window), or "paths" to read MANY files in parallel (10-100x faster than one at a time). Small files return in full; large files (>1500 lines or >500KB) return a bounded line window with largeFile=true. A missing path reports exists=false instead of failing.
 
 Examples:
-- file_read(path="src/App.tsx") for a small file
-- file_read(path="src/big.ts", start_line=120, end_line=220) for exact lines 120-220
-
-Returns JSON with content, totalLines, size, largeFile, range, and truncation metadata.`,
+- file_read(path="src/App.tsx")
+- file_read(path="src/big.ts", start_line=120, end_line=220)
+- file_read(paths=["src/App.tsx", "src/main.tsx", "package.json"])`,
     parameters: {
       type: 'object',
       properties: {
         path: {
           type: 'string',
-          description: 'The full path of the file to read (e.g., "src/App.tsx")',
+          description: 'Single-file form: the full path of the file to read.',
+        },
+        paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Batch form: multiple file paths to read in parallel (omit "path").',
         },
         start_line: {
           type: 'number',
-          description: 'Optional 1-based first line to return. Use with end_line for exact line-based reads.',
+          description: 'Single-file form: optional 1-based first line to return.',
         },
         end_line: {
           type: 'number',
-          description: 'Optional 1-based inclusive last line to return. If omitted with start_line, returns a safe bounded window.',
+          description: 'Single-file form: optional 1-based inclusive last line to return.',
         },
         max_lines: {
           type: 'number',
-          description: 'Optional maximum lines to return from start_line. Capped internally to prevent context overflow.',
+          description: 'Single-file form: optional maximum lines to return from start_line.',
         },
       },
-      required: ['path'],
+      required: [],
     },
   },
 };
 
 // ============================================
-// FILE WRITE TOOL
+// FILE WRITE TOOL (create or overwrite)
 // ============================================
 export const fileWriteTool: ToolDefinition = {
   type: 'function',
   nativeRustOwned: true,
   function: {
     name: 'file_write',
-    description: `COMPLETELY REPLACE the entire content of a file. This tool OVERWRITES the whole file.
+    description: `Create a new file or COMPLETELY OVERWRITE an existing one with the full content you supply. Creates parent directories automatically. "content" is REQUIRED — provide the entire file body.
 
-WHEN TO USE file_write:
-- Creating a new file with content
-- Rewriting an entire file from scratch
-- When changes are so extensive that replacing the whole file is cleaner
-- When you need to restructure the entire file
-
-WHEN NOT TO USE (use file_patch instead):
-- Making small edits to specific lines
-- Changing a few lines in a large file
-- Fixing a bug in one function
-- Adding/removing a single import
-
-WARNING: This replaces ALL content. The entire file content must be provided.`,
+Use file_edit for targeted changes to an existing file. Set must_not_exist=true to fail instead of overwriting if the file already exists.`,
     parameters: {
       type: 'object',
       properties: {
         path: {
           type: 'string',
-          description: 'The full path of the file to write',
+          description: 'The full path of the file to write.',
         },
         content: {
           type: 'string',
-          description: 'The COMPLETE new content for the file. This will REPLACE everything in the file.',
+          description: 'The COMPLETE new content for the file (required).',
+        },
+        must_not_exist: {
+          type: 'boolean',
+          description: 'When true, fail if the file already exists (create-only). Default false.',
+          default: false,
         },
       },
       required: ['path', 'content'],
+    },
+  },
+};
+
+// ============================================
+// FILE EDIT TOOL (single or atomic batch find-and-replace)
+// ============================================
+export const fileEditTool: ToolDefinition = {
+  type: 'function',
+  nativeRustOwned: true,
+  function: {
+    name: 'file_edit',
+    description: `Edit files by exact-text find-and-replace. This is the PREFERRED tool for targeted edits. Read each file with file_read first.
+
+Single edit: pass path + old_string + new_string.
+Many edits to ONE file: pass an "edits" array plus the top-level "path".
+Edits across MULTIPLE files in ONE call: give each item in "edits" its own "path" (the top-level "path" is the default for items that omit it).
+
+The whole batch is ATOMIC: every edit matches against its file's ORIGINAL snapshot, and if any edit fails NO file is changed.
+
+RULES:
+- old_string must match the file exactly (whitespace + newlines). LF/CRLF is handled automatically.
+- old_string must be unique unless replace_all=true. Include 3-5 lines of surrounding context to disambiguate.
+- new_string may be empty to delete old_string. Edits in the same file must not overlap.
+
+Examples:
+- file_edit(path="src/App.tsx", old_string="const n = 0;", new_string="const n = 10;")
+- file_edit(path="src/App.tsx", edits=[{ old_string:"foo", new_string:"bar" }, { old_string:"baz", new_string:"qux" }])
+- file_edit(edits=[{ path:"src/a.ts", old_string:"foo", new_string:"bar" }, { path:"src/b.ts", old_string:"baz", new_string:"qux" }])`,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'The file to edit. Required for the single-edit form. In the batch form it is the DEFAULT path for edits that do not set their own "path".',
+        },
+        old_string: {
+          type: 'string',
+          description: 'Single-edit form: the EXACT text to find. Must match perfectly and be unique unless replace_all=true.',
+        },
+        new_string: {
+          type: 'string',
+          description: 'Single-edit form: the replacement text. May be empty to delete old_string.',
+        },
+        replace_all: {
+          type: 'boolean',
+          description: 'Single-edit form: replace every occurrence of old_string. Default false.',
+          default: false,
+        },
+        edits: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              path: {
+                type: 'string',
+                description: 'Optional file for THIS edit. Defaults to the top-level "path". Set it to edit several files in one atomic call.',
+              },
+              old_string: {
+                type: 'string',
+                description: 'The EXACT text to find. Must match perfectly including whitespace and newlines.',
+              },
+              new_string: {
+                type: 'string',
+                description: 'The text to replace old_string with. May be empty to delete.',
+              },
+              replace_all: {
+                type: 'boolean',
+                description: 'If true, replace ALL occurrences of this old_string. Default false.',
+                default: false,
+              },
+            },
+            required: ['old_string', 'new_string'],
+          },
+          description: 'Batch form: array of edits applied atomically against each file\'s original snapshot. Give items their own "path" to edit multiple files in one call. Matched regions in the same file must not overlap.',
+        },
+      },
+      required: [],
+    },
+  },
+};
+
+// ============================================
+// MOVE PATH TOOL (move/rename a file OR folder)
+// ============================================
+export const movePathTool: ToolDefinition = {
+  type: 'function',
+  nativeRustOwned: true,
+  function: {
+    name: 'move_path',
+    description: 'Move or rename a file OR a folder from one path to another. Fails if the source does not exist or the destination already exists.',
+    parameters: {
+      type: 'object',
+      properties: {
+        old_path: {
+          type: 'string',
+          description: 'The current full path (file or folder).',
+        },
+        new_path: {
+          type: 'string',
+          description: 'The new full path.',
+        },
+      },
+      required: ['old_path', 'new_path'],
+    },
+  },
+};
+
+// ============================================
+// DELETE PATH TOOL (delete a file OR folder)
+// ============================================
+export const deletePathTool: ToolDefinition = {
+  type: 'function',
+  nativeRustOwned: true,
+  function: {
+    name: 'delete_path',
+    description: 'Delete a file or a folder. Deleting a folder (with all its contents) requires recursive=true. Irreversible.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'The full path to delete (file or folder).',
+        },
+        recursive: {
+          type: 'boolean',
+          description: 'Required (true) to delete a folder and its contents. Default false.',
+          default: false,
+        },
+      },
+      required: ['path'],
     },
   },
 };
@@ -218,197 +292,12 @@ Examples:
   },
 };
 
-// ============================================
-// MULTI FILE READ TOOL (Cursor-style parallel reading)
-// ============================================
-export const multiFileReadTool: ToolDefinition = {
-  type: 'function',
-  nativeRustOwned: true,
-  function: {
-    name: 'multi_file_read',
-    description: `Read multiple small/medium files in parallel (10-100x faster than reading files one by one).
-
-USE THIS TOOL when you need to inspect 2 or more files at once. Large files are not returned in full; each large result is marked largeFile=true with line counts and a recommendation to call file_read with start_line/end_line.
-
-Examples:
-- multi_file_read(paths=["src/App.tsx", "src/main.tsx", "src/types/index.ts"])
-- multi_file_read(paths=["package.json", "tsconfig.json", "vite.config.ts"])
-
-Returns: JSON with file contents, errors, and performance metrics.`,
-    parameters: {
-      type: 'object',
-      properties: {
-        paths: {
-          type: 'array',
-          items: {
-            type: 'string',
-          },
-          description: 'Array of file paths to read. All files will be read in parallel for maximum speed.',
-        },
-      },
-      required: ['paths'],
-    },
-  },
-};
-
-// ============================================
-// SEARCH REPLACE TOOL (Cursor-style exact string replacement)
-// ============================================
-export const searchReplaceTool: ToolDefinition = {
-  type: 'function',
-  nativeRustOwned: true,
-  function: {
-    name: 'search_replace',
-    description: `Find and replace exact text in a file. This is the PREFERRED tool for making targeted edits.
-
-HOW IT WORKS:
-1. Provide the EXACT text you want to find (old_string)
-2. Provide the text you want to replace it with (new_string)
-3. The tool finds the old_string and replaces it with new_string
-
-IMPORTANT RULES:
-- old_string MUST match the current file content exactly for indentation and surrounding code
-- Line ending differences (LF vs CRLF) are handled automatically
-- old_string must be UNIQUE in the file (appears only once)
-- Include enough context (3-5 lines before/after) to make old_string unique
-- new_string replaces old_string completely
-
-WHEN TO USE search_replace:
-- Editing specific functions or code blocks
-- Fixing bugs in specific locations
-- Adding/modifying/removing imports
-- Changing variable names or values
-- Any targeted edit
-
-WHEN NOT TO USE (use file_write instead):
-- Creating a new file
-- Rewriting the entire file from scratch
-- When the text to find appears multiple times (use replace_all=true or be more specific)
-
-EXAMPLE:
-To change a function, provide the EXACT current function as old_string:
-
-old_string:
-"function hello() {
-  return 'Hello';
-}"
-
-new_string:
-"function hello() {
-  return 'Hello World';
-}"`,
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: 'The path of the file to modify',
-        },
-        old_string: {
-          type: 'string',
-          description: 'The EXACT text to find and replace. Must match perfectly including whitespace and newlines. Must be unique in the file.',
-        },
-        new_string: {
-          type: 'string',
-          description: 'The text to replace old_string with. Can be empty string to delete the old_string.',
-        },
-        replace_all: {
-          type: 'boolean',
-          description: 'If true, replace ALL occurrences of old_string. Default is false (replace only first/unique occurrence).',
-          default: false,
-        },
-      },
-      required: ['path', 'old_string', 'new_string'],
-    },
-  },
-};
-
-// ============================================
-// MULTI SEARCH REPLACE TOOL (Batch replacements in one call)
-// ============================================
-export const multiSearchReplaceTool: ToolDefinition = {
-  type: 'function',
-  nativeRustOwned: true,
-  function: {
-    name: 'multi_search_replace',
-    description: `Make MULTIPLE find-and-replace edits to a file in a SINGLE tool call. Much faster than calling search_replace multiple times.
-
-WHEN TO USE multi_search_replace:
-- Making 2 or more separate edits to the same file
-- Refactoring multiple functions at once
-- Updating multiple imports
-- Changing multiple variable names or values
-- Any task requiring multiple targeted edits in one file
-
-HOW IT WORKS:
-1. Provide the file path
-2. Provide an array of replacements, each with old_string and new_string
-3. Each replacement is matched against the original file snapshot
-4. Replacement regions must not overlap each other
-5. All replacements must be unique in the file (unless replace_all is set per replacement)
-
-EXAMPLE:
-{
-  "path": "src/App.tsx",
-  "replacements": [
-    { "old_string": "import React from 'react'", "new_string": "import * as React from 'react'" },
-    { "old_string": "const count = 0;", "new_string": "const count = 10;" },
-    { "old_string": "function App() {", "new_string": "const App: React.FC = () => {" }
-  ]
-}
-
-IMPORTANT RULES:
-- Each old_string must match the current file content exactly for indentation and surrounding code
-- Line ending differences (LF vs CRLF) are handled automatically
-- Each old_string should be unique in the file for precise replacements
-- Replacements are matched against the original file snapshot
-- Replacements must not overlap; if two edits are close together, combine them into one larger replacement
-- If any replacement fails, the entire operation is rolled back
-- Include enough context (3-5 lines) in each old_string to make it unique`,
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: 'The path of the file to modify',
-        },
-        replacements: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              old_string: {
-                type: 'string',
-                description: 'The EXACT text to find and replace. Must match perfectly including whitespace and newlines.',
-              },
-              new_string: {
-                type: 'string',
-                description: 'The text to replace old_string with. Can be empty string to delete the old_string.',
-              },
-              replace_all: {
-                type: 'boolean',
-                description: 'If true, replace ALL occurrences of this old_string. Default is false.',
-                default: false,
-              },
-            },
-            required: ['old_string', 'new_string'],
-          },
-          description: 'Array of replacements to apply. Each replacement has old_string, new_string, and optional replace_all.',
-        },
-      },
-      required: ['path', 'replacements'],
-    },
-  },
-};
-
-// Export all file tools as an array
+// Export all file tools as an array (the model sees exactly these).
 export const fileTools: ToolDefinition[] = [
-  fileCreateTool,
   fileReadTool,
   fileWriteTool,
-  searchReplaceTool,
-  multiSearchReplaceTool,
-  fileDeleteTool,
+  fileEditTool,
+  movePathTool,
+  deletePathTool,
   grepTool,
-  multiFileReadTool,
 ];

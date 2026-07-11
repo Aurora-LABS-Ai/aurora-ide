@@ -102,7 +102,10 @@ pub fn resolve_within_workspace(
         };
         let canonical_target = canonicalize(&target_full)?;
         if !canonical_target.starts_with(&canonical_root) {
-            return Err(PathSafetyError::EscapingSymlink(canonical, canonical_target));
+            return Err(PathSafetyError::EscapingSymlink(
+                canonical,
+                canonical_target,
+            ));
         }
         return Ok(canonical_target);
     }
@@ -206,7 +209,10 @@ mod tests {
             matches!(result, Err(PathSafetyError::OutsideWorkspace(_))),
             "expected OutsideWorkspace error, got {result:?}"
         );
-        assert!(!is_within_workspace(Path::new("../outside.txt"), &workspace));
+        assert!(!is_within_workspace(
+            Path::new("../outside.txt"),
+            &workspace
+        ));
     }
 
     #[test]

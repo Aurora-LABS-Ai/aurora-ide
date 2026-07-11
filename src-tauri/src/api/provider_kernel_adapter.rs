@@ -335,17 +335,43 @@ fn anthropic_split_system_and_messages(
     (system, output)
 }
 
+/// Expand a (possibly image-bearing) text body into Anthropic content
+/// blocks. A `<aurora_image>` marker becomes a real `image` block for
+/// vision models; for non-vision models the markers are stripped to a
+/// placeholder so the request stays text-only.
+fn anthropic_text_to_blocks(text: &str, supports_vision: bool) -> Vec<Value> {
+    if !text.contains("<aurora_image ") {
+        return vec![json!({ "type": "text", "text": text })];
+    }
+    if !supports_vision {
+        return vec![json!({
+            "type": "text",
+            "text": strip_aurora_images_for_text(text),
+        })];
+    }
+    split_aurora_images(text)
+        .into_iter()
+        .filter_map(|p| match p {
+            AuroraImagePiece::Text(t) if t.trim().is_empty() => None,
+            AuroraImagePiece::Text(t) => Some(json!({ "type": "text", "text": t })),
+            AuroraImagePiece::Image { media_type, base64 } => Some(json!({
+                "type": "image",
+                "source": { "type": "base64", "media_type": media_type, "data": base64 },
+            })),
+        })
+        .collect()
+}
+
 fn message_blocks_to_anthropic_content(blocks: &[ContentBlock], supports_vision: bool) -> Value {
     if blocks.is_empty() {
         return Value::String(String::new());
     }
-    let arr: Vec<Value> = blocks
-        .iter()
-        .map(|block| match block {
-            ContentBlock::Text { text } => json!({
-                "type": "text",
-                "text": text,
-            }),
+    let mut arr: Vec<Value> = Vec::new();
+    for block in blocks {
+        match block {
+            ContentBlock::Text { text } => {
+                arr.extend(anthropic_text_to_blocks(text, supports_vision));
+            }
             ContentBlock::Thinking { text, signature } => {
                 let mut obj = json!({
                     "type": "thinking",
@@ -354,14 +380,14 @@ fn message_blocks_to_anthropic_content(blocks: &[ContentBlock], supports_vision:
                 if let Some(sig) = signature {
                     obj["signature"] = Value::String(sig.clone());
                 }
-                obj
+                arr.push(obj);
             }
-            ContentBlock::ToolUse { id, name, input } => json!({
+            ContentBlock::ToolUse { id, name, input } => arr.push(json!({
                 "type": "tool_use",
                 "id": id,
                 "name": name,
                 "input": input,
-            }),
+            })),
             ContentBlock::ToolResult {
                 tool_use_id,
                 content,
@@ -386,10 +412,15 @@ fn message_blocks_to_anthropic_content(blocks: &[ContentBlock], supports_vision:
                 if let Some(err) = is_error {
                     obj["is_error"] = Value::Bool(*err);
                 }
-                obj
+                arr.push(obj);
             }
-        })
-        .collect();
+            // A compaction marker is an internal, persisted boundary — never
+            // sent to a provider. `apply_compaction` replaces it with a plain
+            // summary text block before the request is built, so reaching here
+            // would be a bug; skip it defensively rather than emit junk.
+            ContentBlock::Compaction { .. } => {}
+        }
+    }
     Value::Array(arr)
 }
 
@@ -402,7 +433,10 @@ fn message_blocks_to_anthropic_content(blocks: &[ContentBlock], supports_vision:
 /// minimum wire-format churn.
 fn anthropic_tool_result_content(content: &str) -> Value {
     let pieces = split_aurora_images(content);
-    if pieces.iter().all(|p| matches!(p, AuroraImagePiece::Text(_))) {
+    if pieces
+        .iter()
+        .all(|p| matches!(p, AuroraImagePiece::Text(_)))
+    {
         // No images: keep the legacy string shape.
         return Value::String(content.to_string());
     }
@@ -425,7 +459,7 @@ fn anthropic_tool_result_content(content: &str) -> Value {
 }
 
 #[derive(Debug)]
-enum AuroraImagePiece {
+pub(crate) enum AuroraImagePiece {
     Text(String),
     Image { media_type: String, base64: String },
 }
@@ -434,7 +468,7 @@ enum AuroraImagePiece {
 /// Markers without a valid `media_type` attribute or with an empty
 /// payload are kept as plain text — defensive against malformed
 /// output. Capped at 8 images per result.
-fn split_aurora_images(content: &str) -> Vec<AuroraImagePiece> {
+pub(crate) fn split_aurora_images(content: &str) -> Vec<AuroraImagePiece> {
     const MAX_IMAGES: usize = 8;
     let mut pieces: Vec<AuroraImagePiece> = Vec::new();
     let mut images_emitted = 0usize;
@@ -442,12 +476,18 @@ fn split_aurora_images(content: &str) -> Vec<AuroraImagePiece> {
 
     while cursor < content.len() && images_emitted < MAX_IMAGES {
         let rest = &content[cursor..];
-        let Some(open) = rest.find("<aurora_image ") else { break };
+        let Some(open) = rest.find("<aurora_image ") else {
+            break;
+        };
         let absolute_open = cursor + open;
-        let Some(close_attr) = content[absolute_open..].find('>') else { break };
+        let Some(close_attr) = content[absolute_open..].find('>') else {
+            break;
+        };
         let header_end = absolute_open + close_attr + 1;
         let header = &content[absolute_open..header_end];
-        let Some(end_tag) = content[header_end..].find("</aurora_image>") else { break };
+        let Some(end_tag) = content[header_end..].find("</aurora_image>") else {
+            break;
+        };
         let payload_end = header_end + end_tag;
         let body = &content[header_end..payload_end];
 
@@ -459,12 +499,22 @@ fn split_aurora_images(content: &str) -> Vec<AuroraImagePiece> {
             }
         }
         if !body.trim().is_empty() {
+            // Inline base64 (legacy threads, or a capture whose on-disk save
+            // failed so the body carries the bytes directly).
             pieces.push(AuroraImagePiece::Image {
                 media_type,
                 base64: body.trim().to_string(),
             });
             images_emitted += 1;
+        } else if let Some(base64) = rehydrate_image_from_src(header) {
+            // Lean marker: the base64 was stripped from history to keep the JSONL
+            // small; the PNG lives on disk (referenced by `src`). Re-read it now.
+            pieces.push(AuroraImagePiece::Image { media_type, base64 });
+            images_emitted += 1;
         }
+        // else: empty body + unreadable/absent `src` (e.g. pruned screenshot) →
+        // drop the image; the caption text is still emitted so context stays
+        // coherent and the model isn't handed a broken reference.
         cursor = payload_end + "</aurora_image>".len();
     }
 
@@ -478,6 +528,21 @@ fn split_aurora_images(content: &str) -> Vec<AuroraImagePiece> {
         pieces.push(AuroraImagePiece::Text(content.to_string()));
     }
     pieces
+}
+
+/// Rehydrate a screenshot's base64 from the on-disk PNG referenced by the
+/// `<aurora_image src="…">` header. The persisted/model-history copy stores the
+/// path, not the bytes (small JSONL, no re-uploading base64 every turn); this
+/// reads the file back at request-build time. Returns `None` when there's no
+/// `src` or the file can't be read (e.g. it was pruned) — the caller then keeps
+/// only the caption text.
+fn rehydrate_image_from_src(header: &str) -> Option<String> {
+    use base64::Engine;
+    let src = extract_attr(header, "src")?;
+    // The value was minimally XML-escaped when written into the attribute.
+    let path = src.replace("&quot;", "\"").replace("&amp;", "&");
+    let bytes = std::fs::read(&path).ok()?;
+    Some(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 /// Find `name="value"` in an open tag. Whitespace-tolerant; returns
@@ -501,7 +566,10 @@ fn extract_attr(header: &str, name: &str) -> Option<String> {
 /// results stay shape-compatible with strict providers.
 fn openai_tool_result_content(content: &str) -> Value {
     let pieces = split_aurora_images(content);
-    if pieces.iter().all(|p| matches!(p, AuroraImagePiece::Text(_))) {
+    if pieces
+        .iter()
+        .all(|p| matches!(p, AuroraImagePiece::Text(_)))
+    {
         return Value::String(content.to_string());
     }
     let blocks: Vec<Value> = pieces
@@ -523,7 +591,7 @@ fn openai_tool_result_content(content: &str) -> Value {
 /// Replace every `<aurora_image …>BASE64</aurora_image>` block with a
 /// short placeholder string so non-vision providers see context about
 /// what happened without ingesting tens of thousands of base64 tokens.
-fn strip_aurora_images_for_text(content: &str) -> String {
+pub(crate) fn strip_aurora_images_for_text(content: &str) -> String {
     let mut out = String::with_capacity(content.len());
     let pieces = split_aurora_images(content);
     for (i, piece) in pieces.iter().enumerate() {
@@ -586,10 +654,7 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
     }
 
     if request.thinking_enabled && config.supports_thinking {
-        body.insert(
-            "thinking".to_string(),
-            json!({ "type": "enabled" }),
-        );
+        body.insert("thinking".to_string(), json!({ "type": "enabled" }));
     }
 
     // Ask the provider to emit `usage` on the final stream chunk.
@@ -622,7 +687,29 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
 pub(crate) fn should_request_stream_usage(provider_id: &str) -> bool {
     matches!(
         provider_id.to_ascii_lowercase().as_str(),
-        "deepseek" | "glm" | "zhipu" | "z-ai" | "zai" | "openai" | "lmstudio" | "lm-studio"
+        // Verified to accept `stream_options: {include_usage: true}` and emit a
+        // closing usage chunk. NOTE: Fireworks, Ollama and "custom" providers are
+        // deliberately absent — they HTTP 400 on unknown body fields. The agent
+        // window falls back to a local tiktoken estimate for those instead.
+        "deepseek"
+            | "glm"
+            | "zhipu"
+            | "z-ai"
+            | "zai"
+            | "openai"
+            | "lmstudio"
+            | "lm-studio"
+            | "openrouter"
+            | "together"
+            | "togetherai"
+            | "groq"
+            | "xai"
+            | "x-ai"
+            | "grok"
+            | "mistral"
+            | "moonshot"
+            | "kimi"
+            | "perplexity"
     )
 }
 
@@ -675,8 +762,18 @@ fn openai_messages(
                 }
             }
             MessageRole::User => {
+                // The user message may carry `<aurora_image>` markers (pasted /
+                // dropped images from the composer). Split them into a
+                // multimodal `content` array for vision models; strip them to a
+                // placeholder otherwise so a non-vision model isn't fed unusable
+                // base64. Reuses the same splitter as tool-result images.
                 let text = collect_text(&message.blocks);
-                output.push(json!({"role":"user","content":text}));
+                let content = if supports_vision {
+                    openai_tool_result_content(&text)
+                } else {
+                    Value::String(strip_aurora_images_for_text(&text))
+                };
+                output.push(json!({"role":"user","content":content}));
             }
             MessageRole::Assistant => {
                 let text = collect_text(&message.blocks);
@@ -764,7 +861,7 @@ fn openai_messages(
     output
 }
 
-fn collect_text(blocks: &[ContentBlock]) -> String {
+pub(crate) fn collect_text(blocks: &[ContentBlock]) -> String {
     blocks
         .iter()
         .filter_map(|b| match b {
@@ -910,7 +1007,10 @@ fn join_endpoint(base_url: &str, endpoint: &str) -> String {
 /// events; we want the *latest* count (it grows monotonically) plus the
 /// `input_tokens` from `message_start`. Cache fields are taken from
 /// whichever event most recently provided them.
-pub fn merge_usage(current: &mut crate::agent_runtime::types::TokenUsage, wire: &AnthropicUsageWire) {
+pub fn merge_usage(
+    current: &mut crate::agent_runtime::types::TokenUsage,
+    wire: &AnthropicUsageWire,
+) {
     if let Some(input) = wire.input_tokens {
         if input > current.input_tokens || current.input_tokens == 0 {
             current.input_tokens = input;
@@ -995,8 +1095,10 @@ pub fn finalize_assistant_message(
     blocks: Vec<BlockState>,
     usage: crate::agent_runtime::types::TokenUsage,
 ) -> ConversationMessage {
-    let final_blocks: Vec<ContentBlock> =
-        blocks.into_iter().map(BlockState::into_content_block).collect();
+    let final_blocks: Vec<ContentBlock> = blocks
+        .into_iter()
+        .map(BlockState::into_content_block)
+        .collect();
     ConversationMessage::assistant_with_usage(final_blocks, usage, now_unix_ms())
 }
 

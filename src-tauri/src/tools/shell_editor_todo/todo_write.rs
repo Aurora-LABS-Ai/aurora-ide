@@ -111,14 +111,10 @@ impl ToolExecutor for TodoWriteTool {
                 let mut seen_first = false;
                 for entry in arr_mut.iter_mut() {
                     if let Some(obj) = entry.as_object_mut() {
-                        let status =
-                            obj.get("status").and_then(Value::as_str).unwrap_or("");
+                        let status = obj.get("status").and_then(Value::as_str).unwrap_or("");
                         if status == "in_progress" {
                             if seen_first {
-                                obj.insert(
-                                    "status".to_string(),
-                                    Value::String("pending".into()),
-                                );
+                                obj.insert("status".to_string(), Value::String("pending".into()));
                             } else {
                                 seen_first = true;
                             }
@@ -164,6 +160,7 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext {
+            allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             session_id: "s".into(),

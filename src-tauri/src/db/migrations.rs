@@ -172,11 +172,84 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [16])?;
             Ok(())
         }
+        17 => {
+            // Migration from v16 to v17: Add a `reasoning` JSON column to
+            // `provider_models`. Holds the model's reasoning capability +
+            // chosen default — `{type:"effort"|"toggle"|"budget", levels?,
+            // min?, max?, default?}` — auto-filled from models.dev when a
+            // model is added, overridable by the user. Drives the composer's
+            // reasoning-level picker (shown only when this is set).
+            migration_v17(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [17])?;
+            Ok(())
+        }
+        18 => {
+            // Migration from v17 to v18: Add an `extra_body` JSON column to
+            // `provider_models`. Holds a per-model object of extra request-body
+            // fields the user adds manually (e.g. `thinking: {type: enabled}`
+            // for providers we don't special-case). Merged verbatim into the
+            // outgoing request body at send time.
+            migration_v18(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [18])?;
+            Ok(())
+        }
+        19 => {
+            // Migration from v18 to v19: checkpoints are now OPT-IN per project.
+            // Disable them for every existing workspace so an already-tracked
+            // shadow repo stops growing — the per-message git commits were
+            // ballooning %LOCALAPPDATA%\AuroraIDE\checkpoints to tens of GB. The
+            // user re-enables per project from the checkpoint toggle.
+            migration_v19(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [19])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
         ))),
     }
+}
+
+/// Migration v19: flip checkpoints to opt-in. Disable for all existing
+/// workspaces (the new default is off). Idempotent — a plain UPDATE that is
+/// safe to re-run. Users turn checkpoints back on per project when they want
+/// snapshot-per-message for that workspace.
+fn migration_v19(conn: &Connection) -> DbResult<()> {
+    conn.execute("UPDATE workspace_state SET checkpoint_enabled = 0", [])?;
+    Ok(())
+}
+
+/// Migration v17: Add the nullable `reasoning` JSON column to
+/// `provider_models`. Idempotent — guarded with a PRAGMA table_info sniff
+/// so re-running on a hand-patched DB is safe.
+fn migration_v17(conn: &Connection) -> DbResult<()> {
+    let existing: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(provider_models)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        rows.flatten().collect()
+    };
+    if !existing.iter().any(|c| c == "reasoning") {
+        conn.execute("ALTER TABLE provider_models ADD COLUMN reasoning TEXT", [])?;
+    }
+    Ok(())
+}
+
+/// Migration v18: Add the nullable `extra_body` JSON column to
+/// `provider_models`. Idempotent — guarded with a PRAGMA table_info sniff so
+/// re-running on a hand-patched DB is safe.
+fn migration_v18(conn: &Connection) -> DbResult<()> {
+    let existing: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(provider_models)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        rows.flatten().collect()
+    };
+    if !existing.iter().any(|c| c == "extra_body") {
+        conn.execute("ALTER TABLE provider_models ADD COLUMN extra_body TEXT", [])?;
+    }
+    Ok(())
 }
 
 /// Migration v2: Add app_settings, llm_providers, and tool_settings tables
@@ -560,10 +633,26 @@ fn migration_v15(conn: &Connection) -> DbResult<()> {
         "SELECT id, model, {custom_models}, {model_aliases}, \
                 {supports_vision}, {supports_thinking}, {supports_tool_stream} \
          FROM llm_providers",
-        custom_models = if has_custom_models { "custom_models" } else { "NULL" },
-        model_aliases = if has_model_aliases { "model_aliases" } else { "NULL" },
-        supports_vision = if has_supports_vision { "supports_vision" } else { "0" },
-        supports_thinking = if has_supports_thinking { "supports_thinking" } else { "0" },
+        custom_models = if has_custom_models {
+            "custom_models"
+        } else {
+            "NULL"
+        },
+        model_aliases = if has_model_aliases {
+            "model_aliases"
+        } else {
+            "NULL"
+        },
+        supports_vision = if has_supports_vision {
+            "supports_vision"
+        } else {
+            "0"
+        },
+        supports_thinking = if has_supports_thinking {
+            "supports_thinking"
+        } else {
+            "0"
+        },
         supports_tool_stream = if has_supports_tool_stream {
             "supports_tool_stream"
         } else {
@@ -650,10 +739,8 @@ fn migration_v15(conn: &Connection) -> DbResult<()> {
     }
 
     // ── Step 4: rebuild llm_providers without deprecated columns ─────
-    let needs_rebuild = has_custom_models
-        || has_model_aliases
-        || has_supports_vision
-        || has_supports_thinking;
+    let needs_rebuild =
+        has_custom_models || has_model_aliases || has_supports_vision || has_supports_thinking;
 
     if needs_rebuild {
         // SQLite < 3.35 lacks DROP COLUMN; even on newer versions the
@@ -767,11 +854,11 @@ fn migration_v16(conn: &Connection) -> DbResult<()> {
     // catalog as a comment for traceability.
     let seeds: &[(&str, f64, f64, f64)] = &[
         // model_key,                cache_hit, cache_miss, output  (USD / 1M tok)
-        ("deepseek-v4-pro",          0.003625,  0.435,      0.87),
-        ("deepseek-v4-flash",        0.0028,    0.14,       0.28),
+        ("deepseek-v4-pro", 0.003625, 0.435, 0.87),
+        ("deepseek-v4-flash", 0.0028, 0.14, 0.28),
         // V3 family keeps its historical pricing; user can override.
-        ("deepseek-chat",            0.07,      0.27,       1.10),
-        ("deepseek-reasoner",        0.14,      0.55,       2.19),
+        ("deepseek-chat", 0.07, 0.27, 1.10),
+        ("deepseek-reasoner", 0.14, 0.55, 2.19),
     ];
     for (model_key, cache_hit, cache_miss, output) in seeds {
         conn.execute(

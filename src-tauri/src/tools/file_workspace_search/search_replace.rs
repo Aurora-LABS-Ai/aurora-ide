@@ -144,9 +144,7 @@ pub(crate) async fn emit_post_write(
     let content = match read {
         Ok(Ok(s)) => s,
         Ok(Err(io_err)) => {
-            eprintln!(
-                "[{source_tool}] post-write read failed for {resolved_str}: {io_err}"
-            );
+            eprintln!("[{source_tool}] post-write read failed for {resolved_str}: {io_err}");
             return;
         }
         Err(join_err) => {
@@ -159,9 +157,27 @@ pub(crate) async fn emit_post_write(
     let payload = FileChangedPayload::modified(resolved_str, content, source_tool)
         .with_tool_call_id(tool_call_id);
     if let Err(emit_err) = sink.emit_file_changed(&payload) {
-        eprintln!(
-            "[{source_tool}] emit_file_changed failed for {resolved_str}: {emit_err}"
-        );
+        eprintln!("[{source_tool}] emit_file_changed failed for {resolved_str}: {emit_err}");
+    }
+}
+
+/// Upper bound on per-side content embedded in a tool result for the
+/// Review panel. Aligned with the UI layer's per-JSON-field cap
+/// (`MAX_UI_JSON_FIELD_LENGTH` = 128 KiB in `conversation.rs`): at or
+/// below this, both sides pass through to the UI pristine (and the
+/// combined payload stays under the 512 KiB envelope cap, so nothing is
+/// trimmed mid-content). Past it we emit `null` and the Review panel
+/// cleanly falls back to the stats-only summary — better than a
+/// truncation marker injected into the middle of a diff.
+pub(crate) const MAX_DIFF_CONTENT: usize = 128 * 1024;
+
+/// Embed a file side (before/after) into a result payload, or `null`
+/// when it exceeds [`MAX_DIFF_CONTENT`].
+pub(crate) fn diff_side(content: &str) -> Value {
+    if content.len() > MAX_DIFF_CONTENT {
+        Value::Null
+    } else {
+        Value::String(content.to_string())
     }
 }
 
@@ -176,6 +192,8 @@ pub(crate) fn render_response(
 ) -> String {
     match response {
         SearchReplaceResponse::Ok {
+            original_content,
+            new_content,
             line_ending_normalized,
             lines_added,
             lines_removed,
@@ -194,6 +212,10 @@ pub(crate) fn render_response(
                 "linesAdded": lines_added,
                 "linesRemoved": lines_removed,
                 "lineEndingNormalized": line_ending_normalized,
+                // Full before/after for the Review panel's diff. Capped per side;
+                // `null` past the cap (Review falls back to the stats summary).
+                "oldContent": diff_side(&original_content),
+                "newContent": diff_side(&new_content),
             });
             if multi {
                 payload["replacementsRequested"] = json!(replacement_details.len());
@@ -279,6 +301,7 @@ mod tests {
 
     fn ctx_for(workspace: Option<std::path::PathBuf>) -> ToolContext {
         ToolContext {
+            allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             session_id: "s".into(),

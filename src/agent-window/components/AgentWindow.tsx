@@ -1,0 +1,84 @@
+/**
+ * Agent Window — module root component (view).
+ *
+ * The standalone, conversation-first agent workspace. Mounts the isolated theme
+ * provider (its own `--agw-*` tokens) around the 3-zone shell. Self-contained:
+ * drop it anywhere with 100% height/width and it renders fully themed, with zero
+ * dependency on the IDE's global theme.
+ */
+
+import React, { useEffect } from "react";
+import { MotionConfig } from "framer-motion";
+import { AgentThemeProvider } from "./AgentThemeProvider";
+import { AgentShell } from "./AgentShell";
+import { SettingsPage } from "../settings/SettingsPage";
+import { registerQuestionHandler } from "../../services/question-bridge";
+import { registerTeamViewOpener } from "../../services/team-view-bridge";
+import { useAgentWindowBounds } from "../hooks/useAgentWindowBounds";
+import { useTeamStore } from "../../store/useTeamStore";
+import { useAgentChatStore } from "../store/useAgentChatStore";
+import { useAgentQuestionStore } from "../store/useAgentQuestionStore";
+import { useAgentUiStore } from "../store/useAgentUiStore";
+import { AgentCommandCenter } from "./AgentCommandCenter";
+
+/** Read the project this window is scoped to from the launch URL (`?ws=`). */
+function readProjectRootFromUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  const ws = new URLSearchParams(window.location.search).get("ws");
+  return ws && ws.length > 0 ? ws : null;
+}
+
+export const AgentWindow: React.FC = () => {
+  const init = useAgentChatStore((s) => s.init);
+  const projectRoot = useAgentChatStore((s) => s.projectRoot);
+  const view = useAgentUiStore((s) => s.view);
+
+  // Remember the OS window's size (and maximized state) across closes so the
+  // next launch reopens at the size the user last set — never the default.
+  useAgentWindowBounds();
+
+  // Bind the window to its project + load that project's chats once.
+  useEffect(() => {
+    void init(readProjectRootFromUrl());
+  }, [init]);
+
+  // The team lives INSIDE this window now (a center-column takeover), not a
+  // separate OS window. Let the Lead's `team_show` / `team_dispatch` tools
+  // reveal it via the bridge instead of spawning a window.
+  useEffect(
+    () => registerTeamViewOpener(() => useAgentUiStore.getState().openTeam()),
+    [],
+  );
+
+  // Keep the team brain snapshot warm for whatever project this window is scoped
+  // to, so the rail's Team entry and the Team screen are live the moment they're
+  // shown (and re-scope with the project).
+  useEffect(() => {
+    if (!projectRoot) return;
+    void useTeamStore.getState().start(projectRoot);
+    return () => useTeamStore.getState().stop();
+  }, [projectRoot]);
+
+  // Route the agent's `ask_question` tool to this window's question store, so a
+  // tool call rises the inline prompt above the composer and blocks the turn
+  // until the user answers. Cleared on unmount so a closed window stops claiming
+  // requests.
+  useEffect(
+    () => registerQuestionHandler((request) => useAgentQuestionStore.getState().ask(request)),
+    [],
+  );
+
+  // The expand/collapse glide (tool cards, reasoning) must feel exactly like the
+  // IDE chat, which always animates. `reducedMotion="user"` was overriding that:
+  // with the OS "reduce motion" setting on, framer-motion skipped straight to the
+  // end height, making every dropdown snap open instantly. Match the IDE — animate
+  // unconditionally (`"never"` = never auto-reduce).
+  return (
+    <MotionConfig reducedMotion="never">
+      <AgentThemeProvider>
+        {view === "settings" ? <SettingsPage /> : <AgentShell />}
+        <AgentCommandCenter />
+      </AgentThemeProvider>
+    </MotionConfig>
+  );
+};

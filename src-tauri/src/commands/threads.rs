@@ -47,9 +47,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::agent_runtime::session_store::{
-    ContextUsageMeta, SessionStore, TokenUsageMeta,
-};
+use crate::agent_runtime::session_store::{ContextUsageMeta, SessionStore, TokenUsageMeta};
 use crate::agent_runtime::types::{ContentBlock, ConversationMessage, MessageRole};
 use crate::commands::agent_v2::AgentRegistry;
 use crate::db::{ContextUsage, Message, ThreadState, TokenUsage, ToolCall as DbToolCall};
@@ -67,6 +65,17 @@ pub struct ThreadSummary {
     pub title: String,
     pub message_count: usize,
     pub preview: String,
+    /// Project scope (the thread's `workspace_root`). `None` for legacy
+    /// unscoped threads, which a project-filtered list omits entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
+    /// Whether the chat is pinned to the top of the rail.
+    #[serde(default)]
+    pub pinned: bool,
+    /// RFC3339 instant the chat was archived, or `None` when active. Archived
+    /// chats live in the rail's "Archived" view and are purged after 15 days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -81,7 +90,39 @@ fn session_to_db_messages(messages: &[ConversationMessage]) -> Vec<Message> {
     for msg in messages {
         let timestamp = millis_to_rfc3339(msg.timestamp);
         match msg.role {
-            MessageRole::System => continue,
+            MessageRole::System => {
+                // A compaction marker surfaces as a dedicated card the UI
+                // renders inline (greyed, "Context compacted · before → after").
+                // The summary itself is NEVER sent to the frontend. Every other
+                // System message is internal scaffolding and stays hidden.
+                if let Some((before, after)) = msg.blocks.iter().find_map(|b| match b {
+                    ContentBlock::Compaction {
+                        before_tokens,
+                        after_tokens,
+                        ..
+                    } => Some((*before_tokens, *after_tokens)),
+                    _ => None,
+                }) {
+                    out.push(Message {
+                        id: synthetic_message_id("compaction", msg.timestamp, out.len()),
+                        role: "compaction".to_string(),
+                        content: serde_json::json!({
+                            "beforeTokens": before,
+                            "afterTokens": after,
+                        })
+                        .to_string(),
+                        timestamp,
+                        tool_calls: None,
+                        thinking: None,
+                        is_thinking: None,
+                        tools: None,
+                        timeline: None,
+                        tool_proposal: None,
+                        attached_selected_elements: None,
+                        attached_prompt_chips: None,
+                    });
+                }
+            }
             MessageRole::User => {
                 let content = collect_text_blocks(&msg.blocks);
                 out.push(Message {
@@ -101,6 +142,10 @@ fn session_to_db_messages(messages: &[ConversationMessage]) -> Vec<Message> {
                     tools: None,
                     timeline: None,
                     tool_proposal: None,
+                    // Browser-inspector chips persisted with this turn —
+                    // re-rendered above the user bubble on reopen.
+                    attached_selected_elements: msg.attached_selected_elements.clone(),
+                    attached_prompt_chips: msg.attached_prompt_chips.clone(),
                 });
             }
             MessageRole::Assistant => {
@@ -116,8 +161,8 @@ fn session_to_db_messages(messages: &[ConversationMessage]) -> Vec<Message> {
                             push_with_newline(&mut thinking, text);
                         }
                         ContentBlock::ToolUse { id, name, input } => {
-                            let arguments = serde_json::to_string(input)
-                                .unwrap_or_else(|_| "{}".to_string());
+                            let arguments =
+                                serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string());
                             tool_calls.push(DbToolCall {
                                 id: id.clone(),
                                 name: name.clone(),
@@ -129,9 +174,17 @@ fn session_to_db_messages(messages: &[ConversationMessage]) -> Vec<Message> {
                             // Defensive — tool results live on Tool
                             // messages, not Assistant. Ignore.
                         }
+                        ContentBlock::Compaction { .. } => {
+                            // Compaction markers live on System messages and are
+                            // surfaced as their own card; never on Assistant.
+                        }
                     }
                 }
-                let thinking_opt = if thinking.is_empty() { None } else { Some(thinking) };
+                let thinking_opt = if thinking.is_empty() {
+                    None
+                } else {
+                    Some(thinking)
+                };
                 out.push(Message {
                     id: synthetic_message_id("assistant", msg.timestamp, out.len()),
                     role: "assistant".to_string(),
@@ -147,6 +200,8 @@ fn session_to_db_messages(messages: &[ConversationMessage]) -> Vec<Message> {
                     tools: None,
                     timeline: None,
                     tool_proposal: None,
+                    attached_selected_elements: None,
+                    attached_prompt_chips: None,
                 });
             }
             MessageRole::Tool => {
@@ -161,8 +216,7 @@ fn session_to_db_messages(messages: &[ConversationMessage]) -> Vec<Message> {
                                 is_error,
                             } = block
                             {
-                                if let Some(call) =
-                                    calls.iter_mut().find(|c| c.id == *tool_use_id)
+                                if let Some(call) = calls.iter_mut().find(|c| c.id == *tool_use_id)
                                 {
                                     let formatted = if is_error.unwrap_or(false) {
                                         format!("[error] {content}")
@@ -174,6 +228,39 @@ fn session_to_db_messages(messages: &[ConversationMessage]) -> Vec<Message> {
                             }
                         }
                     }
+                }
+
+                // A mid-turn user message rides beside the tool results as a
+                // Text block. Preserve it as a tiny assistant timeline segment
+                // so the frontend merges it at the exact tool→next-response
+                // boundary instead of losing it on thread reload.
+                for (index, text) in msg
+                    .blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } if !text.is_empty() => Some(text),
+                        _ => None,
+                    })
+                    .enumerate()
+                {
+                    out.push(Message {
+                        id: synthetic_message_id("injection", msg.timestamp, out.len()),
+                        role: "assistant".to_string(),
+                        content: String::new(),
+                        timestamp: timestamp.clone(),
+                        tool_calls: None,
+                        thinking: None,
+                        is_thinking: Some(false),
+                        tools: None,
+                        timeline: Some(serde_json::json!([{
+                            "kind": "user_injection",
+                            "id": format!("injection-{}-{index}", msg.timestamp),
+                            "text": text,
+                        }])),
+                        tool_proposal: None,
+                        attached_selected_elements: None,
+                        attached_prompt_chips: None,
+                    });
                 }
             }
         }
@@ -213,8 +300,8 @@ fn session_to_api_messages(messages: &[ConversationMessage]) -> Vec<ApiMessage> 
                             push_with_newline(&mut reasoning, text);
                         }
                         ContentBlock::ToolUse { id, name, input } => {
-                            let arguments = serde_json::to_string(input)
-                                .unwrap_or_else(|_| "{}".to_string());
+                            let arguments =
+                                serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string());
                             tool_calls.push(ApiToolCall {
                                 id: id.clone(),
                                 call_type: "function".to_string(),
@@ -225,9 +312,14 @@ fn session_to_api_messages(messages: &[ConversationMessage]) -> Vec<ApiMessage> 
                             });
                         }
                         ContentBlock::ToolResult { .. } => {}
+                        ContentBlock::Compaction { .. } => {}
                     }
                 }
-                let content_opt = if content.is_empty() { None } else { Some(content) };
+                let content_opt = if content.is_empty() {
+                    None
+                } else {
+                    Some(content)
+                };
                 let reasoning_opt = if reasoning.is_empty() {
                     None
                 } else {
@@ -248,18 +340,25 @@ fn session_to_api_messages(messages: &[ConversationMessage]) -> Vec<ApiMessage> 
                 }
             }
             MessageRole::Tool => {
+                let mut injected_text = String::new();
                 for block in &msg.blocks {
-                    if let ContentBlock::ToolResult {
-                        tool_use_id,
-                        content,
-                        ..
-                    } = block
-                    {
-                        out.push(ApiMessage::Tool {
+                    match block {
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            ..
+                        } => out.push(ApiMessage::Tool {
                             tool_call_id: tool_use_id.clone(),
                             content: content.clone(),
-                        });
+                        }),
+                        ContentBlock::Text { text } => push_with_newline(&mut injected_text, text),
+                        _ => {}
                     }
+                }
+                if !injected_text.is_empty() {
+                    out.push(ApiMessage::User {
+                        content: injected_text,
+                    });
                 }
             }
         }
@@ -310,6 +409,7 @@ fn db_token_to_meta(usage: &TokenUsage) -> TokenUsageMeta {
         total_tokens: usage.total_tokens.max(0) as u32,
         cache_read_tokens: None,
         cache_write_tokens: None,
+        estimated: usage.estimated,
     }
 }
 
@@ -326,6 +426,7 @@ fn meta_to_db_token(meta: &TokenUsageMeta) -> TokenUsage {
         prompt_tokens: i64::from(meta.prompt_tokens),
         completion_tokens: i64::from(meta.completion_tokens),
         total_tokens: i64::from(meta.total_tokens),
+        estimated: meta.estimated,
     }
 }
 
@@ -412,6 +513,9 @@ fn build_thread_summary(
         title: summary.title,
         message_count: summary.message_count,
         preview: summary.preview,
+        workspace_root: summary.workspace_root,
+        pinned: summary.pinned,
+        archived_at: summary.archived_at,
         created_at: summary.created_at,
         updated_at: summary.updated_at,
     }
@@ -429,12 +533,13 @@ fn build_thread_summary(
 #[tauri::command]
 pub fn thread_save(
     thread: ThreadState,
+    workspace_root: Option<String>,
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<(), String> {
     let store = store_from_state(registry.inner());
     store
-        .ensure_thread(&thread.id, Some(thread.title.clone()))
+        .ensure_thread(&thread.id, Some(thread.title.clone()), workspace_root)
         .map_err(|e| format!("Failed to ensure thread {}: {e}", thread.id))?;
     if !thread.title.is_empty() {
         store
@@ -459,15 +564,17 @@ pub fn thread_save(
 #[tauri::command]
 pub fn thread_create(
     title: Option<String>,
+    workspace_root: Option<String>,
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<ThreadState, String> {
     let store = store_from_state(registry.inner());
     let thread_id = uuid::Uuid::new_v4().to_string();
     let meta = store
-        .ensure_thread(&thread_id, title)
+        .ensure_thread(&thread_id, title, workspace_root)
         .map_err(|e| format!("Failed to create thread: {e}"))?;
 
+    let ws_root = meta.workspace_root.clone();
     let state = ThreadState {
         id: thread_id,
         title: meta.title,
@@ -487,6 +594,9 @@ pub fn thread_create(
                 title: state.title.clone(),
                 message_count: 0,
                 preview: String::new(),
+                workspace_root: ws_root,
+                pinned: false,
+                archived_at: None,
                 created_at: state.created_at.clone(),
                 updated_at: state.updated_at.clone(),
             },
@@ -538,14 +648,20 @@ pub fn thread_delete(
     Ok(())
 }
 
-/// List every thread, newest first.
+/// List threads newest-first.
+///
+/// When `workspace_root` is provided, only threads belonging to that
+/// project are returned (legacy unscoped threads are omitted) — this
+/// powers the agent window's project-scoped chat list. Omit it (the
+/// IDE's global history) to get every thread.
 #[tauri::command]
 pub fn thread_list_summaries(
+    workspace_root: Option<String>,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<Vec<ThreadSummary>, String> {
     let store = store_from_state(registry.inner());
     let entries = store
-        .list_summaries()
+        .list_summaries_filtered(workspace_root.as_deref())
         .map_err(|e| format!("Failed to list threads: {e}"))?;
     Ok(entries.into_iter().map(build_thread_summary).collect())
 }
@@ -562,6 +678,38 @@ pub fn thread_update_title(
         .set_title(&thread_id, title)
         .map(|_| ())
         .map_err(|e| format!("Failed to update title: {e}"))
+}
+
+/// Pin / unpin a chat. Pinned chats sort to a dedicated section at the
+/// top of the rail. Persisted in the metadata sidecar; does not bump
+/// `updated_at` (pinning shouldn't reorder by recency).
+#[tauri::command]
+pub fn thread_set_pinned(
+    thread_id: String,
+    pinned: bool,
+    registry: State<'_, Arc<AgentRegistry>>,
+) -> Result<(), String> {
+    let store = store_from_state(registry.inner());
+    store
+        .set_pinned(&thread_id, pinned)
+        .map(|_| ())
+        .map_err(|e| format!("Failed to set pinned: {e}"))
+}
+
+/// Archive / unarchive a chat. Archived chats leave the rail tree for the
+/// "Archived" view and are automatically purged 15 days after archiving.
+/// Persisted in the metadata sidecar; does not bump `updated_at`.
+#[tauri::command]
+pub fn thread_set_archived(
+    thread_id: String,
+    archived: bool,
+    registry: State<'_, Arc<AgentRegistry>>,
+) -> Result<(), String> {
+    let store = store_from_state(registry.inner());
+    store
+        .set_archived(&thread_id, archived)
+        .map(|_| ())
+        .map_err(|e| format!("Failed to set archived: {e}"))
 }
 
 /// Persist usage metadata after a turn so the chat list can show
@@ -667,7 +815,12 @@ mod tests {
         )
     }
 
-    fn assistant_with_tool(tool_id: &str, name: &str, input: serde_json::Value, ts: i64) -> ConversationMessage {
+    fn assistant_with_tool(
+        tool_id: &str,
+        name: &str,
+        input: serde_json::Value,
+        ts: i64,
+    ) -> ConversationMessage {
         ConversationMessage::assistant(
             vec![
                 ContentBlock::Text {
@@ -693,6 +846,8 @@ mod tests {
             }],
             usage: None,
             timestamp: ts,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
         }
     }
 
@@ -704,6 +859,22 @@ mod tests {
         assert_eq!(db[0].role, "user");
         assert_eq!(db[0].content, "hello");
         assert!(db[0].tool_calls.is_none());
+    }
+
+    #[test]
+    fn user_prompt_chips_survive_db_projection() {
+        let mut message = user_msg("check @src/main.ts", 1);
+        message.attached_prompt_chips =
+            Some(vec![crate::agent_runtime::types::AttachedPromptChip {
+                kind: "file".into(),
+                title: "main.ts".into(),
+                value: Some("src/main.ts".into()),
+                path: Some("E:/work/src/main.ts".into()),
+            }]);
+        let db = session_to_db_messages(&[message]);
+        let chips = db[0].attached_prompt_chips.as_ref().expect("prompt chips");
+        assert_eq!(chips[0].title, "main.ts");
+        assert_eq!(chips[0].value.as_deref(), Some("src/main.ts"));
     }
 
     #[test]
@@ -757,12 +928,56 @@ mod tests {
                 }],
                 usage: None,
                 timestamp: 2,
+                attached_selected_elements: None,
+                attached_prompt_chips: None,
             },
         ];
         let db = session_to_db_messages(&messages);
         let assistant = &db[0];
         let calls = assistant.tool_calls.as_ref().unwrap();
         assert_eq!(calls[0].result.as_deref(), Some("[error] boom"));
+    }
+
+    #[test]
+    fn mid_turn_injection_survives_db_and_api_reload_shapes() {
+        let tool_message = ConversationMessage {
+            role: MessageRole::Tool,
+            blocks: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "c".into(),
+                    content: "pong".into(),
+                    is_error: None,
+                },
+                ContentBlock::Text {
+                    text: "use the returned id".into(),
+                },
+            ],
+            usage: None,
+            timestamp: 2,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+        };
+        let messages = vec![
+            assistant_with_tool("c", "ping", serde_json::json!({}), 1),
+            tool_message,
+        ];
+
+        let db = session_to_db_messages(&messages);
+        assert_eq!(db.len(), 2);
+        assert_eq!(db[1].role, "assistant");
+        let timeline = db[1]
+            .timeline
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .expect("injection timeline");
+        assert_eq!(timeline[0]["kind"], "user_injection");
+        assert_eq!(timeline[0]["text"], "use the returned id");
+
+        let api = session_to_api_messages(&messages);
+        assert!(matches!(
+            api.last(),
+            Some(ApiMessage::User { content }) if content == "use the returned id"
+        ));
     }
 
     #[test]
@@ -774,7 +989,11 @@ mod tests {
             tool_result("c", "pong", 4),
         ];
         let api = session_to_api_messages(&messages);
-        assert_eq!(api.len(), 4, "user / assistant text / assistant tool_use / tool result");
+        assert_eq!(
+            api.len(),
+            4,
+            "user / assistant text / assistant tool_use / tool result"
+        );
         match &api[0] {
             ApiMessage::User { content } => assert_eq!(content, "hi"),
             other => panic!("expected user, got {other:?}"),
@@ -804,12 +1023,14 @@ mod tests {
             prompt_tokens: 100,
             completion_tokens: 50,
             total_tokens: 150,
+            estimated: Some(true),
         };
         let meta = db_token_to_meta(&original);
         let back = meta_to_db_token(&meta);
         assert_eq!(back.prompt_tokens, 100);
         assert_eq!(back.completion_tokens, 50);
         assert_eq!(back.total_tokens, 150);
+        assert_eq!(back.estimated, Some(true));
 
         // Use the runtime-side TokenUsage just to make sure the
         // metadata layer doesn't accidentally collide with it.

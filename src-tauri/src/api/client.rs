@@ -26,8 +26,10 @@ use serde_json::Value;
 use crate::agent_runtime::api_client::StreamingApiClient;
 
 use super::anthropic::AnthropicAdapter;
+use super::codex::adapter::CodexAdapter;
 use super::deepseek::DeepSeekAdapter;
 use super::openai_compat::OpenAICompatAdapter;
+use super::responses::OpenAIResponsesAdapter;
 
 /// Frozen view of one Aurora provider's configuration as the API client
 /// adapters need to see it.
@@ -41,8 +43,8 @@ use super::openai_compat::OpenAICompatAdapter;
 pub struct ProviderConfigSnapshot {
     /// Frontend-managed provider identifier. Used by [`build_api_client`]
     /// to choose the adapter. Examples: `"anthropic"`, `"minimax"`,
-    /// `"deepseek"`, `"glm"`, `"openai"`, `"fireworks"`, `"lmstudio"`,
-    /// `"ollama"`, `"custom"`.
+    /// `"deepseek"`, `"glm"`, `"openai"`, `"openai-responses"`,
+    /// `"fireworks"`, `"lmstudio"`, `"ollama"`, `"custom"`.
     #[serde(default, alias = "provider_type", alias = "providerType")]
     pub provider_id: String,
     pub base_url: String,
@@ -81,6 +83,16 @@ pub struct ProviderConfigSnapshot {
 pub enum ProviderKind {
     Anthropic,
     DeepSeek,
+    /// OpenAI's typed-event `/responses` endpoint. An *additional*
+    /// wire shape users opt into per provider — Chat Completions
+    /// (`OpenAICompat`) stays the default for `"openai"` and every
+    /// other OpenAI-shaped id.
+    OpenAIResponses,
+    /// Codex-tier models over the ChatGPT backend, authenticated with
+    /// the user's ChatGPT subscription (OAuth, no API key). Same
+    /// Responses wire shape; auth + endpoint live in
+    /// [`super::codex`].
+    Codex,
     OpenAICompat,
 }
 
@@ -91,6 +103,8 @@ impl ProviderKind {
         match provider_id.trim() {
             "anthropic" | "minimax" => ProviderKind::Anthropic,
             "deepseek" => ProviderKind::DeepSeek,
+            "openai-responses" | "openai_responses" => ProviderKind::OpenAIResponses,
+            "codex" => ProviderKind::Codex,
             _ => ProviderKind::OpenAICompat,
         }
     }
@@ -109,6 +123,8 @@ pub fn build_api_client(config: &ProviderConfigSnapshot) -> Arc<dyn StreamingApi
     match ProviderKind::detect(&config.provider_id) {
         ProviderKind::Anthropic => Arc::new(AnthropicAdapter::new(config.clone())),
         ProviderKind::DeepSeek => Arc::new(DeepSeekAdapter::new(config.clone())),
+        ProviderKind::OpenAIResponses => Arc::new(OpenAIResponsesAdapter::new(config.clone())),
+        ProviderKind::Codex => Arc::new(CodexAdapter::new(config.clone())),
         ProviderKind::OpenAICompat => Arc::new(OpenAICompatAdapter::new(config.clone())),
     }
 }
@@ -148,6 +164,26 @@ mod tests {
     }
 
     #[test]
+    fn detect_openai_responses_routes_to_dedicated_adapter() {
+        assert_eq!(
+            ProviderKind::detect("openai-responses"),
+            ProviderKind::OpenAIResponses
+        );
+        assert_eq!(
+            ProviderKind::detect("openai_responses"),
+            ProviderKind::OpenAIResponses
+        );
+        // Plain "openai" must stay on Chat Completions — the Responses
+        // wire shape is opt-in, not a replacement.
+        assert_eq!(ProviderKind::detect("openai"), ProviderKind::OpenAICompat);
+    }
+
+    #[test]
+    fn detect_codex_routes_to_dedicated_adapter() {
+        assert_eq!(ProviderKind::detect("codex"), ProviderKind::Codex);
+    }
+
+    #[test]
     fn detect_openai_compat_for_others() {
         for id in [
             "glm",
@@ -178,6 +214,8 @@ mod tests {
         let _: Arc<dyn StreamingApiClient> = build_api_client(&config("anthropic"));
         let _: Arc<dyn StreamingApiClient> = build_api_client(&config("minimax"));
         let _: Arc<dyn StreamingApiClient> = build_api_client(&config("deepseek"));
+        let _: Arc<dyn StreamingApiClient> = build_api_client(&config("openai-responses"));
+        let _: Arc<dyn StreamingApiClient> = build_api_client(&config("codex"));
         let _: Arc<dyn StreamingApiClient> = build_api_client(&config("glm"));
         let _: Arc<dyn StreamingApiClient> = build_api_client(&config("openai"));
         let _: Arc<dyn StreamingApiClient> = build_api_client(&config("custom"));

@@ -18,12 +18,15 @@ import {
   type AgentExecutionMode,
 } from "../services/agent-execution-mode";
 import { providerCatalogService, type ProviderCatalogPreset } from "../services/provider-catalog";
+import { ATLAS_CLOUD_PRESET } from "../services/atlascloud";
+import { CODEX_PRESET } from "../services/codex";
 import type { ProviderConfig } from "../services/providers/types";
 import { MAX_ENABLED_SKILLS } from "../services/skills";
 import type {
   AppSettings as DbAppSettings,
   DbLLMProvider,
   DbProviderModel,
+  ModelReasoning,
 } from "../types/database";
 import { useIconPackStore } from "./useIconPackStore";
 
@@ -34,6 +37,35 @@ const countEnabledSkillToggles = (toggles: Record<string, boolean>): number => {
   }
   return count;
 };
+
+// ---------------------------------------------------------------------------
+// Settings persistence debounce
+// ---------------------------------------------------------------------------
+// Every setter calls `saveToDatabase()`, which serializes the whole settings
+// state (~37 `set_setting` rows). Without coalescing, a burst of mutations
+// (dragging a slider, toggling several options) fires N concurrent full-table
+// writes that race each other. A single shared timer collapses a burst into
+// one write. `flushSettingsSave()` forces an immediate write (used on window
+// unload so the last change isn't lost inside the debounce window).
+const SETTINGS_SAVE_DEBOUNCE_MS = 300;
+let settingsSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let settingsSaveResolvers: Array<() => void> = [];
+
+const scheduleSettingsSave = (run: () => Promise<void>): Promise<void> =>
+  new Promise<void>((resolve) => {
+    settingsSaveResolvers.push(resolve);
+    if (settingsSaveTimer) {
+      clearTimeout(settingsSaveTimer);
+    }
+    settingsSaveTimer = setTimeout(() => {
+      settingsSaveTimer = null;
+      const resolvers = settingsSaveResolvers;
+      settingsSaveResolvers = [];
+      void run().finally(() => {
+        for (const r of resolvers) r();
+      });
+    }, SETTINGS_SAVE_DEBOUNCE_MS);
+  });
 
 const UI_FONT_FAMILIES: Record<string, string> = {
   system: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif",
@@ -50,6 +82,33 @@ const UI_FONT_FAMILIES: Record<string, string> = {
 };
 
 const clampTextScale = (value: number): number => Math.min(1.4, Math.max(0.85, value));
+
+// Agent Team — the user-configured ceiling on how many agents the Lead may
+// convene per task. Hard ceiling is 16, recommended value is 5 (see
+// DOCS/aurora-agent-team-ground-truth.md §11). The Lead never exceeds this.
+export const TEAM_SIZE_HARD_CEILING = 16;
+export const TEAM_SIZE_RECOMMENDED = 5;
+const clampTeamSize = (value: number): number =>
+  Math.min(TEAM_SIZE_HARD_CEILING, Math.max(1, Math.round(value) || TEAM_SIZE_RECOMMENDED));
+
+// Context compaction (see DOCS/compaction-design.md). Threshold is a % of the
+// context window; budget is the summary call's max_output_tokens.
+export const DEFAULT_COMPACTION_THRESHOLD_PCT = 80;
+export const COMPACTION_THRESHOLD_MIN = 50;
+export const COMPACTION_THRESHOLD_MAX = 95;
+export const DEFAULT_COMPACTION_SUMMARY_BUDGET = 8192;
+export const COMPACTION_SUMMARY_BUDGET_MIN = 2000;
+export const COMPACTION_SUMMARY_BUDGET_MAX = 16000;
+const clampCompactionThreshold = (value: number): number =>
+  Math.min(
+    COMPACTION_THRESHOLD_MAX,
+    Math.max(COMPACTION_THRESHOLD_MIN, Math.round(value) || DEFAULT_COMPACTION_THRESHOLD_PCT),
+  );
+const clampCompactionBudget = (value: number): number =>
+  Math.min(
+    COMPACTION_SUMMARY_BUDGET_MAX,
+    Math.max(COMPACTION_SUMMARY_BUDGET_MIN, Math.round(value) || DEFAULT_COMPACTION_SUMMARY_BUDGET),
+  );
 
 const applyUiPreferences = (fontFamily: string, textScale: number) => {
   if (typeof document === 'undefined') return;
@@ -77,6 +136,88 @@ interface SettingsState {
   // Tool Approval
   autoApproveTools: boolean;
   agentExecutionMode: AgentExecutionMode;
+
+  // Agent Team (see DOCS/aurora-agent-team-ground-truth.md)
+  teamEnabled: boolean;
+  maxTeamSize: number;
+  /**
+   * Provider/model the Lead runs on, as a `"providerId:modelKey"` selection
+   * from the user's configured providers. Empty string means "use my active
+   * chat model".
+   */
+  teamLeadModel: string;
+  /**
+   * Provider/model the IC team members run on, same `"providerId:modelKey"`
+   * shape. Empty string falls back to the active chat model. Lets the user
+   * pin the Lead to one provider and the team to another.
+   */
+  teamMemberModel: string;
+  /**
+   * Default integration-gate commands the Lead runs after the build to verify
+   * the whole project (empty string = skip that gate). A `team_dispatch` call
+   * inherits these when the model doesn't pass its own `gate`. Persisted so the
+   * setting sticks across sessions and both surfaces read the same value.
+   */
+  teamGateBuild: string;
+  teamGateLint: string;
+  teamGateTest: string;
+  /** Update one or more default integration-gate commands and persist. */
+  setTeamGate: (
+    patch: Partial<{ build: string; lint: string; test: string }>,
+  ) => void;
+  /**
+   * Global, workspace-agnostic user instructions injected into the agent's
+   * system prompt for EVERY workspace (like a global rule). Empty = none.
+   */
+  globalInstructions: string;
+  setGlobalInstructions: (value: string) => void;
+
+  // Context Compaction (see DOCS/compaction-design.md)
+  /** Trigger as a % of the context window (50–95). The runtime summarizes
+   *  older history into a persistent marker once the projected request
+   *  crosses this. */
+  compactionThresholdPct: number;
+  setCompactionThresholdPct: (value: number) => void;
+  /** `max_output_tokens` budget for the summarization call (2,000–16,000). */
+  compactionSummaryBudget: number;
+  setCompactionSummaryBudget: (value: number) => void;
+
+  // AI Title Maker — generate a short chat title from the first message via an
+  // OpenAI-compatible endpoint. Disabled → the derived title is used as before.
+  titleMakerEnabled: boolean;
+  titleMakerBaseUrl: string;
+  titleMakerApiKey: string;
+  titleMakerModel: string;
+  setTitleMaker: (
+    value: Partial<{
+      enabled: boolean;
+      baseUrl: string;
+      apiKey: string;
+      model: string;
+    }>,
+  ) => void;
+
+  /** Allow read-only file tools to read files OUTSIDE the workspace. Off keeps
+   *  the agent strictly inside the project (the default, safe behavior). */
+  allowOutsideWorkspace: boolean;
+  setAllowOutsideWorkspace: (value: boolean) => void;
+  /** Surface a header flash + rail "done" dot when a chat's turn finishes
+   *  streaming (agent window). Off silences both cues. On by default. */
+  notifyOnTurnComplete: boolean;
+  setNotifyOnTurnComplete: (value: boolean) => void;
+  /** While a turn streams, replace the agent-window header title with a live,
+   *  plain-language activity line (e.g. "Editing LeftRail.tsx"). The real chat
+   *  title returns the moment streaming ends. On by default. */
+  showActivityInTitle: boolean;
+  setShowActivityInTitle: (value: boolean) => void;
+  /**
+   * Resolve the {@link ProviderConfig} the Lead should run on — the
+   * `teamLeadModel` override when set and valid, otherwise the active chat
+   * config (`getLLMConfig`).
+   */
+  getTeamLeadConfig: () => ProviderConfig | null;
+  /** Resolve the {@link ProviderConfig} the IC team members run on. */
+  getTeamMemberConfig: () => ProviderConfig | null;
 
   // Autosave Settings
   autoSave: 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange';
@@ -114,7 +255,13 @@ interface SettingsState {
   // Tool Settings
   maxToolCallsPerRequest: number;
   projectLayoutEnabled: boolean; // Include file tree in first message
-  skillToggles: Record<string, boolean>;
+  /**
+   * Per-workspace skill enablement: `scopeKey -> (storageKey -> boolean)`.
+   * `scopeKey` is the normalized workspace root (or `__global__`), so each
+   * project's selection — and the {@link MAX_ENABLED_SKILLS} cap — is scoped
+   * to that project. See `getSkillToggleScopeKey` in services/skills.
+   */
+  skillToggles: Record<string, Record<string, boolean>>;
   skillsEnabled: boolean;
   speechBackend: string;
   speechDevicePreference: 'auto' | 'cpu' | 'gpu';
@@ -127,7 +274,10 @@ interface SettingsState {
 
   // Providers
   providers: LLMProvider[];
+  /** Debounced persist — coalesces bursts of setter calls into one write. */
   saveToDatabase: () => Promise<void>;
+  /** Persist immediately, bypassing the debounce (used by the unload flush). */
+  saveToDatabaseImmediate: () => Promise<void>;
   selectedModel: string; // Format: "providerId:model"
   setAutoAcceptChanges: (value: boolean) => void;
   setAutoApproveTools: (value: boolean) => void;
@@ -141,15 +291,21 @@ interface SettingsState {
   setHasSeenOnboarding: (seen: boolean) => void;
   setMaxTokens: (tokens: number) => void;
   setMaxToolCallsPerRequest: (max: number) => void;
+  setTeamEnabled: (enabled: boolean) => void;
+  setMaxTeamSize: (size: number) => void;
+  setTeamLeadModel: (selection: string) => void;
+  setTeamMemberModel: (selection: string) => void;
   setProjectLayoutEnabled: (value: boolean) => void;
   setSelectedModel: (model: string) => void;
   /**
-   * Toggle a skill on or off. Enabling is rejected (no-op + console warning)
-   * when {@link MAX_ENABLED_SKILLS} skills are already enabled — callers must
-   * disable a skill before enabling another. Disabling is always permitted.
-   * Returns true if the toggle was applied, false if it was rejected.
+   * Toggle a skill on or off **within a workspace scope**. Enabling is
+   * rejected (no-op + console warning) when {@link MAX_ENABLED_SKILLS} skills
+   * are already enabled *in that scope* — callers must disable a skill before
+   * enabling another. Disabling is always permitted. Returns true if the
+   * toggle was applied, false if it was rejected. `scopeKey` comes from
+   * `getSkillToggleScopeKey(workspaceRoot)`.
    */
-  setSkillEnabled: (storageKey: string, enabled: boolean) => boolean;
+  setSkillEnabled: (scopeKey: string, storageKey: string, enabled: boolean) => boolean;
   setSkillsEnabled: (enabled: boolean) => void;
   setSpeechBackend: (backend: string) => void;
   setSpeechDevicePreference: (preference: 'auto' | 'cpu' | 'gpu') => void;
@@ -247,7 +403,7 @@ export interface LLMProvider {
   modelAliases?: Record<string, string>;
   name: string;
   nickname?: string;
-  providerType?: "openai" | "fireworks" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "custom"; // Explicit provider type
+  providerType?: "openai" | "openai-responses" | "codex" | "fireworks" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "custom"; // Explicit provider type
   requiresApiKey?: boolean; // Whether API key is required (false for local)
   /** @deprecated v15 — read the active `LLMModel.supportsThinking` instead. */
   supportsThinking: boolean;
@@ -291,6 +447,15 @@ export interface LLMModel {
   priceCacheMissPerMtok?: number;
   priceOutputPerMtok?: number;
   priceCurrency?: string;
+  /** Reasoning capability + chosen default (models.dev, v17+). */
+  reasoning?: ModelReasoning;
+  /**
+   * Extra request-body fields the user added manually for this model (e.g.
+   * `{ thinking: { type: "enabled" } }`). Merged verbatim into the outgoing
+   * request body at send time — the manual escape hatch for provider-specific
+   * fields we don't model structurally. (v18+)
+   */
+  extraBody?: Record<string, unknown>;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -516,6 +681,19 @@ function providerToDb(provider: LLMProvider, sortOrder: number): DbLLMProvider {
 // ============================================
 // MODEL <-> DB CONVERTERS (v15+)
 // ============================================
+/**
+ * Master on/off state for a model's reasoning. `enabled` is the source of truth
+ * once set from the composer; when undefined we fall back to: ON for
+ * effort/budget models, and the legacy `default` boolean for toggle models.
+ */
+export function reasoningIsOn(r: ModelReasoning): boolean {
+  // Natively-reasoning models can't be turned off — always on.
+  if (r.toggleable === false) return true;
+  if (typeof r.enabled === "boolean") return r.enabled;
+  if (r.type === "toggle") return r.default !== false;
+  return true;
+}
+
 function dbToModel(row: DbProviderModel): LLMModel {
   return {
     id: row.id,
@@ -533,6 +711,8 @@ function dbToModel(row: DbProviderModel): LLMModel {
     priceCacheMissPerMtok: row.priceCacheMissPerMtok ?? undefined,
     priceOutputPerMtok: row.priceOutputPerMtok ?? undefined,
     priceCurrency: row.priceCurrency ?? undefined,
+    reasoning: row.reasoning ?? undefined,
+    extraBody: row.extraBody ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -556,6 +736,8 @@ function modelToDb(model: LLMModel): DbProviderModel {
     priceCacheMissPerMtok: model.priceCacheMissPerMtok ?? null,
     priceOutputPerMtok: model.priceOutputPerMtok ?? null,
     priceCurrency: model.priceCurrency ?? null,
+    reasoning: model.reasoning ?? null,
+    extraBody: model.extraBody ?? null,
     createdAt: model.createdAt || now,
     updatedAt: now,
   };
@@ -662,16 +844,66 @@ function resolveModel(model: LLMModel, provider: LLMProvider): ResolvedLLMModel 
   };
 }
 
+/**
+ * Build a {@link ProviderConfig} for an explicit `"providerId:modelKey"`
+ * selection (the same string shape as `selectedModel`). Returns `null` when
+ * the provider isn't found, so callers can fall back to the active config.
+ *
+ * This is the generalized core of `getLLMConfig` — used by the Agent Team
+ * model overrides (`getTeamLeadConfig` / `getTeamMemberConfig`) so the Lead
+ * and the IC team can each ride a different configured provider.
+ */
+function buildProviderConfigForSelection(
+  selection: string,
+  providers: LLMProvider[],
+  models: LLMModel[],
+): ProviderConfig | null {
+  const [providerId, modelKey] = selection.split(":");
+  if (!providerId) return null;
+  const provider = providers.find((p) => p.id === providerId);
+  if (!provider) return null;
+
+  const activeModel = models.find(
+    (m) => m.providerId === providerId && m.modelKey === modelKey,
+  );
+  const resolved = activeModel ? resolveModel(activeModel, provider) : undefined;
+
+  return {
+    id: provider.id,
+    name: provider.name,
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    model: resolved?.modelKey || modelKey || provider.model,
+    maxOutputTokens: resolved?.resolvedMaxOutputTokens ?? provider.maxOutputTokens,
+    contextWindow: resolved?.resolvedContextWindow ?? provider.contextWindow,
+    supportsThinking: resolved?.supportsThinking ?? false,
+    supportsToolStream:
+      resolved?.supportsToolStream ?? provider.supportsToolStream ?? false,
+    supportsVision: resolved?.supportsVision ?? false,
+    providerType: provider.providerType ?? "custom",
+    customHeaders: provider.customHeaders,
+    customParams: provider.customParams,
+    defaultTemperature: provider.defaultTemperature,
+    defaultMaxTokens: provider.defaultMaxTokens ?? provider.maxOutputTokens,
+  };
+}
+
 const DEFAULT_TOOL_APPROVAL_SETTINGS: Record<string, 'auto' | 'always_ask' | 'deny'> = {
   // Shell commands require approval
   shell_execute: 'always_ask',
   shell_spawn: 'always_ask',
-  // File write operations require approval
+  // File write operations require approval (current tools)
   file_write: 'always_ask',
+  file_edit: 'always_ask',
+  move_path: 'always_ask',
+  delete_path: 'always_ask',
+  folder_create: 'always_ask',
+  // Legacy write tool names (historic threads)
   file_create: 'always_ask',
   file_delete: 'always_ask',
   file_patch: 'always_ask',
-  folder_create: 'always_ask',
+  search_replace: 'always_ask',
+  multi_search_replace: 'always_ask',
   folder_move: 'always_ask',
   folder_delete: 'always_ask',
   // Read operations are generally safe
@@ -713,6 +945,41 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // Tool Approval
   autoApproveTools: false,
   agentExecutionMode: "agent",
+
+  // Agent Team (disabled by default; user opts in from the Agent Window's Settings → Team)
+  teamEnabled: false,
+  maxTeamSize: TEAM_SIZE_RECOMMENDED,
+  // Empty = ride the active chat model. The user can pin the Lead and the
+  // IC team to specific configured providers from the Agent Window's Settings → Team.
+  teamLeadModel: '',
+  teamMemberModel: '',
+  // Default integration-gate commands (Settings → Team). Empty = skip that gate.
+  teamGateBuild: '',
+  teamGateLint: '',
+  teamGateTest: '',
+  // Global, workspace-agnostic user instructions (one global rule applied
+  // everywhere). Empty by default.
+  globalInstructions: '',
+
+  // Context Compaction: auto-summarize older history at 80% of the window,
+  // with a generous 8k-token summary. Both user-configurable (Settings → Agent).
+  compactionThresholdPct: DEFAULT_COMPACTION_THRESHOLD_PCT,
+  compactionSummaryBudget: DEFAULT_COMPACTION_SUMMARY_BUDGET,
+
+  // AI Title Maker — off by default; the derived title is used until enabled.
+  titleMakerEnabled: false,
+  titleMakerBaseUrl: '',
+  titleMakerApiKey: '',
+  titleMakerModel: '',
+
+  // Read access is workspace-bound by default (safe).
+  allowOutsideWorkspace: false,
+
+  // Turn-complete cues (header flash + rail dot) are on by default.
+  notifyOnTurnComplete: true,
+
+  // Live activity in the streaming header title is on by default.
+  showActivityInTitle: true,
 
   // File Changes Approval
   autoAcceptChanges: false,
@@ -775,7 +1042,22 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
     try {
       await useIconPackStore.getState().initializeFromDatabase();
-      const presetProviders = await providerCatalogService.getPresets();
+      const loadedPresets = await providerCatalogService.getPresets();
+      const presetProviders = Array.isArray(loadedPresets) ? loadedPresets : [];
+
+      // Atlas Cloud ships as a frontend preset (not the Rust catalog) so its
+      // coding-plan usage card + seeded models land without a backend rebuild.
+      // Injected here so BOTH the fresh-install and merge paths pick it up.
+      if (!presetProviders.some((p) => p.id === ATLAS_CLOUD_PRESET.id)) {
+        presetProviders.push(ATLAS_CLOUD_PRESET);
+      }
+
+      // Codex (ChatGPT subscription) ships the same way: a frontend preset
+      // with an OAuth-backed card instead of an API key. The Rust side owns
+      // auth + routing (`api::codex`); this just seeds the provider row.
+      if (!presetProviders.some((p) => p.id === CODEX_PRESET.id)) {
+        presetProviders.push(CODEX_PRESET);
+      }
 
       // Check if we have providers in the database
       const hasProviders = await databaseService.hasProviders();
@@ -808,6 +1090,22 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           .filter(p => p.isCustom)
           .map(p => ({ ...p, isCustom: true as const }));
         mergedProviders.push(...customProviders);
+
+        // Persist preset providers that are NEW to this database before
+        // seeding their model rows below — `provider_models` has a
+        // FOREIGN KEY to `llm_providers`, so the parent row must land
+        // first (otherwise the model upsert fails with "FOREIGN KEY
+        // constraint failed" and only persists on a later save).
+        for (let i = 0; i < mergedProviders.length; i++) {
+          const p = mergedProviders[i];
+          if (p.isCustom) continue;
+          if (providers.some((db) => db.id === p.id)) continue;
+          try {
+            await databaseService.saveProvider(providerToDb(p, i));
+          } catch (error) {
+            console.error("Failed to persist new preset provider:", error);
+          }
+        }
 
         // ── Models slice (v15+) ────────────────────────────────────
         // Load model rows for each provider, then merge with preset
@@ -916,6 +1214,27 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           selectedModel,
           autoApproveTools: appSettings.autoApproveTools ?? false,
           agentExecutionMode: persistedExecutionMode,
+          teamEnabled: appSettings.teamEnabled ?? false,
+          maxTeamSize: clampTeamSize(appSettings.maxTeamSize ?? TEAM_SIZE_RECOMMENDED),
+          teamLeadModel: appSettings.teamLeadModel ?? '',
+          teamMemberModel: appSettings.teamMemberModel ?? '',
+          teamGateBuild: appSettings.teamGateBuild ?? '',
+          teamGateLint: appSettings.teamGateLint ?? '',
+          teamGateTest: appSettings.teamGateTest ?? '',
+          globalInstructions: appSettings.globalInstructions ?? '',
+          compactionThresholdPct: clampCompactionThreshold(
+            appSettings.compactionThresholdPct ?? DEFAULT_COMPACTION_THRESHOLD_PCT,
+          ),
+          compactionSummaryBudget: clampCompactionBudget(
+            appSettings.compactionSummaryBudget ?? DEFAULT_COMPACTION_SUMMARY_BUDGET,
+          ),
+          titleMakerEnabled: appSettings.titleMakerEnabled ?? false,
+          titleMakerBaseUrl: appSettings.titleMakerBaseUrl ?? '',
+          titleMakerApiKey: appSettings.titleMakerApiKey ?? '',
+          titleMakerModel: appSettings.titleMakerModel ?? '',
+          allowOutsideWorkspace: appSettings.allowOutsideWorkspace ?? false,
+          notifyOnTurnComplete: appSettings.notifyOnTurnComplete ?? true,
+          showActivityInTitle: appSettings.showActivityInTitle ?? true,
           autoAcceptChanges: appSettings.autoAcceptChanges ?? false,
           explorerIconPack,
           syntaxValidationEnabled: appSettings.syntaxValidationEnabled ?? true,
@@ -962,7 +1281,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
 
       // Load tool settings
-      const toolSettings = await databaseService.getAllToolSettings();
+      const loadedToolSettings = await databaseService.getAllToolSettings();
+      const toolSettings = Array.isArray(loadedToolSettings) ? loadedToolSettings : [];
       if (toolSettings.length > 0) {
         const settings = { ...DEFAULT_TOOL_APPROVAL_SETTINGS };
         for (const ts of toolSettings) {
@@ -987,7 +1307,9 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     }
   },
 
-  saveToDatabase: async () => {
+  saveToDatabase: () => scheduleSettingsSave(() => get().saveToDatabaseImmediate()),
+
+  saveToDatabaseImmediate: async () => {
     const state = get();
 
     try {
@@ -995,6 +1317,23 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       const appSettings: DbAppSettings = {
         selectedModel: state.selectedModel,
         agentExecutionMode: state.agentExecutionMode,
+        teamEnabled: state.teamEnabled,
+        maxTeamSize: state.maxTeamSize,
+        teamLeadModel: state.teamLeadModel,
+        teamMemberModel: state.teamMemberModel,
+        teamGateBuild: state.teamGateBuild,
+        teamGateLint: state.teamGateLint,
+        teamGateTest: state.teamGateTest,
+        globalInstructions: state.globalInstructions,
+        compactionThresholdPct: state.compactionThresholdPct,
+        compactionSummaryBudget: state.compactionSummaryBudget,
+        titleMakerEnabled: state.titleMakerEnabled,
+        titleMakerBaseUrl: state.titleMakerBaseUrl,
+        titleMakerApiKey: state.titleMakerApiKey,
+        titleMakerModel: state.titleMakerModel,
+        allowOutsideWorkspace: state.allowOutsideWorkspace,
+        notifyOnTurnComplete: state.notifyOnTurnComplete,
+        showActivityInTitle: state.showActivityInTitle,
         autoApproveTools: state.autoApproveTools,
         autoAcceptChanges: state.autoAcceptChanges,
         explorerIconPack: state.explorerIconPack,
@@ -1168,8 +1507,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         ),
       };
     });
-    // Debounced save to database
-    setTimeout(() => get().saveToDatabase(), 500);
+    // Persist (debouncing now lives inside saveToDatabase).
+    get().saveToDatabase();
   },
 
   addCustomProvider: (provider: Omit<LLMProvider, "id" | "isCustom">) => {
@@ -1432,6 +1771,81 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     get().saveToDatabase();
   },
 
+  setTeamEnabled: (enabled: boolean) => {
+    // Disabling the feature must not leave the input box stuck in Team mode —
+    // fall back to Agent so the team tools/prompt are no longer in play.
+    const patch: Partial<SettingsState> = { teamEnabled: enabled };
+    if (!enabled && get().agentExecutionMode === "team") {
+      patch.agentExecutionMode = "agent";
+    }
+    set(patch);
+    get().saveToDatabase();
+  },
+
+  setMaxTeamSize: (size: number) => {
+    set({ maxTeamSize: clampTeamSize(size) });
+    get().saveToDatabase();
+  },
+
+  setTeamLeadModel: (selection: string) => {
+    set({ teamLeadModel: selection });
+    get().saveToDatabase();
+  },
+
+  setTitleMaker: (value) => {
+    const patch: Partial<SettingsState> = {};
+    if (value.enabled !== undefined) patch.titleMakerEnabled = value.enabled;
+    if (value.baseUrl !== undefined) patch.titleMakerBaseUrl = value.baseUrl;
+    if (value.apiKey !== undefined) patch.titleMakerApiKey = value.apiKey;
+    if (value.model !== undefined) patch.titleMakerModel = value.model;
+    set(patch);
+    get().saveToDatabase();
+  },
+
+  setAllowOutsideWorkspace: (value: boolean) => {
+    set({ allowOutsideWorkspace: value });
+    get().saveToDatabase();
+  },
+
+  setNotifyOnTurnComplete: (value: boolean) => {
+    set({ notifyOnTurnComplete: value });
+    get().saveToDatabase();
+  },
+
+  setShowActivityInTitle: (value: boolean) => {
+    set({ showActivityInTitle: value });
+    get().saveToDatabase();
+  },
+
+  setTeamMemberModel: (selection: string) => {
+    set({ teamMemberModel: selection });
+    get().saveToDatabase();
+  },
+
+  setTeamGate: (patch) => {
+    const next: Partial<SettingsState> = {};
+    if (patch.build !== undefined) next.teamGateBuild = patch.build;
+    if (patch.lint !== undefined) next.teamGateLint = patch.lint;
+    if (patch.test !== undefined) next.teamGateTest = patch.test;
+    set(next);
+    get().saveToDatabase();
+  },
+
+  setGlobalInstructions: (value: string) => {
+    set({ globalInstructions: value });
+    get().saveToDatabase();
+  },
+
+  setCompactionThresholdPct: (value: number) => {
+    set({ compactionThresholdPct: clampCompactionThreshold(value) });
+    get().saveToDatabase();
+  },
+
+  setCompactionSummaryBudget: (value: number) => {
+    set({ compactionSummaryBudget: clampCompactionBudget(value) });
+    get().saveToDatabase();
+  },
+
   setAutoAcceptChanges: (value: boolean) => {
     set({ autoAcceptChanges: value });
     get().saveToDatabase();
@@ -1452,33 +1866,40 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     get().saveToDatabase();
   },
 
-  setSkillEnabled: (storageKey: string, enabled: boolean) => {
+  setSkillEnabled: (scopeKey: string, storageKey: string, enabled: boolean) => {
     const state = get();
-    const isCurrentlyEnabled = state.skillToggles[storageKey] === true;
+    const scopeToggles = state.skillToggles[scopeKey] ?? {};
+    const isCurrentlyEnabled = scopeToggles[storageKey] === true;
 
     // No-op: nothing to change.
     if (isCurrentlyEnabled === enabled) {
       return true;
     }
 
-    // Enforce hard cap when turning ON. Turning OFF is always allowed.
+    // Enforce hard cap when turning ON, scoped to THIS workspace. Turning OFF
+    // is always allowed. Counting per scope is what keeps one project's
+    // selection from blocking another's.
     if (enabled) {
-      const enabledCount = countEnabledSkillToggles(state.skillToggles);
+      const enabledCount = countEnabledSkillToggles(scopeToggles);
       if (enabledCount >= MAX_ENABLED_SKILLS) {
         console.warn(
-          `[Skills] Cannot enable more than ${MAX_ENABLED_SKILLS} skills at once. ` +
+          `[Skills] Cannot enable more than ${MAX_ENABLED_SKILLS} skills in this workspace. ` +
             `Disable an existing skill before enabling \`${storageKey}\`.`
         );
         return false;
       }
     }
 
-    set((current) => ({
-      skillToggles: {
-        ...current.skillToggles,
-        [storageKey]: enabled,
-      },
-    }));
+    set((current) => {
+      const currentScope = current.skillToggles[scopeKey] ?? {};
+      const nextScope = { ...currentScope, [storageKey]: enabled };
+      return {
+        skillToggles: {
+          ...current.skillToggles,
+          [scopeKey]: nextScope,
+        },
+      };
+    });
     get().saveToDatabase();
     return true;
   },
@@ -1694,7 +2115,47 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     // No provider available
     return null;
   },
+
+  // Agent Team provider overrides. Each resolves the configured
+  // `"providerId:modelKey"` selection when set & valid, else falls back to
+  // the active chat config — so by default the team rides the chat provider.
+  getTeamLeadConfig: () => {
+    const { teamLeadModel, providers, models } = get();
+    if (teamLeadModel) {
+      const cfg = buildProviderConfigForSelection(teamLeadModel, providers, models);
+      if (cfg) return cfg;
+    }
+    return get().getLLMConfig();
+  },
+
+  getTeamMemberConfig: () => {
+    const { teamMemberModel, providers, models } = get();
+    if (teamMemberModel) {
+      const cfg = buildProviderConfigForSelection(teamMemberModel, providers, models);
+      if (cfg) return cfg;
+    }
+    return get().getLLMConfig();
+  },
 }));
+
+/**
+ * Force any debounced settings write to flush immediately. Safe to call
+ * when nothing is pending (no-op). Exposed for the unload flush below and
+ * for callers that need a durable write before navigating away.
+ */
+export const flushSettingsSave = (): void => {
+  if (!settingsSaveTimer) return;
+  clearTimeout(settingsSaveTimer);
+  settingsSaveTimer = null;
+  const resolvers = settingsSaveResolvers;
+  settingsSaveResolvers = [];
+  void useSettingsStore
+    .getState()
+    .saveToDatabaseImmediate()
+    .finally(() => {
+      for (const r of resolvers) r();
+    });
+};
 
 // Initialize settings from database when the module loads (for Tauri)
 if (typeof window !== 'undefined') {
@@ -1702,4 +2163,10 @@ if (typeof window !== 'undefined') {
   setTimeout(() => {
     useSettingsStore.getState().initializeFromDatabase();
   }, 100);
+
+  // Flush any pending debounced save on unload so the last change inside
+  // the debounce window isn't lost when the window closes.
+  window.addEventListener('beforeunload', () => {
+    flushSettingsSave();
+  });
 }

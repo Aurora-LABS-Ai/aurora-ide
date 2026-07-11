@@ -1188,10 +1188,7 @@ mod tests {
 
     #[test]
     fn public_allows_safe_read_in_read_only() {
-        assert_eq!(
-            validate_command("ls -la", ExecutionMode::ReadOnly),
-            Ok(())
-        );
+        assert_eq!(validate_command("ls -la", ExecutionMode::ReadOnly), Ok(()));
     }
 
     #[test]
@@ -1248,12 +1245,9 @@ mod tests {
     #[test]
     fn workspace_validator_blocks_writes_in_read_only() {
         let workspace = PathBuf::from("/workspace/project");
-        let err = validate_command_with_workspace(
-            "rm -rf foo",
-            ExecutionMode::ReadOnly,
-            &workspace,
-        )
-        .expect_err("read-only must block rm");
+        let err =
+            validate_command_with_workspace("rm -rf foo", ExecutionMode::ReadOnly, &workspace)
+                .expect_err("read-only must block rm");
         assert!(matches!(err, BashValidationError::Blocked(_)));
     }
 
@@ -1266,7 +1260,10 @@ mod tests {
             classify_intent("curl https://example.com"),
             CommandIntent::Network
         );
-        assert_eq!(classify_intent("kill -9 1234"), CommandIntent::ProcessManagement);
+        assert_eq!(
+            classify_intent("kill -9 1234"),
+            CommandIntent::ProcessManagement
+        );
         assert_eq!(
             classify_intent("npm install react"),
             CommandIntent::PackageManagement
@@ -1281,8 +1278,14 @@ mod tests {
         assert_eq!(CommandIntent::Write.as_str(), "write");
         assert_eq!(CommandIntent::Destructive.as_str(), "destructive");
         assert_eq!(CommandIntent::Network.as_str(), "network");
-        assert_eq!(CommandIntent::ProcessManagement.as_str(), "process_management");
-        assert_eq!(CommandIntent::PackageManagement.as_str(), "package_management");
+        assert_eq!(
+            CommandIntent::ProcessManagement.as_str(),
+            "process_management"
+        );
+        assert_eq!(
+            CommandIntent::PackageManagement.as_str(),
+            "package_management"
+        );
         assert_eq!(CommandIntent::SystemAdmin.as_str(), "system_admin");
         assert_eq!(CommandIntent::Unknown.as_str(), "unknown");
     }

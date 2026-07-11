@@ -28,19 +28,17 @@ import {
   X,
   Server,
   Layout,
-  Shield,
+  Bot,
   Palette,
-  Plug,
   Info,
   Sparkles,
   Flame,
   Mic,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { ToolSettingsTab } from './ToolSettingsTab';
+import { AgentSettingsTab, type AgentSubTabKey } from './AgentSettingsTab';
 import { ThemeSettingsTab } from './ThemeSettingsTab';
 import { SpeechSettingsTab } from './SpeechSettingsTab';
-import { McpSettingsTab } from './McpSettingsTab';
 import { SkillsSettingsTab } from './SkillsSettingsTab';
 import { GeneralSettingsTab } from './GeneralSettingsTab';
 import { AboutSettingsTab } from './AboutSettingsTab';
@@ -73,11 +71,10 @@ const headerStyle: React.CSSProperties = {
 type SettingsTabKey =
   | 'providers'
   | 'fireworks'
-  | 'tools'
+  | 'agent'
   | 'general'
   | 'themes'
   | 'speech'
-  | 'mcp'
   | 'skills'
   | 'about';
 
@@ -85,10 +82,12 @@ interface SidebarItem {
   id: SettingsTabKey;
   label: string;
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
-  group: 'connect' | 'workspace' | 'system';
+  group: 'connect' | 'agent' | 'workspace' | 'system';
 }
 
-const TAB_TITLES: Record<SettingsTabKey, { eyebrow: string; title: string; description: string }> = {
+type TabMeta = { eyebrow: string; title: string; description: string };
+
+const TAB_TITLES: Record<Exclude<SettingsTabKey, 'agent'>, TabMeta> = {
   providers: {
     eyebrow: 'Connectivity',
     title: 'Providers & Models',
@@ -98,11 +97,6 @@ const TAB_TITLES: Record<SettingsTabKey, { eyebrow: string; title: string; descr
     eyebrow: 'Connectivity',
     title: 'Fireworks Control Center',
     description: 'Account sync, usage exports, and Fireworks model catalog management.',
-  },
-  mcp: {
-    eyebrow: 'Connectivity',
-    title: 'MCP Servers',
-    description: 'Connect Model Context Protocol servers to expose external tools to the agent.',
   },
   skills: {
     eyebrow: 'Workspace',
@@ -119,11 +113,6 @@ const TAB_TITLES: Record<SettingsTabKey, { eyebrow: string; title: string; descr
     title: 'Appearance & Theme',
     description: 'Built-in themes, custom themes, and import/export for VS Code-compatible packs.',
   },
-  tools: {
-    eyebrow: 'System',
-    title: 'Tool Settings',
-    description: 'Approval modes, auto-accept rules, and per-tool risk configuration.',
-  },
   general: {
     eyebrow: 'System',
     title: 'General Settings',
@@ -133,6 +122,20 @@ const TAB_TITLES: Record<SettingsTabKey, { eyebrow: string; title: string; descr
     eyebrow: 'System',
     title: 'About Aurora',
     description: 'Version, capabilities overview, and credits.',
+  },
+};
+
+// The Agent page hosts three sub-sections; the header reflects whichever is open.
+const AGENT_SUBTAB_META: Record<AgentSubTabKey, TabMeta> = {
+  tools: {
+    eyebrow: 'Agent',
+    title: 'Tools',
+    description: 'Approval modes, auto-accept rules, and per-tool risk configuration.',
+  },
+  mcp: {
+    eyebrow: 'Agent',
+    title: 'MCP Servers',
+    description: 'Connect Model Context Protocol servers to expose external tools to the agent.',
   },
 };
 
@@ -161,17 +164,25 @@ export const SettingsPanel: React.FC = () => {
   } = useSettingsStore();
 
   const [activeTab, setActiveTab] = useState<SettingsTabKey>('providers');
+  const [agentSubTab, setAgentSubTab] = useState<AgentSubTabKey>('tools');
   const [appVersion, setAppVersion] = useState(PACKAGE_VERSION);
 
   React.useEffect(() => {
     if (isSettingsOpen && settingsInitialTab) {
-      // The legacy 'local' tab was folded into 'providers' in v15.
-      // Redirect any caller that still requests it so deep-links keep working.
-      const target =
-        settingsInitialTab === 'local'
-          ? 'providers'
-          : (settingsInitialTab as SettingsTabKey);
-      setActiveTab(target);
+      // Redirect legacy / folded deep-links so existing callers keep working:
+      //  - 'local' folded into 'providers' in v15.
+      //  - 'tools' and 'mcp' are now sub-sections of the unified Agent page.
+      if (settingsInitialTab === 'local') {
+        setActiveTab('providers');
+      } else if (settingsInitialTab === 'tools') {
+        setActiveTab('agent');
+        setAgentSubTab('tools');
+      } else if (settingsInitialTab === 'mcp') {
+        setActiveTab('agent');
+        setAgentSubTab('mcp');
+      } else {
+        setActiveTab(settingsInitialTab as SettingsTabKey);
+      }
       consumeSettingsInitialTab();
     }
   }, [isSettingsOpen, settingsInitialTab, consumeSettingsInitialTab]);
@@ -188,22 +199,22 @@ export const SettingsPanel: React.FC = () => {
     ...(fireworksTabEnabled
       ? ([{ id: 'fireworks' as const, label: 'Fireworks', icon: Flame, group: 'connect' as const }])
       : []),
-    { id: 'mcp', label: 'MCP Servers', icon: Plug, group: 'connect' },
+    { id: 'agent', label: 'Agent', icon: Bot, group: 'agent' },
     { id: 'skills', label: 'Skills', icon: Sparkles, group: 'workspace' },
     { id: 'speech', label: 'Speech', icon: Mic, group: 'workspace' },
     { id: 'themes', label: 'Appearance', icon: Palette, group: 'system' },
-    { id: 'tools', label: 'Tools', icon: Shield, group: 'system' },
     { id: 'general', label: 'General', icon: Layout, group: 'system' },
     { id: 'about', label: 'About', icon: Info, group: 'system' },
   ];
 
   const groupedItems: Array<{ label: string; items: SidebarItem[] }> = [
     { label: 'Connectivity', items: sidebarItems.filter((i) => i.group === 'connect') },
+    { label: 'Agent', items: sidebarItems.filter((i) => i.group === 'agent') },
     { label: 'Workspace', items: sidebarItems.filter((i) => i.group === 'workspace') },
     { label: 'System', items: sidebarItems.filter((i) => i.group === 'system') },
   ];
 
-  const meta = TAB_TITLES[activeTab];
+  const meta = activeTab === 'agent' ? AGENT_SUBTAB_META[agentSubTab] : TAB_TITLES[activeTab];
 
   return (
     <div
@@ -348,10 +359,11 @@ export const SettingsPanel: React.FC = () => {
             )}
 
             {activeTab === 'fireworks' && fireworksTabEnabled && <FireworksSettingsTab />}
-            {activeTab === 'mcp' && <McpSettingsTab />}
+            {activeTab === 'agent' && (
+              <AgentSettingsTab subTab={agentSubTab} onSubTabChange={setAgentSubTab} />
+            )}
             {activeTab === 'skills' && <SkillsSettingsTab />}
             {activeTab === 'speech' && <SpeechSettingsTab />}
-            {activeTab === 'tools' && <ToolSettingsTab />}
             {activeTab === 'themes' && <ThemeSettingsTab />}
 
             {activeTab === 'general' && (

@@ -29,6 +29,16 @@ export interface ThreadSummary {
   title: string;
   messageCount: number;
   preview: string;
+  /** Project the thread is scoped to. Absent for legacy unscoped threads. */
+  workspaceRoot?: string | null;
+  /** Whether the chat is pinned to the top of the rail. */
+  pinned?: boolean;
+  /**
+   * RFC3339 instant the chat was archived, or absent/null when active.
+   * Archived chats live in the rail's "Archived" view and are auto-purged
+   * 15 days after this timestamp.
+   */
+  archivedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -39,6 +49,13 @@ export interface TokenUsage {
   totalTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /**
+   * True when these counts are a local tiktoken ESTIMATE, not numbers the
+   * provider reported. Set by the agent window when a turn finishes without any
+   * `usage` event (e.g. an OpenAI-compatible provider that doesn't emit
+   * `stream_options.include_usage`). The UI flags estimated counts with a `~`.
+   */
+  estimated?: boolean;
 }
 
 export interface ContextUsage {
@@ -47,11 +64,53 @@ export interface ContextUsage {
   percentage: number;
 }
 
+/**
+ * Compact, display-only record of an element the user picked with the in-app
+ * browser inspector. Rendered as a "Selected N" chip on the user bubble. The
+ * FULL element context (outerHTML etc.) is sent to the model separately via the
+ * turn's ideContext — this is purely for the transcript UI.
+ */
+export interface AttachedSelectedElement {
+  index: number;
+  selector: string;
+  tagName: string;
+  url?: string | null;
+  text?: string | null;
+  source?: string;
+}
+
+/**
+ * A `/`-directive (skill / rule / MCP) the user attached to a turn in the
+ * composer, snapshotted onto the user message purely so the chip re-renders in
+ * the transcript. The directive's effect already rode to the model via the
+ * turn's ideContext.
+ */
+export interface AttachedCommandChip {
+  kind: "skill" | "rule" | "mcp";
+  title: string;
+}
+
+/** Exact inline composer pills persisted with a user turn for transcript replay. */
+export interface AttachedPromptChip {
+  kind: "file" | "skill" | "rule" | "mcp";
+  title: string;
+  /** Serialized file reference (`rel` for @ picker, absolute for OS picks). */
+  value?: string | null;
+  /** Absolute file path used to resolve the same icon and tooltip after reload. */
+  path?: string | null;
+}
+
 export interface DbMessage {
   id: string;
   role: string;
   content: string;
   timestamp: string;
+  /** User messages only — chips for elements picked via the browser inspector. */
+  attachedSelectedElements?: AttachedSelectedElement[] | null;
+  /** User messages only — chips for `/`-attached skills / rules / MCP servers. */
+  attachedCommands?: AttachedCommandChip[] | null;
+  /** User messages only — exact file and `/` pills from the composer. */
+  attachedPromptChips?: AttachedPromptChip[] | null;
   // serde renames the Rust `tool_calls` field through the
   // `Message` model (which keeps snake_case for backwards-compat).
   tool_calls?: Array<{
@@ -72,7 +131,13 @@ export interface DbThread {
   title: string;
   summary?: string | null;
   messages: DbMessage[];
-  token_usage?: { promptTokens: number; completionTokens: number; totalTokens: number } | null;
+  token_usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    cacheReadTokens?: number;
+    estimated?: boolean;
+  } | null;
   context_usage?: { usedTokens: number; contextWindow: number; percentage: number } | null;
   created_at: string;
   updated_at: string;
@@ -146,8 +211,14 @@ class ThreadServiceClass {
   // Thread Operations
   // ============================================================
 
-  async createThread(title?: string): Promise<DbThread> {
-    return await invoke<DbThread>('thread_create', { title: title ?? null });
+  async createThread(
+    title?: string,
+    workspaceRoot?: string | null,
+  ): Promise<DbThread> {
+    return await invoke<DbThread>('thread_create', {
+      title: title ?? null,
+      workspaceRoot: workspaceRoot ?? null,
+    });
   }
 
   async loadThread(threadId: string): Promise<DbThread | null> {
@@ -158,8 +229,15 @@ class ThreadServiceClass {
     await invoke('thread_delete', { threadId });
   }
 
-  async listThreads(): Promise<ThreadSummary[]> {
-    return await invoke<ThreadSummary[]>('thread_list_summaries');
+  /**
+   * List threads. Pass `workspaceRoot` to get only that project's
+   * chats (the agent window's project-scoped list); omit it for the
+   * IDE's global history.
+   */
+  async listThreads(workspaceRoot?: string | null): Promise<ThreadSummary[]> {
+    return await invoke<ThreadSummary[]>('thread_list_summaries', {
+      workspaceRoot: workspaceRoot ?? null,
+    });
   }
 
   async updateUsage(
@@ -189,12 +267,48 @@ class ThreadServiceClass {
   }
 
   /**
-   * Upsert a thread row. The Rust side only persists `title` — the
-   * messages array is owned exclusively by the agent runtime and is
-   * ignored when present in the payload.
+   * Generate a short chat title from the first user message via the configured
+   * OpenAI-compatible title-maker endpoint. Rejects on any error (the caller
+   * keeps the locally-derived title). Does NOT persist — pair with `updateTitle`.
    */
-  async saveThread(thread: DbThread): Promise<void> {
-    await invoke('thread_save', { thread });
+  async generateTitle(params: {
+    baseUrl: string;
+    apiKey: string | null;
+    model: string;
+    userMessage: string;
+  }): Promise<string> {
+    return invoke<string>('generate_thread_title', {
+      baseUrl: params.baseUrl,
+      apiKey: params.apiKey,
+      model: params.model,
+      userMessage: params.userMessage,
+    });
+  }
+
+  /** Pin / unpin a chat. Persisted in the thread's metadata sidecar. */
+  async setPinned(threadId: string, pinned: boolean): Promise<void> {
+    await invoke('thread_set_pinned', { threadId, pinned });
+  }
+
+  /**
+   * Archive / unarchive a chat. Archived chats leave the rail tree for the
+   * "Archived" view and are permanently purged 15 days after archiving.
+   * Persisted in the metadata sidecar.
+   */
+  async setArchived(threadId: string, archived: boolean): Promise<void> {
+    await invoke('thread_set_archived', { threadId, archived });
+  }
+
+  /**
+   * Upsert a thread row. The Rust side only persists `title` (and, when
+   * supplied, the `workspaceRoot` scope) — the messages array is owned
+   * exclusively by the agent runtime and is ignored when present.
+   */
+  async saveThread(
+    thread: DbThread,
+    workspaceRoot?: string | null,
+  ): Promise<void> {
+    await invoke('thread_save', { thread, workspaceRoot: workspaceRoot ?? null });
   }
 
   /**

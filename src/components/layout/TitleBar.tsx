@@ -26,7 +26,6 @@ import {
   Square,
   X,
   History,
-  ExternalLink,
   PanelLeft,
   PanelRightClose,
   PanelRightOpen,
@@ -42,9 +41,9 @@ import {
   Clock,
   Folder,
   ChevronDown,
+  ArrowUpRight,
 } from "lucide-react";
 import { useUiStore } from "../../store/useUiStore";
-import { useDetachedChatWindow } from "../../hooks/useDetachedChatWindow";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { useEditorStore } from "../../store/useEditorStore";
 import { databaseService } from "../../services/database";
@@ -52,6 +51,7 @@ import { isTauri } from "../../lib/tauri";
 import { AppIcon } from "../ui/AppIcon";
 import { MenuBarMenu, type MenuBarItem } from "./MenuBarMenu";
 import { TitleBarBrowserButton } from "./TitleBarBrowserButton";
+import { openAgentWindow } from "../../agent-window";
 
 const MAX_RECENT_WORKSPACES = 6;
 
@@ -71,8 +71,6 @@ export const TitleBar: React.FC = () => {
     isSidebarOpen,
     toggleSidebar,
   } = useUiStore();
-  const { isDetached, createDetachedWindow, focusDetachedWindow } =
-    useDetachedChatWindow();
   const setRootPath = useWorkspaceStore((s) => s.setRootPath);
   const clearWorkspace = useWorkspaceStore((s) => s.clearWorkspace);
   const rootPath = useWorkspaceStore((s) => s.rootPath);
@@ -158,16 +156,6 @@ export const TitleBar: React.FC = () => {
     },
     [handleMaximize],
   );
-
-  const handleDetachChat = useCallback(async () => {
-    if (isDetached) {
-      // If already detached, focus the detached window
-      focusDetachedWindow();
-    } else {
-      // Create new detached window
-      await createDetachedWindow();
-    }
-  }, [isDetached, createDetachedWindow, focusDetachedWindow]);
 
   const handleOpenFolder = useCallback(async () => {
     if (!isTauri()) {
@@ -403,6 +391,19 @@ export const TitleBar: React.FC = () => {
       <div className="flex items-center h-full" data-no-drag>
         {/* Action buttons */}
         <div className="flex items-center gap-1 px-2">
+          {/* Open the standalone agent window (separate OS window) */}
+          <button
+            onClick={() => {
+              void openAgentWindow(rootPath || null);
+            }}
+            className="flex h-7 items-center gap-1.5 rounded-[6px] px-2.5 text-[12px] font-medium text-text-secondary transition-colors hover:text-text-primary hover:bg-input/50"
+            style={chromeButtonStyle}
+            title="Open Agent Window"
+          >
+            <span>Agents Window</span>
+            <AppIcon icon={ArrowUpRight} size={13} />
+          </button>
+
           <TitleBarBrowserButton chromeButtonStyle={chromeButtonStyle} />
 
           <button
@@ -432,43 +433,18 @@ export const TitleBar: React.FC = () => {
           <div className="w-[1px] h-4 bg-border mx-1" />
           <button
             onClick={toggleChat}
-            disabled={isDetached}
             className={`flex h-7 w-7 items-center justify-center rounded-[6px] transition-colors ${
-              isDetached
-                ? "text-text-disabled cursor-not-allowed"
-                : isChatOpen
-                  ? "text-primary bg-primary/10"
-                  : "text-text-secondary hover:text-text-primary hover:bg-input/50"
+              isChatOpen
+                ? "text-primary bg-primary/10"
+                : "text-text-secondary hover:text-text-primary hover:bg-input/50"
             }`}
             style={chromeButtonStyle}
-            title={
-              isDetached
-                ? "Chat is detached"
-                : isChatOpen
-                  ? "Hide AI Assistant"
-                  : "Show AI Assistant"
-            }
+            title={isChatOpen ? "Hide AI Assistant" : "Show AI Assistant"}
           >
             <AppIcon
               icon={isChatOpen ? PanelRightClose : PanelRightOpen}
               size={14}
             />
-          </button>
-          <button
-            onClick={handleDetachChat}
-            className={`flex h-7 w-7 items-center justify-center rounded-[6px] transition-colors ${
-              isDetached
-                ? "text-primary bg-primary/10"
-                : "text-text-secondary hover:text-text-primary hover:bg-input/50"
-            }`}
-            style={chromeButtonStyle}
-            title={
-              isDetached
-                ? "Focus detached chat window"
-                : "Detach chat to separate window"
-            }
-          >
-            <AppIcon icon={ExternalLink} size={14} />
           </button>
         </div>
 

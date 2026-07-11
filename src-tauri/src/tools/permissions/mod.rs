@@ -44,8 +44,8 @@ pub mod tauri_emitter;
 pub use crate::agent_runtime::tool_executor::Permitter;
 pub use permission_guard::PermissionGuardedExecutor;
 pub use prompter::{
-    permission_request_event_channel, MockPermitter, PermissionEmitter,
-    PermissionRequestPayload, PermissionRouter,
+    permission_request_event_channel, MockPermitter, PermissionEmitter, PermissionRequestPayload,
+    PermissionRouter,
 };
 
 #[cfg(not(feature = "verify_only"))]

@@ -32,9 +32,7 @@ impl PermissionEmitter for TauriPermissionEmitter {
         // closed), the frontend can't approve anyway and the request
         // will eventually be cancelled by the conversation runtime.
         if let Err(err) = self.app.emit(PERMISSION_REQUEST_EVENT, payload) {
-            eprintln!(
-                "[TauriPermissionEmitter] failed to emit {PERMISSION_REQUEST_EVENT}: {err}"
-            );
+            eprintln!("[TauriPermissionEmitter] failed to emit {PERMISSION_REQUEST_EVENT}: {err}");
         }
     }
 }

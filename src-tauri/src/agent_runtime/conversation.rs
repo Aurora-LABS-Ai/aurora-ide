@@ -118,6 +118,22 @@ pub struct RuntimeConfig {
     /// persisted JSONL is untouched — trim is purely an API-view
     /// concern, mirroring how `ide_context` injection works.
     pub context_window: Option<u32>,
+
+    /// Compaction trigger as a fraction of `context_window` (e.g. `0.80`).
+    /// When the projected next-request size crosses this, the runtime
+    /// summarizes older history into a persistent marker before continuing
+    /// (see `DOCS/compaction-design.md`). `None` or `<= 0` disables
+    /// compaction entirely — the request then relies on `trim` alone.
+    /// Has no effect when `context_window` is `None`.
+    pub compaction_threshold: Option<f32>,
+
+    /// `max_output_tokens` budget for the summarization call. Larger = a
+    /// richer, higher-fidelity summary. Clamped by the caller (2k–16k).
+    pub compaction_summary_budget: u32,
+
+    /// When true, read-only file tools may resolve paths OUTSIDE the workspace
+    /// (user opt-in via Settings → Agent). Writes stay workspace-bound.
+    pub allow_outside_workspace: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -130,6 +146,9 @@ impl Default for RuntimeConfig {
             default_temperature: None,
             ide_context: None,
             context_window: None,
+            compaction_threshold: None,
+            compaction_summary_budget: 8192,
+            allow_outside_workspace: false,
         }
     }
 }
@@ -258,6 +277,16 @@ impl ConversationRuntime {
                 return Err(RuntimeError::Cancelled);
             }
 
+            // ── Context compaction ─────────────────────────────────
+            // Before every model call, if the projected request crosses
+            // the configured threshold, summarize older history into a
+            // persistent marker (see `DOCS/compaction-design.md`). Runs
+            // ahead of `trim` (the last-resort net) and shrinks the
+            // model's working set across turns. Best-effort: any failure
+            // leaves the session untouched and the turn proceeds.
+            self.maybe_compact(session, &turn_id, &mut seq, &event_sink, &cancel_token)
+                .await;
+
             // ── Stream one assistant message ───────────────────────
             let model = session.model.clone().unwrap_or_default();
             let tool_schemas = self.tools.schemas();
@@ -269,6 +298,14 @@ impl ConversationRuntime {
 
             let forwarder = spawn_event_forwarder(turn_id.clone(), seq, api_rx, event_sink.clone());
 
+            // Apply any persisted compaction first: replace everything at
+            // or older than the last compaction marker with its summary,
+            // keeping the verbatim tail. The persisted JSONL keeps the full
+            // history (the UI shows it); only this API view shrinks — the
+            // same contract `inject_ide_context`/`trim` follow. A no-marker
+            // session round-trips unchanged.
+            let compacted = apply_compaction(session.messages());
+
             // Optionally wrap the latest user message with the
             // IDE context block. We always work on a freshly cloned
             // vector so the persisted session stays clean (the
@@ -276,7 +313,7 @@ impl ConversationRuntime {
             // API sees `<ide_context>…</ide_context>` ahead of it).
             let owned_messages: Option<Vec<ConversationMessage>> =
                 match self.config.ide_context.as_deref().filter(|s| !s.is_empty()) {
-                    Some(ctx) => Some(inject_ide_context(session.messages(), ctx)),
+                    Some(ctx) => Some(inject_ide_context(&compacted, ctx)),
                     None => None,
                 };
 
@@ -284,8 +321,7 @@ impl ConversationRuntime {
             // `inject_ide_context`: persisted session stays whole, only
             // the request body shrinks. Disabled (no-op) when
             // `context_window` is `None`.
-            let trim_input: Vec<ConversationMessage> = owned_messages
-                .unwrap_or_else(|| session.messages().to_vec());
+            let trim_input: Vec<ConversationMessage> = owned_messages.unwrap_or(compacted);
             let trim_outcome = trim_to_budget(
                 trim_input,
                 self.config.context_window,
@@ -352,7 +388,48 @@ impl ConversationRuntime {
                 }
             };
 
-            total_usage = sum_usage(total_usage, turn.usage);
+            // No-usage providers (Fireworks/kimi, Ollama, custom) report zero
+            // tokens. The frontend's fallback estimator then counts the FULL UI
+            // transcript — which deliberately keeps every message — so it can't
+            // see compaction and the context ring stays high even after we
+            // shrank the real request. Emit a synthetic Usage carrying the
+            // tiktoken count of what we ACTUALLY sent (post compaction + trim),
+            // so the ring reflects the true, compacted context size.
+            let mut effective_usage = turn.usage;
+            if effective_usage.input_tokens == 0 && effective_usage.output_tokens == 0 {
+                let tools_tokens = tool_schemas
+                    .iter()
+                    .map(|t| {
+                        estimate_text_tokens(&t.name)
+                            .saturating_add(estimate_text_tokens(&t.description))
+                            .saturating_add(estimate_text_tokens(&t.input_schema.to_string()))
+                    })
+                    .fold(0u32, u32::saturating_add);
+                let input = messages_for_api
+                    .iter()
+                    .map(estimate_message_tokens)
+                    .fold(
+                        estimate_text_tokens(system_prompt.unwrap_or("")),
+                        u32::saturating_add,
+                    )
+                    .saturating_add(tools_tokens);
+                let output = estimate_message_tokens(&turn.assistant_message);
+                effective_usage = TokenUsage {
+                    input_tokens: input,
+                    output_tokens: output,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                };
+                let envelope = AgentEventEnvelope {
+                    turn_id: turn_id.clone(),
+                    seq,
+                    event: AssistantEvent::Usage(effective_usage.clone()),
+                };
+                seq = seq.saturating_add(1);
+                let _ = event_sink.send(envelope).await;
+            }
+
+            total_usage = sum_usage(total_usage, effective_usage);
 
             // Append the assistant message to the session and bookkeeping.
             session.append_message(turn.assistant_message.clone());
@@ -422,9 +499,7 @@ impl ConversationRuntime {
                 let envelope = AgentEventEnvelope {
                     turn_id: turn_id.clone(),
                     seq,
-                    event: AssistantEvent::QueuedMessageInjected {
-                        text: queued.text,
-                    },
+                    event: AssistantEvent::QueuedMessageInjected { text: queued.text },
                 };
                 seq = seq.saturating_add(1);
                 let _ = event_sink.send(envelope).await;
@@ -444,6 +519,169 @@ impl ConversationRuntime {
             assistant_messages,
             tool_results,
         })
+    }
+
+    /// Summarize older history into a persistent compaction marker when the
+    /// projected request crosses the configured threshold. Best-effort: any
+    /// disabled/too-short/failed case returns WITHOUT mutating the session,
+    /// so the turn always proceeds (trim stays the last-resort net).
+    /// See `DOCS/compaction-design.md`.
+    async fn maybe_compact(
+        &self,
+        session: &mut Session,
+        turn_id: &str,
+        seq: &mut u64,
+        event_sink: &mpsc::Sender<AgentEventEnvelope>,
+        cancel_token: &CancellationToken,
+    ) {
+        let Some(threshold) = self.config.compaction_threshold else {
+            return;
+        };
+        let Some(window) = self.config.context_window else {
+            return;
+        };
+        if threshold <= 0.0 || window == 0 {
+            return;
+        }
+
+        let system_prompt = self.config.system_prompt.as_deref().unwrap_or("");
+        let system_tokens = estimate_text_tokens(system_prompt);
+
+        // Projected size of the request we're about to build (after any prior
+        // compaction is applied). Compare against threshold% of the window.
+        let projected = apply_compaction(session.messages())
+            .iter()
+            .map(estimate_message_tokens)
+            .fold(system_tokens, u32::saturating_add);
+        let limit = (window as f32 * threshold) as u32;
+        if projected < limit {
+            return;
+        }
+
+        // A user-boundary cut preserving ~COMPACT_TAIL_PCT of the window
+        // verbatim. `None` => transcript too short to compact safely.
+        let Some(cut) = compaction_cut(session.messages(), window) else {
+            return;
+        };
+
+        // Signal the UI: ring → spinner, live shimmer card.
+        emit_native_tool_event(event_sink, turn_id, seq, AssistantEvent::CompactionStarted).await;
+
+        // Summarize the head (everything older than the cut). Any prior marker
+        // in the head is folded to its summary first, so we never re-feed a
+        // raw marker to the summarizer.
+        let head_view = apply_compaction(&session.messages()[..cut]);
+        let model = session.model.clone();
+        let summary = self.summarize_head(&head_view, &model, cancel_token).await;
+
+        let summary = match summary {
+            Some(s) if !s.trim().is_empty() => s,
+            _ => {
+                // Failsafe: summary unavailable — leave history intact and
+                // clear the indicator with a no-drop completion. Trim still
+                // bounds the request body downstream.
+                emit_native_tool_event(
+                    event_sink,
+                    turn_id,
+                    seq,
+                    AssistantEvent::CompactionCompleted {
+                        before_tokens: projected,
+                        after_tokens: projected,
+                    },
+                )
+                .await;
+                return;
+            }
+        };
+
+        // After-size = system + summary + the verbatim tail kept from `cut`.
+        let tail_tokens = session.messages()[cut..]
+            .iter()
+            .map(estimate_message_tokens)
+            .fold(0u32, u32::saturating_add);
+        let after = system_tokens
+            .saturating_add(estimate_text_tokens(&summary))
+            .saturating_add(tail_tokens);
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let marker = ConversationMessage {
+            role: MessageRole::System,
+            blocks: vec![ContentBlock::Compaction {
+                summary,
+                before_tokens: projected,
+                after_tokens: after,
+                created_at: now,
+            }],
+            usage: None,
+            timestamp: now,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+        };
+        // Insert at the boundary: `[head…][marker][tail…]`. The persisted
+        // JSONL keeps the head (UI history); only the model API view drops it.
+        session.messages.insert(cut, marker);
+
+        emit_native_tool_event(
+            event_sink,
+            turn_id,
+            seq,
+            AssistantEvent::CompactionCompleted {
+                before_tokens: projected,
+                after_tokens: after,
+            },
+        )
+        .await;
+    }
+
+    /// One-shot summarization call for [`Self::maybe_compact`]. Drains the
+    /// event stream to void (the summary is never rendered) and returns the
+    /// assistant text, or `None` on empty model / error / cancel. Uses the
+    /// session's model, the dedicated compaction system prompt, and the
+    /// configured output budget.
+    async fn summarize_head(
+        &self,
+        head_view: &[ConversationMessage],
+        model: &Option<String>,
+        cancel_token: &CancellationToken,
+    ) -> Option<String> {
+        let model = model.clone().unwrap_or_default();
+        if model.is_empty() {
+            return None;
+        }
+        let mut messages = head_view.to_vec();
+        messages.push(ConversationMessage {
+            role: MessageRole::User,
+            blocks: vec![ContentBlock::Text {
+                text: COMPACTION_INSTRUCTION.to_string(),
+            }],
+            usage: None,
+            timestamp: 0,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+        });
+
+        let (tx, mut rx) = mpsc::channel::<AssistantEvent>(64);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+        let request = ApiRequest {
+            model: &model,
+            system_prompt: Some(COMPACTION_SYSTEM_PROMPT),
+            messages: &messages,
+            tools: &[],
+            temperature: Some(0.3),
+            max_output_tokens: self.config.compaction_summary_budget,
+            thinking_enabled: false,
+        };
+        let result = self
+            .api_client
+            .stream(request, tx, cancel_token.clone())
+            .await;
+        let _ = drain.await;
+
+        match result {
+            Ok(turn) => Some(collect_assistant_text(&turn.assistant_message)),
+            Err(_) => None,
+        }
     }
 
     /// Execute one batch of tool calls (the `ToolUse` blocks emitted
@@ -475,6 +713,7 @@ impl ConversationRuntime {
                     .workspace_root
                     .as_ref()
                     .map(std::path::PathBuf::from),
+                allow_outside_workspace: self.config.allow_outside_workspace,
                 cancel_token: cancel_token.clone(),
             };
 
@@ -548,9 +787,10 @@ impl ConversationRuntime {
             // truncated bytes — that's the "sometimes tree, sometimes raw JSON"
             // artifact users see. Send the full payload to the UI; only the
             // history copy is truncated.
-            let history_content = truncate_tool_content(raw_content.clone());
+            let history_content = truncate_tool_content(&name, raw_content.clone());
 
             if !uses_frontend_lifecycle {
+                let ui_content = truncate_tool_content_for_ui(&name, raw_content);
                 emit_native_tool_event(
                     event_sink,
                     turn_id,
@@ -559,7 +799,7 @@ impl ConversationRuntime {
                         id: id.clone(),
                         name,
                         input,
-                        content: truncate_tool_content_for_ui(raw_content),
+                        content: ui_content,
                         is_error: is_error.unwrap_or(false),
                     },
                 )
@@ -578,6 +818,8 @@ impl ConversationRuntime {
             blocks: result_blocks,
             usage: None,
             timestamp: Utc::now().timestamp_millis(),
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
         })
     }
 }
@@ -628,18 +870,51 @@ const PRESERVE_LAST_USER_TURNS: usize = 2;
 /// (whose formatting overhead burns characters without adding signal).
 const MAX_TOOL_RESULT_LENGTH: usize = 8_192;
 
-/// Clamp a tool's stringified result to [`MAX_TOOL_RESULT_LENGTH`] and
-/// append a `[truncated N bytes]` marker so the model knows the tail
-/// was dropped. Operates on char boundaries (not byte boundaries) so a
-/// truncation point inside a multi-byte UTF-8 sequence cannot produce
-/// invalid UTF-8.
-fn truncate_tool_content(s: String) -> String {
-    if s.len() <= MAX_TOOL_RESULT_LENGTH {
+/// Model-history cap for content-delivery reads (`file_read`,
+/// `multi_file_read`). These tools hand the model file content it must
+/// match against VERBATIM to perform exact-text edits, and they already
+/// bound their own output (file_read windows files over ~1500 lines /
+/// 500 KB; multi_file_read caps per-file and in total). The generic 8 KiB
+/// clamp was a SECOND, far tighter cap that silently hid the middle of any
+/// file over ~200 lines — so a later file_edit built its `old_string` from
+/// the invisible region and failed to match. A read-sized cap lets a normal
+/// read through in full while still backstopping a pathological blob.
+const MAX_READ_RESULT_LENGTH: usize = 512 * 1024;
+
+/// The model-history clamp for a given tool's result. Reads get the large
+/// [`MAX_READ_RESULT_LENGTH`] (they self-limit and the model needs the
+/// content); everything else keeps the tight [`MAX_TOOL_RESULT_LENGTH`]
+/// that stops grep / websearch megabytes from flooding the context window.
+fn result_cap_for(tool: &str) -> usize {
+    match tool {
+        "file_read" | "multi_file_read" => MAX_READ_RESULT_LENGTH,
+        _ => MAX_TOOL_RESULT_LENGTH,
+    }
+}
+
+/// Clamp a tool's stringified result to its per-tool cap and append a
+/// `[truncated N bytes]` marker so the model knows the tail was dropped.
+/// Operates on char boundaries (not byte boundaries) so a truncation point
+/// inside a multi-byte UTF-8 sequence cannot produce invalid UTF-8.
+fn truncate_tool_content(tool: &str, s: String) -> String {
+    // Results carrying an `<aurora_image>` block (browser_screenshot) get
+    // LEANIFIED, not clamped: the base64 body is stripped from the persisted /
+    // model-history copy (the PNG lives on disk, referenced by the `src` header
+    // attr, and is rehydrated at request-build time by `split_aurora_images`).
+    // This keeps the JSONL tiny, stops the base64 being re-uploaded to the model
+    // every turn, and means a reloaded thread never shows a raw base64 blob. A
+    // blind byte clamp here would instead cut through the base64 and drop the
+    // closing tag → adapter can't split the image → model "sees" nothing.
+    if s.contains("<aurora_image ") {
+        return leanify_aurora_images(&s);
+    }
+    let cap = result_cap_for(tool);
+    if s.len() <= cap {
         return s;
     }
     let original_len = s.len();
-    // Walk char boundaries to find a safe slice point <= MAX_TOOL_RESULT_LENGTH.
-    let mut cut = MAX_TOOL_RESULT_LENGTH;
+    // Walk char boundaries to find a safe slice point <= cap.
+    let mut cut = cap;
     while cut > 0 && !s.is_char_boundary(cut) {
         cut -= 1;
     }
@@ -671,7 +946,11 @@ fn truncate_tool_content(s: String) -> String {
 const MAX_UI_TOOL_RESULT_LENGTH: usize = 512 * 1024; // 512 KiB
 const MAX_UI_JSON_FIELD_LENGTH: usize = 128 * 1024; // 128 KiB per string field
 
-fn truncate_tool_content_for_ui(s: String) -> String {
+fn truncate_tool_content_for_ui(tool_name: &str, s: String) -> String {
+    if tool_name == "browser_screenshot" {
+        return screenshot_ui_payload(&s);
+    }
+
     if s.len() <= MAX_UI_TOOL_RESULT_LENGTH {
         return s;
     }
@@ -699,6 +978,104 @@ fn truncate_tool_content_for_ui(s: String) -> String {
         original_len,
     ));
     out
+}
+
+/// Build the UI-facing payload for a `browser_screenshot` result.
+///
+/// The model-history copy keeps the full `<aurora_image>…base64…</aurora_image>`
+/// block (the vision path). The UI must NOT carry that base64 — it would bloat
+/// every persisted thread. Instead we emit a small JSON envelope the tool card's
+/// parser understands: the on-disk PNG `path` (asset-protocol loadable), its
+/// pixel `width`/`height`, and the page `url`. The card renders the image from
+/// `path`; no image bytes touch the thread store.
+///
+/// Falls back gracefully: if there's no `<aurora_image>` block at all (e.g. an
+/// error string), the original text passes through unchanged.
+fn screenshot_ui_payload(s: &str) -> String {
+    let Some(open) = s.find("<aurora_image ") else {
+        return s.to_string();
+    };
+    let Some(header_end_rel) = s[open..].find('>') else {
+        return s.to_string();
+    };
+    let header = &s[open..open + header_end_rel];
+
+    let path = header_attr(header, "src").map(unescape_xml_attr);
+    let width = header_attr(header, "width").and_then(|v| v.parse::<u64>().ok());
+    let height = header_attr(header, "height").and_then(|v| v.parse::<u64>().ok());
+
+    // The caption after the block reads `Screenshot of <url> (WxH px)` — pull the
+    // URL out of it for the card's summary line.
+    let url = s
+        .find("Screenshot of ")
+        .map(|i| &s[i + "Screenshot of ".len()..])
+        .and_then(|rest| rest.split(" (").next())
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty());
+
+    serde_json::json!({
+        "screenshot": {
+            "path": path,
+            "width": width,
+            "height": height,
+            "url": url,
+        }
+    })
+    .to_string()
+}
+
+/// Strip the base64 BODY out of every `<aurora_image src="…">…</aurora_image>`
+/// block, leaving the header (with `src`/`width`/`height`) and surrounding text
+/// intact. Only blocks that carry a `src` are leaned (the PNG is on disk and
+/// re-readable); a block WITHOUT `src` (on-disk save failed → the body is the
+/// only copy) is left untouched so the model still gets the image.
+///
+/// This is what makes the persisted history + JSONL tiny: `split_aurora_images`
+/// rehydrates the base64 from `src` at request-build time.
+fn leanify_aurora_images(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut cursor = 0usize;
+    while let Some(rel) = s[cursor..].find("<aurora_image ") {
+        let open = cursor + rel;
+        let Some(header_end_rel) = s[open..].find('>') else {
+            out.push_str(&s[cursor..]);
+            return out;
+        };
+        let header_end = open + header_end_rel + 1; // just past '>'
+        let Some(close_rel) = s[header_end..].find("</aurora_image>") else {
+            out.push_str(&s[cursor..]);
+            return out;
+        };
+        let close_start = header_end + close_rel;
+        let header = &s[open..header_end];
+        out.push_str(&s[cursor..header_end]); // text before + full header incl. '>'
+        if header.contains("src=\"") {
+            // Drop the base64 body — rehydratable from disk.
+        } else {
+            // No disk copy → keep the body so the image survives.
+            out.push_str(&s[header_end..close_start]);
+        }
+        out.push_str("</aurora_image>");
+        cursor = close_start + "</aurora_image>".len();
+    }
+    out.push_str(&s[cursor..]);
+    out
+}
+
+/// Read a `name="value"` attribute out of an `<aurora_image …` header fragment.
+/// Values never contain `"` (paths are XML-escaped upstream), so a naïve scan to
+/// the next quote is sufficient.
+fn header_attr(header: &str, name: &str) -> Option<String> {
+    let needle = format!("{name}=\"");
+    let start = header.find(&needle)? + needle.len();
+    let end = header[start..].find('"')? + start;
+    Some(header[start..end].to_string())
+}
+
+/// Reverse the minimal XML-attribute escaping applied when the screenshot path
+/// was written into the `src` attribute (`&amp;` → `&`, `&quot;` → `"`).
+fn unescape_xml_attr(v: String) -> String {
+    v.replace("&quot;", "\"").replace("&amp;", "&")
 }
 
 /// Recursively clamp every string in a JSON value to
@@ -733,6 +1110,121 @@ fn shrink_json_strings(value: &mut serde_json::Value) {
         }
         _ => {}
     }
+}
+
+/// Fraction (percent) of the context window preserved verbatim as the recent
+/// "tail" when compacting. Everything older is replaced by the LLM summary.
+const COMPACT_TAIL_PCT: u32 = 30;
+
+/// System prompt for the summarization call. Drives an LLM summary (not a
+/// deterministic template) — fidelity over a generous budget is the whole
+/// point of compaction over plain trimming.
+const COMPACTION_SYSTEM_PROMPT: &str = "You are compacting a long coding-assistant conversation so it can continue without exceeding the model's context window. Produce a dense, faithful summary of everything below that a capable agent would need to seamlessly resume the work. You MUST preserve:\n\n- The user's overall goals and every explicit instruction or constraint still in force.\n- Decisions made and their rationale; rejected alternatives and why.\n- Files read, created, or edited — with their paths and the key contents/signatures that matter going forward.\n- Tool results that still affect the work (errors seen, command output, search findings); drop noise.\n- The current state: what is done, what is in progress, and what is left.\n- Any open questions, blockers, or pending todos.\n\nWrite in clear prose and lists. Be specific (exact names, paths, values) — do not generalize away detail the agent will need. Do not address the user; this is internal context, not a reply. Output ONLY the summary.";
+
+/// Trailing user instruction appended to the head when requesting the summary.
+const COMPACTION_INSTRUCTION: &str =
+    "Summarize the entire conversation above following your system instructions. Output ONLY the summary.";
+
+/// Build the model API view for a session that may carry compaction markers.
+///
+/// Replaces everything at or older than the LAST `ContentBlock::Compaction`
+/// with its summary — folded onto the first user message of the verbatim tail
+/// so the sequence stays user-led and valid for every provider — and keeps the
+/// tail unchanged. A session with no marker round-trips unchanged. The
+/// persisted JSONL is never touched; this is an API-view transform, exactly
+/// like `inject_ide_context`/`trim_to_budget`, but summary-backed.
+fn apply_compaction(messages: &[ConversationMessage]) -> Vec<ConversationMessage> {
+    let Some(mi) = messages.iter().rposition(|m| {
+        m.blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Compaction { .. }))
+    }) else {
+        return messages.to_vec();
+    };
+    let summary = messages[mi]
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            ContentBlock::Compaction { summary, .. } => Some(summary.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let preamble = format!("<conversation_summary>\n{summary}\n</conversation_summary>");
+
+    let mut out: Vec<ConversationMessage> = messages[mi + 1..].to_vec();
+    match out.first_mut() {
+        Some(first) if first.role == MessageRole::User => match first.blocks.first_mut() {
+            Some(ContentBlock::Text { text }) => {
+                *text = format!("{preamble}\n\n{text}");
+            }
+            _ => first
+                .blocks
+                .insert(0, ContentBlock::Text { text: preamble }),
+        },
+        _ => {
+            // Tail isn't user-led (markers normally sit at user boundaries, so
+            // this is defensive) — prepend a standalone user summary so the API
+            // view still starts with a user message.
+            out.insert(
+                0,
+                ConversationMessage {
+                    role: MessageRole::User,
+                    blocks: vec![ContentBlock::Text { text: preamble }],
+                    usage: None,
+                    timestamp: messages[mi].timestamp,
+                    attached_selected_elements: None,
+                    attached_prompt_chips: None,
+                },
+            );
+        }
+    }
+    out
+}
+
+/// Pick the message index to cut at when compacting: the OLDEST `User`
+/// boundary whose verbatim tail still fits within [`COMPACT_TAIL_PCT`] of the
+/// window (maximising preserved recent context up to the cap). Falls back to
+/// the newest user boundary that still leaves a non-empty head if even the
+/// last turn exceeds the cap. Returns `None` when no safe cut exists (fewer
+/// than two user turns) so the caller skips compaction.
+fn compaction_cut(messages: &[ConversationMessage], window: u32) -> Option<usize> {
+    let target = (u64::from(window) * u64::from(COMPACT_TAIL_PCT) / 100) as u32;
+    let per: Vec<u32> = messages.iter().map(estimate_message_tokens).collect();
+    let mut suffix = vec![0u32; messages.len() + 1];
+    for i in (0..messages.len()).rev() {
+        suffix[i] = suffix[i + 1].saturating_add(per[i]);
+    }
+    let user_indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| matches!(m.role, MessageRole::User).then_some(i))
+        .collect();
+    if user_indices.len() < 2 {
+        return None;
+    }
+    // Oldest boundary (with a non-empty head) whose tail fits the cap.
+    for &idx in &user_indices {
+        if idx > 0 && suffix[idx] <= target {
+            return Some(idx);
+        }
+    }
+    // Even the last turn exceeds the cap — keep the smallest possible tail.
+    user_indices.iter().rev().copied().find(|&idx| idx > 0)
+}
+
+/// Concatenate the visible text blocks of an assistant message (used to pull
+/// the summary text out of the summarization call's reconstructed message).
+fn collect_assistant_text(message: &ConversationMessage) -> String {
+    let mut out = String::new();
+    for block in &message.blocks {
+        if let ContentBlock::Text { text } = block {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(text);
+        }
+    }
+    out
 }
 
 /// Trim the API-view of the session to fit a token budget.
@@ -885,6 +1377,43 @@ fn estimate_text_tokens(text: &str) -> u32 {
         .unwrap_or_else(|_| (text.len() as u32 + 3) / 4)
 }
 
+/// Flat per-image token estimate for the trim heuristic. Images are sent as
+/// real `image`/`image_url` blocks and billed by the provider's tile/area
+/// formula (a ~1024px image is roughly this many tokens), NOT by their base64
+/// length — so counting the marker as text would over-count by ~100×. The trim
+/// threshold's 25% cushion absorbs any imprecision in this flat figure.
+const IMAGE_TOKEN_ESTIMATE: u32 = 1_100;
+
+/// Token estimate for text that MAY embed `<aurora_image …>BASE64</aurora_image>`
+/// markers (user-pasted/dropped images, or `browser_screenshot` results). The
+/// base64 payload is excluded from the text token count and each marker instead
+/// contributes a flat [`IMAGE_TOKEN_ESTIMATE`]. Without this a single image
+/// would read as hundreds of thousands of tokens and falsely trip context
+/// trimming.
+fn estimate_text_with_images(text: &str) -> u32 {
+    if !text.contains("<aurora_image ") {
+        return estimate_text_tokens(text);
+    }
+    let mut images: u32 = 0;
+    let mut stripped = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+    while let Some(rel) = text[cursor..].find("<aurora_image ") {
+        let open = cursor + rel;
+        stripped.push_str(&text[cursor..open]);
+        match text[open..].find("</aurora_image>") {
+            Some(close_rel) => {
+                images = images.saturating_add(1);
+                cursor = open + close_rel + "</aurora_image>".len();
+            }
+            None => {
+                cursor = text.len();
+            }
+        }
+    }
+    stripped.push_str(&text[cursor..]);
+    estimate_text_tokens(&stripped).saturating_add(images.saturating_mul(IMAGE_TOKEN_ESTIMATE))
+}
+
 /// Estimate the token cost of one [`ConversationMessage`].
 ///
 /// Sums every block's textual content plus a small per-message and
@@ -897,7 +1426,10 @@ fn estimate_message_tokens(message: &ConversationMessage) -> u32 {
     for block in &message.blocks {
         match block {
             ContentBlock::Text { text } => {
-                total = total.saturating_add(estimate_text_tokens(text));
+                // Excludes embedded image base64 (counts each image as a flat
+                // estimate) so a pasted image doesn't read as ~100× its real
+                // token cost.
+                total = total.saturating_add(estimate_text_with_images(text));
             }
             ContentBlock::Thinking { text, signature } => {
                 total = total.saturating_add(estimate_text_tokens(text));
@@ -912,8 +1444,16 @@ fn estimate_message_tokens(message: &ConversationMessage) -> u32 {
                 total = total.saturating_add(3); // tool-call overhead
             }
             ContentBlock::ToolResult { content, .. } => {
-                total = total.saturating_add(estimate_text_tokens(content));
+                // Screenshot results also embed `<aurora_image>` markers.
+                total = total.saturating_add(estimate_text_with_images(content));
                 total = total.saturating_add(4); // tool-result overhead
+            }
+            ContentBlock::Compaction { summary, .. } => {
+                // In the model API view a compaction marker is replaced by its
+                // summary (a single text block), so its token cost IS the
+                // summary's. `apply_compaction` normally strips markers before
+                // this runs; counting the summary keeps any stray call honest.
+                total = total.saturating_add(estimate_text_tokens(summary));
             }
         }
     }
@@ -1044,6 +1584,57 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Mutex;
     use tokio::sync::mpsc;
+
+    #[test]
+    fn screenshot_ui_result_omits_base64_and_emits_path_json() {
+        let raw = "<aurora_image media_type=\"image/png\" width=\"800\" height=\"600\" src=\"C:\\cache\\shot-1.png\">QUJDREVGRw==</aurora_image>\nScreenshot of http://localhost:3001 (800×600 px)";
+        let ui = truncate_tool_content_for_ui("browser_screenshot", raw.to_string());
+
+        // No base64 reaches the UI / thread store.
+        assert!(!ui.contains("QUJDREVGRw=="));
+        // A structured payload the tool card can parse: path + dims + url.
+        let v: serde_json::Value = serde_json::from_str(&ui).expect("valid JSON payload");
+        let shot = &v["screenshot"];
+        assert_eq!(shot["path"], "C:\\cache\\shot-1.png");
+        assert_eq!(shot["width"], 800);
+        assert_eq!(shot["height"], 600);
+        assert_eq!(shot["url"], "http://localhost:3001");
+    }
+
+    #[test]
+    fn screenshot_model_history_is_leaned_but_rehydratable() {
+        // A screenshot WITH a `src` is leaned: base64 stripped, header (src/dims)
+        // + caption + close tag kept, so the JSONL stays tiny and the adapter can
+        // rehydrate the PNG from disk. It must NOT be byte-clamped (that would
+        // chop the block and drop the close tag).
+        let big_b64 = "A".repeat(20_000);
+        let raw = format!(
+            "<aurora_image media_type=\"image/png\" width=\"1400\" height=\"820\" src=\"C:\\cache\\shot.png\">{big_b64}</aurora_image>\nScreenshot of http://localhost:3001 (1400×820 px)"
+        );
+        let leaned = truncate_tool_content("browser_screenshot", raw);
+        assert!(!leaned.contains(&big_b64), "base64 body must be stripped");
+        assert!(
+            leaned.contains("src=\"C:\\cache\\shot.png\""),
+            "src pointer kept"
+        );
+        assert!(leaned.contains("</aurora_image>"), "close tag kept");
+        assert!(
+            leaned.contains("Screenshot of http://localhost:3001"),
+            "caption kept"
+        );
+    }
+
+    #[test]
+    fn screenshot_without_src_keeps_inline_base64() {
+        // If the on-disk save failed there's no `src`, so the body is the only
+        // copy — it must survive leaning or the model loses the image entirely.
+        let b64 = "B".repeat(12_000);
+        let raw = format!(
+            "<aurora_image media_type=\"image/png\" width=\"800\" height=\"600\">{b64}</aurora_image>\nScreenshot of http://localhost:3001 (800×600 px)"
+        );
+        let out = truncate_tool_content("browser_screenshot", raw);
+        assert!(out.contains(&b64), "inline base64 kept when there's no src");
+    }
 
     // ── Test doubles ────────────────────────────────────────────────
 
@@ -1957,17 +2548,13 @@ mod tests {
     }
 
     fn assistant_with_text(text: &str, ts: i64) -> ConversationMessage {
-        ConversationMessage::assistant(
-            vec![ContentBlock::Text { text: text.into() }],
-            ts,
-        )
+        ConversationMessage::assistant(vec![ContentBlock::Text { text: text.into() }], ts)
     }
 
     /// Building block for trim tests: 60 char text yields ~15 tokens
     /// under cl100k. Used to construct sessions whose total token count
     /// is predictable enough to compare against a budget.
-    const FILLER_60: &str =
-        "0123456789012345678901234567890123456789012345678901234567";
+    const FILLER_60: &str = "0123456789012345678901234567890123456789012345678901234567";
 
     #[test]
     fn trim_is_noop_when_context_window_is_none() {
@@ -1994,11 +2581,11 @@ mod tests {
         // user-anchored turns will exceed the threshold.
         let big = FILLER_60.repeat(60); // ~900 chars → ~225 tokens cl100k
         let messages = vec![
-            user_with_text(&big, 0),         // turn 1
+            user_with_text(&big, 0), // turn 1
             assistant_with_text(&big, 1),
-            user_with_text(&big, 2),         // turn 2
+            user_with_text(&big, 2), // turn 2
             assistant_with_text(&big, 3),
-            user_with_text("latest", 4),     // turn 3 (latest)
+            user_with_text("latest", 4), // turn 3 (latest)
             assistant_with_text("reply", 5),
         ];
 
@@ -2057,6 +2644,8 @@ mod tests {
             }],
             usage: None,
             timestamp: 11,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
         };
         let messages = vec![
             user_with_text(&big, 0),
@@ -2086,11 +2675,12 @@ mod tests {
                     ContentBlock::ToolResult { tool_use_id, .. } => tool_use_id.clone(),
                     _ => panic!("tool message must carry a ToolResult block"),
                 };
-                let has_matching_use = outcome
-                    .messages
-                    .iter()
-                    .any(|m| m.blocks.iter().any(|b| matches!(b,
-                        ContentBlock::ToolUse { id, .. } if id == &rid)));
+                let has_matching_use = outcome.messages.iter().any(|m| {
+                    m.blocks.iter().any(|b| {
+                        matches!(b,
+                        ContentBlock::ToolUse { id, .. } if id == &rid)
+                    })
+                });
                 assert!(
                     has_matching_use,
                     "tool_result {rid} must have its tool_use in the kept slice"
@@ -2196,12 +2786,7 @@ mod tests {
 
         let (tx, _rx) = mpsc::channel(32);
         runtime
-            .run_turn(
-                &mut session,
-                user_msg("now"),
-                tx,
-                CancellationToken::new(),
-            )
+            .run_turn(&mut session, user_msg("now"), tx, CancellationToken::new())
             .await
             .expect("ok");
 
@@ -2259,12 +2844,7 @@ mod tests {
 
         let (tx, _rx) = mpsc::channel(32);
         runtime
-            .run_turn(
-                &mut session,
-                user_msg("now"),
-                tx,
-                CancellationToken::new(),
-            )
+            .run_turn(&mut session, user_msg("now"), tx, CancellationToken::new())
             .await
             .expect("ok");
 

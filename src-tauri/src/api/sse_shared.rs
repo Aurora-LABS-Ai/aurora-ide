@@ -178,7 +178,8 @@ mod tests {
         let split = bytes
             .iter()
             .position(|&b| b == 0xC3)
-            .expect("find the multi-byte start") + 1;
+            .expect("find the multi-byte start")
+            + 1;
         let mut buf = SseFrameBuffer::new();
         buf.extend(&bytes[..split]);
         assert!(buf.take_frames().is_empty());

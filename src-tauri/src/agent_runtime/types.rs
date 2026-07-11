@@ -75,6 +75,26 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+
+    /// A context-compaction boundary marker (see `DOCS/compaction-design.md`).
+    ///
+    /// Carried in a [`MessageRole::System`] message inserted into the JSONL
+    /// stream at the cut point: `[head…][System(Compaction)][tail…]`. It is a
+    /// **persisted, summary-backed** boundary — never sent to a provider. The
+    /// API-view builder (`conversation::apply_compaction`) replaces everything
+    /// at/older than the last such marker with `summary` and keeps the tail
+    /// verbatim, so the model's working set shrinks while the UI transcript
+    /// stays whole.
+    ///
+    /// `summary` is for the MODEL only; the UI renders a card showing the
+    /// `before_tokens → after_tokens` drop and NEVER displays the summary text.
+    Compaction {
+        summary: String,
+        before_tokens: u32,
+        after_tokens: u32,
+        /// Unix epoch milliseconds when compaction fired.
+        created_at: i64,
+    },
 }
 
 /// Token usage attributed to a single assistant turn.
@@ -110,6 +130,43 @@ impl TokenUsage {
 /// shape Aurora's frontend already uses for `Message.timestamp`. We
 /// pick `i64` over `u64` so subtraction in elapsed-time UIs is
 /// straightforward.
+/// Compact, display-only record of an element the user picked with the
+/// in-app browser inspector. Persisted on the user [`ConversationMessage`]
+/// so the chip survives thread reopen — it becomes a permanent part of the
+/// JSONL transcript. The *full* element context is sent to the model via
+/// `ide_context`; this struct exists purely so the UI can re-render the
+/// pill above the user bubble after a reload.
+///
+/// Field names are camelCase on the wire to match the TS
+/// `AttachedSelectedElement` interface (`thread-service.ts`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachedSelectedElement {
+    pub index: i64,
+    pub selector: String,
+    pub tag_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// Display metadata for an exact composer pill attached to a user message.
+/// File pills retain both their serialized reference and resolved absolute
+/// path; directive pills retain the kind/title used by the composer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachedPromptChip {
+    pub kind: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConversationMessage {
     pub role: MessageRole,
@@ -118,6 +175,15 @@ pub struct ConversationMessage {
     pub usage: Option<TokenUsage>,
     /// Unix epoch milliseconds.
     pub timestamp: i64,
+    /// Browser-inspector element chips attached to a user message. `None`
+    /// for every non-user message and for user messages without picks.
+    /// `#[serde(default)]` keeps pre-existing JSONL (written before this
+    /// field existed) loadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attached_selected_elements: Option<Vec<AttachedSelectedElement>>,
+    /// Exact file and `/` pills from the composer, for transcript replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attached_prompt_chips: Option<Vec<AttachedPromptChip>>,
 }
 
 impl ConversationMessage {
@@ -129,6 +195,8 @@ impl ConversationMessage {
             blocks: vec![ContentBlock::Text { text: text.into() }],
             usage: None,
             timestamp,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
         }
     }
 
@@ -141,6 +209,8 @@ impl ConversationMessage {
             blocks,
             usage: None,
             timestamp,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
         }
     }
 
@@ -157,6 +227,8 @@ impl ConversationMessage {
             blocks,
             usage: Some(usage),
             timestamp,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
         }
     }
 }
@@ -312,6 +384,20 @@ mod tests {
     }
 
     #[test]
+    fn conversation_message_round_trip_preserves_prompt_chips() {
+        let mut msg = ConversationMessage::user_text("check @src/main.ts", 123);
+        msg.attached_prompt_chips = Some(vec![AttachedPromptChip {
+            kind: "file".into(),
+            title: "main.ts".into(),
+            value: Some("src/main.ts".into()),
+            path: Some("E:/work/src/main.ts".into()),
+        }]);
+        let value = serde_json::to_value(&msg).expect("serialize");
+        let back: ConversationMessage = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(back.attached_prompt_chips, msg.attached_prompt_chips);
+    }
+
+    #[test]
     fn message_role_serializes_as_snake_case_string() {
         assert_eq!(
             serde_json::to_string(&MessageRole::System).expect("serialize"),
@@ -329,8 +415,7 @@ mod tests {
             serde_json::to_string(&MessageRole::Tool).expect("serialize"),
             "\"tool\""
         );
-        let back: MessageRole =
-            serde_json::from_str("\"assistant\"").expect("deserialize role");
+        let back: MessageRole = serde_json::from_str("\"assistant\"").expect("deserialize role");
         assert_eq!(back, MessageRole::Assistant);
     }
 

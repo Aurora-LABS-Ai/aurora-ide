@@ -75,7 +75,24 @@ impl ToolExecutor for GrepTool {
                 let candidate = if raw_path == "." {
                     root.to_path_buf()
                 } else {
-                    super::resolve_path(&raw_path, Some(root))?
+                    match super::resolve_path(&raw_path, Some(root)) {
+                        Ok(path) => path,
+                        Err(err) => {
+                            return Ok(serde_json::to_string(&json!({
+                                "success": false,
+                                "error": format!("Invalid search path `{raw_path}`: {err}"),
+                                "pattern": pattern,
+                                "tool": "grep",
+                                "matches": null,
+                                "files": null,
+                                "counts": null,
+                                "total_matches": null,
+                                "total_files": null,
+                                "truncated": null,
+                            }))
+                            .unwrap());
+                        }
+                    }
                 };
                 candidate.to_string_lossy().to_string()
             }
@@ -88,7 +105,10 @@ impl ToolExecutor for GrepTool {
                 .get("context_lines")
                 .and_then(Value::as_u64)
                 .map(|n| n as u32),
-            glob: input.get("glob").and_then(Value::as_str).map(str::to_string),
+            glob: input
+                .get("glob")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             is_regex: input.get("is_regex").and_then(Value::as_bool),
             max_results: input
                 .get("max_results")
@@ -187,5 +207,38 @@ mod tests {
         let mut v = json!({ "files": ["C:\\ws\\src\\a.rs"] });
         relativize_paths(&mut v, Path::new("C:/ws"));
         assert_eq!(v["files"][0], "src/a.rs");
+    }
+
+    #[tokio::test]
+    async fn invalid_path_returns_structured_error() {
+        use crate::agent_runtime::tool_executor::ToolContext;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(GrepTool);
+        let out = tool
+            .execute(
+                serde_json::json!({
+                    "pattern": "anything",
+                    "path": "../outside.txt",
+                }),
+                &ToolContext {
+                    allow_outside_workspace: false,
+                    turn_id: "t".into(),
+                    tool_call_id: "c".into(),
+                    session_id: "s".into(),
+                    workspace_root: Some(tmp.path().to_path_buf()),
+                    cancel_token: CancellationToken::new(),
+                },
+            )
+            .await
+            .expect("path errors should be structured grep results");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], false);
+        assert!(parsed["error"]
+            .as_str()
+            .unwrap()
+            .contains("Invalid search path"));
     }
 }

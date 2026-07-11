@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 
-use super::resolve_path;
+use super::resolve_path_for_read;
 
 /// Chosen to match the TS executor (`MAX_FILE_SIZE = 500 * 1024`).
 const MAX_FILE_SIZE: usize = 500 * 1024;
@@ -36,19 +36,24 @@ impl ToolExecutor for FileReadTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "file_read".into(),
-            description: "Read file content safely. Small files are returned in full; large files \
-                          (>1500 lines or >500KB) are returned as a bounded line window. Use \
-                          start_line and end_line for precise 1-based inclusive reads."
+            description: "Read file content safely. Pass `path` to read ONE file (with an optional \
+                          start_line/end_line window), or `paths` to read MANY files in parallel. \
+                          Small files return in full; large files (>1500 lines or >500KB) return a \
+                          bounded line window. A missing path reports exists=false rather than failing."
                 .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "The full path of the file to read." },
-                    "start_line": { "type": "number", "description": "Optional 1-based first line to return." },
-                    "end_line": { "type": "number", "description": "Optional 1-based inclusive last line to return." },
-                    "max_lines": { "type": "number", "description": "Optional maximum lines to return from start_line." }
+                    "path": { "type": "string", "description": "Single-file form: full path to read." },
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Batch form: multiple file paths to read in parallel (omit `path`)."
+                    },
+                    "start_line": { "type": "number", "description": "Single-file form: 1-based first line to return." },
+                    "end_line": { "type": "number", "description": "Single-file form: 1-based inclusive last line to return." },
+                    "max_lines": { "type": "number", "description": "Single-file form: maximum lines to return from start_line." }
                 },
-                "required": ["path"],
                 "additionalProperties": false,
             }),
         }
@@ -57,22 +62,74 @@ impl ToolExecutor for FileReadTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
 
+        // Batch form: read many files in parallel. Record each requested
+        // path as "seen" so a later file_edit knows the agent looked at it,
+        // then delegate to the shared parallel reader.
+        if let Some(arr) = input.get("paths").and_then(Value::as_array) {
+            for entry in arr {
+                if let Some(p) = entry.as_str() {
+                    if let Ok(resolved) = resolve_path_for_read(
+                        p,
+                        ctx.workspace_root.as_deref(),
+                        ctx.allow_outside_workspace,
+                    ) {
+                        super::read_tracker::record(&ctx.session_id, &resolved.to_string_lossy());
+                    }
+                }
+            }
+            return super::multi_file_read::read_many(input, ctx).await;
+        }
+
         let path = input
             .get("path")
             .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidInput("`path` must be a string".into()))?;
+            .ok_or_else(|| {
+                ToolError::InvalidInput("provide `path` (single) or `paths` (array)".into())
+            })?;
 
-        let resolved = resolve_path(path, ctx.workspace_root.as_deref())?;
-        let start_line = input.get("start_line").and_then(Value::as_u64).map(|n| n as usize);
-        let end_line = input.get("end_line").and_then(Value::as_u64).map(|n| n as usize);
-        let max_lines = input.get("max_lines").and_then(Value::as_u64).map(|n| n as usize);
+        let resolved = match resolve_path_for_read(
+            path,
+            ctx.workspace_root.as_deref(),
+            ctx.allow_outside_workspace,
+        ) {
+            Ok(resolved) => resolved,
+            Err(ToolError::Execution(err)) => {
+                return Ok(serde_json::to_string(&json!({
+                    "success": false,
+                    "path": path,
+                    "error": format!("Invalid file path: {err}"),
+                }))
+                .unwrap());
+            }
+            Err(err) => return Err(err),
+        };
+        let start_line = input
+            .get("start_line")
+            .and_then(Value::as_u64)
+            .map(|n| n as usize);
+        let end_line = input
+            .get("end_line")
+            .and_then(Value::as_u64)
+            .map(|n| n as usize);
+        let max_lines = input
+            .get("max_lines")
+            .and_then(Value::as_u64)
+            .map(|n| n as usize);
 
         let path_owned = resolved.to_string_lossy().to_string();
+        let resolved_for_record = path_owned.clone();
         let raw_path = path.to_string();
 
-        let body = tokio::task::spawn_blocking(move || read_with_policy(&path_owned, &raw_path, start_line, end_line, max_lines))
-            .await
-            .map_err(|err| ToolError::Execution(format!("file_read task panicked: {err}")))??;
+        let body = tokio::task::spawn_blocking(move || {
+            read_with_policy(&path_owned, &raw_path, start_line, end_line, max_lines)
+        })
+        .await
+        .map_err(|err| ToolError::Execution(format!("file_read task panicked: {err}")))??;
+
+        // Mark the file seen so a subsequent file_edit passes the
+        // read-before-edit guard. Recording the attempt (even on a miss)
+        // is harmless: file_edit independently fails on a missing file.
+        super::read_tracker::record(&ctx.session_id, &resolved_for_record);
 
         Ok(body)
     }
@@ -89,8 +146,13 @@ fn read_with_policy(
         Ok(c) => c,
         Err(err) => {
             // Mirror TS executor: returns success=false JSON, NOT a thrown error.
+            // `exists: false` folds in the old `file_exists` tool — callers can
+            // probe a path's presence with file_read and branch on this flag.
             return Ok(serde_json::to_string(&json!({
                 "success": false,
+                "exists": false,
+                "path": rel_path,
+                "fullPath": full_path,
                 "error": format!("Failed to read file: {err}"),
             }))
             .unwrap());
@@ -210,10 +272,17 @@ fn slice_window(
 
     let start = start_line.unwrap_or(1).max(1).min(total);
     let max_window = max_lines
-        .unwrap_or(if explicit { MAX_SINGLE_READ_LINES } else { DEFAULT_LINE_WINDOW })
+        .unwrap_or(if explicit {
+            MAX_SINGLE_READ_LINES
+        } else {
+            DEFAULT_LINE_WINDOW
+        })
         .min(MAX_SINGLE_READ_LINES);
     let natural_end = end_line.unwrap_or(start + max_window - 1);
-    let end = natural_end.max(start).min(start + max_window - 1).min(total);
+    let end = natural_end
+        .max(start)
+        .min(start + max_window - 1)
+        .min(total);
 
     let selected = if lines.is_empty() {
         String::new()
@@ -239,6 +308,7 @@ mod tests {
 
     fn ctx_for(workspace: Option<std::path::PathBuf>) -> ToolContext {
         ToolContext {
+            allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             session_id: "s".into(),
@@ -282,6 +352,26 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::PolicyViolation(_)));
+    }
+
+    #[tokio::test]
+    async fn missing_file_returns_json_error() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let result = tool
+            .execute(
+                serde_json::json!({ "path": "missing.txt" }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("missing file should not fail the whole tool call");
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["success"], false);
+        assert!(parsed["error"]
+            .as_str()
+            .unwrap()
+            .contains("Failed to read file"));
     }
 
     #[tokio::test]

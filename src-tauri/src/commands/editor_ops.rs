@@ -29,7 +29,7 @@ const CR: char = '\r';
 // Public command: apply_search_replace
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchReplaceItem {
     pub old_string: String,
@@ -248,9 +248,7 @@ fn plan_multi_search_replace(
 
         // SIMD-accelerated occurrence scan.
         let finder = memmem::Finder::new(normalized_old.as_bytes());
-        let occurrences: Vec<usize> = finder
-            .find_iter(normalized_original.as_bytes())
-            .collect();
+        let occurrences: Vec<usize> = finder.find_iter(normalized_original.as_bytes()).collect();
         let occurrence_count = occurrences.len();
 
         if occurrence_count == 0 {
@@ -519,7 +517,9 @@ pub async fn slice_file_lines(
         .map_err(|error| format!("slice_file_lines task panicked: {}", error))?
 }
 
-fn slice_file_lines_inner(request: SliceFileLinesRequest) -> Result<SliceFileLinesResponse, String> {
+fn slice_file_lines_inner(
+    request: SliceFileLinesRequest,
+) -> Result<SliceFileLinesResponse, String> {
     let content = file_cache::read_file_cached(&request.path)?;
     let byte_size = content.len();
 
@@ -694,102 +694,326 @@ fn evaluate_exclusion(path: String) -> IsPathExcludedItem {
 // table is statically allocated and matched in O(N) with very tight code.
 const EXCLUDED_DIRECTORIES: &[&str] = &[
     // version control
-    ".git", ".svn", ".hg", ".bzr", "_darcs", ".fossil",
+    ".git",
+    ".svn",
+    ".hg",
+    ".bzr",
+    "_darcs",
+    ".fossil",
     // node / js
-    "node_modules", ".pnpm", ".npm", ".yarn", ".pnp", "bower_components", "jspm_packages",
+    "node_modules",
+    ".pnpm",
+    ".npm",
+    ".yarn",
+    ".pnp",
+    "bower_components",
+    "jspm_packages",
     // next / react
-    ".next", ".docusaurus", ".gatsby", ".expo", ".expo-shared",
+    ".next",
+    ".docusaurus",
+    ".gatsby",
+    ".expo",
+    ".expo-shared",
     // vue / nuxt
-    ".nuxt", ".output", ".vuepress", ".temp",
+    ".nuxt",
+    ".output",
+    ".vuepress",
+    ".temp",
     // angular / svelte
-    ".angular", ".svelte-kit",
+    ".angular",
+    ".svelte-kit",
     // bundlers
-    "dist", "build", "out", "output",
-    ".parcel-cache", ".rollup.cache", ".webpack", ".turbo",
-    ".vercel", ".netlify", ".serverless", ".amplify", ".firebase",
-    ".esbuild", ".swc", "storybook-static",
+    "dist",
+    "build",
+    "out",
+    "output",
+    ".parcel-cache",
+    ".rollup.cache",
+    ".webpack",
+    ".turbo",
+    ".vercel",
+    ".netlify",
+    ".serverless",
+    ".amplify",
+    ".firebase",
+    ".esbuild",
+    ".swc",
+    "storybook-static",
     // rust / go
-    "target", "vendor", "bin", "pkg",
+    "target",
+    "vendor",
+    "bin",
+    "pkg",
     // jvm
-    ".gradle", ".idea", "gradle", ".m2", ".mvn", "classes", "libs",
-    "intermediates", "generated", "outputs", "captures",
-    ".cxx", ".externalNativeBuild", "jniLibs", "apk", "aab",
-    "ndk", "sdk", "android-sdk", "android-ndk",
+    ".gradle",
+    ".idea",
+    "gradle",
+    ".m2",
+    ".mvn",
+    "classes",
+    "libs",
+    "intermediates",
+    "generated",
+    "outputs",
+    "captures",
+    ".cxx",
+    ".externalNativeBuild",
+    "jniLibs",
+    "apk",
+    "aab",
+    "ndk",
+    "sdk",
+    "android-sdk",
+    "android-ndk",
     // c/c++
-    "cmake-build-debug", "cmake-build-release", "cmake-build-relwithdebinfo",
-    "cmake-build-minsizerel", "cmakefiles", "debug", "release",
-    "x64", "x86", "win32", "arm", "arm64",
-    ".vs", "ipch", "obj",
+    "cmake-build-debug",
+    "cmake-build-release",
+    "cmake-build-relwithdebinfo",
+    "cmake-build-minsizerel",
+    "cmakefiles",
+    "debug",
+    "release",
+    "x64",
+    "x86",
+    "win32",
+    "arm",
+    "arm64",
+    ".vs",
+    "ipch",
+    "obj",
     // .net
-    "packages", ".nuget", "testresults", "apppackages", "bundleartifacts",
+    "packages",
+    ".nuget",
+    "testresults",
+    "apppackages",
+    "bundleartifacts",
     // python
-    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
-    ".tox", ".nox", ".eggs",
-    ".venv", "venv", "env", "env_", ".env", ".pyenv", ".conda",
-    "site-packages", "htmlcov", ".ipynb_checkpoints",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".nox",
+    ".eggs",
+    ".venv",
+    "venv",
+    "env",
+    "env_",
+    ".env",
+    ".pyenv",
+    ".conda",
+    "site-packages",
+    "htmlcov",
+    ".ipynb_checkpoints",
     // ruby
-    ".bundle", ".gem",
+    ".bundle",
+    ".gem",
     // swift / xcode
-    "deriveddata", "pods", ".build", "carthage", "xcuserdata",
-    "sourcepackages", "modulecache",
+    "deriveddata",
+    "pods",
+    ".build",
+    "carthage",
+    "xcuserdata",
+    "sourcepackages",
+    "modulecache",
     // dart / flutter
-    ".dart_tool", ".pub-cache", ".pub", "ephemeral",
+    ".dart_tool",
+    ".pub-cache",
+    ".pub",
+    "ephemeral",
     // elixir
-    "_build", "deps", ".elixir_ls",
+    "_build",
+    "deps",
+    ".elixir_ls",
     // haskell
-    ".stack-work", ".cabal-sandbox",
+    ".stack-work",
+    ".cabal-sandbox",
     // testing
-    "coverage", ".nyc_output", "__snapshots__", ".jest", ".mocha",
-    "test-results", "test-output", "allure-results", "allure-report",
-    "playwright-report", ".playwright",
+    "coverage",
+    ".nyc_output",
+    "__snapshots__",
+    ".jest",
+    ".mocha",
+    "test-results",
+    "test-output",
+    "allure-results",
+    "allure-report",
+    "playwright-report",
+    ".playwright",
     // caches
-    ".cache", ".tmp", "tmp", "temp", "logs", "log",
+    ".cache",
+    ".tmp",
+    "tmp",
+    "temp",
+    "logs",
+    "log",
     // ides
-    ".vscode", ".settings", ".project", ".classpath", ".factorypath",
-    "nbproject", ".nb-gradle", ".history",
+    ".vscode",
+    ".settings",
+    ".project",
+    ".classpath",
+    ".factorypath",
+    "nbproject",
+    ".nb-gradle",
+    ".history",
     // os
-    "__macosx", ".spotlight-v100", ".trashes", "ehthumbs.db", "$recycle.bin",
+    "__macosx",
+    ".spotlight-v100",
+    ".trashes",
+    "ehthumbs.db",
+    "$recycle.bin",
     // misc
-    ".docker", ".terraform", ".terragrunt-cache", "charts",
-    "artifacts", "publish", "_site",
+    ".docker",
+    ".terraform",
+    ".terragrunt-cache",
+    "charts",
+    "artifacts",
+    "publish",
+    "_site",
     // unity / unreal
-    "library", "memorycaptures", "builds", "usersettings",
-    "binaries", "intermediate", "saved", "deriveddatacache",
+    "library",
+    "memorycaptures",
+    "builds",
+    "usersettings",
+    "binaries",
+    "intermediate",
+    "saved",
+    "deriveddatacache",
     // electron / monorepo
-    ".electron", "release-builds", ".nx", ".rush", ".pnpm-store",
+    ".electron",
+    "release-builds",
+    ".nx",
+    ".rush",
+    ".pnpm-store",
 ];
 
 const EXCLUDED_EXTENSIONS: &[&str] = &[
-    ".pyc", ".pyo", ".pyd",
-    ".class", ".jar", ".war", ".ear",
-    ".dll", ".exe", ".msi", ".msm", ".msp",
-    ".o", ".obj", ".a", ".lib", ".so", ".dylib",
-    ".ko", ".elf",
-    ".pdb", ".idb", ".ilk",
-    ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
-    ".tgz", ".tbz2", ".txz",
-    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".icns",
-    ".webp", ".tiff", ".tif", ".psd", ".ai", ".raw", ".cr2", ".nef",
-    ".woff", ".woff2", ".ttf", ".otf", ".eot",
-    ".mp3", ".mp4", ".wav", ".ogg", ".webm", ".avi", ".mov", ".mkv",
-    ".flac", ".aac", ".m4a", ".m4v", ".flv", ".wmv",
-    ".db", ".sqlite", ".sqlite3", ".mdb", ".accdb",
-    ".map",
-    ".apk", ".aab", ".ipa", ".dex",
-    ".unity", ".prefab", ".asset", ".meta",
-    ".bin", ".dat", ".pak", ".bundle",
+    ".pyc", ".pyo", ".pyd", ".class", ".jar", ".war", ".ear", ".dll", ".exe", ".msi", ".msm",
+    ".msp", ".o", ".obj", ".a", ".lib", ".so", ".dylib", ".ko", ".elf", ".pdb", ".idb", ".ilk",
+    ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar", ".tgz", ".tbz2", ".txz", ".png", ".jpg",
+    ".jpeg", ".gif", ".bmp", ".ico", ".icns", ".webp", ".tiff", ".tif", ".psd", ".ai", ".raw",
+    ".cr2", ".nef", ".woff", ".woff2", ".ttf", ".otf", ".eot", ".mp3", ".mp4", ".wav", ".ogg",
+    ".webm", ".avi", ".mov", ".mkv", ".flac", ".aac", ".m4a", ".m4v", ".flv", ".wmv", ".db",
+    ".sqlite", ".sqlite3", ".mdb", ".accdb", ".map", ".apk", ".aab", ".ipa", ".dex", ".unity",
+    ".prefab", ".asset", ".meta", ".bin", ".dat", ".pak", ".bundle",
 ];
 
 const EXCLUDED_FILES: &[&str] = &[
-    "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb",
-    "cargo.lock", "gemfile.lock", "composer.lock", "poetry.lock",
-    "pipfile.lock", "pubspec.lock", "packages.lock.json", "paket.lock",
-    "mix.lock", "shrinkwrap.yaml",
-    ".ds_store", "thumbs.db", "desktop.ini",
-    ".env", ".env.local", ".env.development", ".env.development.local",
-    ".env.test", ".env.test.local", ".env.production", ".env.production.local",
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "yarn.lock",
+    "bun.lockb",
+    "cargo.lock",
+    "gemfile.lock",
+    "composer.lock",
+    "poetry.lock",
+    "pipfile.lock",
+    "pubspec.lock",
+    "packages.lock.json",
+    "paket.lock",
+    "mix.lock",
+    "shrinkwrap.yaml",
+    ".ds_store",
+    "thumbs.db",
+    "desktop.ini",
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.development.local",
+    ".env.test",
+    ".env.test.local",
+    ".env.production",
+    ".env.production.local",
     ".envrc",
 ];
+
+// ---------------------------------------------------------------------------
+// Public commands: agent_open_in_ide / take_pending_ide_open
+// ---------------------------------------------------------------------------
+
+/// A file the agent window asked the IDE to open while the IDE window was CLOSED.
+/// The backend re-creates the main window and stashes the request here; the
+/// freshly-mounted IDE drains it via [`take_pending_ide_open`] on startup. This
+/// hop sidesteps any "emit before the listener is ready" race.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingIdeOpen {
+    pub path: String,
+    pub line: Option<u64>,
+}
+
+static PENDING_IDE_OPEN: std::sync::Mutex<Option<PendingIdeOpen>> = std::sync::Mutex::new(None);
+
+/// Hand a file off from the agent window (which is view-only) to the MAIN IDE
+/// window for editing, bringing that window to the front — RE-CREATING it if the
+/// user closed it (the common case: the IDE is closed once the agent window is
+/// up, and reopened on demand from here).
+///
+/// This runs in the backend on purpose. The previous path emitted a global JS
+/// event and hoped the main window would focus *itself* — but a background
+/// webview can't steal the OS foreground, and if the IDE was closed there was no
+/// listener at all, so the click did nothing. From Rust we own every window: we
+/// focus reliably, and when the window doesn't exist we build it and queue the
+/// file for its startup drain.
+#[tauri::command]
+pub async fn agent_open_in_ide(
+    app: tauri::AppHandle,
+    path: String,
+    line: Option<u64>,
+) -> Result<(), String> {
+    use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+
+    // Already open → bring it forward and deliver the open request to its
+    // existing `agent_open_in_ide` listener (only the main window listens).
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+        app.emit(
+            "agent_open_in_ide",
+            serde_json::json!({ "path": path, "line": line }),
+        )
+        .map_err(|error| format!("Couldn't notify the IDE window: {error}"))?;
+        return Ok(());
+    }
+
+    // Closed → queue the file, then re-create the main window. It drains the
+    // queue once its frontend mounts (see `take_pending_ide_open`).
+    *PENDING_IDE_OPEN
+        .lock()
+        .map_err(|_| "pending-open lock poisoned".to_string())? =
+        Some(PendingIdeOpen { path, line });
+
+    // Mirror the main window from tauri.conf.json (custom title bar →
+    // decorations off). `WebviewUrl::App("index.html")` loads the SPA root, which
+    // renders the IDE (only `/agent-window` & friends are treated as secondary).
+    let built = WebviewWindowBuilder::new(&app, "main", WebviewUrl::App("index.html".into()))
+        .title("Aurora")
+        .inner_size(1600.0, 1000.0)
+        .min_inner_size(900.0, 600.0)
+        .center()
+        .decorations(false)
+        .resizable(true)
+        .build();
+
+    if let Err(error) = built {
+        // Don't leave a stale entry if the window failed to build.
+        if let Ok(mut guard) = PENDING_IDE_OPEN.lock() {
+            *guard = None;
+        }
+        return Err(format!("Couldn't open the IDE window: {error}"));
+    }
+
+    Ok(())
+}
+
+/// Drained by the main window on startup: returns and clears any file the agent
+/// window queued (via [`agent_open_in_ide`]) while the IDE was closed. Returns
+/// `null` on a normal launch.
+#[tauri::command]
+pub fn take_pending_ide_open() -> Option<PendingIdeOpen> {
+    PENDING_IDE_OPEN.lock().ok().and_then(|mut guard| guard.take())
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -829,10 +1053,7 @@ mod tests {
 
         // 3-byte UTF-8: CJK
         let three_byte = "你好\r\n世界\r\n再见\rfoo";
-        assert_eq!(
-            normalize_line_endings(three_byte),
-            "你好\n世界\n再见\nfoo"
-        );
+        assert_eq!(normalize_line_endings(three_byte), "你好\n世界\n再见\nfoo");
 
         // 4-byte UTF-8: emoji
         let four_byte = "🎉\r\n🚀\r\n💥\rship";
@@ -841,18 +1062,12 @@ mod tests {
         // Mixed widths in a single string — the worst case for the old
         // byte-walker (every char width changes).
         let mixed = "a\r\nä\r\n你\r\n🎉\rdone";
-        assert_eq!(
-            normalize_line_endings(mixed),
-            "a\nä\n你\n🎉\ndone"
-        );
+        assert_eq!(normalize_line_endings(mixed), "a\nä\n你\n🎉\ndone");
 
         // Bare CR followed immediately by a multi-byte char must not
         // confuse the lookahead.
         let cr_then_multibyte = "x\rä\r\n你\rend";
-        assert_eq!(
-            normalize_line_endings(cr_then_multibyte),
-            "x\nä\n你\nend"
-        );
+        assert_eq!(normalize_line_endings(cr_then_multibyte), "x\nä\n你\nend");
     }
 
     /// Regression: `apply_search_replace` on a CRLF-saved file containing

@@ -155,10 +155,7 @@ impl Session {
     /// Take the queued message, leaving the slot empty. Called by the
     /// conversation runtime when it's about to inject.
     pub fn take_queued_message(&self) -> Option<QueuedUserMessage> {
-        self.queued_message
-            .lock()
-            .ok()
-            .and_then(|mut g| g.take())
+        self.queued_message.lock().ok().and_then(|mut g| g.take())
     }
 
     /// Clear the queued message without consuming it. Called by the
@@ -172,10 +169,7 @@ impl Session {
     /// Read the queued message without taking it. For diagnostics.
     #[must_use]
     pub fn peek_queued_message(&self) -> Option<QueuedUserMessage> {
-        self.queued_message
-            .lock()
-            .ok()
-            .and_then(|g| g.clone())
+        self.queued_message.lock().ok().and_then(|g| g.clone())
     }
 
     /// Bind this session to a workspace root path.
@@ -340,10 +334,7 @@ impl Session {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         let line = serde_json::to_string(message)?;
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;
@@ -400,6 +391,8 @@ mod tests {
             blocks: vec![ContentBlock::Text { text: text.into() }],
             usage: None,
             timestamp: 0,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
         }
     }
 
@@ -488,10 +481,7 @@ mod tests {
         let session = Session::new("t")
             .with_workspace_root("E:/aurora/work")
             .with_model("anthropic:claude-3-7-sonnet");
-        assert_eq!(
-            session.workspace_root.as_deref(),
-            Some("E:/aurora/work")
-        );
+        assert_eq!(session.workspace_root.as_deref(), Some("E:/aurora/work"));
         assert_eq!(
             session.model.as_deref(),
             Some("anthropic:claude-3-7-sonnet")
@@ -516,6 +506,8 @@ mod tests {
             blocks: vec![ContentBlock::Text { text: text.into() }],
             usage: None,
             timestamp: 1_700_000_000_000,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
         }
     }
 

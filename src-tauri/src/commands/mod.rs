@@ -27,6 +27,7 @@ pub mod agent_v2_permissions;
 pub mod browser;
 pub mod chat;
 pub mod checkpoints;
+pub mod codex;
 pub mod editor_ops;
 pub mod git;
 pub mod local_providers;
@@ -35,10 +36,15 @@ pub mod provider_kernel;
 pub mod settings;
 pub mod speech;
 pub mod state;
+pub mod team;
 pub mod themes;
 pub mod threads;
+pub mod prompt_refine;
+pub mod title_maker;
 pub mod tokens;
+pub mod typing_assist;
 pub mod undo_redo;
+pub mod usage_stats;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileEntry {
@@ -158,6 +164,42 @@ fn try_kill_pid(pid: u32) -> Result<(), String> {
     }
 }
 
+/// Locate a Git Bash executable on Windows.
+///
+/// Used so the agent's shell tools can default to a POSIX/bash environment
+/// (matching how the model "thinks" — `ls`, `&&`, `rm -rf`, single-quote
+/// quoting — and matching the bash-oriented safety validator) instead of
+/// fighting PowerShell. Returns the first candidate that exists, or `None`
+/// when Git Bash isn't installed (callers then fall back to PowerShell).
+///
+/// On non-Windows the platform shell is already POSIX, so this returns `None`.
+#[cfg(target_os = "windows")]
+#[must_use]
+pub fn find_git_bash() -> Option<String> {
+    let mut candidates: Vec<String> = vec![
+        r"C:\Program Files\Git\bin\bash.exe".to_string(),
+        r"C:\Program Files (x86)\Git\bin\bash.exe".to_string(),
+        r"C:\Git\bin\bash.exe".to_string(),
+    ];
+    for var in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+        if let Ok(pf) = std::env::var(var) {
+            candidates.push(format!(r"{pf}\Git\bin\bash.exe"));
+        }
+    }
+    if let Ok(local) = std::env::var("LocalAppData") {
+        candidates.push(format!(r"{local}\Programs\Git\bin\bash.exe"));
+    }
+    candidates
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[must_use]
+pub fn find_git_bash() -> Option<String> {
+    None
+}
+
 fn build_shell_command(
     shell_profile: &str,
     command: &str,
@@ -167,18 +209,7 @@ fn build_shell_command(
         "bash" => {
             #[cfg(target_os = "windows")]
             {
-                let git_bash_paths = [
-                    r"C:\Program Files\Git\bin\bash.exe",
-                    r"C:\Program Files (x86)\Git\bin\bash.exe",
-                    r"C:\Git\bin\bash.exe",
-                ];
-
-                let bash_path = git_bash_paths
-                    .iter()
-                    .find(|p| std::path::Path::new(p).exists())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "bash".to_string());
-
+                let bash_path = find_git_bash().unwrap_or_else(|| "bash".to_string());
                 (bash_path, vec!["-c"])
             }
             #[cfg(not(target_os = "windows"))]
@@ -727,8 +758,7 @@ pub async fn aurora_websearch(
     // Hard wall-clock cap for any single web operation. Without this a
     // hung DDG endpoint or a slow page stalls the bridge oneshot until
     // the user manually cancels the turn, which presents as a freeze.
-    const AURORA_WEBSEARCH_TIMEOUT: std::time::Duration =
-        std::time::Duration::from_secs(30);
+    const AURORA_WEBSEARCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
     if action == "fetch" {
         let url = request

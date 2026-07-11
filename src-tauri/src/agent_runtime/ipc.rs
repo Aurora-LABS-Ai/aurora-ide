@@ -35,6 +35,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::events::AssistantEvent;
+use super::types::{AttachedPromptChip, AttachedSelectedElement};
 
 /// Frontend → backend request to start one agent turn.
 ///
@@ -131,6 +132,41 @@ pub struct AgentChatRequest {
     /// window get the legacy behaviour (whole session sent every turn).
     #[serde(default)]
     pub context_window: Option<u32>,
+
+    /// Compaction trigger as a percentage of `context_window` (e.g. `80`).
+    /// When the projected request crosses it, the runtime summarizes older
+    /// history into a persistent marker before continuing (see
+    /// `DOCS/compaction-design.md`). `None`/`0` disables compaction — the
+    /// request then relies on `trim` alone. User-configurable (Settings →
+    /// Agent), clamped 50–95 on the frontend.
+    #[serde(default)]
+    pub compaction_threshold_pct: Option<f32>,
+
+    /// `max_output_tokens` budget for the summarization call. `None` uses the
+    /// runtime default (8192). User-configurable (Settings → Agent), clamped
+    /// 2,000–16,000 on the frontend.
+    #[serde(default)]
+    pub compaction_summary_budget: Option<u32>,
+
+    /// When true, read-only file tools may read files OUTSIDE the workspace
+    /// (user opt-in, Settings → Agent). `None`/`false` keeps the strict
+    /// workspace boundary. Writes are never affected.
+    #[serde(default)]
+    pub allow_outside_workspace: Option<bool>,
+
+    /// Browser-inspector element chips the user attached to this message
+    /// in the composer. Persisted verbatim onto the user
+    /// [`crate::agent_runtime::types::ConversationMessage`] so the chips
+    /// survive thread reopen. Display-only — the full element context
+    /// reaches the model through `ide_context`. `None`/empty when the
+    /// user attached nothing.
+    #[serde(default)]
+    pub attached_selected_elements: Option<Vec<AttachedSelectedElement>>,
+
+    /// Exact file and `/` pills attached in the composer. Display-only and
+    /// persisted with the user message so thread reloads remain faithful.
+    #[serde(default)]
+    pub attached_prompt_chips: Option<Vec<AttachedPromptChip>>,
 }
 
 /// One tool entry in [`AgentChatRequest::tools`].
@@ -208,6 +244,11 @@ mod tests {
             max_output_tokens: Some(4096),
             thinking_enabled: Some(true),
             context_window: Some(200_000),
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            compaction_threshold_pct: None,
+            compaction_summary_budget: None,
+            allow_outside_workspace: None,
         }
     }
 
@@ -353,6 +394,11 @@ mod tests {
             max_output_tokens: None,
             thinking_enabled: None,
             context_window: None,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            compaction_threshold_pct: None,
+            compaction_summary_budget: None,
+            allow_outside_workspace: None,
         };
         let s = serde_json::to_string(&req).expect("serialize");
         // Phase 2.3 contract: camelCase, no skip_serializing_if on
@@ -392,9 +438,7 @@ mod tests {
         let env = AgentEventEnvelope {
             turn_id: "t-1".into(),
             seq: 0,
-            event: AssistantEvent::TextDelta {
-                delta: "hi".into(),
-            },
+            event: AssistantEvent::TextDelta { delta: "hi".into() },
         };
         let s = serde_json::to_string(&env).expect("serialize");
         assert!(s.contains("\"turn_id\":\"t-1\""));

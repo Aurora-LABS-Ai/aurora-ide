@@ -337,11 +337,7 @@ impl AgentRegistry {
     /// slot. The slot is an `Arc<std::sync::Mutex<Option<…>>>` shared
     /// with the `Session`, so a write here is immediately visible to
     /// `session.take_queued_message()` running inside the turn.
-    pub async fn enqueue_message(
-        &self,
-        thread_id: &str,
-        text: String,
-    ) -> Result<(), String> {
+    pub async fn enqueue_message(&self, thread_id: &str, text: String) -> Result<(), String> {
         if text.trim().is_empty() {
             return Err("queued message text cannot be empty".to_string());
         }
@@ -394,6 +390,15 @@ impl AgentRegistry {
             }
             Err(other) => return Err(other),
         };
+
+        // JSONL stores messages only; restore the thread's sticky project scope
+        // from its metadata sidecar so a restarted process cannot silently
+        // re-home tool execution to whatever workspace the next request sends.
+        if session.workspace_root.is_none() {
+            if let Ok(meta) = self.store.load_metadata(thread_id) {
+                session.workspace_root = meta.workspace_root;
+            }
+        }
 
         // Bind the session to the registry-level queue slot. If the
         // user already enqueued a mid-turn message *before* the first
@@ -563,6 +568,7 @@ impl<E: EventEmitter> TurnDriver<E> {
             self.registry.bridge_router().clone(),
             self.emitter.clone() as Arc<dyn BridgeEmitter>,
             cancel_token.clone(),
+            request.provider_config.supports_vision,
         );
 
         // 4. Construct the runtime with a fresh RuntimeConfig overlaying
@@ -579,10 +585,50 @@ impl<E: EventEmitter> TurnDriver<E> {
         //    through RuntimeConfig::ide_context — the runtime wraps it
         //    around the API view of the message only, leaving the
         //    persisted JSONL clean.
-        let user_message = ConversationMessage::user_text(
+        let mut user_message = ConversationMessage::user_text(
             request.user_message.clone(),
             Utc::now().timestamp_millis(),
         );
+        // Attach browser-inspector element chips so they persist into the
+        // session JSONL as a permanent part of this turn (re-rendered above
+        // the user bubble on thread reopen). Empty vecs collapse to None so
+        // the field stays absent from the serialized line.
+        user_message.attached_selected_elements = request
+            .attached_selected_elements
+            .clone()
+            .filter(|v| !v.is_empty());
+        user_message.attached_prompt_chips = request
+            .attached_prompt_chips
+            .clone()
+            .filter(|v| !v.is_empty());
+
+        // 5b. Durability for a brand-new chat: persist the user message to the
+        //     JSONL *now*, before the (potentially long) agent loop runs. The
+        //     full session is otherwise only flushed at turn END
+        //     (`save_to_path` below), so until then a fresh draft has an empty
+        //     `.jsonl` (messageCount 0) — invisible to `thread_list_summaries`
+        //     and therefore unreachable if the user navigates away mid-turn.
+        //     Writing message #1 up front makes the thread real on disk
+        //     immediately: it lists, it survives a mid-turn reload/crash, and
+        //     the rail can route back to it. Scoped to genuinely fresh threads
+        //     (empty log) so existing chats keep their untouched hot path; the
+        //     post-turn full `save_to_path` reconciles the line either way, so
+        //     there is never a duplicate on the success path.
+        {
+            let store = self.registry.store();
+            let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
+            let early_path = self.registry.session_path(&thread_id);
+            let is_fresh = std::fs::metadata(&early_path)
+                .map(|m| m.len() == 0)
+                .unwrap_or(true);
+            if is_fresh {
+                if let Err(e) = Session::append_to_path(&early_path, &user_message) {
+                    eprintln!(
+                        "agent_v2: early user-message persist failed for thread {thread_id}: {e}"
+                    );
+                }
+            }
+        }
 
         // 7. Bounded channel + forwarder task. The forwarder exits when
         //    the runtime drops the sender (i.e. when run_turn returns).
@@ -603,15 +649,22 @@ impl<E: EventEmitter> TurnDriver<E> {
             let mut session = session_arc.lock().await;
 
             // Per-turn metadata applied inside the lock so the runtime
-            // sees consistent values. The model is pinned on first use
-            // and not overwritten on subsequent calls (avoids surprising
-            // mid-thread model swaps showing up in the persisted log).
-            if let Some(ws) = &request.workspace_path {
-                session.workspace_root = Some(ws.clone());
+            // sees consistent values.
+            if session.workspace_root.is_none() {
+                if let Some(ws) = &request.workspace_path {
+                    session.workspace_root = Some(ws.clone());
+                }
             }
-            if session.model.is_none() {
-                session.model = Some(format!("{}:{}", request.provider_id, request.model));
-            }
+            // The active model MUST track the current request every turn.
+            // `conversation.rs` sends `session.model` to the provider, while
+            // the provider endpoint + API key come from THIS request's
+            // provider_config. Pinning the model on the first turn only meant
+            // a mid-thread model switch sent the OLD model id to the NEW
+            // provider's endpoint — e.g. a Fireworks model id posted to the
+            // DeepSeek endpoint → HTTP 400 "supported API model names are …".
+            // Updating every turn keeps model + provider consistent, and the
+            // thread's persisted model reflects the one actually in use.
+            session.model = Some(format!("{}:{}", request.provider_id, request.model));
 
             // Snapshot the message count before the runtime runs so we
             // can detect whether this turn actually appended anything
@@ -673,7 +726,7 @@ impl<E: EventEmitter> TurnDriver<E> {
         //     row.
         if turn_appended {
             let store = self.registry.store();
-            let _ = store.ensure_thread(&thread_id, None);
+            let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
             let _ = store.set_workspace_and_model(
                 &thread_id,
                 request.workspace_path.clone(),
@@ -689,9 +742,8 @@ impl<E: EventEmitter> TurnDriver<E> {
                 .map(|m| m.title == "New Chat")
                 .unwrap_or(false);
             if needs_auto_title {
-                let derived = crate::agent_runtime::title::derive_thread_title(
-                    &request.user_message,
-                );
+                let derived =
+                    crate::agent_runtime::title::derive_thread_title(&request.user_message);
                 if !derived.is_empty() && derived != "New Chat" {
                     let _ = store.set_title(&thread_id, derived);
                 }
@@ -757,6 +809,16 @@ fn build_runtime_config(request: &AgentChatRequest) -> RuntimeConfig {
         // whole session every turn" behaviour, so callers that don't
         // know their window (e.g. test mocks) are unaffected.
         context_window: request.context_window.or(defaults.context_window),
+        // Compaction: the frontend sends a percentage (50–95); the runtime
+        // works in fractions. `0`/absent disables it (trim-only).
+        compaction_threshold: request
+            .compaction_threshold_pct
+            .filter(|p| *p > 0.0)
+            .map(|p| (p / 100.0).clamp(0.0, 1.0)),
+        compaction_summary_budget: request
+            .compaction_summary_budget
+            .unwrap_or(defaults.compaction_summary_budget),
+        allow_outside_workspace: request.allow_outside_workspace.unwrap_or(false),
     }
 }
 
@@ -770,6 +832,14 @@ fn build_runtime_config(request: &AgentChatRequest) -> RuntimeConfig {
 /// executor wins. The bridge is preserved only for tool names the
 /// Rust registry doesn't know — primarily MCP tools (`mcp_*`) which
 /// are still discovered + executed on the frontend.
+///
+/// `supports_vision` gates image-returning tools
+/// ([`crate::tools::browser::VISION_REQUIRED_TOOLS`]): when the active
+/// model can't see images, those tools are left out of the per-turn
+/// registry entirely, so they're neither advertised to nor callable by
+/// the model. This is the Rust-side port of the old frontend vision
+/// gate, which stopped working once the Rust registry began advertising
+/// native tools directly.
 fn build_per_turn_tool_registry(
     base: Arc<ToolRegistry>,
     tools: &[AllowedTool],
@@ -777,10 +847,17 @@ fn build_per_turn_tool_registry(
     router: Arc<BridgeRouter>,
     emitter: Arc<dyn BridgeEmitter>,
     cancel_token: CancellationToken,
+    supports_vision: bool,
 ) -> ToolRegistry {
     let registry = ToolRegistry::new();
+    let vision_blocked = |name: &str| {
+        !supports_vision && crate::tools::browser::VISION_REQUIRED_TOOLS.contains(&name)
+    };
     // 1. Bridge fallback for every AllowedTool the model can see.
     for tool in tools {
+        if vision_blocked(&tool.name) {
+            continue;
+        }
         let executor: Arc<dyn ToolExecutor> = Arc::new(FrontendBridgeExecutor::new(
             tool.clone(),
             turn_id.clone(),
@@ -793,6 +870,9 @@ fn build_per_turn_tool_registry(
     // 2. Native Rust executors from the base registry overwrite any
     //    bridge entry registered above with the same name.
     for name in base.names() {
+        if vision_blocked(&name) {
+            continue;
+        }
         if let Some(existing) = base.get(&name) {
             registry.register(existing);
         }
@@ -1274,6 +1354,11 @@ mod tests {
             max_output_tokens: None,
             thinking_enabled: None,
             context_window: None,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            compaction_threshold_pct: None,
+            compaction_summary_budget: None,
+            allow_outside_workspace: None,
         }
     }
 
@@ -1314,6 +1399,73 @@ mod tests {
             "second call must return the SAME Arc pointer as the first"
         );
         assert_eq!(registry.session_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn load_or_create_session_restores_sticky_workspace_scope() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path().to_path_buf());
+        store
+            .ensure_thread("scoped", None, Some("C:/project-a".into()))
+            .expect("metadata");
+        Session::append_to_path(
+            store.session_path("scoped"),
+            &ConversationMessage::user_text("hello", 1),
+        )
+        .expect("jsonl");
+
+        let registry = AgentRegistry::new(dummy_factory(), dir.path().to_path_buf());
+        let session = registry.load_or_create_session("scoped").expect("session");
+
+        assert_eq!(
+            session.lock().await.workspace_root.as_deref(),
+            Some("C:/project-a")
+        );
+    }
+
+    #[tokio::test]
+    async fn later_turn_cannot_move_live_session_to_another_workspace() {
+        let api = Arc::new(MockApi::new(vec![
+            TurnScript::Reply {
+                events: vec![],
+                result: Ok(turn_usage(assistant_text_msg("first"), "end_turn")),
+            },
+            TurnScript::Reply {
+                events: vec![],
+                result: Ok(turn_usage(assistant_text_msg("second"), "end_turn")),
+            },
+        ]));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(
+            Arc::new(MockApiFactory::from_api(api)),
+            dir.path().to_path_buf(),
+        ));
+        let driver = TurnDriver::new(registry.clone(), Arc::new(MockEmitter::default()));
+
+        let mut first = make_request("turn-a", "sticky-thread", "first");
+        first.workspace_path = Some("C:/project-a".into());
+        driver.run_turn(first).await.expect("first turn");
+
+        let mut second = make_request("turn-b", "sticky-thread", "second");
+        second.workspace_path = Some("C:/project-b".into());
+        driver.run_turn(second).await.expect("second turn");
+
+        let session = registry
+            .load_or_create_session("sticky-thread")
+            .expect("session");
+        assert_eq!(
+            session.lock().await.workspace_root.as_deref(),
+            Some("C:/project-a")
+        );
+        assert_eq!(
+            registry
+                .store()
+                .load_metadata("sticky-thread")
+                .expect("metadata")
+                .workspace_root
+                .as_deref(),
+            Some("C:/project-a")
+        );
     }
 
     // ── Test 2 ──────────────────────────────────────────────────────

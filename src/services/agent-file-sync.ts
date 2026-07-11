@@ -40,6 +40,7 @@ import {
   getMonacoEditorForPath,
   replaceMonacoFileContent,
 } from "../lib/monaco-editor-ref";
+import type { ExplorerSnapshot } from "../lib/tauri";
 import { useEditorStore } from "../store/useEditorStore";
 import { liveFilePreviewService } from "./live-file-preview";
 
@@ -67,30 +68,102 @@ const findTabForPath = (path: string) => {
 };
 
 let pendingExplorerRefresh = false;
-const refreshExplorerSoon = async () => {
-  // Coalesce multiple file_changed events that arrive in the same
-  // tool batch into a single explorer refresh. Without this, an
-  // agent that runs 5 `file_write`s in a row would trigger 5
-  // back-to-back `explorer_refresh` IPC calls — each reading the
-  // workspace tree from disk.
+let pendingExplorerChanges: AgentFileChangedPayload[] = [];
+const EXPLORER_SYNC_DEBOUNCE_MS = 80;
+
+type ExplorerChangeKind = "create" | "modify" | "remove";
+
+export interface ExplorerChangeGroup {
+  kind: ExplorerChangeKind;
+  paths: string[];
+}
+
+const explorerKindForChange = (kind: FileChangeKind): ExplorerChangeKind => {
+  switch (kind) {
+    case "created":
+      return "create";
+    case "deleted":
+      return "remove";
+    case "modified":
+    case "renamed":
+      return "modify";
+  }
+};
+
+export const buildExplorerChangeGroups = (
+  changes: AgentFileChangedPayload[],
+): ExplorerChangeGroup[] => {
+  const groups = new Map<ExplorerChangeKind, Set<string>>();
+  const addPath = (kind: ExplorerChangeKind, path: string | undefined) => {
+    if (!path) return;
+    const group = groups.get(kind) ?? new Set<string>();
+    group.add(path);
+    groups.set(kind, group);
+  };
+
+  for (const change of changes) {
+    if (change.kind === "renamed") {
+      addPath("remove", change.oldPath);
+      addPath("create", change.path);
+      continue;
+    }
+    addPath(explorerKindForChange(change.kind), change.path);
+  }
+
+  return [...groups].map(([kind, paths]) => ({
+    kind,
+    paths: [...paths],
+  }));
+};
+
+const applyExplorerSnapshot = async (snapshot: ExplorerSnapshot) => {
+  const { useWorkspaceStore } = await import("../store/useWorkspaceStore");
+  useWorkspaceStore.setState({
+    expandedFolders: new Set(snapshot.expandedFolders),
+    files: snapshot.files,
+    rootPath: snapshot.rootPath,
+    selectedFileId: snapshot.selectedFile,
+  });
+};
+
+const flushExplorerChanges = async () => {
+  const changes = pendingExplorerChanges;
+  pendingExplorerChanges = [];
+  pendingExplorerRefresh = false;
+  if (changes.length === 0) return;
+
+  const groups = buildExplorerChangeGroups(changes);
+
+  try {
+    const { explorerApplyFsChanges } = await import("../lib/tauri");
+    let latestSnapshot: ExplorerSnapshot | null = null;
+    for (const group of groups) {
+      latestSnapshot = await explorerApplyFsChanges(group.paths, group.kind);
+    }
+    if (latestSnapshot) {
+      await applyExplorerSnapshot(latestSnapshot);
+    }
+  } catch (err) {
+    console.warn("[agent-file-sync] targeted explorer update failed:", err);
+    try {
+      const { useWorkspaceStore } = await import("../store/useWorkspaceStore");
+      await useWorkspaceStore.getState().refreshDirectory();
+    } catch (fallbackErr) {
+      console.warn("[agent-file-sync] explorer refresh failed:", fallbackErr);
+    }
+  }
+};
+
+const refreshExplorerSoon = (payload: AgentFileChangedPayload) => {
+  // ponytail: short debounce; switch to per-directory scheduling if
+  // explorer updates still show up in profiles on huge workspaces.
+  pendingExplorerChanges.push(payload);
   if (pendingExplorerRefresh) return;
   pendingExplorerRefresh = true;
 
-  // Use a microtask + queueMicrotask-style yield so we coalesce
-  // events from the same tick, but don't introduce visible lag.
-  queueMicrotask(async () => {
-    try {
-      const { useWorkspaceStore } = await import("../store/useWorkspaceStore");
-      const refresh = useWorkspaceStore.getState().refreshDirectory;
-      if (typeof refresh === "function") {
-        await refresh();
-      }
-    } catch (err) {
-      console.warn("[agent-file-sync] explorer refresh failed:", err);
-    } finally {
-      pendingExplorerRefresh = false;
-    }
-  });
+  setTimeout(() => {
+    void flushExplorerChanges();
+  }, EXPLORER_SYNC_DEBOUNCE_MS);
 };
 
 /**
@@ -108,7 +181,7 @@ const applyFileWritten = (payload: AgentFileChangedPayload) => {
   if (payload.isDirectory || payload.content === undefined) {
     // Folder creates and createless modified events skip the Monaco
     // path entirely — there's no buffer to refresh.
-    void refreshExplorerSoon();
+    refreshExplorerSoon(payload);
     return;
   }
 
@@ -151,7 +224,7 @@ const applyFileWritten = (payload: AgentFileChangedPayload) => {
   }
 
   if (payload.kind === "created") {
-    void refreshExplorerSoon();
+    refreshExplorerSoon(payload);
   }
 };
 
@@ -167,7 +240,7 @@ const applyFileDeleted = (payload: AgentFileChangedPayload) => {
     liveFilePreviewService.complete(payload.toolCallId);
   }
 
-  void refreshExplorerSoon();
+  refreshExplorerSoon(payload);
 };
 
 const applyFileRenamed = (payload: AgentFileChangedPayload) => {
@@ -189,7 +262,7 @@ const applyFileRenamed = (payload: AgentFileChangedPayload) => {
       }));
     }
   }
-  void refreshExplorerSoon();
+  refreshExplorerSoon(payload);
 };
 
 let started = false;

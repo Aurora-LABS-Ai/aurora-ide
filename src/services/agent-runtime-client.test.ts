@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── Hoisted mocks for the IPC primitives ────────────────────────────
-const invokeMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined as unknown));
+type InvokeFn = (command: string, args?: unknown) => Promise<unknown>;
+const invokeMock = vi.hoisted(() => vi.fn<InvokeFn>().mockResolvedValue(undefined));
 type ListenHandler = (event: { event: string; payload: unknown }) => void;
 const listenHandlers = vi.hoisted(() => new Map<string, ListenHandler>());
 const listenUnsubs = vi.hoisted(() => new Map<string, () => void>());
@@ -27,8 +28,9 @@ vi.mock("../lib/runtime", () => ({
 // frontend bridge. Native Rust tools are dispatched server-side and
 // never reach `dispatchToolPending`. The tests below mock the MCP
 // helpers so we can exercise the bridge without booting an MCP server.
+type ExecuteMcpToolFn = (name: string, input: Record<string, unknown>) => Promise<string>;
 const executeMcpToolMock = vi.hoisted(() =>
-  vi.fn(async (_name: string, _args: unknown) => "mcp-result"),
+  vi.fn<ExecuteMcpToolFn>().mockResolvedValue("mcp-result"),
 );
 const isMcpToolMock = vi.hoisted(() =>
   vi.fn((name: string) => name.startsWith("mcp_")),
@@ -164,6 +166,7 @@ describe("AgentRuntimeClient.buildRequest", () => {
       defaultTemperature: 0.5,
       defaultMaxTokens: 4096,
       supportsThinking: true,
+      supportsVision: false,
       contextWindow: 128000,
       maxOutputTokens: 8192,
     });
@@ -492,7 +495,7 @@ describe("AgentRuntimeClient.chat — bridge round-trip", () => {
       expect(post).toBeDefined();
       const args = post?.[1] as { content: string; isError: boolean };
       expect(args.isError).toBe(true);
-      expect(args.content).toContain("not registered in the Rust runtime");
+      expect(args.content).toContain("Rust runtime has no executor");
     });
 
     expect(executeMcpToolMock).not.toHaveBeenCalled();
@@ -588,6 +591,48 @@ describe("AgentRuntimeClient.chat — completion + cleanup", () => {
     for (const unsub of unsubsBefore) {
       expect(unsub).toHaveBeenCalledTimes(1);
     }
+  });
+
+  it("includes exact prompt-chip metadata on the runtime request", () => {
+    const attachedPromptChips = [
+      {
+        kind: "file" as const,
+        title: "main.ts",
+        value: "src/main.ts",
+        path: "E:/work/src/main.ts",
+      },
+      { kind: "mcp" as const, title: "filesystem" },
+    ];
+    const request = AgentRuntimeClient.buildRequest({
+      turnId: "t-chips",
+      threadId: "thread-1",
+      input: { ...sampleInput, attachedPromptChips },
+      providerConfig: sampleProviderConfig,
+      config: {},
+    });
+
+    expect(request.attachedPromptChips).toEqual(attachedPromptChips);
+  });
+
+  it("cleans up partial subscriptions when listener setup fails", async () => {
+    const firstUnsub = vi.fn();
+    listenMock
+      .mockImplementationOnce(async (eventName: string, handler: ListenHandler) => {
+        listenHandlers.set(eventName, handler);
+        return firstUnsub;
+      })
+      .mockRejectedValueOnce(new Error("event bridge unavailable"));
+    const onError = vi.fn();
+    const client = buildClient({ onError });
+
+    await expect(client.chat(sampleInput)).rejects.toThrow("event bridge unavailable");
+
+    expect(firstUnsub).toHaveBeenCalledTimes(1);
+    expect(client.isRunning()).toBe(false);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "event bridge unavailable" }),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith(AGENT_CHAT_COMMAND, expect.anything());
   });
 
   it("rejects with the runtime error and unsubscribes on agent_turn_error", async () => {

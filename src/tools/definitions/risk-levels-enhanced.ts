@@ -14,8 +14,8 @@
  */
 export const getAutoApprovedTools = (): string[] => {
   return Object.entries(enhancedToolRiskLevels)
-    .filter(([_, level]) => level === 'low')
-    .map(([name, _]) => name);
+    .filter(([, level]) => level === 'low')
+    .map(([name]) => name);
 };
 
 /**
@@ -31,8 +31,8 @@ export const getEnhancedToolRiskLevel = (toolName: string): 'low' | 'medium' | '
  */
 export const getToolsRequiringApproval = (): string[] => {
   return Object.entries(enhancedToolRiskLevels)
-    .filter(([_, level]) => level === 'high')
-    .map(([name, _]) => name);
+    .filter(([, level]) => level === 'high')
+    .map(([name]) => name);
 };
 
 /**
@@ -48,16 +48,21 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   // ============================================
   // FILE TOOLS - MOSTLY AUTO-APPROVED
   // ============================================
-  file_create: 'low',        // Changed from 'medium' - auto-approve creates
-  file_read: 'low',          // Already low - read is safe
-  file_read_lines: 'low',    // Already low - read is safe
-  file_write: 'low',         // Changed from 'high' - auto-approve writes for speed
-  search_replace: 'low',     // Changed from 'high' - auto-approve edits for speed
-  file_delete: 'high',       // KEEP HIGH - deletion is destructive
-  file_exists: 'low',        // Already low - check is safe
-  file_search: 'low',        // Already low - search is safe
+  // Current file tools (post 16→10 refine)
+  file_read: 'low',          // read (single or batch) is safe
+  file_write: 'low',         // auto-approve writes for speed
+  file_edit: 'low',          // exact-text edit — auto-approve for speed
+  move_path: 'medium',       // move/rename file or folder — can reorganize
+  delete_path: 'high',       // KEEP HIGH - deletion is destructive
   grep: 'low',               // Search tool - read only operation
-  multi_file_read: 'low',    // Parallel file reading - read only operation
+  // Legacy file tools (historic threads / decoration only)
+  file_create: 'low',
+  file_read_lines: 'low',
+  search_replace: 'low',
+  file_delete: 'high',
+  file_exists: 'low',
+  file_search: 'low',
+  multi_file_read: 'low',
 
   // ============================================
   // WORKSPACE TOOLS - ALL AUTO-APPROVED
@@ -105,6 +110,26 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   // ============================================
   aurora_skill_search: 'low',      // Read-only catalog browse
   aurora_skill_load: 'low',        // Read-only SKILL.md fetch
+
+  // ============================================
+  // INTERACTIVE PROMPT - AUTO-APPROVED (UI is the consent)
+  // ============================================
+  ask_question: 'low',             // Renders a prompt; user answers in the UI
+
+  // ============================================
+  // AGENT TEAM (LEAD CONTROL) TOOLS
+  // Auto-approval is driven by shouldAutoApproveAuroraFrontendTool
+  // (the user opts into the whole flow in settings); these risk
+  // levels are for UI decoration only. Mutations land in guarded
+  // Rust `team_*` commands.
+  // ============================================
+  team_show: 'low',                // Reveals the embedded Team screen
+  team_status: 'low',              // Read-only brain snapshot + run status
+  team_chat: 'low',                // Read-only team group-chat tail
+  team_message: 'low',             // Posts a Lead message to the team channel
+  team_dispatch: 'medium',         // Spins up the team; runs plan→build→integrate in the background
+  team_remove_agent: 'high',       // Dismisses a member, releases its scope
+  team_disband: 'high',            // Stops the whole team run
 
   // Note: MCP tools are handled separately via mcp-tools.ts
   // Their approval is determined by the server's autoApprove setting

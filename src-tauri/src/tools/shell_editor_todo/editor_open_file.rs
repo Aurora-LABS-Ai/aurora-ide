@@ -93,6 +93,7 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext {
+            allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             session_id: "s".into(),
@@ -133,7 +134,10 @@ mod tests {
     #[tokio::test]
     async fn rejects_missing_path() {
         let tool = EditorOpenFileTool::new(Arc::new(NoopIdeEventSink));
-        let err = tool.execute(json!({}), &ctx()).await.expect_err("must fail");
+        let err = tool
+            .execute(json!({}), &ctx())
+            .await
+            .expect_err("must fail");
         assert!(matches!(err, ToolError::InvalidInput(_)));
     }
 

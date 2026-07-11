@@ -1,9 +1,14 @@
 /**
  * Tool Definitions Index
- * Central export for all tool definitions
+ * Central export for all tool definitions.
  *
- * - File: 8 (create, read, write, search_replace, multi_search_replace, delete, grep, multi_file_read)
- * - Workspace: 4 (tree, folder_create, folder_move, folder_delete)
+ * NOTE: tools flagged `nativeRustOwned` are NOT sent to the model from
+ * here — the Rust runtime's registry is their single source of truth
+ * (see `AgentService.buildAvailableTools`, which filters them out). These
+ * definitions remain only as frontend metadata (risk/approval/display).
+ *
+ * - File: 6 (read, write, edit, move_path, delete_path, grep)
+ * - Workspace: 2 (tree, folder_create)
  * - Shell: 4 (execute, spawn, kill, list_processes)
  * - Editor: 2 (open_file, read_lints)
  * - Search: 1 (auroro_websearch)
@@ -14,9 +19,11 @@ import type { ToolDefinition } from "../types";
 import { editorTools } from "./editor-tools";
 import { fileTools } from "./file-tools";
 import { getEnhancedToolRiskLevel } from "./risk-levels-enhanced";
+import { questionTools } from "./question-tools";
 import { searchTools } from "./search-tools";
 import { shellTools } from "./shell-tools";
 import { skillTools } from "./skill-tools";
+import { teamTools } from "./team-tools";
 import { todoTools } from "./todo-tools";
 import { workspaceTools } from "./workspace-tools";
 
@@ -42,6 +49,10 @@ export * from './search-tools';
 
 export * from './skill-tools';
 
+export * from './team-tools';
+
+export * from './question-tools';
+
 export * from './todo-tools';
 
 // All available tools (MCP tools are added dynamically from connected servers)
@@ -52,6 +63,8 @@ export const allTools: ToolDefinition[] = [
   ...editorTools,
   ...searchTools,
   ...skillTools,
+  ...teamTools,
+  ...questionTools,
   ...todoTools,
 ];
 
@@ -86,6 +99,16 @@ export const toolCategories = {
     name: 'Skills',
     description: 'Discovery tools for the Aurora skill catalog.',
     tools: skillTools,
+  },
+  team: {
+    name: 'Agent Team',
+    description: "Lead tools to convene, plan, build, integrate, and manage the agent team.",
+    tools: teamTools,
+  },
+  question: {
+    name: 'User Prompts',
+    description: 'Interactive prompts that ask the user a structured question.',
+    tools: questionTools,
   },
   todo: {
     name: 'Task Management',

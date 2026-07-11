@@ -33,7 +33,7 @@
 //! `disconnect_server`, …) is unchanged so `mcp/commands.rs` and the
 //! frontend keep working without modification.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,7 +45,7 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 
 #[cfg(windows)]
@@ -65,6 +65,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// server is almost certainly broken (or fighting Node startup) and the
 /// user needs to know now rather than waiting a full minute.
 const CONNECT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Enough stderr to explain a startup crash without flooding the settings UI.
+const STDERR_TAIL_LINES: usize = 8;
 
 /// One outbound JSON-RPC message bound for the server. Callers fill in
 /// `method` + `params`; the actor allocates the `id` and parks
@@ -136,13 +139,19 @@ impl McpManager {
         self.servers.read().get(id).cloned()
     }
 
-    pub fn add_server(&self, config: McpServerConfig) -> Result<McpServerState, String> {
+    pub fn add_server(&self, mut config: McpServerConfig) -> Result<McpServerState, String> {
+        // The on-disk config is keyed by name (Cursor/Claude format), so the
+        // runtime id IS the name — never the frontend's throwaway mcp-<id>.
+        config.id = config.name.clone();
+
         let mut mcp_config = McpConfig::load().unwrap_or_default();
         mcp_config.upsert_server(&config);
         mcp_config.save()?;
 
         let state = McpServerState::new(config.clone());
-        self.servers.write().insert(config.id.clone(), state.clone());
+        self.servers
+            .write()
+            .insert(config.id.clone(), state.clone());
         Ok(state)
     }
 
@@ -155,8 +164,15 @@ impl McpManager {
         Ok(())
     }
 
-    pub fn update_server(&self, config: McpServerConfig) -> Result<McpServerState, String> {
-        let id = config.id.clone();
+    pub fn update_server(&self, mut config: McpServerConfig) -> Result<McpServerState, String> {
+        // The id is the name (see `add_server`). The incoming `config.id` is the
+        // server's PREVIOUS key; `config.name` is the (possibly renamed) target.
+        // Renaming therefore moves the server to a new key, so we remove the old
+        // entry from both the file and the in-memory map below.
+        let old_id = config.id.clone();
+        config.id = config.name.clone();
+        let new_id = config.id.clone();
+        let renamed = old_id != new_id;
 
         // Decide *before* mutating state whether the edit invalidates
         // the live connection. The old behaviour was to disconnect on
@@ -171,7 +187,7 @@ impl McpManager {
         // Anything not in that list (name, enabled, autoStart,
         // autoApprove) is metadata and the existing connection stays
         // valid.
-        let previous = self.get_server(&id);
+        let previous = self.get_server(&old_id);
         let transport_dirty = match &previous {
             Some(existing) => {
                 let a = &existing.config;
@@ -186,18 +202,24 @@ impl McpManager {
             None => true,
         };
 
-        if transport_dirty {
-            let _ = self.disconnect_server(&id);
+        // A rename moves the server to a new key, so the old connection (under
+        // the old id) can't carry over — tear it down too.
+        if transport_dirty || renamed {
+            let _ = self.disconnect_server(&old_id);
         }
 
         let mut mcp_config = McpConfig::load().unwrap_or_default();
+        if renamed {
+            mcp_config.remove_server(&old_id);
+        }
         mcp_config.upsert_server(&config);
         mcp_config.save()?;
 
         // Preserve the live connection's runtime state (status, tools,
         // resources, server_info) across non-transport edits — only
-        // the `config` field actually changed.
-        let next_state = if transport_dirty {
+        // the `config` field actually changed. A rename also resets it (the
+        // old connection was torn down above).
+        let next_state = if transport_dirty || renamed {
             McpServerState::new(config)
         } else if let Some(mut keep) = previous {
             keep.config = config;
@@ -206,7 +228,13 @@ impl McpManager {
             McpServerState::new(config)
         };
 
-        self.servers.write().insert(id, next_state.clone());
+        {
+            let mut servers = self.servers.write();
+            if renamed {
+                servers.remove(&old_id);
+            }
+            servers.insert(new_id, next_state.clone());
+        }
         Ok(next_state)
     }
 
@@ -438,10 +466,7 @@ impl McpManager {
                             // Server-pushed notifications. We don't have an
                             // event channel into the agent yet; log and
                             // drop so chatty servers don't bloat memory.
-                            eprintln!(
-                                "[mcp:{}] sse event '{}' (ignored)",
-                                stream_id, event.event
-                            );
+                            eprintln!("[mcp:{}] sse event '{}' (ignored)", stream_id, event.event);
                         }
                     }
                     Err(_) => break,
@@ -449,11 +474,7 @@ impl McpManager {
             }
         });
 
-        let post_endpoint = match tokio::time::timeout(
-            CONNECT_HANDSHAKE_TIMEOUT,
-            endpoint_rx,
-        )
-        .await
+        let post_endpoint = match tokio::time::timeout(CONNECT_HANDSHAKE_TIMEOUT, endpoint_rx).await
         {
             Ok(Ok(endpoint)) => {
                 if endpoint.starts_with("http") {
@@ -672,11 +693,25 @@ async fn stdio_actor(
     // stdout — the canonical "MCP sometimes works, sometimes hangs"
     // failure mode. We just read-and-log; nothing depends on the lines.
     let stderr_id = server_id.clone();
-    let stderr_task = tokio::spawn(async move {
+    let diagnostic_tail = Arc::new(Mutex::new(VecDeque::<String>::new()));
+    let stderr_tail_writer = diagnostic_tail.clone();
+    let mut stderr_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
         loop {
             match reader.next_line().await {
-                Ok(Some(line)) => eprintln!("[mcp:{}] stderr: {}", stderr_id, line),
+                Ok(Some(line)) => {
+                    {
+                        let mut tail = stderr_tail_writer.lock().await;
+                        if tail.len() == STDERR_TAIL_LINES {
+                            tail.pop_front();
+                        }
+                        tail.push_back(format!(
+                            "[stderr] {}",
+                            line.chars().take(500).collect::<String>()
+                        ));
+                    }
+                    eprintln!("[mcp:{}] stderr: {}", stderr_id, line);
+                }
                 Ok(None) => break,
                 Err(err) => {
                     eprintln!("[mcp:{}] stderr read error: {}", stderr_id, err);
@@ -693,6 +728,7 @@ async fn stdio_actor(
     // back-pressure on an unbounded channel is more natural.
     let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<Value>();
     let reader_id = server_id.clone();
+    let stdout_tail_writer = diagnostic_tail.clone();
     let reader_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stdout).lines();
         loop {
@@ -717,6 +753,14 @@ async fn stdio_actor(
                                 "[mcp:{}] non-JSON stdout line: {} (err: {})",
                                 reader_id, trimmed, err
                             );
+                            let mut tail = stdout_tail_writer.lock().await;
+                            if tail.len() == STDERR_TAIL_LINES {
+                                tail.pop_front();
+                            }
+                            tail.push_back(format!(
+                                "[stdout] {}",
+                                trimmed.chars().take(500).collect::<String>()
+                            ));
                         }
                     }
                 }
@@ -777,14 +821,26 @@ async fn stdio_actor(
                 match maybe_msg {
                     Some(msg) => dispatch_inbound(msg, &mut pending, &server_id),
                     None => {
-                        // Reader task closed → stdout EOF → child gone.
-                        // Fail every pending caller with a precise error
-                        // so the UI can offer a "Reconnect" CTA instead
-                        // of the generic "broken pipe".
+                        // Reader task closed → stdout EOF. Preserve the child's
+                        // exit status and bounded stderr tail so startup errors
+                        // do not all collapse into the same generic crash text.
+                        let status = child
+                            .try_wait()
+                            .ok()
+                            .flatten()
+                            .map(|value| value.to_string());
+                        // The child normally closes stderr with stdout. Give the
+                        // drain task one scheduler turn to capture its final
+                        // exception line before we snapshot diagnostics.
+                        let _ = tokio::time::timeout(
+                            Duration::from_millis(100),
+                            &mut stderr_task,
+                        )
+                        .await;
+                        let tail = diagnostic_tail.lock().await;
+                        let error = stdio_closed_error(status.as_deref(), &tail);
                         for (_, sender) in pending.drain() {
-                            let _ = sender.send(Err(
-                                "MCP server stdout closed — process likely crashed".into()
-                            ));
+                            let _ = sender.send(Err(error.clone()));
                         }
                         break;
                     }
@@ -803,6 +859,19 @@ async fn stdio_actor(
     // Reap the child to avoid a zombie on Unix; on Windows this is a no-op.
     let _ = child.wait().await;
     eprintln!("[mcp:{}] stdio actor exited", server_id);
+}
+
+fn stdio_closed_error(status: Option<&str>, stderr_tail: &VecDeque<String>) -> String {
+    if !stderr_tail.is_empty() {
+        return format!(
+            "MCP server closed stdout. Last process output:\n{}",
+            stderr_tail.iter().cloned().collect::<Vec<_>>().join("\n")
+        );
+    }
+    if let Some(status) = status {
+        return format!("MCP server exited with {status} before responding");
+    }
+    "MCP server closed stdout before responding; no stderr output was captured".to_string()
 }
 
 /// SSE actor. Simpler than the stdio actor because the legacy MCP SSE
@@ -1265,4 +1334,24 @@ fn parse_tool_response(result: Value) -> McpToolCallResult {
 
 lazy_static::lazy_static! {
     pub static ref MCP_MANAGER: Arc<McpManager> = Arc::new(McpManager::new());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stdio_closed_error_prefers_server_stderr() {
+        let tail = VecDeque::from(["missing API_KEY".to_string(), "startup aborted".to_string()]);
+        let error = stdio_closed_error(Some("exit code: 1"), &tail);
+        assert!(error.contains("missing API_KEY"));
+        assert!(error.contains("startup aborted"));
+        assert!(!error.contains("process likely crashed"));
+    }
+
+    #[test]
+    fn stdio_closed_error_uses_exit_status_without_stderr() {
+        let error = stdio_closed_error(Some("exit code: 2"), &VecDeque::new());
+        assert!(error.contains("exit code: 2"));
+    }
 }

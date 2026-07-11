@@ -6,8 +6,9 @@
  * 2. Theme Store state management (import, select, delete)
  * 3. Monaco Theme conversion
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { setAuroraRuntimeForTests } from "../lib/runtime";
 import { useThemeStore } from "../store/useThemeStore";
 import type { ThemeFile } from "../types/theme";
 import { themeService } from "./theme-service";
@@ -55,6 +56,17 @@ const SAMPLE_THEME_FILE: ThemeFile = {
         }
     ]
 };
+
+setAuroraRuntimeForTests({
+    kind: 'web',
+    isAvailable: () => false,
+    invoke: async () => {
+        throw new Error('runtime unavailable in theme store tests');
+    },
+    listen: async () => () => undefined,
+});
+
+afterAll(() => setAuroraRuntimeForTests(null));
 
 describe('Theme System Integration', () => {
     beforeEach(async () => {

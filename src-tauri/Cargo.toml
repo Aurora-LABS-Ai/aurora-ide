@@ -20,7 +20,9 @@ crate-type = ["lib", "cdylib", "staticlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset", "tray-icon", "devtools"] }
+# `unstable` enables the multi-webview API (Window::add_child / WebviewBuilder)
+# used by the agent window's embedded in-tab browser (commands::embedded_browser).
+tauri = { version = "2", features = ["protocol-asset", "tray-icon", "devtools", "unstable"] }
 tauri-plugin-shell = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
@@ -88,6 +90,15 @@ tiktoken-rs = "0.6"
 clap = { version = "4", features = ["derive"] }
 base64 = "0.22"
 anyhow = "1"
+
+# Screenshot post-processing (decode → downscale → re-encode PNG). PNG-only to
+# keep the dependency surface + compile time small; used by browser_runtime to
+# bound the size of agent browser screenshots before they reach the model.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Codex (ChatGPT) provider — PKCE code-challenge hashing + verifier entropy
+sha2 = "0.10"
+rand = "0.8"
 
 # Single instance detection (prevent multiple instances, pass args to existing)
 single-instance = "0.3"

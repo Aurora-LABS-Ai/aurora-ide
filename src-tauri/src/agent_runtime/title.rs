@@ -54,7 +54,8 @@ pub fn derive_thread_title(message: &str) -> String {
         return FALLBACK_TITLE.to_string();
     }
 
-    let stage1 = strip_fenced_code_blocks(message);
+    let stage0 = strip_aurora_image_blocks(message);
+    let stage1 = strip_fenced_code_blocks(&stage0);
     let stage2 = strip_inline_code(&stage1);
     let stage3 = strip_json_blobs(&stage2);
     let stage4 = collapse_whitespace(&stage3);
@@ -65,6 +66,34 @@ pub fn derive_thread_title(message: &str) -> String {
     }
 
     truncate_to_title(&stage5, MAX_TITLE_WORDS, MAX_TITLE_CHARS)
+}
+
+// ============================================================================
+// STAGE 0 — embedded image markers
+// ============================================================================
+
+/// Remove `<aurora_image …>BASE64</aurora_image>` blocks (pasted/dropped images
+/// embedded in the user message). Without this the base64 payload — one giant
+/// "word" — would pollute the derived title. Public for reuse by the chat-list
+/// preview builder.
+pub fn strip_aurora_image_blocks(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut cursor = 0usize;
+    while let Some(rel) = s[cursor..].find("<aurora_image ") {
+        let open = cursor + rel;
+        out.push_str(&s[cursor..open]);
+        match s[open..].find("</aurora_image>") {
+            Some(close_rel) => {
+                cursor = open + close_rel + "</aurora_image>".len();
+            }
+            None => {
+                // Unterminated marker — drop the rest defensively.
+                cursor = s.len();
+            }
+        }
+    }
+    out.push_str(&s[cursor..]);
+    out
 }
 
 // ============================================================================
@@ -275,10 +304,35 @@ pub fn trim_decorative_chars(s: &str) -> String {
         c.is_whitespace()
             || matches!(
                 c,
-                '#' | '>' | '<' | '*' | '-' | '=' | '_' | '~' | '`'
-                    | '"' | '\'' | '“' | '”' | '‘' | '’'
-                    | '(' | ')' | '[' | ']' | '{' | '}'
-                    | '|' | '\\' | '/' | ',' | '.' | ':' | ';' | '!' | '?'
+                '#' | '>'
+                    | '<'
+                    | '*'
+                    | '-'
+                    | '='
+                    | '_'
+                    | '~'
+                    | '`'
+                    | '"'
+                    | '\''
+                    | '“'
+                    | '”'
+                    | '‘'
+                    | '’'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | '|'
+                    | '\\'
+                    | '/'
+                    | ','
+                    | '.'
+                    | ':'
+                    | ';'
+                    | '!'
+                    | '?'
             )
     })
     .to_string()

@@ -21,7 +21,9 @@ mod services;
 // `agent_v2` `ToolRegistry`. The module is `pub` so the verify
 // crates under `target/__verify_phase3_*/` can mount it via
 // `#[path]` without dragging in heavy Tauri/ONNX deps.
+mod prompt_refine;
 pub mod tools;
+mod typing_assist;
 mod undo_redo;
 
 use cli::{CliArgs, CliOpenRequest};
@@ -138,6 +140,51 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
 }
 
 // ---------------------------------------------------------------------------
+// Agent Team — Phase 1 live broadcast sink
+// ---------------------------------------------------------------------------
+//
+// `TauriTeamEventSink` is the production [`TeamEventSink`] for the
+// TeamBus. Every channel event the bus persists to
+// `~/.aurora/projects/<projectId>/channel/events.jsonl` is also emitted
+// on the single `"team_event"` Tauri channel so the frontend team
+// client (`src/services/team-client.ts`) can render the standup live.
+// The payload carries the resolving `project_id` so a client watching
+// one project ignores broadcasts for others.
+struct TauriTeamEventSink {
+    app: tauri::AppHandle,
+}
+
+impl agent_runtime::team::TeamEventSink for TauriTeamEventSink {
+    fn emit_team_event(&self, project_id: &str, event: &agent_runtime::team::ChannelEvent) {
+        #[derive(Clone, serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Payload<'a> {
+            project_id: &'a str,
+            event: &'a agent_runtime::team::ChannelEvent,
+        }
+        let _ = self.app.emit("team_event", Payload { project_id, event });
+    }
+
+    // Ephemeral token stream (NOT persisted) — carries an agent's tokens as
+    // they arrive so the Team view streams in real time, on its own
+    // `"team_stream"` channel so the durable `"team_event"` path is untouched.
+    fn emit_team_stream(
+        &self,
+        project_id: &str,
+        delta: &agent_runtime::team::TeamStreamDelta,
+    ) {
+        #[derive(Clone, serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Payload<'a> {
+            project_id: &'a str,
+            #[serde(flatten)]
+            delta: &'a agent_runtime::team::TeamStreamDelta,
+        }
+        let _ = self.app.emit("team_stream", Payload { project_id, delta });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Phase 2.3 — agent_v2 wiring
 // ---------------------------------------------------------------------------
 //
@@ -175,6 +222,10 @@ pub fn run() {
 pub fn run_with_args(cli_args: CliArgs) {
     // Convert CLI args to open request
     let open_request: CliOpenRequest = (&cli_args).into();
+
+    // `agw` / `aurora --agent`: open ONLY the agent window (no IDE). Captured
+    // here so the `move` setup closure can act on it.
+    let agent_mode = cli_args.agent;
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -215,6 +266,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::editor_ops::compute_unified_diff,
             commands::editor_ops::slice_file_lines,
             commands::editor_ops::is_path_excluded,
+            commands::editor_ops::agent_open_in_ide,
+            commands::editor_ops::take_pending_ide_open,
             // State persistence commands
             commands::state::save_workspace_state,
             commands::state::get_workspace_state,
@@ -262,8 +315,12 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::threads::thread_delete,
             commands::threads::thread_list_summaries,
             commands::threads::thread_update_usage,
+            commands::usage_stats::usage_stats_get,
             commands::threads::thread_get_api_history,
             commands::threads::thread_update_title,
+            commands::title_maker::generate_thread_title,
+            commands::threads::thread_set_pinned,
+            commands::threads::thread_set_archived,
             commands::threads::thread_cancel_current_turn,
             // Token counting commands
             commands::tokens::count_tokens,
@@ -273,6 +330,12 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::tokens::estimate_tokens_quick,
             commands::tokens::truncate_to_tokens,
             commands::provider_catalog::commands::provider_catalog_get_presets,
+            // Codex (ChatGPT subscription) provider
+            commands::codex::codex_auth_status,
+            commands::codex::codex_auth_login,
+            commands::codex::codex_auth_cancel_login,
+            commands::codex::codex_auth_logout,
+            commands::codex::codex_usage_get,
             commands::local_providers::commands::local_provider_detect,
             commands::local_providers::commands::local_provider_probe_custom,
             commands::local_providers::commands::local_provider_show_ollama_model,
@@ -302,6 +365,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             // Speech input commands
             commands::speech::speech_validate_config,
             commands::speech::speech_transcribe_pcm,
+            commands::speech::install_agent_media_permission_handler,
             // Git commands
             commands::git::git_is_repository,
             commands::git::git_get_status,
@@ -337,6 +401,9 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::browser::browser_get_url,
             commands::browser::browser_set_size,
             commands::browser::browser_set_position,
+            commands::browser::browser_set_bounds,
+            commands::browser::browser_show,
+            commands::browser::browser_hide,
             commands::browser::aurora_record_picked_element,
             commands::browser::aurora_record_browser_result,
             // MCP (Model Context Protocol) commands
@@ -420,6 +487,51 @@ pub fn run_with_args(cli_args: CliArgs) {
             // user's Allow/Deny verdict here. The router lives in
             // managed state (see `setup` below).
             commands::agent_v2_permissions::agent_grant_permission,
+            // Agent Team — Phase 1 foundation (shared brain + TeamBus).
+            // Scaffolds and reads `~/.aurora/projects/<projectId>/` and
+            // posts to the team channel; the `TeamBus` in managed state
+            // persists + broadcasts each post on the `team_event`
+            // channel. See DOCS/aurora-agent-team-ground-truth.md.
+            commands::team::team_resolve_project_id,
+            commands::team::team_init,
+            commands::team::team_get_state,
+            commands::team::team_channel_tail,
+            commands::team::team_origin_threads,
+            commands::team::team_post_channel_event,
+            commands::team::team_convene,
+            commands::team::team_add_agent,
+            commands::team::team_remove_agent,
+            commands::team::team_disband,
+            commands::team::team_set_agent_status,
+            commands::team::team_assign_scope,
+            commands::team::team_assign_task,
+            commands::team::team_set_task_status,
+            commands::team::team_run_planning,
+            commands::team::team_begin_build,
+            commands::team::team_run_build,
+            commands::team::team_check_scope,
+            commands::team::team_ask_boundary,
+            commands::team::team_publish_contract,
+            commands::team::team_mark_agent_done,
+            commands::team::team_record_review,
+            commands::team::team_set_gate_status,
+            commands::team::team_finish_integration,
+            commands::team::team_run_integration,
+            commands::team::team_dispatch,
+            commands::team::team_run_status,
+            commands::team::team_run_ack,
+            commands::team::team_get_agent_transcript,
+            // Composer typing assistance (autocorrect · completion · next-word)
+            commands::typing_assist::typing_assist_ensure_ready,
+            commands::typing_assist::typing_assist_query,
+            commands::typing_assist::typing_assist_correct,
+            commands::typing_assist::typing_assist_learn,
+            commands::typing_assist::typing_assist_undo_correct,
+            commands::typing_assist::typing_assist_flush,
+            // Composer prompt refinement (local llama.cpp GGUF)
+            commands::prompt_refine::prompt_refine_validate,
+            commands::prompt_refine::prompt_refine_run,
+            commands::prompt_refine::prompt_refine_cancel,
         ])
         .setup(move |app| {
             // Devtools stay available in every build (the `devtools`
@@ -429,6 +541,15 @@ pub fn run_with_args(cli_args: CliArgs) {
             //   Windows: F12
             //   macOS:   Cmd+Option+I
             //   Linux:   Ctrl+Shift+I
+
+            // Agent-only launch (`agw` / `aurora --agent`): we'll show ONLY the
+            // agent window, so hide the auto-created IDE window immediately to
+            // avoid a flash before we close it below.
+            if agent_mode {
+                if let Some(main_win) = app.get_webview_window("main") {
+                    let _ = main_win.hide();
+                }
+            }
 
             // Initialize database.
             //
@@ -480,6 +601,14 @@ pub fn run_with_args(cli_args: CliArgs) {
             // Store undo/redo state for per-file history
             app.manage(commands::undo_redo::UndoRedoState::new());
 
+            // Composer typing-assist engine (lazily built on first activation).
+            app.manage(std::sync::Arc::new(
+                typing_assist::TypingAssistState::default(),
+            ));
+
+            // Composer prompt-refine (drives the user's llama-completion.exe).
+            app.manage(std::sync::Arc::new(prompt_refine::RefineState::default()));
+
             // Rust agent runtime registry — the single owner of all
             // chat-history persistence.
             //
@@ -513,9 +642,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             // `commands::execute_command_stream` from a `tokio::spawn`
             // for `shell_spawn`, mirroring the legacy TS executor's
             // `invoke()` shape.
-            let production_sink: std::sync::Arc<
-                dyn tools::shell_editor_todo::IdeEventSink,
-            > = std::sync::Arc::new(ProductionIdeEventSink::new(handle.clone()));
+            let production_sink: std::sync::Arc<dyn tools::shell_editor_todo::IdeEventSink> =
+                std::sync::Arc::new(ProductionIdeEventSink::new(handle.clone()));
 
             // Build the BrowserManager BEFORE tool registration so the
             // browser bucket can hold an Arc to it. The same Arc is
@@ -554,43 +682,56 @@ pub fn run_with_args(cli_args: CliArgs) {
             // The DB-backed resolver re-reads on every call, so
             // toggling a setting in the UI takes effect immediately
             // on the next tool dispatch.
-            let permission_router = std::sync::Arc::new(
-                tools::permissions::PermissionRouter::new(),
-            );
-            let permission_emitter: std::sync::Arc<
-                dyn tools::permissions::PermissionEmitter,
-            > = std::sync::Arc::new(
-                tools::permissions::TauriPermissionEmitter::new(handle.clone()),
-            );
-            let tauri_permitter: std::sync::Arc<
-                dyn agent_runtime::tool_executor::Permitter,
-            > = std::sync::Arc::new(
-                tools::permissions::TauriPermitter::new(
+            let permission_router =
+                std::sync::Arc::new(tools::permissions::PermissionRouter::new());
+            let permission_emitter: std::sync::Arc<dyn tools::permissions::PermissionEmitter> =
+                std::sync::Arc::new(tools::permissions::TauriPermissionEmitter::new(
+                    handle.clone(),
+                ));
+            let tauri_permitter: std::sync::Arc<dyn agent_runtime::tool_executor::Permitter> =
+                std::sync::Arc::new(tools::permissions::TauriPermitter::new(
                     permission_router.clone(),
                     permission_emitter,
-                ),
-            );
+                ));
 
             // The resolver holds an `AppHandle` and pulls
             // `Mutex<Database>` from managed state on each call —
             // sharing the same SQLite connection used by the rest
             // of the app.
             let resolver: std::sync::Arc<dyn tools::permissions::SettingsResolver> =
-                std::sync::Arc::new(
-                    tools::permissions::DatabaseSettingsResolver::new(handle.clone()),
-                );
-            let settings_aware: std::sync::Arc<
-                dyn agent_runtime::tool_executor::Permitter,
-            > = std::sync::Arc::new(
-                tools::permissions::SettingsAwarePermitter::new(
+                std::sync::Arc::new(tools::permissions::DatabaseSettingsResolver::new(
+                    handle.clone(),
+                ));
+            let settings_aware: std::sync::Arc<dyn agent_runtime::tool_executor::Permitter> =
+                std::sync::Arc::new(tools::permissions::SettingsAwarePermitter::new(
                     resolver,
                     tauri_permitter,
-                ),
-            );
+                ));
             tools::install_permission_gate(&agent_registry.tools(), settings_aware);
 
             app.manage(agent_registry);
             app.manage(permission_router);
+
+            // Agent Team — Phase 1. The TeamBus owns the single
+            // persist+broadcast path for team-channel events. Its sink
+            // emits the `"team_event"` channel to the frontend; the
+            // brain itself lives in `~/.aurora/projects/<projectId>/`,
+            // resolved per-call by the commands in `commands::team`.
+            let team_sink: std::sync::Arc<dyn agent_runtime::team::TeamEventSink> =
+                std::sync::Arc::new(TauriTeamEventSink {
+                    app: handle.clone(),
+                });
+            app.manage(std::sync::Arc::new(agent_runtime::team::TeamBus::new(
+                Some(team_sink),
+            )));
+
+            // The background dispatch engine: one `team_dispatch` runs the
+            // whole plan→build→integrate lifecycle on a detached task so the
+            // Lead's chat turn never blocks. Holds the live per-project run
+            // status the frontend injects into the Lead every message (§17).
+            app.manage(std::sync::Arc::new(
+                agent_runtime::team::TeamDispatcher::new(),
+            ));
 
             // Native browser-window manager. Owns the lifecycle of
             // every browser-* WebviewWindow used for previews,
@@ -649,6 +790,77 @@ pub fn run_with_args(cli_args: CliArgs) {
             if let Some(win) = app.get_webview_window("main") {
                 if let Err(err) = services::webview_permissions::install_permission_handler(&win) {
                     eprintln!("[aurora] failed to install webview permission handler: {err}");
+                }
+            }
+
+            // Agent-only launch: build the agent window (route `/agent-window`,
+            // no `?ws=` — it opens regardless of the working directory) and close
+            // the auto-created IDE window so the agent window is all that shows.
+            // If building it fails, re-show the IDE so the launch isn't a black
+            // hole.
+            if agent_mode {
+                use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+                // Reopen at the size the user last set. The agent window
+                // persists `{width, height, maximized}` (logical px) to
+                // `app_settings.agent_window_bounds` on every resize (see
+                // `useAgentWindowBounds`); both launch paths — this one and
+                // the JS `openAgentWindow` — read it back, clamped to the
+                // window minimum. Missing / corrupt state → the defaults.
+                let (mut width, mut height, mut maximized) = (1200.0_f64, 800.0_f64, false);
+                let saved_bounds = app
+                    .state::<Mutex<db::Database>>()
+                    .lock()
+                    .ok()
+                    .and_then(|db| db.settings().get_setting("agent_window_bounds").ok())
+                    .flatten()
+                    .map(|setting| setting.value);
+                if let Some(raw) = saved_bounds {
+                    if let Ok(bounds) = serde_json::from_str::<serde_json::Value>(&raw) {
+                        if let Some(w) = bounds.get("width").and_then(|v| v.as_f64()) {
+                            width = w.max(820.0);
+                        }
+                        if let Some(h) = bounds.get("height").and_then(|v| v.as_f64()) {
+                            height = h.max(560.0);
+                        }
+                        maximized = bounds
+                            .get("maximized")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                    }
+                }
+
+                match WebviewWindowBuilder::new(
+                    app.handle(),
+                    "agent-window",
+                    WebviewUrl::App("agent-window".into()),
+                )
+                .title("Aurora Agent")
+                .inner_size(width, height)
+                .min_inner_size(820.0, 560.0)
+                .center()
+                .resizable(true)
+                .maximized(maximized)
+                .build()
+                {
+                    Ok(agent_win) => {
+                        if let Err(err) =
+                            services::webview_permissions::install_permission_handler(&agent_win)
+                        {
+                            eprintln!(
+                                "[aurora] failed to install webview permission handler (agent): {err}"
+                            );
+                        }
+                        if let Some(main_win) = app.get_webview_window("main") {
+                            let _ = main_win.close();
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("[aurora] failed to open agent window: {err}");
+                        if let Some(main_win) = app.get_webview_window("main") {
+                            let _ = main_win.show();
+                        }
+                    }
                 }
             }
 

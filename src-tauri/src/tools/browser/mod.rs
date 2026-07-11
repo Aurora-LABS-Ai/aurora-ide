@@ -1,51 +1,51 @@
-//! Browser tools bucket — minimal, professional surface.
+//! Browser tools bucket — one browser: the agent window's right-rail panel.
 //!
-//! The agent gets nine tools (down from thirteen). Each one maps to
-//! a real user-facing action ("Click Element", "Scroll Page") so the
-//! chat timeline reads like a recipe, not a debugger session.
+//! The agent does NOT spawn standalone browser windows. Aurora's agent window
+//! has a dedicated Browser panel in its right-hand dock (an embedded webview
+//! labelled `browser-agentwin`). Every `browser_*` tool drives THAT panel:
+//! calling one reveals the panel (if it isn't already open) and acts on it.
+//! There is no `label` argument and no window management — a single, always-
+//! reused browser, so the chat timeline reads like a recipe, not a debugger
+//! session juggling windows.
 //!
-//! * **Read-only** (`requires_permission == false`): `browser_open`,
-//!   `browser_close`, `browser_list_windows`, `browser_screenshot`,
+//! Six tools:
+//! * **Read-only** (`requires_permission == false`): `browser_screenshot`,
 //!   `browser_get_console_logs`.
-//! * **Page interaction** (`requires_permission == true`):
-//!   `browser_navigate`, `browser_click`, `browser_fill`,
-//!   `browser_scroll`.
+//! * **Page interaction** (`requires_permission == true`): `browser_navigate`,
+//!   `browser_click`, `browser_fill`, `browser_scroll`.
 //!
-//! `browser_list_windows` is the only enumeration tool — the agent
-//! needs it to detect existing windows (opened by the user via the
-//! "+ Browser" tab, or by a previous turn) so it can reuse them
-//! instead of stacking duplicate windows on every browser-related
-//! task. Without it, an agent that's told to "verify the dev server"
-//! repeatedly spawns fresh `browser-agent-<uuid>` windows.
+//! `browser_navigate` is the entry point — it opens the right-rail panel and
+//! loads a URL. The others operate on whatever the panel is currently showing.
 //!
-//! Deliberately dropped from the agent surface:
-//!
-//! * `browser_eval` — arbitrary JS in the user's page is a foot-gun
-//!   no agent loop should be allowed to point at itself. The Rust
-//!   `BrowserManager` still uses it internally to implement every
-//!   other tool, but the model can no longer call it directly.
-//! * `browser_get_dom` — returned up to 200 KB per call and burned
-//!   context. The agent should screenshot or scroll instead.
-//! * `browser_get_url`, `browser_inspect_element`,
-//!   `browser_wait_for` — folded into the tools that need them.
-//!   `browser_click` now auto-waits internally; `browser_screenshot`
-//!   already returns the current URL in its caption. The IDE itself
-//!   can still call these via the Tauri IPC commands when the *user*
-//!   drives the browser tab.
-//!
-//! `browser_close`'s `requires_permission` is `false` by design — it
-//! destroys a window the agent itself opened, so leaving it gated
-//! would force a permission prompt on every cleanup.
+//! Deliberately not on the agent surface:
+//! * `browser_open` / `browser_close` / `browser_list_windows` — window
+//!   management is meaningless now that there is exactly one embedded browser.
+//! * `browser_eval` — arbitrary JS in the page is a foot-gun. The Rust
+//!   `BrowserManager` still uses it internally to implement the other tools.
+//! * `browser_get_dom` — burned up to 200 KB of context; screenshot instead.
+//! * `browser_get_url`, `browser_inspect_element`, `browser_wait_for` — folded
+//!   into the tools that need them (`browser_click` auto-waits, etc.). The IDE
+//!   still calls all of these via the Tauri IPC commands when the *user* drives
+//!   a browser tab directly.
 //!
 //! `browser_screenshot` returns a structured string containing an
 //! `<aurora_image media_type="image/png">BASE64</aurora_image>` marker
 //! that the Anthropic API adapter rewrites into a vision content
 //! block on the next turn so the model can actually *see* the page.
 //! Other providers strip the marker and keep the textual caption.
+//!
+//! ## Opening the right-rail browser from a tool
+//!
+//! The embedded webview is built by the frontend (`BrowserPanel`) when its dock
+//! tab is visible — Rust can't create it directly (it needs the host window's
+//! live bounds). So [`ensure_agent_browser`] emits `aurora:agent-open-browser`,
+//! which the agent window handles by opening the Browser tab; the tool then
+//! polls until the webview exists before acting on it.
 
 #![allow(dead_code)]
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -54,25 +54,19 @@ use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor, ToolRegistry};
 use crate::services::browser_runtime::{BrowserManager, BrowserResult, CreateBrowserWindow};
 
+/// The one browser the agent drives: the agent window's right-dock panel.
+const AGENT_BROWSER_LABEL: &str = "browser-agentwin";
+
 /// Names of every tool this bucket registers, in roster order. Pinned
 /// by the bucket-level test below.
 ///
-/// `browser_list_windows` was re-added (it had been retired alongside
-/// `browser_eval` / `browser_get_dom`) because the agent system prompt
-/// directs the model to call it before opening a new window — without
-/// it, the model would call `browser_list_windows`, get a "tool not
-/// found" error, panic, and call `browser_open` again, spawning a
-/// duplicate window per turn. This is the one read-only tool the agent
-/// actually needs to deduplicate windows; the other hidden tools
-/// (`browser_eval`, `browser_get_dom`, `browser_inspect_element`)
-/// remain unregistered.
+/// Window-management tools (`browser_open`, `browser_close`,
+/// `browser_list_windows`) were removed: the agent has a single embedded
+/// right-rail browser, so there are no windows to open, close, or enumerate.
 pub const TOOL_NAMES: &[&str] = &[
-    "browser_open",
-    "browser_close",
-    "browser_list_windows",
+    "browser_navigate",
     "browser_screenshot",
     "browser_get_console_logs",
-    "browser_navigate",
     "browser_click",
     "browser_fill",
     "browser_scroll",
@@ -86,21 +80,28 @@ pub const TOOLS_REQUIRING_PERMISSION: &[&str] = &[
     "browser_scroll",
 ];
 
+/// Tools whose result is an image (a vision content block on the next
+/// turn). For models that don't declare vision support these are
+/// filtered out of the per-turn registry, so the model is neither
+/// advertised nor able to call a tool whose output it can't see. This
+/// is the Rust-side port of the legacy frontend gate
+/// (`VISION_REQUIRED_TOOLS` in `src/services/agent-service.ts`), which
+/// became ineffective once the Rust registry — not the frontend list —
+/// became the source of advertised native tools.
+pub const VISION_REQUIRED_TOOLS: &[&str] = &["browser_screenshot"];
+
 /// Mount every tool in this bucket onto `reg`. Idempotent.
 ///
-/// `BrowserGetUrlTool`, `BrowserGetDomTool`, `BrowserInspectElementTool`,
-/// `BrowserWaitForTool`, and `BrowserEvalTool` remain retired from the
-/// agent surface — see the module doc for the rationale. The structs
-/// themselves are still compiled (and the IPC layer keeps calling the
-/// underlying manager methods) so the human-driven browser tab UI does
-/// not lose any capability.
+/// The window-management (`BrowserOpenTool`, `BrowserCloseTool`,
+/// `BrowserListWindowsTool`) and low-level (`BrowserGetUrlTool`,
+/// `BrowserGetDomTool`, `BrowserInspectElementTool`, `BrowserWaitForTool`,
+/// `BrowserEvalTool`) structs remain compiled but unregistered — the IPC layer
+/// still calls the underlying manager methods so the human-driven browser tab
+/// UI keeps every capability; the agent surface just doesn't advertise them.
 pub fn register(reg: &mut ToolRegistry, manager: Arc<BrowserManager>) {
-    reg.register(Arc::new(BrowserOpenTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserCloseTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserListWindowsTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserGetConsoleLogsTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserScreenshotTool::new(manager.clone())));
     reg.register(Arc::new(BrowserNavigateTool::new(manager.clone())));
+    reg.register(Arc::new(BrowserScreenshotTool::new(manager.clone())));
+    reg.register(Arc::new(BrowserGetConsoleLogsTool::new(manager.clone())));
     reg.register(Arc::new(BrowserClickTool::new(manager.clone())));
     reg.register(Arc::new(BrowserFillTool::new(manager.clone())));
     reg.register(Arc::new(BrowserScrollTool::new(manager)));
@@ -151,13 +152,39 @@ fn require_string<'a>(input: &'a Value, key: &str) -> Result<&'a str, ToolError>
         .ok_or_else(|| ToolError::InvalidInput(format!("`{key}` must be a non-empty string")))
 }
 
+/// Make sure the agent window's right-rail Browser panel exists, then return.
+///
+/// If its embedded webview is already live, this is a no-op. Otherwise we ask
+/// the frontend to open the Browser dock tab (which builds the webview) and poll
+/// until it appears — up to ~6 s — so the caller can immediately drive it.
+async fn ensure_agent_browser(
+    manager: &BrowserManager,
+    initial_url: Option<&str>,
+) -> Result<(), ToolError> {
+    if manager.has_window(AGENT_BROWSER_LABEL) {
+        return Ok(());
+    }
+    manager
+        .request_open_agent_browser(initial_url)
+        .map_err(ToolError::Execution)?;
+    for _ in 0..60 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if manager.has_window(AGENT_BROWSER_LABEL) {
+            return Ok(());
+        }
+    }
+    Err(ToolError::Execution(
+        "The agent window's right-rail Browser panel did not open in time. Make sure the agent \
+         window is visible, then retry."
+            .into(),
+    ))
+}
+
 fn unwrap_browser_result(result: BrowserResult) -> Result<Value, ToolError> {
     if !result.ok {
-        return Err(ToolError::Execution(
-            result
-                .error
-                .unwrap_or_else(|| "browser tool failed without an error message".into()),
-        ));
+        return Err(ToolError::Execution(result.error.unwrap_or_else(|| {
+            "browser tool failed without an error message".into()
+        })));
     }
     Ok(result.value.unwrap_or(Value::Null))
 }
@@ -176,7 +203,9 @@ impl BrowserOpenTool {
 }
 #[async_trait]
 impl ToolExecutor for BrowserOpenTool {
-    fn name(&self) -> &str { "browser_open" }
+    fn name(&self) -> &str {
+        "browser_open"
+    }
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_open".into(),
@@ -200,17 +229,21 @@ impl ToolExecutor for BrowserOpenTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
         let url = require_string(&input, "url")?.to_string();
-        let label = extract_label(&input)
-            .unwrap_or_else(|| format!("browser-agent-{}", uuid_short()));
+        let label =
+            extract_label(&input).unwrap_or_else(|| format!("browser-agent-{}", uuid_short()));
         let opts = CreateBrowserWindow {
             label: label.clone(),
             url: url.clone(),
-            title: input.get("title").and_then(Value::as_str).map(str::to_string),
+            title: input
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             width: input.get("width").and_then(Value::as_f64),
             height: input.get("height").and_then(Value::as_f64),
             x: None,
             y: None,
             always_on_top: None,
+            embed: None,
         };
         self.manager
             .create_window(opts)
@@ -223,17 +256,22 @@ pub struct BrowserCloseTool {
     manager: Arc<BrowserManager>,
 }
 impl BrowserCloseTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self { Self { manager } }
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
 }
 #[async_trait]
 impl ToolExecutor for BrowserCloseTool {
-    fn name(&self) -> &str { "browser_close" }
+    fn name(&self) -> &str {
+        "browser_close"
+    }
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_close".into(),
             description: "Close a browser window opened by the agent. \
                 `label` is optional — when omitted, closes the most \
-                recently used window.".into(),
+                recently used window."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": { "label": {"type": "string"} },
@@ -253,11 +291,15 @@ pub struct BrowserListWindowsTool {
     manager: Arc<BrowserManager>,
 }
 impl BrowserListWindowsTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self { Self { manager } }
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
 }
 #[async_trait]
 impl ToolExecutor for BrowserListWindowsTool {
-    fn name(&self) -> &str { "browser_list_windows" }
+    fn name(&self) -> &str {
+        "browser_list_windows"
+    }
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_list_windows".into(),
@@ -283,16 +325,21 @@ pub struct BrowserGetUrlTool {
     manager: Arc<BrowserManager>,
 }
 impl BrowserGetUrlTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self { Self { manager } }
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
 }
 #[async_trait]
 impl ToolExecutor for BrowserGetUrlTool {
-    fn name(&self) -> &str { "browser_get_url" }
+    fn name(&self) -> &str {
+        "browser_get_url"
+    }
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_get_url".into(),
             description: "Return the current URL of a browser window — including any \
-                in-page navigation the runtime is aware of.".into(),
+                in-page navigation the runtime is aware of."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": { "label": {"type": "string"} },
@@ -315,16 +362,21 @@ pub struct BrowserGetDomTool {
     manager: Arc<BrowserManager>,
 }
 impl BrowserGetDomTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self { Self { manager } }
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
 }
 #[async_trait]
 impl ToolExecutor for BrowserGetDomTool {
-    fn name(&self) -> &str { "browser_get_dom" }
+    fn name(&self) -> &str {
+        "browser_get_dom"
+    }
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_get_dom".into(),
             description: "Return the outerHTML of the page (or a single CSS selector if \
-                provided). Capped at 200 KB to protect the context window.".into(),
+                provided). Capped at 200 KB to protect the context window."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -358,18 +410,23 @@ pub struct BrowserInspectElementTool {
     manager: Arc<BrowserManager>,
 }
 impl BrowserInspectElementTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self { Self { manager } }
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
 }
 #[async_trait]
 impl ToolExecutor for BrowserInspectElementTool {
-    fn name(&self) -> &str { "browser_inspect_element" }
+    fn name(&self) -> &str {
+        "browser_inspect_element"
+    }
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_inspect_element".into(),
             description: "Inspect a single element by CSS selector. Returns tag, attributes, \
                 bounding rect, computed text, visibility, and a small subset of computed \
                 styles (display, visibility, opacity, color, background, font-size, \
-                font-weight).".into(),
+                font-weight)."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -398,22 +455,26 @@ pub struct BrowserGetConsoleLogsTool {
     manager: Arc<BrowserManager>,
 }
 impl BrowserGetConsoleLogsTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self { Self { manager } }
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
 }
 #[async_trait]
 impl ToolExecutor for BrowserGetConsoleLogsTool {
-    fn name(&self) -> &str { "browser_get_console_logs" }
+    fn name(&self) -> &str {
+        "browser_get_console_logs"
+    }
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_get_console_logs".into(),
-            description: "Read the rolling JS console buffer (max 500 entries, includes \
-                console.log/info/warn/error/debug + uncaught errors + unhandled promise \
-                rejections). Optional `level` filters by severity; `sinceMs` returns only \
-                entries newer than this many milliseconds ago.".into(),
+            description: "Read the JS console of the agent window's right-rail Browser panel \
+                (rolling buffer, max 500 entries: console.log/info/warn/error/debug + uncaught \
+                errors + unhandled promise rejections). Optional `level` filters by severity; \
+                `sinceMs` returns only entries newer than this many milliseconds ago."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "label": {"type": "string", "description": "Optional. Defaults to the most recently used window."},
                     "level": {"type": "string", "enum": ["log","info","warn","error","debug"]},
                     "sinceMs": {"type": "number", "description": "Drop entries older than this (milliseconds)."}
                 },
@@ -423,16 +484,16 @@ impl ToolExecutor for BrowserGetConsoleLogsTool {
     }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-        let label = resolve_label(&input, &self.manager)?;
+        ensure_agent_browser(&self.manager, None).await?;
         let level = input.get("level").and_then(Value::as_str);
         let since = input.get("sinceMs").and_then(Value::as_u64);
         let result = self
             .manager
-            .get_console_logs(&label, level, since)
+            .get_console_logs(AGENT_BROWSER_LABEL, level, since)
             .await
             .map_err(ToolError::Execution)?;
         let value = unwrap_browser_result(result)?;
-        Ok(json!({ "label": label, "logs": value }).to_string())
+        Ok(json!({ "logs": value }).to_string())
     }
 }
 
@@ -440,23 +501,27 @@ pub struct BrowserScreenshotTool {
     manager: Arc<BrowserManager>,
 }
 impl BrowserScreenshotTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self { Self { manager } }
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
 }
 #[async_trait]
 impl ToolExecutor for BrowserScreenshotTool {
-    fn name(&self) -> &str { "browser_screenshot" }
+    fn name(&self) -> &str {
+        "browser_screenshot"
+    }
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_screenshot".into(),
-            description: "Capture a PNG screenshot of the page (or a CSS selector). The \
-                image is returned as a vision content block on the next turn so \
-                vision-capable models (Claude, GPT-4V) can SEE the page directly. Useful \
-                for debugging visual bugs, verifying UI changes, or confirming a feature \
-                works after edits.".into(),
+            description: "Capture a PNG screenshot of the agent window's right-rail Browser panel \
+                (or a CSS selector within it). The image is returned as a vision content block on \
+                the next turn so vision-capable models (Claude, GPT-4V) can SEE the page directly. \
+                Useful for debugging visual bugs, verifying UI changes, or confirming a feature \
+                works after edits."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "label": {"type": "string", "description": "Optional. Defaults to the most recently used window."},
                     "selector": {"type": "string", "description": "Optional CSS selector — captures just that element. Omit for full <body>."}
                 },
                 "required": []
@@ -465,11 +530,12 @@ impl ToolExecutor for BrowserScreenshotTool {
     }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-        let label = resolve_label(&input, &self.manager)?;
+        ensure_agent_browser(&self.manager, None).await?;
+        let label = AGENT_BROWSER_LABEL;
         let selector = input.get("selector").and_then(Value::as_str);
         let result = self
             .manager
-            .screenshot(&label, selector)
+            .screenshot(label, selector)
             .await
             .map_err(ToolError::Execution)?;
         let value = unwrap_browser_result(result)?;
@@ -483,16 +549,27 @@ impl ToolExecutor for BrowserScreenshotTool {
             .unwrap_or("image/png");
         let width = value.get("width").and_then(Value::as_u64).unwrap_or(0);
         let height = value.get("height").and_then(Value::as_u64).unwrap_or(0);
-        let url = self.manager.current_url(&label).unwrap_or_default();
+        // Absolute path of the on-disk PNG copy (asset-protocol loadable by the
+        // tool card). Carried in the header as `src`; the model never sees it
+        // (the whole `<aurora_image>` block becomes a vision block), and the UI
+        // strip in `conversation.rs` parses it back out for rendering.
+        let src_attr = value
+            .get("path")
+            .and_then(Value::as_str)
+            .map(|p| format!(" src=\"{}\"", p.replace('&', "&amp;").replace('"', "&quot;")))
+            .unwrap_or_default();
+        let url = self.manager.current_url(label).unwrap_or_default();
         // The `<aurora_image …>` marker is the contract with
         // `crate::api::provider_kernel_adapter` — when the tool result
         // is serialised for an Anthropic call, the adapter rewrites
         // this block into a multimodal `image` content block so the
-        // model literally sees the page.
+        // model literally sees the page. `width`/`height`/`src` are extra
+        // header attributes the adapter ignores (it only reads `media_type`).
         Ok(format!(
-            "<aurora_image media_type=\"{mt}\">{b64}</aurora_image>\nScreenshot of {url}{sel} ({w}×{h} px)",
+            "<aurora_image media_type=\"{mt}\" width=\"{w}\" height=\"{h}\"{src}>{b64}</aurora_image>\nScreenshot of {url}{sel} ({w}×{h} px)",
             mt = media_type,
             b64 = base64,
+            src = src_attr,
             url = url,
             sel = selector
                 .map(|s| format!(" — selector `{s}`"))
@@ -511,34 +588,45 @@ pub struct BrowserNavigateTool {
     manager: Arc<BrowserManager>,
 }
 impl BrowserNavigateTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self { Self { manager } }
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
 }
 #[async_trait]
 impl ToolExecutor for BrowserNavigateTool {
-    fn name(&self) -> &str { "browser_navigate" }
+    fn name(&self) -> &str {
+        "browser_navigate"
+    }
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_navigate".into(),
-            description: "Drive an existing browser window to a new URL.".into(),
+            description: "Open the Browser panel in the agent window's right dock (if it isn't \
+                already open) and load `url` in it. This is the agent's ONE browser — a single \
+                embedded panel, never a separate window — and this is the tool to start any \
+                browser task with. Use it to preview and verify running pages (dev servers, \
+                local HTML), then screenshot / click / read console on the same panel."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "label": {"type": "string", "description": "Optional. Defaults to the most recently used window."},
-                    "url": {"type": "string"}
+                    "url": {"type": "string", "description": "URL to load (http:// or https://, or a local dev-server address)."}
                 },
                 "required": ["url"]
             }),
         }
     }
-    fn requires_permission(&self) -> bool { true }
+    fn requires_permission(&self) -> bool {
+        true
+    }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-        let label = resolve_label(&input, &self.manager)?;
         let url = require_string(&input, "url")?;
+        // Reveal + build the right-rail panel (hinting the URL), then drive it.
+        ensure_agent_browser(&self.manager, Some(url)).await?;
         self.manager
-            .navigate(&label, url)
+            .navigate(AGENT_BROWSER_LABEL, url)
             .map_err(ToolError::Execution)?;
-        Ok(json!({ "ok": true, "label": label, "url": url }).to_string())
+        Ok(json!({ "ok": true, "url": url }).to_string())
     }
 }
 
@@ -546,44 +634,49 @@ pub struct BrowserClickTool {
     manager: Arc<BrowserManager>,
 }
 impl BrowserClickTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self { Self { manager } }
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
 }
 #[async_trait]
 impl ToolExecutor for BrowserClickTool {
-    fn name(&self) -> &str { "browser_click" }
+    fn name(&self) -> &str {
+        "browser_click"
+    }
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_click".into(),
-            description: "Click the first element matching `selector`. \
-                Automatically scrolls it into view and waits up to 4 \
-                seconds for it to appear, so most async-rendered \
-                buttons don't need a separate wait step. `label` is \
-                optional — defaults to the most recently used window.".into(),
+            description: "Click the first element matching `selector` in the agent window's \
+                right-rail Browser panel. Automatically scrolls it into view and waits up to 4 \
+                seconds for it to appear, so most async-rendered buttons don't need a separate \
+                wait step."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "label": {"type": "string"},
                     "selector": {"type": "string"}
                 },
                 "required": ["selector"]
             }),
         }
     }
-    fn requires_permission(&self) -> bool { true }
+    fn requires_permission(&self) -> bool {
+        true
+    }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-        let label = resolve_label(&input, &self.manager)?;
+        ensure_agent_browser(&self.manager, None).await?;
         let selector = require_string(&input, "selector")?;
         // Built-in auto-wait: poll for the element for up to 4 seconds
         // before clicking. This subsumes the dropped `browser_wait_for`
         // tool for the 95% case (waiting just before clicking).
         let _ = self
             .manager
-            .wait_for(&label, selector, Some(4_000))
+            .wait_for(AGENT_BROWSER_LABEL, selector, Some(4_000))
             .await;
         let result = self
             .manager
-            .click(&label, selector)
+            .click(AGENT_BROWSER_LABEL, selector)
             .await
             .map_err(ToolError::Execution)?;
         Ok(unwrap_browser_result(result)?.to_string())
@@ -594,22 +687,26 @@ pub struct BrowserFillTool {
     manager: Arc<BrowserManager>,
 }
 impl BrowserFillTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self { Self { manager } }
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
 }
 #[async_trait]
 impl ToolExecutor for BrowserFillTool {
-    fn name(&self) -> &str { "browser_fill" }
+    fn name(&self) -> &str {
+        "browser_fill"
+    }
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_fill".into(),
-            description: "Set the value of an input/textarea/contentEditable matching \
-                `selector` and dispatch input + change events so frameworks (React, Vue, \
-                Svelte, …) react to the change. If `submit` is true and the element is \
-                inside a <form>, the form is submitted afterwards.".into(),
+            description: "In the agent window's right-rail Browser panel, set the value of an \
+                input/textarea/contentEditable matching `selector` and dispatch input + change \
+                events so frameworks (React, Vue, Svelte, …) react to the change. If `submit` is \
+                true and the element is inside a <form>, the form is submitted afterwards."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "label": {"type": "string", "description": "Optional. Defaults to the most recently used window."},
                     "selector": {"type": "string"},
                     "value": {"type": "string"},
                     "submit": {"type": "boolean", "default": false}
@@ -618,19 +715,24 @@ impl ToolExecutor for BrowserFillTool {
             }),
         }
     }
-    fn requires_permission(&self) -> bool { true }
+    fn requires_permission(&self) -> bool {
+        true
+    }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-        let label = resolve_label(&input, &self.manager)?;
+        ensure_agent_browser(&self.manager, None).await?;
         let selector = require_string(&input, "selector")?;
         let value = input
             .get("value")
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidInput("`value` must be a string".into()))?;
-        let submit = input.get("submit").and_then(Value::as_bool).unwrap_or(false);
+        let submit = input
+            .get("submit")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let result = self
             .manager
-            .fill(&label, selector, value, submit)
+            .fill(AGENT_BROWSER_LABEL, selector, value, submit)
             .await
             .map_err(ToolError::Execution)?;
         Ok(unwrap_browser_result(result)?.to_string())
@@ -641,17 +743,22 @@ pub struct BrowserWaitForTool {
     manager: Arc<BrowserManager>,
 }
 impl BrowserWaitForTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self { Self { manager } }
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
 }
 #[async_trait]
 impl ToolExecutor for BrowserWaitForTool {
-    fn name(&self) -> &str { "browser_wait_for" }
+    fn name(&self) -> &str {
+        "browser_wait_for"
+    }
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_wait_for".into(),
             description: "Block until `selector` is present and visible (non-zero bounding \
                 rect). Returns `{ ok, found, waitedMs }`. `timeoutMs` defaults to 8000, \
-                capped at 60000.".into(),
+                capped at 60000."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -663,7 +770,9 @@ impl ToolExecutor for BrowserWaitForTool {
             }),
         }
     }
-    fn requires_permission(&self) -> bool { true }
+    fn requires_permission(&self) -> bool {
+        true
+    }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
         let label = require_label(&input)?;
@@ -686,27 +795,26 @@ pub struct BrowserScrollTool {
     manager: Arc<BrowserManager>,
 }
 impl BrowserScrollTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self { Self { manager } }
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
 }
 #[async_trait]
 impl ToolExecutor for BrowserScrollTool {
-    fn name(&self) -> &str { "browser_scroll" }
+    fn name(&self) -> &str {
+        "browser_scroll"
+    }
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_scroll".into(),
-            description: "Scroll the page up, down, to top, to bottom, \
-                or until a specific element is visible. Returns the \
-                before/after scroll position and whether the page is \
-                now at the top/bottom — so a follow-up screenshot \
-                isn't needed just to confirm the scroll landed."
+            description: "Scroll the agent window's right-rail Browser panel up, down, to top, to \
+                bottom, or until a specific element is visible. Returns the before/after scroll \
+                position and whether the page is now at the top/bottom — so a follow-up \
+                screenshot isn't needed just to confirm the scroll landed."
                 .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "label": {
-                        "type": "string",
-                        "description": "Optional. Defaults to the most recently used window."
-                    },
                     "direction": {
                         "type": "string",
                         "enum": ["up", "down", "top", "bottom"],
@@ -725,10 +833,12 @@ impl ToolExecutor for BrowserScrollTool {
             }),
         }
     }
-    fn requires_permission(&self) -> bool { true }
+    fn requires_permission(&self) -> bool {
+        true
+    }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-        let label = resolve_label(&input, &self.manager)?;
+        ensure_agent_browser(&self.manager, None).await?;
         let direction = input.get("direction").and_then(Value::as_str);
         let selector = input.get("selector").and_then(Value::as_str);
         let amount = input
@@ -737,11 +847,11 @@ impl ToolExecutor for BrowserScrollTool {
             .and_then(Value::as_i64);
         let result = self
             .manager
-            .scroll(&label, direction, selector, amount)
+            .scroll(AGENT_BROWSER_LABEL, direction, selector, amount)
             .await
             .map_err(ToolError::Execution)?;
         let value = unwrap_browser_result(result)?;
-        Ok(json!({ "label": label, "scroll": value }).to_string())
+        Ok(json!({ "scroll": value }).to_string())
     }
 }
 
@@ -754,11 +864,15 @@ pub struct BrowserEvalTool {
     manager: Arc<BrowserManager>,
 }
 impl BrowserEvalTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self { Self { manager } }
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
 }
 #[async_trait]
 impl ToolExecutor for BrowserEvalTool {
-    fn name(&self) -> &str { "browser_eval" }
+    fn name(&self) -> &str {
+        "browser_eval"
+    }
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_eval".into(),
@@ -777,7 +891,9 @@ impl ToolExecutor for BrowserEvalTool {
             }),
         }
     }
-    fn requires_permission(&self) -> bool { true }
+    fn requires_permission(&self) -> bool {
+        true
+    }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
         let label = require_label(&input)?;
@@ -803,19 +919,19 @@ mod tests {
 
     #[test]
     fn tool_name_roster_count() {
-        // Nine tools after re-adding `browser_list_windows` so the agent
-        // can deduplicate windows.
-        assert_eq!(TOOL_NAMES.len(), 9);
+        // Six tools: one embedded right-rail browser, no window management.
+        assert_eq!(TOOL_NAMES.len(), 6);
     }
 
     #[test]
     fn dangerous_tools_are_unregistered() {
-        // Explicitly assert the foot-gun tools are not exposed to the
-        // agent surface. Catches accidental re-registration.
-        // `browser_list_windows` is deliberately omitted from this list
-        // — it's a read-only enumeration that the agent needs to avoid
-        // spawning duplicate windows.
+        // Explicitly assert the foot-gun and now-obsolete window-management
+        // tools are not exposed to the agent surface. Catches accidental
+        // re-registration.
         for hidden in [
+            "browser_open",
+            "browser_close",
+            "browser_list_windows",
             "browser_eval",
             "browser_get_dom",
             "browser_get_url",
@@ -831,8 +947,7 @@ mod tests {
 
     #[test]
     fn permission_required_set_matches_constants() {
-        let names: std::collections::HashSet<_> =
-            TOOL_NAMES.iter().copied().collect();
+        let names: std::collections::HashSet<_> = TOOL_NAMES.iter().copied().collect();
         for &n in TOOLS_REQUIRING_PERMISSION {
             assert!(names.contains(n), "permission tool {n} not in roster");
         }

@@ -196,6 +196,7 @@ const previewFullContentTool = async (
 const previewSearchReplaceTool = async (
   toolCall: ToolCallRequest,
   rawArguments: string,
+  toolName: LivePreviewToolName,
 ) => {
   const pathField = getStreamingStringArg(rawArguments, "path");
   const oldStringField = getStreamingStringArg(rawArguments, "old_string");
@@ -212,7 +213,7 @@ const previewSearchReplaceTool = async (
   }
 
   const filePath = resolvePath(pathField.value);
-  const session = getOrCreateSession(toolCall.id, "search_replace", filePath);
+  const session = getOrCreateSession(toolCall.id, toolName, filePath);
   const updateVersion = session.updateVersion + 1;
   session.updateVersion = updateVersion;
 
@@ -235,6 +236,7 @@ const previewSearchReplaceTool = async (
 const previewMultiSearchReplaceTool = async (
   toolCall: ToolCallRequest,
   rawArguments: string,
+  toolName: LivePreviewToolName,
 ) => {
   const pathField = getStreamingStringArg(rawArguments, "path");
   const replacements = getParsedReplacementsArg(rawArguments);
@@ -244,7 +246,7 @@ const previewMultiSearchReplaceTool = async (
   }
 
   const filePath = resolvePath(pathField.value);
-  const session = getOrCreateSession(toolCall.id, "multi_search_replace", filePath);
+  const session = getOrCreateSession(toolCall.id, toolName, filePath);
   const updateVersion = session.updateVersion + 1;
   session.updateVersion = updateVersion;
 
@@ -276,12 +278,25 @@ const updateFromToolCall = async (toolCall: ToolCallRequest) => {
     return;
   }
 
-  if (toolName === "search_replace") {
-    await previewSearchReplaceTool(toolCall, rawArguments);
+  // `file_edit` carries either a single old_string/new_string OR an
+  // `edits` array; legacy `multi_search_replace` used `replacements`.
+  // Pick the batch preview when an array is present, else single.
+  if (toolName === "file_edit") {
+    const replacements = getParsedReplacementsArg(rawArguments);
+    if (replacements) {
+      await previewMultiSearchReplaceTool(toolCall, rawArguments, toolName);
+    } else {
+      await previewSearchReplaceTool(toolCall, rawArguments, toolName);
+    }
     return;
   }
 
-  await previewMultiSearchReplaceTool(toolCall, rawArguments);
+  if (toolName === "search_replace") {
+    await previewSearchReplaceTool(toolCall, rawArguments, toolName);
+    return;
+  }
+
+  await previewMultiSearchReplaceTool(toolCall, rawArguments, toolName);
 };
 
 /**

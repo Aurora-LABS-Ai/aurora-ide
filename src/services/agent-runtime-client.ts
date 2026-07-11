@@ -28,6 +28,10 @@ import { parseToolArguments } from "../lib/tool-arguments";
 import type { ProviderConfig } from "./providers/types";
 import type { ToolCallRequest, TokenUsage } from "./providers/types";
 import type { AgentCallbacks, AgentConfig } from "./agent-service.types";
+import type {
+  AttachedPromptChip,
+  AttachedSelectedElement,
+} from "./thread-service";
 import {
   executeMcpTool,
   isMcpTool,
@@ -128,6 +132,26 @@ export interface AgentChatRequest {
    * runtime always uses the same value the chat header already shows.
    */
   contextWindow: number | null;
+  /**
+   * Compaction trigger as a percentage of `contextWindow` (50–95). When the
+   * projected request crosses it, the runtime summarizes older history into a
+   * persistent marker (`DOCS/compaction-design.md`). `null`/`0` disables it —
+   * the request then relies on trim alone.
+   */
+  compactionThresholdPct: number | null;
+  /** `max_output_tokens` budget for the summarization call (2,000–16,000). */
+  compactionSummaryBudget: number | null;
+  /** Allow read-only file tools to read files outside the workspace. */
+  allowOutsideWorkspace: boolean | null;
+  /**
+   * Browser-inspector element chips attached to this user turn. Persisted
+   * by the runtime onto the user `ConversationMessage` in the session JSONL
+   * (camelCase on the wire → Rust `attached_selected_elements`). `null`/
+   * omitted when the user attached nothing.
+   */
+  attachedSelectedElements?: AttachedSelectedElement[] | null;
+  /** Exact composer pills retained for transcript replay after reopening. */
+  attachedPromptChips?: AttachedPromptChip[] | null;
 }
 
 /**
@@ -159,6 +183,8 @@ export type AssistantEvent =
     }
   | { type: "message_stop"; stop_reason: string }
   | { type: "queued_message_injected"; text: string }
+  | { type: "compaction_started" }
+  | { type: "compaction_completed"; before_tokens: number; after_tokens: number }
   | { type: "error"; message: string; recoverable: boolean };
 
 /**
@@ -262,6 +288,8 @@ export interface AgentRuntimeChatInput {
   ideContext: string | null;
   tools: RuntimeToolDefinitionLike[];
   workspacePath?: string | null;
+  attachedSelectedElements?: AttachedSelectedElement[] | null;
+  attachedPromptChips?: AttachedPromptChip[] | null;
 }
 
 export interface AgentRuntimeClientOptions {
@@ -444,6 +472,28 @@ export class AgentRuntimeClient {
       contextWindow: typeof providerConfig.contextWindow === "number"
         ? providerConfig.contextWindow
         : null,
+      // Compaction knobs (user-configurable, Settings → Agent). `null` lets the
+      // runtime fall back to trim-only / its default budget.
+      compactionThresholdPct:
+        typeof config.compactionThresholdPct === "number"
+          ? config.compactionThresholdPct
+          : null,
+      compactionSummaryBudget:
+        typeof config.compactionSummaryBudget === "number"
+          ? config.compactionSummaryBudget
+          : null,
+      allowOutsideWorkspace:
+        typeof config.allowOutsideWorkspace === "boolean"
+          ? config.allowOutsideWorkspace
+          : null,
+      attachedSelectedElements:
+        input.attachedSelectedElements && input.attachedSelectedElements.length > 0
+          ? input.attachedSelectedElements
+          : null,
+      attachedPromptChips:
+        input.attachedPromptChips && input.attachedPromptChips.length > 0
+          ? input.attachedPromptChips
+          : null,
     };
   }
 
@@ -493,9 +543,10 @@ export class AgentRuntimeClient {
       rejectTurn(err);
     };
 
-    // ── Subscribe to all four channels FIRST so we don't miss the
-    //    head of the stream while `agent_chat_v2` is still booting. ──
-    const unEvent = await auroraListen<AgentEventEnvelope>(
+    try {
+      // ── Subscribe to all four channels FIRST so we don't miss the
+      //    head of the stream while `agent_chat_v2` is still booting. ──
+      const unEvent = await auroraListen<AgentEventEnvelope>(
       AGENT_EVENT_CHANNEL,
       ({ payload }) => {
         if (extractTurnId(payload) !== turnId) return;
@@ -506,9 +557,9 @@ export class AgentRuntimeClient {
         }
       },
     );
-    this.cleanups.push(unEvent);
+      this.cleanups.push(unEvent);
 
-    const unToolPending = await auroraListen<ToolPendingPayload>(
+      const unToolPending = await auroraListen<ToolPendingPayload>(
       AGENT_TOOL_PENDING_CHANNEL,
       ({ payload }) => {
         if (extractTurnId(payload) !== turnId) return;
@@ -518,9 +569,9 @@ export class AgentRuntimeClient {
         void this.dispatchToolPending(turnId, payload);
       },
     );
-    this.cleanups.push(unToolPending);
+      this.cleanups.push(unToolPending);
 
-    const unTurnComplete = await auroraListen<TurnCompletionPayload>(
+      const unTurnComplete = await auroraListen<TurnCompletionPayload>(
       AGENT_TURN_COMPLETE_CHANNEL,
       ({ payload }) => {
         if (extractTurnId(payload) !== turnId) return;
@@ -533,9 +584,9 @@ export class AgentRuntimeClient {
         });
       },
     );
-    this.cleanups.push(unTurnComplete);
+      this.cleanups.push(unTurnComplete);
 
-    const unTurnError = await auroraListen<TurnErrorPayload>(
+      const unTurnError = await auroraListen<TurnErrorPayload>(
       AGENT_TURN_ERROR_CHANNEL,
       ({ payload }) => {
         if (extractTurnId(payload) !== turnId) return;
@@ -548,13 +599,13 @@ export class AgentRuntimeClient {
         settleReject(err);
       },
     );
-    this.cleanups.push(unTurnError);
+      this.cleanups.push(unTurnError);
 
     // Phase 4 — permission gate: subscribe to the prompter event
     // channel, render the existing approval UI via the consumer's
     // `onToolApprovalRequired` callback (same modal as bridge tools),
     // and post the verdict back through `agent_grant_permission`.
-    const unPermissionRequest = await auroraListen<PermissionRequestPayload>(
+      const unPermissionRequest = await auroraListen<PermissionRequestPayload>(
       AGENT_PERMISSION_REQUEST_CHANNEL,
       ({ payload }) => {
         const eventTurnId = extractTurnId(payload);
@@ -572,14 +623,14 @@ export class AgentRuntimeClient {
         void this.dispatchPermissionRequest(turnId, payload);
       },
     );
-    this.cleanups.push(unPermissionRequest);
+      this.cleanups.push(unPermissionRequest);
 
     // Kick off the turn. The `Result<(), String>` from `agent_chat_v2`
     // is authoritative ONLY if the events never fire (e.g. immediate
     // factory error before the registry registers the turn). When
     // events DO fire, they win — because they may resolve/reject the
     // promise before the IPC call returns.
-    const invokePromise = auroraInvoke<void>(AGENT_CHAT_COMMAND, { request })
+      const invokePromise = auroraInvoke<void>(AGENT_CHAT_COMMAND, { request })
       .then(() => undefined)
       .catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
@@ -589,13 +640,21 @@ export class AgentRuntimeClient {
         settleReject(wrapped);
       });
 
-    try {
       const result = await turnPromise;
       // Drain the IPC promise so we don't leave it dangling — the
       // events have already settled `turnPromise` so the IPC's own
       // resolution is a no-op at this point.
       await invokePromise;
       return result;
+    } catch (error) {
+      // Listener registration can fail before the command starts. Surface that
+      // through the normal UI error callback and still release any listeners
+      // that were registered earlier in the sequence.
+      if (!settled) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        callbacks.onError?.(err);
+      }
+      throw error;
     } finally {
       this.runCleanups();
       this.currentTurnId = null;
@@ -647,7 +706,7 @@ export class AgentRuntimeClient {
         // Streaming preview of a tool call. We synthesise a
         // ToolCallRequest whose `function.arguments` carries the
         // full accumulated raw JSON the model has typed so far —
-        // ChatPanel / AgentModeLayout already handle re-firing
+        // the chat surfaces already handle re-firing
         // `onToolCall` with growing rawArgs (existing-event update
         // path), and `liveFilePreviewService.updateFromToolCall`
         // partial-parses the buffer to extract `path` / `content`
@@ -689,6 +748,12 @@ export class AgentRuntimeClient {
         break;
       case "queued_message_injected":
         callbacks.onQueuedMessageInjected?.(event.text);
+        break;
+      case "compaction_started":
+        callbacks.onCompactionStarted?.();
+        break;
+      case "compaction_completed":
+        callbacks.onCompactionCompleted?.(event.before_tokens, event.after_tokens);
         break;
       case "error":
         callbacks.onError?.(new Error(event.message));
@@ -834,7 +899,14 @@ export class AgentRuntimeClient {
       });
 
       content = isAuroraFrontend
-        ? await executeAuroraFrontendTool(toolName, args)
+        ? await executeAuroraFrontendTool(toolName, args, {
+            // Pin team/frontend tools to THIS turn's workspace + thread, not
+            // whatever project/chat is globally open. A background turn can
+            // drive the team while another chat is on screen; without this the
+            // global stores would point team_dispatch at the wrong project.
+            workspacePath: this.options.config.workspacePath ?? null,
+            threadId: this.options.threadId,
+          })
         : await executeMcpTool(toolName, args);
       this.options.callbacks.onToolExecutionComplete?.(
         {

@@ -754,8 +754,7 @@ data: [DONE]\n\
         // fact deserialized — without this, the parsing arm above would
         // silently see `delta.signature == None` and the accumulator stays
         // empty, which is exactly the bug we're fixing.
-        let payload =
-            r#"{"type":"signature_delta","signature":"sig_xyz","thinking":null,"text":null,"partial_json":null}"#;
+        let payload = r#"{"type":"signature_delta","signature":"sig_xyz","thinking":null,"text":null,"partial_json":null}"#;
         let delta: super::super::types::AnthropicDelta =
             serde_json::from_str(payload).expect("delta should parse");
         assert_eq!(delta.delta_type, "signature_delta");

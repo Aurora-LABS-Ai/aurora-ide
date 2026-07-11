@@ -45,8 +45,9 @@ interface CheckpointActions {
 
 export const useCheckpointStore = create<CheckpointState & CheckpointActions>(
   (set, get) => ({
-    // State
-    enabled: true,
+    // State — checkpoints are opt-in per project; start OFF until the backend
+    // (`isEnabled`) confirms this workspace turned them on.
+    enabled: false,
     checkpoints: new Map(),
     isRestoring: false,
     workspacePath: null,

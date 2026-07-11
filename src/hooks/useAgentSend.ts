@@ -2,11 +2,11 @@
  * useAgentSend — single source of truth for the chat composer's
  * "send a turn to the agent" pipeline.
  *
- * The same ~500-line `handleSend` previously lived in BOTH `ChatPanel`
- * and `AgentModeLayout`. Maintaining two near-identical copies caused
- * drift bugs (Agent Mode lost the skill-catalog injection, the
- * `isFirstMessage` flag, and the cross-window stream broadcast). This
- * hook unifies the lifecycle so both surfaces stay in sync forever.
+ * The same ~500-line `handleSend` once lived in multiple in-IDE chat
+ * surfaces; maintaining near-identical copies caused drift bugs (lost
+ * skill-catalog injection, the `isFirstMessage` flag, the cross-window
+ * stream broadcast). This hook unifies that lifecycle so the IDE chat
+ * pipeline lives in exactly one place.
  *
  * The hook owns:
  *  - the streaming message id ref (so the timeline event stream lands
@@ -16,9 +16,9 @@
  *  - the audit-store bridging,
  *  - the cross-window broadcast (`chatSyncBroadcast.broadcastStreamUpdate`).
  *
- * Both `ChatPanel` and `AgentModeLayout` consume the same handlers
- * returned here. The hook intentionally avoids JSX so it can be unit-
- * tested in isolation.
+ * `ChatPanel` consumes the handlers returned here (the standalone Agent
+ * Window has its own `useAgentWindowSend`). The hook intentionally avoids
+ * JSX so it can be unit-tested in isolation.
  */
 
 import { useCallback, useEffect, useRef } from "react";
@@ -44,7 +44,8 @@ import {
   getIDEContextLight,
   loadProjectRules,
 } from "../services/context-builder";
-import { tokenService } from "../services/token-service";
+import { getWorkspaceSkillToggles } from "../services/skills";
+import { tokenService, stripImagePayloads, IMAGE_TOKEN_COST } from "../services/token-service";
 import { getProfessionalToolName } from "../services/tool-display";
 import { toolRegistry } from "../tools";
 import { chatSyncBroadcast } from "./useRustChatSync";
@@ -86,17 +87,6 @@ export interface UseAgentSendApi {
   handleReject: () => void;
 }
 
-const FILE_OP_TOOL_NAMES = new Set([
-  "file_create",
-  "file_write",
-  "search_replace",
-  "multi_search_replace",
-  "file_delete",
-  "folder_create",
-  "folder_move",
-  "folder_delete",
-]);
-
 const generateId = (): string => Math.random().toString(36).substr(2, 9);
 
 export function useAgentSend(): UseAgentSendApi {
@@ -113,8 +103,6 @@ export function useAgentSend(): UseAgentSendApi {
   const addMessageToThread = useThreadStore((s) => s.addMessageToThread);
   const updateMessageInThread = useThreadStore((s) => s.updateMessageInThread);
   const updateThreadUsage = useThreadStore((s) => s.updateThreadUsage);
-
-  const refreshDirectory = useWorkspaceStore((s) => s.refreshDirectory);
 
   const flushTimelineUpdate = useCallback(() => {
     if (pendingRAF.current) {
@@ -178,10 +166,6 @@ export function useAgentSend(): UseAgentSendApi {
     [flushTimelineUpdate, updateMessageInThread],
   );
 
-  const refreshFileExplorer = useCallback(() => {
-    refreshDirectory();
-  }, [refreshDirectory]);
-
   const handleSend = useCallback(
     async (
       content: string,
@@ -198,7 +182,13 @@ export function useAgentSend(): UseAgentSendApi {
       const settings = useSettingsStore.getState();
       const llmConfig = settings.getLLMConfig();
       const autoApproveTools = settings.autoApproveTools;
-      const agentExecutionMode = settings.agentExecutionMode;
+      // The Agent Team runs only in the Agent Window now — the in-IDE chat is
+      // Agent/Plan only. Clamp any stale persisted "team" so the IDE never
+      // exposes team-control tools or the Lead prompt.
+      const agentExecutionMode =
+        settings.agentExecutionMode === "team"
+          ? "agent"
+          : settings.agentExecutionMode;
       const getToolApproval = settings.getToolApproval;
       const userThinkingEnabled = settings.thinkingEnabled;
       const thinkingEnabled =
@@ -298,7 +288,10 @@ export function useAgentSend(): UseAgentSendApi {
           "../services/skills"
         );
         const resolved = await resolveSkills({
-          enabledSkillToggles: settings.skillToggles,
+          enabledSkillToggles: getWorkspaceSkillToggles(
+            settings.skillToggles,
+            rootPath,
+          ),
           explicitSkillKeys: promptSelection.explicitSkillKeys,
           skillsEnabled: settings.skillsEnabled,
           userMessage: content,
@@ -407,7 +400,6 @@ export function useAgentSend(): UseAgentSendApi {
 
       let currentThinkingEventId: string | null = null;
       let currentContentEventId: string | null = null;
-      let hasFileOperation = false;
       let usageReceivedFromAPI = false;
 
       const auditStore = useAuditStore.getState();
@@ -508,10 +500,6 @@ export function useAgentSend(): UseAgentSendApi {
                   ),
                 };
                 addTimelineEvent({ type: "tool", tool: newToolCall });
-
-                if (FILE_OP_TOOL_NAMES.has(toolCall.function.name)) {
-                  hasFileOperation = true;
-                }
               } else {
                 const rawArgs = toolCall.function.arguments || "";
                 let parsedArgs = existing.tool!.args || {};
@@ -615,10 +603,6 @@ export function useAgentSend(): UseAgentSendApi {
                 updateTimelineEvent(toolEvent.id, {
                   tool: { ...toolEvent.tool!, status: "complete", result },
                 });
-              }
-
-              if (hasFileOperation) {
-                setTimeout(() => refreshFileExplorer(), 100);
               }
             },
             onToolExecutionError: (toolCall, error) => {
@@ -747,23 +731,28 @@ export function useAgentSend(): UseAgentSendApi {
                   }
                 }
               }
-
-              if (hasFileOperation) {
-                refreshFileExplorer();
-              }
-
               if (!usageReceivedFromAPI) {
                 const ctx = useContextStore.getState();
                 let responseTokens = 0;
+                let images = 0;
+                // Strip image payloads (screenshots, pasted images) BEFORE
+                // estimating — a base64 blob counted as text would overcount the
+                // context ~10x. Each stripped image bills a flat allowance.
+                const estimate = (text: string) => {
+                  const clean = stripImagePayloads(text);
+                  images += clean.images;
+                  responseTokens += tokenService.quickEstimate(clean.text).tokens;
+                };
                 for (const event of timelineRef.current) {
                   if (event.type === "content" && event.content) {
-                    responseTokens += tokenService.quickEstimate(event.content).tokens;
+                    estimate(event.content);
                   } else if (event.type === "thinking" && event.thinking) {
-                    responseTokens += tokenService.quickEstimate(event.thinking).tokens;
+                    estimate(event.thinking);
                   } else if (event.type === "tool" && event.tool?.result) {
-                    responseTokens += tokenService.quickEstimate(event.tool.result).tokens;
+                    estimate(event.tool.result);
                   }
                 }
+                responseTokens += images * IMAGE_TOKEN_COST;
                 ctx.setEstimatedContext(ctx.usedContextTokens + responseTokens);
               }
             },
@@ -856,7 +845,6 @@ export function useAgentSend(): UseAgentSendApi {
       addMessageToThread,
       addTimelineEvent,
       flushTimelineUpdate,
-      refreshFileExplorer,
       setLoading,
       setPendingApproval,
       updateThreadUsage,

@@ -64,9 +64,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ isDetached = false }) => {
 
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
 
-  // Single source of truth for the send pipeline (used by both
-  // ChatPanel and AgentModeLayout — see `useAgentSend.ts` for why this
-  // was extracted).
+  // Single source of truth for the in-IDE send pipeline — see
+  // `useAgentSend.ts` for why this was extracted.
   const { handleSend, handleApprove, handleApproveRemember, handleReject } =
     useAgentSend();
 

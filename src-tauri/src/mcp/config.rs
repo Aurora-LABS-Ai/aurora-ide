@@ -52,24 +52,57 @@ fn default_true() -> bool {
 }
 
 impl McpConfig {
-    /// Get the MCP config file path — `<AuroraIDE>/config/mcp.json`.
+    /// Get the MCP config file path — `~/.aurora/mcp.json`.
     pub fn config_path() -> Option<PathBuf> {
         Some(crate::paths::mcp_config_file())
     }
 
-    /// Load MCP config from file
+    /// Load MCP config from file.
+    ///
+    /// The on-disk format is keyed by server **name** (Cursor/Claude style). If
+    /// the new home-dir file is missing but a legacy `<root>/config/mcp.json`
+    /// exists, it is migrated once: re-keyed from the old internal `mcp-<id>`
+    /// keys to the human-readable server name and saved to the new location.
     pub fn load() -> Result<Self, String> {
         let path = crate::paths::mcp_config_file();
 
-        if !path.exists() {
-            // Return empty config if file doesn't exist
-            return Ok(Self::default());
+        if path.exists() {
+            let content = std::fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read MCP config: {}", e))?;
+            return serde_json::from_str(&content)
+                .map_err(|e| format!("Failed to parse MCP config: {}", e));
         }
 
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read MCP config: {}", e))?;
+        // One-time migration from the legacy app-data location.
+        let legacy = crate::paths::legacy_mcp_config_file();
+        if legacy.exists() {
+            if let Ok(content) = std::fs::read_to_string(&legacy) {
+                if let Ok(old) = serde_json::from_str::<Self>(&content) {
+                    let migrated = old.rekeyed_by_name();
+                    // Best-effort write to the new path; loading still succeeds
+                    // even if the write fails (e.g. read-only home).
+                    let _ = migrated.save();
+                    return Ok(migrated);
+                }
+            }
+        }
 
-        serde_json::from_str(&content).map_err(|e| format!("Failed to parse MCP config: {}", e))
+        // No config anywhere → empty.
+        Ok(Self::default())
+    }
+
+    /// Rebuild the map keyed by each server's display name (falling back to the
+    /// existing key), dropping the now-redundant `name` field — used to migrate
+    /// the legacy id-keyed file to the human-readable name-keyed format.
+    fn rekeyed_by_name(&self) -> Self {
+        let mut mcp_servers = HashMap::new();
+        for (key, entry) in &self.mcp_servers {
+            let name = entry.name.clone().unwrap_or_else(|| key.clone());
+            let mut e = entry.clone();
+            e.name = None;
+            mcp_servers.insert(name, e);
+        }
+        Self { mcp_servers }
     }
 
     /// Save MCP config to file
@@ -119,7 +152,9 @@ impl McpConfig {
             .iter()
             .map(|config| {
                 let entry = McpServerEntry {
-                    name: Some(config.name.clone()),
+                    // The map KEY is the name (Cursor/Claude format), so the
+                    // redundant `name` field is dropped.
+                    name: None,
                     command: config.command.clone(),
                     args: config.args.clone(),
                     env: config.env.clone(),
@@ -129,18 +164,19 @@ impl McpConfig {
                     auto_start: config.auto_start,
                     auto_approve: config.auto_approve,
                 };
-                (config.id.clone(), entry)
+                (config.name.clone(), entry)
             })
             .collect();
 
         Self { mcp_servers }
     }
 
-    /// Add or update a server
+    /// Add or update a server. Keyed by the server **name** (Cursor/Claude
+    /// format) — the runtime id is normalized to the name by the manager, so
+    /// the file never stores an internal `mcp-<id>`.
     pub fn upsert_server(&mut self, config: &McpServerConfig) {
         let entry = McpServerEntry {
-            // Store the display name
-            name: Some(config.name.clone()),
+            name: None,
             command: config.command.clone(),
             args: config.args.clone(),
             env: config.env.clone(),
@@ -150,7 +186,7 @@ impl McpConfig {
             auto_start: config.auto_start,
             auto_approve: config.auto_approve,
         };
-        self.mcp_servers.insert(config.id.clone(), entry);
+        self.mcp_servers.insert(config.name.clone(), entry);
     }
 
     /// Remove a server

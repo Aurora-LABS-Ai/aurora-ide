@@ -136,7 +136,8 @@ where
     let mut blocks: Vec<BlockState> = Vec::new();
     let mut last_kind: Option<DeltaKind> = None;
     // Map tool_call index → position in `blocks`.
-    let mut tool_positions: std::collections::HashMap<i32, usize> = std::collections::HashMap::new();
+    let mut tool_positions: std::collections::HashMap<i32, usize> =
+        std::collections::HashMap::new();
 
     let mut usage = TokenUsage::default();
     let mut finish_reason: Option<String> = None;

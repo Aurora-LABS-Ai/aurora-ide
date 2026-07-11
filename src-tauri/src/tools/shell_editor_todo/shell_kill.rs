@@ -80,9 +80,7 @@ impl ToolExecutor for ShellKillTool {
             });
 
         let identifier = identifier.ok_or_else(|| {
-            ToolError::InvalidInput(
-                "shell_kill requires `requestId`, `processId`, or `pid`".into(),
-            )
+            ToolError::InvalidInput("shell_kill requires `requestId`, `processId`, or `pid`".into())
         })?;
 
         match cancel_stream(identifier.clone()) {
@@ -123,6 +121,7 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext {
+            allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             session_id: "s".into(),

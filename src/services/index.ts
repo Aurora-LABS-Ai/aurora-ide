@@ -13,6 +13,8 @@ export {
   initAgentService
 } from './agent-service';
 
+export type { PromptOverhead } from './agent-service';
+
 export type {
   AgentConfig,
   AgentCallbacks,

@@ -119,8 +119,8 @@ mod tests {
     #[test]
     fn resolve_permission_errors_when_unknown() {
         let router = PermissionRouter::new();
-        let err = resolve_permission(&router, "missing", "shell_execute", true)
-            .expect_err("must fail");
+        let err =
+            resolve_permission(&router, "missing", "shell_execute", true).expect_err("must fail");
         assert_eq!(err, "no pending permission request");
     }
 

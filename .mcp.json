@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "qg-probe": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "C:\\Users\\Alvan\\Documents\\ALL-MCP-SERVER\\qg-win-control\\qg_probe_mcp",
+        "qg-probe-mcp"
+      ],
+      "env": {
+        "QG_PROBE_EXE": "C:\\Users\\Alvan\\Documents\\ALL-MCP-SERVER\\qg-win-control\\QgProbe\\bin\\Release\\net9.0-windows\\win-x64\\publish\\QgProbe.exe"
+      }
+    }
+  }
+}

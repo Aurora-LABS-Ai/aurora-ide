@@ -31,7 +31,7 @@ import {
 export interface ProviderDraft {
   name: string;
   nickname: string;
-  providerType: 'openai' | 'anthropic' | 'custom';
+  providerType: 'openai' | 'openai-responses' | 'anthropic' | 'custom';
   baseUrl: string;
   apiKey: string;
   initialModelKey: string;
@@ -59,7 +59,7 @@ export const ProviderEditorDialog: React.FC<ProviderEditorDialogProps> = ({
 }) => {
   const [name, setName] = useState('');
   const [nickname, setNickname] = useState('');
-  const [providerType, setProviderType] = useState<'openai' | 'anthropic' | 'custom'>('openai');
+  const [providerType, setProviderType] = useState<'openai' | 'openai-responses' | 'anthropic' | 'custom'>('openai');
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
@@ -181,6 +181,7 @@ export const ProviderEditorDialog: React.FC<ProviderEditorDialogProps> = ({
                     ariaLabel="Select provider API format"
                     options={[
                       { label: 'OpenAI compatible', value: 'openai' },
+                      { label: 'OpenAI Responses', value: 'openai-responses' },
                       { label: 'Anthropic compatible', value: 'anthropic' },
                       { label: 'Custom (OpenAI-like)', value: 'custom' },
                     ]}
@@ -198,7 +199,11 @@ export const ProviderEditorDialog: React.FC<ProviderEditorDialogProps> = ({
                 badge={
                   <StatusPill variant="neutral" dot={false}>
                     <Globe className="h-2.5 w-2.5" />
-                    {providerType === 'anthropic' ? 'Anthropic' : 'OpenAI-compat'}
+                    {providerType === 'anthropic'
+                      ? 'Anthropic'
+                      : providerType === 'openai-responses'
+                        ? 'OpenAI Responses'
+                        : 'OpenAI-compat'}
                   </StatusPill>
                 }
               >
@@ -210,7 +215,9 @@ export const ProviderEditorDialog: React.FC<ProviderEditorDialogProps> = ({
                     placeholder={
                       providerType === 'anthropic'
                         ? 'https://api.anthropic.com'
-                        : 'https://api.openrouter.ai/v1'
+                        : providerType === 'openai-responses'
+                          ? 'https://api.openai.com/v1'
+                          : 'https://api.openrouter.ai/v1'
                     }
                     style={{ fontFamily: 'monospace' }}
                   />

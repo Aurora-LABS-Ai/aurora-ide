@@ -327,20 +327,24 @@ export const ToolIcon: React.FC<IconProps> = ({ size = 14, className = '' }) => 
 // Helper to get the right icon for a tool name
 export const getToolIcon = (toolName: string, size = 14): React.ReactNode => {
   const iconMap: Record<string, React.FC<IconProps>> = {
-    // File operations
+    // File operations (current)
     'file_read': FileIcon,
     'file_write': FileEditIcon,
+    'file_edit': SearchReplaceIcon,
+    'move_path': FolderOpenIcon,
+    'delete_path': FileDeleteIcon,
+    // File operations (legacy names)
     'file_create': FileCreateIcon,
     'file_delete': FileDeleteIcon,
     'file_patch': FileEditIcon,
     'multi_file_read': FileIcon,
-    
+
     // Search operations
     'search_replace': SearchReplaceIcon,
     'multi_search_replace': SearchReplaceIcon,
     'grep': SearchIcon,
     'grep_search': SearchIcon,
-    
+
     // Folder operations
     'workspace_tree': FolderOpenIcon,
     'folder_create': FolderIcon,

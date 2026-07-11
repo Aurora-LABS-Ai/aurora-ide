@@ -10,25 +10,27 @@
 //! submodule so a future-Sub can swap an implementation without
 //! pulling in the rest of the bucket.
 //!
-//! ## Tool roster
+//! ## Tool roster (10 registered)
 //!
-//! | name                   | wraps                                                             |
-//! |------------------------|-------------------------------------------------------------------|
-//! | `file_read`            | `commands::read_file_content` + `editor_ops::slice_file_lines`    |
-//! | `file_write`           | `commands::write_file_content`                                    |
-//! | `file_patch`           | `commands::editor_ops::apply_search_replace` (alias)              |
-//! | `file_create`          | `commands::create_file` + `commands::write_file_content`          |
-//! | `file_delete`          | `commands::delete_path`                                           |
-//! | `file_exists`          | `std::fs::metadata` (no command needed)                           |
-//! | `grep`                 | `commands::ripgrep_search`                                        |
-//! | `multi_file_read`      | `commands::read_files_batch`                                      |
-//! | `search_replace`       | `commands::editor_ops::apply_search_replace`                      |
-//! | `multi_search_replace` | `commands::editor_ops::apply_multi_search_replace`                |
-//! | `workspace_tree`       | `commands::read_directory` (recursed via manual stack)            |
-//! | `folder_create`        | `commands::create_folder`                                         |
-//! | `folder_delete`        | `commands::delete_path`                                           |
-//! | `aurora_search`        | semantic indexer is not shipped (returns informational error)     |
-//! | `auroro_websearch`     | `commands::aurora_websearch`                                      |
+//! Refined from the original 16: read/edit families collapsed to one
+//! tool each, delete + folder-delete merged, folder_move generalised.
+//!
+//! | name               | role                                                                         |
+//! |--------------------|------------------------------------------------------------------------------|
+//! | `file_read`        | read one (`path`) or many (`paths`) files; missing → exists:false             |
+//! | `file_write`       | create or overwrite a whole file; `content` required; `must_not_exist` guard  |
+//! | `file_edit`        | exact-text edit, single or `edits[]` batch (atomic); read-before-edit guard    |
+//! | `move_path`        | move/rename a file OR folder (`std::fs::rename`)                              |
+//! | `delete_path`      | delete a file, or a folder with `recursive:true`                             |
+//! | `folder_create`    | `commands::create_folder`                                                    |
+//! | `grep`             | `commands::ripgrep_search`                                                   |
+//! | `workspace_tree`   | `commands::read_directory` (recursed via manual stack)                       |
+//! | `aurora_search`    | semantic indexer is not shipped (returns informational error)                |
+//! | `auroro_websearch` | `commands::aurora_websearch`                                                 |
+//!
+//! Internal (unregistered) helpers: `multi_file_read` (batch reader for
+//! `file_read`), `search_replace` (diff/result helpers for `file_edit` /
+//! `file_write`), `read_tracker` (read-before-edit state).
 //!
 //! ## Path safety
 //!
@@ -51,17 +53,22 @@ use crate::agent_safety::{resolve_within_workspace, PathSafetyError};
 
 pub mod aurora_search;
 pub mod auroro_websearch;
-pub mod file_create;
-pub mod file_delete;
-pub mod file_exists;
-pub mod file_patch;
+pub mod delete_path;
+pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
 pub mod folder_create;
-pub mod folder_delete;
 pub mod grep;
+pub mod move_path;
+/// Internal: the parallel batch reader, reused by `file_read`'s `paths`
+/// form. Not registered as a standalone tool.
 pub mod multi_file_read;
-pub mod multi_search_replace;
+/// Internal: per-session read-before-edit guard state.
+pub mod read_tracker;
+/// Internal: shared edit-result/diff helpers used by `file_edit` and
+/// `file_write`. The `SearchReplaceTool` struct here is no longer
+/// registered (its job is now `file_edit`); the module survives for its
+/// `render_response` / `emit_post_write` / `diff_side` helpers.
 pub mod search_replace;
 pub mod workspace_tree;
 
@@ -70,13 +77,11 @@ pub mod workspace_tree;
 /// underlying `ToolRegistry` does).
 ///
 /// `sink` is shared across every mutating tool (`file_write`,
-/// `file_create`, `file_patch`, `search_replace`,
-/// `multi_search_replace`, `file_delete`, `folder_create`,
-/// `folder_delete`) so they can fire the `agent_file_changed` Tauri
-/// event after a successful disk write — that's how open Monaco
-/// buffers, the explorer tree, and the pending-changes diff UI find
-/// out that disk just moved. Pass [`NoopIdeEventSink`] in unit tests
-/// that don't care about emissions.
+/// `file_edit`, `move_path`, `delete_path`, `folder_create`) so they can
+/// fire the `agent_file_changed` Tauri event after a successful disk
+/// write — that's how open Monaco buffers, the explorer tree, and the
+/// pending-changes diff UI find out that disk just moved. Pass
+/// [`NoopIdeEventSink`] in unit tests that don't care about emissions.
 ///
 /// The contract names this `pub fn register(reg: &mut ToolRegistry)`,
 /// but [`ToolRegistry::register`] takes `&self` (the registry is an
@@ -90,40 +95,33 @@ pub fn register(
     use std::sync::Arc;
 
     reg.register(Arc::new(file_read::FileReadTool));
-    reg.register(Arc::new(file_write::FileWriteTool::new(sink.clone())));
-    reg.register(Arc::new(file_patch::FilePatchTool::new(sink.clone())));
-    reg.register(Arc::new(file_create::FileCreateTool::new(sink.clone())));
-    reg.register(Arc::new(file_delete::FileDeleteTool::new(sink.clone())));
-    reg.register(Arc::new(file_exists::FileExistsTool));
+    reg.register(Arc::new(file_edit::FileEditTool::new(sink.clone())));
+    reg.register(Arc::new(move_path::MovePathTool::new(sink.clone())));
+    reg.register(Arc::new(delete_path::DeletePathTool::new(sink.clone())));
     reg.register(Arc::new(grep::GrepTool));
-    reg.register(Arc::new(multi_file_read::MultiFileReadTool));
-    reg.register(Arc::new(search_replace::SearchReplaceTool::new(sink.clone())));
-    reg.register(Arc::new(multi_search_replace::MultiSearchReplaceTool::new(
-        sink.clone(),
-    )));
     reg.register(Arc::new(workspace_tree::WorkspaceTreeTool));
-    reg.register(Arc::new(folder_create::FolderCreateTool::new(sink.clone())));
-    reg.register(Arc::new(folder_delete::FolderDeleteTool::new(sink)));
+    reg.register(Arc::new(file_write::FileWriteTool::new(sink.clone())));
+    reg.register(Arc::new(folder_create::FolderCreateTool::new(sink)));
     reg.register(Arc::new(aurora_search::AuroraSearchTool));
     reg.register(Arc::new(auroro_websearch::AuroroWebSearchTool));
 }
 
-/// The 15 tool names this bucket registers, in roster order. Used
-/// by the bucket-level smoke test and by Sub-E's composer test.
+/// The tool names this bucket registers, in roster order. Used by the
+/// bucket-level smoke test and by Sub-E's composer test. The refactor
+/// from 16→10 merged the read/edit/delete families into one tool each
+/// (`file_read`, `file_edit`, `delete_path`) and renamed `folder_move`
+/// → `move_path` (now file-or-folder). `multi_file_read`, `file_exists`,
+/// `file_create`, `search_replace`, and `multi_search_replace` are gone —
+/// folded into `file_read` / `file_write` / `file_edit`.
 pub const TOOL_NAMES: &[&str] = &[
     "file_read",
-    "file_write",
-    "file_patch",
-    "file_create",
-    "file_delete",
-    "file_exists",
+    "file_edit",
+    "move_path",
+    "delete_path",
     "grep",
-    "multi_file_read",
-    "search_replace",
-    "multi_search_replace",
     "workspace_tree",
+    "file_write",
     "folder_create",
-    "folder_delete",
     "aurora_search",
     "auroro_websearch",
 ];
@@ -149,6 +147,63 @@ pub(crate) fn resolve_path(
         Some(root) => resolve_within_workspace(raw, root).map_err(map_path_error),
         None => Ok(raw.to_path_buf()),
     }
+}
+
+/// Resolve a path for read-only tools. Existing paths use the
+/// strict canonical resolver; missing leaves inside the workspace are
+/// still returned so the reader can report a normal `success=false`
+/// payload instead of failing the whole tool call.
+pub(crate) fn resolve_path_for_read(
+    path: &str,
+    workspace_root: Option<&Path>,
+    allow_outside: bool,
+) -> Result<PathBuf, ToolError> {
+    let raw = Path::new(path);
+    let Some(root) = workspace_root else {
+        return Ok(raw.to_path_buf());
+    };
+
+    match resolve_within_workspace(raw, root) {
+        Ok(resolved) => Ok(resolved),
+        Err(PathSafetyError::Io(_)) => resolve_missing_path_inside_workspace(raw, root),
+        // A boundary rejection (path resolves OUTSIDE the workspace) is only
+        // fatal when the user hasn't opted into out-of-workspace reads. When they
+        // have, resolve the path on its own — absolute as-is, relative against
+        // the workspace — so the reader can open it.
+        Err(error) => {
+            if allow_outside {
+                Ok(resolve_outside_workspace(raw, root))
+            } else {
+                Err(map_path_error(error))
+            }
+        }
+    }
+}
+
+/// Resolve a path the user explicitly allowed reading from outside the
+/// workspace. Absolute paths stay as-is; relative ones anchor to the workspace.
+/// Canonicalized when it exists so symlinks/`..` collapse, else returned verbatim
+/// (a missing file still surfaces a normal "not found" from the reader).
+fn resolve_outside_workspace(raw: &Path, root: &Path) -> PathBuf {
+    let absolute = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        root.join(raw)
+    };
+    dunce::canonicalize(&absolute).unwrap_or(absolute)
+}
+
+fn resolve_missing_path_inside_workspace(path: &Path, root: &Path) -> Result<PathBuf, ToolError> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+
+    let (existing_ancestor, tail) = closest_existing_ancestor(&absolute);
+    let resolved_ancestor =
+        resolve_within_workspace(&existing_ancestor, root).map_err(map_path_error)?;
+    Ok(resolved_ancestor.join(tail))
 }
 
 /// Like [`resolve_path`] but tolerant of a missing leaf — used by
@@ -186,9 +241,9 @@ pub(crate) fn resolve_path_for_create(
         .parent()
         .ok_or_else(|| ToolError::InvalidInput(format!("path has no parent: {}", path)))?;
 
-    let leaf = absolute.file_name().ok_or_else(|| {
-        ToolError::InvalidInput(format!("path has no file name: {}", path))
-    })?;
+    let leaf = absolute
+        .file_name()
+        .ok_or_else(|| ToolError::InvalidInput(format!("path has no file name: {}", path)))?;
 
     if parent.exists() {
         let resolved_parent = resolve_within_workspace(parent, root).map_err(map_path_error)?;
@@ -338,7 +393,11 @@ pub(crate) fn detect_write_conventions(path: &std::path::Path) -> (Option<LineEn
         return (None, false);
     };
     let has_bom = bytes.starts_with(UTF8_BOM);
-    let body = if has_bom { &bytes[UTF8_BOM.len()..] } else { &bytes[..] };
+    let body = if has_bom {
+        &bytes[UTF8_BOM.len()..]
+    } else {
+        &bytes[..]
+    };
     (detect_line_ending(body), has_bom)
 }
 
@@ -432,10 +491,11 @@ mod tests {
     }
 
     #[test]
-    fn register_mounts_all_15_tools() {
+    fn register_mounts_all_bucket_tools() {
         let mut reg = ToolRegistry::new();
         register(&mut reg, test_sink());
-        assert_eq!(reg.len(), TOOL_NAMES.len(), "expected 15 tools in bucket");
+        assert_eq!(reg.len(), TOOL_NAMES.len(), "expected 10 tools in bucket");
+        assert_eq!(TOOL_NAMES.len(), 10);
 
         let registered: HashSet<String> = reg.names().into_iter().collect();
         for &name in TOOL_NAMES {
@@ -483,6 +543,26 @@ mod tests {
     }
 
     #[test]
+    fn resolve_path_for_read_allows_missing_inside_workspace() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        let resolved = resolve_path_for_read("missing.txt", Some(tmp.path()), false).expect("ok");
+        let expected_parent = dunce::canonicalize(tmp.path()).unwrap();
+        assert_eq!(resolved.parent().unwrap(), expected_parent);
+        assert_eq!(resolved.file_name().unwrap(), "missing.txt");
+    }
+
+    #[test]
+    fn resolve_path_for_read_rejects_missing_escape() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let result = resolve_path_for_read("../outside-missing.txt", Some(&workspace), false);
+        assert!(matches!(result, Err(ToolError::PolicyViolation(_))));
+    }
+
+    #[test]
     fn resolve_path_rejects_dotdot_escape() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let workspace = tmp.path().join("workspace");
@@ -496,8 +576,7 @@ mod tests {
     #[test]
     fn resolve_path_for_create_handles_missing_leaf() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let resolved =
-            resolve_path_for_create("new-file.txt", Some(tmp.path())).expect("ok");
+        let resolved = resolve_path_for_create("new-file.txt", Some(tmp.path())).expect("ok");
         // Compare canonicalised parents.
         let expected_parent = dunce::canonicalize(tmp.path()).unwrap();
         assert_eq!(resolved.parent().unwrap(), expected_parent);

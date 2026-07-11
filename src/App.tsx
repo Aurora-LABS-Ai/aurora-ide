@@ -22,7 +22,7 @@
 
 import { useEffect, useState } from "react";
 import { MainLayout } from "./components/layout/MainLayout";
-import { DetachedChatWindow } from "./components/chat/DetachedChatWindow";
+import { AgentWindow } from "./agent-window";
 
 import { useWorkspaceBootstrap } from "./hooks/useWorkspaceBootstrap";
 import { useEditorStore } from "./store/useEditorStore";
@@ -38,7 +38,8 @@ import { OnboardingModal } from "./components/modals/OnboardingModal";
 import { QuickOpenModal } from "./components/modals/QuickOpenModal";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { initializeSystemInfo } from "./services/context-builder";
-import { installAgentIdeListeners } from "./services/agent-ide-events";
+import { installAgentIdeListeners, handleOpenInIde } from "./services/agent-ide-events";
+import { auroraInvoke } from "./lib/runtime";
 import { useLocalProviderDetection } from "./hooks/useLocalProviderDetection";
 import { useMcpStore } from "./store/useMcpStore";
 
@@ -72,7 +73,8 @@ function App() {
   const hasSeenOnboarding = useSettingsStore((state) => state.hasSeenOnboarding);
   const initializeSettings = useSettingsStore((state) => state.initializeFromDatabase);
   const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
-  const [isDetachedWindow, setIsDetachedWindow] = useState(false);
+  const isAgentWindow =
+    typeof window !== "undefined" && window.location.pathname === "/agent-window";
   const restoreWorkspace = useEditorStore((state) => state.restoreWorkspace);
   useWorkspaceBootstrap();
 
@@ -91,18 +93,12 @@ function App() {
   // Handle CLI open requests (aurora . command)
   useCliOpen();
 
-  useEffect(() => {
-    // Check if this is the detached chat window based on URL path
-    const path = window.location.pathname;
-    setIsDetachedWindow(path === "/chat-detached");
-  }, []);
-
   // Restore workspace state from database on app startup
   useEffect(() => {
-    if (!isDetachedWindow) {
+    if (!isAgentWindow) {
       restoreWorkspace();
     }
-  }, [isDetachedWindow, restoreWorkspace]);
+  }, [isAgentWindow, restoreWorkspace]);
 
   useEffect(() => {
     initializeSettings();
@@ -115,13 +111,12 @@ function App() {
   // is honoured regardless of which view the user lands on first —
   // settings tab, agent mode, or chat. The store guards itself against
   // duplicate calls (`initialized` flag), so this is safe even though
-  // ChatPanel / AgentModeLayout also call `loadServers` defensively.
-  // Skipped for the detached chat window (it inherits state from the
-  // main process via Zustand subscriptions, no second load needed).
+  // ChatPanel also calls `loadServers` defensively.
+  // Skipped for the agent window (it is scoped to its own workspace).
   useEffect(() => {
-    if (isDetachedWindow) return;
+    if (isAgentWindow) return;
     void useMcpStore.getState().loadServers();
-  }, [isDetachedWindow]);
+  }, [isAgentWindow]);
 
   // Subscribe to the Rust agent's IDE-event bus once the app mounts.
   // These listeners wire `agent_editor_open` → Monaco, `agent_todo_write`
@@ -137,6 +132,27 @@ function App() {
     return () => {
       cancelled = true;
       dispose?.();
+    };
+  }, []);
+
+  // Main-window startup: if the agent window asked to open a file while the IDE
+  // was CLOSED, the backend re-created this window and queued the file. Drain it
+  // now and open it (gated by pathname, not the async window-type state, so a
+  // secondary window can never grab the queue first).
+  useEffect(() => {
+    const path = window.location.pathname;
+    const isSecondary = path === "/agent-window";
+    if (isSecondary) return;
+    let cancelled = false;
+    void auroraInvoke<{ path: string; line?: number } | null>("take_pending_ide_open")
+      .then((pending) => {
+        if (!cancelled && pending?.path) void handleOpenInIde(pending);
+      })
+      .catch(() => {
+        // No pending open / not in the Tauri runtime — nothing to do.
+      });
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -169,9 +185,9 @@ function App() {
   // Handle global shortcuts - MUST be called before any conditional returns (React hooks rule)
   useGlobalShortcuts(() => setIsQuickOpenOpen(prev => !prev));
 
-  // Render detached chat window if on that route
-  if (isDetachedWindow) {
-    return <DetachedChatWindow />;
+  // Render the standalone agent window if on that route
+  if (isAgentWindow) {
+    return <AgentWindow />;
   }
 
   // Hold initial render until settings are initialized, preventing

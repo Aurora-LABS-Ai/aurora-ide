@@ -67,7 +67,7 @@ impl<'a> WorkspaceRepository<'a> {
                         .flatten()
                 },
                 last_opened_at: row.get(3)?,
-                checkpoint_enabled: row.get::<_, i32>(4).unwrap_or(1) == 1,
+                checkpoint_enabled: row.get::<_, i32>(4).unwrap_or(0) == 1,
             })
         });
 
@@ -104,7 +104,7 @@ impl<'a> WorkspaceRepository<'a> {
                         .flatten()
                 },
                 last_opened_at: row.get(3)?,
-                checkpoint_enabled: row.get::<_, i32>(4).unwrap_or(1) == 1,
+                checkpoint_enabled: row.get::<_, i32>(4).unwrap_or(0) == 1,
             })
         });
 
@@ -151,7 +151,7 @@ impl<'a> WorkspaceRepository<'a> {
                         .flatten()
                 },
                 last_opened_at: row.get(3)?,
-                checkpoint_enabled: row.get::<_, i32>(4).unwrap_or(1) == 1,
+                checkpoint_enabled: row.get::<_, i32>(4).unwrap_or(0) == 1,
             })
         })?;
 
@@ -179,7 +179,9 @@ impl<'a> WorkspaceRepository<'a> {
         Ok(())
     }
 
-    /// Get checkpoint_enabled setting for a workspace (default true if not found)
+    /// Get checkpoint_enabled setting for a workspace. Checkpoints are OPT-IN:
+    /// a workspace with no saved preference defaults to DISABLED so we never
+    /// silently start committing the whole tree into a shadow git repo.
     pub fn get_checkpoint_enabled(&self, workspace_path: &str) -> DbResult<bool> {
         let result: Result<i32, _> = self.conn.query_row(
             "SELECT checkpoint_enabled FROM workspace_state WHERE workspace_path = ?1",
@@ -189,7 +191,7 @@ impl<'a> WorkspaceRepository<'a> {
 
         match result {
             Ok(val) => Ok(val == 1),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(true), // Default to enabled
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false), // Opt-in: default disabled
             Err(e) => Err(DbError::Sqlite(e)),
         }
     }

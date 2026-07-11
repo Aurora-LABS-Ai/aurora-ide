@@ -7,6 +7,8 @@ import { useSettingsStore } from '../../store/useSettingsStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import {
   getResolvedGlobalSkillsPath,
+  getSkillToggleScopeKey,
+  getWorkspaceSkillToggles,
   isSkillEnabled,
   loadGlobalSkills,
   loadWorkspaceSkills,
@@ -193,6 +195,16 @@ export const SkillsSettingsTab: React.FC = () => {
   const { rootPath } = useWorkspaceStore();
   const { skillToggles, skillsEnabled, setSkillEnabled, setSkillsEnabled } = useSettingsStore();
 
+  // Skill enablement is per-workspace. Resolve the scope key + the flat
+  // toggle bucket for the currently-open project; everything below counts and
+  // renders against this bucket only, so other projects' selections never
+  // leak into (or block) this one.
+  const scopeKey = useMemo(() => getSkillToggleScopeKey(rootPath), [rootPath]);
+  const workspaceToggles = useMemo(
+    () => getWorkspaceSkillToggles(skillToggles, rootPath),
+    [skillToggles, rootPath],
+  );
+
   const [activeScope, setActiveScope] = useState<SkillsScope>('project');
   const [projectSkills, setProjectSkills] = useState<SkillDefinition[]>([]);
   const [globalSkills, setGlobalSkills] = useState<SkillDefinition[]>([]);
@@ -243,16 +255,16 @@ export const SkillsSettingsTab: React.FC = () => {
   }, [rootPath]);
 
   const totalEnabledCount = useMemo(
-    () => Object.values(skillToggles).filter(Boolean).length,
-    [skillToggles]
+    () => Object.values(workspaceToggles).filter(Boolean).length,
+    [workspaceToggles]
   );
   const capReached = totalEnabledCount >= MAX_ENABLED_SKILLS;
 
   const handleToggle = (skill: SkillDefinition, enabled: boolean) => {
-    const applied = setSkillEnabled(skill.storageKey, enabled);
+    const applied = setSkillEnabled(scopeKey, skill.storageKey, enabled);
     if (!applied && enabled) {
       setCapWarning(
-        `You can enable up to ${MAX_ENABLED_SKILLS} skills. Disable one before enabling \`${skill.name}\`.`
+        `You can enable up to ${MAX_ENABLED_SKILLS} skills per workspace. Disable one before enabling \`${skill.name}\`.`
       );
       return;
     }
@@ -276,7 +288,7 @@ export const SkillsSettingsTab: React.FC = () => {
   });
 
   const activeSkills = activeScope === 'project' ? projectSkills : globalSkills;
-  const enabledInScope = activeSkills.filter((s) => isSkillEnabled(s, skillToggles, true)).length;
+  const enabledInScope = activeSkills.filter((s) => isSkillEnabled(s, workspaceToggles, true)).length;
   const projectFolderHints = WORKSPACE_SKILL_FOLDERS.map((folder) => folder.replace(/\\/g, '/'));
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
@@ -518,7 +530,7 @@ export const SkillsSettingsTab: React.FC = () => {
             }
             onToggle={handleToggle}
             skills={visibleSkills}
-            skillToggles={skillToggles}
+            skillToggles={workspaceToggles}
           />
         </div>
       </Section>

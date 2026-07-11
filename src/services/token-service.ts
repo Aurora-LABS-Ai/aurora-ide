@@ -261,6 +261,43 @@ class TokenServiceClass {
   }
 }
 
+// ============================================================
+// Image-aware estimation helpers
+// ============================================================
+
+/**
+ * A vision image costs a roughly FIXED number of tokens regardless of its
+ * base64 length. Counting the base64 as text would overcount by ~10x and blow
+ * up the context %, so strip image payloads and bill this flat per-image
+ * allowance instead. ~1100 covers a high-detail tile on OpenAI/Anthropic-class
+ * models — close enough for an estimate.
+ */
+export const IMAGE_TOKEN_COST = 1100;
+
+// `<aurora_image media_type="...">BASE64</aurora_image>` markers (pasted images,
+// browser_screenshot) and bare `data:<type>;base64,...` URIs (tool results).
+const AURORA_IMAGE_MARKER_RE = /<aurora_image\b[^>]*>[\s\S]*?<\/aurora_image>/g;
+const BASE64_DATA_URI_RE = /data:[^;,\s]+;base64,[A-Za-z0-9+/=]+/g;
+
+/**
+ * Strip embedded image payloads from text so token estimates never count raw
+ * base64. Returns the cleaned text plus the number of images removed — bill each
+ * at {@link IMAGE_TOKEN_COST}.
+ */
+export function stripImagePayloads(text: string): { text: string; images: number } {
+  let images = 0;
+  const cleaned = text
+    .replace(AURORA_IMAGE_MARKER_RE, () => {
+      images += 1;
+      return "";
+    })
+    .replace(BASE64_DATA_URI_RE, () => {
+      images += 1;
+      return "";
+    });
+  return { text: cleaned, images };
+}
+
 // Export singleton
 export const tokenService = new TokenServiceClass();
 

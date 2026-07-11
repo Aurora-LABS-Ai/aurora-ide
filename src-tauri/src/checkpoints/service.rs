@@ -208,17 +208,30 @@ impl CheckpointService {
         fs::create_dir_all(&exclude_path)?;
 
         let exclude_content = r#"# Aurora Checkpoint Excludes
-# Node.js
+# These keep the shadow repo small — they are the things that must NEVER be
+# committed per-message, because versioning them balloons checkpoints/ to tens
+# of GB (a Rust target dir, node_modules, or a few model weights alone do it).
+# Node.js / JS toolchains
 node_modules/
 .npm/
 .pnpm/
+.pnpm-store/
 .yarn/
+bower_components/
 
 # Build outputs
 dist/
 build/
 out/
 target/
+.next/
+.nuxt/
+.svelte-kit/
+.turbo/
+.parcel-cache/
+.angular/
+coverage/
+storybook-static/
 
 # IDE
 .idea/
@@ -242,19 +255,74 @@ logs/
 .cache/
 __pycache__/
 *.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.gradle/
 
 # Environment
 .env
 .env.local
 *.local
 
-# Aurora
+# Aurora / code-intel caches (can be large)
 .aurora/
+.gitnexus/
+graphify-out/
 
-# Large files
+# Model weights & ML artifacts (huge — never version these)
+*.onnx
+*.safetensors
+*.gguf
+*.ggml
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.tflite
+*.pb
+*.npz
+*.npy
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# Media (often large binaries)
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.wav
+*.mp3
+*.flac
+*.psd
+*.iso
+*.img
+
+# Native build artifacts
+*.pdb
+*.lib
+*.a
+*.o
+*.obj
+*.node
+*.wasm
+*.class
+*.jar
+
+# Large/compressed files
 *.zip
 *.tar
 *.gz
+*.bz2
+*.xz
+*.zst
 *.rar
 *.7z
 *.exe

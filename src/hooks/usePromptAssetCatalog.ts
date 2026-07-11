@@ -7,6 +7,7 @@ import {
   loadPromptAttachments,
   type PromptAttachment,
 } from "../services/prompt-assets";
+import { getWorkspaceSkillToggles } from "../services/skills";
 
 /**
  * Shared catalog state for the slash (`/`) prompt picker — currently rules and
@@ -63,7 +64,8 @@ function isPromptAssetPath(rootPath: string, path: string): boolean {
 
 interface UsePromptAssetCatalogParams {
   rootPath: string | null;
-  skillToggles: Record<string, boolean>;
+  /** Nested per-workspace toggle map; the current project's bucket is derived internally. */
+  skillToggles: Record<string, Record<string, boolean>>;
   skillsEnabled: boolean;
 }
 
@@ -98,7 +100,10 @@ export function usePromptAssetCatalog(
     const myToken = ++loadTokenRef.current;
     try {
       const attachments = await loadPromptAttachments(rootPathRef.current, {
-        enabledSkillToggles: skillTogglesRef.current,
+        enabledSkillToggles: getWorkspaceSkillToggles(
+          skillTogglesRef.current,
+          rootPathRef.current,
+        ),
         skillsEnabled: skillsEnabledRef.current,
       });
       // Discard the result if a newer load was kicked off while we were waiting.

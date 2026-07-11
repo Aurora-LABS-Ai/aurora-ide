@@ -54,6 +54,9 @@ pub struct ToolContext {
     pub tool_call_id: String,
     pub session_id: String,
     pub workspace_root: Option<PathBuf>,
+    /// When true, read-only file tools may resolve paths OUTSIDE the workspace
+    /// (the user opted in via Settings → Agent). Writes stay workspace-bound.
+    pub allow_outside_workspace: bool,
     pub cancel_token: CancellationToken,
 }
 
@@ -423,6 +426,7 @@ mod tests {
             tool_call_id: "call-1".into(),
             session_id: "s-1".into(),
             workspace_root: None,
+            allow_outside_workspace: false,
             cancel_token: CancellationToken::new(),
         }
     }

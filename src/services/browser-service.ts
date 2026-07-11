@@ -75,6 +75,15 @@ export async function onBrowserWindowOpened(
   return unlisten;
 }
 
+/** Bounds + host for an embedded (in-tab) browser webview. */
+export interface BrowserEmbedConfig {
+  hostLabel: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface CreateBrowserWindowOptions {
   label: string;
   url: string;
@@ -84,6 +93,8 @@ export interface CreateBrowserWindowOptions {
   x?: number;
   y?: number;
   alwaysOnTop?: boolean;
+  /** When set, render as a child webview embedded in `hostLabel` (in-tab). */
+  embed?: BrowserEmbedConfig;
 }
 
 /**
@@ -102,6 +113,31 @@ export async function createBrowserWindow(opts: CreateBrowserWindowOptions): Pro
 
 export async function closeBrowserWindow(label: string): Promise<void> {
   await auroraInvoke('close_browser_webview', { label });
+}
+
+/** Reposition/resize an embedded browser to track its panel rect. */
+export async function setBrowserBounds(
+  label: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): Promise<void> {
+  await auroraInvoke('browser_set_bounds', {
+    label,
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.round(width),
+    height: Math.round(height),
+  });
+}
+
+export async function showBrowser(label: string): Promise<void> {
+  await auroraInvoke('browser_show', { label });
+}
+
+export async function hideBrowser(label: string): Promise<void> {
+  await auroraInvoke('browser_hide', { label });
 }
 
 export async function navigateBrowser(label: string, url: string): Promise<void> {

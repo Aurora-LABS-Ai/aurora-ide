@@ -7,7 +7,6 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 .codex
-.cursor
 node_modules
 fireworks-docs
 local-llm-docs/

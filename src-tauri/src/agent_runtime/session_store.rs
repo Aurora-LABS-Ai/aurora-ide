@@ -74,6 +74,10 @@ pub struct TokenUsageMeta {
     pub cache_read_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<u32>,
+    /// `Some(true)` when these counts are a local tiktoken estimate rather than
+    /// provider-reported usage. Round-tripped so the `~` flag survives reopen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated: Option<bool>,
 }
 
 /// Aurora-side context window accounting (used + window + percentage).
@@ -107,6 +111,15 @@ pub struct SessionMetadata {
     pub token_usage: Option<TokenUsageMeta>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_usage: Option<ContextUsageMeta>,
+    /// Whether the user has pinned this chat to the top of the rail.
+    /// Defaults to `false` for threads created before pinning shipped.
+    #[serde(default)]
+    pub pinned: bool,
+    /// RFC3339 instant the chat was archived, or `None` when active. Doubles
+    /// as the retention clock: an archive older than 15 days is purged on the
+    /// next listing (see [`SessionStore::list_summaries_filtered`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -123,6 +136,8 @@ impl SessionMetadata {
             model: None,
             token_usage: None,
             context_usage: None,
+            pinned: false,
+            archived_at: None,
             created_at: now.clone(),
             updated_at: now,
         }
@@ -143,8 +158,37 @@ pub struct SessionSummary {
     pub title: String,
     pub message_count: usize,
     pub preview: String,
+    /// The project this thread belongs to (its `workspace_root`).
+    /// `None` for threads created before scoping shipped — those are
+    /// "ungrouped" and excluded from any project-filtered listing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
+    /// Pinned chats sort above the rest of the list in the rail.
+    #[serde(default)]
+    pub pinned: bool,
+    /// RFC3339 instant the chat was archived, or `None` when active. The rail
+    /// routes archived chats into the "Archived" view instead of the tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// How long an archived chat is retained before it is permanently purged.
+/// Measured from the chat's `archived_at` instant.
+const ARCHIVE_RETENTION_DAYS: i64 = 15;
+
+/// `true` iff `archived_at` (RFC3339) is older than [`ARCHIVE_RETENTION_DAYS`].
+/// An unparseable timestamp is treated as NOT expired so a malformed sidecar
+/// can never trigger silent data loss.
+fn archive_expired(archived_at: &str) -> bool {
+    match chrono::DateTime::parse_from_rfc3339(archived_at) {
+        Ok(ts) => {
+            let age = chrono::Utc::now().signed_duration_since(ts.with_timezone(&chrono::Utc));
+            age.num_days() >= ARCHIVE_RETENTION_DAYS
+        }
+        Err(_) => false,
+    }
 }
 
 // ============================================================================
@@ -211,6 +255,22 @@ impl SessionStore {
     /// from the JSONL's filesystem mtime) so a corrupted sidecar
     /// can't make a thread invisible.
     pub fn list_summaries(&self) -> Result<Vec<SessionSummary>, RuntimeError> {
+        self.list_summaries_filtered(None)
+    }
+
+    /// Like [`Self::list_summaries`] but scoped to a single project.
+    ///
+    /// When `workspace_root` is `Some(root)`, only threads whose
+    /// metadata `workspace_root` equals `root` are returned — threads
+    /// from other projects AND legacy unscoped threads (`workspace_root
+    /// == None`) are excluded. This is what makes a conversation opened
+    /// in `c:/xyz` invisible from `c:/yyz`.
+    ///
+    /// `None` returns every thread (the IDE's global chat history).
+    pub fn list_summaries_filtered(
+        &self,
+        workspace_root: Option<&str>,
+    ) -> Result<Vec<SessionSummary>, RuntimeError> {
         let mut out = Vec::new();
         let read = match fs::read_dir(&self.dir) {
             Ok(r) => r,
@@ -238,11 +298,32 @@ impl SessionStore {
             }
 
             match self.summarize_thread(&stem, &path) {
-                Ok(summary) => out.push(summary),
+                Ok(summary) => {
+                    // Retention GC: an archived chat past its 15-day window is
+                    // purged here. Listing is the natural, frequent trigger, so
+                    // no background scheduler is needed. This runs before the
+                    // project filter so expired archives are reaped globally.
+                    if let Some(ts) = summary.archived_at.as_deref() {
+                        if archive_expired(ts) {
+                            if let Err(err) = self.delete(&stem) {
+                                eprintln!(
+                                    "[SessionStore] failed to purge expired archive {stem}: {err}"
+                                );
+                            }
+                            continue;
+                        }
+                    }
+                    // Project scoping: when a filter is set, drop threads
+                    // that don't belong to it (including unscoped ones).
+                    if let Some(want) = workspace_root {
+                        if summary.workspace_root.as_deref() != Some(want) {
+                            continue;
+                        }
+                    }
+                    out.push(summary);
+                }
                 Err(err) => {
-                    eprintln!(
-                        "[SessionStore] failed to summarize {stem}: {err}; skipping"
-                    );
+                    eprintln!("[SessionStore] failed to summarize {stem}: {err}; skipping");
                 }
             }
         }
@@ -289,6 +370,9 @@ impl SessionStore {
             title: meta.title,
             message_count,
             preview,
+            workspace_root: meta.workspace_root,
+            pinned: meta.pinned,
+            archived_at: meta.archived_at,
             created_at: meta.created_at,
             updated_at: meta.updated_at,
         })
@@ -324,10 +408,7 @@ impl SessionStore {
             Err(e) => return Err(RuntimeError::from(e)),
         };
         let meta: SessionMetadata = serde_json::from_str(&raw).map_err(|e| {
-            RuntimeError::InvalidState(format!(
-                "{} is malformed: {e}",
-                path.display()
-            ))
+            RuntimeError::InvalidState(format!("{} is malformed: {e}", path.display()))
         })?;
         Ok(meta)
     }
@@ -347,6 +428,7 @@ impl SessionStore {
         &self,
         thread_id: &str,
         title: Option<String>,
+        workspace_root: Option<String>,
     ) -> Result<SessionMetadata, RuntimeError> {
         fs::create_dir_all(&self.dir)?;
 
@@ -361,15 +443,34 @@ impl SessionStore {
         }
 
         let mut meta = self.load_metadata(thread_id)?;
+        // A brand-new thread has no sidecar yet — its bootstrap metadata
+        // MUST be persisted so the scope (workspace_root) sticks even
+        // before the first turn runs.
+        let mut dirty = !self.meta_path(thread_id).exists();
         let was_default = meta.title == "New Chat";
         if let Some(t) = title {
             if !t.is_empty() && (was_default || meta.title != t) {
                 meta.title = t;
                 meta.updated_at = chrono::Utc::now().to_rfc3339();
+                dirty = true;
             }
         }
-        // First-time creation: persist the bootstrap metadata.
-        if !self.meta_path(thread_id).exists() {
+        // Tag the thread with its project at creation so it's scoped
+        // immediately. Scope is set ONCE and is STICKY: `ensure_thread` runs
+        // every turn with the turn's workspace, and OVERWRITING here silently
+        // "moved" whole conversations to another project whenever that path
+        // drifted (e.g. a repointed runtime workspace). Only adopt a workspace
+        // when the thread has none yet (fresh, or a legacy unscoped thread
+        // getting its first scope); a thread's project must never change as a
+        // turn side effect.
+        if let Some(ws) = workspace_root {
+            let ws = ws.trim();
+            if !ws.is_empty() && meta.workspace_root.as_deref().unwrap_or("").is_empty() {
+                meta.workspace_root = Some(ws.to_string());
+                dirty = true;
+            }
+        }
+        if dirty {
             self.save_metadata(&meta)?;
         }
         Ok(meta)
@@ -388,6 +489,46 @@ impl SessionStore {
         }
         meta.title = title;
         meta.updated_at = chrono::Utc::now().to_rfc3339();
+        self.save_metadata(&meta)?;
+        Ok(meta)
+    }
+
+    /// Toggle the pinned flag on the sidecar. No-op when unchanged.
+    /// Deliberately does NOT bump `updated_at` — pinning shouldn't
+    /// reorder the chat within its (pinned/unpinned) group by recency.
+    pub fn set_pinned(
+        &self,
+        thread_id: &str,
+        pinned: bool,
+    ) -> Result<SessionMetadata, RuntimeError> {
+        let mut meta = self.load_metadata(thread_id)?;
+        if meta.pinned == pinned {
+            return Ok(meta);
+        }
+        meta.pinned = pinned;
+        self.save_metadata(&meta)?;
+        Ok(meta)
+    }
+
+    /// Archive / unarchive a chat. Archiving stamps `archived_at` with the
+    /// current instant (which also starts the 15-day retention clock);
+    /// unarchiving clears it. No-op when already in the requested state.
+    /// Deliberately does NOT bump `updated_at` — archiving shouldn't reorder
+    /// the chat by recency.
+    pub fn set_archived(
+        &self,
+        thread_id: &str,
+        archived: bool,
+    ) -> Result<SessionMetadata, RuntimeError> {
+        let mut meta = self.load_metadata(thread_id)?;
+        if meta.archived_at.is_some() == archived {
+            return Ok(meta);
+        }
+        meta.archived_at = if archived {
+            Some(chrono::Utc::now().to_rfc3339())
+        } else {
+            None
+        };
         self.save_metadata(&meta)?;
         Ok(meta)
     }
@@ -424,9 +565,14 @@ impl SessionStore {
     ) -> Result<SessionMetadata, RuntimeError> {
         let mut meta = self.load_metadata(thread_id)?;
         let mut dirty = false;
+        // Scope is STICKY (see `ensure_thread`): adopt a workspace only when the
+        // thread has none yet; never let a later turn's path overwrite an
+        // existing scope — that repointed whole conversations to another project
+        // whenever the runtime workspace drifted.
         if let Some(ws) = workspace_root {
-            if meta.workspace_root.as_deref() != Some(ws.as_str()) {
-                meta.workspace_root = Some(ws);
+            let ws = ws.trim();
+            if !ws.is_empty() && meta.workspace_root.as_deref().unwrap_or("").is_empty() {
+                meta.workspace_root = Some(ws.to_string());
                 dirty = true;
             }
         }
@@ -501,6 +647,13 @@ fn collect_text_preview(blocks: &[ContentBlock], limit: usize) -> String {
     let mut out = String::new();
     for block in blocks {
         if let ContentBlock::Text { text } = block {
+            // Strip embedded image markers so a pasted image's base64 payload
+            // never leaks into the chat-list preview.
+            let text = super::title::strip_aurora_image_blocks(text);
+            let text = text.trim();
+            if text.is_empty() {
+                continue;
+            }
             if !out.is_empty() {
                 out.push(' ');
             }
@@ -531,7 +684,7 @@ mod tests {
     #[test]
     fn ensure_thread_creates_files_and_default_metadata() {
         let (_g, store) = tmp_store();
-        let meta = store.ensure_thread("t1", None).expect("ensure");
+        let meta = store.ensure_thread("t1", None, None).expect("ensure");
         assert_eq!(meta.thread_id, "t1");
         assert_eq!(meta.title, "New Chat");
         assert!(store.session_path("t1").exists());
@@ -541,9 +694,9 @@ mod tests {
     #[test]
     fn list_summaries_returns_threads_sorted_newest_first() {
         let (_g, store) = tmp_store();
-        store.ensure_thread("a", Some("First".into())).unwrap();
+        store.ensure_thread("a", Some("First".into()), None).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        store.ensure_thread("b", Some("Second".into())).unwrap();
+        store.ensure_thread("b", Some("Second".into()), None).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         store.touch("a").unwrap();
 
@@ -555,7 +708,7 @@ mod tests {
     #[test]
     fn message_count_and_preview_come_from_jsonl() {
         let (_g, store) = tmp_store();
-        store.ensure_thread("p", Some("Title".into())).unwrap();
+        store.ensure_thread("p", Some("Title".into()), None).unwrap();
 
         let mut session = Session::new("p");
         session.append_message(ConversationMessage::user_text(
@@ -580,7 +733,7 @@ mod tests {
     #[test]
     fn set_title_updates_metadata_and_bumps_updated_at() {
         let (_g, store) = tmp_store();
-        let m1 = store.ensure_thread("x", None).unwrap();
+        let m1 = store.ensure_thread("x", None, None).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         let m2 = store.set_title("x", "Renamed".into()).unwrap();
         assert_eq!(m2.title, "Renamed");
@@ -593,7 +746,7 @@ mod tests {
     #[test]
     fn set_usage_persists_token_and_context_metadata() {
         let (_g, store) = tmp_store();
-        store.ensure_thread("u", None).unwrap();
+        store.ensure_thread("u", None, None).unwrap();
         let token = TokenUsageMeta {
             prompt_tokens: 10,
             completion_tokens: 5,
@@ -616,7 +769,7 @@ mod tests {
     #[test]
     fn delete_removes_jsonl_and_meta() {
         let (_g, store) = tmp_store();
-        store.ensure_thread("d", None).unwrap();
+        store.ensure_thread("d", None, None).unwrap();
         assert!(store.session_path("d").exists());
         assert!(store.meta_path("d").exists());
         store.delete("d").unwrap();
@@ -644,15 +797,85 @@ mod tests {
     #[test]
     fn list_summaries_skips_jsonl_tmp_artifacts() {
         let (_g, store) = tmp_store();
-        store.ensure_thread("real", None).unwrap();
+        store.ensure_thread("real", None, None).unwrap();
         std::fs::create_dir_all(store.dir()).unwrap();
-        std::fs::write(
-            store.dir().join("real.jsonl.tmp"),
-            "stale-rename-leftover",
-        )
-        .unwrap();
+        std::fs::write(store.dir().join("real.jsonl.tmp"), "stale-rename-leftover").unwrap();
         let summaries = store.list_summaries().unwrap();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].id, "real");
+    }
+
+    #[test]
+    fn ensure_thread_persists_workspace_root_at_create() {
+        let (_g, store) = tmp_store();
+        let meta = store
+            .ensure_thread("w", Some("Scoped".into()), Some("C:/proj/xyz".into()))
+            .unwrap();
+        assert_eq!(meta.workspace_root.as_deref(), Some("C:/proj/xyz"));
+        // Round-trips through the sidecar (scope sticks before any turn).
+        let reloaded = store.load_metadata("w").unwrap();
+        assert_eq!(reloaded.workspace_root.as_deref(), Some("C:/proj/xyz"));
+    }
+
+    #[test]
+    fn workspace_scope_is_sticky_and_never_moves_on_a_later_turn() {
+        let (_g, store) = tmp_store();
+        store
+            .ensure_thread("w", Some("Scoped".into()), Some("C:/proj/A".into()))
+            .unwrap();
+        // A later turn running with a DIFFERENT workspace must NOT move the
+        // thread — this is the "conversation jumped to another project" bug.
+        store
+            .set_workspace_and_model("w", Some("C:/proj/B".into()), Some("prov:model".into()))
+            .unwrap();
+        assert_eq!(
+            store.load_metadata("w").unwrap().workspace_root.as_deref(),
+            Some("C:/proj/A"),
+        );
+        // The per-turn `ensure_thread` re-affirmation is likewise sticky.
+        store
+            .ensure_thread("w", None, Some("C:/proj/B".into()))
+            .unwrap();
+        assert_eq!(
+            store.load_metadata("w").unwrap().workspace_root.as_deref(),
+            Some("C:/proj/A"),
+        );
+    }
+
+    #[test]
+    fn legacy_unscoped_thread_still_adopts_first_scope() {
+        let (_g, store) = tmp_store();
+        store.ensure_thread("w", Some("Old".into()), None).unwrap();
+        assert_eq!(store.load_metadata("w").unwrap().workspace_root, None);
+        // A legacy unscoped thread SHOULD adopt a scope on its first turn.
+        store
+            .set_workspace_and_model("w", Some("C:/proj/A".into()), None)
+            .unwrap();
+        assert_eq!(
+            store.load_metadata("w").unwrap().workspace_root.as_deref(),
+            Some("C:/proj/A"),
+        );
+    }
+
+    #[test]
+    fn list_summaries_filtered_scopes_to_one_project_and_drops_unscoped() {
+        let (_g, store) = tmp_store();
+        store
+            .ensure_thread("x1", Some("xyz one".into()), Some("C:/proj/xyz".into()))
+            .unwrap();
+        store
+            .ensure_thread("y1", Some("yyz one".into()), Some("C:/proj/yyz".into()))
+            .unwrap();
+        // Legacy unscoped thread (created before scoping shipped).
+        store.ensure_thread("legacy", Some("old".into()), None).unwrap();
+
+        let xyz = store.list_summaries_filtered(Some("C:/proj/xyz")).unwrap();
+        assert_eq!(xyz.len(), 1, "only the xyz thread; yyz + legacy excluded");
+        assert_eq!(xyz[0].id, "x1");
+        assert_eq!(xyz[0].workspace_root.as_deref(), Some("C:/proj/xyz"));
+
+        // Unfiltered still returns everything (IDE global history).
+        let all = store.list_summaries().unwrap();
+        assert_eq!(all.len(), 3);
     }
 }

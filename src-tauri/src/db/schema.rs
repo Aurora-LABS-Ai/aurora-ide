@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 16;
+pub const SCHEMA_VERSION: i32 = 19;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -82,7 +82,7 @@ fn create_workspace_state_table(conn: &Connection) -> DbResult<()> {
             open_tabs TEXT NOT NULL, -- JSON array of TabState
             panel_sizes TEXT,        -- JSON of PanelSizes
             last_opened_at TEXT NOT NULL,
-            checkpoint_enabled INTEGER NOT NULL DEFAULT 1, -- 1 = enabled (default), 0 = disabled
+            checkpoint_enabled INTEGER NOT NULL DEFAULT 0, -- 0 = disabled (default, opt-in per project), 1 = enabled
             UNIQUE(workspace_path)
         )",
         [],
@@ -230,6 +230,8 @@ fn create_provider_models_table(conn: &Connection) -> DbResult<()> {
             price_cache_miss_per_mtok REAL,          -- USD per 1M fresh input tokens
             price_output_per_mtok REAL,              -- USD per 1M output tokens
             price_currency TEXT,                     -- NULL → USD
+            reasoning TEXT,                          -- JSON {type,levels,min,max,default} or NULL
+            extra_body TEXT,                         -- JSON object of extra request-body fields, merged verbatim, or NULL
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(provider_id, model_key),

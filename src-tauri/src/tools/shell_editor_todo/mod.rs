@@ -9,9 +9,8 @@
 //!    `crate::commands::*` and gates `shell_execute` /
 //!    `shell_spawn` through
 //!    [`crate::agent_safety::bash_validation::validate_command`].
-//! 2. **Editor** (`editor_open_file`, `read_lints`) — fire-and-forget
-//!    Tauri events. The frontend updates Monaco / lint state from the
-//!    event; the tool result is just an acknowledgement string.
+//! 2. **Editor** (`editor_open_file`, `read_lints`) — opens files through
+//!    Tauri events and runs native project checkers for diagnostics.
 //! 3. **Todo** (`todo_write`) — fire-and-forget Tauri event for the
 //!    task panel.
 //!
@@ -112,7 +111,6 @@ pub fn register(reg: &mut ToolRegistry, sink: Arc<dyn IdeEventSink>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_runtime::tool_executor::ToolExecutor;
     use std::collections::HashSet;
 
     #[test]
@@ -155,11 +153,7 @@ mod tests {
         let mut required: Vec<String> = reg
             .names()
             .into_iter()
-            .filter(|n| {
-                reg.get(n)
-                    .map(|t| t.requires_permission())
-                    .unwrap_or(false)
-            })
+            .filter(|n| reg.get(n).map(|t| t.requires_permission()).unwrap_or(false))
             .collect();
         required.sort();
         let mut expected: Vec<&str> = TOOLS_REQUIRING_PERMISSION.to_vec();

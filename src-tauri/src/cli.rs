@@ -86,6 +86,12 @@ pub struct CliArgs {
     #[arg(long)]
     pub new_empty_window: bool,
 
+    /// Open ONLY the Aurora Agent window (no IDE). Path is ignored — the agent
+    /// window opens regardless of where the command is run. Accepts `--agent`
+    /// or `--agents`; short shim: `agw`.
+    #[arg(long, visible_alias = "agents")]
+    pub agent: bool,
+
     /// Install the 'aurora' CLI command to system PATH (requires admin on Windows)
     #[arg(long)]
     pub install_cli: bool,
@@ -422,6 +428,15 @@ pub mod install {
         std::fs::write(&batch_path, batch_content)
             .map_err(|e| format!("Failed to create aurora.cmd: {}", e))?;
 
+        // Short shim for the agent window only: `agw` → `aurora --agent`.
+        // Delegate to the sibling aurora.cmd (via %~dp0 = this script's dir)
+        // instead of baking the exe path again, so agw always tracks whatever
+        // aurora.cmd points to — one reinstall refreshes both.
+        let agw_path = install_dir.join("agw.cmd");
+        let agw_content = "@echo off\r\n\"%~dp0aurora.cmd\" --agent %*".to_string();
+        std::fs::write(&agw_path, agw_content)
+            .map_err(|e| format!("Failed to create agw.cmd: {}", e))?;
+
         // Remove stale `aurora.exe` snapshots from older installs.
         // If present, Windows may prefer it over aurora.cmd and launch an outdated build.
         let stale_exe_path = install_dir.join("aurora.exe");
@@ -444,6 +459,7 @@ pub mod install {
         println!("  aurora .                              Open current directory");
         println!("  aurora /path/to/dir                   Open specific directory");
         println!("  aurora file.txt                       Open a file");
+        println!("  agw                                   Open only the Aurora Agent window");
         println!("  aurora icon-pack build --manifest ... Build a .aurora icon-pack bundle");
 
         Ok(())
@@ -581,6 +597,29 @@ pub mod install {
         symlink(&current_exe, &symlink_path)
             .map_err(|e| format!("Failed to create symlink: {}", e))?;
 
+        // Short shim for the agent window only: `agw` → `aurora --agent`. A
+        // symlink can't carry the flag, so write a tiny exec wrapper instead.
+        let agw_path = install_dir.join("agw");
+        if agw_path.exists() || agw_path.is_symlink() {
+            let _ = std::fs::remove_file(&agw_path);
+        }
+        // Delegate to the sibling `aurora` symlink (resolved from this script's
+        // own dir) so agw tracks whatever aurora points to — one reinstall fixes
+        // both.
+        let agw_script =
+            "#!/bin/sh\nexec \"$(dirname \"$0\")/aurora\" --agent \"$@\"\n".to_string();
+        std::fs::write(&agw_path, agw_script)
+            .map_err(|e| format!("Failed to create agw wrapper: {}", e))?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&agw_path)
+                .map_err(|e| format!("Failed to stat agw wrapper: {}", e))?
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&agw_path, perms)
+                .map_err(|e| format!("Failed to chmod agw wrapper: {}", e))?;
+        }
+
         println!("Aurora CLI installed successfully!");
         println!("Location: {}", symlink_path.display());
         println!("\nMake sure {} is in your PATH.", install_dir.display());
@@ -590,6 +629,7 @@ pub mod install {
         println!("  aurora .                              Open current directory");
         println!("  aurora /path/to/dir                   Open specific directory");
         println!("  aurora file.txt                       Open a file");
+        println!("  agw                                   Open only the Aurora Agent window");
         println!("  aurora icon-pack build --manifest ... Build a .aurora icon-pack bundle");
 
         Ok(())
@@ -615,11 +655,19 @@ pub mod install {
 
     /// Uninstall the CLI command
     pub fn uninstall_cli() -> Result<(), String> {
-        let symlink_path = get_cli_install_path().join("aurora");
+        let install_dir = get_cli_install_path();
+        let symlink_path = install_dir.join("aurora");
 
         if symlink_path.exists() || symlink_path.is_symlink() {
             std::fs::remove_file(&symlink_path)
                 .map_err(|e| format!("Failed to remove symlink: {}", e))?;
+        }
+
+        // Remove the short `agw` shim too.
+        let agw_path = install_dir.join("agw");
+        if agw_path.exists() || agw_path.is_symlink() {
+            std::fs::remove_file(&agw_path)
+                .map_err(|e| format!("Failed to remove agw wrapper: {}", e))?;
         }
 
         println!("Aurora CLI uninstalled successfully!");

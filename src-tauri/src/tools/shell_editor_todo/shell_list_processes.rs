@@ -87,6 +87,7 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext {
+            allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             session_id: "s".into(),
@@ -105,7 +106,10 @@ mod tests {
         assert_eq!(parsed["success"], json!(true));
         assert_eq!(parsed["count"], json!(0));
         assert!(parsed["processes"].is_array());
-        assert!(parsed["note"].as_str().unwrap_or_default().contains("ledger"));
+        assert!(parsed["note"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("ledger"));
     }
 
     #[tokio::test]

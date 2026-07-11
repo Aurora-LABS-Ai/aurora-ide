@@ -65,43 +65,23 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             name: "Fireworks AI".to_string(),
             nickname: Some("Fireworks".to_string()),
             base_url: "https://api.fireworks.ai/inference/v1".to_string(),
-            model: "accounts/fireworks/models/kimi-k2-instruct-0905".to_string(),
+            model: "accounts/fireworks/routers/glm-5p2-fast".to_string(),
             context_window: 200000,
             max_output_tokens: 32768,
             supports_thinking: true,
             supports_tool_stream: None,
             custom_models: Some(vec![
-                "accounts/fireworks/models/kimi-k2-instruct-0905".to_string(),
-                "accounts/fireworks/models/kimi-k2-thinking".to_string(),
-                "accounts/fireworks/models/kimi-k2p5".to_string(),
-                "accounts/fireworks/models/deepseek-v3p2".to_string(),
-                "accounts/fireworks/models/glm-5".to_string(),
-                "accounts/fireworks/models/qwen2p5-coder-32b-instruct".to_string(),
+                "accounts/fireworks/routers/glm-5p2-fast".to_string(),
+                "accounts/fireworks/routers/kimi-k2p7-code-fast".to_string(),
             ]),
             model_aliases: Some(HashMap::from([
                 (
-                    "accounts/fireworks/models/deepseek-v3p2".to_string(),
-                    "DeepSeek V3.2".to_string(),
+                    "accounts/fireworks/routers/glm-5p2-fast".to_string(),
+                    "GLM 5.2 Fast".to_string(),
                 ),
                 (
-                    "accounts/fireworks/models/glm-5".to_string(),
-                    "GLM 5".to_string(),
-                ),
-                (
-                    "accounts/fireworks/models/kimi-k2-instruct-0905".to_string(),
-                    "Kimi K2".to_string(),
-                ),
-                (
-                    "accounts/fireworks/models/kimi-k2-thinking".to_string(),
-                    "Kimi K2 Thinking".to_string(),
-                ),
-                (
-                    "accounts/fireworks/models/kimi-k2p5".to_string(),
-                    "Kimi K2.5".to_string(),
-                ),
-                (
-                    "accounts/fireworks/models/qwen2p5-coder-32b-instruct".to_string(),
-                    "Qwen 2.5 Coder 32B".to_string(),
+                    "accounts/fireworks/routers/kimi-k2p7-code-fast".to_string(),
+                    "Kimi K2.7 Code Fast".to_string(),
                 ),
             ])),
             provider_type: "fireworks".to_string(),
@@ -242,10 +222,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
                 "deepseek-reasoner".to_string(),
             ]),
             model_aliases: Some(HashMap::from([
-                (
-                    "deepseek-v4-pro".to_string(),
-                    "DeepSeek V4 Pro".to_string(),
-                ),
+                ("deepseek-v4-pro".to_string(), "DeepSeek V4 Pro".to_string()),
                 (
                     "deepseek-v4-flash".to_string(),
                     "DeepSeek V4 Flash".to_string(),
@@ -336,6 +313,46 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
                 ("o1".to_string(), ModelPricing::usd(7.50, 15.0, 60.0)),
                 ("o1-mini".to_string(), ModelPricing::usd(1.50, 3.0, 12.0)),
             ])),
+        },
+        ProviderCatalogPreset {
+            id: "openai-responses".to_string(),
+            name: "OpenAI (Responses)".to_string(),
+            nickname: None,
+            // Same base URL as Chat Completions — the adapter appends
+            // `/responses` instead of `/chat/completions`. This preset
+            // is an ADDITIONAL wire shape (typed streaming events +
+            // reasoning persistence across tool calls), not a
+            // replacement for the "openai" preset above.
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-5.5".to_string(),
+            // GPT-5.x reasoning family: 400K context window, 128K max
+            // output. Per-model overrides enrich from models.dev in
+            // the UI.
+            context_window: 400_000,
+            max_output_tokens: 128_000,
+            supports_thinking: true,
+            supports_tool_stream: None,
+            custom_models: Some(vec![
+                "gpt-5.5".to_string(),
+                "gpt-5.1".to_string(),
+                "gpt-5".to_string(),
+                "gpt-5-mini".to_string(),
+            ]),
+            model_aliases: Some(HashMap::from([
+                ("gpt-5.5".to_string(), "GPT-5.5".to_string()),
+                ("gpt-5.1".to_string(), "GPT-5.1".to_string()),
+                ("gpt-5".to_string(), "GPT-5".to_string()),
+                ("gpt-5-mini".to_string(), "GPT-5 Mini".to_string()),
+            ])),
+            provider_type: "openai-responses".to_string(),
+            // Reasoning models reject `temperature` on /responses; the
+            // adapter gates it by model family, so no preset default.
+            default_temperature: None,
+            default_max_tokens: None,
+            requires_api_key: true,
+            // Pricing intentionally omitted — the UI enriches models
+            // from models.dev, which stays current across releases.
+            model_pricing: None,
         },
         ProviderCatalogPreset {
             id: "lmstudio".to_string(),

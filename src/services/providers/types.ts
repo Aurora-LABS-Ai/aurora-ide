@@ -246,12 +246,14 @@ export type ContentBlock =
   | ToolResultContent;
 
 export type ProviderType =
-  | 'openai'      // OpenAI and compatible APIs
-  | 'fireworks'   // Fireworks AI (OpenAI-compatible with reasoning_content)
-  | 'anthropic'   // Native Anthropic Claude API
-  | 'deepseek'    // DeepSeek (OpenAI-compatible with extensions)
-  | 'glm'         // GLM/Z.AI (OpenAI-compatible with thinking)
-  | 'minimax'     // MiniMax M2 family (Anthropic-compatible by default)
-  | 'lmstudio'    // LM Studio (local server, uses async-openai Rust crate)
-  | 'ollama'      // Ollama (local server, uses async-openai Rust crate)
-  | 'custom';     // Custom OpenAI-compatible
+  | 'openai'           // OpenAI and compatible APIs (Chat Completions)
+  | 'openai-responses' // OpenAI Responses API (/responses, typed streaming events)
+  | 'codex'            // Codex via ChatGPT backend (subscription OAuth, Responses dialect)
+  | 'fireworks'        // Fireworks AI (OpenAI-compatible with reasoning_content)
+  | 'anthropic'        // Native Anthropic Claude API
+  | 'deepseek'         // DeepSeek (OpenAI-compatible with extensions)
+  | 'glm'              // GLM/Z.AI (OpenAI-compatible with thinking)
+  | 'minimax'          // MiniMax M2 family (Anthropic-compatible by default)
+  | 'lmstudio'         // LM Studio (local server, uses async-openai Rust crate)
+  | 'ollama'           // Ollama (local server, uses async-openai Rust crate)
+  | 'custom';          // Custom OpenAI-compatible

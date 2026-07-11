@@ -56,9 +56,10 @@ impl ToolExecutor for MultiFileReadTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
 
-        let arr = input.get("paths").and_then(Value::as_array).ok_or_else(|| {
-            ToolError::InvalidInput("`paths` must be an array of strings".into())
-        })?;
+        let arr = input
+            .get("paths")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ToolError::InvalidInput("`paths` must be an array of strings".into()))?;
         if arr.is_empty() {
             return Err(ToolError::InvalidInput(
                 "`paths` must be a non-empty array".into(),
@@ -81,11 +82,29 @@ impl ToolExecutor for MultiFileReadTool {
             full_path: String,
         }
         let mut resolved = Vec::with_capacity(arr.len());
+        let mut files: Vec<Value> = Vec::new();
+        let mut error_count = 0usize;
         for entry in arr {
             let path = entry.as_str().ok_or_else(|| {
                 ToolError::InvalidInput("each entry of `paths` must be a string".into())
             })?;
-            let abs = super::resolve_path(path, ctx.workspace_root.as_deref())?;
+            let abs = match super::resolve_path_for_read(
+                path,
+                ctx.workspace_root.as_deref(),
+                ctx.allow_outside_workspace,
+            ) {
+                Ok(abs) => abs,
+                Err(ToolError::Execution(err)) => {
+                    error_count += 1;
+                    files.push(json!({
+                        "path": path,
+                        "success": false,
+                        "error": format!("Invalid file path: {err}"),
+                    }));
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
             resolved.push(Resolved {
                 input_path: path.to_string(),
                 full_path: abs.to_string_lossy().to_string(),
@@ -96,11 +115,9 @@ impl ToolExecutor for MultiFileReadTool {
         let read_paths: Vec<String> = resolved.iter().map(|r| r.full_path.clone()).collect();
         let map = read_files_batch(read_paths.clone()).await;
 
-        let mut files: Vec<Value> = Vec::with_capacity(resolved.len());
         let mut total_content_size = 0usize;
         let mut content_limit_reached = false;
         let mut success_count = 0usize;
-        let mut error_count = 0usize;
 
         for entry in resolved {
             let result = map.get(&entry.full_path);
@@ -226,6 +243,13 @@ impl ToolExecutor for MultiFileReadTool {
     }
 }
 
+/// Parallel batch read, reused by [`super::file_read`]'s `paths` form so
+/// the single `file_read` tool covers both single- and multi-file reads
+/// without exposing a second tool name to the model.
+pub(crate) async fn read_many(input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
+    MultiFileReadTool.execute(input, ctx).await
+}
+
 fn count_lines(content: &str) -> usize {
     if content.is_empty() {
         return 0;
@@ -274,6 +298,7 @@ mod tests {
 
     fn ctx_for(workspace: Option<std::path::PathBuf>) -> ToolContext {
         ToolContext {
+            allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             session_id: "s".into(),
@@ -310,14 +335,32 @@ mod tests {
         let paths: Vec<String> = (0..30).map(|i| format!("f{i}.txt")).collect();
         let tool: Arc<dyn ToolExecutor> = Arc::new(MultiFileReadTool);
         let out = tool
-            .execute(
-                serde_json::json!({ "paths": paths }),
-                &ctx_for(None),
-            )
+            .execute(serde_json::json!({ "paths": paths }), &ctx_for(None))
             .await
             .expect("ok");
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["success"], false);
         assert!(parsed["error"].as_str().unwrap().contains("Too many"));
+    }
+
+    #[tokio::test]
+    async fn reports_missing_file_without_aborting_batch() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "alpha").unwrap();
+
+        let tool: Arc<dyn ToolExecutor> = Arc::new(MultiFileReadTool);
+        let out = tool
+            .execute(
+                serde_json::json!({ "paths": ["a.txt", "missing.txt"] }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("missing file should be a per-file error");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["filesRead"], 1);
+        assert_eq!(parsed["filesError"], 1);
+        let files = parsed["files"].as_array().unwrap();
+        let missing = files.iter().find(|f| f["path"] == "missing.txt").unwrap();
+        assert_eq!(missing["success"], false);
     }
 }

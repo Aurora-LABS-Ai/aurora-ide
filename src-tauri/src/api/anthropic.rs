@@ -184,7 +184,9 @@ where
         // iteration will pick it up via `biased; cancelled()`.
     }
 
-    let final_stop = stop_reason.clone().unwrap_or_else(|| "end_turn".to_string());
+    let final_stop = stop_reason
+        .clone()
+        .unwrap_or_else(|| "end_turn".to_string());
 
     // Emit `MessageStop` once at end-of-stream.
     let _ = event_sink

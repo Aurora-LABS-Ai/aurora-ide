@@ -45,15 +45,24 @@ impl ToolExecutor for AuroroWebSearchTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
 
-        let action = input.get("action").and_then(Value::as_str).map(str::to_string);
-        let query = input.get("query").and_then(Value::as_str).map(str::to_string);
+        let action = input
+            .get("action")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let query = input
+            .get("query")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let url = input.get("url").and_then(Value::as_str).map(str::to_string);
         let num_results = input
             .get("numResults")
             .or_else(|| input.get("num_results"))
             .and_then(Value::as_u64)
             .map(|n| n as u32);
-        let region = input.get("region").and_then(Value::as_str).map(str::to_string);
+        let region = input
+            .get("region")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let safe_search = input
             .get("safeSearch")
             .or_else(|| input.get("safe_search"))
@@ -62,9 +71,13 @@ impl ToolExecutor for AuroroWebSearchTool {
 
         // Mirror the TS executor's "we need at least one of query or url"
         // contract before crossing into the underlying command.
-        let resolved_action = action
-            .clone()
-            .unwrap_or_else(|| if url.is_some() { "fetch".into() } else { "search".into() });
+        let resolved_action = action.clone().unwrap_or_else(|| {
+            if url.is_some() {
+                "fetch".into()
+            } else {
+                "search".into()
+            }
+        });
         if resolved_action == "search" && query.is_none() {
             return Ok(serde_json::to_string(&json!({
                 "success": false,
@@ -160,6 +173,7 @@ mod tests {
 
     fn ctx_for() -> ToolContext {
         ToolContext {
+            allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             session_id: "s".into(),
@@ -177,7 +191,10 @@ mod tests {
             .expect("ok");
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["success"], false);
-        assert!(parsed["error"].as_str().unwrap().contains("query is required"));
+        assert!(parsed["error"]
+            .as_str()
+            .unwrap()
+            .contains("query is required"));
     }
 
     #[tokio::test]
@@ -189,6 +206,9 @@ mod tests {
             .expect("ok");
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["success"], false);
-        assert!(parsed["error"].as_str().unwrap().contains("url is required"));
+        assert!(parsed["error"]
+            .as_str()
+            .unwrap()
+            .contains("url is required"));
     }
 }

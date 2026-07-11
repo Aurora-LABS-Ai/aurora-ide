@@ -104,6 +104,42 @@ const handleEditorOpen = async ({ path, line, column }: EditorOpenPayload): Prom
   }
 };
 
+/**
+ * Open a file the agent window handed off for editing (its Review panel is
+ * view-only). Opens the file in Monaco and brings the IDE window forward.
+ * Runs only in the main window (see the gate in `installAgentIdeListeners`).
+ */
+export const handleOpenInIde = async (payload: EditorOpenPayload): Promise<void> => {
+  await handleEditorOpen(payload);
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const win = getCurrentWindow();
+    try {
+      await win.show();
+    } catch {
+      // already visible — fine
+    }
+    try {
+      await win.unminimize();
+    } catch {
+      // not minimized — fine
+    }
+    await win.setFocus();
+    // Windows blocks a background window from stealing the foreground, so the
+    // hand-off from the agent window would otherwise open the file but leave the
+    // IDE buried. A brief always-on-top nudge forces it to the front, then we
+    // immediately release it so it behaves like a normal window.
+    try {
+      await win.setAlwaysOnTop(true);
+      await win.setAlwaysOnTop(false);
+    } catch {
+      // platform may not support the toggle — setFocus above is best-effort
+    }
+  } catch (err) {
+    console.warn("[agent-ide-events] focus IDE window failed:", err);
+  }
+};
+
 const handleTodoWrite = ({ todos }: TodoWritePayload): void => {
   if (!Array.isArray(todos) || todos.length === 0) {
     useTaskStore.getState().setTasks([]);
@@ -141,6 +177,22 @@ const handleTodoWrite = ({ todos }: TodoWritePayload): void => {
  */
 export const installAgentIdeListeners = async (): Promise<() => void> => {
   const cleanups: Array<() => void> = [];
+
+  // `agent_open_in_ide` is a hand-off FROM the agent window (view-only) TO the
+  // IDE editor — only the main window should act on it, never the agent / team
+  // windows (which would open into a non-existent editor and steal focus).
+  // Every other channel is harmless to run in any window.
+  const path = typeof window !== "undefined" ? window.location.pathname : "/";
+  const isSecondaryWindow =
+    path === "/agent-window" || path === "/team-view";
+
+  if (!isSecondaryWindow) {
+    cleanups.push(
+      await auroraListen<EditorOpenPayload>("agent_open_in_ide", ({ payload }) => {
+        void handleOpenInIde(payload);
+      }),
+    );
+  }
 
   cleanups.push(
     await auroraListen<EditorOpenPayload>("agent_editor_open", ({ payload }) => {

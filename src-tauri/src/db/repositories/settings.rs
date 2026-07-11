@@ -94,6 +94,66 @@ impl<'a> SettingsRepository<'a> {
                     settings.agent_execution_mode = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.agent_execution_mode.clone())
                 }
+                "teamEnabled" => {
+                    settings.team_enabled =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.team_enabled)
+                }
+                "maxTeamSize" => {
+                    settings.max_team_size =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.max_team_size)
+                }
+                "teamLeadModel" => {
+                    settings.team_lead_model = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.team_lead_model.clone())
+                }
+                "teamMemberModel" => {
+                    settings.team_member_model = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.team_member_model.clone())
+                }
+                "teamGateBuild" => {
+                    settings.team_gate_build = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.team_gate_build.clone())
+                }
+                "teamGateLint" => {
+                    settings.team_gate_lint = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.team_gate_lint.clone())
+                }
+                "teamGateTest" => {
+                    settings.team_gate_test = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.team_gate_test.clone())
+                }
+                "globalInstructions" => {
+                    settings.global_instructions = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.global_instructions.clone())
+                }
+                "compactionThresholdPct" => {
+                    settings.compaction_threshold_pct = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.compaction_threshold_pct)
+                }
+                "compactionSummaryBudget" => {
+                    settings.compaction_summary_budget = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.compaction_summary_budget)
+                }
+                "titleMakerEnabled" => {
+                    settings.title_maker_enabled = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.title_maker_enabled)
+                }
+                "titleMakerBaseUrl" => {
+                    settings.title_maker_base_url = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.title_maker_base_url.clone())
+                }
+                "titleMakerApiKey" => {
+                    settings.title_maker_api_key = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.title_maker_api_key.clone())
+                }
+                "titleMakerModel" => {
+                    settings.title_maker_model = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.title_maker_model.clone())
+                }
+                "allowOutsideWorkspace" => {
+                    settings.allow_outside_workspace = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.allow_outside_workspace)
+                }
                 "autoApproveTools" => {
                     settings.auto_approve_tools =
                         serde_json::from_str(&setting.value).unwrap_or(settings.auto_approve_tools)
@@ -225,6 +285,66 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting(
             "agentExecutionMode",
             &serde_json::to_string(&settings.agent_execution_mode).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "teamEnabled",
+            &serde_json::to_string(&settings.team_enabled).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "maxTeamSize",
+            &serde_json::to_string(&settings.max_team_size).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "teamLeadModel",
+            &serde_json::to_string(&settings.team_lead_model).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "teamMemberModel",
+            &serde_json::to_string(&settings.team_member_model).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "teamGateBuild",
+            &serde_json::to_string(&settings.team_gate_build).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "teamGateLint",
+            &serde_json::to_string(&settings.team_gate_lint).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "teamGateTest",
+            &serde_json::to_string(&settings.team_gate_test).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "globalInstructions",
+            &serde_json::to_string(&settings.global_instructions).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "compactionThresholdPct",
+            &serde_json::to_string(&settings.compaction_threshold_pct).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "compactionSummaryBudget",
+            &serde_json::to_string(&settings.compaction_summary_budget).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "titleMakerEnabled",
+            &serde_json::to_string(&settings.title_maker_enabled).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "titleMakerBaseUrl",
+            &serde_json::to_string(&settings.title_maker_base_url).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "titleMakerApiKey",
+            &serde_json::to_string(&settings.title_maker_api_key).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "titleMakerModel",
+            &serde_json::to_string(&settings.title_maker_model).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "allowOutsideWorkspace",
+            &serde_json::to_string(&settings.allow_outside_workspace).unwrap_or_default(),
         )?;
         self.set_setting(
             "autoApproveTools",

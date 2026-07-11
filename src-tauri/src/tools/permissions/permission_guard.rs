@@ -155,6 +155,7 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext {
+            allow_outside_workspace: false,
             turn_id: "t-1".into(),
             tool_call_id: "call-1".into(),
             session_id: "sess".into(),
@@ -190,7 +191,10 @@ mod tests {
         // double-prompt.
         assert!(!wrapped.requires_permission());
         // Granted → inner ran.
-        let out = wrapped.execute(serde_json::json!({}), &ctx()).await.unwrap();
+        let out = wrapped
+            .execute(serde_json::json!({}), &ctx())
+            .await
+            .unwrap();
         assert_eq!(out, "ran");
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }

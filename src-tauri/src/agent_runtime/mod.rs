@@ -34,6 +34,10 @@
 //!   `BridgeRouter` plumbing that lets the runtime delegate any
 //!   advertised tool back to the Tauri frontend via a one-shot
 //!   request/response channel.
+//! - [`team`] — Agent Team foundation (shared brain + TeamBus). The
+//!   `~/.aurora/projects/<projectId>/` workspace store and the channel
+//!   persist+broadcast pipe. See
+//!   `DOCS/aurora-agent-team-ground-truth.md`.
 //!
 //! See `docs/plan/rust-agent-migration.md` for the master plan and
 //! the per-phase briefs.
@@ -57,6 +61,7 @@ pub mod ipc;
 pub mod recovery;
 pub mod session;
 pub mod session_store;
+pub mod team;
 pub mod title;
 pub mod tool_executor;
 pub mod types;

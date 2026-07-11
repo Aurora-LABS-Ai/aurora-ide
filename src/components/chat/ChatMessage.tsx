@@ -20,7 +20,7 @@
  * See: src/services/theme-service.ts for theme utilities
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import type { Message, TimelineEvent, ToolProposal } from '../../types';
 import { ThinkingBlock } from './ThinkingBlock';
@@ -36,6 +36,7 @@ import { User, Copy, Check, BookOpen, Zap, MousePointer2 } from 'lucide-react';
 import { getProfessionalToolName } from '../../services/tool-display';
 import { Tooltip } from '../ui/Tooltip';
 import { writeClipboardText } from '../../lib/clipboard';
+import { buildTimelineRows } from './tool-timeline/grouping';
 
 // Copy button component with feedback. Uses the robust
 // `writeClipboardText` helper so the Tauri WebView2 origin actually
@@ -251,6 +252,11 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
   onApprovePendingRemember,
 }) => {
   const isUser = message.sender === 'user';
+  const hasTimeline = message.timeline && message.timeline.length > 0;
+  const timelineRows = useMemo(
+    () => (hasTimeline ? buildTimelineRows(message.timeline!) : []),
+    [hasTimeline, message.timeline],
+  );
 
   if (isUser) {
     const hasAttachedFiles = message.attachedFiles && message.attachedFiles.length > 0;
@@ -403,8 +409,6 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
     );
   }
 
-  const hasTimeline = message.timeline && message.timeline.length > 0;
-
   // Get copyable text content
   const getCopyableText = (): string => {
     if (hasTimeline) {
@@ -460,19 +464,32 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
 
         <div className="select-text cursor-text">
           {hasTimeline ? (
-            message.timeline!.map((event, idx) => (
-              <TimelineEventItem
-                key={event.id}
-                event={event}
-                isStreaming={isStreaming && isLastMessage && idx === message.timeline!.length - 1}
-                isActivelyStreaming={isStreaming && isLastMessage}
-                toolVariant={toolVariant}
-                pendingApproval={pendingApproval}
-                onApprovePending={onApprovePending}
-                onRejectPending={onRejectPending}
-                onApprovePendingRemember={onApprovePendingRemember}
-              />
-            ))
+            timelineRows.map((row, idx) =>
+              row.type === 'tools' ? (
+                <ToolTimeline
+                  key={row.id}
+                  tools={row.tools}
+                  variant={toolVariant}
+                  isActivelyStreaming={isStreaming && isLastMessage}
+                  pendingApproval={pendingApproval}
+                  onApprovePending={onApprovePending}
+                  onRejectPending={onRejectPending}
+                  onApprovePendingRemember={onApprovePendingRemember}
+                />
+              ) : (
+                <TimelineEventItem
+                  key={row.event.id}
+                  event={row.event}
+                  isStreaming={isStreaming && isLastMessage && idx === timelineRows.length - 1}
+                  isActivelyStreaming={isStreaming && isLastMessage}
+                  toolVariant={toolVariant}
+                  pendingApproval={pendingApproval}
+                  onApprovePending={onApprovePending}
+                  onRejectPending={onRejectPending}
+                  onApprovePendingRemember={onApprovePendingRemember}
+                />
+              ),
+            )
           ) : (
             <>
               {message.thinking && (

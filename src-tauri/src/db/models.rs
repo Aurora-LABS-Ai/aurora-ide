@@ -120,6 +120,10 @@ pub struct TokenUsage {
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
     pub total_tokens: i64,
+    /// `Some(true)` when these counts are a local tiktoken estimate (the
+    /// provider returned no usage), so the UI can flag them with a `~`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated: Option<bool>,
 }
 
 /// Context usage tracking for a thread
@@ -162,6 +166,22 @@ pub struct Message {
     pub timeline: Option<serde_json::Value>,
     #[serde(rename = "toolProposal", default)]
     pub tool_proposal: Option<serde_json::Value>,
+    /// Browser-inspector element chips attached to a user message, loaded
+    /// back from the session JSONL so they re-render above the bubble on
+    /// thread reopen. `None` for assistant/tool messages.
+    #[serde(
+        rename = "attachedSelectedElements",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub attached_selected_elements:
+        Option<Vec<crate::agent_runtime::types::AttachedSelectedElement>>,
+    #[serde(
+        rename = "attachedPromptChips",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub attached_prompt_chips: Option<Vec<crate::agent_runtime::types::AttachedPromptChip>>,
 }
 
 /// Tool call in a message
@@ -306,6 +326,16 @@ pub struct ProviderModel {
     /// future EUR/GBP support — today the UI always renders `$`.
     #[serde(default)]
     pub price_currency: Option<String>,
+    /// Reasoning capability + chosen default, mirrored from models.dev:
+    /// `{type:"effort"|"toggle"|"budget", levels?:[..], min?, max?, default?}`.
+    /// `None` means the model has no reasoning controls.
+    #[serde(default)]
+    pub reasoning: Option<serde_json::Value>,
+    /// Extra request-body fields the user added manually for this model, merged
+    /// verbatim into the outgoing request (e.g. `{"thinking":{"type":"enabled"}}`).
+    /// `None` means no extra fields.
+    #[serde(default)]
+    pub extra_body: Option<serde_json::Value>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -340,6 +370,55 @@ pub struct AppSettings {
     // General settings
     pub selected_model: String,
     pub agent_execution_mode: String,
+    // Agent Team (see DOCS/aurora-agent-team-ground-truth.md §11)
+    pub team_enabled: bool,
+    pub max_team_size: i32,
+    /// Provider/model the Lead runs on, as a `"providerId:modelKey"`
+    /// selection drawn from the user's configured providers. Empty string
+    /// means "use my active chat model" (the team rides the chat provider).
+    #[serde(default)]
+    pub team_lead_model: String,
+    /// Provider/model the IC team members run on, same `"providerId:modelKey"`
+    /// shape. Empty string falls back to the active chat model. Lets the user
+    /// pin the Lead to one provider and the team to another.
+    #[serde(default)]
+    pub team_member_model: String,
+    /// Default integration-gate commands the Lead runs after the build to verify
+    /// the whole project (§14). Empty string = skip that gate. Sourced from
+    /// Settings → Team; a `team_dispatch` call inherits these when the model
+    /// doesn't pass its own `gate`. `serde(default)` so legacy rows load clean.
+    #[serde(default)]
+    pub team_gate_build: String,
+    #[serde(default)]
+    pub team_gate_lint: String,
+    #[serde(default)]
+    pub team_gate_test: String,
+    /// Global, workspace-agnostic user instructions injected into the agent's
+    /// system prompt for EVERY workspace (the "global rule" surface). Empty
+    /// string means none. Default added via `serde(default)` so existing rows
+    /// without the key deserialize cleanly.
+    #[serde(default)]
+    pub global_instructions: String,
+    /// Context-compaction trigger as a % of the context window (50–95).
+    #[serde(default)]
+    pub compaction_threshold_pct: f64,
+    /// `max_output_tokens` budget for the compaction summary call (2k–16k).
+    #[serde(default)]
+    pub compaction_summary_budget: i32,
+    /// AI title maker — when enabled, the first message of a NEW chat is sent to
+    /// an OpenAI-compatible endpoint to generate a short title (fallback to the
+    /// derived title on any error). All `serde(default)` so legacy rows load.
+    #[serde(default)]
+    pub title_maker_enabled: bool,
+    #[serde(default)]
+    pub title_maker_base_url: String,
+    #[serde(default)]
+    pub title_maker_api_key: String,
+    #[serde(default)]
+    pub title_maker_model: String,
+    /// When true, read-only file tools may read files outside the workspace.
+    #[serde(default)]
+    pub allow_outside_workspace: bool,
     pub auto_approve_tools: bool,
     pub auto_accept_changes: bool,
     pub explorer_icon_pack: String,
@@ -362,7 +441,14 @@ pub struct AppSettings {
     // Tool settings
     pub max_tool_calls_per_request: i32,
     pub skills_enabled: bool,
-    pub skill_toggles: HashMap<String, bool>,
+    /// Per-workspace skill enablement: `scopeKey -> (skillStorageKey -> bool)`.
+    /// `scopeKey` is the normalized workspace root path (or `__global__` when
+    /// no project is open). Stored nested so each project's selection is
+    /// independent. Legacy flat `{ storageKey: bool }` values fail to
+    /// deserialize and fall back to the empty default, which intentionally
+    /// prunes the old global toggles on first load.
+    #[serde(default)]
+    pub skill_toggles: HashMap<String, HashMap<String, bool>>,
     pub fireworks_tab_enabled: bool,
     pub fireworks_account_id: String,
 
@@ -382,6 +468,21 @@ impl Default for AppSettings {
         Self {
             selected_model: "fireworks:accounts/fireworks/routers/kimi-k2p6-turbo".to_string(),
             agent_execution_mode: "agent".to_string(),
+            team_enabled: false,
+            max_team_size: 5,
+            team_lead_model: String::new(),
+            team_member_model: String::new(),
+            team_gate_build: String::new(),
+            team_gate_lint: String::new(),
+            team_gate_test: String::new(),
+            global_instructions: String::new(),
+            compaction_threshold_pct: 80.0,
+            compaction_summary_budget: 8192,
+            title_maker_enabled: false,
+            title_maker_base_url: String::new(),
+            title_maker_api_key: String::new(),
+            title_maker_model: String::new(),
+            allow_outside_workspace: false,
             auto_approve_tools: false,
             auto_accept_changes: false,
             explorer_icon_pack: "material".to_string(),
@@ -434,4 +535,3 @@ pub struct CustomTheme {
     pub created_at: String,
     pub updated_at: String,
 }
-

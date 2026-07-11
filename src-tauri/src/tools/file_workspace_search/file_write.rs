@@ -18,9 +18,8 @@ use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 use crate::tools::shell_editor_todo::{FileChangedPayload, IdeEventSink};
 
-use super::{
-    apply_write_conventions, detect_write_conventions, resolve_path_for_create,
-};
+use super::search_replace::diff_side;
+use super::{apply_write_conventions, detect_write_conventions, resolve_path_for_create};
 
 pub struct FileWriteTool {
     sink: Arc<dyn IdeEventSink>,
@@ -42,15 +41,18 @@ impl ToolExecutor for FileWriteTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "file_write".into(),
-            description: "Completely replace the entire content of a file. Creates parent \
-                          directories if missing. Use search_replace/multi_search_replace for \
-                          targeted edits."
+            description: "Create a new file or completely overwrite an existing one with the full \
+                          content you supply. Creates parent directories automatically. `content` \
+                          is REQUIRED — provide the entire file body. Use file_edit for targeted \
+                          changes; set must_not_exist=true to fail instead of overwriting if the \
+                          file already exists."
                 .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "The full path of the file to write." },
-                    "content": { "type": "string", "description": "The COMPLETE new content for the file." }
+                    "content": { "type": "string", "description": "The COMPLETE new content for the file (required)." },
+                    "must_not_exist": { "type": "boolean", "default": false, "description": "When true, fail if the file already exists (create-only)." }
                 },
                 "required": ["path", "content"],
                 "additionalProperties": false,
@@ -79,6 +81,10 @@ impl ToolExecutor for FileWriteTool {
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidInput("`content` must be a string".into()))?
             .to_string();
+        let must_not_exist = input
+            .get("must_not_exist")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         let resolved = resolve_path_for_create(path, ctx.workspace_root.as_deref())?;
         let resolved_str = resolved.to_string_lossy().to_string();
@@ -92,9 +98,30 @@ impl ToolExecutor for FileWriteTool {
         // collide with here.
         let existed_before = Path::new(&resolved_str).exists();
 
+        // Create-only guard (folds the old `file_create` tool's
+        // "FAILS if the file already exists" contract into a flag).
+        if must_not_exist && existed_before {
+            return Ok(serde_json::to_string(&json!({
+                "success": false,
+                "error": format!("File already exists: {raw_path}. Omit must_not_exist to overwrite."),
+                "path": raw_path,
+                "fullPath": resolved_str,
+            }))
+            .unwrap());
+        }
+
         let content_for_event = content.clone();
-        let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let content_for_result = content.clone();
+        // Returns the pre-write content (for the Review panel's diff). Empty when
+        // the file is new. Read inside the same blocking task so there's no extra
+        // hop and no TOCTOU window before the overwrite.
+        let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
             let file_path = Path::new(&resolved_str);
+            let old_content = if existed_before {
+                std::fs::read_to_string(file_path).unwrap_or_default()
+            } else {
+                String::new()
+            };
             if let Some(parent) = file_path.parent() {
                 if !parent.exists() {
                     std::fs::create_dir_all(parent)
@@ -112,13 +139,13 @@ impl ToolExecutor for FileWriteTool {
             std::fs::write(file_path, &bytes_to_write)
                 .map_err(|e| format!("Failed to write file: {e}"))?;
             crate::file_cache::get_file_cache().invalidate(&resolved_str);
-            Ok(())
+            Ok(old_content)
         })
         .await
         .map_err(|err| ToolError::Execution(format!("file_write task panicked: {err}")))?;
 
         match result {
-            Ok(()) => {
+            Ok(old_content) => {
                 // Fire the IDE event so the open Monaco buffer + explorer +
                 // pending-changes UI refresh. A `Created` kind is emitted
                 // when the file did not exist before the write — this lets
@@ -144,10 +171,13 @@ impl ToolExecutor for FileWriteTool {
                 // disk, dropping the UI refresh is preferable to making the
                 // tool look like it failed.
                 if let Err(emit_err) = self.sink.emit_file_changed(&payload) {
-                    eprintln!(
-                        "[file_write] emit_file_changed failed for {raw_path}: {emit_err}"
-                    );
+                    eprintln!("[file_write] emit_file_changed failed for {raw_path}: {emit_err}");
                 }
+
+                // The agent now knows this file's exact content (it just
+                // wrote it), so a follow-up file_edit should pass the
+                // read-before-edit guard without a redundant read.
+                super::read_tracker::record(&ctx.session_id, &resolved.to_string_lossy());
 
                 Ok(serde_json::to_string(&json!({
                     "success": true,
@@ -156,6 +186,11 @@ impl ToolExecutor for FileWriteTool {
                     "path": raw_path,
                     "fullPath": resolved.to_string_lossy(),
                     "bytes": bytes,
+                    // Full before/after for the Review panel. Line endings are
+                    // normalised to LF on both sides so a CRLF file doesn't render
+                    // as an all-lines-changed diff.
+                    "oldContent": diff_side(&old_content.replace("\r\n", "\n")),
+                    "newContent": diff_side(&content_for_result.replace("\r\n", "\n")),
                 }))
                 .unwrap())
             }
@@ -182,6 +217,7 @@ mod tests {
 
     fn ctx_for(workspace: Option<std::path::PathBuf>) -> ToolContext {
         ToolContext {
+            allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             session_id: "s".into(),
@@ -207,7 +243,10 @@ mod tests {
             .expect("ok");
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["success"], true);
-        assert_eq!(std::fs::read_to_string(tmp.path().join("out.txt")).unwrap(), "hi");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("out.txt")).unwrap(),
+            "hi"
+        );
     }
 
     #[tokio::test]

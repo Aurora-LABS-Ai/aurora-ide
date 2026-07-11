@@ -806,3 +806,26 @@ pub async fn speech_transcribe_pcm(
             .map_err(|error| format!("Qwen3-ASR transcription worker failed: {}", error))?,
     }
 }
+
+/// Install Aurora's native WebView microphone auto-grant handler on the agent
+/// window's WebView.
+///
+/// The IDE main window gets this at startup (see `lib.rs::setup`), but the agent
+/// window is usually created on demand from the frontend (`openAgentWindow` →
+/// `new WebviewWindow(...)`), a path that never runs the Rust-side install. Without
+/// it, the agent window's first `getUserMedia` call makes WebView2 (Windows) show
+/// its own "…wants to use your microphone" prompt on top of Aurora's in-app gate,
+/// which looks broken. The agent window calls this once on boot so its own
+/// in-app modal is the only microphone prompt the user ever sees.
+///
+/// Best-effort and safe to call more than once: registering the handler twice is
+/// harmless (WebView2 stops dispatching after the first sets an explicit state),
+/// and a missing window or unsupported platform simply no-ops.
+#[tauri::command]
+pub fn install_agent_media_permission_handler(app: AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    match app.get_webview_window("agent-window") {
+        Some(window) => crate::services::webview_permissions::install_permission_handler(&window),
+        None => Ok(()),
+    }
+}

@@ -11,17 +11,22 @@ use std::env;
 // Environment variable used to pass CLI args to spawned GUI process
 const AURORA_CLI_PATH_ENV: &str = "AURORA_CLI_PATH";
 const AURORA_CLI_FILE_ENV: &str = "AURORA_CLI_FILE";
+const AURORA_CLI_AGENT_ENV: &str = "AURORA_CLI_AGENT";
 
 fn main() {
     // Check if we were spawned with CLI path via environment variable
     // This means we're the detached GUI process
     let env_path = env::var(AURORA_CLI_PATH_ENV).ok();
     let env_file = env::var(AURORA_CLI_FILE_ENV).ok();
+    let env_agent = env::var(AURORA_CLI_AGENT_ENV).ok();
 
-    if env_path.is_some() || env_file.is_some() {
-        // We're the spawned GUI process - run with the path from env
+    if env_path.is_some() || env_file.is_some() || env_agent.is_some() {
+        // We're the spawned GUI process - run with the intent from env.
         let mut args = CliArgs::default();
-        if let Some(file) = env_file {
+        if env_agent.is_some() {
+            // Agent-only launch: open just the agent window, ignore any path.
+            args.agent = true;
+        } else if let Some(file) = env_file {
             // Preserve explicit file-open intent.
             args.path = Some(std::path::PathBuf::from(file));
         } else if let Some(path) = env_path {
@@ -30,6 +35,7 @@ fn main() {
         // Clear env vars so child processes don't inherit them
         env::remove_var(AURORA_CLI_PATH_ENV);
         env::remove_var(AURORA_CLI_FILE_ENV);
+        env::remove_var(AURORA_CLI_AGENT_ENV);
 
         aurora_lib::run_with_args(args);
         return;
@@ -68,9 +74,9 @@ fn main() {
         }
     }
 
-    // If a path was provided, spawn a detached GUI process and exit
-    // This frees the terminal immediately
-    if args.path.is_some() {
+    // If a path was provided OR agent-only mode was requested, spawn a detached
+    // GUI process and exit so the terminal is freed immediately.
+    if args.path.is_some() || args.agent {
         if let Err(e) = spawn_detached_gui(&args) {
             eprintln!("Failed to launch Aurora: {}", e);
             std::process::exit(1);
@@ -90,8 +96,13 @@ fn spawn_detached_gui(args: &CliArgs) -> Result<(), String> {
 
     let mut cmd = std::process::Command::new(&current_exe);
 
+    // Agent-only launch: signal the spawned process to open just the agent
+    // window. No path is needed (it opens regardless of the working directory).
+    if args.agent {
+        cmd.env(AURORA_CLI_AGENT_ENV, "1");
+    }
     // Pass the path via environment variable
-    if let Some(resolved) = args.resolve_path() {
+    else if let Some(resolved) = args.resolve_path() {
         if resolved.is_dir() {
             cmd.env(AURORA_CLI_PATH_ENV, resolved.to_string_lossy().to_string());
         } else if resolved.is_file() {

@@ -178,9 +178,7 @@ mod tests {
             _cancel_token: CancellationToken,
         ) -> Result<TurnUsage, ApiError> {
             event_sink
-                .send(AssistantEvent::TextDelta {
-                    delta: "hi".into(),
-                })
+                .send(AssistantEvent::TextDelta { delta: "hi".into() })
                 .await
                 .map_err(|_| ApiError::Network("sink closed".into()))?;
             Ok(TurnUsage {
@@ -191,6 +189,8 @@ mod tests {
                     blocks: vec![ContentBlock::Text { text: "hi".into() }],
                     usage: None,
                     timestamp: 0,
+                    attached_selected_elements: None,
+                    attached_prompt_chips: None,
                 },
             })
         }

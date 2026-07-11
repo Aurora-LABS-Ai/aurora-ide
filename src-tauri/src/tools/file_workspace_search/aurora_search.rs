@@ -87,6 +87,7 @@ mod tests {
             tool_call_id: "c".into(),
             session_id: "s".into(),
             workspace_root: None,
+            allow_outside_workspace: false,
             cancel_token: CancellationToken::new(),
         }
     }

@@ -73,8 +73,10 @@ impl ToolExecutor for ShellExecuteTool {
         ToolSchema {
             name: "shell_execute".into(),
             description: "Execute a shell command in the workspace directory. Returns stdout, \
-                          stderr, and exit code. Use with caution as this can modify the \
-                          system."
+                          stderr, and exit code. Runs in Git Bash (POSIX/bash syntax) by default \
+                          on Windows when available, otherwise PowerShell — prefer POSIX commands \
+                          (ls, cat, rm, &&, |, single-quote quoting). Use with caution as this can \
+                          modify the system."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -86,6 +88,11 @@ impl ToolExecutor for ShellExecuteTool {
                     "cwd": {
                         "type": "string",
                         "description": "Working directory for the command. Defaults to workspace root."
+                    },
+                    "shell": {
+                        "type": "string",
+                        "enum": ["bash", "powershell"],
+                        "description": "Shell to run in. Defaults to bash (Git Bash) when available; pass \"powershell\" only for genuinely PowerShell-specific commands."
                     },
                     "timeout": {
                         "type": "number",
@@ -114,7 +121,9 @@ impl ToolExecutor for ShellExecuteTool {
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidInput("`command` must be a string".into()))?;
         if command.trim().is_empty() {
-            return Err(ToolError::InvalidInput("`command` must not be empty".into()));
+            return Err(ToolError::InvalidInput(
+                "`command` must not be empty".into(),
+            ));
         }
 
         // Prefer the workspace-aware validator when we have a folder
@@ -145,10 +154,12 @@ impl ToolExecutor for ShellExecuteTool {
                     .map(|p| p.to_string_lossy().to_string())
             });
 
-        let shell = input
-            .get("shell")
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        let shell = resolve_shell(
+            input
+                .get("shell")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        );
 
         let timeout_ms = input
             .get("timeout")
@@ -193,6 +204,27 @@ impl ToolExecutor for ShellExecuteTool {
             .to_string()),
         }
     }
+}
+
+/// Pick the shell for an agent command.
+///
+/// An explicit `shell` arg always wins. Otherwise we default to Git Bash when
+/// it's installed (so the model's POSIX/bash habits — and the bash-oriented
+/// safety validator — line up with what actually runs), falling back to `None`
+/// (→ the platform default, PowerShell on Windows) when Git Bash is absent.
+/// Shared with `shell_spawn` so background processes use the same default.
+#[must_use]
+pub(crate) fn resolve_shell(requested: Option<String>) -> Option<String> {
+    if requested.is_some() {
+        return requested;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if crate::commands::find_git_bash().is_some() {
+            return Some("bash".to_string());
+        }
+    }
+    None
 }
 
 /// Map [`BashValidationError`] onto [`ToolError::PolicyViolation`]
@@ -243,6 +275,7 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext {
+            allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             session_id: "s".into(),
@@ -288,7 +321,10 @@ mod tests {
             .await
             .expect_err("must fail");
         match err {
-            ToolError::PolicyViolation(msg) => assert!(msg.contains("warning") || msg.contains("destructive") || msg.contains("root"), "got: {msg}"),
+            ToolError::PolicyViolation(msg) => assert!(
+                msg.contains("warning") || msg.contains("destructive") || msg.contains("root"),
+                "got: {msg}"
+            ),
             other => panic!("expected PolicyViolation, got {other:?}"),
         }
     }

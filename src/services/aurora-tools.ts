@@ -40,7 +40,17 @@
  * bridge auto-approves them without surfacing the tool-approval
  * modal.
  */
+import {
+  normalizeAskQuestionArgs,
+  requestUserQuestions,
+  type AskQuestionItem,
+} from "./question-bridge";
 import { findSkillById, searchSkillCandidates } from "./skills";
+import {
+  executeTeamLeadTool,
+  isTeamLeadTool,
+  type TeamToolContext,
+} from "./team-agent-tools";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 
 /**
@@ -56,6 +66,10 @@ import { useWorkspaceStore } from "../store/useWorkspaceStore";
 const AURORA_FRONTEND_TOOLS = new Set<string>([
   "aurora_skill_search",
   "aurora_skill_load",
+  // Interactive prompt. Auto-approved because the prompt UI *is* the consent —
+  // it can't mutate anything, it just collects the user's answer and blocks the
+  // turn until they respond (or skip).
+  "ask_question",
 ]);
 
 /**
@@ -63,7 +77,7 @@ const AURORA_FRONTEND_TOOLS = new Set<string>([
  * Aurora executor rather than the Rust runtime or MCP bridge.
  */
 export function isAuroraFrontendTool(toolName: string): boolean {
-  return AURORA_FRONTEND_TOOLS.has(toolName);
+  return AURORA_FRONTEND_TOOLS.has(toolName) || isTeamLeadTool(toolName);
 }
 
 /**
@@ -76,7 +90,12 @@ export function isAuroraFrontendTool(toolName: string): boolean {
  * logic.
  */
 export function shouldAutoApproveAuroraFrontendTool(toolName: string): boolean {
-  return AURORA_FRONTEND_TOOLS.has(toolName);
+  // Skill tools are read-only. Team-control tools are auto-approved by
+  // product decision: the user opts into the whole flow by enabling Team in
+  // settings + selecting Team mode, so the Lead drives it without per-call
+  // modals. Each mutation still lands in Rust via the guarded `team_*`
+  // commands, and execution is hard-gated on `teamEnabled`.
+  return AURORA_FRONTEND_TOOLS.has(toolName) || isTeamLeadTool(toolName);
 }
 
 interface SkillSearchArgs {
@@ -164,6 +183,48 @@ async function runSkillLoad(rawArgs: Record<string, unknown>): Promise<string> {
   });
 }
 
+/** Render the chosen option ids + free text back into human-readable answers. */
+function describeAnswer(
+  question: AskQuestionItem,
+  selectedIds: string[],
+  otherText: string | undefined,
+): string | null {
+  const labels = selectedIds.map(
+    (id) => question.options.find((o) => o.id === id)?.label ?? id,
+  );
+  const parts = [...labels];
+  if (otherText && otherText.trim()) parts.push(otherText.trim());
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
+/**
+ * Execute `ask_question`: render the interactive prompt, block until the user
+ * answers/skips, and serialise their choices into a model-friendly envelope:
+ * `{ skipped, responses: [{ id, prompt, answer }] }`. Unanswered questions come
+ * back with `answer: null`.
+ */
+async function runAskQuestion(rawArgs: Record<string, unknown>): Promise<string> {
+  const request = normalizeAskQuestionArgs(rawArgs);
+  if (!request) {
+    throw new Error(
+      "ask_question: provide a non-empty `questions` array, each with `prompt` and `options`.",
+    );
+  }
+
+  const result = await requestUserQuestions(request);
+
+  const responses = request.questions.map((q) => {
+    const answer = result.answers.find((a) => a.questionId === q.id);
+    return {
+      id: q.id,
+      prompt: q.prompt,
+      answer: answer ? describeAnswer(q, answer.selectedIds, answer.otherText) : null,
+    };
+  });
+
+  return JSON.stringify({ skipped: result.skipped, responses });
+}
+
 /**
  * Dispatch a frontend-native Aurora tool. Returns the JSON-stringified
  * tool result on success; throws on any failure (the bridge wraps the
@@ -172,12 +233,19 @@ async function runSkillLoad(rawArgs: Record<string, unknown>): Promise<string> {
 export async function executeAuroraFrontendTool(
   toolName: string,
   args: Record<string, unknown>,
+  ctx?: TeamToolContext,
 ): Promise<string> {
+  if (isTeamLeadTool(toolName)) {
+    return executeTeamLeadTool(toolName, args, ctx);
+  }
+
   switch (toolName) {
     case "aurora_skill_search":
       return runSkillSearch(args);
     case "aurora_skill_load":
       return runSkillLoad(args);
+    case "ask_question":
+      return runAskQuestion(args);
     default:
       // Defensive: the bridge gates on `isAuroraFrontendTool` before
       // calling us, so this branch only fires if the two lists drift.

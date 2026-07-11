@@ -532,11 +532,48 @@ export async function loadAllSkillCandidates(options?: {
 }
 
 /**
+ * Sentinel scope key used when no workspace is open. Per-workspace toggles
+ * live under the normalized workspace root path; this bucket holds the
+ * "no project" case so the shape stays uniform.
+ */
+export const GLOBAL_SKILL_SCOPE_KEY = "__global__";
+
+/**
+ * Normalize a workspace root path into the key used to bucket that project's
+ * skill toggles. Skill enablement is **per workspace** — enabling a skill in
+ * project A must never leak into project B, and the enabled-count / cap are
+ * evaluated against the current project's bucket only.
+ */
+export function getSkillToggleScopeKey(workspacePath?: string | null): string {
+  const trimmed = workspacePath?.trim();
+  if (!trimmed) {
+    return GLOBAL_SKILL_SCOPE_KEY;
+  }
+  return trimmed.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+/**
+ * Pull the flat `{ storageKey: boolean }` bucket for a given workspace out of
+ * the nested per-workspace toggle map. Returns an empty bucket when the
+ * workspace has no recorded toggles yet.
+ */
+export function getWorkspaceSkillToggles(
+  toggles: Record<string, Record<string, boolean>> | undefined,
+  workspacePath?: string | null,
+): Record<string, boolean> {
+  if (!toggles) {
+    return {};
+  }
+  return toggles[getSkillToggleScopeKey(workspacePath)] ?? {};
+}
+
+/**
  * Determine whether a given skill is enabled for prompt injection.
  *
  * **Default-off semantics:** when the user has never interacted with a
  * skill's toggle, it is treated as DISABLED. The user explicitly opts in
- * from the Skills settings tab.
+ * from the Skills settings tab. `skillToggles` here is the *flat bucket* for
+ * the current workspace (see {@link getWorkspaceSkillToggles}).
  */
 export function isSkillEnabled(
   skill: SkillDefinition,

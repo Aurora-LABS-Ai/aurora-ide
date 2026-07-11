@@ -35,7 +35,6 @@ import { ToolApprovalModal } from "../modals/ToolApprovalModal";
 import { AuditTimeline } from "../modals/AuditTimeline";
 import { TerminalPanel } from "../terminal/Terminal";
 import { ThemePanel } from "../theme/ThemePanel";
-import { AgentModeLayout } from "../agent";
 import { useUiStore } from "../../store/useUiStore";
 import { useRustChatSync } from "../../hooks/useRustChatSync";
 import { useWorkspaceSessionReset } from "../../hooks/useWorkspaceSessionReset";
@@ -46,11 +45,9 @@ import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 export const MainLayout: React.FC = () => {
   const {
     isChatOpen,
-    detachedChat,
     setSettingsOpen,
     isSidebarOpen,
     toggleSidebar,
-    isAgentMode,
     toolApprovalState,
   } = useUiStore();
   // Hoisted gate: only mount the modal (and its embedded DiffEditor)
@@ -96,8 +93,8 @@ export const MainLayout: React.FC = () => {
     resetGit();
   }, [rootPath, initializeGit, resetGit]);
 
-  // Show chat panel only if it's open AND not detached
-  const showChatPanel = isChatOpen && !detachedChat.isDetached;
+  // Show chat panel only when the user has toggled it open.
+  const showChatPanel = isChatOpen;
 
   // Calculate git badge count (staged + unstaged + untracked)
   const gitBadgeCount = status
@@ -110,14 +107,13 @@ export const MainLayout: React.FC = () => {
 
   // Calculate center panel size based on sidebar and chat visibility
   const centerPanelDefaultSize = useMemo(() => {
-    if (isAgentMode) return 82;
     if (!showChatPanel) return 100; // No chat panel, center panel gets full width
     // With chat panel shown, calculate center panel size
     // Chat panel always stays at 25%, center panel gets the rest
     // When sidebar is open (18%): center panel = 100% - 18% - 25% = 57%
     // When sidebar is closed (0%): center panel = 100% - 0% - 25% = 75%
     return isSidebarOpen ? 57 : 75;
-  }, [isAgentMode, showChatPanel, isSidebarOpen]);
+  }, [showChatPanel, isSidebarOpen]);
 
   return (
     <div className="h-full flex flex-col bg-editor text-text-primary overflow-hidden">
@@ -169,7 +165,7 @@ export const MainLayout: React.FC = () => {
             <div className="h-full flex flex-col">
               {/* Main content area */}
               <div className="flex-1 min-h-0 overflow-hidden">
-                {isAgentMode ? <AgentModeLayout /> : <EditorPanel />}
+                <EditorPanel />
               </div>
 
               {/* Terminal at bottom - works in both modes */}
@@ -177,8 +173,8 @@ export const MainLayout: React.FC = () => {
             </div>
           </Panel>
 
-          {/* Chat panel - only in normal mode */}
-          {!isAgentMode && showChatPanel && (
+          {/* Chat panel */}
+          {showChatPanel && (
             <>
               <PanelResizeHandle className="w-[1px] bg-border hover:bg-primary transition-colors" />
 

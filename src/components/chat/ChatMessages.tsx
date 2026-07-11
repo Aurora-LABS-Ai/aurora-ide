@@ -68,9 +68,9 @@ export const ChatMessages: React.FC<ChatMessagesProps> = ({
     >
       <div ref={contentRef} className="py-2">
         {messages.map((msg, index) => {
-          // Group consecutive assistant messages under a single header —
-          // see the comment in AgentModeLayout's matching block. Same
-          // bug, same fix.
+          // Group consecutive assistant messages under a single header:
+          // only the first assistant message in a run shows the "Aurora"
+          // label, so a multi-step turn reads as one continuous reply.
           const prev = index > 0 ? messages[index - 1] : undefined;
           const hideAssistantHeader =
             msg.sender === "assistant" && prev?.sender === "assistant";

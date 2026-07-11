@@ -2,17 +2,13 @@ import { create } from "zustand";
 
 import type { ToolProposal } from "../types";
 
-interface DetachedWindowState {
-  isDetached: boolean;
-  position: { x: number; y: number } | null;
-  size: { width: number; height: number } | null;
-  windowLabel: string | null;
-}
-
 export type SettingsTabId =
   | "providers"
   | "local"
   | "fireworks"
+  | "agent"
+  // `tools` and `mcp` are kept for backward-compatible deep-links; the panel
+  // redirects them to the unified Agent page's matching sub-section.
   | "tools"
   | "general"
   | "themes"
@@ -23,14 +19,11 @@ export type SettingsTabId =
 
 interface UiState {
   closeToolApproval: () => void;
-  detachChat: (windowLabel: string) => void;
-  detachedChat: DetachedWindowState;
   isAuditOpen: boolean;
   isChatOpen: boolean;
   isSettingsOpen: boolean;
   isSidebarOpen: boolean;
   openToolApproval: (proposal: ToolProposal) => void;
-  reattachChat: () => void;
   setAuditOpen: (isOpen: boolean) => void;
   setChatOpen: (isOpen: boolean) => void;
   setSettingsOpen: (isOpen: boolean) => void;
@@ -45,19 +38,12 @@ interface UiState {
   toggleChat: () => void;
   toggleSidebar: () => void;
 
-  // Agent Mode - full-screen chat interface with file changes panel
-  isAgentMode: boolean;
-  setAgentMode: (isActive: boolean) => void;
-  toggleAgentMode: () => void;
-
   // Actions
   toggleTheme: () => void;
   toolApprovalState: {
     isOpen: boolean;
     proposal: ToolProposal | null;
   };
-  updateDetachedPosition: (position: { x: number; y: number }) => void;
-  updateDetachedSize: (size: { width: number; height: number }) => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -65,22 +51,13 @@ export const useUiStore = create<UiState>((set) => ({
   isSettingsOpen: false,
   settingsInitialTab: null,
   isAuditOpen: false,
-  isChatOpen: true,
-  isAgentMode: false,
+  // The chat rail starts hidden — the IDE opens to the editor, and the user
+  // reveals chat on demand via the title-bar toggle.
+  isChatOpen: false,
   toolApprovalState: {
     isOpen: false,
     proposal: null,
   },
-  detachedChat: {
-    isDetached: false,
-    windowLabel: null,
-    position: null,
-    size: null,
-  },
-
-  // Agent Mode actions
-  setAgentMode: (isActive) => set({ isAgentMode: isActive }),
-  toggleAgentMode: () => set((state) => ({ isAgentMode: !state.isAgentMode })),
 
   toggleTheme: () =>
     set((state) => {
@@ -113,41 +90,4 @@ export const useUiStore = create<UiState>((set) => ({
     set({ toolApprovalState: { isOpen: true, proposal } }),
   closeToolApproval: () =>
     set({ toolApprovalState: { isOpen: false, proposal: null } }),
-
-  detachChat: (windowLabel) =>
-    set((state) => ({
-      detachedChat: {
-        ...state.detachedChat,
-        isDetached: true,
-        windowLabel,
-      },
-      isChatOpen: false,
-    })),
-
-  reattachChat: () =>
-    set({
-      detachedChat: {
-        isDetached: false,
-        windowLabel: null,
-        position: null,
-        size: null,
-      },
-      isChatOpen: true,
-    }),
-
-  updateDetachedPosition: (position) =>
-    set((state) => ({
-      detachedChat: {
-        ...state.detachedChat,
-        position,
-      },
-    })),
-
-  updateDetachedSize: (size) =>
-    set((state) => ({
-      detachedChat: {
-        ...state.detachedChat,
-        size,
-      },
-    })),
 }));

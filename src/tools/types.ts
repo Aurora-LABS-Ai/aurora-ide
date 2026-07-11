@@ -26,6 +26,9 @@ export interface PropertyDefinition {
  properties?: Record<string, PropertyDefinition>;
   required?: string[];
   type: string;
+  /** JSON-Schema numeric bounds (e.g. an integer member count ≥ 1). */
+  minimum?: number;
+  maximum?: number;
 }
 
 // Tool registry entry — frontend metadata only. Executors live in

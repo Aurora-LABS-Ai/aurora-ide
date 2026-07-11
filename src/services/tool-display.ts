@@ -3,18 +3,23 @@ import { getToolDisplayName } from "./mcp-tools";
 const TOOL_DISPLAY_NAMES: Record<string, string> = {
   auroro_websearch: "Search the Web",
   editor_open_file: "Open File in Editor",
+  // Current file/folder tools.
+  file_read: "Read File",
+  file_write: "Write File",
+  file_edit: "Edit File",
+  move_path: "Move or Rename",
+  delete_path: "Delete",
+  folder_create: "Create Folder",
+  grep: "Search Codebase",
+  read_lints: "Read Diagnostics",
+  // Legacy file/folder names — kept so historic threads render cleanly.
   file_create: "Create New File",
   file_delete: "Delete File",
   file_patch: "Apply File Patch",
-  file_read: "Read File",
-  file_write: "Rewrite File",
-  folder_create: "Create Folder",
   folder_move: "Move Folder",
   folder_delete: "Delete Folder",
-  grep: "Search Codebase",
   multi_file_read: "Read Multiple Files",
   multi_search_replace: "Apply Batch Edits",
-  read_lints: "Read Diagnostics",
   search_replace: "Apply Targeted Edit",
   shell_execute: "Run Command",
   shell_kill: "Stop Background Process",
@@ -22,6 +27,7 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   shell_spawn: "Start Background Process",
   todo_write: "Update Task List",
   workspace_tree: "Inspect Workspace",
+  ask_question: "Ask the User",
   // Browser tools — keep the names short and verb-led so the chat
   // card reads like a human action ("Click Element" instead of
   // "Browser Click"). The legacy auto-title-case produced "Browser

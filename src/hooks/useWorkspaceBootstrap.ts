@@ -46,6 +46,17 @@ export const useWorkspaceBootstrap = (): void => {
 
   useEffect(() => {
     if (!isTauri()) return;
+    // The agent window is a separate WebviewWindow SCOPED to its launch `?ws=`
+    // path (mirrored into `useWorkspaceStore.rootPath` by `bindRuntimeWorkspace`).
+    // It must NOT run the IDE's "restore last-opened workspace" bootstrap — that
+    // async DB restore lands after the scoped bind and silently repoints
+    // `rootPath` to the IDE's last folder, so tools/context read the wrong
+    // project while the UI (driven by `projectRoot`) still shows the scoped one.
+    if (
+      typeof window !== "undefined" &&
+      window.location.pathname === "/agent-window"
+    )
+      return;
     if (hasInitialized.current) return;
     if (rootPath) return;
 

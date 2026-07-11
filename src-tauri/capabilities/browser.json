@@ -3,6 +3,10 @@
   "identifier": "browser-windows",
   "description": "Capabilities granted to native browser preview/inspector windows. Lets injected inspector + Stagewise scripts post picked-element payloads back into Aurora; everything else (fs, shell, db) is intentionally omitted.",
   "windows": ["browser-*"],
+  "webviews": ["browser-*"],
+  "remote": {
+    "urls": ["http://*", "https://*"]
+  },
   "permissions": [
     "core:default",
     "core:event:default",

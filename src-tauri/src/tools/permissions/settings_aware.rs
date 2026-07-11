@@ -72,9 +72,7 @@ impl SettingsResolver for DatabaseSettingsResolver {
             Ok(Some(setting)) => Some(setting.approval_mode),
             Ok(None) => None,
             Err(err) => {
-                eprintln!(
-                    "[SettingsAwarePermitter] DB lookup for {tool_name} failed: {err}"
-                );
+                eprintln!("[SettingsAwarePermitter] DB lookup for {tool_name} failed: {err}");
                 None
             }
         }
@@ -198,7 +196,11 @@ mod tests {
     fn mock_chain(
         mode: Option<&'static str>,
         permitter: MockPermitter,
-    ) -> (SettingsAwarePermitter, Arc<MockPermitter>, Arc<StaticResolver>) {
+    ) -> (
+        SettingsAwarePermitter,
+        Arc<MockPermitter>,
+        Arc<StaticResolver>,
+    ) {
         mock_chain_with_global(mode, false, permitter)
     }
 
@@ -206,7 +208,11 @@ mod tests {
         mode: Option<&'static str>,
         auto_approve_all: bool,
         permitter: MockPermitter,
-    ) -> (SettingsAwarePermitter, Arc<MockPermitter>, Arc<StaticResolver>) {
+    ) -> (
+        SettingsAwarePermitter,
+        Arc<MockPermitter>,
+        Arc<StaticResolver>,
+    ) {
         let resolver = Arc::new(StaticResolver {
             mode,
             auto_approve_all,
@@ -268,7 +274,11 @@ mod tests {
             .await
             .unwrap();
         assert!(!granted);
-        assert_eq!(inner.call_count(), 1, "inner permitter invoked exactly once");
+        assert_eq!(
+            inner.call_count(),
+            1,
+            "inner permitter invoked exactly once"
+        );
     }
 
     #[tokio::test]
@@ -294,13 +304,7 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel();
         let err = outer
-            .request(
-                "t",
-                "tu",
-                "shell_execute",
-                &serde_json::json!({}),
-                cancel,
-            )
+            .request("t", "tu", "shell_execute", &serde_json::json!({}), cancel)
             .await
             .expect_err("must cancel");
         assert!(matches!(err, ToolError::Cancelled));

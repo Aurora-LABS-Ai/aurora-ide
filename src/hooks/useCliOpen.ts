@@ -35,6 +35,14 @@ export interface CliOpenRequest {
 export function useCliOpen() {
   useEffect(() => {
     if (!isTauri()) return;
+    // The agent window is scoped to its launch `?ws=` workspace; a live
+    // `cli-open` event (a global Tauri event) must not repoint its workspace
+    // out from under the pinned project. Only the IDE window handles CLI opens.
+    if (
+      typeof window !== "undefined" &&
+      window.location.pathname === "/agent-window"
+    )
+      return;
 
     let unlisten: (() => void) | undefined;
 

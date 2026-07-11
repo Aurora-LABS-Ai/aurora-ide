@@ -187,9 +187,17 @@ pub struct ShellStreamRequest {
 /// Recorded emission for the verify crate.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RecordedEvent {
-    EditorOpen { path: String, line: Option<u64>, column: Option<u64> },
-    ReadLints { paths: Vec<String> },
-    TodoWrite { todos: Value },
+    EditorOpen {
+        path: String,
+        line: Option<u64>,
+        column: Option<u64>,
+    },
+    ReadLints {
+        paths: Vec<String>,
+    },
+    TodoWrite {
+        todos: Value,
+    },
     ShellStream(ShellStreamRequest),
     FileChanged(FileChangedPayload),
 }
@@ -346,7 +354,9 @@ impl IdeEventSink for RecordingIdeEventSink {
     }
 
     fn emit_todo_write(&self, todos: &Value) -> Result<(), String> {
-        self.record(RecordedEvent::TodoWrite { todos: todos.clone() })
+        self.record(RecordedEvent::TodoWrite {
+            todos: todos.clone(),
+        })
     }
 
     async fn spawn_shell_stream(&self, req: ShellStreamRequest) -> Result<(), String> {
@@ -374,13 +384,21 @@ mod tests {
     fn recording_sink_captures_in_order() {
         let sink = RecordingIdeEventSink::new();
         sink.emit_editor_open("foo.rs", Some(10), Some(2)).unwrap();
-        sink.emit_read_lints(&vec!["a.rs".into(), "b.rs".into()]).unwrap();
-        sink.emit_todo_write(&serde_json::json!([{"content":"hi","activeForm":"saying hi","status":"pending"}])).unwrap();
+        sink.emit_read_lints(&vec!["a.rs".into(), "b.rs".into()])
+            .unwrap();
+        sink.emit_todo_write(
+            &serde_json::json!([{"content":"hi","activeForm":"saying hi","status":"pending"}]),
+        )
+        .unwrap();
 
         let events = sink.events();
         assert_eq!(events.len(), 3);
-        assert!(matches!(&events[0], RecordedEvent::EditorOpen { path, line, column } if path == "foo.rs" && line == &Some(10) && column == &Some(2)));
-        assert!(matches!(&events[1], RecordedEvent::ReadLints { paths } if paths == &vec!["a.rs".to_string(), "b.rs".to_string()]));
+        assert!(
+            matches!(&events[0], RecordedEvent::EditorOpen { path, line, column } if path == "foo.rs" && line == &Some(10) && column == &Some(2))
+        );
+        assert!(
+            matches!(&events[1], RecordedEvent::ReadLints { paths } if paths == &vec!["a.rs".to_string(), "b.rs".to_string()])
+        );
         assert!(matches!(&events[2], RecordedEvent::TodoWrite { .. }));
     }
 
@@ -388,7 +406,9 @@ mod tests {
     async fn recording_sink_fail_next_short_circuits_one_call() {
         let sink = RecordingIdeEventSink::new();
         sink.fail_next("boom");
-        let err = sink.emit_editor_open("a", None, None).expect_err("must fail");
+        let err = sink
+            .emit_editor_open("a", None, None)
+            .expect_err("must fail");
         assert_eq!(err, "boom");
         // Subsequent call succeeds
         sink.emit_editor_open("b", None, None).expect("ok");

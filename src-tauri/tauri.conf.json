@@ -48,7 +48,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "runtime/onnxruntime/*.dll": ""
+      "runtime/onnxruntime/*.dll": "",
+      "resources/typing-assist/*.txt": "typing-assist/"
     },
     "windows": {
       "webviewInstallMode": {

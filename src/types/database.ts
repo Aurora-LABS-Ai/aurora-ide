@@ -5,7 +5,49 @@
 // APP SETTINGS
 // ============================================================
 export interface AppSettings {
-  agentExecutionMode?: 'agent' | 'plan';
+  agentExecutionMode?: 'agent' | 'plan' | 'team';
+  // Agent Team (see DOCS/aurora-agent-team-ground-truth.md)
+  teamEnabled?: boolean;
+  maxTeamSize?: number;
+  /**
+   * Provider/model the Lead runs on, as a `"providerId:modelKey"` selection
+   * from the user's configured providers. Empty/undefined means "use my
+   * active chat model".
+   */
+  teamLeadModel?: string;
+  /**
+   * Provider/model the IC team members run on, same `"providerId:modelKey"`
+   * shape. Empty/undefined falls back to the active chat model.
+   */
+  teamMemberModel?: string;
+  /**
+   * Default integration-gate commands (Settings → Team) the Lead runs after the
+   * build to verify the project. Empty/undefined skips that gate. A
+   * `team_dispatch` call inherits these when the model doesn't pass its own.
+   */
+  teamGateBuild?: string;
+  teamGateLint?: string;
+  teamGateTest?: string;
+  /**
+   * Global, workspace-agnostic user instructions injected into the agent's
+   * system prompt for every workspace. Empty/undefined means none.
+   */
+  globalInstructions?: string;
+  /** Context-compaction trigger as a % of the context window (50–95). */
+  compactionThresholdPct?: number;
+  /** `max_output_tokens` budget for the compaction summary call (2,000–16,000). */
+  compactionSummaryBudget?: number;
+  /** AI title maker — generate a short chat title from the first message. */
+  titleMakerEnabled?: boolean;
+  titleMakerBaseUrl?: string;
+  titleMakerApiKey?: string;
+  titleMakerModel?: string;
+  /** Allow read-only file tools to read files outside the workspace. */
+  allowOutsideWorkspace?: boolean;
+  /** Show the header flash + rail dot when a chat's turn finishes. Default on. */
+  notifyOnTurnComplete?: boolean;
+  /** While a turn streams, replace the header title with a live activity line. Default on. */
+  showActivityInTitle?: boolean;
   autoAcceptChanges?: boolean;
   autoApproveTools: boolean;
   autoSave: string;
@@ -18,7 +60,8 @@ export interface AppSettings {
   maxToolCallsPerRequest: number;
   projectLayoutEnabled?: boolean; // Include file tree in first message
   selectedModel: string;
-  skillToggles?: Record<string, boolean>;
+  /** Per-workspace skill enablement: `scopeKey -> (storageKey -> boolean)`. */
+  skillToggles?: Record<string, Record<string, boolean>>;
   skillsEnabled?: boolean;
   speechBackend?: string;
   speechDevicePreference?: 'auto' | 'cpu' | 'gpu';
@@ -77,6 +120,37 @@ export interface DbLLMProvider {
 // One row per model exposed by a provider. `contextWindow` and
 // `maxOutputTokens` are nullable: `null` means "inherit the
 // provider's default", a non-null value overrides it.
+
+/**
+ * A model's reasoning capability + the user's chosen default, mirrored from
+ * models.dev (v17+). `null`/absent means the model has no reasoning controls.
+ *  - `effort`  → `levels` lists the selectable tiers (e.g. low/medium/high);
+ *                `default` is the chosen tier.
+ *  - `toggle`  → reasoning is simply on/off; `default` is a boolean.
+ *  - `budget`  → a token budget in `[min, max]`; `default` is the chosen number.
+ */
+export interface ModelReasoning {
+  type: "effort" | "toggle" | "budget";
+  levels?: string[];
+  min?: number;
+  max?: number;
+  default?: string | number | boolean;
+  /**
+   * Master on/off for reasoning, controlled per-model from the composer. When
+   * `false`, reasoning is OFF and no effort/budget is sent — regardless of
+   * `default`. Undefined means ON for `effort`/`budget` models; `toggle` models
+   * historically stored their on/off in `default` (kept for back-compat).
+   */
+  enabled?: boolean;
+  /**
+   * Whether reasoning can be turned OFF. `false` for natively-reasoning models
+   * (the model always reasons; there's no on/off — only an effort selector). When
+   * `false` the composer shows NO on/off switch and reasoning is always sent.
+   * Undefined / `true` means it can be toggled. Only meaningful for `effort`.
+   */
+  toggleable?: boolean;
+}
+
 export interface DbProviderModel {
   /** `${providerId}::${modelKey}` — primary key. */
   id: string;
@@ -96,6 +170,10 @@ export interface DbProviderModel {
   priceOutputPerMtok: number | null;
   /** Currency ISO code. `null` is treated as `"USD"` by the UI. */
   priceCurrency: string | null;
+  /** Reasoning capability + chosen default (models.dev, v17+). */
+  reasoning: ModelReasoning | null;
+  /** Extra request-body fields merged verbatim at send time (v18+). */
+  extraBody: Record<string, unknown> | null;
   createdAt: string;
   updatedAt: string;
 }

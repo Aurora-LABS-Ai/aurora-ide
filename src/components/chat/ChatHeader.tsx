@@ -8,12 +8,11 @@
  */
 
 import React from "react";
-import { Plus, History, Maximize2 } from "lucide-react";
+import { Plus, History } from "lucide-react";
 import { StreamingDotMatrix } from "../ui/StreamingDotMatrix";
 import { useThreadStore } from "../../store/useThreadStore";
 import { useChatStore } from "../../store/useChatStore";
 import { useContextStore } from "../../store/useContextStore";
-import { useUiStore } from "../../store/useUiStore";
 import { AppIcon } from "../ui/AppIcon";
 
 // Get theme colors at runtime from CSS variables
@@ -93,7 +92,6 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
 }) => {
   const { currentThreadId, threads } = useThreadStore();
   const { isLoading } = useChatStore();
-  const { toggleAgentMode } = useUiStore();
   const {
     usagePercentage,
     usedContextTokens,
@@ -225,12 +223,6 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
             variant="primary"
           >
             <AppIcon icon={Plus} size={14} />
-          </HeaderIconButton>
-          <HeaderIconButton
-            onClick={toggleAgentMode}
-            title="Agent Mode — full-screen chat"
-          >
-            <AppIcon icon={Maximize2} size={13} />
           </HeaderIconButton>
         </div>
       </div>

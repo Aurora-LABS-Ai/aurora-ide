@@ -152,7 +152,9 @@ impl DeepSeekAdapter {
 
         // build_openai_body returns Value::Object. We need a mutable
         // map; unwrap is safe because we just built it.
-        let map = body.as_object_mut().expect("build_openai_body returns Object");
+        let map = body
+            .as_object_mut()
+            .expect("build_openai_body returns Object");
 
         // Force-enable `stream_options.include_usage` so we always get
         // the `prompt_cache_hit_tokens` field on the closing chunk.
@@ -222,13 +224,26 @@ impl DeepSeekAdapter {
 fn apply_thinking_tweaks(map: &mut Map<String, Value>, config: &ProviderConfigSnapshot) {
     map.insert("thinking".to_string(), json!({ "type": "enabled" }));
 
-    let effort = resolve_effort(config);
-    map.insert(
-        "reasoning_effort".to_string(),
-        Value::String(effort.as_str().to_string()),
-    );
+    // Respect an explicitly-configured effort. `build_openai_body` has already
+    // merged `customParams` (including the composer's per-model `reasoning_effort`
+    // and any manual extra-body fields) into the map, so if a value is present we
+    // pass it through VERBATIM — `low` / `medium` / `high` / `xhigh` reach DeepSeek
+    // exactly as the user set them. Only when nothing was provided do we fall back
+    // to the documented default.
+    if !map.contains_key("reasoning_effort") {
+        let effort = resolve_effort(config);
+        map.insert(
+            "reasoning_effort".to_string(),
+            Value::String(effort.as_str().to_string()),
+        );
+    }
 
-    for key in &["temperature", "top_p", "presence_penalty", "frequency_penalty"] {
+    for key in &[
+        "temperature",
+        "top_p",
+        "presence_penalty",
+        "frequency_penalty",
+    ] {
         map.remove(*key);
     }
 }

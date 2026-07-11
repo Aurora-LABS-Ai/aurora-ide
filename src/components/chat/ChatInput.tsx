@@ -65,6 +65,10 @@ import { PromptAttachmentPopup } from "./PromptAttachmentPopup";
 import { ShimmerText } from "../ui/ShimmerText";
 import { ModelSelector } from "../ui/ModelSelector";
 import { AgentExecutionModeToggle } from "../ui/AgentExecutionModeToggle";
+import {
+  cycleAgentExecutionMode,
+  type AgentExecutionMode,
+} from "../../services/agent-execution-mode";
 import { SpeechInputButton } from "./SpeechInputButton";
 
 // Rotating status messages for AI generation
@@ -649,8 +653,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
     setSelectedModel(`${providerId}:${model}`);
   };
 
+  // Team runs in the Agent Window now — the in-IDE composer only toggles
+  // Agent ↔ Plan. A stale persisted "team" falls back to Agent as the base.
+  const composerMode: AgentExecutionMode =
+    agentExecutionMode === "team" ? "agent" : agentExecutionMode;
+
   const handleExecutionModeToggle = useCallback(() => {
-    setAgentExecutionMode(agentExecutionMode === "plan" ? "agent" : "plan");
+    const base: AgentExecutionMode =
+      agentExecutionMode === "team" ? "agent" : agentExecutionMode;
+    setAgentExecutionMode(cycleAgentExecutionMode(base));
   }, [agentExecutionMode, setAgentExecutionMode]);
 
   const handleSpeechTranscript = useCallback((transcript: string) => {
@@ -1011,7 +1022,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({ onSend, disabled }) => {
 
           <div className="flex items-center gap-1.5">
             <AgentExecutionModeToggle
-              mode={agentExecutionMode}
+              mode={composerMode}
               onToggle={handleExecutionModeToggle}
             />
           </div>

@@ -21,7 +21,8 @@ impl<'a> ModelsRepository<'a> {
             "SELECT id, provider_id, model_key, label, context_window, max_output_tokens,
                     supports_vision, supports_thinking, supports_tool_stream, enabled,
                     sort_order, price_cache_hit_per_mtok, price_cache_miss_per_mtok,
-                    price_output_per_mtok, price_currency, created_at, updated_at
+                    price_output_per_mtok, price_currency, created_at, updated_at, reasoning,
+                    extra_body
              FROM provider_models
              ORDER BY provider_id ASC, sort_order ASC, model_key ASC",
         )?;
@@ -39,7 +40,8 @@ impl<'a> ModelsRepository<'a> {
             "SELECT id, provider_id, model_key, label, context_window, max_output_tokens,
                     supports_vision, supports_thinking, supports_tool_stream, enabled,
                     sort_order, price_cache_hit_per_mtok, price_cache_miss_per_mtok,
-                    price_output_per_mtok, price_currency, created_at, updated_at
+                    price_output_per_mtok, price_currency, created_at, updated_at, reasoning,
+                    extra_body
              FROM provider_models
              WHERE provider_id = ?1
              ORDER BY sort_order ASC, model_key ASC",
@@ -61,7 +63,8 @@ impl<'a> ModelsRepository<'a> {
             "SELECT id, provider_id, model_key, label, context_window, max_output_tokens,
                     supports_vision, supports_thinking, supports_tool_stream, enabled,
                     sort_order, price_cache_hit_per_mtok, price_cache_miss_per_mtok,
-                    price_output_per_mtok, price_currency, created_at, updated_at
+                    price_output_per_mtok, price_currency, created_at, updated_at, reasoning,
+                    extra_body
              FROM provider_models
              WHERE provider_id = ?1 AND model_key = ?2",
         )?;
@@ -89,19 +92,31 @@ impl<'a> ModelsRepository<'a> {
             model.created_at.clone()
         };
 
+        let reasoning = model
+            .reasoning
+            .as_ref()
+            .map(|r| serde_json::to_string(r).unwrap_or_default());
+        let extra_body = model
+            .extra_body
+            .as_ref()
+            .map(|r| serde_json::to_string(r).unwrap_or_default());
+
         self.conn.execute(
             "INSERT INTO provider_models (
                 id, provider_id, model_key, label, context_window, max_output_tokens,
                 supports_vision, supports_thinking, supports_tool_stream, enabled,
                 sort_order, price_cache_hit_per_mtok, price_cache_miss_per_mtok,
-                price_output_per_mtok, price_currency, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                price_output_per_mtok, price_currency, created_at, updated_at, reasoning,
+                extra_body
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
              ON CONFLICT(id) DO UPDATE SET
                 model_key = ?3, label = ?4, context_window = ?5, max_output_tokens = ?6,
                 supports_vision = ?7, supports_thinking = ?8, supports_tool_stream = ?9,
                 enabled = ?10, sort_order = ?11,
                 price_cache_hit_per_mtok = ?12, price_cache_miss_per_mtok = ?13,
                 price_output_per_mtok = ?14, price_currency = ?15,
+                reasoning = ?18,
+                extra_body = ?19,
                 updated_at = ?17",
             params![
                 id,
@@ -121,6 +136,8 @@ impl<'a> ModelsRepository<'a> {
                 model.price_currency,
                 created_at,
                 now,
+                reasoning,
+                extra_body,
             ],
         )?;
         Ok(())
@@ -206,5 +223,11 @@ fn row_to_model(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProviderModel> {
         price_currency: row.get(14)?,
         created_at: row.get(15)?,
         updated_at: row.get(16)?,
+        reasoning: row
+            .get::<_, Option<String>>(17)?
+            .and_then(|s| serde_json::from_str(&s).ok()),
+        extra_body: row
+            .get::<_, Option<String>>(18)?
+            .and_then(|s| serde_json::from_str(&s).ok()),
     })
 }

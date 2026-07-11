@@ -26,9 +26,12 @@ export const GrepResultsView: React.FC<GrepResultsViewProps> = ({
   const grouped = useMemo(() => {
     const map = new Map<string, GrepMatch[]>();
     for (const m of matches) {
-      const list = map.get(m.file) ?? [];
+      // A malformed match (no `file`) must not become an `undefined` map key —
+      // it crashes the per-file render (`file.split`). Bucket it under a label.
+      const key = m.file || "(unknown file)";
+      const list = map.get(key) ?? [];
       list.push(m);
-      map.set(m.file, list);
+      map.set(key, list);
     }
     return Array.from(map.entries());
   }, [matches]);
@@ -54,7 +57,7 @@ export const GrepResultsView: React.FC<GrepResultsViewProps> = ({
       </div>
       <div className="max-h-[280px] overflow-y-auto overflow-x-auto scrollbar-thin scrollbar-thumb-scrollbar scrollbar-track-transparent">
         {grouped.map(([file, fileMatches]) => {
-          const fileName = file.split(/[/\\]/).pop() || file;
+          const fileName = (file || "").split(/[/\\]/).pop() || file;
           return (
             <div key={file} className="border-b border-border/30 last:border-b-0">
               <div className="flex items-center gap-1.5 bg-input/30 px-3 py-1">

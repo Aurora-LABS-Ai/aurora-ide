@@ -2,8 +2,11 @@ import { parseToolArguments } from "../lib/tool-arguments";
 import type { SearchReplaceReplacement } from "../lib/search-replace-utils";
 
 export type LivePreviewToolName =
-  | "file_create"
   | "file_write"
+  | "file_edit"
+  // Legacy names kept so historical threads (and any in-flight call from
+  // an older session) still resolve. New sessions only emit the two above.
+  | "file_create"
   | "search_replace"
   | "multi_search_replace";
 
@@ -17,8 +20,10 @@ const TRUE_FIELD_PATTERN = (field: string) =>
 
 export const isLivePreviewTool = (toolName: string): toolName is LivePreviewToolName => {
   return (
-    toolName === "file_create" ||
     toolName === "file_write" ||
+    toolName === "file_edit" ||
+    // Legacy aliases (historical threads).
+    toolName === "file_create" ||
     toolName === "search_replace" ||
     toolName === "multi_search_replace"
   );
@@ -157,7 +162,11 @@ export const getParsedReplacementsArg = (
     return null;
   }
 
-  const replacements = parsed.args.replacements;
+  // `file_edit` uses `edits`; the legacy `multi_search_replace` used
+  // `replacements`. Accept either so both old and new calls preview.
+  const replacements = Array.isArray(parsed.args.edits)
+    ? parsed.args.edits
+    : parsed.args.replacements;
   if (!Array.isArray(replacements)) {
     return null;
   }

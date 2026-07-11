@@ -33,14 +33,16 @@
 //! `tauri.conf.json`) so `window.__TAURI_INTERNALS__.invoke(...)` is
 //! reachable in any window we create.
 
+use std::io::Cursor as IoCursor;
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tauri::webview::WebviewBuilder;
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Webview, WebviewUrl,
     WebviewWindowBuilder,
 };
 use tokio::sync::oneshot;
@@ -186,9 +188,14 @@ impl BrowserManager {
         let label = sanitize_label(&opts.label)?;
 
         if self.windows.contains_key(&label) {
-            // Window already exists — focus and (optionally) navigate.
-            if let Some(window) = self.app.get_webview_window(&label) {
-                let _ = window.set_focus();
+            // Window already exists — focus and (optionally) re-embed / navigate.
+            if let Ok(view) = self.window(&label) {
+                let _ = view.set_focus();
+                if let Some(embed) = &opts.embed {
+                    let _ = view.set_position(LogicalPosition::new(embed.x, embed.y));
+                    let _ = view.set_size(LogicalSize::new(embed.width.max(1.0), embed.height.max(1.0)));
+                    let _ = view.show();
+                }
                 if !opts.url.is_empty() {
                     self.navigate(&label, &opts.url)?;
                 }
@@ -205,24 +212,89 @@ impl BrowserManager {
                 .map_err(|e| format!("invalid url '{}': {e}", opts.url))?,
         );
 
-        let mut builder = WebviewWindowBuilder::new(&self.app, &label, url)
-            .title(opts.title.as_deref().unwrap_or("Aurora Browser"))
-            .inner_size(opts.width.unwrap_or(1280.0), opts.height.unwrap_or(800.0))
-            .resizable(true)
-            .focused(true)
-            .initialization_script(BROWSER_INIT_SCRIPT);
+        if let Some(embed) = &opts.embed {
+            // Embedded mode: pin a child webview inside the host window's
+            // content area. It shares the SAME init script + IPC pipeline as a
+            // standalone browser window, so the inspector, screenshots, and all
+            // agent browser tools work identically — just rendered in-tab.
+            let host = self
+                .app
+                .get_window(&embed.host_label)
+                .ok_or_else(|| format!("embed host window '{}' not found", embed.host_label))?;
+            let builder = WebviewBuilder::new(&label, url).initialization_script(BROWSER_INIT_SCRIPT);
+            host.add_child(
+                builder,
+                LogicalPosition::new(embed.x, embed.y),
+                LogicalSize::new(embed.width.max(1.0), embed.height.max(1.0)),
+            )
+            .map_err(|e| format!("failed to embed browser '{label}': {e}"))?;
+        } else {
+            let mut builder = WebviewWindowBuilder::new(&self.app, &label, url)
+                .title(opts.title.as_deref().unwrap_or("Aurora Browser"))
+                .inner_size(opts.width.unwrap_or(1280.0), opts.height.unwrap_or(800.0))
+                .resizable(true)
+                .focused(true)
+                .initialization_script(BROWSER_INIT_SCRIPT);
 
-        if let (Some(x), Some(y)) = (opts.x, opts.y) {
-            builder = builder.position(x, y);
+            if let (Some(x), Some(y)) = (opts.x, opts.y) {
+                builder = builder.position(x, y);
+            }
+
+            if let Some(true) = opts.always_on_top {
+                builder = builder.always_on_top(true);
+            }
+
+            let window = builder
+                .build()
+                .map_err(|e| format!("failed to build browser window '{label}': {e}"))?;
+
+            // When the window is destroyed externally (X button, Alt-F4)
+            // drop our state, fail any pending two-way IPC requests bound
+            // to this window, and tell the frontend so the tab can show a
+            // closed-state badge. (Embedded webviews die with the host
+            // window; their cleanup goes through `close`.)
+            let app = self.app.clone();
+            let windows = self.windows.clone();
+            let pending = self.pending.clone();
+            let last_active = self.last_active_label.clone();
+            let label_for_close = label.clone();
+            window.on_window_event(move |event| {
+                if matches!(event, tauri::WindowEvent::Destroyed) {
+                    // Drain in-flight requests so callers don't sit for
+                    // 30s waiting on a page-side helper that's gone.
+                    let mut to_drop = Vec::new();
+                    for entry in pending.iter() {
+                        if entry.value().label == label_for_close {
+                            to_drop.push(entry.key().clone());
+                        }
+                    }
+                    for id in to_drop {
+                        if let Some((_, request)) = pending.remove(&id) {
+                            let _ = request.sender.send(BrowserResult {
+                                ok: false,
+                                value: None,
+                                error: Some(format!(
+                                    "browser request superseded — window closed for '{}'",
+                                    label_for_close
+                                )),
+                            });
+                        }
+                    }
+                    windows.remove(&label_for_close);
+                    if let Ok(mut guard) = last_active.lock() {
+                        if guard.as_deref() == Some(label_for_close.as_str()) {
+                            *guard = None;
+                        }
+                    }
+                    let _ = app.emit(
+                        "aurora:browser-window-closed",
+                        BrowserWindowClosedPayload {
+                            label: label_for_close.clone(),
+                        },
+                    );
+                }
+            });
         }
-
-        if let Some(true) = opts.always_on_top {
-            builder = builder.always_on_top(true);
-        }
-
-        let window = builder
-            .build()
-            .map_err(|e| format!("failed to build browser window '{label}': {e}"))?;
 
         self.windows.insert(
             label.clone(),
@@ -245,54 +317,44 @@ impl BrowserManager {
             },
         );
 
-        // When the window is destroyed externally (X button, Alt-F4)
-        // drop our state, fail any pending two-way IPC requests bound
-        // to this window, and tell the frontend so the tab can show a
-        // closed-state badge.
-        let app = self.app.clone();
-        let windows = self.windows.clone();
-        let pending = self.pending.clone();
-        let last_active = self.last_active_label.clone();
-        let label_for_close = label.clone();
-        window.on_window_event(move |event| {
-            if matches!(event, tauri::WindowEvent::Destroyed) {
-                // Drain in-flight requests so callers don't sit for
-                // 30s waiting on a page-side helper that's gone.
-                let mut to_drop = Vec::new();
-                for entry in pending.iter() {
-                    if entry.value().label == label_for_close {
-                        to_drop.push(entry.key().clone());
-                    }
-                }
-                for id in to_drop {
-                    if let Some((_, request)) = pending.remove(&id) {
-                        let _ = request.sender.send(BrowserResult {
-                            ok: false,
-                            value: None,
-                            error: Some(format!(
-                                "browser request superseded — window closed for '{}'",
-                                label_for_close
-                            )),
-                        });
-                    }
-                }
-                windows.remove(&label_for_close);
-                if let Ok(mut guard) = last_active.lock() {
-                    if guard.as_deref() == Some(label_for_close.as_str()) {
-                        *guard = None;
-                    }
-                }
-                let _ = app.emit(
-                    "aurora:browser-window-closed",
-                    BrowserWindowClosedPayload {
-                        label: label_for_close.clone(),
-                    },
-                );
-            }
-        });
-
         self.touch_active(&label);
         Ok(())
+    }
+
+    /// Reposition / resize an embedded browser to track the tab body rect.
+    pub fn set_bounds(&self, label: &str, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+        let view = self.window(label)?;
+        view.set_position(LogicalPosition::new(x, y))
+            .map_err(|e| format!("set_position failed: {e}"))?;
+        view.set_size(LogicalSize::new(width.max(1.0), height.max(1.0)))
+            .map_err(|e| format!("set_size failed: {e}"))
+    }
+
+    /// Show the (embedded) browser webview.
+    pub fn show(&self, label: &str) -> Result<(), String> {
+        self.window(label)?.show().map_err(|e| format!("show failed: {e}"))
+    }
+
+    /// Hide the (embedded) browser webview without destroying it.
+    pub fn hide(&self, label: &str) -> Result<(), String> {
+        self.window(label)?.hide().map_err(|e| format!("hide failed: {e}"))
+    }
+
+    /// Is a browser webview with this label currently live? Used by the agent
+    /// browser tools to tell whether the right-rail panel's embedded webview
+    /// has been built yet.
+    pub fn has_window(&self, label: &str) -> bool {
+        self.window(label).is_ok()
+    }
+
+    /// Ask the agent-window frontend to reveal its right-dock Browser panel.
+    /// The panel's React effect builds the embedded `browser-agentwin` webview,
+    /// which is what the agent's `browser_*` tools then drive. Emitted globally;
+    /// only the agent window listens for it. `url` is an optional hint.
+    pub fn request_open_agent_browser(&self, url: Option<&str>) -> Result<(), String> {
+        self.app
+            .emit("aurora:agent-open-browser", serde_json::json!({ "url": url }))
+            .map_err(|e| format!("failed to emit agent-open-browser: {e}"))
     }
 
     pub fn navigate(&self, label: &str, url: &str) -> Result<(), String> {
@@ -337,9 +399,7 @@ impl BrowserManager {
 
     pub fn eval(&self, label: &str, script: &str) -> Result<(), String> {
         let window = self.window(label)?;
-        window
-            .eval(script)
-            .map_err(|e| format!("eval failed: {e}"))
+        window.eval(script).map_err(|e| format!("eval failed: {e}"))
     }
 
     pub fn close(&self, label: &str) -> Result<(), String> {
@@ -348,8 +408,8 @@ impl BrowserManager {
         // `Destroyed` window-event handler would have done; doing it
         // here covers programmatic close (close button never fires).
         self.drain_pending_for_label(label, "window closed");
-        if let Some(window) = self.app.get_webview_window(label) {
-            let _ = window.close();
+        if let Ok(view) = self.window(label) {
+            let _ = view.close();
         }
         self.windows.remove(label);
         // Clear `last_active_label` if it pointed at the window we
@@ -375,8 +435,7 @@ impl BrowserManager {
     /// instead of hallucinating again. Cheap — DashMap iteration over
     /// what is at most a few entries.
     fn unknown_window_error(&self, label: &str) -> String {
-        let mut available: Vec<String> =
-            self.windows.iter().map(|e| e.key().clone()).collect();
+        let mut available: Vec<String> = self.windows.iter().map(|e| e.key().clone()).collect();
         available.sort();
         if available.is_empty() {
             format!("unknown window '{label}' (no browser windows are open)")
@@ -443,9 +502,18 @@ impl BrowserManager {
         Ok(())
     }
 
-    fn window(&self, label: &str) -> Result<WebviewWindow, String> {
+    /// Resolve a browser's live `Webview` handle by label. Works for BOTH a
+    /// standalone browser window and a child webview embedded in the agent
+    /// window's Browser tab — `get_webview` finds either; the `get_webview_window`
+    /// fallback covers any window whose webview isn't directly registered.
+    /// Every downstream op (navigate / eval / with_webview / set_focus / close)
+    /// is a `Webview` method, so callers don't care which kind it is.
+    fn window(&self, label: &str) -> Result<Webview, String> {
+        // `get_webview` resolves from the app-wide webview registry, which holds
+        // BOTH standalone window webviews and embedded child webviews under their
+        // label — so one lookup serves a browser window and an in-tab browser.
         self.app
-            .get_webview_window(label)
+            .get_webview(label)
             .ok_or_else(|| self.unknown_window_error(label))
     }
 
@@ -538,7 +606,8 @@ impl BrowserManager {
             rid = json!(request_id),
         );
         self.eval(label, &script)?;
-        self.await_result(request_id, rx, DEFAULT_RESULT_TIMEOUT).await
+        self.await_result(request_id, rx, DEFAULT_RESULT_TIMEOUT)
+            .await
     }
 
     /// Capture an HTML snapshot of the page or a single selector.
@@ -611,7 +680,11 @@ impl BrowserManager {
         let since_arg = since_ms
             .map(|s| s.to_string())
             .unwrap_or_else(|| "null".into());
-        let expr = format!("window.__aurora.getLogs({lvl}, {since})", lvl = level_arg, since = since_arg);
+        let expr = format!(
+            "window.__aurora.getLogs({lvl}, {since})",
+            lvl = level_arg,
+            since = since_arg
+        );
         self.eval_with_result(label, &expr).await
     }
 
@@ -835,28 +908,17 @@ impl BrowserManager {
         let element_scope = cleaned.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
         if !element_scope {
             if let Ok(window) = self.window(label) {
+                // Force the webview visible and let it composite one frame before
+                // capturing. `CapturePreview` grabs the *last painted* surface, and
+                // an occluded / just-navigated / tab-switched webview (Windows sets
+                // `IsVisible=false`, which stops compositing) otherwise returns a
+                // STALE frame — the previous page. This was the "screenshot shows
+                // the wrong page" bug: show + settle guarantees a fresh frame.
+                let _ = window.show();
+                tokio::time::sleep(Duration::from_millis(180)).await;
                 match crate::services::browser_native_capture::capture_webview_png(&window).await {
                     Ok(Some(png_bytes)) => {
-                        // Frontend expects `{ ok, base64, mediaType, width, height }`.
-                        // We don't know width/height at this layer — Windows
-                        // CapturePreview encodes the WebView's current
-                        // viewport — but the SVG path's reported width/height
-                        // is also viewport-derived, so 0/0 here is honest
-                        // and we let the agent's image vision layer infer
-                        // from the actual PNG dimensions.
-                        use base64::Engine;
-                        let base64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
-                        return Ok(BrowserResult {
-                            ok: true,
-                            value: Some(json!({
-                                "base64": base64,
-                                "mediaType": "image/png",
-                                "width": 0,
-                                "height": 0,
-                                "capturePath": "native"
-                            })),
-                            error: None,
-                        });
+                        return Ok(self.finalize_screenshot(png_bytes, "native"));
                     }
                     Ok(None) => {
                         // Platform unsupported — fall through to SVG path
@@ -938,7 +1000,133 @@ impl BrowserManager {
             }})()"#,
             target = target
         );
-        self.eval_with_result(label, &expr).await
+        let result = self.eval_with_result(label, &expr).await?;
+        // Route the page-produced PNG through the same downscale + on-disk save
+        // path the native capture uses, so element screenshots also get bounded
+        // base64 (model) + a `path` the tool card can render (UI).
+        Ok(self.finalize_svg_result(result))
+    }
+
+    /// Bound a captured PNG for delivery: decode → downscale to
+    /// [`SCREENSHOT_MAX_WIDTH`] → re-encode PNG, base64 it for the model's
+    /// vision block, and save a copy to the app cache dir so the tool card can
+    /// render the image via the asset protocol (a `path`, never megabytes of
+    /// base64, is what lands in the thread store).
+    fn finalize_screenshot(&self, bytes: Vec<u8>, capture_path: &str) -> BrowserResult {
+        use base64::Engine;
+        let (png, width, height) = downscale_png(bytes);
+        let base64 = base64::engine::general_purpose::STANDARD.encode(&png);
+        let path = self.save_screenshot(&png);
+        BrowserResult {
+            ok: true,
+            value: Some(json!({
+                "base64": base64,
+                "mediaType": "image/png",
+                "width": width,
+                "height": height,
+                "capturePath": capture_path,
+                "path": path,
+            })),
+            error: None,
+        }
+    }
+
+    /// Re-run a page-produced (SVG-path) screenshot result through
+    /// [`Self::finalize_screenshot`] so both capture paths return the identical
+    /// enriched shape. Non-ok / non-image results pass through untouched.
+    fn finalize_svg_result(&self, result: BrowserResult) -> BrowserResult {
+        use base64::Engine;
+        if !result.ok {
+            return result;
+        }
+        let Some(b64) = result
+            .value
+            .as_ref()
+            .and_then(|v| v.get("base64"))
+            .and_then(Value::as_str)
+        else {
+            return result;
+        };
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else {
+            return result;
+        };
+        self.finalize_screenshot(bytes, "svg")
+    }
+
+    /// Persist a screenshot PNG under `<app_cache>/aurora-screenshots/` and
+    /// return its absolute path (loadable by the frontend via `convertFileSrc`).
+    /// Best-effort — returns `None` on any IO failure so the screenshot still
+    /// works (the card just falls back to its caption). Prunes stale files first
+    /// so the directory can't grow without bound.
+    fn save_screenshot(&self, bytes: &[u8]) -> Option<String> {
+        let dir = self.app.path().app_cache_dir().ok()?.join("aurora-screenshots");
+        std::fs::create_dir_all(&dir).ok()?;
+        prune_old_screenshots(&dir);
+        let file = dir.join(format!("shot-{}.png", Uuid::new_v4()));
+        std::fs::write(&file, bytes).ok()?;
+        Some(file.to_string_lossy().to_string())
+    }
+}
+
+/// Longest edge a saved/model screenshot is allowed before downscaling. Keeps
+/// the base64 the model receives (and the on-disk PNG) bounded so a hi-DPI
+/// full-page capture can't blow up the context window.
+const SCREENSHOT_MAX_WIDTH: u32 = 1400;
+
+/// Decode a PNG, downscale it to at most [`SCREENSHOT_MAX_WIDTH`] wide
+/// (preserving aspect ratio), and re-encode as PNG. Returns
+/// `(png_bytes, width, height)`. On any decode/encode failure the original
+/// bytes are returned with `(0, 0)` dimensions so the caller still has an image.
+fn downscale_png(bytes: Vec<u8>) -> (Vec<u8>, u32, u32) {
+    let Ok(img) = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png) else {
+        return (bytes, 0, 0);
+    };
+    let (w, h) = (img.width(), img.height());
+    let img = if w > SCREENSHOT_MAX_WIDTH {
+        let nh = ((h as f64) * (SCREENSHOT_MAX_WIDTH as f64) / (w as f64)).round() as u32;
+        img.resize(
+            SCREENSHOT_MAX_WIDTH,
+            nh.max(1),
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        img
+    };
+    let (ow, oh) = (img.width(), img.height());
+    let mut out = Vec::new();
+    if img
+        .write_to(&mut IoCursor::new(&mut out), image::ImageFormat::Png)
+        .is_ok()
+    {
+        (out, ow, oh)
+    } else {
+        (bytes, w, h)
+    }
+}
+
+/// Keep only the newest [`SCREENSHOT_KEEP`] screenshot files, deleting the
+/// oldest beyond that. Count-based (not age-based) so a reloaded thread can
+/// still show its screenshots days later, while a burst of captures can't grow
+/// the directory without bound. Best-effort, silent — errors are ignored.
+fn prune_old_screenshots(dir: &std::path::Path) {
+    const SCREENSHOT_KEEP: usize = 300;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(SystemTime, std::path::PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let modified = e.metadata().ok()?.modified().ok()?;
+            Some((modified, e.path()))
+        })
+        .collect();
+    if files.len() <= SCREENSHOT_KEEP {
+        return;
+    }
+    // Newest first, then drop everything past the keep count.
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in files.into_iter().skip(SCREENSHOT_KEEP) {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -955,7 +1143,9 @@ fn sanitize_label(label: &str) -> Result<String, String> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        return Err(format!("browser window label '{label}' contains invalid characters"));
+        return Err(format!(
+            "browser window label '{label}' contains invalid characters"
+        ));
     }
     Ok(label.to_string())
 }
@@ -973,6 +1163,20 @@ pub struct CreateBrowserWindow {
     pub x: Option<f64>,
     pub y: Option<f64>,
     pub always_on_top: Option<bool>,
+    /// When present, build the browser as a child webview embedded in
+    /// `host_label`'s content area instead of a standalone window.
+    pub embed: Option<EmbedConfig>,
+}
+
+/// Bounds + host for an embedded (in-tab) browser webview.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbedConfig {
+    pub host_label: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 /// Payload emitted on `aurora:browser-window-closed`.
@@ -1155,7 +1359,16 @@ const BROWSER_INIT_SCRIPT: &str = r#"
 
   const ns = window.__aurora || (window.__aurora = {});
   ns.__bootstrapped = true;
-  ns.label = (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.metadata && window.__TAURI_INTERNALS__.metadata.currentWindow && window.__TAURI_INTERNALS__.metadata.currentWindow.label) || '';
+  // Prefer the WEBVIEW's own label, not the window's. For an embedded in-tab
+  // browser the webview is a child of the host window, so `currentWindow.label`
+  // is the HOST ('agent-window') — which makes picked-element events carry the
+  // wrong label and get filtered out by the panel. `currentWebview.label` is
+  // the child's own label ('browser-agentwin'); it also equals the label for a
+  // standalone browser window, so this is correct in both modes.
+  ns.label = (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.metadata && (
+    (window.__TAURI_INTERNALS__.metadata.currentWebview && window.__TAURI_INTERNALS__.metadata.currentWebview.label) ||
+    (window.__TAURI_INTERNALS__.metadata.currentWindow && window.__TAURI_INTERNALS__.metadata.currentWindow.label)
+  )) || '';
 
   ns.invoke = function (cmd, args) {
     try {

@@ -26,52 +26,8 @@ export const folderCreateTool: ToolDefinition = {
   },
 };
 
-// ============================================
-// FOLDER MOVE TOOL
-// ============================================
-export const folderMoveTool: ToolDefinition = {
-  type: 'function',
-  function: {
-    name: 'folder_move',
-    description: 'Move or rename a folder from one path to another path. This fails if the source folder does not exist or the destination already exists.',
-    parameters: {
-      type: 'object',
-      properties: {
-        old_path: {
-          type: 'string',
-          description: 'The current full path of the folder',
-        },
-        new_path: {
-          type: 'string',
-          description: 'The new full path for the folder',
-        },
-      },
-      required: ['old_path', 'new_path'],
-    },
-  },
-};
-
-// ============================================
-// FOLDER DELETE TOOL
-// ============================================
-export const folderDeleteTool: ToolDefinition = {
-  type: 'function',
-  nativeRustOwned: true,
-  function: {
-    name: 'folder_delete',
-    description: 'Delete a folder and all its contents. This action is irreversible.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: 'The full path of the folder to delete',
-        },
-      },
-      required: ['path'],
-    },
-  },
-};
+// Note: folder move/delete are folded into the file-tools `move_path` /
+// `delete_path` (file-or-folder). They no longer live here.
 
 // ============================================
 // WORKSPACE TREE TOOL
@@ -121,6 +77,4 @@ By default, file nodes include lineCount, size, and largeFile metadata for the f
 export const workspaceTools: ToolDefinition[] = [
   workspaceTreeTool,
   folderCreateTool,
-  folderMoveTool,
-  folderDeleteTool,
 ];

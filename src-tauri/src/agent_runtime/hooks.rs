@@ -288,9 +288,7 @@ mod tests {
     async fn empty_hook_chain_is_silent() {
         let chain = HookChain::new();
         assert!(chain.is_empty());
-        chain
-            .pre_tool_use("any", &serde_json::json!({}))
-            .await;
+        chain.pre_tool_use("any", &serde_json::json!({})).await;
         chain
             .post_tool_use("any", ToolHookResult::Success(""))
             .await;
@@ -301,9 +299,7 @@ mod tests {
         let h = Arc::new(RecordingHook::default());
         let mut chain = HookChain::new();
         chain.push(h.clone());
-        chain
-            .pre_tool_use("shell", &serde_json::json!({}))
-            .await;
+        chain.pre_tool_use("shell", &serde_json::json!({})).await;
         assert_eq!(h.snapshot().len(), 1);
     }
 

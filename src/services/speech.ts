@@ -47,4 +47,15 @@ export const speechService = {
       request,
     });
   },
+
+  /**
+   * Install the native WebView microphone auto-grant handler on the agent
+   * window so its OS-level "…wants to use your microphone" prompt is suppressed
+   * — Aurora's own in-app modal becomes the only microphone gate. No-op outside
+   * the desktop runtime; safe to call repeatedly. Only meaningful in the agent
+   * window (the IDE main window installs this at startup).
+   */
+  ensureMicPermissionHandler(): Promise<void> {
+    return auroraInvoke<void>("install_agent_media_permission_handler");
+  },
 };

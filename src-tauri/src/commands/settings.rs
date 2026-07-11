@@ -30,8 +30,12 @@ pub fn save_app_settings(
 
 #[tauri::command]
 pub fn get_global_skills_path() -> Result<Option<String>, String> {
+    // `.agents/skills` (plural) matches the workspace convention
+    // (`WORKSPACE_SKILL_FOLDERS`) and the cross-agent shared-skills layout
+    // used by other tooling. Previously this pointed at `.agent` (singular),
+    // so the user's real global skills were never discovered.
     Ok(dirs::home_dir().map(|home| {
-        home.join(".agent")
+        home.join(".agents")
             .join("skills")
             .to_string_lossy()
             .to_string()
@@ -140,9 +144,7 @@ pub fn save_all_providers(
 
 /// List every provider_model row across every provider.
 #[tauri::command]
-pub fn list_provider_models(
-    db: State<'_, Mutex<Database>>,
-) -> Result<Vec<ProviderModel>, String> {
+pub fn list_provider_models(db: State<'_, Mutex<Database>>) -> Result<Vec<ProviderModel>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.models()
         .list_all()

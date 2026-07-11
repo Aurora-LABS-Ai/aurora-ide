@@ -39,6 +39,9 @@ const PROVIDER_DEFAULTS: Record<string, { contextWindow: number; maxOutput: numb
   minimax: { contextWindow: 200000, maxOutput: 128000 },
   ollama: { contextWindow: 128000, maxOutput: 8192 },
   openai: { contextWindow: 128000, maxOutput: 16384 },
+  // Responses API targets the reasoning-model families (GPT-5.x),
+  // which ship a 400K context window and large output budgets.
+  'openai-responses': { contextWindow: 400000, maxOutput: 128000 },
 };
 
 export function getDefaultContextWindow(model: string): number {

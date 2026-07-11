@@ -16,6 +16,10 @@
 //!   `provider_id` (no `base_url` introspection).
 //! - [`anthropic`] — [`AnthropicAdapter`] for `provider_id` ∈
 //!   `{"anthropic", "minimax"}`.
+//! - [`responses`] — [`OpenAIResponsesAdapter`] for `provider_id`
+//!   `"openai-responses"` (OpenAI's typed-event `/responses` wire
+//!   shape — an additional provider type, not a replacement for
+//!   Chat Completions).
 //! - [`openai_compat`] — [`OpenAICompatAdapter`] for everything else
 //!   (`deepseek`, `glm`, `fireworks`, `openai`, `lmstudio`, `ollama`,
 //!   `custom`, …).
@@ -44,9 +48,11 @@
 
 pub mod anthropic;
 pub mod client;
+pub mod codex;
 pub mod deepseek;
 pub mod openai_compat;
 pub mod provider_kernel_adapter;
+pub mod responses;
 pub mod sse;
 pub mod sse_shared;
 

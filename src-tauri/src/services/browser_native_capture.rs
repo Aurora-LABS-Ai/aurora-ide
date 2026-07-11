@@ -24,9 +24,13 @@
 //! handler on the WebView's UI thread. The function itself can be
 //! awaited from any tokio task.
 
-use tauri::WebviewWindow;
+use tauri::Webview;
 
 /// Try a platform-native PNG capture of `window`'s WebView surface.
+///
+/// Accepts any `Webview` handle — a standalone browser window OR a child
+/// webview embedded in the agent window's Browser tab both expose the same
+/// `with_webview` platform escape hatch.
 ///
 /// Returns:
 ///   * `Ok(Some(bytes))` — native capture succeeded, bytes are a
@@ -35,7 +39,7 @@ use tauri::WebviewWindow;
 ///     (macOS / Linux). Caller should fall back to the JS SVG path.
 ///   * `Err(message)` — native capture *was* attempted and failed; the
 ///     caller can either propagate the error or fall back to SVG.
-pub async fn capture_webview_png(window: &WebviewWindow) -> Result<Option<Vec<u8>>, String> {
+pub async fn capture_webview_png(window: &Webview) -> Result<Option<Vec<u8>>, String> {
     #[cfg(windows)]
     {
         windows_impl::capture(window).await.map(Some)
@@ -70,7 +74,7 @@ mod windows_impl {
 
     use std::sync::Mutex;
 
-    use tauri::WebviewWindow;
+    use tauri::Webview;
     use tokio::sync::oneshot;
     use webview2_com::CapturePreviewCompletedHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
@@ -78,7 +82,7 @@ mod windows_impl {
     use windows::Win32::System::Com::StructuredStorage::CreateStreamOnHGlobal;
     use windows::Win32::System::Com::{IStream, STATFLAG_NONAME, STREAM_SEEK_SET};
 
-    pub(super) async fn capture(window: &WebviewWindow) -> Result<Vec<u8>, String> {
+    pub(super) async fn capture(window: &Webview) -> Result<Vec<u8>, String> {
         let (tx, rx) = oneshot::channel::<Result<Vec<u8>, String>>();
         // `with_webview` requires a Send + 'static closure, and the
         // closure can only fire once; wrap the sender in a Mutex<Option>
@@ -95,7 +99,10 @@ mod windows_impl {
                 let webview2 = match controller.CoreWebView2() {
                     Ok(v) => v,
                     Err(err) => {
-                        send_once(&dispatch_tx, Err(format!("CoreWebView2 unavailable: {err}")));
+                        send_once(
+                            &dispatch_tx,
+                            Err(format!("CoreWebView2 unavailable: {err}")),
+                        );
                         return;
                     }
                 };
@@ -160,9 +167,9 @@ mod windows_impl {
         match rx.await {
             Ok(Ok(bytes)) => Ok(bytes),
             Ok(Err(err)) => Err(err),
-            Err(_) => Err(
-                "WebView capture completion channel dropped (UI thread likely exited)".into(),
-            ),
+            Err(_) => {
+                Err("WebView capture completion channel dropped (UI thread likely exited)".into())
+            }
         }
     }
 

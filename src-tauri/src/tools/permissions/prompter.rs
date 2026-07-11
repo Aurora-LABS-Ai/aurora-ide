@@ -117,11 +117,7 @@ impl PermissionRouter {
     /// the right policy if the frontend somehow asks the same tool
     /// twice in one turn.
     #[must_use]
-    pub fn register(
-        &self,
-        turn_id: String,
-        tool_name: String,
-    ) -> oneshot::Receiver<bool> {
+    pub fn register(&self, turn_id: String, tool_name: String) -> oneshot::Receiver<bool> {
         let (tx, rx) = oneshot::channel();
         self.pending.insert((turn_id, tool_name), tx);
         rx
@@ -136,12 +132,7 @@ impl PermissionRouter {
     /// dropped the receiver). The boolean is passed back so the
     /// caller (the Tauri command) can surface a meaningful error if
     /// desired.
-    pub fn resolve(
-        &self,
-        turn_id: &str,
-        tool_name: &str,
-        granted: bool,
-    ) -> Result<(), bool> {
+    pub fn resolve(&self, turn_id: &str, tool_name: &str, granted: bool) -> Result<(), bool> {
         let key = (turn_id.to_string(), tool_name.to_string());
         let Some((_key, sender)) = self.pending.remove(&key) else {
             return Err(granted);
@@ -618,8 +609,7 @@ mod tests {
     async fn router_permitter_grant_round_trip() {
         let router = Arc::new(PermissionRouter::new());
         let emitter = Arc::new(RecordingEmitter::default());
-        let permitter =
-            RouterPermitter::new(router.clone(), emitter.clone());
+        let permitter = RouterPermitter::new(router.clone(), emitter.clone());
 
         let router_clone = router.clone();
         tokio::spawn(async move {
@@ -660,8 +650,7 @@ mod tests {
     async fn router_permitter_deny_round_trip() {
         let router = Arc::new(PermissionRouter::new());
         let emitter = Arc::new(RecordingEmitter::default());
-        let permitter =
-            RouterPermitter::new(router.clone(), emitter);
+        let permitter = RouterPermitter::new(router.clone(), emitter);
 
         let router_clone = router.clone();
         tokio::spawn(async move {
@@ -696,8 +685,7 @@ mod tests {
     async fn router_permitter_short_circuits_on_pre_cancel() {
         let router = Arc::new(PermissionRouter::new());
         let emitter = Arc::new(RecordingEmitter::default());
-        let permitter =
-            RouterPermitter::new(router.clone(), emitter.clone());
+        let permitter = RouterPermitter::new(router.clone(), emitter.clone());
 
         let cancel = CancellationToken::new();
         cancel.cancel();
@@ -721,8 +709,7 @@ mod tests {
     async fn router_permitter_cancels_mid_prompt() {
         let router = Arc::new(PermissionRouter::new());
         let emitter = Arc::new(RecordingEmitter::default());
-        let permitter =
-            RouterPermitter::new(router.clone(), emitter);
+        let permitter = RouterPermitter::new(router.clone(), emitter);
         let cancel = CancellationToken::new();
 
         let cancel_clone = cancel.clone();
@@ -753,8 +740,7 @@ mod tests {
     async fn router_permitter_handles_router_dropping_sender() {
         let router = Arc::new(PermissionRouter::new());
         let emitter = Arc::new(RecordingEmitter::default());
-        let permitter =
-            RouterPermitter::new(router.clone(), emitter);
+        let permitter = RouterPermitter::new(router.clone(), emitter);
 
         let router_clone = router.clone();
         tokio::spawn(async move {

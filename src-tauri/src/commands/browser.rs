@@ -99,6 +99,30 @@ pub async fn browser_set_position(
     state.set_position(&label, x, y)
 }
 
+/// Position + size in one call — used by the embedded in-tab browser to track
+/// its panel rect without two round-trips.
+#[tauri::command]
+pub async fn browser_set_bounds(
+    state: State<'_, BrowserManager>,
+    label: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    state.set_bounds(&label, x, y, width, height)
+}
+
+#[tauri::command]
+pub async fn browser_show(state: State<'_, BrowserManager>, label: String) -> Result<(), String> {
+    state.show(&label)
+}
+
+#[tauri::command]
+pub async fn browser_hide(state: State<'_, BrowserManager>, label: String) -> Result<(), String> {
+    state.hide(&label)
+}
+
 #[tauri::command]
 pub async fn browser_activate_inspector(
     state: State<'_, BrowserManager>,

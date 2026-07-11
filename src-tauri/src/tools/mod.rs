@@ -44,7 +44,8 @@
 //!
 //! After a successful [`register_builtin_tools`] call the destination
 //! registry contains exactly the union of [`file_workspace_search::TOOL_NAMES`]
-//! and [`shell_editor_todo::TOOL_NAMES`] (15 + 7 = 22). The
+//! and [`shell_editor_todo::TOOL_NAMES`] (10 + 7 = 17), plus the 9
+//! browser tools when a `BrowserManager` is supplied (total 26). The
 //! `Sub-E` verify crate (`__verify_phase3_e/`) pins this count.
 
 #![allow(dead_code)]
@@ -56,9 +57,11 @@ pub mod shell_editor_todo;
 
 /// Number of tools pre-populated in the production
 /// [`crate::agent_runtime::tool_executor::ToolRegistry`]:
-/// Sub-C ships 15 (file/workspace/search), Sub-D ships 7
-/// (shell/editor/todo), the browser bucket ships 13 — total 35.
-pub const BUILTIN_TOOL_COUNT: usize = 35;
+/// Sub-C ships 10 (file/workspace/search, after the 16→10 refine),
+/// Sub-D ships 7 (shell/editor/todo), the browser bucket ships 9 —
+/// total 26. Kept in lockstep with the three bucket `TOOL_NAMES`
+/// arrays by `builtin_tool_count_is_correct`.
+pub const BUILTIN_TOOL_COUNT: usize = 26;
 
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
@@ -131,10 +134,8 @@ pub fn install_permission_gate(
     for name in reg.names() {
         if let Some(executor) = reg.get(&name) {
             if executor.requires_permission() {
-                let guarded = permissions::PermissionGuardedExecutor::maybe_wrap(
-                    executor,
-                    &permitter,
-                );
+                let guarded =
+                    permissions::PermissionGuardedExecutor::maybe_wrap(executor, &permitter);
                 reg.register(guarded);
                 wrapped.push(name);
             }
@@ -159,8 +160,8 @@ mod tests {
     // own unit tests inside `tools::browser::tests`.
 
     #[test]
-    fn builtin_tool_count_is_35() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 35);
+    fn builtin_tool_count_is_correct() {
+        assert_eq!(BUILTIN_TOOL_COUNT, 26);
         assert_eq!(
             file_workspace_search::TOOL_NAMES.len()
                 + shell_editor_todo::TOOL_NAMES.len()
@@ -170,10 +171,11 @@ mod tests {
     }
 
     #[test]
-    fn register_builtin_tools_without_browser_mounts_22_tools() {
+    fn register_builtin_tools_without_browser_mounts_bucket_tools() {
         let reg = ToolRegistry::new();
         register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
-        assert_eq!(reg.len(), 22);
+        // Sub-C (10) + Sub-D (7) = 17 without the browser bucket.
+        assert_eq!(reg.len(), 17);
     }
 
     #[test]
@@ -182,10 +184,7 @@ mod tests {
         register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
         let registered: HashSet<String> = reg.names().into_iter().collect();
         for &name in file_workspace_search::TOOL_NAMES {
-            assert!(
-                registered.contains(name),
-                "missing Sub-C tool: {name}"
-            );
+            assert!(registered.contains(name), "missing Sub-C tool: {name}");
         }
     }
 
@@ -195,10 +194,7 @@ mod tests {
         register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
         let registered: HashSet<String> = reg.names().into_iter().collect();
         for &name in shell_editor_todo::TOOL_NAMES {
-            assert!(
-                registered.contains(name),
-                "missing Sub-D tool: {name}"
-            );
+            assert!(registered.contains(name), "missing Sub-D tool: {name}");
         }
     }
 
@@ -207,7 +203,7 @@ mod tests {
         let reg = ToolRegistry::new();
         register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
         register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
-        assert_eq!(reg.len(), 22, "re-register must coalesce");
+        assert_eq!(reg.len(), 17, "re-register must coalesce");
     }
 
     #[test]

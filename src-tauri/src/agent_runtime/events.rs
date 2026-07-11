@@ -132,6 +132,20 @@ pub enum AssistantEvent {
     /// retry is sensible (e.g. transient HTTP 5xx) or whether the user
     /// must intervene (e.g. invalid API key).
     Error { message: String, recoverable: bool },
+
+    /// Context compaction has begun (auto at threshold, or manual `/compact`).
+    /// UI: turn the context ring into a spinner and insert a live shimmer
+    /// "compacting…" card at the current position. See `DOCS/compaction-design.md`.
+    CompactionStarted,
+
+    /// Context compaction finished. `before_tokens`/`after_tokens` are the
+    /// model-context size immediately before and after the rewrite, for the
+    /// card's `before → after` label. The summary text is intentionally NOT
+    /// included — the UI never reveals it.
+    CompactionCompleted {
+        before_tokens: u32,
+        after_tokens: u32,
+    },
 }
 
 /// Per-turn summary written at the end of one full assistant turn —
@@ -301,6 +315,8 @@ mod tests {
                 blocks: vec![ContentBlock::Text { text: "ok".into() }],
                 usage: None,
                 timestamp: 0,
+                attached_selected_elements: None,
+                attached_prompt_chips: None,
             }],
             tool_results: Vec::new(),
         };

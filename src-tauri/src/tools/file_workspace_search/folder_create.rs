@@ -119,6 +119,7 @@ mod tests {
             tool_call_id: "c".into(),
             session_id: "s".into(),
             workspace_root: workspace,
+            allow_outside_workspace: false,
             cancel_token: CancellationToken::new(),
         }
     }

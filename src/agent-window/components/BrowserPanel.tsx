@@ -1,0 +1,410 @@
+/**
+ * Agent Window — Browser tab [view].
+ *
+ * Hosts the AGENT'S real browser inside the dock: `browser_runtime` builds its
+ * webview as a child of the agent window (embedded), so the SAME pipeline the
+ * agent tools use — navigate, screenshot, DOM, and crucially the element
+ * INSPECTOR — works here, in-tab. The toolbar (React DOM) sits above; the page
+ * renders natively in the body region.
+ *
+ * Inspector picks arrive on the global `aurora:element-picked` event; we drop a
+ * concise reference into the composer via `agw:compose-insert`. The webview is
+ * bounds-synced on layout changes, hidden on tab switch, and closed on tab close.
+ */
+
+import React, { useEffect, useMemo, useRef, useState } from "react";
+
+import { AgentIcon } from "../shared/AgentIcon";
+import { isAuroraRuntimeAvailable } from "../../lib/runtime";
+import { useAgentSelectionStore } from "../store/useAgentSelectionStore";
+import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
+import { DEV_SERVERS, useAgentBrowserHistory } from "../store/useAgentBrowserHistory";
+import {
+  activateInspector,
+  createBrowserWindow,
+  deactivateInspector,
+  evalBrowser,
+  getBrowserUrl,
+  hideBrowser,
+  listBrowserWindows,
+  navigateBrowser,
+  onPickedElement,
+  refreshBrowser,
+  setBrowserBounds,
+  showBrowser,
+  type PickedElement,
+} from "../../services/browser-service";
+
+const LABEL = "browser-agentwin";
+const HOST = "agent-window";
+
+/** Whether the embedded browser webview has been built this session. */
+let created = false;
+
+/** Address-bar normalization: scheme as-is, bare host → https, else web search. */
+function normalizeAddress(input: string): string {
+  const t = input.trim();
+  if (!t) return "about:blank";
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t) || t.startsWith("about:")) return t;
+  if (/^[^\s]+\.[^\s]{2,}(\/.*)?$/.test(t)) return `https://${t}`;
+  return `https://www.google.com/search?q=${encodeURIComponent(t)}`;
+}
+
+/** Tear down the embedded browser (called when the Browser tab is closed). */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located webview lifecycle helper
+export async function closeAgentBrowser(): Promise<void> {
+  created = false;
+  const { closeBrowserWindow } = await import("../../services/browser-service");
+  try {
+    await closeBrowserWindow(LABEL);
+  } catch {
+    /* not open */
+  }
+}
+
+/**
+ * Temporarily hide the native webview so a React overlay (e.g. the dock's `+`
+ * menu) isn't occluded by it — a child webview always paints above the DOM.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located webview lifecycle helper
+export async function hideAgentBrowser(): Promise<void> {
+  if (!created) return;
+  try {
+    await hideBrowser(LABEL);
+  } catch {
+    /* not open */
+  }
+}
+
+/**
+ * Re-show the native webview after an overlay closes. Self-gating: only shows
+ * when the dock is open AND the Browser tab is the live active surface, so any
+ * caller (image modal, add-menu, address suggest) can call it blindly without
+ * resurrecting the webview over another tab or a closed dock.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- co-located webview lifecycle helper
+export async function showAgentBrowser(): Promise<void> {
+  if (!created) return;
+  const st = useAgentWorkspaceStore.getState();
+  const active = st.tabs.find((t) => t.id === st.activeTabId);
+  if (!st.dockOpen || active?.kind !== "browser") return;
+  try {
+    await showBrowser(LABEL);
+  } catch {
+    /* not open */
+  }
+}
+
+export const BrowserPanel: React.FC = () => {
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const focusedRef = useRef(false);
+  const [address, setAddress] = useState("");
+  const [inspecting, setInspecting] = useState(false);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const recent = useAgentBrowserHistory((s) => s.recent);
+  const pushRecent = useAgentBrowserHistory((s) => s.push);
+
+  const measure = () => {
+    const el = bodyRef.current;
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    // The dock's OUTER container (`.agw-shell-side`) animates its width during
+    // the rail glide and clips a right-pinned, fixed-width inner — so the body's
+    // own rect never moves, only the visible clip. Anchor the webview's LEFT to
+    // the outer's current (animating) left edge and keep its width = the panel's
+    // fixed width, so the native webview slides in/out from the right IN SYNC
+    // with the rail, WITHOUT reflowing the page. Falls back to the body's own
+    // left if the outer can't be found.
+    const outer = el.closest(".agw-shell-side") as HTMLElement | null;
+    const left = outer ? outer.getBoundingClientRect().left : r.left;
+    return { x: left, y: r.top, width: r.width, height: r.height };
+  };
+
+  useEffect(() => {
+    if (!isAuroraRuntimeAvailable()) return;
+    const el = bodyRef.current;
+    if (!el) return;
+
+    let disposed = false;
+
+    // Ensure the embedded webview actually exists in the BACKEND before
+    // touching it. The module-level `created` flag can go stale (dev backend
+    // restart / host window recreated) — trusting it led to `setBounds`/`show`
+    // throwing "unknown window 'browser-agentwin'". We check the live registry
+    // and rebuild on a miss, so the browser (and its inspector) self-heal.
+    const ensureBrowser = async () => {
+      const b = measure();
+      if (!b || disposed) return;
+      let exists = false;
+      try {
+        exists = (await listBrowserWindows()).some((w) => w.label === LABEL);
+      } catch {
+        exists = false;
+      }
+      if (disposed) return;
+      if (exists) {
+        try {
+          await setBrowserBounds(LABEL, b.x, b.y, b.width, b.height);
+          await showBrowser(LABEL);
+          created = true;
+          return;
+        } catch {
+          // Tracked but the webview is gone — fall through to a fresh build
+          // (the backend drops the stale entry and rebuilds).
+        }
+      }
+      if (disposed) return;
+      try {
+        await createBrowserWindow({
+          label: LABEL,
+          url: "about:blank",
+          embed: { hostLabel: HOST, x: b.x, y: b.y, width: b.width, height: b.height },
+        });
+        created = true;
+      } catch (err) {
+        console.warn("[agent-window] embed browser failed:", err);
+      }
+    };
+
+    const raf = requestAnimationFrame(() => {
+      void ensureBrowser();
+    });
+
+    const resync = () => {
+      const b = measure();
+      if (b) void setBrowserBounds(LABEL, b.x, b.y, b.width, b.height).catch(() => {});
+    };
+    const ro = new ResizeObserver(resync);
+    ro.observe(el);
+    // Also observe the ANIMATING outer container: during the rail open/close
+    // glide it resizes every frame (the body does not), so this is what drives
+    // the webview to slide in/out in lockstep with the rail instead of popping.
+    const outerEl = el.closest(".agw-shell-side");
+    if (outerEl) ro.observe(outerEl);
+    window.addEventListener("resize", resync);
+
+    const poll = window.setInterval(async () => {
+      if (focusedRef.current) return;
+      try {
+        const u = await getBrowserUrl(LABEL);
+        if (u && u !== "about:blank") {
+          setAddress(u);
+          pushRecent(u);
+        }
+      } catch {
+        /* not ready */
+      }
+    }, 1200);
+
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      window.removeEventListener("resize", resync);
+      window.clearInterval(poll);
+      void hideBrowser(LABEL).catch(() => {});
+    };
+  }, []);
+
+  // Inspector picks → add a "Selected N" chip to the composer (IDE parity).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void onPickedElement((p: PickedElement) => {
+      if (p.label !== LABEL) return;
+      useAgentSelectionStore.getState().add(p);
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => unlisten?.();
+  }, []);
+
+  const openSuggest = () => {
+    setSuggestOpen(true);
+    void hideAgentBrowser(); // reveal the dropdown above the native page
+  };
+  const closeSuggest = () => {
+    setSuggestOpen(false);
+    void showAgentBrowser();
+  };
+
+  const navigateTo = (url: string) => {
+    setAddress(url);
+    void navigateBrowser(LABEL, url);
+    pushRecent(url);
+    setSuggestOpen(false);
+    inputRef.current?.blur();
+    void showAgentBrowser();
+  };
+
+  const go = () => navigateTo(normalizeAddress(address));
+
+  // Recent (matching) + common dev servers, filtered by what's typed.
+  const suggestions = useMemo(() => {
+    const q = address.trim().toLowerCase();
+    const recents = recent
+      .filter((u) => !q || u.toLowerCase().includes(q))
+      .slice(0, 5);
+    const servers = DEV_SERVERS.filter(
+      (s) => !q || s.url.toLowerCase().includes(q) || s.label.toLowerCase().includes(q),
+    );
+    return { recents, servers };
+  }, [address, recent]);
+
+  // Rebuild the embedded webview when the backend has lost track of it (the
+  // "unknown window 'browser-agentwin'" desync — e.g. after a dev backend
+  // restart / the host window being recreated). Closes any orphan first, then
+  // recreates at the current bounds and re-navigates to the live address.
+  const recoverBrowser = async (): Promise<boolean> => {
+    const b = measure();
+    if (!b) return false;
+    try {
+      await closeAgentBrowser();
+    } catch {
+      /* nothing to close */
+    }
+    created = false;
+    try {
+      await createBrowserWindow({
+        label: LABEL,
+        url: "about:blank",
+        embed: { hostLabel: HOST, x: b.x, y: b.y, width: b.width, height: b.height },
+      });
+      created = true;
+      const normalized = address.trim() ? normalizeAddress(address) : "";
+      if (normalized && normalized !== "about:blank") {
+        await navigateBrowser(LABEL, normalized);
+      }
+      return true;
+    } catch (err) {
+      console.warn("[agent-window] browser recovery failed:", err);
+      return false;
+    }
+  };
+
+  const toggleInspect = async () => {
+    const next = !inspecting;
+    try {
+      await (next ? activateInspector(LABEL) : deactivateInspector(LABEL));
+      setInspecting(next);
+    } catch (err) {
+      // The webview desynced from the backend. Rebuild it and retry once so the
+      // inspector actually turns on and element picks reach the composer.
+      if (!next) {
+        setInspecting(false);
+        return;
+      }
+      console.warn("[agent-window] inspector activate failed, rebuilding:", err);
+      const ok = await recoverBrowser();
+      if (ok) {
+        try {
+          await activateInspector(LABEL);
+          setInspecting(true);
+          return;
+        } catch (retryErr) {
+          console.warn("[agent-window] inspector retry failed:", retryErr);
+        }
+      }
+      setInspecting(false);
+    }
+  };
+
+  return (
+    <div className="agw-br-root">
+      <div className="agw-br-bar">
+        <button type="button" className="agw-br-nav" title="Back" aria-label="Back" onClick={() => void evalBrowser(LABEL, "history.back()")}>
+          <span style={{ display: "inline-flex", transform: "rotate(90deg)" }}>
+            <AgentIcon name="chevron-down" size={15} />
+          </span>
+        </button>
+        <button type="button" className="agw-br-nav" title="Forward" aria-label="Forward" onClick={() => void evalBrowser(LABEL, "history.forward()")}>
+          <span style={{ display: "inline-flex", transform: "rotate(-90deg)" }}>
+            <AgentIcon name="chevron-down" size={15} />
+          </span>
+        </button>
+        <button type="button" className="agw-br-nav" title="Reload" aria-label="Reload" onClick={() => void refreshBrowser(LABEL)}>
+          <AgentIcon name="retry" size={14} />
+        </button>
+        <div className="agw-br-address">
+          <AgentIcon name="browser" size={13} style={{ color: "var(--agw-text-subtle)" }} />
+          <input
+            ref={inputRef}
+            className="agw-br-input"
+            placeholder="Search or enter address"
+            value={address}
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
+            onFocus={() => {
+              focusedRef.current = true;
+              inputRef.current?.select();
+              openSuggest();
+            }}
+            onBlur={() => {
+              focusedRef.current = false;
+              // Delay so a suggestion click lands before the dropdown closes.
+              window.setTimeout(() => closeSuggest(), 130);
+            }}
+            onChange={(e) => setAddress(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") go();
+              else if (e.key === "Escape") {
+                closeSuggest();
+                inputRef.current?.blur();
+              }
+            }}
+          />
+          {suggestOpen && (suggestions.recents.length > 0 || suggestions.servers.length > 0) && (
+            <div className="agw-br-suggest agw-scroll">
+              {suggestions.recents.length > 0 && <div className="agw-br-sugg-head">Recent</div>}
+              {suggestions.recents.map((u) => (
+                <button
+                  key={`r-${u}`}
+                  type="button"
+                  className="agw-br-sugg"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    navigateTo(u);
+                  }}
+                >
+                  <AgentIcon name="retry" size={12} style={{ color: "var(--agw-text-subtle)" }} />
+                  <span className="agw-br-sugg-url">{u}</span>
+                </button>
+              ))}
+              <div className="agw-br-sugg-head">Local servers</div>
+              {suggestions.servers.map((s) => (
+                <button
+                  key={`s-${s.url}`}
+                  type="button"
+                  className="agw-br-sugg"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    navigateTo(s.url);
+                  }}
+                >
+                  <AgentIcon name="terminal" size={12} style={{ color: "var(--agw-text-subtle)" }} />
+                  <span className="agw-br-sugg-url">{s.url}</span>
+                  <span className="agw-br-sugg-label">{s.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        {/* Inspector — pick elements on the page, just like the IDE browser. */}
+        <button
+          type="button"
+          className="agw-br-nav"
+          title={inspecting ? "Stop inspecting" : "Inspect element"}
+          aria-label="Inspect element"
+          aria-pressed={inspecting}
+          onClick={() => void toggleInspect()}
+          style={inspecting ? { color: "var(--agw-accent)", background: "var(--agw-hover)" } : undefined}
+        >
+          <AgentIcon name="inspect" size={15} />
+        </button>
+      </div>
+      {/* The native webview floats over this region; keep it empty. */}
+      <div ref={bodyRef} className="agw-br-body" />
+    </div>
+  );
+};

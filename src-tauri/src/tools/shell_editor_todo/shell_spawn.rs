@@ -103,7 +103,9 @@ impl ToolExecutor for ShellSpawnTool {
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidInput("`command` must be a string".into()))?;
         if command.trim().is_empty() {
-            return Err(ToolError::InvalidInput("`command` must not be empty".into()));
+            return Err(ToolError::InvalidInput(
+                "`command` must not be empty".into(),
+            ));
         }
 
         // Workspace-aware path validation when a folder is open;
@@ -135,7 +137,10 @@ impl ToolExecutor for ShellSpawnTool {
             request_id: request_id.clone(),
             command: command.to_string(),
             cwd: cwd.clone(),
-            shell: None,
+            // Same default as `shell_execute`: Git Bash when available so a
+            // spawned dev server / watcher runs the model's POSIX command as
+            // written instead of under PowerShell.
+            shell: super::shell_execute::resolve_shell(None),
             timeout_ms: None,
         };
 
@@ -167,6 +172,7 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext {
+            allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             session_id: "s".into(),
@@ -185,10 +191,7 @@ mod tests {
         let sink = RecordingIdeEventSink::new();
         let tool = ShellSpawnTool::new(sink.clone());
         let out = tool
-            .execute(
-                json!({"command": "echo hi", "cwd": "/work"}),
-                &ctx(),
-            )
+            .execute(json!({"command": "echo hi", "cwd": "/work"}), &ctx())
             .await
             .expect("ok");
         let parsed: Value = serde_json::from_str(&out).expect("json");

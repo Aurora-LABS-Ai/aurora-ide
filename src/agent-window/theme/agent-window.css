@@ -147,7 +147,7 @@
   vertical-align: baseline;
   margin: 0 1px;
   padding: 1px 6px;
-  border-radius: 6px;
+  border-radius: var(--agw-radius-sm);
   background: var(--agw-chip-surface);
   border: 1px solid var(--agw-border);
   color: var(--agw-chip-text);
@@ -173,7 +173,7 @@
 }
 .agw-scroll::-webkit-scrollbar-thumb {
   background: var(--agw-scroll-thumb);
-  border-radius: 8px;
+  border-radius: var(--agw-radius-md);
   border: 2px solid transparent;
   background-clip: content-box;
 }
@@ -319,7 +319,7 @@
   -webkit-backdrop-filter: blur(24px) saturate(140%);
   backdrop-filter: blur(24px) saturate(140%);
   border: 1px solid var(--agw-border-strong);
-  border-radius: 16px;
+  border-radius: var(--agw-radius-lg);
   box-shadow: var(--agw-shadow-pop);
   animation: agw-pop-in 0.14s cubic-bezier(0.2, 0.9, 0.3, 1);
 }
@@ -475,7 +475,7 @@
   justify-content: center;
   flex-shrink: 0;
   font-weight: 700;
-  border-radius: 7px;
+  border-radius: var(--agw-radius-sm);
   color: var(--agw-accent);
   background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
 }
@@ -530,7 +530,7 @@
   align-self: stretch;
   box-sizing: border-box;
   border: 1px solid var(--agw-border);
-  border-radius: 9px;
+  border-radius: var(--agw-radius-md);
   background: var(--agw-surface);
   color: var(--agw-text-subtle);
 }
@@ -574,7 +574,7 @@
   width: 100%;
   padding: 7px 8px;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: var(--agw-radius-md);
   background: transparent;
   /* Menu-row labels read at FULL text strength at rest (Codex-style) —
      hover/selected change the background, not gray→white text. Secondary
@@ -1271,12 +1271,12 @@
 .agw-team-skel-label {
   width: 84px;
   height: 11px;
-  border-radius: 5px;
+  border-radius: var(--agw-radius-sm);
   margin-bottom: 3px;
 }
 .agw-team-skel-line {
   height: 12px;
-  border-radius: 5px;
+  border-radius: var(--agw-radius-sm);
 }
 .agw-team-skel-label,
 .agw-team-skel-line {
@@ -1307,7 +1307,7 @@
  * (the inner content is still the real conversation MessageBubble). */
 .agw-team-bubble {
   border: 1px solid var(--agw-border);
-  border-radius: 14px;
+  border-radius: var(--agw-radius-lg);
   padding: 12px 16px;
   background: var(--agw-canvas);
   min-width: 0;
@@ -1528,7 +1528,7 @@
   padding-bottom: 12px; /* the tucked strip the composer paints over */
   border: 1px solid var(--agw-border-strong);
   border-bottom: none; /* hidden behind the composer */
-  border-radius: 14px 14px 0 0;
+  border-radius: var(--agw-radius-lg) var(--agw-radius-lg) 0 0;
   background: var(--agw-surface);
   overflow: hidden;
 }
@@ -1617,7 +1617,7 @@
   align-items: center;
   gap: 10px;
   padding: 6px 8px;
-  border-radius: 8px;
+  border-radius: var(--agw-radius-md);
   font-size: var(--agw-fs-ui);
   line-height: 1.45;
   color: var(--agw-text);
@@ -1675,7 +1675,7 @@
   justify-content: center;
   width: 28px;
   height: 28px;
-  border-radius: 8px;
+  border-radius: var(--agw-radius-md);
   cursor: help;
   outline: none;
   transition: background 0.12s ease;
@@ -1693,7 +1693,7 @@
    * + dropdown, and browser suggestions (one surface for the whole family). */
   background: var(--agw-popover-surface);
   border: 1px solid var(--agw-border-strong);
-  border-radius: 12px;
+  border-radius: var(--agw-radius-md);
   box-shadow: var(--agw-shadow-pop);
   animation: agw-ctx-pop 0.12s ease-out;
 }
@@ -2149,7 +2149,7 @@
 .agw-set-range:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--agw-ring);
-  border-radius: 6px;
+  border-radius: var(--agw-radius-sm);
 }
 
 /* ── Mid-turn user injection (inline note in the transcript) ────────────── */
@@ -2190,7 +2190,7 @@
   padding-bottom: 12px;
   border: 1px solid var(--agw-border-strong);
   border-bottom: none;
-  border-radius: 14px 14px 0 0;
+  border-radius: var(--agw-radius-lg) var(--agw-radius-lg) 0 0;
   background: var(--agw-surface);
   overflow: hidden;
 }
@@ -3188,7 +3188,7 @@
   font-family: var(--agw-font-code);
   font-size: 0.88em;
   padding: 1.5px 5px;
-  border-radius: 5px;
+  border-radius: var(--agw-radius-sm);
   background: var(--agw-code-surface);
   border: 1px solid var(--agw-code-border);
   color: var(--agw-text);
@@ -3360,7 +3360,7 @@
 .agw-skeleton span {
   display: block;
   height: 10px;
-  border-radius: 6px;
+  border-radius: var(--agw-radius-sm);
   /* Bars sit just above the surface — built from the theme's text-subtle token
    * (#727272 in the dark theme), not white. Low alpha + the container opacity
    * above keep them a quiet placeholder rather than a bright block. */
@@ -3426,7 +3426,7 @@
   -webkit-backdrop-filter: blur(24px) saturate(140%);
   backdrop-filter: blur(24px) saturate(140%);
   border: 1px solid var(--agw-border-strong);
-  border-radius: 16px;
+  border-radius: var(--agw-radius-lg);
   box-shadow: var(--agw-shadow-pop);
   animation: agw-pop-in 0.14s cubic-bezier(0.2, 0.9, 0.3, 1);
 }
@@ -3437,7 +3437,7 @@
   width: 100%;
   padding: 7px 9px;
   border: none;
-  border-radius: 9px;
+  border-radius: var(--agw-radius-md);
   background: transparent;
   color: var(--agw-text);
   cursor: pointer;
@@ -3599,7 +3599,7 @@
   gap: 3px;
   padding: 1px 7px;
   margin: 0 1px;
-  border-radius: 7px;
+  border-radius: var(--agw-radius-sm);
   background: color-mix(in srgb, var(--agw-accent) 15%, transparent);
   color: var(--agw-accent);
   font-size: var(--agw-fs-md);
@@ -3631,7 +3631,7 @@
   background: color-mix(in srgb, var(--agw-composer-surface) 58%, var(--agw-conversation));
   border: 1px solid var(--agw-border-strong);
   border-bottom: none; /* hidden behind the composer */
-  border-radius: 14px 14px 0 0;
+  border-radius: var(--agw-radius-lg) var(--agw-radius-lg) 0 0;
   overflow: hidden;
   /* Open/close is a HEIGHT glide driven by Framer (AnimatePresence) in
    * QuestionPrompt — same pattern as the task panel / rail sections. No CSS
@@ -3708,7 +3708,7 @@
   width: 100%;
   text-align: left;
   padding: 7px 9px;
-  border-radius: 9px;
+  border-radius: var(--agw-radius-md);
   border: 1px solid transparent;
   background: transparent;
   color: var(--agw-text);
@@ -3736,7 +3736,7 @@
   justify-content: center;
   width: 19px;
   height: 19px;
-  border-radius: 5px;
+  border-radius: var(--agw-radius-sm);
   border: 1px solid var(--agw-border);
   background: color-mix(in srgb, var(--agw-text) 5%, transparent);
   font-size: var(--agw-fs-label);
@@ -3766,7 +3766,7 @@
   height: 33px;
   width: calc(100% - 29px);
   padding: 0 11px;
-  border-radius: 9px;
+  border-radius: var(--agw-radius-md);
   border: 1px solid var(--agw-border);
   background: var(--agw-surface);
   color: var(--agw-text);
@@ -3865,7 +3865,7 @@
   width: 18px;
   height: 18px;
   border: none;
-  border-radius: 5px;
+  border-radius: var(--agw-radius-sm);
   background: transparent;
   color: var(--agw-text-subtle);
   cursor: pointer;
@@ -4306,7 +4306,7 @@
   height: 20px;
   flex-shrink: 0;
   border: none;
-  border-radius: 5px;
+  border-radius: var(--agw-radius-sm);
   background: transparent;
   color: var(--agw-text-subtle);
   cursor: pointer;
@@ -4476,7 +4476,7 @@
   height: 17px;
   flex-shrink: 0;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--agw-radius-sm);
   background: transparent;
   color: var(--agw-text-subtle);
   cursor: pointer;
@@ -4687,7 +4687,7 @@
   align-items: center;
   gap: 4px;
   padding: 1px 4px 1px 7px;
-  border-radius: 7px;
+  border-radius: var(--agw-radius-sm);
   background: color-mix(in srgb, var(--agw-accent) 15%, transparent);
   color: var(--agw-accent);
   font-size: var(--agw-fs-md);
@@ -5159,7 +5159,7 @@
   max-width: 100%;
 }
 .agw-seg-btn {
-  height: 26px;
+  height: 24px;
   padding: 0 14px;
   border: none;
   border-radius: 999px;
@@ -5258,7 +5258,10 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  height: 32px;
+  /* 30px = THE settings control row height (inputs and selects are 30px;
+     the segmented control's outer track is 24 + 2×3 padding = 30). One
+     height per row family is a large part of what reads as "engineered". */
+  height: 30px;
   padding: 0 16px;
   border: 1px solid var(--agw-border);
   border-radius: 999px;
@@ -5427,7 +5430,7 @@
   width: 32px;
   height: 32px;
   flex-shrink: 0;
-  border-radius: 10px;
+  border-radius: var(--agw-radius-md);
   border: 1px solid var(--agw-border);
   background: var(--agw-surface-elevated);
   color: var(--agw-text-muted);
@@ -5579,7 +5582,7 @@
   width: 32px;
   height: 32px;
   flex-shrink: 0;
-  border-radius: 10px;
+  border-radius: var(--agw-radius-md);
   border: 1px solid var(--agw-border);
   background: var(--agw-surface-elevated);
   color: var(--agw-text-muted);
@@ -5645,7 +5648,7 @@
   width: 30px;
   height: 30px;
   flex-shrink: 0;
-  border-radius: 9px;
+  border-radius: var(--agw-radius-md);
   border: 1px solid var(--agw-border);
   background: var(--agw-surface-elevated);
   color: var(--agw-text);
@@ -5686,7 +5689,7 @@
   height: 30px;
   flex-shrink: 0;
   border: 1px solid var(--agw-border);
-  border-radius: 9px;
+  border-radius: var(--agw-radius-md);
   background: transparent;
   color: var(--agw-text-subtle);
   cursor: pointer;
@@ -6139,7 +6142,7 @@
   align-items: center;
   gap: 14px;
   padding: 7px 10px;
-  border-radius: 8px;
+  border-radius: var(--agw-radius-md);
 }
 .agw-profile-row:hover,
 .agw-profile-row[data-hover] {
@@ -6239,7 +6242,7 @@
   width: 44px;
   height: 44px;
   font-size: 18px;
-  border-radius: 14px;
+  border-radius: var(--agw-radius-lg);
 }
 .agw-profile-head-titles {
   flex: 1;
@@ -6489,7 +6492,7 @@
   width: 26px;
   height: 26px;
   font-size: var(--agw-fs-ui);
-  border-radius: 8px;
+  border-radius: var(--agw-radius-md);
 }
 
 .agw-prov-detail {
@@ -6716,7 +6719,7 @@
   width: 100%;
   padding: 7px 8px;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: var(--agw-radius-md);
   background: transparent;
   color: var(--agw-text);
   font-size: var(--agw-fs-ui);
@@ -6862,7 +6865,7 @@
   width: 38px;
   height: 38px;
   flex-shrink: 0;
-  border-radius: 11px;
+  border-radius: var(--agw-radius-md);
   border: 1px solid var(--agw-border);
   background: var(--agw-surface-elevated);
   color: var(--agw-text-muted);
@@ -6948,7 +6951,7 @@
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--agw-radius-md);
   background: transparent;
   color: var(--agw-text-subtle);
   cursor: pointer;
@@ -7656,7 +7659,7 @@
   color: var(--agw-text-subtle);
   background: color-mix(in srgb, var(--agw-text) 5%, transparent);
   border: 1px solid var(--agw-border);
-  border-radius: 4px;
+  border-radius: var(--agw-radius-sm);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7846,7 +7849,7 @@
   position: relative;
   width: 56px;
   height: 56px;
-  border-radius: 10px;
+  border-radius: var(--agw-radius-md);
   overflow: hidden;
   border: 1px solid var(--agw-border-strong);
   background: var(--agw-surface-elevated);
@@ -7900,7 +7903,7 @@
 .agw-bubble-image {
   padding: 0;
   border: 1px solid var(--agw-border);
-  border-radius: 12px;
+  border-radius: var(--agw-radius-md);
   overflow: hidden;
   background: var(--agw-surface-elevated);
   cursor: zoom-in;
@@ -8049,7 +8052,7 @@
   justify-content: center;
   width: 44px;
   height: 44px;
-  border-radius: 12px;
+  border-radius: var(--agw-radius-md);
   color: var(--agw-accent);
   background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--agw-accent) 30%, transparent);
@@ -8135,7 +8138,7 @@
 .agw-img-canvas {
   max-width: 88vw;
   max-height: 78vh;
-  border-radius: 10px;
+  border-radius: var(--agw-radius-md);
   background: var(--agw-surface);
   box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
   touch-action: none;
@@ -8147,7 +8150,7 @@
   flex-wrap: wrap;
   gap: 14px;
   padding: 8px 12px;
-  border-radius: 12px;
+  border-radius: var(--agw-radius-md);
   background: var(--agw-surface-elevated);
   border: 1px solid var(--agw-border-strong);
 }
@@ -8160,7 +8163,7 @@
   height: 28px;
   padding: 0 12px;
   border: 1px solid var(--agw-border-strong);
-  border-radius: 8px;
+  border-radius: var(--agw-radius-md);
   background: transparent;
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-ui);
@@ -8184,7 +8187,7 @@
   height: 28px;
   padding: 0 16px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--agw-radius-md);
   background: var(--agw-accent);
   color: var(--agw-on-accent);
   font-size: var(--agw-fs-ui);
@@ -8607,7 +8610,7 @@
 .agw-atlas-skeleton {
   height: 12px;
   margin-bottom: 10px;
-  border-radius: 6px;
+  border-radius: var(--agw-radius-sm);
   background: linear-gradient(
     90deg,
     var(--agw-surface) 25%,
@@ -8763,7 +8766,7 @@
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--agw-border-strong);
-  border-radius: 16px;
+  border-radius: var(--agw-radius-lg);
   background: color-mix(in srgb, var(--agw-surface-elevated) 96%, transparent);
   box-shadow: 0 28px 80px color-mix(in srgb, var(--agw-canvas) 72%, transparent), var(--agw-shadow-pop);
   color: var(--agw-text);
@@ -8797,7 +8800,7 @@
 .agw-shortcut-recorder kbd {
   border: 1px solid var(--agw-border-strong);
   border-bottom-color: color-mix(in srgb, var(--agw-border-strong) 70%, var(--agw-text-subtle));
-  border-radius: 6px;
+  border-radius: var(--agw-radius-sm);
   background: var(--agw-chip-surface);
   color: var(--agw-text-muted);
   font: 600 10px/1 var(--agw-font-ui);
@@ -8828,7 +8831,7 @@
   gap: 10px;
   padding: 6px 9px;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: var(--agw-radius-md);
   background: transparent;
   color: var(--agw-text);
   text-align: left;
@@ -8850,7 +8853,7 @@
   display: grid;
   place-items: center;
   border: 1px solid var(--agw-border);
-  border-radius: 8px;
+  border-radius: var(--agw-radius-md);
   background: var(--agw-surface);
   color: var(--agw-text-muted);
 }
@@ -8899,7 +8902,7 @@
   gap: 14px;
   padding: 0 8px 0 11px;
   border: 1px solid var(--agw-border-strong);
-  border-radius: 8px;
+  border-radius: var(--agw-radius-md);
   background: var(--agw-surface);
   color: var(--agw-text-muted);
   font: 600 11px/1 var(--agw-font-ui);
@@ -8915,7 +8918,7 @@
 
 @media (max-width: 620px) {
   .agw-command-overlay { padding: 10px; align-items: center; }
-  .agw-command-center { width: 100%; max-height: calc(100vh - 20px); border-radius: 13px; }
+  .agw-command-center { width: 100%; max-height: calc(100vh - 20px); border-radius: var(--agw-radius-lg); }
   .agw-command-footer { justify-content: center; }
   .agw-command-footer span:first-child { display: none; }
 }

@@ -183,7 +183,23 @@ export function useComposerTyping(
     accept.className = "agw-ghost-accept";
     accept.textContent = "→";
     span.appendChild(accept);
-    el.appendChild(span);
+    // Insert AT THE CARET, not at the end of the editor DOM. A contenteditable
+    // keeps a trailing placeholder <br> after the text, so `appendChild` lands
+    // the ghost after that break — visually on a NEW line even when the current
+    // line has room. The ghost only ever shows with the caret at the end
+    // (`caretAtEnd` precondition), so the caret position IS where the prediction
+    // continues; inserting there keeps it inline on the caret's line.
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0 && el.contains(sel.anchorNode)) {
+      const at = sel.getRangeAt(0).cloneRange();
+      at.collapse(false);
+      at.insertNode(span);
+    } else if (el.lastChild && el.lastChild.nodeName === "BR") {
+      // Fallback (no usable selection): step in front of the placeholder <br>.
+      el.insertBefore(span, el.lastChild);
+    } else {
+      el.appendChild(span);
+    }
     ghostElRef.current = span;
     ghostInfoRef.current = ghost;
   }, [editorRef]);

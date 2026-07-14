@@ -248,6 +248,12 @@
   background: var(--agw-hover);
   color: var(--agw-text);
 }
+/* Pressed: one perceptible step past hover. Mixing a little foreground into
+   the hover fill deepens it in BOTH light and dark themes (text is always
+   the high-contrast pole), so the press reads with any user palette. */
+.agw-icon-btn:active {
+  background: color-mix(in srgb, var(--agw-hover) 88%, var(--agw-text) 12%);
+}
 .agw-icon-btn:focus-visible {
   box-shadow: 0 0 0 2px var(--agw-ring);
 }
@@ -4868,6 +4874,10 @@
   color: var(--agw-text);
   background: var(--agw-set-nav-hover-bg);
 }
+.agw-settings-nav-item:active {
+  color: var(--agw-text);
+  background: color-mix(in srgb, var(--agw-set-nav-hover-bg) 88%, var(--agw-text) 12%);
+}
 .agw-settings-nav-item[data-active] {
   color: var(--agw-set-nav-active-fg);
   font-weight: 600;
@@ -5081,14 +5091,27 @@
   left: 3px;
   width: 18px;
   height: 18px;
-  border-radius: 50%;
+  border-radius: 999px;
   background: var(--agw-text);
   box-shadow: 0 1px 2px color-mix(in srgb, #000 35%, transparent);
-  transition: transform 0.18s cubic-bezier(0.34, 1.4, 0.6, 1), background 0.18s ease;
+  transition:
+    transform 0.18s cubic-bezier(0.34, 1.4, 0.6, 1),
+    width 0.15s cubic-bezier(0.34, 1.4, 0.6, 1),
+    background 0.18s ease;
 }
 .agw-switch[data-on] .agw-switch-knob {
   transform: translateX(18px);
   background: var(--agw-on-accent);
+}
+/* Held down: the knob stretches toward where it's about to go (the iOS
+   switch press), then the spring transition above carries the release.
+   The stretched knob keeps its outer edge: 3px inset + 14px travel + 22px
+   knob = the same 39px right edge as the resting on-state. */
+.agw-switch:not([data-disabled]):active .agw-switch-knob {
+  width: 22px;
+}
+.agw-switch[data-on]:not([data-disabled]):active .agw-switch-knob {
+  transform: translateX(14px);
 }
 .agw-switch[data-on][data-tone="accent"] {
   background: var(--agw-accent);
@@ -5132,7 +5155,9 @@
   font-size: 11.5px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  /* box-shadow rides the same curve so the active pill's shadow fades in
+     with its background instead of popping on a frame. */
+  transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
   outline: none;
   /* Labels stay on one line; when space runs out the buttons shrink and
      ellipsize inside their pill instead of clipping outside it. */
@@ -5143,6 +5168,14 @@
 }
 .agw-seg-btn:hover {
   color: var(--agw-text);
+  background: color-mix(in srgb, var(--agw-hover) 55%, transparent);
+}
+.agw-seg-btn:active {
+  color: var(--agw-text);
+  background: color-mix(in srgb, var(--agw-hover) 88%, var(--agw-text) 8%);
+}
+.agw-seg-btn:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
 }
 .agw-seg-btn[data-active] {
   background: var(--agw-surface-elevated);
@@ -5157,6 +5190,13 @@
 }
 .agw-seg-btn[data-active][data-tone="danger"] {
   color: var(--agw-removed);
+}
+/* The active pill's own shadow would otherwise override the focus ring
+   (equal specificity, later in the file) — layer both. */
+.agw-seg-btn[data-active]:focus-visible {
+  box-shadow:
+    0 1px 3px color-mix(in srgb, #000 28%, transparent),
+    0 0 0 2px var(--agw-ring);
 }
 
 /* ── Pill ─────────────────────────────────────────────────────────────── */
@@ -5225,6 +5265,13 @@
   background: var(--agw-hover);
   border-color: var(--agw-border-strong);
 }
+/* Pressed: a real physical step past hover, per variant. Without these,
+   clicking gave zero feedback until the state change landed — the single
+   biggest "decoration, not a control" tell. */
+.agw-set-btn:active:not(:disabled) {
+  background: color-mix(in srgb, var(--agw-hover) 88%, var(--agw-text) 12%);
+  border-color: var(--agw-border-strong);
+}
 .agw-set-btn[data-variant="primary"] {
   background: var(--agw-accent);
   border-color: var(--agw-accent);
@@ -5234,12 +5281,20 @@
   background: var(--agw-accent-hover);
   border-color: var(--agw-accent-hover);
 }
+.agw-set-btn[data-variant="primary"]:active:not(:disabled) {
+  background: color-mix(in srgb, var(--agw-accent-hover) 86%, #000 14%);
+  border-color: color-mix(in srgb, var(--agw-accent-hover) 86%, #000 14%);
+}
 .agw-set-btn[data-variant="danger"] {
   color: var(--agw-removed);
   border-color: color-mix(in srgb, var(--agw-removed) 40%, transparent);
 }
 .agw-set-btn[data-variant="danger"]:hover {
   background: color-mix(in srgb, var(--agw-removed) 12%, transparent);
+}
+.agw-set-btn[data-variant="danger"]:active:not(:disabled) {
+  background: color-mix(in srgb, var(--agw-removed) 20%, transparent);
+  border-color: color-mix(in srgb, var(--agw-removed) 55%, transparent);
 }
 .agw-set-btn[data-variant="success"] {
   color: var(--agw-added);
@@ -5249,9 +5304,16 @@
   background: color-mix(in srgb, var(--agw-added) 12%, transparent);
   border-color: color-mix(in srgb, var(--agw-added) 58%, transparent);
 }
+.agw-set-btn[data-variant="success"]:active:not(:disabled) {
+  background: color-mix(in srgb, var(--agw-added) 20%, transparent);
+  border-color: color-mix(in srgb, var(--agw-added) 66%, transparent);
+}
 .agw-set-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+.agw-set-btn:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
 }
 
 /* ── Text input ───────────────────────────────────────────────────────── */
@@ -6356,6 +6418,14 @@
 .agw-prov-item[data-active] {
   background: var(--agw-surface-elevated);
 }
+/* Pressed (after [data-active] so selecting an already-active row still
+   acknowledges the click with a deeper shade). */
+.agw-prov-item:active {
+  background: color-mix(in srgb, var(--agw-hover) 88%, var(--agw-text) 12%);
+}
+.agw-prov-item:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
 .agw-prov-item-text {
   display: flex;
   flex-direction: column;
@@ -6494,6 +6564,13 @@
 .agw-csel-trigger:hover {
   border-color: var(--agw-border-strong);
 }
+.agw-csel-trigger:active {
+  border-color: var(--agw-border-strong);
+  background: color-mix(in srgb, var(--agw-canvas) 92%, var(--agw-text) 8%);
+}
+.agw-csel-trigger:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
 .agw-csel-menu {
   position: absolute;
   z-index: 30;
@@ -6527,6 +6604,13 @@
 .agw-csel-item:hover {
   background: var(--agw-hover);
   color: var(--agw-text);
+}
+.agw-csel-item:active {
+  background: color-mix(in srgb, var(--agw-hover) 88%, var(--agw-text) 12%);
+  color: var(--agw-text);
+}
+.agw-csel-item:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
 }
 .agw-csel-item[data-active] {
   color: var(--agw-text);

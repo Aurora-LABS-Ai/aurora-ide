@@ -10,7 +10,7 @@
 //! submodule so a future-Sub can swap an implementation without
 //! pulling in the rest of the bucket.
 //!
-//! ## Tool roster (10 registered)
+//! ## Tool roster (9 registered)
 //!
 //! Refined from the original 16: read/edit families collapsed to one
 //! tool each, delete + folder-delete merged, folder_move generalised.
@@ -25,7 +25,6 @@
 //! | `folder_create`    | `commands::create_folder`                                                    |
 //! | `grep`             | `commands::ripgrep_search`                                                   |
 //! | `workspace_tree`   | `commands::read_directory` (recursed via manual stack)                       |
-//! | `aurora_search`    | semantic indexer is not shipped (returns informational error)                |
 //! | `auroro_websearch` | `commands::aurora_websearch`                                                 |
 //!
 //! Internal (unregistered) helpers: `multi_file_read` (batch reader for
@@ -51,7 +50,6 @@ use std::path::{Path, PathBuf};
 use crate::agent_runtime::tool_executor::{ToolError, ToolRegistry};
 use crate::agent_safety::{resolve_within_workspace, PathSafetyError};
 
-pub mod aurora_search;
 pub mod auroro_websearch;
 pub mod delete_path;
 pub mod file_edit;
@@ -102,7 +100,6 @@ pub fn register(
     reg.register(Arc::new(workspace_tree::WorkspaceTreeTool));
     reg.register(Arc::new(file_write::FileWriteTool::new(sink.clone())));
     reg.register(Arc::new(folder_create::FolderCreateTool::new(sink)));
-    reg.register(Arc::new(aurora_search::AuroraSearchTool));
     reg.register(Arc::new(auroro_websearch::AuroroWebSearchTool));
 }
 
@@ -122,7 +119,6 @@ pub const TOOL_NAMES: &[&str] = &[
     "workspace_tree",
     "file_write",
     "folder_create",
-    "aurora_search",
     "auroro_websearch",
 ];
 
@@ -494,8 +490,8 @@ mod tests {
     fn register_mounts_all_bucket_tools() {
         let mut reg = ToolRegistry::new();
         register(&mut reg, test_sink());
-        assert_eq!(reg.len(), TOOL_NAMES.len(), "expected 10 tools in bucket");
-        assert_eq!(TOOL_NAMES.len(), 10);
+        assert_eq!(reg.len(), TOOL_NAMES.len(), "expected 9 tools in bucket");
+        assert_eq!(TOOL_NAMES.len(), 9);
 
         let registered: HashSet<String> = reg.names().into_iter().collect();
         for &name in TOOL_NAMES {

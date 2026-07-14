@@ -18,6 +18,7 @@ pub mod browser_native_capture;
 pub mod browser_runtime;
 pub mod token_service;
 pub mod webview_permissions;
+pub mod webview_recovery;
 
 // ApiConverter and TokenService are imported directly from their modules:
 // - crate::services::api_converter::{ApiConverter, ApiMessage, UiMessage}

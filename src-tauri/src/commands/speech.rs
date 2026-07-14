@@ -825,7 +825,18 @@ pub async fn speech_transcribe_pcm(
 pub fn install_agent_media_permission_handler(app: AppHandle) -> Result<(), String> {
     use tauri::Manager;
     match app.get_webview_window("agent-window") {
-        Some(window) => crate::services::webview_permissions::install_permission_handler(&window),
+        Some(window) => {
+            // The JS-created agent window misses every Rust-side install
+            // that build-time windows get, so this command is its one
+            // native-handler bootstrap: piggyback the renderer-crash
+            // auto-reload handler (best-effort) alongside the mic grant.
+            if let Err(err) =
+                crate::services::webview_recovery::install_crash_recovery_handler(&window)
+            {
+                eprintln!("[aurora] failed to install webview crash recovery (agent): {err}");
+            }
+            crate::services::webview_permissions::install_permission_handler(&window)
+        }
         None => Ok(()),
     }
 }

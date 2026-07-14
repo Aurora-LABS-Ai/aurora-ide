@@ -15,6 +15,7 @@ import { SettingsPage } from "../settings/SettingsPage";
 import { registerQuestionHandler } from "../../services/question-bridge";
 import { registerTeamViewOpener } from "../../services/team-view-bridge";
 import { useAgentWindowBounds } from "../hooks/useAgentWindowBounds";
+import { restoreThreadAfterReload, useReloadRestore } from "../hooks/useReloadRestore";
 import { useTeamStore } from "../../store/useTeamStore";
 import { useAgentChatStore } from "../store/useAgentChatStore";
 import { useAgentQuestionStore } from "../store/useAgentQuestionStore";
@@ -37,9 +38,19 @@ export const AgentWindow: React.FC = () => {
   // next launch reopens at the size the user last set — never the default.
   useAgentWindowBounds();
 
-  // Bind the window to its project + load that project's chats once.
+  // Track the open chat so an in-window reload can land back in it.
+  useReloadRestore();
+
+  // Bind the window to its project + load that project's chats once. If this
+  // mount is a RELOAD of the same window (Ctrl+R, or the native crash-recovery
+  // auto-reload after a renderer crash), re-open the chat that was on screen —
+  // a crash mid-run then recovers straight into the live transcript instead of
+  // dumping the user on the project home.
   useEffect(() => {
-    void init(readProjectRootFromUrl());
+    void (async () => {
+      await init(readProjectRootFromUrl());
+      restoreThreadAfterReload();
+    })();
   }, [init]);
 
   // The team lives INSIDE this window now (a center-column takeover), not a

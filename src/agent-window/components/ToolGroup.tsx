@@ -34,7 +34,7 @@ import { TOOL_GROUP_MIN } from "./timeline";
  * component (which made the view jump at the 6th call). Below the threshold it
  * is a transparent passthrough — just the cards, no header, always open.
  */
-export const ToolGroup: React.FC<{
+const ToolGroupImpl: React.FC<{
   tools: ToolCall[];
   /** The turn this group belongs to is still streaming. */
   isActivelyStreaming?: boolean;
@@ -141,3 +141,27 @@ export const ToolGroup: React.FC<{
     </div>
   );
 };
+
+/**
+ * Memoized by ELEMENT identity: `buildRows` recreates the `tools` array every
+ * render of the streaming turn, but the ToolCall objects inside keep their
+ * identity unless that specific call was actually patched (args delta /
+ * result landing). Comparing element-wise means a frame of pure text tokens
+ * no longer re-renders every tool card in the turn — in a long agentic run
+ * that's dozens of cards skipped per frame.
+ */
+function toolGroupPropsEqual(
+  prev: { tools: ToolCall[]; isActivelyStreaming?: boolean },
+  next: { tools: ToolCall[]; isActivelyStreaming?: boolean },
+): boolean {
+  if ((prev.isActivelyStreaming ?? false) !== (next.isActivelyStreaming ?? false)) {
+    return false;
+  }
+  if (prev.tools.length !== next.tools.length) return false;
+  for (let i = 0; i < prev.tools.length; i++) {
+    if (prev.tools[i] !== next.tools[i]) return false;
+  }
+  return true;
+}
+
+export const ToolGroup = React.memo(ToolGroupImpl, toolGroupPropsEqual);

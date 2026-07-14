@@ -12,7 +12,7 @@ import { AnimatePresence, motion } from "framer-motion";
 
 import { AgentIcon } from "../shared/AgentIcon";
 
-export const AgentThinkingBlock: React.FC<{
+const AgentThinkingBlockImpl: React.FC<{
   content: string;
   isGenerating?: boolean;
 }> = ({ content, isGenerating = false }) => {
@@ -74,3 +74,10 @@ export const AgentThinkingBlock: React.FC<{
     </div>
   );
 };
+
+/**
+ * Memoized: completed reasoning segments never change while the rest of the
+ * turn streams, so skip their re-render per streamed frame (string + bool
+ * props → default shallow compare is exact).
+ */
+export const AgentThinkingBlock = React.memo(AgentThinkingBlockImpl);

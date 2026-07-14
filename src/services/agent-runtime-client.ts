@@ -114,6 +114,7 @@ export interface AgentChatRequest {
   providerId: string;
   model: string;
   workspacePath: string | null;
+  executionMode: "agent" | "plan" | "team";
   providerConfig: ProviderConfigSnapshot;
   systemPrompt: string | null;
   ideContext: string | null;
@@ -452,6 +453,7 @@ export class AgentRuntimeClient {
       providerId: providerConfig.id,
       model: providerConfig.model,
       workspacePath: input.workspacePath ?? null,
+      executionMode: config.executionMode ?? "agent",
       providerConfig: AgentRuntimeClient.buildProviderConfigSnapshot(providerConfig),
       systemPrompt: input.systemPrompt && input.systemPrompt.length > 0
         ? input.systemPrompt

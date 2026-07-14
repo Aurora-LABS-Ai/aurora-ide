@@ -96,7 +96,7 @@ const components = {
   ),
 };
 
-export const AgentMarkdown: React.FC<{
+const AgentMarkdownImpl: React.FC<{
   content: string;
   /** Live turn — enables Streamdown's incremental animation + incomplete parse. */
   streaming?: boolean;
@@ -137,3 +137,12 @@ export const AgentMarkdown: React.FC<{
     </div>
   );
 };
+
+/**
+ * Memoized: the transcript re-renders the whole ACTIVE turn on every streamed
+ * frame, but only the newest content segment actually changes — every earlier
+ * segment would otherwise re-run Streamdown (markdown parse + Shiki) per frame
+ * for identical props. Props are a string + a bool, so the default shallow
+ * compare is exact.
+ */
+export const AgentMarkdown = React.memo(AgentMarkdownImpl);

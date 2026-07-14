@@ -100,12 +100,15 @@ use crate::agent_runtime::bridge::{
 use crate::agent_runtime::conversation::{ConversationRuntime, RuntimeConfig};
 use crate::agent_runtime::error::RuntimeError;
 use crate::agent_runtime::events::TurnCompletion;
-use crate::agent_runtime::ipc::{AgentChatRequest, AgentEventEnvelope, AllowedTool};
+use crate::agent_runtime::ipc::{
+    AgentChatRequest, AgentEventEnvelope, AgentExecutionMode, AllowedTool,
+};
 use crate::agent_runtime::recovery::{classify_error, RecoveryHint};
 use crate::agent_runtime::session::Session;
 use crate::agent_runtime::session_store::SessionStore;
-use crate::agent_runtime::tool_executor::{ToolExecutor, ToolRegistry};
+use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor, ToolRegistry};
 use crate::agent_runtime::types::ConversationMessage;
+use crate::agent_safety::bash_validation::{validate_command, ExecutionMode};
 
 // ============================================================================
 // API factory — dyn-trait so the real provider builder drops in unchanged
@@ -569,6 +572,7 @@ impl<E: EventEmitter> TurnDriver<E> {
             self.emitter.clone() as Arc<dyn BridgeEmitter>,
             cancel_token.clone(),
             request.provider_config.supports_vision,
+            request.execution_mode,
         );
 
         // 4. Construct the runtime with a fresh RuntimeConfig overlaying
@@ -848,6 +852,7 @@ fn build_per_turn_tool_registry(
     emitter: Arc<dyn BridgeEmitter>,
     cancel_token: CancellationToken,
     supports_vision: bool,
+    execution_mode: AgentExecutionMode,
 ) -> ToolRegistry {
     let registry = ToolRegistry::new();
     let vision_blocked = |name: &str| {
@@ -855,7 +860,9 @@ fn build_per_turn_tool_registry(
     };
     // 1. Bridge fallback for every AllowedTool the model can see.
     for tool in tools {
-        if vision_blocked(&tool.name) {
+        if vision_blocked(&tool.name)
+            || (execution_mode == AgentExecutionMode::Plan && is_plan_mutating_tool(&tool.name))
+        {
             continue;
         }
         let executor: Arc<dyn ToolExecutor> = Arc::new(FrontendBridgeExecutor::new(
@@ -870,14 +877,148 @@ fn build_per_turn_tool_registry(
     // 2. Native Rust executors from the base registry overwrite any
     //    bridge entry registered above with the same name.
     for name in base.names() {
-        if vision_blocked(&name) {
+        if vision_blocked(&name)
+            || (execution_mode == AgentExecutionMode::Plan && is_plan_mutating_tool(&name))
+        {
             continue;
         }
         if let Some(existing) = base.get(&name) {
-            registry.register(existing);
+            if execution_mode == AgentExecutionMode::Plan && name == "shell_execute" {
+                registry.register(Arc::new(PlanShellExecutor { inner: existing }));
+            } else {
+                registry.register(existing);
+            }
         }
     }
     registry
+}
+
+const PLAN_MUTATING_TOOLS: &[&str] = &[
+    "file_write",
+    "file_edit",
+    "move_path",
+    "delete_path",
+    "folder_create",
+    "shell_spawn",
+    "shell_kill",
+    "todo_write",
+];
+
+fn is_plan_mutating_tool(name: &str) -> bool {
+    PLAN_MUTATING_TOOLS.contains(&name)
+}
+
+struct PlanShellExecutor {
+    inner: Arc<dyn ToolExecutor>,
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor for PlanShellExecutor {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn schema(&self) -> crate::agent_runtime::api_client::ToolSchema {
+        self.inner.schema()
+    }
+
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        context: &ToolContext,
+    ) -> Result<String, ToolError> {
+        let command = input
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                ToolError::InvalidInput("`command` must be a non-empty string".into())
+            })?;
+        if !is_plan_shell_command_allowed(command) {
+            return Err(ToolError::PolicyViolation(
+                "Plan mode allows one read-only shell command at a time; use Agent mode for writes, pipelines, or chained commands"
+                    .into(),
+            ));
+        }
+        validate_command(command, ExecutionMode::ReadOnly).map_err(|error| {
+            ToolError::PolicyViolation(format!(
+                "Plan mode allows read-only shell commands only: {error}"
+            ))
+        })?;
+        self.inner.execute(input, context).await
+    }
+}
+
+fn is_plan_shell_command_allowed(command: &str) -> bool {
+    if command.trim().is_empty()
+        || [';', '|', '>', '<', '&', '\n', '\r', '`']
+            .iter()
+            .any(|token| command.contains(*token))
+        || command.contains("$(")
+    {
+        return false;
+    }
+
+    let normalized = command
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    if normalized.contains("--output") || normalized.contains(" -o ") {
+        return false;
+    }
+    let simple = [
+        "cat",
+        "cd",
+        "dir",
+        "echo",
+        "findstr",
+        "get-childitem",
+        "get-command",
+        "get-content",
+        "get-item",
+        "get-location",
+        "get-process",
+        "grep",
+        "ls",
+        "pwd",
+        "resolve-path",
+        "rg",
+        "select-string",
+        "test-path",
+        "type",
+        "where",
+        "whoami",
+    ];
+    if simple
+        .iter()
+        .any(|allowed| normalized == *allowed || normalized.starts_with(&format!("{allowed} ")))
+    {
+        return true;
+    }
+
+    ["git diff", "git log", "git show", "git status"]
+        .iter()
+        .any(|allowed| normalized == *allowed || normalized.starts_with(&format!("{allowed} ")))
+        || is_read_only_git_branch(&normalized)
+}
+
+fn is_read_only_git_branch(command: &str) -> bool {
+    if command == "git branch" {
+        return true;
+    }
+    let Some(args) = command.strip_prefix("git branch ") else {
+        return false;
+    };
+    let flags: Vec<&str> = args.split_whitespace().collect();
+    flags.iter().all(|arg| arg.starts_with('-'))
+        && !flags.iter().any(|arg| {
+            matches!(
+                *arg,
+                "-d" | "-D" | "-m" | "-M" | "-c" | "-C" | "--delete" | "--move" | "--copy"
+            ) || arg.starts_with("--delete=")
+                || arg.starts_with("--move=")
+                || arg.starts_with("--copy=")
+        })
 }
 
 // ============================================================================
@@ -1346,6 +1487,7 @@ mod tests {
             provider_id: "mock-provider".into(),
             model: "mock-model".into(),
             workspace_path: None,
+            execution_mode: AgentExecutionMode::Agent,
             provider_config: default_provider_config(),
             system_prompt: None,
             ide_context: None,
@@ -1360,6 +1502,99 @@ mod tests {
             compaction_summary_budget: None,
             allow_outside_workspace: None,
         }
+    }
+
+    fn native_test_registry() -> Arc<ToolRegistry> {
+        let mut registry = ToolRegistry::new();
+        let sink = Arc::new(crate::tools::shell_editor_todo::NoopIdeEventSink);
+        crate::tools::file_workspace_search::register(&mut registry, sink.clone());
+        crate::tools::shell_editor_todo::register(&mut registry, sink);
+        Arc::new(registry)
+    }
+
+    #[test]
+    fn plan_registry_excludes_native_mutators_but_keeps_read_tools() {
+        let emitter = Arc::new(MockEmitter::default());
+        let registry = build_per_turn_tool_registry(
+            native_test_registry(),
+            &[],
+            "turn-plan".into(),
+            Arc::new(BridgeRouter::new()),
+            emitter,
+            CancellationToken::new(),
+            false,
+            AgentExecutionMode::Plan,
+        );
+
+        for name in PLAN_MUTATING_TOOLS {
+            assert!(registry.get(name).is_none(), "Plan mode exposed {name}");
+        }
+        for name in ["file_read", "grep", "workspace_tree", "shell_execute"] {
+            assert!(registry.get(name).is_some(), "Plan mode hid {name}");
+        }
+    }
+
+    #[test]
+    fn plan_shell_allowlist_handles_powershell_git_and_command_chaining() {
+        for command in [
+            "rg TODO src",
+            "Get-Content package.json -Raw",
+            "git status --short",
+            "git branch --show-current",
+        ] {
+            assert!(
+                is_plan_shell_command_allowed(command),
+                "blocked safe command: {command}"
+            );
+        }
+        for command in [
+            "Set-Content secret.txt nope",
+            "Get-Content a | Set-Content b",
+            "echo $(rm file)",
+            "git branch feature",
+            "git branch -D feature",
+            "git diff --output=changes.patch",
+            "rg TODO; Remove-Item file",
+        ] {
+            assert!(
+                !is_plan_shell_command_allowed(command),
+                "allowed mutating command: {command}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_shell_rejects_mutating_commands_before_execution() {
+        let emitter = Arc::new(MockEmitter::default());
+        let registry = build_per_turn_tool_registry(
+            native_test_registry(),
+            &[],
+            "turn-plan".into(),
+            Arc::new(BridgeRouter::new()),
+            emitter,
+            CancellationToken::new(),
+            false,
+            AgentExecutionMode::Plan,
+        );
+        let tool = registry
+            .get("shell_execute")
+            .expect("read-only shell remains visible");
+        let error = tool
+            .execute(
+                serde_json::json!({ "command": "Set-Content secret.txt nope" }),
+                &ToolContext {
+                    turn_id: "turn-plan".into(),
+                    tool_call_id: "call-plan".into(),
+                    session_id: "session-plan".into(),
+                    workspace_root: None,
+                    allow_outside_workspace: false,
+                    cancel_token: CancellationToken::new(),
+                },
+            )
+            .await
+            .expect_err("Plan mode must reject writes");
+
+        assert!(matches!(error, ToolError::PolicyViolation(_)));
     }
 
     fn dummy_factory() -> Arc<MockApiFactory> {

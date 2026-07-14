@@ -51,7 +51,6 @@ import {
   isTeamLeadTool,
   type TeamToolContext,
 } from "./team-agent-tools";
-import { useWorkspaceStore } from "../store/useWorkspaceStore";
 
 /**
  * Names of Aurora tools that are implemented in TypeScript on the
@@ -108,19 +107,6 @@ interface SkillLoadArgs {
   id?: unknown;
 }
 
-function readWorkspacePath(): string | null {
-  // Read the workspace root straight from the store. The bridge has
-  // no parameter for it, but `useWorkspaceStore` is a singleton so
-  // any active workspace is reflected here. `rootPath` is the empty
-  // string when no workspace is loaded — normalise that to `null`
-  // so downstream code can short-circuit cleanly.
-  const raw = useWorkspaceStore.getState().rootPath;
-  if (typeof raw !== "string" || raw.trim() === "") {
-    return null;
-  }
-  return raw;
-}
-
 function coerceLimit(value: unknown): number {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -134,7 +120,10 @@ function coerceLimit(value: unknown): number {
   return 30;
 }
 
-async function runSkillSearch(rawArgs: Record<string, unknown>): Promise<string> {
+async function runSkillSearch(
+  rawArgs: Record<string, unknown>,
+  workspacePath: string | null,
+): Promise<string> {
   const args = rawArgs as SkillSearchArgs;
   const query = typeof args.query === "string" ? args.query : undefined;
   const limit = coerceLimit(args.limit);
@@ -143,7 +132,6 @@ async function runSkillSearch(rawArgs: Record<string, unknown>): Promise<string>
       ? args.source
       : undefined;
 
-  const workspacePath = readWorkspacePath();
   const results = await searchSkillCandidates(query ?? null, limit, { workspacePath });
 
   const filtered = source ? results.filter((r) => r.source === source) : results;
@@ -155,14 +143,16 @@ async function runSkillSearch(rawArgs: Record<string, unknown>): Promise<string>
   });
 }
 
-async function runSkillLoad(rawArgs: Record<string, unknown>): Promise<string> {
+async function runSkillLoad(
+  rawArgs: Record<string, unknown>,
+  workspacePath: string | null,
+): Promise<string> {
   const args = rawArgs as SkillLoadArgs;
   const id = typeof args.id === "string" ? args.id.trim() : "";
   if (!id) {
     throw new Error("aurora_skill_load: `id` is required");
   }
 
-  const workspacePath = readWorkspacePath();
   const skill = await findSkillById(id, { workspacePath });
 
   if (!skill) {
@@ -241,9 +231,9 @@ export async function executeAuroraFrontendTool(
 
   switch (toolName) {
     case "aurora_skill_search":
-      return runSkillSearch(args);
+      return runSkillSearch(args, ctx?.workspacePath ?? null);
     case "aurora_skill_load":
-      return runSkillLoad(args);
+      return runSkillLoad(args, ctx?.workspacePath ?? null);
     case "ask_question":
       return runAskQuestion(args);
     default:

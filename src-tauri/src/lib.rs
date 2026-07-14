@@ -791,6 +791,9 @@ pub fn run_with_args(cli_args: CliArgs) {
                 if let Err(err) = services::webview_permissions::install_permission_handler(&win) {
                     eprintln!("[aurora] failed to install webview permission handler: {err}");
                 }
+                if let Err(err) = services::webview_recovery::install_crash_recovery_handler(&win) {
+                    eprintln!("[aurora] failed to install webview crash recovery: {err}");
+                }
             }
 
             // Agent-only launch: build the agent window (route `/agent-window`,
@@ -849,6 +852,13 @@ pub fn run_with_args(cli_args: CliArgs) {
                         {
                             eprintln!(
                                 "[aurora] failed to install webview permission handler (agent): {err}"
+                            );
+                        }
+                        if let Err(err) =
+                            services::webview_recovery::install_crash_recovery_handler(&agent_win)
+                        {
+                            eprintln!(
+                                "[aurora] failed to install webview crash recovery (agent): {err}"
                             );
                         }
                         if let Some(main_win) = app.get_webview_window("main") {

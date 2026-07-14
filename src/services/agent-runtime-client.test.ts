@@ -154,6 +154,7 @@ describe("AgentRuntimeClient.buildRequest", () => {
       maxOutputTokens: 1024,
       thinkingEnabled: true,
       workspacePath: "E:/VOID-EDITOR/Aurora-Agent-IDE",
+      executionMode: "agent",
     });
 
     expect(request.providerConfig).toEqual({
@@ -219,6 +220,18 @@ describe("AgentRuntimeClient.buildRequest", () => {
     // null on the wire means "no enforcement" — the Rust runtime
     // falls back to the legacy whole-session behaviour.
     expect(request.contextWindow).toBeNull();
+  });
+
+  it("sends Plan mode as an explicit runtime boundary value", () => {
+    const request = AgentRuntimeClient.buildRequest({
+      turnId: "t-plan",
+      threadId: "thread-1",
+      input: sampleInput,
+      providerConfig: sampleProviderConfig,
+      config: { executionMode: "plan" },
+    });
+
+    expect(request.executionMode).toBe("plan");
   });
 });
 

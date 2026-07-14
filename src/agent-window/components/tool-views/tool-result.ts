@@ -124,6 +124,21 @@ const FILE_MODIFY_TOOLS = new Set([
 
 const MAX_CODE = 4000;
 
+/**
+ * Cap on shell output rendered in a tool card. A runaway command can emit
+ * megabytes; pushing that into a `<pre>` freezes layout (and stresses the
+ * WebView renderer). Keep the head (the command's real signal) plus the tail
+ * (exit summary / final error) and note the elision between them.
+ */
+const MAX_SHELL_HEAD = 24_000;
+const MAX_SHELL_TAIL = 12_000;
+
+function clampShellOutput(text: string): string {
+  if (text.length <= MAX_SHELL_HEAD + MAX_SHELL_TAIL) return text;
+  const omitted = text.length - MAX_SHELL_HEAD - MAX_SHELL_TAIL;
+  return `${text.slice(0, MAX_SHELL_HEAD)}\n… (${omitted.toLocaleString()} characters omitted) …\n${text.slice(-MAX_SHELL_TAIL)}`;
+}
+
 // ── Safe accessors (JSON.parse → unknown; narrow before use) ──────────
 
 function rec(v: unknown): Record<string, unknown> | null {
@@ -394,7 +409,7 @@ export function parseToolResult(
       cwd: asStr(parsed.cwd) ?? asStr(args.cwd),
       exitCode: exit ?? null,
       mode: parsed.type === "terminal" ? "terminal" : "inline",
-      output: pieces.join("\n"),
+      output: clampShellOutput(pieces.join("\n")),
       success,
     };
     out.summary = success ? "Ran command" : "Command failed";

@@ -1086,7 +1086,88 @@ pub fn parse_tool_input(raw: &str) -> Value {
     if raw.trim().is_empty() {
         return json!({});
     }
-    serde_json::from_str(raw).unwrap_or_else(|_| json!({}))
+    let normalized = normalize_absolute_windows_paths(raw);
+    serde_json::from_str(&normalized).unwrap_or_else(|_| json!({}))
+}
+
+/// Models occasionally emit Windows paths with literal backslashes inside
+/// tool-call JSON. Some of those sequences are invalid JSON (`\U`), while
+/// others are valid escapes with the wrong meaning (`\r`, `\n`, `\t`). Repair
+/// only strings that unmistakably start with an absolute drive path, leaving
+/// command strings, file contents, and already-correct JSON escapes untouched.
+fn normalize_absolute_windows_paths(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut output = String::with_capacity(raw.len());
+    let mut cursor = 0usize;
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        if bytes[index] != b'"' {
+            index += 1;
+            continue;
+        }
+
+        let is_drive_path = index + 3 < bytes.len()
+            && bytes[index + 1].is_ascii_alphabetic()
+            && bytes[index + 2] == b':'
+            && bytes[index + 3] == b'\\';
+
+        if is_drive_path {
+            output.push_str(&raw[cursor..=index]);
+            let mut segment_start = index + 1;
+            let mut path_index = segment_start;
+
+            while path_index < bytes.len() {
+                match bytes[path_index] {
+                    b'\\' => {
+                        output.push_str(&raw[segment_start..path_index]);
+                        let run_start = path_index;
+                        while path_index < bytes.len() && bytes[path_index] == b'\\' {
+                            path_index += 1;
+                        }
+                        output.push_str(&raw[run_start..path_index]);
+                        if (path_index - run_start) % 2 == 1 {
+                            output.push('\\');
+                        }
+                        segment_start = path_index;
+                    }
+                    b'"' => {
+                        output.push_str(&raw[segment_start..=path_index]);
+                        index = path_index + 1;
+                        cursor = index;
+                        break;
+                    }
+                    _ => path_index += 1,
+                }
+            }
+
+            if path_index == bytes.len() {
+                // Keep malformed/incomplete JSON intact; the caller will apply
+                // its established invalid-input fallback.
+                output.push_str(&raw[segment_start..]);
+                cursor = bytes.len();
+                index = bytes.len();
+            }
+            continue;
+        }
+
+        // Skip over an ordinary JSON string so a quote-like byte in its value
+        // cannot be mistaken for the start of a path string.
+        index += 1;
+        while index < bytes.len() {
+            if bytes[index] == b'\\' {
+                index = (index + 2).min(bytes.len());
+            } else if bytes[index] == b'"' {
+                index += 1;
+                break;
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    output.push_str(&raw[cursor..]);
+    output
 }
 
 /// Build a final assistant [`ConversationMessage`] from accumulated
@@ -1183,5 +1264,40 @@ mod tests {
         assert_eq!(parse_tool_input("   "), json!({}));
         assert_eq!(parse_tool_input("not json"), json!({}));
         assert_eq!(parse_tool_input(r#"{"a":1}"#), json!({"a": 1}));
+    }
+
+    #[test]
+    fn parse_tool_input_repairs_unescaped_windows_path() {
+        let raw = r#"{"path":"C:\Users\Alvan\project\repo\src\main\index.ts"}"#;
+        assert_eq!(
+            parse_tool_input(raw),
+            json!({"path": r"C:\Users\Alvan\project\repo\src\main\index.ts"})
+        );
+    }
+
+    #[test]
+    fn parse_tool_input_repairs_windows_paths_array() {
+        let raw = r#"{"paths":["C:\Users\Alvan\long\repo\src\main\index.ts","E:\rust\new\tests\read.rs"]}"#;
+        assert_eq!(
+            parse_tool_input(raw),
+            json!({
+                "paths": [
+                    r"C:\Users\Alvan\long\repo\src\main\index.ts",
+                    r"E:\rust\new\tests\read.rs"
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn parse_tool_input_preserves_escaped_windows_paths_and_other_escapes() {
+        let raw = r#"{"paths":["C:\\Users\\Alvan\\repo\\src\\main\\index.ts"],"content":"first\nsecond"}"#;
+        assert_eq!(
+            parse_tool_input(raw),
+            json!({
+                "paths": [r"C:\Users\Alvan\repo\src\main\index.ts"],
+                "content": "first\nsecond"
+            })
+        );
     }
 }

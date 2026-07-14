@@ -44,8 +44,8 @@
 //!
 //! After a successful [`register_builtin_tools`] call the destination
 //! registry contains exactly the union of [`file_workspace_search::TOOL_NAMES`]
-//! and [`shell_editor_todo::TOOL_NAMES`] (10 + 7 = 17), plus the 9
-//! browser tools when a `BrowserManager` is supplied (total 26). The
+//! and [`shell_editor_todo::TOOL_NAMES`] (9 + 7 = 16), plus the 6
+//! browser tools when a `BrowserManager` is supplied (total 22). The
 //! `Sub-E` verify crate (`__verify_phase3_e/`) pins this count.
 
 #![allow(dead_code)]
@@ -57,11 +57,11 @@ pub mod shell_editor_todo;
 
 /// Number of tools pre-populated in the production
 /// [`crate::agent_runtime::tool_executor::ToolRegistry`]:
-/// Sub-C ships 10 (file/workspace/search, after the 16→10 refine),
-/// Sub-D ships 7 (shell/editor/todo), the browser bucket ships 9 —
-/// total 26. Kept in lockstep with the three bucket `TOOL_NAMES`
+/// Sub-C ships 9 (file/workspace/search), Sub-D ships 7
+/// (shell/editor/todo), and the browser bucket ships 6 — total 22.
+/// Kept in lockstep with the three bucket `TOOL_NAMES`
 /// arrays by `builtin_tool_count_is_correct`.
-pub const BUILTIN_TOOL_COUNT: usize = 26;
+pub const BUILTIN_TOOL_COUNT: usize = 22;
 
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn builtin_tool_count_is_correct() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 26);
+        assert_eq!(BUILTIN_TOOL_COUNT, 22);
         assert_eq!(
             file_workspace_search::TOOL_NAMES.len()
                 + shell_editor_todo::TOOL_NAMES.len()
@@ -174,8 +174,8 @@ mod tests {
     fn register_builtin_tools_without_browser_mounts_bucket_tools() {
         let reg = ToolRegistry::new();
         register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
-        // Sub-C (10) + Sub-D (7) = 17 without the browser bucket.
-        assert_eq!(reg.len(), 17);
+        // Sub-C (9) + Sub-D (7) = 16 without the browser bucket.
+        assert_eq!(reg.len(), 16);
     }
 
     #[test]
@@ -203,7 +203,7 @@ mod tests {
         let reg = ToolRegistry::new();
         register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
         register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
-        assert_eq!(reg.len(), 17, "re-register must coalesce");
+        assert_eq!(reg.len(), 16, "re-register must coalesce");
     }
 
     #[test]

@@ -126,8 +126,7 @@ impl ToolExecutor for FileEditTool {
         }
 
         // Single-edit form — requires a top-level `path`.
-        let path =
-            top_path.ok_or_else(|| ToolError::InvalidInput(missing_path_message(&input)))?;
+        let path = top_path.ok_or_else(|| ToolError::InvalidInput(missing_path_message(&input)))?;
         let resolved = resolve_path(path, ctx.workspace_root.as_deref())?;
         let resolved_str = resolved.to_string_lossy().to_string();
         let raw_path = path.to_string();
@@ -216,17 +215,23 @@ impl FileEditTool {
                          top-level `path` that all edits share."
                     ))
                 })?;
-            let old_string = rep.get("old_string").and_then(Value::as_str).ok_or_else(|| {
-                ToolError::InvalidInput(format!("Edit {n}: `old_string` is required"))
-            })?;
+            let old_string = rep
+                .get("old_string")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    ToolError::InvalidInput(format!("Edit {n}: `old_string` is required"))
+                })?;
             if old_string.is_empty() {
                 return Err(ToolError::InvalidInput(format!(
                     "Edit {n}: `old_string` must not be empty"
                 )));
             }
-            let new_string = rep.get("new_string").and_then(Value::as_str).ok_or_else(|| {
-                ToolError::InvalidInput(format!("Edit {n}: `new_string` is required"))
-            })?;
+            let new_string = rep
+                .get("new_string")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    ToolError::InvalidInput(format!("Edit {n}: `new_string` is required"))
+                })?;
             let replace_all = rep
                 .get("replace_all")
                 .and_then(Value::as_bool)
@@ -267,8 +272,10 @@ impl FileEditTool {
             }
         }
 
-        // Phase 1 — validate every file with write:false. One failure aborts
-        // the batch before any disk write.
+        // Phase 1 — validate every file and retain its original/new snapshots.
+        // One failure aborts before any disk write.
+        let mut prepared: Vec<(String, String, SearchReplaceResponse)> =
+            Vec::with_capacity(groups.len());
         for g in &groups {
             let resp = apply_multi_search_replace(ApplyMultiSearchReplaceRequest {
                 path: g.resolved.clone(),
@@ -284,25 +291,22 @@ impl FileEditTool {
                     render_response(&g.raw, &g.resolved, resp, true)
                 });
             }
+            prepared.push((g.raw.clone(), g.resolved.clone(), resp));
         }
 
-        // Phase 2 — commit. Every file planned cleanly, so each write re-runs
-        // the (cached) plan and persists it.
-        let mut committed: Vec<(String, String, SearchReplaceResponse)> =
-            Vec::with_capacity(groups.len());
-        for g in groups {
-            let resp = apply_multi_search_replace(ApplyMultiSearchReplaceRequest {
-                path: g.resolved.clone(),
-                replacements: g.items.clone(),
-                write: true,
-            })
+        // Phase 2 — commit from the validated snapshots. The commit checks that
+        // no file changed between planning and writing, and rolls back every
+        // attempted write if a later write fails.
+        let committed = tokio::task::spawn_blocking(move || commit_prepared_files(prepared))
             .await
+            .map_err(|error| {
+                ToolError::Execution(format!("file_edit commit task panicked: {error}"))
+            })?
             .map_err(ToolError::Execution)?;
-            if matches!(resp, SearchReplaceResponse::Ok { .. }) {
-                emit_post_write(&*self.sink, &g.resolved, "file_edit", &ctx.tool_call_id).await;
-                super::read_tracker::record(&ctx.session_id, &g.resolved);
-            }
-            committed.push((g.raw, g.resolved, resp));
+
+        for (_, resolved, _) in &committed {
+            emit_post_write(&*self.sink, resolved, "file_edit", &ctx.tool_call_id).await;
+            super::read_tracker::record(&ctx.session_id, resolved);
         }
 
         if committed.len() == 1 {
@@ -310,6 +314,114 @@ impl FileEditTool {
             return Ok(render_response(&raw, &resolved, resp, true));
         }
         Ok(render_multi_success(&committed))
+    }
+}
+
+type PreparedEdit = (String, String, SearchReplaceResponse);
+
+fn commit_prepared_files(mut files: Vec<PreparedEdit>) -> Result<Vec<PreparedEdit>, String> {
+    commit_prepared_files_with(
+        &files,
+        |path| std::fs::read_to_string(path),
+        |path, content| {
+            std::fs::write(path, content)?;
+            crate::file_cache::get_file_cache().invalidate(path);
+            Ok(())
+        },
+    )?;
+
+    for (_, _, response) in &mut files {
+        if let SearchReplaceResponse::Ok { wrote_to_disk, .. } = response {
+            *wrote_to_disk = true;
+        }
+    }
+    Ok(files)
+}
+
+fn commit_prepared_files_with<Read, Write>(
+    files: &[PreparedEdit],
+    mut read: Read,
+    mut write: Write,
+) -> Result<(), String>
+where
+    Read: FnMut(&str) -> std::io::Result<String>,
+    Write: FnMut(&str, &str) -> std::io::Result<()>,
+{
+    let mut committed = Vec::with_capacity(files.len());
+
+    for (index, (_, path, response)) in files.iter().enumerate() {
+        let SearchReplaceResponse::Ok {
+            original_content,
+            new_content,
+            ..
+        } = response
+        else {
+            return Err(format!("internal error: unplanned response for {path}"));
+        };
+
+        let current = read(path).map_err(|error| {
+            rollback_error(
+                format!("failed to re-read {path} before commit: {error}"),
+                files,
+                &committed,
+                &mut write,
+            )
+        })?;
+        if current != *original_content {
+            return Err(rollback_error(
+                format!("{path} changed after it was validated; no batch edits were kept"),
+                files,
+                &committed,
+                &mut write,
+            ));
+        }
+
+        if let Err(error) = write(path, new_content) {
+            let mut attempted = committed.clone();
+            attempted.push(index);
+            return Err(rollback_error(
+                format!("failed to write {path}: {error}"),
+                files,
+                &attempted,
+                &mut write,
+            ));
+        }
+        committed.push(index);
+    }
+
+    Ok(())
+}
+
+fn rollback_error<Write>(
+    cause: String,
+    files: &[PreparedEdit],
+    attempted: &[usize],
+    write: &mut Write,
+) -> String
+where
+    Write: FnMut(&str, &str) -> std::io::Result<()>,
+{
+    let failures: Vec<String> = attempted
+        .iter()
+        .rev()
+        .filter_map(|&index| {
+            let (_, path, response) = &files[index];
+            let SearchReplaceResponse::Ok {
+                original_content, ..
+            } = response
+            else {
+                return Some(format!("{path}: original snapshot unavailable"));
+            };
+            write(path, original_content)
+                .err()
+                .map(|error| format!("{path}: {error}"))
+        })
+        .collect();
+
+    if failures.is_empty() {
+        format!("{cause}; all attempted writes were rolled back")
+    } else {
+        format!("{cause}; rollback also failed for: {}", failures.join(", "))
     }
 }
 
@@ -358,7 +470,11 @@ fn render_multi_needs_read(raw_path: &str, resolved_str: &str) -> String {
 
 /// Render a validation failure for a multi-file batch. Nothing was written;
 /// the message names the file and the 1-based edit that failed within it.
-fn render_multi_failure(raw_path: &str, full_path: &str, response: SearchReplaceResponse) -> String {
+fn render_multi_failure(
+    raw_path: &str,
+    full_path: &str,
+    response: SearchReplaceResponse,
+) -> String {
     let (error, failed_at, occurrences) = match response {
         SearchReplaceResponse::NotFound { failed_at } => (
             format!(
@@ -705,5 +821,97 @@ mod tests {
         assert_eq!(parsed["needsRead"], true);
         // File must be untouched.
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "data\n");
+    }
+
+    fn prepared(path: &str, original: &str, new_content: &str) -> PreparedEdit {
+        (
+            path.to_string(),
+            path.to_string(),
+            SearchReplaceResponse::Ok {
+                original_content: original.to_string(),
+                new_content: new_content.to_string(),
+                line_ending_normalized: false,
+                lines_added: 0,
+                lines_removed: 0,
+                total_replacements: 1,
+                replacement_details: Vec::new(),
+                wrote_to_disk: false,
+            },
+        )
+    }
+
+    #[test]
+    fn commit_rolls_back_every_attempted_file_when_a_later_write_fails() {
+        use std::cell::{Cell, RefCell};
+        use std::collections::HashMap;
+
+        let files = vec![
+            prepared("a", "old-a", "new-a"),
+            prepared("b", "old-b", "new-b"),
+        ];
+        let disk = RefCell::new(HashMap::from([
+            ("a".to_string(), "old-a".to_string()),
+            ("b".to_string(), "old-b".to_string()),
+        ]));
+        let failed = Cell::new(false);
+
+        let error = commit_prepared_files_with(
+            &files,
+            |path| {
+                disk.borrow().get(path).cloned().ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "missing test file")
+                })
+            },
+            |path, content| {
+                if path == "b" && content == "new-b" && !failed.replace(true) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "injected failure",
+                    ));
+                }
+                disk.borrow_mut()
+                    .insert(path.to_string(), content.to_string());
+                Ok(())
+            },
+        )
+        .expect_err("second write must fail");
+
+        assert!(error.contains("all attempted writes were rolled back"));
+        assert_eq!(disk.borrow().get("a").unwrap(), "old-a");
+        assert_eq!(disk.borrow().get("b").unwrap(), "old-b");
+    }
+
+    #[test]
+    fn commit_rejects_stale_snapshot_and_rolls_back_earlier_files() {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+
+        let files = vec![
+            prepared("a", "old-a", "new-a"),
+            prepared("b", "old-b", "new-b"),
+        ];
+        let disk = RefCell::new(HashMap::from([
+            ("a".to_string(), "old-a".to_string()),
+            ("b".to_string(), "changed-elsewhere".to_string()),
+        ]));
+
+        let error = commit_prepared_files_with(
+            &files,
+            |path| {
+                disk.borrow().get(path).cloned().ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "missing test file")
+                })
+            },
+            |path, content| {
+                disk.borrow_mut()
+                    .insert(path.to_string(), content.to_string());
+                Ok(())
+            },
+        )
+        .expect_err("stale second file must abort the batch");
+
+        assert!(error.contains("changed after it was validated"));
+        assert_eq!(disk.borrow().get("a").unwrap(), "old-a");
+        assert_eq!(disk.borrow().get("b").unwrap(), "changed-elsewhere");
     }
 }

@@ -2,6 +2,83 @@
 
 Thin progress + working-memory layer. Append 2-4 lines per meaningful change.
 
+## Task (2026-07-14): Settings/provider controls felt "cheap" — pressed-state + focus pass — DONE (uncommitted, CSS-only)
+User: settings (esp. providers page) interactions feel like decoration, not controls; colors are theirs, feel is off.
+Root cause: NO `:active` (pressed) state existed on ANY control in agent-window.css except the composer send button;
+several controls also lacked focus-visible rings; the seg control's active shadow popped (not in transition).
+- Added pressed states to: `.agw-icon-btn`, `.agw-settings-nav-item`, `.agw-set-btn` (+ primary/danger/success
+  variants), `.agw-seg-btn`, `.agw-prov-item`, `.agw-csel-trigger`, `.agw-csel-item`. Theme-proof shade formula:
+  `color-mix(hover 88%, var(--agw-text) 12%)` — deepens correctly in light AND dark with any user palette.
+- Focus-visible rings added where missing (set-btn, seg-btn, prov-item, csel-*); seg active pill layers ring+shadow.
+- `.agw-switch` knob now does the iOS press-stretch (width 18→22px held, on-state translate 18→14 so the outer
+  edge stays put; spring transition carries release). Seg-btn transition now includes box-shadow; seg hover
+  gained a soft fill.
+- Verified: postcss parse, tsc -b, 118/118 tests, production `pnpm build` exit 0. (First build attempt hit a
+  known-flaky ENOTEMPTY in scripts/sync-material-icons.mjs rmdir of public/vscode-icons — retry passed.)
+
+## Task (2026-07-14): Agent-window streaming lag — 5 perf fixes — DONE (uncommitted, FE-only)
+User: window feels laggy/unprofessional during streaming. Root cause: EVERY token → `patchTurnMessage` →
+whole-transcript rebuild + re-render of every row in the active turn (tokens arrive way faster than 60fps;
+long agentic turns have dozens of tool cards + markdown segments, each re-rendered per token).
+- `useAgentWindowSend`: token/thinking deltas now COALESCE into one store patch per animation frame
+  (rAF + 200ms timer backstop for hidden windows); every non-text event (tool upsert/result, injection,
+  compaction, error, turn end) calls `flushStreamText()` first so timeline order stays exact.
+- `AgentMarkdown`, `AgentThinkingBlock`: React.memo (string+bool props) — completed segments in the
+  streaming turn skip Streamdown/Shiki re-work per frame.
+- `ToolGroup`: React.memo with element-IDENTITY comparator over `tools` (buildRows recreates arrays but
+  ToolCall objects keep identity unless actually patched) — text frames no longer re-render every card.
+- `tool-result.ts`: shell output in cards clamped to 24K head + 12K tail with elision note (a multi-MB
+  output used to go verbatim into a `<pre>` — jank + the WebView2 crash trigger).
+- Verified: tsc -b, eslint (5 touched files), 118/118 tests. NOT live-verified (needs app run).
+
+## Task (2026-07-14): "Transcript rolled back to compaction after grey screen" — root-caused (ANALYSIS ONLY, no code change)
+Compaction is NOT the culprit — it's append-only (marker message; JSONL keeps full history; UI renders everything).
+Real chain: huge shell output → WebView2 renderer crash (known 150.0.4078.65 regression, grey page) → reload wipes
+in-memory `liveTurns` → `selectThread` falls back to `thread_load` (disk), and disk only has COMPLETED turns
+(`save_to_path` runs at turn END; mid-turn content incl. a fresh compaction marker is memory-only). Orphaned turn
+keeps running in Rust but all event listeners are per-`chat()` call → nothing re-attaches after reload, nothing
+refreshes on its `agent_turn_complete`, and `selectThread` early-returns on the already-open thread. The "lost"
+messages usually ARE on disk once the turn ends — switch to another chat and back to see them. Fix candidates:
+(a) incremental `append_to_path` per assistant/tool message, (b) global turn-complete listener → `reloadCurrentThread`,
+(c) reload-time query for in-flight turns (Rust `in_flight`) to re-attach or at least re-fetch on completion.
+
+## Task (2026-07-13): Agent-window STATUS_BREAKPOINT crash — root-caused + auto-recovery — DONE (uncommitted, needs Rust rebuild)
+User hit repeated "This page is having a problem / STATUS_BREAKPOINT" in the agent window since 2026-07-12.
+- **Root cause (proved via minidump)**: WebView2 Evergreen runtime auto-updated to 150.0.4078.65 on 2026-07-11
+  18:28 — hours before crashes began. Symbolicated the Crashpad dump (`%LOCALAPPDATA%\com.aurora.agent\EBWebView\
+  Crashpad\reports`, cdb + msdl symbols): renderer CHECK (int3) on MOUSE-UP → `LocalFrameView::UpdateLifecycle
+  PhasesInternal` → `LayoutSelection::Commit` → `FrameSelection::IsHidden/SelectionHasFocus` → re-entrant
+  `Document::UpdateStyleAndLayout`. A click while a text selection exists during style/layout churn (streaming
+  chat) trips a Blink re-entrancy CHECK. Runtime regression — NOT app code (scroll-fade/shimmer CSS exonerated;
+  not in the stack). No newer 150.x runtime exists yet (.65 > documented .44).
+- **Fix 1 — native auto-recovery**: new `services/webview_recovery.rs` — `ICoreWebView2::add_ProcessFailed`
+  handler that `Reload()`s on RENDER_PROCESS_EXITED / FRAME_RENDER_PROCESS_EXITED (per Microsoft's contract),
+  rate-limited 3 reloads/120s (no crash-loop), idempotent per WebView COM identity (the bootstrap command is
+  called repeatedly + handlers survive reloads → would otherwise stack). Installed at all 3 window-creation
+  sites: lib.rs main, lib.rs agent-mode launch, and `install_agent_media_permission_handler` (JS-created agent
+  window path).
+- **Fix 2 — seamless restore**: new `agent-window/hooks/useReloadRestore.ts` — snapshots the open chat
+  (`{id, ws}`) to sessionStorage on selection change; `AgentWindow` boot re-selects it after `init()`. Survives
+  crash-reload + Ctrl+R, fresh windows unaffected (sessionStorage is per-browsing-session). `selectThread`
+  already re-attaches to live turns, so a mid-run crash recovers into the streaming transcript.
+- Verified: 118/118 tests (3 new), tsc -b, eslint(touched), cargo check --lib, rustfmt(touched). NOT live-verified:
+  Rust change ⇒ needs `pnpm tauri:dev` restart AND `pnpm tauri build` for the installed production app.
+
+## Task (2026-07-12): Agent-window tool consolidation mismatches — IN PROGRESS
+- Enforce Agent/Plan/Team at the Rust tool-registry boundary; Plan keeps read-only shell validation and cannot see native mutators.
+- Make cross-file `file_edit` rollback-safe with stale-snapshot detection; align agent-window approvals with the current tool roster.
+- Pin frontend skill tools to the turn workspace, correct the native roster count, and remove the unavailable `aurora_search` tool.
+- Verify with focused Rust/TS regression tests, typecheck, lint, cargo check, and graphify update.
+- Test-target compilation caught an incorrect private emitter reference in the new Plan-mode tests; switched to the existing local `MockEmitter` before continuing.
+- Workspace-wide rustfmt touched unrelated files; all formatter-only changes were restored byte-for-byte from HEAD before verification resumed.
+- Full frontend tests passed; typecheck caught a test mock returning `undefined` where the real skill API returns `null`, corrected before the final verification rerun.
+
+### Review — DONE
+- Rust now receives an explicit execution mode: Plan hides every native mutator and wraps `shell_execute` with a cross-shell read-only allowlist plus the existing safety validator.
+- Multi-file edits validate snapshots, reject concurrent changes, and roll back every attempted write on failure; approval rows now contain only current gated agent-window tools.
+- Skill search/load use the dispatching turn's workspace; dead `aurora_search` was removed and the resulting native roster is 22 tools.
+- Verified: 115/115 frontend tests, 26 focused tests, targeted ESLint, TypeScript, production frontend build, `cargo check`, Rust test-target compilation, 45/45 safety tests, touched-file rustfmt, diff check, and graphify refresh. Full ESLint remains blocked by generated `build/` assets and legacy IDE violations outside agent-window scope.
+
 ## Task (2026-07-09): Profile page v2 — identity, models, hover readout, image export — DONE (uncommitted, Rust NOT compile-checked)
 User: profile page needs sharing (export image), model attribution (meta.json DOES have `model`),
 and chart hover detail (native title tooltip was useless).
@@ -1106,3 +1183,18 @@ the OUTER `.agw-shell-side` animates `width` (right-pinned inner revealed by its
 - Skeleton token color IS theme-driven: bars derive from dark theme `text:#ededed`/`textSubtle:#727272` (`themes.ts`) via
   color-mix — not hardcoded white. Dimmed further: container `opacity 0.42→0.30`, highlight `text 24%→14%`, edges `subtle 55%→40%`.
 - Verified: token-coverage test still 4/4 pass.
+
+## Active: batch `file_read` Windows-path corruption (2026-07-13)
+- Reproduced the failure boundary in `api/provider_kernel_adapter.rs`: streamed tool arguments are decoded with plain
+  `serde_json::from_str`. An unescaped absolute Windows path can therefore turn `\r`, `\n`, or `\t` path prefixes into
+  control characters, while prefixes such as `\U` make the complete tool input invalid.
+- Scope is native tool-input parsing plus regression tests for `path` and `paths`; no agent-window UI or theme changes.
+- Plan: normalize only absolute Windows path JSON strings before decoding, preserve already-correct doubled backslashes,
+  compile/test the focused Rust target, then update graphify.
+
+### Review
+- `parse_tool_input` now repairs odd backslash runs only inside unmistakable drive-letter path strings before JSON decoding.
+  This covers both `path` and every entry in `paths`, including sequences that previously decoded as CR/LF/tab.
+- Added regression cases for a single raw Windows path, a two-path batch, and already-correct paths plus ordinary `\n`
+  content. `cargo check --lib --tests` passes; the filtered test binary compiled but cannot launch because of the repository's
+  known Windows native-link failure (`STATUS_ENTRYPOINT_NOT_FOUND`). No UI files were touched.

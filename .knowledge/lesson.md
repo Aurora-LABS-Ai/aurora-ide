@@ -2,6 +2,20 @@
 
 Append 2-4 lines per mistake / broken assumption / project-specific warning.
 
+## "App broke with zero app changes" → check the WebView2 runtime date FIRST (2026-07-13)
+- The Evergreen WebView2 runtime auto-updates silently (`C:\Program Files (x86)\Microsoft\EdgeWebView\Application\<ver>` —
+  check the folder's CreationTime). A renderer crash (STATUS_BREAKPOINT sad page) that "started yesterday" matched the
+  runtime install time to the hour; app code was innocent. Don't rip out recently-shipped CSS/JS on timing correlation
+  alone — the runtime updates on its own clock too.
+- Renderer crashes leave minidumps in `%LOCALAPPDATA%\com.aurora.agent\EBWebView\Crashpad\reports` (NOT in Windows
+  Event Log — WER never sees Crashpad crashes). `cdb -z <dmp> -c ".ecxr; k 40; q"` with
+  `_NT_SYMBOL_PATH=srv*<cache>*https://msdl.microsoft.com/download/symbols` symbolicates msedge.dll (~600MB PDB
+  download, takes ~15 min). The dump's UTF-16 strings also carry the page URL → tells you WHICH window/route crashed.
+- STATUS_BREAKPOINT = a deliberate Chromium CHECK/int3, not a JS error; page content should never be able to cause it.
+  The app-side answer is `ICoreWebView2::add_ProcessFailed` + rate-limited `Reload()` (services/webview_recovery.rs),
+  not chasing phantom bugs in app code. WebView2 event handlers live on the browser-side COM object and SURVIVE page
+  reloads — installers called per-boot must be idempotent or they stack.
+
 ## PowerShell source scans (2026-07-10)
 - Bash brace expansion (`path/{a,b}.rs`) is not valid PowerShell command syntax. Pass each path
   explicitly (or build a PowerShell array) when using `rg` from this Windows workspace.
@@ -109,3 +123,10 @@ clean 199ms runtime verification of the typing-assist engine.
 ## CSS patches need selector context (2026-07-11)
 - A minimal patch for generic `opacity`/`background` declarations matched earlier unrelated rules. The focused token
   test caught it. For repeated CSS declarations, include the selector in every patch hunk and verify the exact block.
+# 2026-07-12 — Reuse the command module's test emitter
+- New `agent_v2` registry tests initially referenced a private `RecordingEmitter` from another module and failed test compilation.
+- Reuse the local `MockEmitter`, which already implements the command's event and bridge contracts; compile test targets before broader verification.
+
+# 2026-07-12 — Do not run workspace-wide rustfmt here
+- `cargo fmt --all` reformatted unrelated Rust files; a first scripted restore then consumed truncated shell output and shortened several files.
+- Restore clean files from HEAD in bounded chunks via `apply_patch`; format only touched files and never treat tool-rendered output as an unbounded file transport.

@@ -586,7 +586,63 @@ export function useAgentWindowSend(): AgentWindowSend {
     // store setter no-ops when unchanged, so calling it per token is free.
     const setActivity = (activity: AgentActivity) =>
       useAgentChatStore.getState().setThreadActivity(threadId, activity);
+
+    // ── Streaming-text coalescing ─────────────────────────────────────
+    // Tokens arrive far faster than the display refreshes (bursty, often
+    // several per millisecond). Patching the store per token re-renders the
+    // whole transcript per token — the streaming jank that grows with the
+    // size of the active turn. Text deltas buffer here and flush as ONE
+    // store patch per animation frame (a timer backstops hidden windows,
+    // where rAF doesn't fire). Anything that appends a NON-text timeline
+    // event flushes first, so the ordered timeline stays exact.
+    const pendingText: Array<{ kind: "content" | "thinking"; text: string }> = [];
+    let textFlushRaf: number | null = null;
+    let textFlushTimer: number | null = null;
+    const flushStreamText = () => {
+      if (textFlushRaf !== null) {
+        cancelAnimationFrame(textFlushRaf);
+        textFlushRaf = null;
+      }
+      if (textFlushTimer !== null) {
+        window.clearTimeout(textFlushTimer);
+        textFlushTimer = null;
+      }
+      if (pendingText.length === 0) return;
+      const deltas = pendingText.splice(0, pendingText.length);
+      patchMessage(assistantId, (m) => {
+        let timeline = timelineOf(m);
+        let content = m.content || "";
+        let thinking = m.thinking || "";
+        let isThinking = !!m.isThinking;
+        for (const d of deltas) {
+          if (d.kind === "content") {
+            // First content token ends the reasoning phase → thinking block
+            // auto-collapses (same trigger the IDE uses via `isThinking`).
+            content += d.text;
+            timeline = appendContent(timeline, d.text);
+            isThinking = false;
+          } else {
+            thinking += d.text;
+            timeline = appendThinking(timeline, d.text);
+            isThinking = true;
+          }
+        }
+        return { ...m, content, thinking, isThinking, timeline };
+      });
+    };
+    const queueStreamText = (kind: "content" | "thinking", text: string) => {
+      const last = pendingText[pendingText.length - 1];
+      if (last && last.kind === kind) last.text += text;
+      else pendingText.push({ kind, text });
+      if (textFlushRaf === null && textFlushTimer === null) {
+        textFlushRaf = requestAnimationFrame(flushStreamText);
+        textFlushTimer = window.setTimeout(flushStreamText, 200);
+      }
+    };
+
     const upsertToolCall = (tc: ToolCallRequest, result?: string | null) => {
+      // Keep timeline order exact: buffered text lands BEFORE this tool event.
+      flushStreamText();
       patchMessage(assistantId, (m) => {
         const calls = m.tool_calls ? [...m.tool_calls] : [];
         const idx = calls.findIndex((c) => c.id === tc.id);
@@ -652,6 +708,7 @@ export function useAgentWindowSend(): AgentWindowSend {
     };
 
     const setToolResult = (tc: ToolCallRequest, result: string) => {
+      flushStreamText();
       patchMessage(assistantId, (m) => {
         const calls = (m.tool_calls ?? []).map((c) =>
           c.id === tc.id ? { ...c, result } : c,
@@ -868,23 +925,11 @@ export function useAgentWindowSend(): AgentWindowSend {
           onToken: (token) => {
             // Final-answer text is streaming — the narrator reads "Responding…".
             setActivity({ label: "Responding…" });
-            patchMessage(assistantId, (m) => ({
-              ...m,
-              // First content token ends the reasoning phase → thinking block
-              // auto-collapses (same trigger the IDE uses via `isThinking`).
-              isThinking: false,
-              content: (m.content || "") + token,
-              timeline: appendContent(timelineOf(m), token),
-            }));
+            queueStreamText("content", token);
           },
           onThinking: (text) => {
             setActivity({ label: "Thinking…" });
-            patchMessage(assistantId, (m) => ({
-              ...m,
-              isThinking: true,
-              thinking: (m.thinking || "") + text,
-              timeline: appendThinking(timelineOf(m), text),
-            }));
+            queueStreamText("thinking", text);
           },
           onUsage: (usage) => {
             usageFired = true;
@@ -897,6 +942,7 @@ export function useAgentWindowSend(): AgentWindowSend {
             // continues — so the order matches what the model saw. No separate
             // user bubble (that would land after the streaming message and read
             // as if the agent replied before the user spoke). Then drop the pill.
+            flushStreamText();
             patchMessage(assistantId, (m) => ({
               ...m,
               timeline: appendUserInjection(timelineOf(m), text),
@@ -909,6 +955,7 @@ export function useAgentWindowSend(): AgentWindowSend {
           // summary text is never sent to the UI — only the before→after drop.
           onCompactionStarted: () => {
             setActivity({ label: "Compacting context…" });
+            flushStreamText();
             const id = nextEventId();
             compactionEventId = id;
             // Drop the marker INTO the streaming assistant timeline at the
@@ -976,6 +1023,7 @@ export function useAgentWindowSend(): AgentWindowSend {
               error instanceof Error ? error.message : String(error);
             if (/cancel|abort/i.test(message)) return; // user stop → not an error
             const note = `\n\n**Error:** ${message}`;
+            flushStreamText();
             patchMessage(assistantId, (m) => ({
               ...m,
               content: `${m.content || ""}${note}`,
@@ -1050,7 +1098,8 @@ export function useAgentWindowSend(): AgentWindowSend {
         delete next[threadId];
         return next;
       });
-      // Reasoning phase is definitively over.
+      // Land any tail of buffered stream text, then close the reasoning phase.
+      flushStreamText();
       patchMessage(assistantId, (m) => (m.isThinking ? { ...m, isThinking: false } : m));
       const s = useAgentChatStore.getState();
       const settledThread = s.liveTurns[threadId];

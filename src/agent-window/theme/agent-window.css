@@ -111,7 +111,7 @@
   scrollbar-width: none;
   z-index: 4;
   opacity: 0.5;
-  transition: opacity 0.15s ease;
+  transition: opacity 0.12s ease;
 }
 .agw-jumprail::-webkit-scrollbar {
   display: none;
@@ -185,7 +185,7 @@
 /* Resize handles between zones. */
 .agw-resize-handle {
   background: var(--agw-border);
-  transition: background 0.15s ease;
+  transition: background 0.12s ease;
 }
 .agw-resize-handle:hover,
 .agw-resize-handle[data-resize-handle-active] {
@@ -230,7 +230,7 @@
   background: var(--agw-border);
   cursor: col-resize;
   position: relative;
-  transition: background 0.15s ease;
+  transition: background 0.12s ease;
   touch-action: none;
 }
 .agw-shell-handle::after {
@@ -321,7 +321,7 @@
   border: 1px solid var(--agw-border-strong);
   border-radius: var(--agw-radius-lg);
   box-shadow: var(--agw-shadow-pop);
-  animation: agw-pop-in 0.14s cubic-bezier(0.2, 0.9, 0.3, 1);
+  animation: agw-pop-in 0.12s cubic-bezier(0.2, 0.9, 0.3, 1);
 }
 @supports not (backdrop-filter: blur(1px)) {
   .agw-menu {
@@ -1478,7 +1478,7 @@
   box-shadow: 0 0 calc(2px + var(--level) * 11px)
     color-mix(in srgb, var(--agw-accent) calc(18% + var(--level) * 46%), transparent);
   transform: scaleY(calc(1 + var(--level) * 0.5));
-  transition: transform 0.09s ease-out, box-shadow 0.09s ease-out;
+  transition: transform 0.12s ease-out, box-shadow 0.12s ease-out;
 }
 .agw-mic-wave::before {
   content: "";
@@ -1840,7 +1840,7 @@
   outline: none;
 }
 .agw-rail-collapse-all svg {
-  transition: transform 0.16s ease;
+  transition: transform 0.12s ease;
 }
 .agw-rail-collapse-all:hover {
   background: var(--agw-hover);
@@ -1925,7 +1925,7 @@
 .agw-rail-project-caret {
   flex-shrink: 0;
   color: var(--agw-text-subtle);
-  transition: transform 0.16s ease;
+  transition: transform 0.12s ease;
 }
 .agw-rail-project-name {
   flex: 1;
@@ -3403,7 +3403,7 @@
   border: none;
   border-radius: 999px;
   outline: none;
-  transition: background 0.15s ease, transform 0.12s cubic-bezier(0.2, 0, 0, 1);
+  transition: background 0.12s ease, transform 0.12s cubic-bezier(0.2, 0, 0, 1);
 }
 .agw-send:not(:disabled):active {
   transform: scale(0.9);
@@ -3428,7 +3428,7 @@
   border: 1px solid var(--agw-border-strong);
   border-radius: var(--agw-radius-lg);
   box-shadow: var(--agw-shadow-pop);
-  animation: agw-pop-in 0.14s cubic-bezier(0.2, 0.9, 0.3, 1);
+  animation: agw-pop-in 0.12s cubic-bezier(0.2, 0.9, 0.3, 1);
 }
 .agw-mention-item {
   display: flex;
@@ -3915,7 +3915,7 @@
   text-align: left;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.1s ease, color 0.1s ease;
+  transition: background 0.12s ease, color 0.12s ease;
   outline: none;
 }
 .agw-tree-row:hover {
@@ -3936,7 +3936,7 @@
   width: 14px;
   flex-shrink: 0;
   color: var(--agw-text-subtle);
-  transition: transform 0.14s ease;
+  transition: transform 0.12s ease;
 }
 .agw-tree-name {
   flex: 1;
@@ -4361,7 +4361,7 @@
   font-weight: 500;
   text-align: left;
   cursor: pointer;
-  transition: background 0.1s ease;
+  transition: background 0.12s ease;
   outline: none;
 }
 .agw-addmenu-item:hover:not(:disabled) {
@@ -4768,7 +4768,7 @@
   font-size: var(--agw-fs-ui);
   text-align: left;
   cursor: pointer;
-  transition: background 0.1s ease;
+  transition: background 0.12s ease;
   outline: none;
 }
 .agw-br-sugg:hover {
@@ -4877,7 +4877,7 @@
   font-weight: 500;
   text-align: left;
   cursor: pointer;
-  transition: background 0.1s ease, color 0.1s ease;
+  transition: background 0.12s ease, color 0.12s ease;
   outline: none;
 }
 .agw-settings-nav-item + .agw-settings-nav-item {
@@ -5109,7 +5109,7 @@
   box-shadow: 0 1px 2px color-mix(in srgb, #000 35%, transparent);
   transition:
     transform 0.18s cubic-bezier(0.34, 1.4, 0.6, 1),
-    width 0.15s cubic-bezier(0.34, 1.4, 0.6, 1),
+    width 0.12s cubic-bezier(0.34, 1.4, 0.6, 1),
     background 0.18s ease;
 }
 .agw-switch[data-on] .agw-switch-knob {
@@ -5348,7 +5348,7 @@
   font-size: var(--agw-fs-ui);
   font-family: var(--agw-font-ui);
   outline: none;
-  transition: border-color 0.1s ease;
+  transition: border-color 0.12s ease;
 }
 .agw-set-input::placeholder {
   color: var(--agw-text-subtle);
@@ -5545,7 +5545,7 @@
   background: var(--agw-surface);
   overflow: hidden;
   box-shadow: var(--agw-set-shadow);
-  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
 .agw-set-group[data-open] {
   border-color: var(--agw-border-strong);
@@ -5931,7 +5931,7 @@
   color: var(--agw-text);
   text-align: left;
   cursor: pointer;
-  transition: background 0.1s ease;
+  transition: background 0.12s ease;
   outline: none;
 }
 .agw-prov-add-item:hover {
@@ -6055,7 +6055,7 @@
   /* Hexagon cells — Aurora's own mark, not GitHub's squares or dots. */
   clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
   background: color-mix(in srgb, var(--agw-text) 7%, transparent);
-  transition: transform 0.08s ease, filter 0.08s ease;
+  transition: transform 0.12s ease, filter 0.12s ease;
 }
 .agw-heatmap-legend {
   display: flex;
@@ -6173,7 +6173,7 @@
   );
   /* Same premium glow language as the heatmap cells. */
   box-shadow: 0 0 10px color-mix(in srgb, var(--agw-accent) 32%, transparent);
-  transition: box-shadow 0.15s ease;
+  transition: box-shadow 0.12s ease;
 }
 .agw-profile-row:hover .agw-profile-row-fill {
   box-shadow: 0 0 16px color-mix(in srgb, var(--agw-accent) 55%, transparent);
@@ -6614,7 +6614,7 @@
   font-size: var(--agw-fs-ui);
   text-align: left;
   cursor: pointer;
-  transition: background 0.1s ease, color 0.1s ease;
+  transition: background 0.12s ease, color 0.12s ease;
   outline: none;
 }
 .agw-csel-item:hover {
@@ -6824,7 +6824,7 @@
   border-radius: var(--agw-set-r-card);
   background: var(--agw-surface);
   overflow: hidden;
-  transition: border-color 0.14s ease;
+  transition: border-color 0.12s ease;
 }
 .agw-mcp-card[data-open] {
   border-color: var(--agw-border-strong);
@@ -7050,7 +7050,7 @@
   line-height: 1.5;
   resize: vertical;
   outline: none;
-  transition: border-color 0.1s ease;
+  transition: border-color 0.12s ease;
 }
 .agw-mcp-textarea::placeholder {
   color: var(--agw-text-subtle);
@@ -7188,7 +7188,7 @@
   background: var(--agw-surface);
   cursor: pointer;
   text-align: left;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition: border-color 0.12s ease, background 0.12s ease;
 }
 .agw-appr-card:hover {
   background: var(--agw-hover);
@@ -7242,7 +7242,7 @@
   font-size: var(--agw-fs-ui);
   line-height: 1.45;
   cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
 }
 .agw-appr-drop:hover {
   color: var(--agw-text);
@@ -7498,7 +7498,7 @@
   font-size: var(--agw-fs-ui);
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.14s ease, border-color 0.14s ease;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
 .agw-skill-chip:hover {
   background: color-mix(in srgb, var(--agw-added) 18%, transparent);
@@ -7576,7 +7576,7 @@
   border-radius: var(--agw-radius-md);
   background: var(--agw-surface);
   cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease,
+  transition: border-color 0.12s ease, background 0.12s ease,
     transform 0.12s ease;
 }
 .agw-skill-card:hover:not([data-disabled]) {

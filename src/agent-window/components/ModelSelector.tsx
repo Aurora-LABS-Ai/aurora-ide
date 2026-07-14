@@ -37,31 +37,13 @@ interface RichOption {
   sortOrder: number;
 }
 
-type SortMode = "added" | "used" | "abc";
-
-const SORT_MODES: SortMode[] = ["added", "used", "abc"];
-const SORT_LABEL: Record<SortMode, string> = { added: "Added", used: "Used", abc: "A–Z" };
-const SORT_TITLE: Record<SortMode, string> = {
-  added: "Recently added",
-  used: "Recently used",
-  abc: "Alphabetical",
-};
-
-const SORT_KEY = "agw:model-sort";
 const RECENT_KEY = "agw:model-recent";
 const MENU_EST_HEIGHT = 420;
+/** How many recently-used models surface in the "Recent" strip. */
+const RECENT_MAX = 3;
 
 const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
-function readSort(): SortMode {
-  try {
-    const v = localStorage.getItem(SORT_KEY);
-    if (v === "added" || v === "used" || v === "abc") return v;
-  } catch {
-    /* localStorage unavailable — fall through to default */
-  }
-  return "added";
-}
 function readRecent(): Record<string, number> {
   try {
     const raw = localStorage.getItem(RECENT_KEY);
@@ -152,7 +134,6 @@ export const ModelSelector: React.FC<{
   const [open, setOpen] = useState(false);
   const [placement, setPlacement] = useState<"up" | "down">("up");
   const [query, setQuery] = useState("");
-  const [sortMode, setSortMode] = useState<SortMode>(() => readSort());
   const [recent, setRecent] = useState<Record<string, number>>(() => readRecent());
 
   const rootRef = useRef<HTMLDivElement>(null);
@@ -195,29 +176,47 @@ export const ModelSelector: React.FC<{
     );
   }, [options, query]);
 
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    if (sortMode === "abc") {
-      arr.sort((a, b) => a.label.localeCompare(b.label));
-    } else if (sortMode === "used") {
-      arr.sort(
+  // Provider sections, in the order the user arranged providers; models inside
+  // each section in the user's configured order (`sortOrder` ASCENDING — the
+  // same order the provider settings page shows; the old flat sort compared it
+  // descending, which silently REVERSED the user's arrangement). The stable,
+  // grouped layout replaces the old added/used/A–Z cycling, whose "recently
+  // added" default degenerated into cross-provider alphabetical soup whenever
+  // `createdAt` was missing (every tie fell through to the label).
+  const groups = useMemo(() => {
+    const byProvider = new Map<string, RichOption[]>();
+    for (const o of filtered) {
+      const list = byProvider.get(o.providerId);
+      if (list) list.push(o);
+      else byProvider.set(o.providerId, [o]);
+    }
+    const ordered: Array<{ providerId: string; providerName: string; items: RichOption[] }> = [];
+    const emit = (providerId: string) => {
+      const items = byProvider.get(providerId);
+      if (!items) return;
+      byProvider.delete(providerId);
+      items.sort((a, b) => a.sortOrder - b.sortOrder || a.label.localeCompare(b.label));
+      ordered.push({ providerId, providerName: items[0].providerName, items });
+    };
+    for (const p of providers) emit(p.id);
+    for (const id of [...byProvider.keys()]) emit(id); // providers not in the list (defensive)
+    return ordered;
+  }, [filtered, providers]);
+
+  // "Recent" strip — the last few models actually used, newest first. Hidden
+  // while searching (the query owns the list) and never shows a lone duplicate
+  // of the only group's top row.
+  const recentRows = useMemo(() => {
+    if (query.trim()) return [];
+    return options
+      .filter((o) => (recent[`${o.providerId}:${o.model}`] ?? 0) > 0)
+      .sort(
         (a, b) =>
           (recent[`${b.providerId}:${b.model}`] ?? 0) -
-            (recent[`${a.providerId}:${a.model}`] ?? 0) ||
-          b.createdAt - a.createdAt ||
-          a.label.localeCompare(b.label),
-      );
-    } else {
-      // "added" — most recently added first.
-      arr.sort(
-        (a, b) =>
-          b.createdAt - a.createdAt ||
-          b.sortOrder - a.sortOrder ||
-          a.label.localeCompare(b.label),
-      );
-    }
-    return arr;
-  }, [filtered, sortMode, recent]);
+          (recent[`${a.providerId}:${a.model}`] ?? 0),
+      )
+      .slice(0, RECENT_MAX);
+  }, [options, recent, query]);
 
   const current = useMemo(
     () => options.find((o) => `${o.providerId}:${o.model}` === selectedModel),
@@ -290,17 +289,56 @@ export const ModelSelector: React.FC<{
     setOpen(false);
   };
 
-  const cycleSort = () => {
-    const next = SORT_MODES[(SORT_MODES.indexOf(sortMode) + 1) % SORT_MODES.length];
-    setSortMode(next);
-    try {
-      localStorage.setItem(SORT_KEY, next);
-    } catch {
-      /* best-effort persistence */
-    }
-  };
-
   const down = placement === "down";
+
+  // One row shape for both the Recent strip and the provider sections. The
+  // provider subline only renders where the section header doesn't already
+  // say it (i.e. in Recent).
+  const renderRow = (opt: RichOption, showProvider: boolean) => {
+    const id = `${opt.providerId}:${opt.model}`;
+    const active = id === selectedModel;
+    return (
+      <div
+        key={id}
+        role="option"
+        aria-selected={active}
+        tabIndex={0}
+        className="agw-model-item"
+        data-active={active || undefined}
+        onClick={() => pick(opt)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            pick(opt);
+          }
+        }}
+      >
+        <span className="agw-model-meta">
+          <span className="agw-model-nameline">
+            <span className="agw-model-name">{opt.label}</span>
+            {opt.vision && (
+              <span className="agw-model-cap" title="Vision input">
+                <AgentIcon name="eye" size={11} />
+                Vision
+              </span>
+            )}
+            {opt.tools && (
+              <span className="agw-model-cap" title="Tool streaming">
+                Tools
+              </span>
+            )}
+          </span>
+          {showProvider && <span className="agw-model-sub">{opt.providerName}</span>}
+        </span>
+        <span className="agw-model-controls">
+          <RowReasoning opt={opt} />
+          {active && (
+            <AgentIcon name="check" size={15} style={{ color: "var(--agw-accent)" }} />
+          )}
+        </span>
+      </div>
+    );
+  };
 
   return (
     <div ref={rootRef} style={{ position: "relative" }}>
@@ -391,15 +429,6 @@ export const ModelSelector: React.FC<{
                   <span>Plan</span>
                 </button>
               </div>
-              <button
-                type="button"
-                className="agw-model-sort"
-                title={`Sorted by ${SORT_TITLE[sortMode].toLowerCase()} — click to change`}
-                onClick={cycleSort}
-              >
-                <AgentIcon name="sort" size={13} />
-                <span>{SORT_LABEL[sortMode]}</span>
-              </button>
             </div>
 
             {/* Search */}
@@ -416,62 +445,31 @@ export const ModelSelector: React.FC<{
               />
             </div>
 
-            {/* List — flat, sorted */}
+            {/* List — Recent strip, then one section per provider in the
+                user's configured order (models in provider-page order). */}
             <div className="agw-model-list agw-scroll">
-              {sorted.length === 0 ? (
+              {filtered.length === 0 ? (
                 <div className="agw-model-empty">
                   {options.length === 0 ? "No models configured." : "No models match."}
                 </div>
               ) : (
-                sorted.map((opt) => {
-                  const id = `${opt.providerId}:${opt.model}`;
-                  const active = id === selectedModel;
-                  return (
-                    <div
-                      key={id}
-                      role="option"
-                      aria-selected={active}
-                      tabIndex={0}
-                      className="agw-model-item"
-                      data-active={active || undefined}
-                      onClick={() => pick(opt)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          pick(opt);
-                        }
-                      }}
-                    >
-                      <span className="agw-model-meta">
-                        <span className="agw-model-nameline">
-                          <span className="agw-model-name">{opt.label}</span>
-                          {opt.vision && (
-                            <span className="agw-model-cap" title="Vision input">
-                              <AgentIcon name="eye" size={11} />
-                              Vision
-                            </span>
-                          )}
-                          {opt.tools && (
-                            <span className="agw-model-cap" title="Tool streaming">
-                              Tools
-                            </span>
-                          )}
-                        </span>
-                        <span className="agw-model-sub">{opt.providerName}</span>
-                      </span>
-                      <span className="agw-model-controls">
-                        <RowReasoning opt={opt} />
-                        {active && (
-                          <AgentIcon
-                            name="check"
-                            size={15}
-                            style={{ color: "var(--agw-accent)" }}
-                          />
-                        )}
-                      </span>
+                <>
+                  {recentRows.length > 0 && (
+                    <div className="agw-model-group">
+                      <div className="agw-model-group-label">Recent</div>
+                      {recentRows.map((opt) => renderRow(opt, true))}
                     </div>
-                  );
-                })
+                  )}
+                  {groups.map((g) => (
+                    <div key={g.providerId} className="agw-model-group">
+                      <div className="agw-model-group-label">
+                        {g.providerName}
+                        <span className="agw-model-group-count">{g.items.length}</span>
+                      </div>
+                      {g.items.map((opt) => renderRow(opt, false))}
+                    </div>
+                  ))}
+                </>
               )}
             </div>
 

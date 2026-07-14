@@ -2,6 +2,21 @@
 
 Thin progress + working-memory layer. Append 2-4 lines per meaningful change.
 
+## Task (2026-07-14): "App doesn't feel mature" — measured + 3 staged coherence passes — DONE (committed)
+Diagnosis with hard numbers: 19 font sizes / 24 radii / 8 control heights / 12 transition durations — near-duplicate
+values read as noise; maturity = few values ruthlessly repeated. User approved all passes + asked for checkpoint
+commits for rollback. Commits: checkpoint (2906b75→…), pass 1 5280510 (type: 6-token --agw-fs-* scale, 259 CSS decls
++ TSX inline fontSize mapped), pass 2 21566d0 (radii onto theme tokens — raw px was IGNORING the user's Appearance
+radius preset; settings row height unified at 30px: set-btn 32→30, seg-btn 26→24), pass 3 c80bec9 (durations 12→2:
+0.12s micro / 0.18s structural; 0.28-0.5s progress kept). Verified per pass: postcss parse, tsc, 118/118, build.
+
+## Task (2026-07-14): Composer ghost prediction wrapped to a new line — FIXED (committed 3d5f829)
+Typing-assist ghost span was `appendChild`ed to the contenteditable END → landed AFTER the trailing placeholder
+<br> every contenteditable keeps → rendered on line 2 despite room on line 1. Fix in useComposerTyping.showGhost:
+insert at the CARET (caretAtEnd is a precondition, so caret = continuation point) via range.insertNode; fallback
+inserts before a trailing <br>. Range.toString() ignores <br>, so caretAtEnd's tail===ghostText check still holds.
+Needs interactive verify (user watching hot reload).
+
 ## Task (2026-07-14): Settings/provider controls felt "cheap" — pressed-state + focus pass — DONE (uncommitted, CSS-only)
 User: settings (esp. providers page) interactions feel like decoration, not controls; colors are theirs, feel is off.
 Root cause: NO `:active` (pressed) state existed on ANY control in agent-window.css except the composer send button;

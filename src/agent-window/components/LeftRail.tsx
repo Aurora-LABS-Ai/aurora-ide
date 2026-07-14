@@ -695,7 +695,7 @@ export const LeftRail: React.FC = () => {
             border: "1px solid var(--agw-border)",
             background: "var(--agw-canvas)",
             color: "var(--agw-text-subtle)",
-            fontSize: 12.5,
+            fontSize: 12,
           }}
         >
           <AgentIcon name="search" size={14} />
@@ -711,7 +711,7 @@ export const LeftRail: React.FC = () => {
               border: "none",
               outline: "none",
               color: "var(--agw-text)",
-              fontSize: 12.5,
+              fontSize: 12,
             }}
           />
         </div>

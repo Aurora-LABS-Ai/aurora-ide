@@ -452,7 +452,7 @@ const CenterNote: React.FC<{ text: string }> = ({ text }) => (
       alignItems: "center",
       justifyContent: "center",
       padding: 24,
-      fontSize: 13.5,
+      fontSize: 13,
       color: "var(--agw-text-subtle)",
     }}
   >

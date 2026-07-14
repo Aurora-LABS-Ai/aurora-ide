@@ -527,7 +527,7 @@ export const TeamScreen: React.FC = () => {
           <div className="agw-team-empty" style={{ flex: 1 }}>
             <AgentIcon name="users" size={26} />
             <span>No team yet for this project.</span>
-            <span style={{ fontSize: 12.5, maxWidth: 380, textAlign: "center", lineHeight: 1.55 }}>
+            <span style={{ fontSize: 12, maxWidth: 380, textAlign: "center", lineHeight: 1.55 }}>
               Enable the team under Settings → Team, then give the agent a big task — it’ll split the work by scope and convene a team here.
             </span>
           </div>

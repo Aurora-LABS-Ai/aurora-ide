@@ -140,7 +140,7 @@ export const ReviewPanel: React.FC = () => {
         }}
       >
         <AgentIcon name="diff" size={22} style={{ color: "var(--agw-text-subtle)" }} />
-        <div style={{ fontSize: 13.5, color: "var(--agw-text-muted)", fontWeight: 600 }}>
+        <div style={{ fontSize: 13, color: "var(--agw-text-muted)", fontWeight: 600 }}>
           No file changes yet
         </div>
         <div style={{ fontSize: 12, color: "var(--agw-text-subtle)", maxWidth: 240 }}>
@@ -175,16 +175,16 @@ export const ReviewPanel: React.FC = () => {
         >
           {scope === "all" ? "All changes" : "Last turn"}
         </button>
-        <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--agw-text)" }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--agw-text)" }}>
           {changes.length} file{changes.length === 1 ? "" : "s"}
         </span>
         {totals.added > 0 && (
-          <span style={{ color: "var(--agw-added)", fontSize: 11.5, fontFamily: "var(--agw-font-code)" }}>
+          <span style={{ color: "var(--agw-added)", fontSize: 11, fontFamily: "var(--agw-font-code)" }}>
             +{totals.added}
           </span>
         )}
         {totals.removed > 0 && (
-          <span style={{ color: "var(--agw-removed)", fontSize: 11.5, fontFamily: "var(--agw-font-code)" }}>
+          <span style={{ color: "var(--agw-removed)", fontSize: 11, fontFamily: "var(--agw-font-code)" }}>
             −{totals.removed}
           </span>
         )}
@@ -228,7 +228,7 @@ export const ReviewPanel: React.FC = () => {
           <div
             style={{
               padding: "18px 14px",
-              fontSize: 12.5,
+              fontSize: 12,
               color: "var(--agw-text-subtle)",
               textAlign: "center",
             }}

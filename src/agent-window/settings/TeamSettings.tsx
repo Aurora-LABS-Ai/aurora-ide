@@ -306,7 +306,7 @@ export const TeamSettings: React.FC = () => {
           label="Coordinator"
           hint="Whoever you're chatting with — the model in your composer's selector. It reads your task and decides to convene a team. There's nothing to pick here; switch it by switching your chat model."
         >
-          <span style={{ fontSize: 12.5, color: "var(--agw-text-subtle)" }}>
+          <span style={{ fontSize: 12, color: "var(--agw-text-subtle)" }}>
             Your active chat model
           </span>
         </SettingsRow>
@@ -333,7 +333,7 @@ export const TeamSettings: React.FC = () => {
         description="Team runs for this project — their goal, phase, and outcome."
       >
         <SettingsRow last label="History" hint="Populates once the team has run in this project.">
-          <span style={{ fontSize: 12.5, color: "var(--agw-text-subtle)" }}>
+          <span style={{ fontSize: 12, color: "var(--agw-text-subtle)" }}>
             No team runs yet.
           </span>
         </SettingsRow>

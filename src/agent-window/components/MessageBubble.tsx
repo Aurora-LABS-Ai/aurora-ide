@@ -195,7 +195,7 @@ const UserBubble: React.FC<{
             borderRadius: 14,
             background: "var(--agw-bubble-user)",
             color: "var(--agw-text)",
-            fontSize: 14.5,
+            fontSize: 14,
             lineHeight: 1.55,
             border: "1px solid var(--agw-border)",
           }}

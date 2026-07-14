@@ -88,7 +88,7 @@ async function attachSession(session: TermSession, container: HTMLDivElement, on
   const term = new Terminal({
     cursorBlink: true,
     cursorStyle: "bar",
-    fontSize: 12.5,
+    fontSize: 12,
     fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, "JetBrains Mono", monospace',
     lineHeight: 1.25,
     convertEol: true,

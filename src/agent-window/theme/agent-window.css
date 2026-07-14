@@ -25,6 +25,19 @@
   --agw-popover-surface: var(--agw-surface-elevated);
   --agw-modal-blur: blur(8px) saturate(0.85);
 
+  /* ── Type scale ──────────────────────────────────────────────────────────
+   * SIX sizes for the whole window. The half-pixel one-off sizes that grew
+   * organically (9.5 / 10.5 / 11.5 / 12.5 / 13.5 / 14.5) collapsed onto this
+   * scale — near-duplicate sizes read as visual noise ("almost aligned"),
+   * a fixed scale reads as intent. New styles MUST pick from these tokens;
+   * raw px font-sizes are reserved for display/hero text (>15px). */
+  --agw-fs-micro: 10px;  /* badges, eyebrows, code metadata      */
+  --agw-fs-label: 11px;  /* section labels, sublines, chips      */
+  --agw-fs-ui: 12px;     /* controls, inputs, list rows          */
+  --agw-fs-md: 13px;     /* emphasized UI, headers, empty states */
+  --agw-fs-body: 14px;   /* transcript / reading text            */
+  --agw-fs-title: 15px;  /* pane titles                          */
+
   height: 100%;
   width: 100%;
   display: flex;
@@ -35,7 +48,7 @@
   color: var(--agw-text);
   font-family: var(--agw-font-ui);
   /* Base bumped 13 → 14px for a more comfortable read in the agent window. */
-  font-size: 14px;
+  font-size: var(--agw-fs-body);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -277,7 +290,7 @@
   background: transparent;
   color: var(--agw-text);
   border-radius: 999px;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease;
   outline: none;
@@ -449,7 +462,7 @@
   min-width: 0;
 }
 .agw-mode-item-hint {
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 400;
   line-height: 1.4;
   color: var(--agw-text-subtle);
@@ -469,7 +482,7 @@
 .agw-model-trigger-avatar {
   width: 18px;
   height: 18px;
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   border-radius: 999px;
 }
 .agw-model-menu {
@@ -490,12 +503,12 @@
   border-bottom: 1px solid var(--agw-border);
 }
 .agw-model-title {
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-weight: 600;
   color: var(--agw-text);
 }
 .agw-model-count {
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   font-variant-numeric: tabular-nums;
   color: var(--agw-text-subtle);
   padding: 1px 7px;
@@ -532,7 +545,7 @@
   background: transparent;
   outline: none;
   color: var(--agw-text);
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
 }
 .agw-model-list {
   flex: 1;
@@ -547,7 +560,7 @@
   margin-top: 2px;
 }
 .agw-model-group {
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -577,7 +590,7 @@
 .agw-model-item .agw-model-avatar {
   width: 26px;
   height: 26px;
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
 }
 .agw-model-item:hover {
   background: var(--agw-hover);
@@ -600,7 +613,7 @@
   min-width: 0;
 }
 .agw-model-name {
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   font-weight: 500;
   min-width: 0;
   white-space: nowrap;
@@ -625,7 +638,7 @@
   padding: 0 6px;
   border: 1px solid var(--agw-border);
   border-radius: 999px;
-  font-size: 9.5px;
+  font-size: var(--agw-fs-micro);
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -654,7 +667,7 @@
   border-radius: 999px;
   background: transparent;
   color: var(--agw-accent);
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   font-weight: 700;
   letter-spacing: 0.02em;
   cursor: pointer;
@@ -720,7 +733,7 @@
   border-radius: 999px;
   background: transparent;
   color: var(--agw-text-subtle);
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
@@ -754,7 +767,7 @@
   border-radius: 999px;
   background: transparent;
   color: var(--agw-text-subtle);
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
@@ -778,7 +791,7 @@
   box-shadow: 0 0 0 2px var(--agw-ring);
 }
 .agw-model-sub {
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
   white-space: nowrap;
   overflow: hidden;
@@ -787,14 +800,14 @@
 .agw-model-empty {
   padding: 22px 12px;
   text-align: center;
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   color: var(--agw-text-subtle);
 }
 .agw-model-foot {
   flex: 0 0 auto;
   padding: 8px 13px;
   border-top: 1px solid var(--agw-border);
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
 }
 
@@ -867,7 +880,7 @@
   border-radius: var(--agw-radius-md);
   background: transparent;
   color: var(--agw-text-muted);
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   cursor: pointer;
   text-align: left;
   transition: background 0.12s ease, color 0.12s ease;
@@ -902,7 +915,7 @@
 /* Pinned rows carry a project subtitle and stand a little taller. */
 .agw-rail-item-sub {
   min-width: 0;
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
   white-space: nowrap;
   overflow: hidden;
@@ -1038,7 +1051,7 @@
   border-radius: 999px;
   background: var(--agw-control-muted);
   color: var(--agw-text-subtle);
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
 }
 
@@ -1088,12 +1101,12 @@
   border-bottom: 1px solid var(--agw-border);
 }
 .agw-team-title {
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   font-weight: 600;
   color: var(--agw-text);
 }
 .agw-team-phase {
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   padding: 2px 8px;
   border-radius: 999px;
@@ -1101,7 +1114,7 @@
   background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
 }
 .agw-team-progress-label {
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
 }
 .agw-team-progress {
@@ -1131,7 +1144,7 @@
   border-right: 1px solid var(--agw-border);
 }
 .agw-team-side-label {
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   letter-spacing: 0.4px;
   text-transform: uppercase;
@@ -1171,7 +1184,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -1182,7 +1195,7 @@
 
 .agw-team-side-note {
   padding: 6px 8px;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   color: var(--agw-text-subtle);
   font-style: italic;
 }
@@ -1217,7 +1230,7 @@
 /* Terminal run status — a full-width banner so a long failure (e.g. a raw
  * provider error) wraps readably instead of ballooning into a giant pill. */
 .agw-team-status {
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   line-height: 1.5;
   padding: 9px 12px;
   border-radius: var(--agw-radius-md);
@@ -1309,7 +1322,7 @@
   justify-content: center;
   gap: 10px;
   color: var(--agw-text-subtle);
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
 }
 
 /* Left-rail "Team" entry (above Pinned) + the per-project team badge. */
@@ -1325,7 +1338,7 @@
   background: var(--agw-canvas);
   color: var(--agw-text);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   font-weight: 600;
 }
 .agw-rail-team:hover {
@@ -1337,7 +1350,7 @@
 }
 .agw-rail-team-tag {
   margin-left: auto;
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   font-weight: 600;
   color: var(--agw-text-subtle);
 }
@@ -1382,7 +1395,7 @@
   border: 1px solid color-mix(in srgb, var(--agw-accent) 40%, var(--agw-border));
   background: color-mix(in srgb, var(--agw-accent) 12%, var(--agw-canvas));
   color: var(--agw-text);
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   cursor: pointer;
 }
 .agw-done-flash:hover {
@@ -1566,7 +1579,7 @@
 .agw-tasks-title {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-weight: 600;
   color: var(--agw-text);
   white-space: nowrap;
@@ -1575,7 +1588,7 @@
 }
 .agw-tasks-count {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   color: var(--agw-text-muted);
   background: var(--agw-control-muted);
@@ -1605,7 +1618,7 @@
   gap: 10px;
   padding: 6px 8px;
   border-radius: 8px;
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   line-height: 1.45;
   color: var(--agw-text);
 }
@@ -1695,7 +1708,7 @@
   align-items: center;
   gap: 6px;
   margin-bottom: 8px;
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -1705,7 +1718,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
 }
 .agw-ctx-label {
   color: var(--agw-text-muted);
@@ -1728,7 +1741,7 @@
   transition: width 0.5s ease;
 }
 .agw-ctx-sub {
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   font-variant-numeric: tabular-nums;
   color: var(--agw-text-subtle);
 }
@@ -1741,7 +1754,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   font-variant-numeric: tabular-nums;
   color: var(--agw-text-subtle);
   margin-top: 2px;
@@ -1750,7 +1763,7 @@
 
 /* Section header (Pinned label / Projects toggle + sort). */
 .agw-rail-section-label {
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.6px;
@@ -1774,7 +1787,7 @@
   border-radius: var(--agw-radius-sm);
   background: transparent;
   color: var(--agw-text-subtle);
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.6px;
@@ -1797,7 +1810,7 @@
   border-radius: var(--agw-radius-sm);
   background: transparent;
   color: var(--agw-text-subtle);
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
@@ -1860,7 +1873,7 @@
   border-radius: var(--agw-radius-md);
   background: transparent;
   color: var(--agw-text-muted);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-weight: 600;
   cursor: pointer;
   text-align: left;
@@ -1877,7 +1890,7 @@
   justify-content: flex-end;
   min-width: 20px;
   margin-left: 6px;
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--agw-text-subtle);
@@ -1958,7 +1971,7 @@
 }
 .agw-rail-empty {
   padding: 7px 8px;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   color: var(--agw-text-subtle);
 }
 
@@ -1974,7 +1987,7 @@
   background: transparent;
   border-radius: var(--agw-radius-md);
   color: var(--agw-text-subtle);
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   font-weight: 500;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
@@ -2005,7 +2018,7 @@
   border-radius: 0;
   background: transparent;
   color: var(--agw-text-muted);
-  font-size: 14px;
+  font-size: var(--agw-fs-body);
   cursor: pointer;
   transition: color 0.12s ease;
   outline: none;
@@ -2098,7 +2111,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   line-height: 1;
   color: var(--agw-text-muted);
   white-space: nowrap;
@@ -2153,7 +2166,7 @@
   border-radius: 0 8px 8px 0;
   background: color-mix(in srgb, var(--agw-accent) 8%, transparent);
   color: var(--agw-text);
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   line-height: 1.45;
 }
 .agw-injection > span {
@@ -2193,7 +2206,7 @@
 }
 .agw-queued-label {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -2205,7 +2218,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   color: var(--agw-text);
 }
 
@@ -2226,7 +2239,7 @@
   background: transparent;
   color: var(--agw-text-muted);
   cursor: pointer;
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   text-align: left;
   transition: background 0.12s ease, color 0.12s ease;
   outline: none;
@@ -2282,7 +2295,7 @@
   border: 1px solid var(--agw-border);
   background: var(--agw-chip-surface);
   color: var(--agw-chip-text);
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   flex-shrink: 1;
 }
 .agw-tool-chip svg {
@@ -2335,7 +2348,7 @@
 
 /* Status / summary text (e.g. "+12  -3", "In Progress", error reason). */
 .agw-tool-summary {
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-family: var(--agw-font-code);
   white-space: nowrap;
   overflow: hidden;
@@ -2360,7 +2373,7 @@
 }
 .agw-tool-arg {
   font-family: var(--agw-font-code);
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   padding: 1px 6px;
   border-radius: var(--agw-radius-sm);
   border: 1px solid var(--agw-border);
@@ -2373,7 +2386,7 @@
   padding: 8px 10px;
   max-height: 320px;
   overflow: auto;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
@@ -2444,7 +2457,7 @@
 }
 .agw-multi-diff-head {
   padding: 5px 10px;
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   color: var(--agw-text-muted);
   background: var(--agw-surface);
@@ -2518,7 +2531,7 @@
   min-width: 0;
 }
 .agw-rv-title {
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--agw-text-muted);
@@ -2526,7 +2539,7 @@
 }
 .agw-rv-path {
   font-family: var(--agw-font-code);
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
   white-space: nowrap;
   overflow: hidden;
@@ -2539,7 +2552,7 @@
   align-items: center;
   gap: 8px;
   font-family: var(--agw-font-code);
-  font-size: 9.5px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
   white-space: nowrap;
   flex-shrink: 0;
@@ -2555,7 +2568,7 @@
 .agw-rv-badge {
   padding: 1px 6px;
   border-radius: var(--agw-radius-sm);
-  font-size: 9px;
+  font-size: var(--agw-fs-micro);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -2572,7 +2585,7 @@
 }
 .agw-rv-exit {
   font-family: var(--agw-font-code);
-  font-size: 9.5px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
   padding: 1px 6px;
   border-radius: var(--agw-radius-sm);
@@ -2586,7 +2599,7 @@
   align-items: center;
   gap: 6px;
   padding: 2px 10px 2px 0;
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-muted);
 }
 .agw-tree-row[data-dir="true"] {
@@ -2620,7 +2633,7 @@
   margin-left: auto;
   padding-left: 8px;
   font-family: var(--agw-font-code);
-  font-size: 9.5px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
   white-space: nowrap;
   flex-shrink: 0;
@@ -2642,7 +2655,7 @@
 }
 .agw-grep-file-name {
   font-family: var(--agw-font-code);
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2650,7 +2663,7 @@
 }
 .agw-grep-file-count {
   margin-left: auto;
-  font-size: 9.5px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
 }
 .agw-grep-hit {
@@ -2667,7 +2680,7 @@
   flex-shrink: 0;
   text-align: right;
   font-family: var(--agw-font-code);
-  font-size: 9.5px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
   font-variant-numeric: tabular-nums;
 }
@@ -2677,7 +2690,7 @@
   overflow: hidden;
   white-space: pre;
   font-family: var(--agw-font-code);
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-muted);
 }
 
@@ -2695,7 +2708,7 @@
   flex: 1;
   min-width: 0;
   font-family: var(--agw-font-code);
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   line-height: 1.5;
   color: var(--agw-text);
@@ -2710,7 +2723,7 @@
 }
 .agw-shell-trim {
   padding: 3px 10px;
-  font-size: 9px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-removed);
   border-bottom: 1px solid var(--agw-border);
   background: var(--agw-removed-surface);
@@ -2721,7 +2734,7 @@
   white-space: pre-wrap;
   word-break: break-all;
   font-family: var(--agw-font-code);
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   line-height: 1.55;
   color: var(--agw-text-muted);
 }
@@ -2731,7 +2744,7 @@
  * Shared by the inline tool-card body and the Review panel. */
 .agw-diffview {
   font-family: var(--agw-font-code);
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   line-height: 1.55;
   overflow: auto;
   border: 1px solid var(--agw-border);
@@ -2790,7 +2803,7 @@
   padding: 2px 12px;
   background: var(--agw-surface);
   color: var(--agw-text-subtle);
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   user-select: none;
 }
 
@@ -2831,7 +2844,7 @@
 }
 .agw-diff-empty {
   padding: 10px 12px;
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
   border: 1px solid var(--agw-border);
   border-radius: var(--agw-radius-md);
@@ -2920,7 +2933,7 @@
   border-radius: var(--agw-radius-sm);
   background: transparent;
   color: var(--agw-text-muted);
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   outline: none;
@@ -2990,7 +3003,7 @@
   display: flex;
   align-items: baseline;
   font-family: var(--agw-font-code);
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
 }
 /* The directory part truncates; the filename stays fully visible. */
 .agw-rv-file-dir {
@@ -3011,7 +3024,7 @@
   gap: 8px;
   flex-shrink: 0;
   font-family: var(--agw-font-code);
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-variant-numeric: tabular-nums;
 }
 
@@ -3021,7 +3034,7 @@
   height: 28px;
   padding: 0 12px;
   border-radius: var(--agw-radius-sm);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-weight: 600;
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
@@ -3077,7 +3090,7 @@
   border-radius: var(--agw-radius-sm);
   background: transparent;
   color: var(--agw-text-subtle);
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
   outline: none;
@@ -3098,7 +3111,7 @@
   /* Premium reading size — 15px on a 28px line (matches the reference's
    * text-[15px] leading-7). The bigger, airier type is what reads as
    * "heavyweight" instead of cramped/cheap. */
-  font-size: 15px;
+  font-size: var(--agw-fs-title);
   line-height: 1.75;
   word-break: break-word;
   overflow-wrap: anywhere;
@@ -3194,7 +3207,7 @@
   padding: 12px 14px;
   overflow-x: auto;
   font-family: var(--agw-font-code);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   line-height: 1.55;
 }
 .agw-codeblock-pre code {
@@ -3245,7 +3258,7 @@
 .agw-md table {
   border-collapse: collapse;
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   /* Fill Streamdown's full-width table wrapper. `display:block` shrank the
    * table to its content width, leaving the wrapper's bordered right side empty
    * (the "phantom extra column"); a real `display:table` + width:100% makes the
@@ -3280,7 +3293,7 @@
   outline: none;
 }
 .agw-think-label {
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   font-weight: 500;
 }
 .agw-think-pulse {
@@ -3299,7 +3312,7 @@
 }
 .agw-think-pre {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   line-height: 1.55;
   color: var(--agw-text-muted);
   white-space: pre-wrap;
@@ -3318,7 +3331,7 @@
   padding: 3px 4px 3px 0;
   border: none;
   background: transparent;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   cursor: pointer;
   outline: none;
 }
@@ -3328,7 +3341,7 @@
 .agw-tool-group-badge {
   padding: 1px 7px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--agw-removed);
@@ -3437,7 +3450,7 @@
   color: var(--agw-text);
 }
 .agw-mention-name {
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   font-weight: 500;
   flex-shrink: 0;
 }
@@ -3445,7 +3458,7 @@
   margin-left: auto;
   min-width: 0;
   font-family: var(--agw-font-code);
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3469,7 +3482,7 @@
   border: 1px solid var(--agw-border-strong);
   background: var(--agw-surface);
   color: var(--agw-text);
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
 }
 .agw-attach-pill > svg {
   color: var(--agw-text-subtle);
@@ -3514,7 +3527,7 @@
   word-break: break-word;
   overflow-wrap: anywhere;
   color: var(--agw-text);
-  font-size: 14.5px;
+  font-size: var(--agw-fs-body);
   line-height: 1.55;
 }
 .agw-ce-placeholder {
@@ -3524,7 +3537,7 @@
   right: 12px;
   pointer-events: none;
   color: var(--agw-text-subtle);
-  font-size: 14.5px;
+  font-size: var(--agw-fs-body);
   line-height: 1.55;
   white-space: nowrap;
   overflow: hidden;
@@ -3589,7 +3602,7 @@
   border-radius: 7px;
   background: color-mix(in srgb, var(--agw-accent) 15%, transparent);
   color: var(--agw-accent);
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   font-weight: 600;
   line-height: 1.45;
   white-space: nowrap;
@@ -3637,7 +3650,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   font-weight: 600;
   color: var(--agw-text);
 }
@@ -3650,7 +3663,7 @@
   gap: 4px;
 }
 .agw-qp-count {
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-variant-numeric: tabular-nums;
   color: var(--agw-text-subtle);
   padding-right: 2px;
@@ -3672,7 +3685,7 @@
   align-items: baseline;
   gap: 7px;
   margin-bottom: 7px;
-  font-size: 13.5px;
+  font-size: var(--agw-fs-md);
   font-weight: 600;
   line-height: 1.45;
   color: var(--agw-text);
@@ -3699,7 +3712,7 @@
   border: 1px solid transparent;
   background: transparent;
   color: var(--agw-text);
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   line-height: 1.4;
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
@@ -3726,7 +3739,7 @@
   border-radius: 5px;
   border: 1px solid var(--agw-border);
   background: color-mix(in srgb, var(--agw-text) 5%, transparent);
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   line-height: 1;
   color: var(--agw-text-subtle);
@@ -3757,7 +3770,7 @@
   border: 1px solid var(--agw-border);
   background: var(--agw-surface);
   color: var(--agw-text);
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   outline: none;
   transition: border-color 0.12s ease;
 }
@@ -3839,7 +3852,7 @@
   outline: none;
   background: transparent;
   color: var(--agw-text);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-family: var(--agw-font-ui);
 }
 .agw-files-input::placeholder {
@@ -3897,7 +3910,7 @@
   border: none;
   background: transparent;
   color: var(--agw-text-muted);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-family: var(--agw-font-ui);
   text-align: left;
   cursor: pointer;
@@ -3936,7 +3949,7 @@
   align-items: center;
   gap: 7px;
   height: 24px;
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
 }
 
@@ -3960,7 +3973,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--agw-text-subtle);
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-family: var(--agw-font-code);
 }
 
@@ -4015,7 +4028,7 @@
   display: flex;
   align-items: baseline;
   font-family: var(--agw-font-code);
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
 }
 .agw-fv-crumb-dir {
   min-width: 0;
@@ -4040,7 +4053,7 @@
   border-radius: var(--agw-radius-sm);
   background: transparent;
   color: var(--agw-text-muted);
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
@@ -4062,7 +4075,7 @@
   display: flex;
   overflow: auto;
   font-family: var(--agw-font-code);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   line-height: 1.55;
 }
 .agw-fv-gutter {
@@ -4112,7 +4125,7 @@
   border: none;
   background: transparent;
   color: var(--agw-text-subtle);
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
@@ -4186,7 +4199,7 @@
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
   font-family: var(--agw-font-code);
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
@@ -4267,7 +4280,7 @@
   border: none;
   background: transparent;
   color: inherit;
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-weight: 500;
   cursor: pointer;
   outline: none;
@@ -4344,7 +4357,7 @@
   border-radius: var(--agw-radius-sm);
   background: transparent;
   color: var(--agw-text);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-weight: 500;
   text-align: left;
   cursor: pointer;
@@ -4369,7 +4382,7 @@
 .agw-addmenu-kbd {
   flex-shrink: 0;
   font-family: var(--agw-font-code);
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
   letter-spacing: 0.02em;
 }
@@ -4433,7 +4446,7 @@
   border: none;
   background: transparent;
   color: inherit;
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   font-weight: 500;
   font-family: var(--agw-font-code);
   cursor: pointer;
@@ -4557,7 +4570,7 @@
   outline: none;
   background: transparent;
   color: var(--agw-text);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-family: var(--agw-font-ui);
 }
 .agw-br-input::placeholder {
@@ -4590,7 +4603,7 @@
   border-radius: var(--agw-radius-sm);
   background: transparent;
   color: var(--agw-text-muted);
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   font-weight: 600;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
@@ -4626,7 +4639,7 @@
   border-radius: 999px;
   background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
   color: var(--agw-text);
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   max-width: 220px;
 }
 .agw-sel-tag {
@@ -4677,7 +4690,7 @@
   border-radius: 7px;
   background: color-mix(in srgb, var(--agw-accent) 15%, transparent);
   color: var(--agw-accent);
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   font-weight: 600;
   line-height: 1.45;
   white-space: nowrap;
@@ -4707,7 +4720,7 @@
 /* Provenance tag in the `/` picker rows — sits between the name and the id. */
 .agw-cmd-source {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
@@ -4735,7 +4748,7 @@
 }
 .agw-br-sugg-head {
   padding: 6px 9px 3px;
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -4752,7 +4765,7 @@
   border-radius: var(--agw-radius-sm);
   background: transparent;
   color: var(--agw-text);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   text-align: left;
   cursor: pointer;
   transition: background 0.1s ease;
@@ -4768,11 +4781,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--agw-font-code);
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
 }
 .agw-br-sugg-label {
   flex-shrink: 0;
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
 }
 
@@ -4822,7 +4835,7 @@
   border-bottom: 1px solid var(--agw-border);
 }
 .agw-settings-nav-eyebrow {
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   font-weight: 600;
   letter-spacing: 0.18em;
   text-transform: uppercase;
@@ -4830,7 +4843,7 @@
 }
 .agw-settings-nav-title {
   margin-top: 2px;
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   font-weight: 600;
   color: var(--agw-text);
 }
@@ -4844,7 +4857,7 @@
 }
 .agw-settings-nav-group-label {
   padding: 0 8px 6px;
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   font-weight: 600;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -4860,7 +4873,7 @@
   border-radius: var(--agw-radius-sm);
   background: transparent;
   color: var(--agw-text-muted);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-weight: 500;
   text-align: left;
   cursor: pointer;
@@ -4889,7 +4902,7 @@
 .agw-settings-nav-foot {
   padding: 10px 16px;
   border-top: 1px solid var(--agw-border);
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
   font-family: var(--agw-font-code);
 }
@@ -4921,7 +4934,7 @@
   border-radius: 999px;
   background: var(--agw-surface);
   color: var(--agw-text-muted);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-weight: 600;
   cursor: pointer;
   box-shadow: var(--agw-set-shadow-soft);
@@ -4936,7 +4949,7 @@
   min-width: 0;
 }
 .agw-settings-head-eyebrow {
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   font-weight: 600;
   letter-spacing: 0.18em;
   text-transform: uppercase;
@@ -5004,14 +5017,14 @@
   color: var(--agw-text-muted);
 }
 .agw-set-section-title {
-  font-size: 15px;
+  font-size: var(--agw-fs-title);
   font-weight: 650;
   letter-spacing: -0.01em;
   color: var(--agw-text);
 }
 .agw-set-section-desc {
   margin-top: 2px;
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   line-height: 1.5;
   color: var(--agw-text-subtle);
 }
@@ -5040,21 +5053,21 @@
   max-width: 60%;
 }
 .agw-set-row-label-text {
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   font-weight: 500;
   line-height: 1.35;
   color: var(--agw-text);
 }
 .agw-set-row-hint {
   margin-top: 3px;
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   line-height: 1.45;
   color: var(--agw-text-subtle);
 }
 .agw-set-row-hint code,
 .agw-set-row-hint .agw-mono {
   font-family: var(--agw-font-code);
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
 }
 .agw-set-row-control {
   display: flex;
@@ -5152,7 +5165,7 @@
   border-radius: 999px;
   background: transparent;
   color: var(--agw-text-subtle);
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   cursor: pointer;
   /* box-shadow rides the same curve so the active pill's shadow fades in
@@ -5207,7 +5220,7 @@
   padding: 2px 8px;
   border: 1px solid var(--agw-border);
   border-radius: var(--agw-radius-sm);
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -5251,7 +5264,7 @@
   border-radius: 999px;
   background: var(--agw-surface);
   color: var(--agw-text);
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   font-weight: 600;
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
@@ -5329,7 +5342,7 @@
   border-radius: var(--agw-radius-sm);
   background: var(--agw-canvas);
   color: var(--agw-text);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-family: var(--agw-font-ui);
   outline: none;
   transition: border-color 0.1s ease;
@@ -5349,7 +5362,7 @@
   gap: 10px;
   padding: 11px 13px;
   border-radius: var(--agw-radius-md);
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   line-height: 1.45;
   color: var(--agw-text);
 }
@@ -5370,7 +5383,7 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -5422,13 +5435,13 @@
 .agw-set-tile-label {
   flex: 1;
   min-width: 0;
-  font-size: 13.5px;
+  font-size: var(--agw-fs-md);
   font-weight: 650;
   letter-spacing: -0.01em;
   color: var(--agw-text);
 }
 .agw-set-tile-hint {
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   line-height: 1.5;
   color: var(--agw-text-subtle);
 }
@@ -5462,7 +5475,7 @@
 .agw-set-card-title {
   flex: 1;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-weight: 600;
   color: var(--agw-text);
   overflow: hidden;
@@ -5485,7 +5498,7 @@
 }
 .agw-set-card-tool {
   min-width: 0;
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   color: var(--agw-text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5505,7 +5518,7 @@
   border-radius: 999px;
   background: var(--agw-surface);
   color: var(--agw-text-subtle);
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
@@ -5574,7 +5587,7 @@
 .agw-set-group-title {
   flex: 1;
   min-width: 0;
-  font-size: 14px;
+  font-size: var(--agw-fs-body);
   font-weight: 650;
   letter-spacing: -0.01em;
   color: var(--agw-text);
@@ -5584,7 +5597,7 @@
 }
 .agw-set-group-meta {
   flex-shrink: 0;
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
 }
 .agw-set-group-body {
@@ -5600,7 +5613,7 @@
 }
 .agw-set-trow-name {
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   color: var(--agw-text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5617,7 +5630,7 @@
 }
 .agw-set-group-foot-label {
   margin-right: 4px;
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -5636,7 +5649,7 @@
   border: 1px solid var(--agw-border);
   background: var(--agw-surface-elevated);
   color: var(--agw-text);
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   font-weight: 700;
 }
 .agw-prov-conn {
@@ -5655,7 +5668,7 @@
   min-width: 0;
 }
 .agw-prov-edit-field > span {
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   letter-spacing: 0.04em;
   color: var(--agw-text-subtle);
@@ -5685,7 +5698,7 @@
   color: var(--agw-text);
 }
 .agw-prov-models-head {
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -5695,7 +5708,7 @@
 .agw-prov-empty {
   padding: 20px 14px;
   color: var(--agw-text-subtle);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   text-align: center;
 }
 .agw-prov-reason {
@@ -5762,7 +5775,7 @@
     radial-gradient(circle at center, var(--agw-added) 0 4px, transparent 5px);
 }
 .agw-prov-model-name {
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   font-weight: 600;
   color: var(--agw-text);
   overflow: hidden;
@@ -5783,13 +5796,13 @@
 }
 .agw-prov-key {
   font-family: var(--agw-font-code);
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-muted);
 }
 /* Inline metadata (ctx, price) — plain muted text with a leading separator dot,
    NOT a bordered chip, so the row reads as a sentence of facts. */
 .agw-prov-meta-dot {
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
 }
 .agw-prov-meta-dot::before {
@@ -5801,7 +5814,7 @@
   padding: 1px 7px;
   border: 1px solid var(--agw-border);
   border-radius: 999px;
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   font-weight: 600;
   color: var(--agw-text-muted);
 }
@@ -5828,7 +5841,7 @@
   border-radius: 999px;
   background: transparent;
   color: var(--agw-text-subtle);
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
@@ -5873,7 +5886,7 @@
 }
 .agw-prov-add-note {
   margin-top: 8px;
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-warning);
 }
 .agw-prov-add-input {
@@ -5883,7 +5896,7 @@
   border: none;
   background: transparent;
   color: var(--agw-text);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-family: var(--agw-font-ui);
   outline: none;
 }
@@ -5922,7 +5935,7 @@
   background: var(--agw-hover);
 }
 .agw-prov-add-name {
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -5930,14 +5943,14 @@
   flex: 1;
   min-width: 0;
   font-family: var(--agw-font-code);
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .agw-prov-add-meta {
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
   flex-shrink: 0;
 }
@@ -5962,7 +5975,7 @@
   font-variant-numeric: tabular-nums;
 }
 .agw-profile-tile-label {
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -6015,7 +6028,7 @@
   flex-direction: column;
   justify-content: space-between;
   padding: 1px 0;
-  font-size: 9.5px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
   flex-shrink: 0;
 }
@@ -6047,7 +6060,7 @@
   justify-content: flex-end;
   gap: 4px;
   margin-top: 10px;
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
 }
 .agw-heatmap-legend .agw-heatmap-cell {
@@ -6105,7 +6118,7 @@
 .agw-heatmap-months span {
   flex: 1;
   min-width: 0;
-  font-size: 9.5px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
   overflow: visible;
   white-space: nowrap;
@@ -6133,7 +6146,7 @@
   background: var(--agw-hover);
 }
 .agw-profile-row-label {
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   font-weight: 500;
   color: var(--agw-text);
   white-space: nowrap;
@@ -6164,7 +6177,7 @@
 }
 .agw-profile-row-val {
   text-align: right;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--agw-text-muted);
@@ -6191,7 +6204,7 @@
   justify-content: space-between;
   margin-top: 6px;
   padding: 0 2px;
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
 }
 
@@ -6239,7 +6252,7 @@
   color: var(--agw-text);
 }
 .agw-profile-sub {
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
 }
 /* Hovered-bar readout above the chart — reserved height, no layout jump. */
@@ -6252,25 +6265,25 @@
   font-variant-numeric: tabular-nums;
 }
 .agw-profile-readout-date {
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   font-weight: 600;
   color: var(--agw-text);
 }
 .agw-profile-readout-val {
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   color: var(--agw-accent);
   font-weight: 600;
 }
 .agw-profile-readout-turns,
 .agw-profile-readout-hint {
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
 }
 .agw-profile-chart-empty {
   align-self: center;
   width: 100%;
   text-align: center;
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   color: var(--agw-text-subtle);
 }
 .agw-profile-tools {
@@ -6286,7 +6299,7 @@
 .agw-profile-tool-name {
   width: 180px;
   flex-shrink: 0;
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-family: var(--agw-font-code);
   color: var(--agw-text);
   overflow: hidden;
@@ -6310,7 +6323,7 @@
   width: 48px;
   flex-shrink: 0;
   text-align: right;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   font-variant-numeric: tabular-nums;
   color: var(--agw-text-muted);
 }
@@ -6341,7 +6354,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 14px 16px 10px;
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -6391,7 +6404,7 @@
 }
 .agw-prov-models-hint {
   margin: -4px 0 10px;
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   line-height: 1.5;
   color: var(--agw-text-subtle);
 }
@@ -6434,7 +6447,7 @@
   flex: 1;
 }
 .agw-prov-item-name {
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-weight: 600;
   color: var(--agw-text);
   overflow: hidden;
@@ -6442,7 +6455,7 @@
   white-space: nowrap;
 }
 .agw-prov-item-sub {
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
 }
 .agw-prov-status-dot {
@@ -6475,7 +6488,7 @@
 .agw-prov-avatar-sm {
   width: 26px;
   height: 26px;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   border-radius: 8px;
 }
 
@@ -6499,7 +6512,7 @@
   justify-content: center;
   gap: 12px;
   color: var(--agw-text-subtle);
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
 }
 /* Fixed regions in the detail pane — only the models list scrolls. */
 .agw-prov-detail-head,
@@ -6521,7 +6534,7 @@
   min-width: 0;
 }
 .agw-prov-detail-name {
-  font-size: 15px;
+  font-size: var(--agw-fs-title);
   font-weight: 650;
   letter-spacing: -0.01em;
   color: var(--agw-text);
@@ -6530,7 +6543,7 @@
   white-space: nowrap;
 }
 .agw-prov-detail-sub {
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
 }
 .agw-prov-models-count {
@@ -6555,7 +6568,7 @@
   border-radius: var(--agw-radius-sm);
   background: var(--agw-canvas);
   color: var(--agw-text);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   cursor: pointer;
   white-space: nowrap;
   outline: none;
@@ -6595,7 +6608,7 @@
   border-radius: var(--agw-radius-sm);
   background: transparent;
   color: var(--agw-text);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   text-align: left;
   cursor: pointer;
   transition: background 0.1s ease, color 0.1s ease;
@@ -6631,7 +6644,7 @@
   border-radius: 999px;
   background: transparent;
   color: var(--agw-text);
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   font-weight: 600;
   cursor: pointer;
   user-select: none;
@@ -6706,7 +6719,7 @@
   border-radius: 9px;
   background: transparent;
   color: var(--agw-text);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-weight: 500;
   text-align: left;
   cursor: pointer;
@@ -6743,7 +6756,7 @@
 }
 .agw-reason-state {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   padding: 1px 8px;
   border-radius: 999px;
@@ -6762,7 +6775,7 @@
 }
 .agw-reason-heading {
   padding: 2px 8px 4px;
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -6787,7 +6800,7 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
 }
 .agw-mcp-stat-sep {
@@ -6902,7 +6915,7 @@
   min-width: 0;
 }
 .agw-mcp-card-name {
-  font-size: 14px;
+  font-size: var(--agw-fs-body);
   font-weight: 650;
   letter-spacing: -0.01em;
   color: var(--agw-text);
@@ -6911,7 +6924,7 @@
   white-space: nowrap;
 }
 .agw-mcp-card-sub {
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6995,7 +7008,7 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   letter-spacing: 0.04em;
   color: var(--agw-text-subtle);
@@ -7007,12 +7020,12 @@
   background: var(--agw-canvas);
   color: var(--agw-text-muted);
   font-family: var(--agw-font-code);
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   line-height: 1.6;
   word-break: break-all;
 }
 .agw-mcp-muted {
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   color: var(--agw-text-subtle);
 }
 .agw-mcp-count {
@@ -7029,7 +7042,7 @@
   border-radius: var(--agw-radius-sm);
   background: var(--agw-canvas);
   color: var(--agw-text);
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   font-family: var(--agw-font-code);
   line-height: 1.5;
   resize: vertical;
@@ -7056,7 +7069,7 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   color: var(--agw-text-muted);
   cursor: pointer;
 }
@@ -7086,7 +7099,7 @@
   background: var(--agw-canvas);
   color: var(--agw-text-muted);
   font-family: var(--agw-font-code);
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   cursor: help;
 }
 
@@ -7102,12 +7115,12 @@
   text-align: center;
 }
 .agw-mcp-empty-title {
-  font-size: 13.5px;
+  font-size: var(--agw-fs-md);
   font-weight: 650;
   color: var(--agw-text);
 }
 .agw-mcp-empty-sub {
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   color: var(--agw-text-subtle);
   margin-bottom: 4px;
 }
@@ -7124,7 +7137,7 @@
   border-radius: var(--agw-radius-sm);
   background: transparent;
   color: var(--agw-text-subtle);
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   outline: none;
@@ -7197,7 +7210,7 @@
   height: 100%;
 }
 .agw-appr-card-name {
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-weight: 500;
   color: var(--agw-text);
   min-width: 0;
@@ -7223,7 +7236,7 @@
   border-radius: var(--agw-radius-md);
   background: color-mix(in srgb, var(--agw-canvas) 50%, transparent);
   color: var(--agw-text-muted);
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   line-height: 1.45;
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
@@ -7283,7 +7296,7 @@
 .agw-appr-hex {
   width: 156px;
   font-family: var(--agw-font-code);
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
 }
 
 /* ── Range / contrast slider ─────────────────────────────────────────────── */
@@ -7321,7 +7334,7 @@
 }
 .agw-appr-range-val {
   min-width: 24px;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   font-variant-numeric: tabular-nums;
   color: var(--agw-text-muted);
   text-align: right;
@@ -7378,7 +7391,7 @@
   min-width: 0;
 }
 .agw-skill-hero-eyebrow {
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   font-weight: 700;
   letter-spacing: 0.18em;
   text-transform: uppercase;
@@ -7401,13 +7414,13 @@
   color: var(--agw-warning);
 }
 .agw-skill-hero-count span {
-  font-size: 15px;
+  font-size: var(--agw-fs-title);
   font-weight: 500;
   color: var(--agw-text-subtle);
 }
 .agw-skill-hero-label {
   margin-top: 3px;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   color: var(--agw-text-subtle);
 }
 .agw-skill-meter {
@@ -7436,7 +7449,7 @@
   flex-shrink: 0;
 }
 .agw-skill-hero-state {
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   color: var(--agw-text-subtle);
 }
@@ -7454,14 +7467,14 @@
   flex-wrap: wrap;
 }
 .agw-skill-equipped-head > span:first-child {
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--agw-text);
 }
 .agw-skill-equipped-hint {
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
 }
 .agw-skill-chips {
@@ -7479,7 +7492,7 @@
   border: 1px solid color-mix(in srgb, var(--agw-added) 38%, transparent);
   background: color-mix(in srgb, var(--agw-added) 12%, transparent);
   color: var(--agw-text);
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   font-weight: 500;
   cursor: pointer;
   transition: background 0.14s ease, border-color 0.14s ease;
@@ -7532,7 +7545,7 @@
 .agw-skill-count {
   flex-shrink: 0;
   font-family: var(--agw-font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
   font-variant-numeric: tabular-nums;
 }
@@ -7604,21 +7617,21 @@
   align-items: center;
   gap: 5px;
   align-self: flex-start;
-  font-size: 9.5px;
+  font-size: var(--agw-fs-micro);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
 }
 .agw-skill-card-name {
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   font-weight: 600;
   line-height: 1.3;
   color: var(--agw-text);
   padding-right: 22px;
 }
 .agw-skill-card-desc {
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   line-height: 1.45;
   color: var(--agw-text-subtle);
   display: -webkit-box;
@@ -7639,7 +7652,7 @@
   max-width: 100%;
   padding: 1px 6px;
   font-family: var(--agw-font-mono, ui-monospace, monospace);
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
   background: color-mix(in srgb, var(--agw-text) 5%, transparent);
   border: 1px solid var(--agw-border);
@@ -7649,7 +7662,7 @@
   text-overflow: ellipsis;
 }
 .agw-skill-trig {
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
 }
 
@@ -7668,7 +7681,7 @@
 }
 .agw-skill-empty p {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
 }
 
 /* Source footnote. */
@@ -7684,7 +7697,7 @@
   align-items: center;
   gap: 7px;
   font-family: var(--agw-font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   line-height: 1.5;
   color: var(--agw-text-subtle);
   word-break: break-all;
@@ -7709,7 +7722,7 @@
   background: var(--agw-surface);
   color: var(--agw-text);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   line-height: 1.55;
 }
 .agw-set-textarea::placeholder {
@@ -7725,7 +7738,7 @@
   justify-content: space-between;
   gap: 12px;
   margin-top: 9px;
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   line-height: 1.4;
   color: var(--agw-text-subtle);
 }
@@ -7761,7 +7774,7 @@
   border-radius: 999px;
   background: transparent;
   color: var(--agw-text);
-  font-size: 15px;
+  font-size: var(--agw-fs-title);
   line-height: 1;
   cursor: pointer;
 }
@@ -7775,7 +7788,7 @@
 .agw-agent-stepper-val {
   min-width: 78px;
   text-align: center;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   color: var(--agw-text);
   font-variant-numeric: tabular-nums;
 }
@@ -7805,7 +7818,7 @@
 .agw-agent-modelsel-meta {
   flex-shrink: 0;
   margin-left: 8px;
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
 }
 
@@ -7870,7 +7883,7 @@
   opacity: 1;
 }
 .agw-attach-warn {
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   color: var(--agw-warning, var(--agw-removed));
   padding: 4px 2px;
 }
@@ -7940,12 +7953,12 @@
   box-shadow: 0 18px 50px color-mix(in srgb, #000 45%, transparent);
 }
 .agw-confirm-title {
-  font-size: 14.5px;
+  font-size: var(--agw-fs-body);
   font-weight: 600;
   color: var(--agw-text);
 }
 .agw-confirm-msg {
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   line-height: 1.5;
   color: var(--agw-text-muted);
 }
@@ -7962,7 +7975,7 @@
   border-radius: var(--agw-radius-md);
   background: transparent;
   color: var(--agw-text);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-weight: 500;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
@@ -8043,12 +8056,12 @@
   margin-bottom: 2px;
 }
 .agw-mic-perm-title {
-  font-size: 15px;
+  font-size: var(--agw-fs-title);
   font-weight: 650;
   color: var(--agw-text);
 }
 .agw-mic-perm-msg {
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   line-height: 1.55;
   color: var(--agw-text-muted);
   max-width: 320px;
@@ -8059,7 +8072,7 @@
   justify-content: center;
   gap: 8px;
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   color: var(--agw-text-muted);
   cursor: pointer;
   user-select: none;
@@ -8084,7 +8097,7 @@
   border-radius: var(--agw-radius-md);
   background: transparent;
   color: var(--agw-text);
-  font-size: 12.5px;
+  font-size: var(--agw-fs-ui);
   font-weight: 550;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease, filter 0.12s ease;
@@ -8150,7 +8163,7 @@
   border-radius: 8px;
   background: transparent;
   color: var(--agw-text-muted);
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   font-weight: 600;
   cursor: pointer;
 }
@@ -8174,7 +8187,7 @@
   border-radius: 8px;
   background: var(--agw-accent);
   color: var(--agw-on-accent);
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   font-weight: 700;
   cursor: pointer;
 }
@@ -8270,13 +8283,13 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   font-weight: 650;
   color: var(--agw-text);
 }
 .agw-atlas-sub {
   margin-top: 2px;
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
   white-space: nowrap;
   overflow: hidden;
@@ -8296,7 +8309,7 @@
 }
 .agw-atlas-hint {
   padding: 14px 12px;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   line-height: 1.55;
   color: var(--agw-text-subtle);
 }
@@ -8319,19 +8332,19 @@
 }
 .agw-atlas-hero-unit {
   margin-top: 5px;
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
 }
 .agw-atlas-hero-token {
   text-align: right;
-  font-size: 13px;
+  font-size: var(--agw-fs-md);
   font-weight: 650;
   color: var(--agw-accent);
 }
 .agw-atlas-hero-token-hint {
   display: block;
   margin-top: 2px;
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   font-weight: 500;
   color: var(--agw-text-subtle);
 }
@@ -8360,7 +8373,7 @@
   display: flex;
   justify-content: space-between;
   margin-top: 5px;
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
   font-variant-numeric: tabular-nums;
 }
@@ -8380,14 +8393,14 @@
   background: var(--agw-canvas);
 }
 .agw-atlas-stat-label {
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--agw-text-subtle);
 }
 .agw-atlas-stat-value {
   margin-top: 3px;
-  font-size: 15px;
+  font-size: var(--agw-fs-title);
   font-weight: 650;
   color: var(--agw-text);
   font-variant-numeric: tabular-nums;
@@ -8397,7 +8410,7 @@
 }
 .agw-atlas-stat-sub {
   margin-top: 2px;
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
   white-space: nowrap;
   overflow: hidden;
@@ -8462,7 +8475,7 @@
 .agw-atlas-chip {
   flex: 0 0 auto;
   padding: 4px 10px;
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   white-space: nowrap;
   border: 1px solid var(--agw-border);
@@ -8498,7 +8511,7 @@
   align-items: center;
   padding: 6px 8px;
   border-radius: var(--agw-radius-sm);
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
 }
 .agw-atlas-row:nth-child(odd) {
   background: var(--agw-canvas);
@@ -8536,7 +8549,7 @@
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 4px;
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
 }
 .agw-atlas-bar-name {
   font-weight: 600;
@@ -8580,13 +8593,13 @@
   background: var(--agw-accent);
 }
 .agw-atlas-slide-name {
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   color: var(--agw-text-muted);
 }
 .agw-atlas-updated {
   margin-left: auto;
-  font-size: 10px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
 }
 
@@ -8618,7 +8631,7 @@
   justify-content: space-between;
   gap: 10px;
   padding: 12px;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   color: var(--agw-text-muted);
 }
 .agw-atlas-retry {
@@ -8626,7 +8639,7 @@
   align-items: center;
   gap: 5px;
   padding: 4px 9px;
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   border: 1px solid var(--agw-border-strong);
   border-radius: var(--agw-radius-sm);
@@ -8636,14 +8649,14 @@
 }
 .agw-atlas-note {
   margin-top: 10px;
-  font-size: 10.5px;
+  font-size: var(--agw-fs-label);
   line-height: 1.5;
   color: var(--agw-text-subtle);
 }
 .agw-atlas-empty {
   padding: 22px 8px;
   text-align: center;
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   color: var(--agw-text-subtle);
 }
 
@@ -8674,17 +8687,17 @@
   gap: 10px;
 }
 .agw-codex-window-label {
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   font-weight: 600;
   color: var(--agw-text);
 }
 .agw-codex-window-meta {
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-muted);
   white-space: nowrap;
 }
 .agw-codex-note {
-  font-size: 11.5px;
+  font-size: var(--agw-fs-label);
   line-height: 1.5;
   color: var(--agw-text-muted);
 }
@@ -8709,7 +8722,7 @@
   padding: 0;
   border: none;
   background: none;
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   font-weight: 600;
   color: var(--agw-text-muted);
   cursor: pointer;
@@ -8724,7 +8737,7 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  font-size: 11px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-muted);
 }
 
@@ -8859,7 +8872,7 @@
   gap: 10px;
   padding: 24px;
   color: var(--agw-text-subtle);
-  font-size: 12px;
+  font-size: var(--agw-fs-ui);
   text-align: center;
 }
 

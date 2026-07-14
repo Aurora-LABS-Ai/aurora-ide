@@ -328,7 +328,7 @@ export const FileViewer: React.FC<{
           {text.kind === "loading" && (
             <Centered>
               <div className="agw-fv-spinner" />
-              <div style={{ fontSize: 12.5, color: "var(--agw-text-subtle)" }}>Loading…</div>
+              <div style={{ fontSize: 12, color: "var(--agw-text-subtle)" }}>Loading…</div>
             </Centered>
           )}
           {text.kind === "ready" &&

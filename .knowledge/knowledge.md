@@ -2,6 +2,15 @@
 
 Thin progress + working-memory layer. Append 2-4 lines per meaningful change.
 
+## Task (2026-07-14): Model selector ordering broken — grouped redesign — DONE (committed 6c54122)
+Two real defects in the flat sort: (1) models missing `createdAt` all tied at 0 → default "recently added"
+degenerated to cross-provider alphabetical soup; (2) `b.sortOrder - a.sortOrder` tiebreak was DESCENDING —
+reversed the user's provider-page arrangement (store sorts ASC everywhere: useSettingsStore 797/1626).
+New way to show: Recent strip (last 3 used, hidden while searching) + one section per provider (user's provider
+order), models by sortOrder ASC; per-row provider subline dropped inside sections (header says it). Sort-cycling
+button + agw:model-sort localStorage removed; stale `.agw-model-group` label CSS repurposed to section wrapper +
+`.agw-model-group-label`/`-count`. Verified: tsc, eslint, postcss, 118/118.
+
 ## Task (2026-07-14): "App doesn't feel mature" — measured + 3 staged coherence passes — DONE (committed)
 Diagnosis with hard numbers: 19 font sizes / 24 radii / 8 control heights / 12 transition durations — near-duplicate
 values read as noise; maturity = few values ruthlessly repeated. User approved all passes + asked for checkpoint

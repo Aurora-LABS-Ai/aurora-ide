@@ -7,7 +7,7 @@
  * `ToolItem`, kept isolated (own `--agw-*` chrome, own icons).
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { isTauri } from "../../../lib/tauri";
@@ -19,62 +19,7 @@ import { ShellOutputView } from "./ShellOutputView";
 import { FileListView } from "./FileListView";
 import { WorkspaceTreeView } from "./WorkspaceTreeView";
 import { baseName, type ParsedToolResult } from "./tool-result";
-import {
-  extToShikiLang,
-  useShikiTokens,
-  type ShikiThemeVariant,
-} from "../../../components/chat/useShikiTokens";
-import { selectActiveAgentTheme, useAgentThemeStore } from "../../store/useAgentThemeStore";
-
-/** Lowercased extension (no dot) of a path, or "" when none. */
-function extOf(path: string): string {
-  const base = path.split(/[/\\]/).pop() ?? path;
-  const dot = base.lastIndexOf(".");
-  return dot >= 0 ? base.slice(dot + 1).toLowerCase() : "";
-}
-
-/**
- * Tool-card file body. Syntax-highlights via the shared Shiki tokenizer when the
- * language is known AND the user has highlighting on; otherwise renders plain
- * text (same flat look as before). The language is derived from the file path
- * the parser carried through (`codePath`).
- */
-const ToolCode: React.FC<{ code: string; path: string | null }> = ({ code, path }) => {
-  const appearance = useAgentThemeStore((s) => selectActiveAgentTheme(s).appearance);
-  const syntaxOn = useAgentThemeStore((s) => s.syntaxHighlighting);
-  const variant: ShikiThemeVariant = appearance === "light" ? "light" : "dark";
-  const lang = useMemo(
-    () => (syntaxOn && path ? extToShikiLang(extOf(path)) : null),
-    [syntaxOn, path],
-  );
-  const tokens = useShikiTokens(code, lang, variant);
-
-  if (!tokens) {
-    return <pre className="agw-code agw-scroll agw-tool-result">{code}</pre>;
-  }
-  return (
-    <pre className="agw-code agw-scroll agw-tool-result">
-      <code>
-        {tokens.map((line, i) => (
-          <span key={i} className="agw-code-line">
-            {line.length === 0 ? (
-              "\n"
-            ) : (
-              <>
-                {line.map((tok, j) => (
-                  <span key={j} style={{ color: tok.color }}>
-                    {tok.content}
-                  </span>
-                ))}
-                {"\n"}
-              </>
-            )}
-          </span>
-        ))}
-      </code>
-    </pre>
-  );
-};
+import { ToolCode } from "./ToolCode";
 
 /**
  * Screenshot result body. Renders the captured PNG from its on-disk path (via

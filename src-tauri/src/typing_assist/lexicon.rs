@@ -148,7 +148,9 @@ impl Lexicon {
         if self.no_correct.contains(&w) {
             return true;
         }
-        self.words.get(&w).is_some_and(|s| s.count >= LEARNED_THRESHOLD)
+        self.words
+            .get(&w)
+            .is_some_and(|s| s.count >= LEARNED_THRESHOLD)
     }
 
     /// True when the undo list specifically contains this word (blocks even curated fixes).
@@ -183,9 +185,7 @@ impl Lexicon {
         let mut hits: Vec<(String, i64)> = self
             .bigrams
             .iter()
-            .filter_map(|(key, &c)| {
-                key.strip_prefix(&prefix).map(|w| (w.to_string(), c))
-            })
+            .filter_map(|(key, &c)| key.strip_prefix(&prefix).map(|w| (w.to_string(), c)))
             .collect();
         hits.sort_by(|a, b| b.1.cmp(&a.1));
         hits.truncate(count);

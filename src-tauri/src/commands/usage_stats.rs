@@ -144,7 +144,9 @@ pub fn usage_stats_get(registry: State<'_, Arc<AgentRegistry>>) -> Result<UsageS
                 }
             }
 
-            let Some(usage) = &message.usage else { continue };
+            let Some(usage) = &message.usage else {
+                continue;
+            };
             let input = u64::from(usage.input_tokens)
                 + u64::from(usage.cache_creation_input_tokens.unwrap_or(0));
             let output = u64::from(usage.output_tokens);
@@ -179,7 +181,11 @@ pub fn usage_stats_get(registry: State<'_, Arc<AgentRegistry>>) -> Result<UsageS
 
         if let (Some(first), Some(last)) = (first_ts, last_ts) {
             let duration = last - first;
-            if duration > 0 && longest_task.as_ref().is_none_or(|t| duration > t.duration_ms) {
+            if duration > 0
+                && longest_task
+                    .as_ref()
+                    .is_none_or(|t| duration > t.duration_ms)
+            {
                 longest_task = Some(LongestTask {
                     thread_id: summary.id.clone(),
                     title: summary.title.clone(),

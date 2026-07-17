@@ -42,9 +42,10 @@ impl ToolExecutor for MovePathTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "move_path".into(),
-            description: "Move or rename a file OR a folder from one path to another. Fails if the \
+            description:
+                "Move or rename a file OR a folder from one path to another. Fails if the \
                           source does not exist or the destination already exists."
-                .into(),
+                    .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -118,7 +119,9 @@ impl ToolExecutor for MovePathTool {
                 )
                 .with_tool_call_id(ctx.tool_call_id.clone());
                 if let Err(emit_err) = self.sink.emit_file_changed(&deleted) {
-                    eprintln!("[move_path] emit_file_changed (deleted) failed for {raw_old}: {emit_err}");
+                    eprintln!(
+                        "[move_path] emit_file_changed (deleted) failed for {raw_old}: {emit_err}"
+                    );
                 }
                 let created = if is_dir {
                     FileChangedPayload::folder_created(
@@ -137,7 +140,9 @@ impl ToolExecutor for MovePathTool {
                 }
                 .with_tool_call_id(ctx.tool_call_id.clone());
                 if let Err(emit_err) = self.sink.emit_file_changed(&created) {
-                    eprintln!("[move_path] emit_file_changed (created) failed for {raw_new}: {emit_err}");
+                    eprintln!(
+                        "[move_path] emit_file_changed (created) failed for {raw_new}: {emit_err}"
+                    );
                 }
 
                 Ok(serde_json::to_string(&json!({
@@ -200,7 +205,10 @@ mod tests {
         assert_eq!(parsed["success"], true);
         assert_eq!(parsed["isDirectory"], false);
         assert!(!tmp.path().join("a.txt").exists());
-        assert_eq!(std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(), "hi");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(),
+            "hi"
+        );
     }
 
     #[tokio::test]

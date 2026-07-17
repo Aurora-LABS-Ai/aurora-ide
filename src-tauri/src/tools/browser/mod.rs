@@ -556,7 +556,12 @@ impl ToolExecutor for BrowserScreenshotTool {
         let src_attr = value
             .get("path")
             .and_then(Value::as_str)
-            .map(|p| format!(" src=\"{}\"", p.replace('&', "&amp;").replace('"', "&quot;")))
+            .map(|p| {
+                format!(
+                    " src=\"{}\"",
+                    p.replace('&', "&amp;").replace('"', "&quot;")
+                )
+            })
             .unwrap_or_default();
         let url = self.manager.current_url(label).unwrap_or_default();
         // The `<aurora_image …>` marker is the contract with

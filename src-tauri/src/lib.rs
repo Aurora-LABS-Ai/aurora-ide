@@ -478,6 +478,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             // command lets the frontend close the loop on bridge tool
             // calls (`FrontendBridgeExecutor`).
             commands::agent_v2::agent_chat_v2,
+            commands::agent_v2::agent_compact_thread,
             commands::agent_v2::agent_cancel,
             commands::agent_v2::agent_load_thread,
             commands::agent_v2::agent_post_tool_result,

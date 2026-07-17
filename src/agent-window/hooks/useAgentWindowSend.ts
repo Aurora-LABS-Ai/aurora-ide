@@ -73,6 +73,7 @@ import {
   type TimelineEvent,
 } from "../components/timeline";
 import { describeToolActivity, type AgentActivity } from "../components/activity";
+import { isDirectiveCommand } from "../adapters/prompt-commands";
 
 /** Read the in-progress ordered timeline off a message (defaults to empty). */
 function timelineOf(m: DbMessage): TimelineEvent[] {
@@ -224,6 +225,8 @@ export interface AgentWindowSend {
   sending: boolean;
   /** Send (or resend) a turn. No-op on empty text or while already sending. */
   send: (text: string, fileChips?: AttachedPromptChip[]) => Promise<void>;
+  /** Compact the open thread immediately. No-op when no idle thread is open. */
+  compact: () => Promise<void>;
   /** Cancel the in-flight turn. */
   stop: () => void;
   /** The tool currently awaiting approval, or `null`. */
@@ -240,6 +243,18 @@ const genId = () => Math.random().toString(36).slice(2, 11);
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function withProviderDefaults(config: ProviderConfig): ProviderConfig {
+  return {
+    ...config,
+    providerType: config.providerType || "custom",
+    contextWindow: config.contextWindow || 128_000,
+    maxOutputTokens: config.maxOutputTokens || 8_192,
+    supportsThinking: config.supportsThinking ?? false,
+    supportsToolStream: config.supportsToolStream ?? false,
+    supportsVision: config.supportsVision ?? false,
+  };
 }
 
 /**
@@ -440,6 +455,93 @@ export function useAgentWindowSend(): AgentWindowSend {
     }
   }, [resolveApproval]);
 
+  const compact = useCallback(async () => {
+    const store = useAgentChatStore.getState();
+    const threadId = store.currentThreadId;
+    const seed = store.currentThread;
+    if (!threadId || !seed || store.liveTurns[threadId]) return;
+
+    const settings = useSettingsStore.getState();
+    const llmConfig = settings.getLLMConfig();
+    if (!llmConfig) return;
+
+    const projectRoot = store.projectRoot;
+    const executionMode =
+      settings.teamEnabled && settings.agentExecutionMode !== "plan"
+        ? "team"
+        : settings.agentExecutionMode;
+    const markerId = genId();
+    let markerStarted = false;
+
+    store.beginTurn(threadId, seed, projectRoot);
+    store.setThreadActivity(threadId, { label: "Compacting context…" });
+
+    const agent = new AgentService();
+    runningAgents.set(threadId, agent);
+    agent.setProvider(withProviderDefaults(llmConfig));
+    agent.setThreadId(threadId);
+    agent.updateConfig({
+      executionMode,
+      workspacePath: projectRoot,
+      maxTokens: llmConfig.defaultMaxTokens ?? llmConfig.maxOutputTokens ?? 8_192,
+      compactionThresholdPct: settings.compactionThresholdPct,
+      compactionSummaryBudget: settings.compactionSummaryBudget,
+      allowOutsideWorkspace: settings.allowOutsideWorkspace,
+    });
+
+    const completeMarker = (beforeTokens: number, afterTokens: number) => {
+      if (!markerStarted) {
+        markerStarted = true;
+        store.appendTurnMessage(threadId, {
+          id: markerId,
+          role: "compaction",
+          content: JSON.stringify({ beforeTokens, afterTokens, running: false }),
+          timestamp: nowIso(),
+        });
+      } else {
+        store.patchTurnMessage(threadId, markerId, (message) => ({
+          ...message,
+          content: JSON.stringify({ beforeTokens, afterTokens, running: false }),
+        }));
+      }
+      useAgentContextStore.getState().setUsage(threadId, {
+        promptTokens: afterTokens,
+        completionTokens: 0,
+        totalTokens: afterTokens,
+        cacheReadTokens: 0,
+        estimated: true,
+      });
+    };
+
+    try {
+      const result = await agent.compactThread({
+        onCompactionStarted: () => {
+          markerStarted = true;
+          store.appendTurnMessage(threadId, {
+            id: markerId,
+            role: "compaction",
+            content: JSON.stringify({
+              beforeTokens: 0,
+              afterTokens: 0,
+              running: true,
+            }),
+            timestamp: nowIso(),
+          });
+        },
+        onCompactionCompleted: completeMarker,
+      });
+      if (result && !markerStarted) {
+        completeMarker(result.beforeTokens, result.afterTokens);
+      }
+    } catch (error) {
+      console.error("[agent-window] manual compaction failed:", error);
+    } finally {
+      runningAgents.delete(threadId);
+      await store.refreshThreads();
+      store.endTurn(threadId);
+    }
+  }, []);
+
   const sendTurn = useCallback(async (
     raw: string,
     target?: BackgroundSendTarget,
@@ -483,7 +585,9 @@ export function useAgentWindowSend(): AgentWindowSend {
     // Snapshot the staged `/` directives (skills / rules / MCP) for THIS turn,
     // then clear the chips so they don't ride along on the next message. Skills
     // thread through `explicitSkillKeys`; rules + MCP become context blocks below.
-    const stagedCommands = target ? [] : useAgentCommandStore.getState().commands;
+    const stagedCommands = target
+      ? []
+      : useAgentCommandStore.getState().commands.filter(isDirectiveCommand);
     const commandSelection = buildCommandSelection(stagedCommands);
     // Compact chips snapshotted for the user bubble (display only — the
     // directive's effect rides to the model via ideContext / explicitSkillKeys).
@@ -724,24 +828,7 @@ export function useAgentWindowSend(): AgentWindowSend {
       });
     };
 
-    const providerConfig: ProviderConfig = {
-      id: llmConfig.id,
-      name: llmConfig.name,
-      providerType:
-        (llmConfig.providerType as ProviderConfig["providerType"]) || "custom",
-      baseUrl: llmConfig.baseUrl,
-      apiKey: llmConfig.apiKey,
-      model: llmConfig.model,
-      contextWindow: llmConfig.contextWindow || 128000,
-      maxOutputTokens: llmConfig.maxOutputTokens || 8192,
-      supportsThinking: llmConfig.supportsThinking ?? false,
-      supportsToolStream: llmConfig.supportsToolStream ?? false,
-      supportsVision: llmConfig.supportsVision ?? false,
-      defaultTemperature: llmConfig.defaultTemperature,
-      defaultMaxTokens: llmConfig.defaultMaxTokens,
-      customHeaders: llmConfig.customHeaders,
-      customParams: llmConfig.customParams,
-    };
+    const providerConfig = withProviderDefaults(llmConfig);
 
     // Minimal, authoritative context: the runtime roots tools at this path; the
     // model just needs to KNOW the path so it can reason about / explore it.
@@ -1162,5 +1249,14 @@ export function useAgentWindowSend(): AgentWindowSend {
     [sendTurn],
   );
 
-  return { sending, send, stop, pendingApproval, approve, approveAlways, reject };
+  return {
+    sending,
+    send,
+    compact,
+    stop,
+    pendingApproval,
+    approve,
+    approveAlways,
+    reject,
+  };
 }

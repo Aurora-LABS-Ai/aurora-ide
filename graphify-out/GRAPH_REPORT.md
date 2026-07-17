@@ -1,16 +1,16 @@
-# Graph Report - Aurora-Agent-IDE  (2026-07-13)
+# Graph Report - Aurora-Agent-IDE  (2026-07-16)
 
 ## Corpus Check
-- 590 files · ~2,312,105 words
+- 597 files · ~2,320,959 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 10278 nodes · 20038 edges · 1963 communities (395 shown, 1568 thin omitted)
-- Extraction: 94% EXTRACTED · 6% INFERRED · 0% AMBIGUOUS · INFERRED: 1104 edges (avg confidence: 0.94)
+- 10345 nodes · 20230 edges · 1977 communities (394 shown, 1583 thin omitted)
+- Extraction: 95% EXTRACTED · 5% INFERRED · 0% AMBIGUOUS · INFERRED: 1104 edges (avg confidence: 0.94)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `2906b758`
+- Built from commit: `35a345bb`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -1894,12 +1894,26 @@
 - [[_COMMUNITY_Community 1960|Community 1960]]
 - [[_COMMUNITY_Community 1961|Community 1961]]
 - [[_COMMUNITY_Community 1962|Community 1962]]
+- [[_COMMUNITY_Community 1963|Community 1963]]
+- [[_COMMUNITY_Community 1964|Community 1964]]
+- [[_COMMUNITY_Community 1965|Community 1965]]
+- [[_COMMUNITY_Community 1966|Community 1966]]
+- [[_COMMUNITY_Community 1967|Community 1967]]
+- [[_COMMUNITY_Community 1968|Community 1968]]
+- [[_COMMUNITY_Community 1969|Community 1969]]
+- [[_COMMUNITY_Community 1970|Community 1970]]
+- [[_COMMUNITY_Community 1971|Community 1971]]
+- [[_COMMUNITY_Community 1972|Community 1972]]
+- [[_COMMUNITY_Community 1973|Community 1973]]
+- [[_COMMUNITY_Community 1974|Community 1974]]
+- [[_COMMUNITY_Community 1975|Community 1975]]
+- [[_COMMUNITY_Community 1976|Community 1976]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `auroraInvoke()` - 112 edges
 2. `useSettingsStore` - 86 edges
-3. `isAuroraRuntimeAvailable()` - 71 edges
-4. `Aurora IDE — Working Memory` - 69 edges
+3. `Aurora IDE — Working Memory` - 79 edges
+4. `isAuroraRuntimeAvailable()` - 71 edges
 5. `isTauri()` - 61 edges
 6. `useWorkspaceStore` - 56 edges
 7. `String` - 54 edges
@@ -1941,19 +1955,19 @@
 - 1-file cycle: `src-tauri/src/agent_safety/paths.rs -> src-tauri/src/agent_safety/paths.rs`
 - 1-file cycle: `src-tauri/src/api/anthropic.rs -> src-tauri/src/api/anthropic.rs`
 
-## Communities (1963 total, 1568 thin omitted)
+## Communities (1977 total, 1583 thin omitted)
 
 ### Community 0 - "Community 0"
-Cohesion: 0.03
-Nodes (95): FileExplorer(), FileTree(), FileTreeProps, TreeNode, TreeNodeComponent(), TreeNodeProps, useExplorerKeyboard(), UseExplorerKeyboardProps (+87 more)
+Cohesion: 0.05
+Nodes (54): UseExplorerKeyboardProps, FileMeta, getCacheStats(), invalidateFileCache(), preloadFiles(), readFileCached(), readFilesBatch(), readFileWithMeta() (+46 more)
 
 ### Community 1 - "Community 1"
 Cohesion: 0.05
-Nodes (106): apply_compaction(), assistant_text(), assistant_tool_use(), assistant_with_text(), build_trim_notice(), build_trim_notice_appends_to_existing_prompt(), build_trim_notice_handles_empty_base_prompt(), CapturedRequest (+98 more)
+Nodes (110): apply_compaction(), assistant_text(), assistant_tool_use(), assistant_with_text(), build_trim_notice(), build_trim_notice_appends_to_existing_prompt(), build_trim_notice_handles_empty_base_prompt(), CapturedRequest (+102 more)
 
 ### Community 2 - "Community 2"
 Cohesion: 0.04
-Nodes (63): ChatHeader(), ChatHeaderProps, getContextColor(), getContextColors(), HeaderIconButtonProps, ChatInput(), ChatMessages(), ChatMessagesProps (+55 more)
+Nodes (62): ChatHeader(), ChatHeaderProps, getContextColor(), getContextColors(), HeaderIconButtonProps, ChatMessage, ChatMessages(), ChatMessagesProps (+54 more)
 
 ### Community 3 - "Community 3"
 Cohesion: 0.11
@@ -1973,27 +1987,27 @@ Nodes (71): Barrier, BuildTools, AgentRecord, ApiError, ApiRequest, Arc, Assista
 
 ### Community 7 - "Community 7"
 Cohesion: 0.02
-Nodes (107): folder-prompts, folder-prompts-open, folder-proto, folder-proto-open, folder-public, folder-public-open, Material Icons Collection, rescript (+99 more)
+Nodes (83): Material Icons Collection, rescript, restql, riot, roadmap, roblox, robot, robots (+75 more)
 
 ### Community 8 - "Community 8"
-Cohesion: 0.07
-Nodes (32): cap(), ModelSelector(), RowReasoning(), SORT_LABEL, SORT_MODES, SORT_TITLE, SortMode, CodeEditor() (+24 more)
+Cohesion: 0.09
+Nodes (28): MemoizedFileExplorer, CreateInputProps, FileTree(), FileTreeProps, TreeNode, TreeNodeComponent(), TreeNodeProps, createFile() (+20 more)
 
 ### Community 9 - "Community 9"
-Cohesion: 0.07
-Nodes (44): GitFileItem(), useAutoSave(), CliOpenRequest, useCliOpen(), useGlobalShortcuts(), useInternalDrag(), useLocalProviderDetection(), useTauriDragDrop() (+36 more)
+Cohesion: 0.08
+Nodes (42): ChatInput(), CodeEditor(), EditorPanel(), TabBar(), FileExplorer(), GitFileItem(), useAutoSave(), CliOpenRequest (+34 more)
 
 ### Community 10 - "Community 10"
-Cohesion: 0.06
-Nodes (48): AgentActivity, AgentComposerProps, EmptyStateProps, BubbleMessage, AgwTurn, appendCompaction(), appendContent(), appendThinking() (+40 more)
+Cohesion: 0.05
+Nodes (51): AgentActivity, AgentComposerProps, AgentTaskPanel(), EmptyStateProps, BubbleMessage, AgwTurn, appendCompaction(), appendContent() (+43 more)
 
 ### Community 11 - "Community 11"
 Cohesion: 0.07
 Nodes (44): AttributePair, BoundingRect, EmbedConfig, PickSource, AttributePair, BoundingRect, BrowserManager, BrowserResult (+36 more)
 
 ### Community 12 - "Community 12"
-Cohesion: 0.04
-Nodes (62): getAppVersion(), AboutSettingsTab(), featureItems, principleItems, AgentSettingsTab(), AgentSettingsTabProps, AgentSubTabKey, SUB_TABS (+54 more)
+Cohesion: 0.10
+Nodes (22): ToolDefinition, filterToolsForExecutionMode(), formatAgentExecutionModeRuntimeContext(), normalizeAgentExecutionMode(), AgentPromptContext, AgentRuntimeCallbacks, AgentRuntimeClientOptions, AgentService (+14 more)
 
 ### Community 13 - "Community 13"
 Cohesion: 0.07
@@ -2020,8 +2034,8 @@ Cohesion: 0.11
 Nodes (66): AgentSpec, AgentToolCall, AgentToolResult, AgentTurn, clamp_display(), snapshot(), team_add_agent(), team_ask_boundary() (+58 more)
 
 ### Community 19 - "Community 19"
-Cohesion: 0.08
-Nodes (55): ActionButton(), FormBlock(), KeyValue(), Section(), deleteOllamaModel(), DetectionResult, detectLocalProviders(), getOllamaRunningModels() (+47 more)
+Cohesion: 0.09
+Nodes (47): deleteOllamaModel(), DetectionResult, detectLocalProviders(), getOllamaRunningModels(), loadOllamaModel(), LocalModel, LocalProvider, mapDetectionResult() (+39 more)
 
 ### Community 20 - "Community 20"
 Cohesion: 0.09
@@ -2049,7 +2063,7 @@ Nodes (66): ChildStderr, ChildStdin, ChildStdout, mcp_add_server(), mcp_call_too
 
 ### Community 26 - "Community 26"
 Cohesion: 0.07
-Nodes (34): BaseProvider, RustProviderMessage, RustProviderRequest, RustProviderResponse, RustStreamChunk, buildRustProviderRequest(), mapRustProviderResponse(), mapRustStreamResult() (+26 more)
+Nodes (33): PendingToolCallState, BaseProvider, RustProviderMessage, RustProviderRequest, RustProviderResponse, RustStreamChunk, buildRustProviderRequest(), mapRustProviderResponse() (+25 more)
 
 ### Community 27 - "Community 27"
 Cohesion: 0.08
@@ -2065,15 +2079,15 @@ Nodes (41): allowed_tool(), BridgeEmitter, BridgeRouter, ctx(), executor_emits_p
 
 ### Community 30 - "Community 30"
 Cohesion: 0.15
-Nodes (26): SearchReplaceReplacement, cancelPendingEditorPreview(), createSession(), getActiveTabSnapshot(), getOrCreateSession(), LiveFilePreviewSession, LiveFilePreviewSnapshot, LivePreviewStatus (+18 more)
+Nodes (27): SearchReplaceReplacement, parseToolArguments(), cancelPendingEditorPreview(), createSession(), getActiveTabSnapshot(), getOrCreateSession(), LiveFilePreviewSession, LiveFilePreviewSnapshot (+19 more)
 
 ### Community 31 - "Community 31"
-Cohesion: 0.07
-Nodes (44): useIconPackImportDrag(), asStringMap(), AuroraIconPackBundle, AuroraIconPackMappings, createExplorerIconPackFromAuroraBundle(), isObjectRecord(), parseAuroraIconPackBundle(), validateBundleShape() (+36 more)
+Cohesion: 0.11
+Nodes (30): BUILTIN_ICON_PACKS, customExplorerIconPacks, fallbackIconName(), fallbackResolvedIcon(), getAvailableExplorerIconPacks(), getExplorerIconPack(), isExplorerIconPackAvailable(), normalizeExplorerIconRequest() (+22 more)
 
 ### Community 32 - "Community 32"
 Cohesion: 0.05
-Nodes (57): CommandItem, Suggestion, isCodexProvider(), getBuiltinSkills(), SkillSource, AgentSettings(), Mode, MODE_OPTIONS (+49 more)
+Nodes (62): AgentMicPermissionModalProps, ApprovalBarProps, React, isCodexProvider(), getBuiltinSkills(), SkillSource, WORKSPACE_SKILL_FOLDERS, AgentSettings() (+54 more)
 
 ### Community 33 - "Community 33"
 Cohesion: 0.12
@@ -2081,19 +2095,19 @@ Nodes (53): AsrInference, build_qwen3_tokenizer_json(), canonical_model_path(), 
 
 ### Community 34 - "Community 34"
 Cohesion: 0.05
-Nodes (52): BrowserPanel(), closeAgentBrowser(), hideAgentBrowser(), showAgentBrowser(), BrowserTab(), BrowserTabProps, EmptyStateProps, InspectorMode (+44 more)
+Nodes (50): BrowserPanel(), closeAgentBrowser(), hideAgentBrowser(), BrowserTabProps, EmptyStateProps, InspectorMode, NativeWindowPlaceholderProps, UrlSuggestionsPanelProps (+42 more)
 
 ### Community 35 - "Community 35"
 Cohesion: 0.10
-Nodes (30): loadPromptAttachments(), BUILTIN_SKILL_BASE, BUILTIN_SKILLS, createStorageKey(), discoverSkillFiles(), extractPreviewLines(), filterEnabledSkills(), getResolvedGlobalSkillsPath() (+22 more)
+Nodes (29): getGlobalSkillsPath(), loadPromptAttachments(), BUILTIN_SKILL_BASE, BUILTIN_SKILLS, createStorageKey(), discoverSkillFiles(), extractPreviewLines(), filterEnabledSkills() (+21 more)
 
 ### Community 36 - "Community 36"
 Cohesion: 0.10
 Nodes (30): cancelled_context_short_circuits_execution(), ctx(), echo_tool_executes_and_returns_input(), echo_tool_rejects_missing_input(), EchoTool, Permitter, registry_clone_shares_state(), registry_re_register_overwrites() (+22 more)
 
 ### Community 37 - "Community 37"
-Cohesion: 0.11
-Nodes (30): bandColor(), CodexQuotaRow(), ContextRing(), formatCost(), formatTokens(), getCodexUsageCached(), CODEX_PRESET, CODEX_SEED_MODELS (+22 more)
+Cohesion: 0.12
+Nodes (29): bandColor(), CodexQuotaRow(), ContextRing(), formatCost(), formatTokens(), getCodexUsageCached(), CODEX_SEED_MODELS, codexAuthCancelLogin() (+21 more)
 
 ### Community 38 - "Community 38"
 Cohesion: 0.13
@@ -2113,19 +2127,19 @@ Nodes (46): AnthropicContentBlock, AuroraAssistantMessage, AuroraStreamToolCall,
 
 ### Community 42 - "Community 42"
 Cohesion: 0.06
-Nodes (36): ChatMessage, ChatMessageProps, extractTimelineText(), TimelineEventItem, TimelineEventItemProps, ThinkingBlock(), ThinkingBlockProps, getToolIcon() (+28 more)
+Nodes (36): ChatMessageProps, extractTimelineText(), TimelineEventItem, TimelineEventItemProps, ThinkingBlock(), ThinkingBlockProps, getToolIcon(), ToolApprovalBanner() (+28 more)
 
 ### Community 43 - "Community 43"
 Cohesion: 0.07
-Nodes (38): cycleAgentExecutionMode(), filterToolsForExecutionMode(), formatAgentExecutionModeRuntimeContext(), isMcpToolAllowedInPlanMode(), isPlanModeShellCommandAllowed(), isTeamLeadToolName(), isToolAllowedForExecutionMode(), MCP_READ_VERBS (+30 more)
+Nodes (35): cycleAgentExecutionMode(), isMcpToolAllowedInPlanMode(), isPlanModeShellCommandAllowed(), isTeamLeadToolName(), isToolAllowedForExecutionMode(), MCP_READ_VERBS, MCP_WRITE_VERBS, PLAN_MODE_SHELL_ALLOWLIST (+27 more)
 
 ### Community 44 - "Community 44"
-Cohesion: 0.08
-Nodes (29): RichOption, CapabilityRowProps, dialogShellStyle, ModelDraft, ModelEditorDialog(), ModelEditorDialogProps, dialogShellStyle, ProviderDraft (+21 more)
+Cohesion: 0.06
+Nodes (48): CapabilityRowProps, dialogShellStyle, ModelDraft, ModelEditorDialog(), dialogShellStyle, ProviderDraft, ProviderEditorDialog(), ProviderEditorDialogProps (+40 more)
 
 ### Community 45 - "Community 45"
-Cohesion: 0.06
-Nodes (44): PromptCommand, cancelRefine(), RefineConfig, RefineValidation, runRefine(), validateRefine(), AgentComposer(), COMMAND_ICON (+36 more)
+Cohesion: 0.05
+Nodes (46): build(), cache, DirectiveCommand, inflight, invalidatePromptCommands(), isDirectiveCommand(), loadPromptCommands(), mapActionCommands() (+38 more)
 
 ### Community 46 - "Community 46"
 Cohesion: 0.12
@@ -2137,7 +2151,7 @@ Nodes (32): apply_thinking_tweaks(), base_config(), custom_params_can_promote_ef
 
 ### Community 48 - "Community 48"
 Cohesion: 0.07
-Nodes (21): ExplorerIconPackId, getFamilyKey(), isThinkingVariantModel(), pickBestCandidate(), resolveThinkingModelPair(), scoreCandidate(), ThinkingModelPair, applyUiPreferences() (+13 more)
+Nodes (32): AutoSaveMode, GeneralSettingsTab(), GeneralSettingsTabProps, IntegrationStatus, ActionButtonProps, ActionButtonVariant, BannerStatus, FieldLabelProps (+24 more)
 
 ### Community 50 - "Community 50"
 Cohesion: 0.08
@@ -2160,8 +2174,8 @@ Cohesion: 0.05
 Nodes (39): dependencies, @anthropic-ai/sdk, @babel/parser, clsx, date-fns, @fontsource/inter, @fontsource/manrope, framer-motion (+31 more)
 
 ### Community 55 - "Community 55"
-Cohesion: 0.11
-Nodes (44): AgentRecord, Arc, DispatchMember, Option, Path, ProviderConfigSnapshot, Result, RuntimeError (+36 more)
+Cohesion: 0.12
+Nodes (37): AgentRecord, Arc, DispatchMember, Option, Path, ProviderConfigSnapshot, RuntimeError, String (+29 more)
 
 ### Community 56 - "Community 56"
 Cohesion: 0.12
@@ -2172,8 +2186,8 @@ Cohesion: 0.12
 Nodes (27): Clone, Default, Into, Option, Self, String, Value, Vec (+19 more)
 
 ### Community 58 - "Community 58"
-Cohesion: 0.13
-Nodes (19): AgentChatRequest, agent_cancel(), agent_cancel_queued_message(), agent_chat_v2(), agent_enqueue_message(), agent_post_tool_result(), AgentRegistry, cancel_returns_false_for_unknown_turn() (+11 more)
+Cohesion: 0.18
+Nodes (20): agent_cancel(), agent_cancel_queued_message(), agent_chat_v2(), agent_compact_thread(), agent_enqueue_message(), agent_load_thread(), agent_post_tool_result(), AgentRegistry (+12 more)
 
 ### Community 59 - "Community 59"
 Cohesion: 0.11
@@ -2189,7 +2203,7 @@ Nodes (35): anthropic_content_blocks(), anthropic_content_value(), apply_openai_
 
 ### Community 62 - "Community 62"
 Cohesion: 0.09
-Nodes (27): assistant_text_msg(), assistant_tool_use_msg(), build_runtime_config(), build_runtime_config_falls_back_to_defaults_when_unset(), build_runtime_config_overlays_request_fields(), cancel_returns_true_for_registered_turn(), empty_tool_registry_returns_no_schemas(), is_plan_shell_command_allowed() (+19 more)
+Nodes (28): AgentExecutionMode, BridgeRouter, allowed_tool(), api_factory_is_object_safe_and_constructible(), build_per_turn_tool_registry(), cancel_returns_false_for_unknown_turn(), cancel_returns_true_for_registered_turn(), dummy_factory() (+20 more)
 
 ### Community 63 - "Community 63"
 Cohesion: 0.19
@@ -2200,12 +2214,12 @@ Cohesion: 0.13
 Nodes (26): closest_existing_ancestor(), map_path_error(), register(), register_mounts_all_bucket_tools(), resolve_missing_path_inside_workspace(), resolve_outside_workspace(), resolve_path(), resolve_path_for_create() (+18 more)
 
 ### Community 65 - "Community 65"
-Cohesion: 0.09
-Nodes (34): formatModelDisplayName(), formatProviderNickname(), MODEL_TOKEN_OVERRIDES, PROVIDER_NICKNAME_OVERRIDES, FireworksSettingsTab(), formatCurrency(), formatInteger(), formatRelativeTime() (+26 more)
+Cohesion: 0.11
+Nodes (31): executeCommand(), FireworksSettingsTab(), formatCurrency(), formatInteger(), formatRelativeTime(), NOTICE_VARIANT, NoticeTone, buildBillingExportCommand() (+23 more)
 
 ### Community 66 - "Community 66"
-Cohesion: 0.16
-Nodes (35): auroraInvoke(), auroraListen(), buildActiveTeamContext(), ackRunStatus(), addAgent(), askBoundary(), assignScope(), assignTask() (+27 more)
+Cohesion: 0.15
+Nodes (34): auroraInvoke(), buildActiveTeamContext(), ackRunStatus(), addAgent(), askBoundary(), assignScope(), assignTask(), beginBuild() (+26 more)
 
 ### Community 67 - "Community 67"
 Cohesion: 0.11
@@ -2224,8 +2238,8 @@ Cohesion: 0.11
 Nodes (26): Lexicon, HashMap, Mutex, Option, Path, PathBuf, Result, Self (+18 more)
 
 ### Community 71 - "Community 71"
-Cohesion: 0.15
-Nodes (13): agent_load_thread(), MockApi, MockEmitter, TauriEmitter, RecoveryHint, AgentEventEnvelope, Option, StdMutex (+5 more)
+Cohesion: 0.19
+Nodes (8): MockEmitter, TauriEmitter, RecoveryHint, AgentEventEnvelope, Option, TurnCompletion, Vec, ToolBridgeRequest
 
 ### Community 72 - "Community 72"
 Cohesion: 0.12
@@ -2249,19 +2263,19 @@ Nodes (30): delete_provider(), delete_provider_model(), get_all_providers(), get
 
 ### Community 77 - "Community 77"
 Cohesion: 0.06
-Nodes (33): ChatInputProps, GENERATING_MESSAGES, GeneratingStatus(), ContextUsageIndicator(), ContextUsageIndicatorProps, getComputedThemeColor(), getRingColors(), PromptAttachmentPopup() (+25 more)
+Nodes (36): AttachedFile, ChatInputProps, GENERATING_MESSAGES, GeneratingStatus(), ContextUsageIndicator(), ContextUsageIndicatorProps, getComputedThemeColor(), getRingColors() (+28 more)
 
 ### Community 78 - "Community 78"
 Cohesion: 0.08
 Nodes (11): DatabaseService, AppSettings, DbLLMProvider, DbProviderModel, EditorState, ExecutionProviderDetails, ExplorerState, FoldedRegion (+3 more)
 
 ### Community 79 - "Community 79"
-Cohesion: 0.19
-Nodes (11): BUILT_IN_THEME_NAMES, canUseTauriThemeCommands(), deserializeStoredThemes(), loadCustomThemes(), loadPersistedActiveThemeId(), persistActiveThemeId(), removeCustomTheme(), saveCustomTheme() (+3 more)
+Cohesion: 0.06
+Nodes (28): RichOption, formatModelDisplayName(), formatProviderNickname(), MODEL_TOKEN_OVERRIDES, PROVIDER_NICKNAME_OVERRIDES, getFamilyKey(), isThinkingVariantModel(), pickBestCandidate() (+20 more)
 
 ### Community 80 - "Community 80"
-Cohesion: 0.09
-Nodes (24): ApiFactory, FileChangedPayload, ShellStreamRequest, ProductionIdeEventSink, RealApiFactory, run(), run_with_args(), TauriTeamEventSink (+16 more)
+Cohesion: 0.06
+Nodes (29): AgentConfirm(), AgentConfirmProps, ProjectSort, SORT_LABEL, SORT_ORDER, TimelineEvent, useTeamHistoryStore, useTeamStore (+21 more)
 
 ### Community 81 - "Community 81"
 Cohesion: 0.14
@@ -2272,8 +2286,8 @@ Cohesion: 0.10
 Nodes (51): agent_open_in_ide(), apply_multi_search_replace(), apply_multi_search_replace_inner(), apply_search_replace(), ApplyMultiSearchReplaceRequest, ApplySearchReplaceRequest, compute_unified_diff(), compute_unified_diff_inner() (+43 more)
 
 ### Community 83 - "Community 83"
-Cohesion: 0.07
-Nodes (28): GeneralSettingsTabProps, SkillRowProps, AgentExecutionMode, getAgentModePromptSection(), normalizeAgentExecutionMode(), composeAgentSystemPrompt(), ComposedAgentPrompt, formatGlobalInstructions() (+20 more)
+Cohesion: 0.09
+Nodes (24): ApiFactory, FileChangedPayload, ShellStreamRequest, ProductionIdeEventSink, RealApiFactory, run(), run_with_args(), TauriTeamEventSink (+16 more)
 
 ### Community 84 - "Community 84"
 Cohesion: 0.17
@@ -2300,12 +2314,12 @@ Cohesion: 0.13
 Nodes (15): CheckpointRepository, Database, DbConnection, EditorRepository, ExplorerRepository, ModelsRepository, SettingsRepository, AppHandle (+7 more)
 
 ### Community 90 - "Community 90"
-Cohesion: 0.11
-Nodes (26): disableNativeTooltips(), stripTitlesIn(), commitStreamedMonacoFileContent(), editorsByPath, getMonacoEditorForPath(), normalizePath(), registerMonacoEditorForPath(), replaceMonacoFileContent() (+18 more)
+Cohesion: 0.07
+Nodes (37): FileChangeCard(), FileChangeCardProps, PendingChangesBar(), PendingChangesBarProps, disableNativeTooltips(), stripTitlesIn(), commitStreamedMonacoFileContent(), editorsByPath (+29 more)
 
 ### Community 91 - "Community 91"
-Cohesion: 0.05
-Nodes (56): TimelineEvent, AgentAutoScrollOptions, AgentAutoScrollResult, useAgentAutoScroll(), PostChannelEventInput, useTeamStore, buildMemberBubbles(), MemberBubble (+48 more)
+Cohesion: 0.06
+Nodes (40): PostChannelEventInput, cancelDraftClear(), clearAllDraftTimers(), draftClearTimers, ingestStreamFrame(), reconcileDrafts(), TeamLiveDraft, TeamStoreState (+32 more)
 
 ### Community 92 - "Community 92"
 Cohesion: 0.11
@@ -2321,19 +2335,19 @@ Nodes (25): Tauri Application, Folder Type Gradle, Folder Type Grunt Opened, Fol
 
 ### Community 95 - "Community 95"
 Cohesion: 0.16
-Nodes (19): ctx_for(), emits_created_for_new_file(), emits_modified_for_existing_file(), FileWriteTool, noop_tool(), rejects_escape(), writes_new_file_inside_workspace(), Arc (+11 more)
+Nodes (20): ctx_for(), emits_created_for_new_file(), emits_modified_for_existing_file(), FileWriteTool, noop_tool(), rejects_escape(), schema_serializes_path_before_content(), writes_new_file_inside_workspace() (+12 more)
 
 ### Community 96 - "Community 96"
 Cohesion: 0.13
 Nodes (20): ctx_for(), diff_side(), emit_post_write(), render_response(), replaces_unique_match(), reports_not_found_as_structured_failure(), SearchReplaceTool, Arc (+12 more)
 
 ### Community 97 - "Community 97"
-Cohesion: 0.13
-Nodes (7): DeleteConfirmDialog(), DeleteConfirmDialogProps, SpeechInputButton(), SpeechInputButtonProps, ConfirmDialog(), ConfirmDialogProps, ConfirmVariant
+Cohesion: 0.11
+Nodes (12): AgentSpeech, MicNotice, MicNoticeSeverity, crispBackendOptions, engineOptions, languageOptions, SpeechDevicePreference, SpeechRuntimeRequest (+4 more)
 
 ### Community 98 - "Community 98"
-Cohesion: 0.14
-Nodes (17): GitBranchSelector(), GitCommitInput(), GitCommitInputProps, GitFileItemProps, statusColors, statusLabels, CollapsibleSectionProps, GitDiffPreviewState (+9 more)
+Cohesion: 0.13
+Nodes (19): GitBranchSelector(), GitCommitInput(), GitCommitInputProps, GitFileItemProps, statusColors, statusLabels, CollapsibleSectionProps, GitDiffPreviewState (+11 more)
 
 ### Community 99 - "Community 99"
 Cohesion: 0.19
@@ -2341,7 +2355,7 @@ Nodes (24): LmStudioModel, DetectionResult, LmStudioModel, LmStudioModelsRespons
 
 ### Community 100 - "Community 100"
 Cohesion: 0.11
-Nodes (22): cache, inflight, invalidateFileIndex(), loadFileIndex(), MentionFile, rankFiles(), relativize(), walk() (+14 more)
+Nodes (20): useIconPackImportDrag(), listExplorerIconPacks(), settingsCardStyle, settingsDangerActionStyle, settingsDangerPanelStyle, settingsInputStyle, settingsPaneStyle, settingsPrimaryActionStyle (+12 more)
 
 ### Community 101 - "Community 101"
 Cohesion: 0.15
@@ -2364,8 +2378,8 @@ Cohesion: 0.16
 Nodes (20): ActiveCommandStream, aurora_websearch(), AuroraWebSearchRequest, AuroraWebSearchResponse, CommandStreamChunk, decode_rg_path(), decode_rg_text(), FileEntry (+12 more)
 
 ### Community 106 - "Community 106"
-Cohesion: 0.10
-Nodes (27): AttachedFile, buildAutoRulesContext(), buildRuleContext(), isImageFilePath(), getSystemInfo(), formatSelectedElementsBlock(), buildAttachedContextBlock(), buildAttachedFiles() (+19 more)
+Cohesion: 0.06
+Nodes (42): buildWorkspacePromptOptions(), EmptyStateMode, joinList(), PromptOption, WorkspaceAwareEmptyState(), WorkspaceAwareEmptyStateProps, buildAutoRulesContext(), buildRuleContext() (+34 more)
 
 ### Community 107 - "Community 107"
 Cohesion: 0.09
@@ -2388,28 +2402,28 @@ Cohesion: 0.18
 Nodes (22): BashValidationError, check_destructive(), command_targets_outside_workspace(), ExecutionMode, extract_first_command(), extract_sudo_inner(), find_end_of_value(), run_pipeline() (+14 more)
 
 ### Community 112 - "Community 112"
-Cohesion: 0.09
-Nodes (21): FormRow(), FormRowLast(), getScopeMeta(), SkillListProps, SkillRow(), SkillsScope, SkillsSettingsTab(), ApprovalMode (+13 more)
+Cohesion: 0.10
+Nodes (21): getAppVersion(), AboutSettingsTab(), featureItems, principleItems, AgentSettingsTab(), AgentSettingsTabProps, AgentSubTabKey, SUB_TABS (+13 more)
 
 ### Community 113 - "Community 113"
-Cohesion: 0.06
-Nodes (42): openInIde(), SHIKI_LANGS, SHIKI_THEMES, ShikiThemeVariant, useShikiTokens(), AgentImageModal(), AgentImageModalProps, COLORS (+34 more)
+Cohesion: 0.11
+Nodes (18): DEFAULT_DARK_TOKENS, DEFAULT_LIGHT_TOKENS, hexColorArb, hexDigitArb, invalidColorArb, partialColorsArb, partialCommonTokensArb, partialEditorTokensArb (+10 more)
 
 ### Community 114 - "Community 114"
-Cohesion: 0.09
-Nodes (25): collectFileChanges(), FileChange, MODIFY_TOOLS, ReviewScope, ReviewPanel(), buildTurns(), AgentReviewState, useAgentReviewStore (+17 more)
+Cohesion: 0.08
+Nodes (25): openInIde(), collectFileChanges(), FileChange, MODIFY_TOOLS, ReviewScope, ReviewPanel(), AgentReviewState, useAgentReviewStore (+17 more)
 
 ### Community 115 - "Community 115"
 Cohesion: 0.15
 Nodes (16): creates_nested_folders(), ctx_for(), fails_when_folder_exists(), FolderCreateTool, Arc, IdeEventSink, Option, PathBuf (+8 more)
 
 ### Community 116 - "Community 116"
-Cohesion: 0.13
-Nodes (24): clamp01(), COLOR_PATTERNS, deepMerge(), generateCSSVariables(), getCSSVariableName(), getLuminance(), injectCSSVariables(), mergeWithBaseTheme() (+16 more)
+Cohesion: 0.14
+Nodes (22): clamp01(), COLOR_PATTERNS, generateCSSVariables(), getCSSVariableName(), getLuminance(), injectCSSVariables(), mixColors(), normalizeDarkSidebarInteractionTokens() (+14 more)
 
 ### Community 117 - "Community 117"
-Cohesion: 0.21
-Nodes (19): repairTruncatedJson(), SalvageResult, salvageTruncatedToolResult(), stripTruncationMarker(), BrowserScrollResult, FileListEntry, GrepData, GrepMatch (+11 more)
+Cohesion: 0.18
+Nodes (12): cancelRefine(), RefineConfig, RefineValidation, runRefine(), validateRefine(), ComposerRefine, RefinePhase, useComposerRefine() (+4 more)
 
 ### Community 118 - "Community 118"
 Cohesion: 0.15
@@ -2436,8 +2450,8 @@ Cohesion: 0.08
 Nodes (64): access_from_value(), access_is_fresh(), access_token_expiry_unix(), account_id_from_claims(), apply_token_response(), apply_token_response_preserves_unknown_keys(), auth_file_path(), b64url() (+56 more)
 
 ### Community 124 - "Community 124"
-Cohesion: 0.17
-Nodes (24): batch_edits_default_to_top_level_path(), batch_edits_multiple_files_atomically(), batch_form_applies_all_edits(), batch_multi_file_is_atomic_on_failure(), blocks_edit_without_prior_read(), commit_rejects_stale_snapshot_and_rolls_back_earlier_files(), commit_rolls_back_every_attempted_file_when_a_later_write_fails(), ctx_for() (+16 more)
+Cohesion: 0.11
+Nodes (42): batch_edits_default_to_top_level_path(), batch_edits_multiple_files_atomically(), batch_form_applies_all_edits(), batch_multi_file_is_atomic_on_failure(), blocks_edit_without_prior_read(), commit_prepared_files(), commit_prepared_files_with(), commit_rejects_stale_snapshot_and_rolls_back_earlier_files() (+34 more)
 
 ### Community 125 - "Community 125"
 Cohesion: 0.10
@@ -2460,8 +2474,8 @@ Cohesion: 0.11
 Nodes (4): classify_error(), contains_any(), RecoveryHint, Option
 
 ### Community 130 - "Community 130"
-Cohesion: 0.14
-Nodes (18): buildBashEnv(), buildPowerShellInitCommand(), getShellSpawnConfig(), powershellFallbackConfig(), ShellProfile, ShellSpawnConfig, attachSession(), cssVar() (+10 more)
+Cohesion: 0.06
+Nodes (38): buildBashEnv(), buildPowerShellInitCommand(), getShellSpawnConfig(), powershellFallbackConfig(), ShellProfile, ShellSpawnConfig, extToShikiLang(), SHIKI_LANGS (+30 more)
 
 ### Community 131 - "Community 131"
 Cohesion: 0.18
@@ -2484,8 +2498,8 @@ Cohesion: 0.15
 Nodes (15): cancel_short_circuits(), ctx(), list_active_streams(), ProcessRow, returns_success_with_zero_processes(), ShellListProcessesTool, Option, Result (+7 more)
 
 ### Community 137 - "Community 137"
-Cohesion: 0.10
-Nodes (21): settingsSubtlePanelStyle, AppearanceTab, SegmentedNavItem, SegmentedNavProps, ThemeCardProps, themeCardStyle, THEME_TEMPLATE, FlatColorMap (+13 more)
+Cohesion: 0.13
+Nodes (16): THEME_TEMPLATE, FlatColorMap, ThemeEditorState, ThemeEditorTab(), ThemeEditorTabProps, ThemeJsonMap, VISUAL_EDITOR_SECTIONS, activeCardStyle (+8 more)
 
 ### Community 138 - "Community 138"
 Cohesion: 0.10
@@ -2504,12 +2518,12 @@ Cohesion: 0.20
 Nodes (17): aurora_provider_chat(), aurora_provider_stream(), cancel_aurora_provider_stream(), AuthType, get_chat_url(), normalize_provider_type(), provider_preset(), ProviderFormat (+9 more)
 
 ### Community 142 - "Community 142"
-Cohesion: 0.12
-Nodes (20): AgentCommandCenter(), chatCommand(), CommandGroup, folderName(), SETTINGS, AgentWindow(), AgentWindowBounds, useAgentWindowBounds() (+12 more)
+Cohesion: 0.18
+Nodes (13): AgentCommandCenter(), chatCommand(), CommandGroup, CommandItem, folderName(), SETTINGS, fuzzyCommandScore(), SearchableCommand (+5 more)
 
 ### Community 143 - "Community 143"
-Cohesion: 0.09
-Nodes (15): Architecture Document, Expansion Guide, Getting Started Guide, Monaco Editor, ONNX Runtime, tailwindcss, typescript, vite (+7 more)
+Cohesion: 0.12
+Nodes (13): Architecture Document, Expansion Guide, Getting Started Guide, Monaco Editor, ONNX Runtime, tailwindcss, typescript, Provider Contract Blueprint (+5 more)
 
 ### Community 144 - "Community 144"
 Cohesion: 0.37
@@ -2520,24 +2534,24 @@ Cohesion: 0.23
 Nodes (20): dispatchOrigin(), executeTeamLeadTool(), optionalCount(), providerSnaps(), requireMembers(), requireRepoPath(), requireString(), requireTeamEnabled() (+12 more)
 
 ### Community 146 - "Community 146"
-Cohesion: 0.13
-Nodes (15): AgentExecutionMode, BridgeEmitter, BridgeRouter, allowed_tool(), build_per_turn_tool_registry(), E, is_plan_mutating_tool(), native_test_registry() (+7 more)
+Cohesion: 0.18
+Nodes (9): AgentChatRequest, BridgeEmitter, build_runtime_config(), build_runtime_config_falls_back_to_defaults_when_unset(), build_runtime_config_overlays_request_fields(), E, TurnDriver<E>, unregister_then_cancel_returns_false() (+1 more)
 
 ### Community 147 - "Community 147"
-Cohesion: 0.13
-Nodes (16): IMAGE_EXTS, MARKDOWN_EXTS, MonacoEditorInstance, ViewMode, MarkdownPreview(), MarkdownPreviewProps, formatStatus(), GitDiffModal() (+8 more)
+Cohesion: 0.14
+Nodes (15): IMAGE_EXTS, MARKDOWN_EXTS, MonacoEditorInstance, ViewMode, MarkdownPreview(), MarkdownPreviewProps, formatStatus(), GitDiffModal() (+7 more)
 
 ### Community 148 - "Community 148"
-Cohesion: 0.28
-Nodes (15): accepts_symlink_with_target_inside_workspace(), canonicalize(), is_within_workspace(), PathSafetyError, rejects_absolute_path_outside_workspace(), rejects_dotdot_escape(), rejects_symlink_with_target_outside_workspace(), resolve_within_workspace() (+7 more)
+Cohesion: 0.29
+Nodes (14): accepts_symlink_with_target_inside_workspace(), canonicalize(), PathSafetyError, rejects_absolute_path_outside_workspace(), rejects_dotdot_escape(), rejects_symlink_with_target_outside_workspace(), resolve_within_workspace(), resolves_relative_path_inside_workspace() (+6 more)
 
 ### Community 149 - "Community 149"
 Cohesion: 0.12
 Nodes (16): CI workflow (ci.yml), GitHub Actions, Release workflow (release.yml), args, dlls, downloadResult, extractResult, force (+8 more)
 
 ### Community 150 - "Community 150"
-Cohesion: 0.12
-Nodes (17): editorOpenFileTool, editorTools, readLintsTool, getToolByName(), toolCategories, askQuestionTool, questionTools, auroroWebSearchTool (+9 more)
+Cohesion: 0.05
+Nodes (52): editorOpenFileTool, editorTools, readLintsTool, deletePathTool, fileEditTool, fileReadTool, fileTools, fileWriteTool (+44 more)
 
 ### Community 151 - "Community 151"
 Cohesion: 0.17
@@ -2556,8 +2570,8 @@ Cohesion: 0.21
 Nodes (8): WorkspaceRepository, WorkspaceRepository<'a>, Connection, DbResult, Option, Self, Vec, WorkspaceState
 
 ### Community 155 - "Community 155"
-Cohesion: 0.10
-Nodes (30): extToShikiLang(), ExplorerFileAssetIcon(), ExplorerFileAssetIconProps, cn(), EXT_TO_LANGUAGE, formatApprovalValue(), getProfessionalStatusLabel(), StatusLabelOptions (+22 more)
+Cohesion: 0.08
+Nodes (35): ToolTimelineProps, UiState, ExplorerFileAssetIcon(), ExplorerFileAssetIconProps, cn(), EXT_TO_LANGUAGE, formatApprovalValue(), getProfessionalStatusLabel() (+27 more)
 
 ### Community 156 - "Community 156"
 Cohesion: 0.20
@@ -2580,16 +2594,16 @@ Cohesion: 0.13
 Nodes (6): AssistantEvent, TurnCompletion, ConversationMessage, String, TokenUsage, Vec
 
 ### Community 161 - "Community 161"
-Cohesion: 0.08
-Nodes (31): Draft, QuestionCard(), QuestionPrompt(), AURORA_FRONTEND_TOOLS, coerceLimit(), executeAuroraFrontendTool(), isAuroraFrontendTool(), runAskQuestion() (+23 more)
+Cohesion: 0.13
+Nodes (16): Draft, QuestionCard(), QuestionPrompt(), AskQuestionAnswer, AskQuestionItem, AskQuestionOption, AskQuestionRequest, AskQuestionResult (+8 more)
 
 ### Community 162 - "Community 162"
-Cohesion: 0.25
-Nodes (5): PlanShellExecutor, ToolContext, ToolError, ToolExecutor, ToolSchema
+Cohesion: 0.11
+Nodes (15): assistant_text_msg(), assistant_tool_use_msg(), PlanShellExecutor, turn_usage(), ApiError, ApiRequest, AssistantEvent, ConversationMessage (+7 more)
 
 ### Community 163 - "Community 163"
-Cohesion: 0.11
-Nodes (20): AgentQueuedDock(), AgentTaskPanel(), ApprovalBar(), ApprovalBarProps, ConversationPane(), JustFinishedFlash(), EmptyState(), SUGGESTIONS (+12 more)
+Cohesion: 0.05
+Nodes (54): cache, inflight, invalidateFileIndex(), loadFileIndex(), MentionFile, rankFiles(), relativize(), walk() (+46 more)
 
 ### Community 164 - "Community 164"
 Cohesion: 0.21
@@ -2608,16 +2622,16 @@ Cohesion: 0.13
 Nodes (3): CheckpointResponse, CheckpointService, RestoreResponse
 
 ### Community 168 - "Community 168"
-Cohesion: 0.50
-Nodes (6): ApiError, ApiRequest, AssistantEvent, CancellationToken, Sender, TurnUsage
+Cohesion: 0.08
+Nodes (37): FileIcon(), FolderIcon(), FolderIconProps, IconProps, FileListView(), GrepResultsView(), MultiFileResultsView(), ShellOutputView() (+29 more)
 
 ### Community 169 - "Community 169"
 Cohesion: 0.07
 Nodes (32): HashSet, permission_required_set_matches_contract(), re_register_overwrites(), register(), register_mounts_all_7_tools(), schemas_match_tool_names(), Arc, BrowserManager (+24 more)
 
 ### Community 170 - "Community 170"
-Cohesion: 0.10
-Nodes (20): CopyButton(), AgentMarkdown(), CodeCopy(), components, AgentThinkingBlock(), CompactionCard(), fmtTokens(), bubblePropsEqual() (+12 more)
+Cohesion: 0.07
+Nodes (32): CodeBlockWrapper(), components, CopyButton(), getLanguageDisplayName(), getLanguageIcon(), MarkdownRenderer, MarkdownRendererProps, AgentImageModal() (+24 more)
 
 ### Community 171 - "Community 171"
 Cohesion: 0.17
@@ -2632,8 +2646,8 @@ Cohesion: 0.32
 Nodes (13): IStream, capture(), capture_webview_png(), read_stream(), send_once(), Arc, Mutex, Option (+5 more)
 
 ### Community 175 - "Community 175"
-Cohesion: 0.11
-Nodes (13): AgentSpeech, MicNotice, MicNoticeSeverity, crispBackendOptions, engineOptions, languageOptions, SpeechSettingsTab(), SpeechDevicePreference (+5 more)
+Cohesion: 0.20
+Nodes (15): AURORA_FRONTEND_TOOLS, coerceLimit(), executeAuroraFrontendTool(), isAuroraFrontendTool(), runAskQuestion(), runSkillLoad(), runSkillSearch(), shouldAutoApproveAuroraFrontendTool() (+7 more)
 
 ### Community 176 - "Community 176"
 Cohesion: 0.22
@@ -2644,24 +2658,24 @@ Cohesion: 0.15
 Nodes (13): File Type Go Default, File Type Go Aqua, File Type Go Black, File Type Go Fuchsia, File Type Go Gopher, File Type Go Lightblue, File Type Go Package, File Type Go White (+5 more)
 
 ### Community 178 - "Community 178"
-Cohesion: 0.10
-Nodes (19): DEFAULT_DARK_TOKENS, DEFAULT_LIGHT_TOKENS, hexColorArb, hexDigitArb, invalidColorArb, partialColorsArb, partialCommonTokensArb, partialEditorTokensArb (+11 more)
+Cohesion: 0.11
+Nodes (17): ChatTokens, ColorValidationResult, CommonTokens, CSSVariableMap, CSSVariableName, DbTheme, EditorTokens, MonacoTokenRule (+9 more)
 
 ### Community 179 - "Community 179"
 Cohesion: 0.06
-Nodes (44): WindowSelectorChip(), MemoizedFileExplorer, GitPanel(), ActivityBar(), ActivityBarItemProps, ActivityBarProps, SidebarPanel, MainLayout() (+36 more)
+Nodes (44): BrowserTab(), WindowSelectorChip(), useRustChatSync(), useWorkspaceSessionReset(), ActivityBar(), ActivityBarItemProps, ActivityBarProps, SidebarPanel (+36 more)
 
 ### Community 180 - "Community 180"
-Cohesion: 0.15
-Nodes (14): ToolCall, toolStatus, basename(), completedString(), DOT_ICON, FILE_MODIFY_TOOLS, FOLDER_TOOLS, HIDDEN_ARG_KEYS (+6 more)
+Cohesion: 0.26
+Nodes (11): correctWord(), ensureTypingReady(), flushTyping(), learnWord(), queryTyping(), TypingGhost, TypingGhostKind, undoCorrect() (+3 more)
 
 ### Community 181 - "Community 181"
 Cohesion: 0.17
 Nodes (12): file-type-opencl, SVG6XZ92cNT, SVGa8orpbjk, SVGaW5Dydse, SVGb5T10cNf, SVGd1Nggbaa, SVGHnIfFbaA, SVGkHxqydfB (+4 more)
 
 ### Community 182 - "Community 182"
-Cohesion: 0.08
-Nodes (27): correctWord(), ensureTypingReady(), flushTyping(), learnWord(), queryTyping(), TypingGhost, TypingGhostKind, undoCorrect() (+19 more)
+Cohesion: 0.10
+Nodes (18): AuroraEvent, AuroraEventHandler, auroraListen(), AuroraRuntime, AuroraRuntimeKind, AuroraWebInvokeFailure, AuroraWebInvokeResponse, AuroraWebInvokeSuccess (+10 more)
 
 ### Community 183 - "Community 183"
 Cohesion: 0.27
@@ -2676,12 +2690,12 @@ Cohesion: 0.29
 Nodes (9): ApiError, ApiRequest, AssistantEvent, CancellationToken, Sender, StreamingApiClient, TurnUsage, ApprovingReviewer (+1 more)
 
 ### Community 187 - "Community 187"
-Cohesion: 0.15
-Nodes (25): acceptsSurface(), activeProjectMatches(), buffer(), completionPrompt(), deliverOrBuffer(), failurePrompt(), flushPendingForActive(), handledEventIds (+17 more)
+Cohesion: 0.16
+Nodes (24): acceptsSurface(), activeProjectMatches(), buffer(), completionPrompt(), deliverOrBuffer(), failurePrompt(), flushPendingForActive(), handledEventIds (+16 more)
 
 ### Community 188 - "Community 188"
-Cohesion: 0.10
-Nodes (16): buildWorkspacePromptOptions(), EmptyStateMode, joinList(), PromptOption, WorkspaceAwareEmptyState(), WorkspaceAwareEmptyStateProps, useWorkspaceSummary(), readDirectory() (+8 more)
+Cohesion: 0.47
+Nodes (8): install(), install_crash_recovery_handler(), installed(), HashMap, Mutex, Result, String, WebviewWindow
 
 ### Community 189 - "Community 189"
 Cohesion: 0.35
@@ -2704,32 +2718,32 @@ Cohesion: 0.08
 Nodes (65): broadcast_chat_event(), BroadcastEvent, ChatState, ChatStateEvent, clear_chat_state(), get_chat_state(), set_chat_loading(), set_current_thread() (+57 more)
 
 ### Community 195 - "Community 195"
-Cohesion: 0.16
-Nodes (10): setAuroraRuntimeForTests(), convertToMonacoTheme(), themeFileToDefinition(), ThemeService, SAMPLE_THEME_FILE, BUILT_IN_THEME_IDS, getBuiltInTheme(), getBuiltInThemes() (+2 more)
+Cohesion: 0.27
+Nodes (16): repairTruncatedJson(), SalvageResult, salvageTruncatedToolResult(), stripTruncationMarker(), BrowserScrollResult, FileListEntry, GrepData, GrepMatch (+8 more)
 
 ### Community 196 - "Community 196"
-Cohesion: 0.21
-Nodes (14): countOccurrences(), detectLineEnding(), findMatchRanges(), hasOverlap(), LineEnding, normalizeLineEndings(), planMultiSearchReplace(), PlannedRange (+6 more)
+Cohesion: 0.13
+Nodes (7): DeleteConfirmDialog(), DeleteConfirmDialogProps, SpeechInputButton(), SpeechInputButtonProps, ConfirmDialog(), ConfirmDialogProps, ConfirmVariant
 
 ### Community 197 - "Community 197"
 Cohesion: 0.12
 Nodes (12): build_api_client(), config(), factory_returns_arc_dyn_for_each_provider(), ProviderConfigSnapshot, ProviderKind, Arc, HashMap, Option (+4 more)
 
 ### Community 198 - "Community 198"
-Cohesion: 0.11
-Nodes (17): ChatTokens, ColorValidationResult, CommonTokens, CSSVariableMap, CSSVariableName, DbTheme, EditorTokens, MonacoTokenRule (+9 more)
+Cohesion: 0.21
+Nodes (13): asStringMap(), AuroraIconPackBundle, AuroraIconPackMappings, createExplorerIconPackFromAuroraBundle(), isObjectRecord(), parseAuroraIconPackBundle(), validateBundleShape(), registerCustomExplorerIconPacks() (+5 more)
 
 ### Community 199 - "Community 199"
 Cohesion: 0.22
 Nodes (6): cleanAuroraDebugArtifacts(), forwardedArgs, recoverablePatterns, removeMatchingEntries(), rootDir, targetDir
 
 ### Community 200 - "Community 200"
-Cohesion: 0.19
-Nodes (10): cancelDraftClear(), clearAllDraftTimers(), draftClearTimers, ingestStreamFrame(), reconcileDrafts(), TeamLiveDraft, TeamStoreState, ChannelEvent (+2 more)
+Cohesion: 0.15
+Nodes (14): AddMode, AddServerFormProps, McpSettingsTab(), ServerCard(), serverCardOuterStyle, ServerCardProps, AddServerCard(), McpSettings() (+6 more)
 
 ### Community 201 - "Community 201"
-Cohesion: 0.26
-Nodes (12): AMBIGUOUS_PATH_TOOLS, asStr(), basename(), clip(), describeToolActivity(), FILE_ICON_TOOLS, FOLDER_ICON_TOOLS, labelArg() (+4 more)
+Cohesion: 0.08
+Nodes (37): activityArgs(), AgentActivityTarget, AMBIGUOUS_PATH_TOOLS, asStr(), basename(), clip(), describeToolActivity(), editPaths() (+29 more)
 
 ### Community 202 - "Community 202"
 Cohesion: 0.22
@@ -2744,20 +2758,20 @@ Cohesion: 0.50
 Nodes (8): list_backends(), load_api(), main(), Path, read_wav_mono_f32(), transcribe(), transcribe_cli(), transcribe_pcm()
 
 ### Community 205 - "Community 205"
-Cohesion: 0.27
-Nodes (10): buildContextTurnsFromMessages(), buildRoundFromAssistantMessage(), ContextToolCallPayload, ContextToolCallRoundPayload, ContextToolResultPayload, ContextTurnPayload, getToolArguments(), getToolResult() (+2 more)
+Cohesion: 0.40
+Nodes (5): ApiFactory, EventEmitter, PathBuf, Send, Sync
 
 ### Community 206 - "Community 206"
-Cohesion: 0.31
-Nodes (9): isRecord(), isValidUnicodeEscape(), parseJsonAsRecord(), parseToolArguments(), parseToolArgumentsForDisplay(), repairInvalidBackslashesInJsonStrings(), ToolArgumentsParseResult, ToolArgumentsParseStatus (+1 more)
+Cohesion: 0.21
+Nodes (14): countOccurrences(), detectLineEnding(), findMatchRanges(), hasOverlap(), LineEnding, normalizeLineEndings(), planMultiSearchReplace(), PlannedRange (+6 more)
 
 ### Community 208 - "Community 208"
 Cohesion: 0.29
 Nodes (7): DbError, serialize_error(), E, Ok, Error, Result, S
 
 ### Community 209 - "Community 209"
-Cohesion: 0.36
-Nodes (10): openFileInEditor(), getBaseName(), getParentPath(), getPathSeparator(), getWorkspaceRootPath(), isAbsolutePath(), normalizePath(), requireWorkspace() (+2 more)
+Cohesion: 0.12
+Nodes (12): ExecuteMcpToolFn, executeMcpToolMock, InvokeFn, invokeMock, isMcpToolMock, ListenHandler, listenHandlers, listenMock (+4 more)
 
 ### Community 210 - "Community 210"
 Cohesion: 0.39
@@ -2768,8 +2782,8 @@ Cohesion: 0.38
 Nodes (6): classify_by_first_command(), classify_command(), classify_git_command(), classify_intent(), CommandIntent, CommandIntent
 
 ### Community 212 - "Community 212"
-Cohesion: 0.19
-Nodes (10): FileChangeCard(), FileChangeCardProps, PendingChangesBar(), PendingChangesBarProps, ChangeOperation, ChangeStatus, loadOriginalContent(), PendingChange (+2 more)
+Cohesion: 0.05
+Nodes (44): closeAgentWindow(), DEFAULT_SIZE, focusAgentWindow(), MIN_SIZE, openAgentWindow(), installAuroraCli(), installAuroraContextMenu(), isAuroraCliInstalled() (+36 more)
 
 ### Community 213 - "Community 213"
 Cohesion: 0.15
@@ -2780,16 +2794,16 @@ Cohesion: 0.18
 Nodes (17): clean_output(), default_device(), refine(), RefineConfig, RefineState, RefineValidation, resolve_completion(), validate() (+9 more)
 
 ### Community 215 - "Community 215"
-Cohesion: 0.22
-Nodes (10): validateStructuredDocument(), buildStructuredValidationResult(), SUPPORTED_EXTENSIONS, validateJSONFallback(), validateStructuredContent(), validateSyntax(), validateWithBabel(), ValidationError (+2 more)
+Cohesion: 0.50
+Nodes (4): Reality change, Reality change — live verification and disk hydration, Review — DONE, Task (2026-07-16): Reveal tool target while the model is still emitting
 
 ### Community 216 - "Community 216"
 Cohesion: 0.29
 Nodes (3): EXCLUDED_DIRECTORIES, EXCLUDED_EXTENSIONS, EXCLUDED_FILES
 
 ### Community 217 - "Community 217"
-Cohesion: 0.21
-Nodes (10): build(), cache, inflight, invalidatePromptCommands(), loadPromptCommands(), mapMcpServers(), mapSkill(), PromptCommandKind (+2 more)
+Cohesion: 0.67
+Nodes (5): install(), install_permission_handler(), Result, String, WebviewWindow
 
 ### Community 218 - "Community 218"
 Cohesion: 0.22
@@ -2800,8 +2814,8 @@ Cohesion: 0.33
 Nodes (5): description, identifier, permissions, $schema, windows
 
 ### Community 220 - "Community 220"
-Cohesion: 0.21
-Nodes (9): CodeBlockWrapper(), components, getLanguageDisplayName(), getLanguageIcon(), MarkdownRenderer, MarkdownRendererProps, DOTS, StreamingDotMatrix() (+1 more)
+Cohesion: 0.27
+Nodes (13): ApiError, ApiRequest, AssistantEvent, CancellationToken, Result, Sender, StreamingApiClient, TeamStreamer (+5 more)
 
 ### Community 221 - "Community 221"
 Cohesion: 0.14
@@ -2820,8 +2834,8 @@ Cohesion: 0.33
 Nodes (6): file-type-opam, SVGGcoJNexl, SVGSXCg7bzK, SVGXKcPydvF, SVGYPQ2Cd2K, SVGzBrRlcyL
 
 ### Community 225 - "Community 225"
-Cohesion: 0.06
-Nodes (47): closeAgentWindow(), DEFAULT_SIZE, focusAgentWindow(), MIN_SIZE, openAgentWindow(), AgentAppearance, AgentTheme, AgentThemeTokens (+39 more)
+Cohesion: 0.08
+Nodes (36): AgentAppearance, AgentTheme, AgentThemeTokens, DOCK_TAB_LABELS, DockSingletonKind, DockTabInstance, DockTabKind, AgentThemeProvider() (+28 more)
 
 ### Community 226 - "Community 226"
 Cohesion: 0.40
@@ -2830,10 +2844,6 @@ Nodes (5): main(), spawn_detached_gui(), CliArgs, Result, String
 ### Community 227 - "Community 227"
 Cohesion: 0.29
 Nodes (7): Folder Type: package (closed), Folder Type: package (opened), Folder Type Webpack, name, private, type, version
-
-### Community 228 - "Community 228"
-Cohesion: 0.09
-Nodes (19): AgentConfirm(), AgentConfirmProps, LeftRail(), ProjectSort, SORT_LABEL, SORT_ORDER, braceBalance(), collapseWhitespace() (+11 more)
 
 ### Community 229 - "Community 229"
 Cohesion: 0.40
@@ -2868,7 +2878,7 @@ Cohesion: 0.60
 Nodes (4): files_are_identical(), main(), materialize_onnxruntime_dlls(), Path
 
 ### Community 238 - "Community 238"
-Cohesion: 0.19
+Cohesion: 0.17
 Nodes (3): ToolRegistry, RegisteredTool, TrackedToolCall
 
 ### Community 239 - "Community 239"
@@ -3083,10 +3093,6 @@ Nodes (6): get_watcher_handle(), is_ignored_watch_path(), start_fs_watcher(), Mu
 Cohesion: 0.18
 Nodes (10): 0. The prime directive, 1. The required module shape (any language), 2. Non-negotiable rules, 3. UI / frontend is NOT exempt, 4. The safe restructuring playbook, 5. What "modular" buys (why this matters), 6. Anti-patterns to refuse, Global AGENTS guide — modular architecture rules (+2 more)
 
-### Community 589 - "Community 589"
-Cohesion: 0.31
-Nodes (10): apply_conventions_does_not_double_bom(), apply_conventions_preserves_bom(), apply_write_conventions(), detect_line_ending(), detect_write_conventions(), LineEnding, normalize_line_endings(), Option (+2 more)
-
 ### Community 590 - "Community 590"
 Cohesion: 0.24
 Nodes (5): clean_title(), generate_thread_title(), Option, Result, String
@@ -3101,7 +3107,7 @@ Nodes (8): Behavioural equivalence proof, Files changed by this audit, `src-taur
 
 ### Community 593 - "Community 593"
 Cohesion: 0.03
-Nodes (64): Active: Agent response skeleton brightness tune (2026-07-11), Active: AURORA label sweep (kill pulse) + skeleton extra dim (2026-07-11), Active: Bubble-pill alignment + skeleton token (2026-07-11), Active extension (2026-07-11): diagnostics + command center, Active: `file_edit` exact-match audit (2026-07-12), Active: Preferences section restore (2026-07-11), Active: Shimmer inventory → Appearance setting (2026-07-11), Active: Skeleton brightness + true left→right direction (2026-07-11) (+56 more)
+Nodes (72): Active: Agent response skeleton brightness tune (2026-07-11), Active: AURORA label sweep (kill pulse) + skeleton extra dim (2026-07-11), Active: Bubble-pill alignment + skeleton token (2026-07-11), Active extension (2026-07-11): diagnostics + command center, Active: `file_edit` exact-match audit (2026-07-12), Active: Preferences section restore (2026-07-11), Active: Shimmer inventory → Appearance setting (2026-07-11), Active: Skeleton brightness + true left→right direction (2026-07-11) (+64 more)
 
 ### Community 594 - "Community 594"
 Cohesion: 0.22
@@ -3124,56 +3130,44 @@ Cohesion: 0.40
 Nodes (4): QG_PROBE_EXE, uv, qg-probe, qg-probe-mcp
 
 ### Community 1942 - "Community 1942"
-Cohesion: 0.13
-Nodes (14): 2026-07-12 — Do not run workspace-wide rustfmt here, 2026-07-12 — Reuse the command module's test emitter, Agent Team "max size" counts the Lead (2026-07-04), Agent window has TWO workspace-path sources of truth (2026-07-04), Agent-window markdown tables (2026-07-04), "Broken interface" after many rapid hot edits = HMR desync, NOT a source bug (2026-07-04), `cargo test --lib` for the aurora crate fails to LAUNCH (STATUS_ENTRYPOINT_NOT_FOUND), CSS patches need selector context (2026-07-11) (+6 more)
+Cohesion: 0.12
+Nodes (16): 2026-07-12 — Do not run workspace-wide rustfmt here, 2026-07-12 — Reuse the command module's test emitter, Agent Team "max size" counts the Lead (2026-07-04), Agent window has TWO workspace-path sources of truth (2026-07-04), Agent-window markdown tables (2026-07-04), "App broke with zero app changes" → check the WebView2 runtime date FIRST (2026-07-13), "Broken interface" after many rapid hot edits = HMR desync, NOT a source bug (2026-07-04), `cargo test --lib` for the aurora crate fails to LAUNCH (STATUS_ENTRYPOINT_NOT_FOUND) (+8 more)
 
 ### Community 1943 - "Community 1943"
-Cohesion: 0.18
-Nodes (13): api_factory_is_object_safe_and_constructible(), ApiFactory, default_provider_config(), dummy_factory(), EventEmitter, MockApiFactory, Arc, PathBuf (+5 more)
+Cohesion: 0.31
+Nodes (8): default_provider_config(), MockApi, MockApiFactory, ProviderConfigSnapshot, RuntimeError, StdMutex, StreamingApiClient, TurnScript
 
 ### Community 1944 - "Community 1944"
-Cohesion: 0.05
-Nodes (29): AgentEventEnvelope, AgentRuntimeClient, AgentRuntimeClientOptions, AllowedTool, AssistantEvent, generateTurnId(), mapAssistantUsage(), PermissionRequestPayload (+21 more)
+Cohesion: 0.09
+Nodes (17): AgentEventEnvelope, AgentRuntimeChatResult, AgentRuntimeClient, AllowedTool, AssistantEvent, generateTurnId(), mapAssistantUsage(), PermissionRequestPayload (+9 more)
 
 ### Community 1945 - "Community 1945"
 Cohesion: 0.36
 Nodes (10): CodexAuthStatus, CodexUsageSnapshot, codex_auth_cancel_login(), codex_auth_login(), codex_auth_logout(), codex_auth_status(), codex_usage_get(), AppHandle (+2 more)
 
 ### Community 1946 - "Community 1946"
-Cohesion: 0.24
-Nodes (6): allTools, getToolRiskLevel(), enhancedToolRiskLevels, getEnhancedToolRiskLevel(), requiresApproval(), RISK_LEVEL_CHANGES
-
-### Community 1947 - "Community 1947"
-Cohesion: 0.29
-Nodes (6): sizeClasses, TogglePill(), TogglePillProps, ToggleSize, ToggleVariant, variantClasses
+Cohesion: 0.19
+Nodes (11): BUILT_IN_THEME_NAMES, canUseTauriThemeCommands(), deserializeStoredThemes(), loadCustomThemes(), loadPersistedActiveThemeId(), persistActiveThemeId(), removeCustomTheme(), saveCustomTheme() (+3 more)
 
 ### Community 1948 - "Community 1948"
-Cohesion: 0.22
-Nodes (8): teamChatTool, teamDisbandTool, teamDispatchTool, teamMessageTool, teamRemoveAgentTool, teamShowTool, teamStatusTool, teamTools
+Cohesion: 0.28
+Nodes (11): braceBalance(), collapseWhitespace(), DECORATIVE_CHARS, deriveThreadTitle(), isStripChar(), lineIsFence(), stripFencedCodeBlocks(), stripInlineCode() (+3 more)
 
 ### Community 1949 - "Community 1949"
-Cohesion: 0.25
-Nodes (7): deletePathTool, fileEditTool, fileReadTool, fileTools, fileWriteTool, grepTool, movePathTool
-
-### Community 1950 - "Community 1950"
-Cohesion: 0.20
-Nodes (17): commit_prepared_files(), commit_prepared_files_with(), FileGroup, needs_read_json(), render_multi_failure(), render_multi_needs_read(), render_multi_success(), rollback_error() (+9 more)
+Cohesion: 0.21
+Nodes (10): SkillRowProps, getAgentModePromptSection(), composeAgentSystemPrompt(), ComposedAgentPrompt, formatGlobalInstructions(), formatSkillCatalogForContext(), formatSkillReferences(), getSkillToggleScopeKey() (+2 more)
 
 ### Community 1952 - "Community 1952"
-Cohesion: 0.48
-Nodes (4): FsOperation, FsOperationType, operationLog, OperationSummary
+Cohesion: 0.36
+Nodes (10): openFileInEditor(), getBaseName(), getParentPath(), getPathSeparator(), getWorkspaceRootPath(), isAbsolutePath(), normalizePath(), requireWorkspace() (+2 more)
 
 ### Community 1953 - "Community 1953"
 Cohesion: 0.31
 Nodes (10): prompt_refine_cancel(), prompt_refine_run(), prompt_refine_validate(), RefineConfig, RefineState, RefineValidation, Arc, Result (+2 more)
 
 ### Community 1954 - "Community 1954"
-Cohesion: 0.29
-Nodes (6): FunctionDefinition, FunctionParameters, PropertyDefinition, ToolCallRequest, ToolCallResult, ToolStatus
-
-### Community 1955 - "Community 1955"
-Cohesion: 0.33
-Nodes (5): shellExecuteTool, shellKillTool, shellListProcessesTool, shellSpawnTool, shellTools
+Cohesion: 0.31
+Nodes (10): apply_conventions_does_not_double_bom(), apply_conventions_preserves_bom(), apply_write_conventions(), detect_line_ending(), detect_write_conventions(), LineEnding, normalize_line_endings(), Option (+2 more)
 
 ### Community 1957 - "Community 1957"
 Cohesion: 0.38
@@ -3187,25 +3181,41 @@ Nodes (5): Active task: native code-intelligence / `read_lints` (DOCS/agent-wind
 Cohesion: 0.50
 Nodes (4): HashMap, Option, get(), map()
 
+### Community 1972 - "Community 1972"
+Cohesion: 0.27
+Nodes (8): isRecord(), isValidUnicodeEscape(), parseJsonAsRecord(), parseToolArgumentsForDisplay(), repairInvalidBackslashesInJsonStrings(), ToolArgumentsParseResult, ToolArgumentsParseStatus, VALID_JSON_ESCAPES
+
+### Community 1973 - "Community 1973"
+Cohesion: 0.29
+Nodes (5): convertToMonacoTheme(), ThemeService, MonacoThemeData, ThemeDefinition, ThemeTokens
+
+### Community 1974 - "Community 1974"
+Cohesion: 0.28
+Nodes (6): deepMerge(), mergeWithBaseTheme(), themeFileToDefinition(), BUILT_IN_THEME_IDS, getBuiltInTheme(), getBuiltInThemes()
+
+### Community 1975 - "Community 1975"
+Cohesion: 0.33
+Nodes (4): DropdownPosition, SettingsSelectOption, SettingsSelectProps, toneMap
+
 ## Knowledge Gaps
-- **3528 isolated node(s):** `uv`, `qg-probe-mcp`, `QG_PROBE_EXE`, `format`, `schemaVersion` (+3523 more)
+- **3542 isolated node(s):** `uv`, `qg-probe-mcp`, `QG_PROBE_EXE`, `format`, `schemaVersion` (+3537 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **1568 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **1583 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `start_workspace_watcher()` connect `Community 193` to `Community 498`?**
-  _High betweenness centrality (0.033) - this node is a cross-community bridge._
-- **Why does `is_ignored_watch_path()` connect `Community 498` to `Community 193`, `Community 51`?**
-  _High betweenness centrality (0.033) - this node is a cross-community bridge._
 - **Why does `now_rfc3339()` connect `Community 3` to `Community 6`, `Community 103`, `Community 14`, `Community 18`, `Community 53`, `Community 55`, `Community 24`?**
-  _High betweenness centrality (0.031) - this node is a cross-community bridge._
+  _High betweenness centrality (0.026) - this node is a cross-community bridge._
+- **Why does `start_workspace_watcher()` connect `Community 193` to `Community 498`?**
+  _High betweenness centrality (0.019) - this node is a cross-community bridge._
+- **Why does `is_ignored_watch_path()` connect `Community 498` to `Community 193`, `Community 51`?**
+  _High betweenness centrality (0.019) - this node is a cross-community bridge._
 - **Are the 229 inferred relationships involving `Material Icons` (e.g. with `Folder Aurelia` and `Folder Aurelia Open`) actually correct?**
   _`Material Icons` has 229 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 112 inferred relationships involving `Material Icons Collection` (e.g. with `folder-prompts` and `folder-prompts-open`) actually correct?**
   _`Material Icons Collection` has 112 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `uv`, `qg-probe-mcp`, `QG_PROBE_EXE` to the rest of the system?**
-  _3528 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _3542 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Community 0` be split into smaller, more focused modules?**
-  _Cohesion score 0.033523809523809525 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.04955570745044429 - nodes in this community are weakly interconnected._

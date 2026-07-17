@@ -193,7 +193,10 @@ impl BrowserManager {
                 let _ = view.set_focus();
                 if let Some(embed) = &opts.embed {
                     let _ = view.set_position(LogicalPosition::new(embed.x, embed.y));
-                    let _ = view.set_size(LogicalSize::new(embed.width.max(1.0), embed.height.max(1.0)));
+                    let _ = view.set_size(LogicalSize::new(
+                        embed.width.max(1.0),
+                        embed.height.max(1.0),
+                    ));
                     let _ = view.show();
                 }
                 if !opts.url.is_empty() {
@@ -221,7 +224,8 @@ impl BrowserManager {
                 .app
                 .get_window(&embed.host_label)
                 .ok_or_else(|| format!("embed host window '{}' not found", embed.host_label))?;
-            let builder = WebviewBuilder::new(&label, url).initialization_script(BROWSER_INIT_SCRIPT);
+            let builder =
+                WebviewBuilder::new(&label, url).initialization_script(BROWSER_INIT_SCRIPT);
             host.add_child(
                 builder,
                 LogicalPosition::new(embed.x, embed.y),
@@ -322,7 +326,14 @@ impl BrowserManager {
     }
 
     /// Reposition / resize an embedded browser to track the tab body rect.
-    pub fn set_bounds(&self, label: &str, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+    pub fn set_bounds(
+        &self,
+        label: &str,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> Result<(), String> {
         let view = self.window(label)?;
         view.set_position(LogicalPosition::new(x, y))
             .map_err(|e| format!("set_position failed: {e}"))?;
@@ -332,12 +343,16 @@ impl BrowserManager {
 
     /// Show the (embedded) browser webview.
     pub fn show(&self, label: &str) -> Result<(), String> {
-        self.window(label)?.show().map_err(|e| format!("show failed: {e}"))
+        self.window(label)?
+            .show()
+            .map_err(|e| format!("show failed: {e}"))
     }
 
     /// Hide the (embedded) browser webview without destroying it.
     pub fn hide(&self, label: &str) -> Result<(), String> {
-        self.window(label)?.hide().map_err(|e| format!("hide failed: {e}"))
+        self.window(label)?
+            .hide()
+            .map_err(|e| format!("hide failed: {e}"))
     }
 
     /// Is a browser webview with this label currently live? Used by the agent
@@ -353,7 +368,10 @@ impl BrowserManager {
     /// only the agent window listens for it. `url` is an optional hint.
     pub fn request_open_agent_browser(&self, url: Option<&str>) -> Result<(), String> {
         self.app
-            .emit("aurora:agent-open-browser", serde_json::json!({ "url": url }))
+            .emit(
+                "aurora:agent-open-browser",
+                serde_json::json!({ "url": url }),
+            )
             .map_err(|e| format!("failed to emit agent-open-browser: {e}"))
     }
 
@@ -1059,7 +1077,12 @@ impl BrowserManager {
     /// works (the card just falls back to its caption). Prunes stale files first
     /// so the directory can't grow without bound.
     fn save_screenshot(&self, bytes: &[u8]) -> Option<String> {
-        let dir = self.app.path().app_cache_dir().ok()?.join("aurora-screenshots");
+        let dir = self
+            .app
+            .path()
+            .app_cache_dir()
+            .ok()?
+            .join("aurora-screenshots");
         std::fs::create_dir_all(&dir).ok()?;
         prune_old_screenshots(&dir);
         let file = dir.join(format!("shot-{}.png", Uuid::new_v4()));

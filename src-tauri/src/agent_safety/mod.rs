@@ -13,7 +13,7 @@
 //!   from `claw-code/rust/crates/runtime/src/bash_validation.rs`.
 //! - [`bash_validation::ExecutionMode`] / [`bash_validation::BashValidationError`]
 //!   — types in the validator's signature.
-//! - [`paths::resolve_within_workspace`] / [`paths::is_within_workspace`]
+//! - [`paths::resolve_within_workspace`]
 //!   — workspace-boundary path resolution with single-hop symlink safety.
 //! - [`paths::PathSafetyError`] — errors returned by the resolver.
 
@@ -22,7 +22,7 @@ pub mod paths;
 
 // Only `paths::*` is re-exported at the short path because file tools
 // import via `crate::agent_safety::{resolve_within_workspace,
-// PathSafetyError, is_within_workspace}` (see
+// PathSafetyError}` (see
 // `tools/file_workspace_search/file_exists.rs` and `mod.rs`).
 // `bash_validation::*` is consumed exclusively through the long path
 // (`crate::agent_safety::bash_validation::validate_command`) by the

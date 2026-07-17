@@ -79,8 +79,8 @@ pub async fn fetch_usage() -> Result<CodexUsageSnapshot, String> {
         ));
     }
 
-    let value: Value = serde_json::from_str(&body)
-        .map_err(|err| format!("Usage response was not JSON: {err}"))?;
+    let value: Value =
+        serde_json::from_str(&body).map_err(|err| format!("Usage response was not JSON: {err}"))?;
     Ok(parse_usage(&value))
 }
 
@@ -116,10 +116,7 @@ pub(crate) fn parse_usage(root: &Value) -> CodexUsageSnapshot {
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 unlimited: c.get("unlimited").and_then(Value::as_bool).unwrap_or(false),
-                balance: c
-                    .get("balance")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
+                balance: c.get("balance").and_then(Value::as_str).map(str::to_string),
             }),
         fetched_at_ms: chrono::Utc::now().timestamp_millis(),
     }
@@ -181,7 +178,10 @@ mod tests {
         assert_eq!(primary.window_minutes, Some(300));
         assert_eq!(primary.resets_in_seconds, Some(4200));
         assert_eq!(primary.resets_at_ms, Some(1_760_000_000_000));
-        assert_eq!(snap.secondary.expect("secondary").window_minutes, Some(10080));
+        assert_eq!(
+            snap.secondary.expect("secondary").window_minutes,
+            Some(10080)
+        );
         let credits = snap.credits.expect("credits");
         assert!(credits.has_credits);
         assert_eq!(credits.balance.as_deref(), Some("12.5"));

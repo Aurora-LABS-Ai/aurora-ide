@@ -24,7 +24,10 @@ import { loadAllSkillCandidates, type SkillDefinition } from "../../services/ski
 import { loadProjectRules } from "../../services/context-builder";
 import { useMcpStore } from "../../store/useMcpStore";
 
-export type PromptCommandKind = "skill" | "rule" | "mcp";
+export type PromptCommandKind = "skill" | "rule" | "mcp" | "action";
+export type DirectiveCommand = PromptCommand & {
+  kind: Exclude<PromptCommandKind, "action">;
+};
 
 export interface PromptCommand {
   /** Stable, unique key across all kinds (also the dedupe key for attachments). */
@@ -45,6 +48,13 @@ export interface PromptCommand {
   skillStorageKey?: string;
   ruleFilename?: string;
   mcpServerId?: string;
+  actionId?: "compact";
+}
+
+export function isDirectiveCommand(
+  command: PromptCommand,
+): command is DirectiveCommand {
+  return command.kind !== "action";
 }
 
 const cache = new Map<string, PromptCommand[]>();
@@ -104,6 +114,20 @@ function mapMcpServers(): PromptCommand[] {
     });
 }
 
+function mapActionCommands(): PromptCommand[] {
+  const compact: PromptCommand = {
+    key: "action:compact",
+    kind: "action",
+    title: "Compact context",
+    subtitle: "/compact",
+    description: "Summarize earlier messages and keep the recent conversation ready for the model.",
+    sourceLabel: "Action",
+    haystack: "compact context compact reduce compress summarize conversation history".toLowerCase(),
+    actionId: "compact",
+  };
+  return [compact];
+}
+
 async function build(root: string | null): Promise<PromptCommand[]> {
   const [skills, rules] = await Promise.all([
     loadAllSkillCandidates({ workspacePath: root ?? undefined }),
@@ -111,13 +135,14 @@ async function build(root: string | null): Promise<PromptCommand[]> {
   ]);
 
   const commands: PromptCommand[] = [
+    ...mapActionCommands(),
     ...rules.map((r) => mapRule(r.filename)),
     ...mapMcpServers(),
     ...skills.map(mapSkill),
   ];
 
-  // Stable order: rules, then MCP, then skills — each alphabetical within kind.
-  const order: Record<PromptCommandKind, number> = { rule: 0, mcp: 1, skill: 2 };
+  // Stable order: actions, rules, MCP, then skills — each alphabetical within kind.
+  const order: Record<PromptCommandKind, number> = { action: 0, rule: 1, mcp: 2, skill: 3 };
   commands.sort(
     (a, b) => order[a.kind] - order[b.kind] || a.title.localeCompare(b.title),
   );

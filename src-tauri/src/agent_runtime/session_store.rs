@@ -694,9 +694,13 @@ mod tests {
     #[test]
     fn list_summaries_returns_threads_sorted_newest_first() {
         let (_g, store) = tmp_store();
-        store.ensure_thread("a", Some("First".into()), None).unwrap();
+        store
+            .ensure_thread("a", Some("First".into()), None)
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        store.ensure_thread("b", Some("Second".into()), None).unwrap();
+        store
+            .ensure_thread("b", Some("Second".into()), None)
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         store.touch("a").unwrap();
 
@@ -708,7 +712,9 @@ mod tests {
     #[test]
     fn message_count_and_preview_come_from_jsonl() {
         let (_g, store) = tmp_store();
-        store.ensure_thread("p", Some("Title".into()), None).unwrap();
+        store
+            .ensure_thread("p", Some("Title".into()), None)
+            .unwrap();
 
         let mut session = Session::new("p");
         session.append_message(ConversationMessage::user_text(
@@ -867,7 +873,9 @@ mod tests {
             .ensure_thread("y1", Some("yyz one".into()), Some("C:/proj/yyz".into()))
             .unwrap();
         // Legacy unscoped thread (created before scoping shipped).
-        store.ensure_thread("legacy", Some("old".into()), None).unwrap();
+        store
+            .ensure_thread("legacy", Some("old".into()), None)
+            .unwrap();
 
         let xyz = store.list_summaries_filtered(Some("C:/proj/xyz")).unwrap();
         assert_eq!(xyz.len(), 1, "only the xyz thread; yyz + legacy excluded");

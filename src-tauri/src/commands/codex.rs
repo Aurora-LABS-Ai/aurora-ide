@@ -35,11 +35,8 @@ pub async fn codex_auth_login(app: tauri::AppHandle) -> Result<CodexAuthStatus, 
         .open(&auth_url, None)
         .map_err(|err| format!("Couldn't open the browser: {err}"))?;
 
-    let outcome = tokio::time::timeout(
-        std::time::Duration::from_secs(LOGIN_TIMEOUT_SECS),
-        done,
-    )
-    .await;
+    let outcome =
+        tokio::time::timeout(std::time::Duration::from_secs(LOGIN_TIMEOUT_SECS), done).await;
 
     match outcome {
         Ok(Ok(result)) => result?,

@@ -168,7 +168,11 @@ impl<'a> TeamStreamer<'a> {
     /// A chunk of visible answer text.
     pub fn text(&self, delta: &str) {
         if !delta.is_empty() {
-            let kind = if self.text_as_thinking { "thinking" } else { "text" };
+            let kind = if self.text_as_thinking {
+                "thinking"
+            } else {
+                "text"
+            };
             self.frame(kind, "delta", delta);
         }
     }

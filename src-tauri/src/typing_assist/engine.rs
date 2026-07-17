@@ -86,7 +86,11 @@ fn is_word_char(c: char) -> bool {
 impl Engine {
     /// Loads and indexes the dictionaries + the personal lexicon. Blocking I/O —
     /// call off the async runtime (e.g. `spawn_blocking`).
-    pub fn load(freq_path: &Path, bigram_path: &Path, lexicon_path: std::path::PathBuf) -> std::io::Result<Engine> {
+    pub fn load(
+        freq_path: &Path,
+        bigram_path: &Path,
+        lexicon_path: std::path::PathBuf,
+    ) -> std::io::Result<Engine> {
         let mut engine = Engine {
             words: Vec::with_capacity(90_000),
             counts: Vec::with_capacity(90_000),
@@ -185,7 +189,11 @@ impl Engine {
     /// The corpus bigram count for prev→word, or 0.
     fn corpus_bigram(&self, previous: &str, word: &str) -> u64 {
         self.bigram_counts
-            .get(&format!("{} {}", previous.to_lowercase(), word.to_lowercase()))
+            .get(&format!(
+                "{} {}",
+                previous.to_lowercase(),
+                word.to_lowercase()
+            ))
             .copied()
             .unwrap_or(0)
     }
@@ -242,7 +250,11 @@ impl Engine {
 
         let mut best: Option<(f64, u32)> = None;
         // The subtree's top-frequency words are the completion candidates.
-        for &id in self.nodes[node].top_words.iter().take(MAX_COMPLETION_CANDIDATES) {
+        for &id in self.nodes[node]
+            .top_words
+            .iter()
+            .take(MAX_COMPLETION_CANDIDATES)
+        {
             let word = &self.words[id as usize];
             if *word == lower {
                 continue; // nothing to complete
@@ -402,7 +414,11 @@ impl Engine {
 
     /// All candidates share the smallest edit distance; prefer the one that fits
     /// after the previous word, then fall back to raw corpus frequency.
-    fn pick_best_correction(&self, candidates: &[(u32, i32)], previous: &str) -> Option<(u32, i32)> {
+    fn pick_best_correction(
+        &self,
+        candidates: &[(u32, i32)],
+        previous: &str,
+    ) -> Option<(u32, i32)> {
         if candidates.is_empty() {
             return None;
         }
@@ -603,9 +619,15 @@ mod tests {
     #[test]
     fn completes_prefix_as_ghost() {
         let e = load();
-        let g = e.query("I need to fini", true, false).expect("a completion");
+        let g = e
+            .query("I need to fini", true, false)
+            .expect("a completion");
         assert!(matches!(g.kind, GhostKind::Completion));
-        assert!(g.word.to_lowercase().starts_with("fini"), "word = {}", g.word);
+        assert!(
+            g.word.to_lowercase().starts_with("fini"),
+            "word = {}",
+            g.word
+        );
         assert_eq!(g.insert, g.word["fini".len()..]);
     }
 
@@ -613,7 +635,10 @@ mod tests {
     fn predicts_next_word_after_space() {
         let e = load();
         let g = e.query("thank ", false, true);
-        assert!(g.is_some(), "expected a next-word prediction after 'thank '");
+        assert!(
+            g.is_some(),
+            "expected a next-word prediction after 'thank '"
+        );
         assert!(matches!(g.unwrap().kind, GhostKind::NextWord));
     }
 

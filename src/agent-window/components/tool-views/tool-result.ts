@@ -12,6 +12,8 @@
  * cleaned code/text view rather than a raw blob.
  */
 
+import { streamedToolStringArguments } from "../tool-call";
+
 // ── Data shapes ──────────────────────────────────────────────────────
 
 export interface WorkspaceTreeNode {
@@ -42,6 +44,9 @@ export interface MultiFileEntry {
   success: boolean;
   lines?: number;
   error?: string;
+  content?: string;
+  fullPath?: string;
+  truncated?: boolean;
 }
 
 export interface GrepMatch {
@@ -120,6 +125,7 @@ const FILE_MODIFY_TOOLS = new Set([
   "file_create",
   "file_patch",
   "search_replace",
+  "multi_search_replace",
 ]);
 
 const MAX_CODE = 4000;
@@ -250,6 +256,101 @@ function clean(raw: string): string {
   return text;
 }
 
+function editDiffsFromArgs(
+  args: Record<string, unknown>,
+): NonNullable<ParsedToolResult["diffs"]> {
+  const edits = asArr(args.edits) ?? asArr(args.replacements) ?? [];
+  const defaultPath = asStr(args.path);
+  const grouped = new Map<string, { oldText: string[]; newText: string[] }>();
+
+  for (const edit of edits) {
+    const item = rec(edit);
+    if (!item) continue;
+    const path = asStr(item.path) ?? defaultPath;
+    const oldText = asStr(item.old_string) ?? asStr(item.oldString);
+    const newText = asStr(item.new_string) ?? asStr(item.newString);
+    if (!path || oldText === undefined || newText === undefined) continue;
+    const group = grouped.get(path) ?? { oldText: [], newText: [] };
+    group.oldText.push(oldText);
+    group.newText.push(newText);
+    grouped.set(path, group);
+  }
+
+  return Array.from(grouped, ([path, edit]) => ({
+    path,
+    oldText: edit.oldText.join("\n\n"),
+    newText: edit.newText.join("\n\n"),
+  }));
+}
+
+function stripBrokenHistoryMarker(value: string): string {
+  const marker = value.indexOf("\n\n[truncated ");
+  return marker >= 0 ? value.slice(0, marker) : value;
+}
+
+function recoverTruncatedRead(
+  out: ParsedToolResult,
+  name: string,
+  args: Record<string, unknown>,
+  raw: string,
+): boolean {
+  if (name !== "file_read" && name !== "multi_file_read") return false;
+  if (!raw.includes("[truncated ")) return false;
+
+  const values = streamedToolStringArguments(raw, [
+    "path",
+    "fullPath",
+    "content",
+    "error",
+  ]);
+  const contents = values.content ?? [];
+  if (contents.length === 0) return false;
+
+  const argPaths = Array.isArray(args.paths)
+    ? args.paths.filter((path): path is string => typeof path === "string")
+    : [];
+  const paths = (values.path ?? []).map((value) => value.value);
+  const fullPaths = (values.fullPath ?? []).map((value) => value.value);
+  const errors = (values.error ?? []).map((value) => value.value);
+  const batch = name === "multi_file_read" || argPaths.length > 0;
+
+  if (batch) {
+    const count = Math.max(contents.length, paths.length, argPaths.length);
+    out.multiFile = Array.from({ length: count }, (_, index) => {
+      const contentValue = contents[index];
+      const content = contentValue
+        ? stripBrokenHistoryMarker(contentValue.value)
+        : undefined;
+      return {
+        path: paths[index] ?? argPaths[index] ?? fullPaths[index] ?? `file ${index + 1}`,
+        fullPath: fullPaths[index],
+        success: content !== undefined,
+        content,
+        lines: content === undefined ? undefined : content.split("\n").length,
+        error: errors[index],
+        truncated: !contentValue?.complete,
+      };
+    });
+    out.summary = `Read ${out.multiFile.length} ${
+      out.multiFile.length === 1 ? "file" : "files"
+    }`;
+    return true;
+  }
+
+  const content = stripBrokenHistoryMarker(contents[0].value);
+  out.code = content;
+  out.codePath =
+    paths[0] ??
+    fullPaths[0] ??
+    asStr(args.path) ??
+    asStr(args.file_path) ??
+    null;
+  out.summary = `Read ${content.split("\n").length} ${
+    content.split("\n").length === 1 ? "line" : "lines"
+  }`;
+  return true;
+}
+
 const EMPTY: ParsedToolResult = {
   summary: null,
   tree: null,
@@ -315,7 +416,26 @@ export function parseToolResult(
 
   // Non-JSON (plain text, error sentinel, truncated) → text fallback.
   if (!parsed) {
-    if (!out.edit) out.code = clean(result);
+    if (recoverTruncatedRead(out, name, args, result)) return out;
+
+    const argumentDiffs = editDiffsFromArgs(args);
+    if (argumentDiffs.length > 1) {
+      out.diffs = argumentDiffs;
+      out.edit = null;
+      return out;
+    }
+    if (argumentDiffs.length === 1) {
+      out.diff = argumentDiffs[0];
+      out.edit = null;
+      return out;
+    }
+    if ((name === "file_write" || name === "file_create") && out.edit?.added) {
+      out.code = out.edit.added;
+      out.codePath = asStr(args.path) ?? asStr(args.file_path) ?? null;
+      out.edit = null;
+      return out;
+    }
+    if (!FILE_MODIFY_TOOLS.has(name)) out.code = clean(result);
     return out;
   }
 
@@ -429,6 +549,9 @@ export function parseToolResult(
         success: o.success !== false,
         lines: asNum(o.lines),
         error: asStr(o.error),
+        content: typeof o.content === "string" ? o.content : undefined,
+        fullPath: asStr(o.fullPath),
+        truncated: o.truncated === true || parsed.historyTruncated === true,
       });
     }
     out.multiFile = entries;
@@ -523,7 +646,17 @@ export function parseToolResult(
 
   const message = asStr(parsed.message);
   if (message) {
-    out.summary = message.length > 60 ? "Done" : message;
+    const targetPaths = [
+      asStr(parsed.path),
+      asStr(parsed.fullPath),
+      asStr(args.path),
+      asStr(args.file_path),
+    ].filter((path): path is string => Boolean(path));
+    out.summary = targetPaths.some((path) => message.includes(path))
+      ? null
+      : message.length > 60
+        ? "Done"
+        : message;
     return out;
   }
   if (parsed.success === true) {

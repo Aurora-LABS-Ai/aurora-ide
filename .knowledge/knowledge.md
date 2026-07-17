@@ -1222,3 +1222,72 @@ the OUTER `.agw-shell-side` animates `width` (right-pinned inner revealed by its
 - Added regression cases for a single raw Windows path, a two-path batch, and already-correct paths plus ordinary `\n`
   content. `cargo check --lib --tests` passes; the filtered test binary compiled but cannot launch because of the repository's
   known Windows native-link failure (`STATUS_ENTRYPOINT_NOT_FOUND`). No UI files were touched.
+
+## Task (2026-07-16): Finish manual `/compact` command — DONE (uncommitted)
+- Completed the partial cross-boundary flow: slash action → composer handler → agent-window send hook → AgentService/runtime
+  client → `agent_compact_thread` → forced Rust compaction, persisted marker, live compaction card, and context-ring update.
+- Fixed the incomplete client implementation that referenced nonexistent listener/request methods and would wait forever for
+  `agent_turn_complete`; manual compaction now resolves from its own IPC result while routing scoped compaction events.
+- Cleared the two Rust compiler warnings by removing the unused workspace predicate and unnecessary mutable test binding.
+
+### Review
+- Verified 119/119 frontend tests, TypeScript build, targeted ESLint, production frontend build, and `cargo check --lib --tests`.
+- Rust sources are warning-free; the only remaining cargo warning is emitted by third-party `esaxx-rs` passing `-std=c++11`
+  to MSVC, outside Aurora source.
+
+## Analysis (2026-07-16): Rich live tool-execution narration
+- The runtime already emits distinct argument-stream, tool-ready, execution-start, approval, and execution-result signals.
+  The agent window discards those distinctions: its local ToolCall stores only name/arguments/result and infers three states,
+  so preparing, approval, and executing all render as the same `Running…`.
+- Presentation logic is split across `activity.ts`, `tool-display.ts`, `ToolCallCard.tsx`, and `tool-result.ts`; coverage is
+  strongest for file/search/shell results and generic for several browser/process/editor tools.
+- Recommended first implementation: preserve lifecycle phase in the existing frontend ToolCall and render deterministic,
+  tool-aware phrases from current name/args/events. Do not parse model prose or add phrase fields to every tool schema.
+
+## Task (2026-07-16): Reveal tool target while the model is still emitting
+- Reuse the existing completed-state file icons and target labels as soon as partial tool arguments expose a path, command,
+  query, process, or browser target; cover the complete native tool roster without changing the Rust protocol.
+- Keep the change inside the existing agent-window presentation path, add one focused regression check, then verify the
+  TypeScript/lint/test surfaces and the running agent-window behavior.
+
+### Review — DONE
+- Partial argument objects now retain completed paths, arrays, commands, queries, URLs, selectors, and process identifiers,
+  so the live header and tool card reveal their real target before a large trailing payload finishes streaming.
+- Tool action glyphs now follow the QuantumHUB bare 16px/1.5px house style with distinct browser, process, diagnostics,
+  task, and workspace actions; `Read File` uses a document-plus-magnifier while extension-aware file chips stay unchanged.
+- Verified in the running Aurora window, 134/134 frontend tests, targeted ESLint, TypeScript through the production build,
+  `git diff --check`, and a successful production frontend build.
+
+### Reality change
+- A live KAT `file_write` still rendered `Writing…` while its task panel already showed `Creating store-crud.test.ts`.
+  The earlier fix only helps when the model serializes `path` before the large `content` field; field order is not reliable.
+- Re-opened the task: trace the actual streamed argument order and add an earliest-reliable filename source rather than
+  assuming every provider follows JSON-schema property order.
+
+### Reality change — live verification and disk hydration
+- The current KAT session proved the native schema was reaching the model with alphabetically sorted properties:
+  persisted `file_write` inputs were serialized as `content,path`, so a large body could finish before the filename arrived.
+  Enabled `serde_json/preserve_order`, documented `path`-first writes, and added `target_paths` as early UI metadata for
+  multi-file edits.
+- Completed write cards leaked `File written: E:\...` from the result message. The chip already owns the filename, so
+  result summaries now suppress messages that repeat a relative or absolute target path.
+- Disk-reloaded edit results exposed raw JSON because model-history persistence blindly cut non-read results at 8 KiB in
+  the middle of `newContent`/`oldContent`. Future history now keeps valid JSON and shrinks only payload strings; existing
+  broken entries recover diffs from the saved tool arguments or source content from the truncated fields.
+- Batch reads previously discarded each `files[].content` in the UI parser. The rich result now retains and renders every
+  file as a basename-labelled, extension-aware syntax-highlighted code block.
+
+### Review — implementation complete, manual verification handed to user
+- Live target contract: `serde_json` now preserves schema insertion order, `file_write` advertises `path` before `content`,
+  and multi-file `file_edit` exposes an early `target_paths` list. The frontend also parses incomplete path strings and
+  renders every edit target as a wrapping horizontal chip row.
+- Toolbar privacy/polish: visible chips always use basenames and extension icons; completed and failed summaries suppress
+  full target paths instead of showing `E:\...`.
+- Disk hydration: large persisted JSON results shrink content fields without breaking the envelope. Already-saved broken
+  read/edit results recover highlighted source or argument-backed diffs, and batch reads render each file's syntax content.
+- Verification completed: 143/143 full frontend tests passed before the final basename failure-summary regression; the
+  final focused suite passed 25/25, targeted ESLint and TypeScript passed, the production frontend build passed, Rust
+  `cargo check --lib --tests` passed, touched Rust files passed rustfmt, and the final Tauri dev binary linked and launched.
+  Rust test execution remains blocked by the known Windows `STATUS_ENTRYPOINT_NOT_FOUND` test-binary issue. Per user request,
+  the final visual/manual product verification is intentionally left to the user.
+- Ran `graphify update .` after the implementation. The Codex-started Tauri dev process tree was stopped before handoff.

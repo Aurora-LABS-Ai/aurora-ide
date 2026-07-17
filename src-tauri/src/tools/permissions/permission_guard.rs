@@ -226,7 +226,7 @@ mod tests {
         let permitter_dyn: Arc<dyn Permitter> = permitter.clone();
         let guard = PermissionGuardedExecutor::new(inner, permitter_dyn);
 
-        let mut c = ctx();
+        let c = ctx();
         c.cancel_token.cancel();
         let err = guard
             .execute(serde_json::json!({}), &c)

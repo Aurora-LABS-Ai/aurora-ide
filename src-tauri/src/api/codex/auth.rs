@@ -348,9 +348,7 @@ fn apply_token_response(mut auth: Value, tokens: &TokenResponse) -> Result<Value
         "last_refresh".into(),
         json!(chrono::Utc::now().to_rfc3339()),
     );
-    let tokens_slot = obj
-        .entry("tokens")
-        .or_insert_with(|| json!({}));
+    let tokens_slot = obj.entry("tokens").or_insert_with(|| json!({}));
     if !tokens_slot.is_object() {
         *tokens_slot = json!({});
     }
@@ -512,25 +510,35 @@ async fn run_callback_server(
 
         let params = parse_query(query);
         if let Some(error) = params.get("error") {
-            let message = params
-                .get("error_description")
-                .unwrap_or(error)
-                .to_string();
+            let message = params.get("error_description").unwrap_or(error).to_string();
             let _ = respond(&mut stream, 200, &error_page(&message)).await;
             break Err(message);
         }
         if params.get("state").map(String::as_str) != Some(expected_state.as_str()) {
-            let _ = respond(&mut stream, 400, &error_page("The sign-in link didn't match this session. Try again from Aurora.")).await;
+            let _ = respond(
+                &mut stream,
+                400,
+                &error_page("The sign-in link didn't match this session. Try again from Aurora."),
+            )
+            .await;
             break Err("State mismatch on OAuth callback.".to_string());
         }
         let Some(code) = params.get("code") else {
-            let _ = respond(&mut stream, 400, &error_page("The sign-in response was missing its authorization code.")).await;
+            let _ = respond(
+                &mut stream,
+                400,
+                &error_page("The sign-in response was missing its authorization code."),
+            )
+            .await;
             break Err("Missing authorization code.".to_string());
         };
 
         match exchange_code(code, &verifier, &redirect_uri).await {
             Ok(tokens) => {
-                let existing = read_auth_value().ok().flatten().unwrap_or_else(|| json!({}));
+                let existing = read_auth_value()
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| json!({}));
                 let result = apply_token_response(existing, &tokens)
                     .and_then(|value| write_auth_value(&value));
                 match result {
@@ -539,13 +547,25 @@ async fn run_callback_server(
                         break Ok(());
                     }
                     Err(err) => {
-                        let _ = respond(&mut stream, 200, &error_page("Aurora couldn't save the sign-in. Check the app and try again.")).await;
+                        let _ = respond(
+                            &mut stream,
+                            200,
+                            &error_page(
+                                "Aurora couldn't save the sign-in. Check the app and try again.",
+                            ),
+                        )
+                        .await;
                         break Err(err);
                     }
                 }
             }
             Err(err) => {
-                let _ = respond(&mut stream, 200, &error_page("Signing in didn't complete. Return to Aurora and try again.")).await;
+                let _ = respond(
+                    &mut stream,
+                    200,
+                    &error_page("Signing in didn't complete. Return to Aurora and try again."),
+                )
+                .await;
                 break Err(format!("Token exchange failed: {err}"));
             }
         }
@@ -707,7 +727,10 @@ mod tests {
     fn jwt_claims_roundtrip() {
         let token = fake_jwt(json!({ "email": "dev@example.com", "exp": 1234 }));
         let claims = jwt_claims(&token).expect("claims");
-        assert_eq!(claim_str(&claims, "email").as_deref(), Some("dev@example.com"));
+        assert_eq!(
+            claim_str(&claims, "email").as_deref(),
+            Some("dev@example.com")
+        );
         assert_eq!(access_token_expiry_unix(&token), Some(1234));
         assert!(jwt_claims("not-a-jwt").is_none());
     }
@@ -715,10 +738,17 @@ mod tests {
     #[test]
     fn account_id_prefers_direct_then_namespaced_then_org() {
         let direct = json!({ "chatgpt_account_id": "acct_direct" });
-        assert_eq!(account_id_from_claims(&direct).as_deref(), Some("acct_direct"));
+        assert_eq!(
+            account_id_from_claims(&direct).as_deref(),
+            Some("acct_direct")
+        );
 
-        let namespaced = json!({ "https://api.openai.com/auth": { "chatgpt_account_id": "acct_ns" } });
-        assert_eq!(account_id_from_claims(&namespaced).as_deref(), Some("acct_ns"));
+        let namespaced =
+            json!({ "https://api.openai.com/auth": { "chatgpt_account_id": "acct_ns" } });
+        assert_eq!(
+            account_id_from_claims(&namespaced).as_deref(),
+            Some("acct_ns")
+        );
 
         let org = json!({ "organizations": [{ "id": "org_1" }] });
         assert_eq!(account_id_from_claims(&org).as_deref(), Some("org_1"));

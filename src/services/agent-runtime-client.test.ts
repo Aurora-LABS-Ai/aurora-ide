@@ -45,6 +45,7 @@ vi.mock("./mcp-tools", () => ({
 import {
   AGENT_CANCEL_COMMAND,
   AGENT_CHAT_COMMAND,
+  AGENT_COMPACT_THREAD_COMMAND,
   AGENT_EVENT_CHANNEL,
   AGENT_POST_TOOL_RESULT_COMMAND,
   AGENT_TOOL_PENDING_CHANNEL,
@@ -432,6 +433,66 @@ describe("AgentRuntimeClient.chat — event routing", () => {
 
     dispatch(AGENT_TURN_COMPLETE_CHANNEL, { turnId, stop_reason: "end_turn", iterations: 1 });
     await promise;
+  });
+});
+
+describe("AgentRuntimeClient.compactThread", () => {
+  beforeEach(() => {
+    invokeMock.mockReset().mockImplementation(async (command, args) => {
+      if (command !== AGENT_COMPACT_THREAD_COMMAND) return undefined;
+      const { turnId } = (args as { request: { turnId: string } }).request;
+      dispatch(AGENT_EVENT_CHANNEL, {
+        turnId,
+        seq: 1,
+        event: { type: "compaction_started" },
+      });
+      dispatch(AGENT_EVENT_CHANNEL, {
+        turnId,
+        seq: 2,
+        event: {
+          type: "compaction_completed",
+          before_tokens: 96_000,
+          after_tokens: 24_000,
+        },
+      });
+      return [96_000, 24_000];
+    });
+    listenHandlers.clear();
+    listenUnsubs.clear();
+    listenMock.mockClear();
+  });
+
+  it("routes compaction events and resolves from the command result without a turn-complete event", async () => {
+    const onCompactionStarted = vi.fn();
+    const onCompactionCompleted = vi.fn();
+    const client = buildClient({ onCompactionStarted, onCompactionCompleted });
+
+    const result = await client.compactThread({
+      systemPrompt: sampleInput.systemPrompt,
+      ideContext: sampleInput.ideContext,
+      tools: [],
+      workspacePath: sampleInput.workspacePath,
+      attachedSelectedElements: null,
+      attachedPromptChips: null,
+    });
+
+    expect(result).toEqual({ beforeTokens: 96_000, afterTokens: 24_000 });
+    expect(onCompactionStarted).toHaveBeenCalledTimes(1);
+    expect(onCompactionCompleted).toHaveBeenCalledWith(96_000, 24_000);
+    expect(invokeMock).toHaveBeenCalledWith(
+      AGENT_COMPACT_THREAD_COMMAND,
+      expect.objectContaining({
+        request: expect.objectContaining({
+          threadId: "thread-1",
+          userMessage: "",
+        }),
+      }),
+    );
+    expect(client.isRunning()).toBe(false);
+    expect(Array.from(listenUnsubs.values())).toEqual([
+      expect.any(Function),
+    ]);
+    expect(Array.from(listenUnsubs.values())[0]).toHaveBeenCalledTimes(1);
   });
 });
 

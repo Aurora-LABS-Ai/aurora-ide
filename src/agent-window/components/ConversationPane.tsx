@@ -387,6 +387,7 @@ export const ConversationPane: React.FC = () => {
               value={draft}
               onValueChange={(text) => setDraft(draftKey, text)}
               onSubmit={send.send}
+              onActionCommand={() => void send.compact()}
               sending={openIsStreaming}
               onStop={send.stop}
             />

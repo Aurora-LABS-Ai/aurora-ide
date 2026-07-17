@@ -529,6 +529,86 @@ impl<E: EventEmitter> TurnDriver<E> {
         Self { registry, emitter }
     }
 
+    pub async fn compact_thread(
+        &self,
+        request: AgentChatRequest,
+    ) -> Result<Option<(u32, u32)>, RuntimeError> {
+        let turn_id = request.turn_id.clone();
+        let thread_id = request.thread_id.clone();
+
+        let session_arc = self.registry.load_or_create_session(&thread_id)?;
+        let api_client = self
+            .registry
+            .api_factory()
+            .build(&request.provider_config)?;
+        let cancel_token = CancellationToken::new();
+        self.registry
+            .register_in_flight(turn_id.clone(), cancel_token.clone());
+
+        let runtime = ConversationRuntime::new(
+            api_client,
+            Arc::new(build_per_turn_tool_registry(
+                self.registry.tools(),
+                &[],
+                turn_id.clone(),
+                self.registry.bridge_router().clone(),
+                self.emitter.clone() as Arc<dyn BridgeEmitter>,
+                cancel_token.clone(),
+                request.provider_config.supports_vision,
+                request.execution_mode,
+            )),
+            build_runtime_config(&request),
+        );
+
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEventEnvelope>(64);
+        let emitter_for_task = self.emitter.clone();
+        let forwarder = tokio::spawn(async move {
+            while let Some(envelope) = event_rx.recv().await {
+                emitter_for_task.emit_event(&envelope);
+            }
+        });
+
+        let session_path = self.registry.session_path(&thread_id);
+        let result = {
+            let mut session = session_arc.lock().await;
+            if session.workspace_root.is_none() {
+                if let Some(ws) = &request.workspace_path {
+                    session.workspace_root = Some(ws.clone());
+                }
+            }
+            session.model = Some(format!("{}:{}", request.provider_id, request.model));
+
+            let mut seq = 0;
+            runtime
+                .compact_now(&mut session, &turn_id, &mut seq, &event_tx, &cancel_token)
+                .await
+        };
+        drop(event_tx);
+        let _ = forwarder.await;
+
+        {
+            let session = session_arc.lock().await;
+            if let Err(persist_err) = session.save_to_path(&session_path) {
+                eprintln!(
+                    "agent_v2: failed to persist compacted session for thread {thread_id}: {persist_err}"
+                );
+            }
+        }
+
+        let store = self.registry.store();
+        let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
+        let _ = store.set_workspace_and_model(
+            &thread_id,
+            request.workspace_path.clone(),
+            Some(format!("{}:{}", request.provider_id, request.model)),
+        );
+
+        self.registry.unregister_in_flight(&turn_id);
+        self.registry.bridge_router().drop_turn(&turn_id);
+
+        Ok(result)
+    }
+
     /// Drive one turn end-to-end. See [`TurnDriver`] for the full
     /// lifecycle.
     pub async fn run_turn(
@@ -1103,6 +1183,19 @@ mod tauri_layer {
             .run_turn(request)
             .await
             .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    #[tauri::command]
+    pub async fn agent_compact_thread(
+        state: State<'_, Arc<AgentRegistry>>,
+        app: AppHandle,
+        request: AgentChatRequest,
+    ) -> Result<Option<(u32, u32)>, String> {
+        let driver = TurnDriver::new(state.inner().clone(), Arc::new(TauriEmitter { app }));
+        driver
+            .compact_thread(request)
+            .await
             .map_err(|e| e.to_string())
     }
 

@@ -130,3 +130,10 @@ clean 199ms runtime verification of the typing-assist engine.
 # 2026-07-12 — Do not run workspace-wide rustfmt here
 - `cargo fmt --all` reformatted unrelated Rust files; a first scripted restore then consumed truncated shell output and shortened several files.
 - Restore clean files from HEAD in bounded chunks via `apply_patch`; format only touched files and never treat tool-rendered output as an unbounded file transport.
+
+## Tool JSON order and persisted rich results (2026-07-16)
+- Source order inside `json!` is not preserved by default `serde_json`; the live schema reached KAT as `content,path`, so
+  frontend partial parsing alone could never reveal the filename early. Verify the provider-facing serialized schema,
+  not the Rust literal, when UI depends on streamed argument order.
+- Never persist a rich JSON tool result with a blind byte slice. It produces invalid JSON on reload and forces a raw-text
+  fallback. Compact large payload fields inside the parsed value so the saved envelope stays structurally valid.

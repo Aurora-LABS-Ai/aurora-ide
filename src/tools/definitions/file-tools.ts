@@ -63,7 +63,7 @@ export const fileWriteTool: ToolDefinition = {
   nativeRustOwned: true,
   function: {
     name: 'file_write',
-    description: `Create a new file or COMPLETELY OVERWRITE an existing one with the full content you supply. Creates parent directories automatically. "content" is REQUIRED — provide the entire file body.
+    description: `Create a new file or COMPLETELY OVERWRITE an existing one with the full content you supply. Emit "path" first, before "content", so the interface can show the target while the file body streams. Creates parent directories automatically. "content" is REQUIRED — provide the entire file body.
 
 Use file_edit for targeted changes to an existing file. Set must_not_exist=true to fail instead of overwriting if the file already exists.`,
     parameters: {
@@ -101,6 +101,7 @@ export const fileEditTool: ToolDefinition = {
 Single edit: pass path + old_string + new_string.
 Many edits to ONE file: pass an "edits" array plus the top-level "path".
 Edits across MULTIPLE files in ONE call: give each item in "edits" its own "path" (the top-level "path" is the default for items that omit it).
+For a multi-file batch, emit "target_paths" first with every file path so the interface can show all targets before the edit bodies stream.
 
 The whole batch is ATOMIC: every edit matches against its file's ORIGINAL snapshot, and if any edit fails NO file is changed.
 
@@ -116,6 +117,11 @@ Examples:
     parameters: {
       type: 'object',
       properties: {
+        target_paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Streaming UI metadata for a multi-file batch. Emit this field first with every file that edits[] will target. It does not change which files are edited.',
+        },
         path: {
           type: 'string',
           description: 'The file to edit. Required for the single-edit form. In the batch form it is the DEFAULT path for edits that do not set their own "path".',

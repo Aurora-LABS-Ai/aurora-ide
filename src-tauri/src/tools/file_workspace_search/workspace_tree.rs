@@ -33,14 +33,25 @@ const DEFAULT_MAX_FILES_FOR_STATS: usize = 300;
 /// survives any change to that upstream filter.
 const ARTIFACT_DIRS: &[&str] = &[
     // JS / web — dependencies, build output, caches
-    "node_modules", "bower_components", ".pnpm", ".yarn",
-    "dist", "build", "out", "coverage", "storybook-static",
+    "node_modules",
+    "bower_components",
+    ".pnpm",
+    ".yarn",
+    "dist",
+    "build",
+    "out",
+    "coverage",
+    "storybook-static",
     // Rust
     "target",
     // Python — virtualenvs, caches, installed packages
-    "__pycache__", "venv", ".venv", "site-packages",
+    "__pycache__",
+    "venv",
+    ".venv",
+    "site-packages",
     // .NET / JVM / native build output
-    "bin", "obj",
+    "bin",
+    "obj",
     // Go / PHP vendored dependencies
     "vendor",
 ];

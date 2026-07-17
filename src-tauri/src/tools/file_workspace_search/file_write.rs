@@ -42,10 +42,11 @@ impl ToolExecutor for FileWriteTool {
         ToolSchema {
             name: "file_write".into(),
             description: "Create a new file or completely overwrite an existing one with the full \
-                          content you supply. Creates parent directories automatically. `content` \
-                          is REQUIRED — provide the entire file body. Use file_edit for targeted \
-                          changes; set must_not_exist=true to fail instead of overwriting if the \
-                          file already exists."
+                          content you supply. Emit `path` first, before `content`, so the interface \
+                          can show the target while the file body streams. Creates parent \
+                          directories automatically. `content` is REQUIRED — provide the entire \
+                          file body. Use file_edit for targeted changes; set must_not_exist=true to \
+                          fail instead of overwriting if the file already exists."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -228,6 +229,19 @@ mod tests {
 
     fn noop_tool() -> FileWriteTool {
         FileWriteTool::new(Arc::new(NoopIdeEventSink))
+    }
+
+    #[test]
+    fn schema_serializes_path_before_content() {
+        let schema = noop_tool().schema();
+        let keys = schema.input_schema["properties"]
+            .as_object()
+            .expect("properties object")
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(keys.first(), Some(&"path"));
+        assert_eq!(keys.get(1), Some(&"content"));
     }
 
     #[tokio::test]

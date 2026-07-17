@@ -8,7 +8,6 @@
 //!   absolute paths leaving the workspace, symlinks pointing outside),
 //!   follows symlinks **once only**, and returns the resolved canonical
 //!   path on success.
-//! - [`is_within_workspace`] is the boolean shorthand.
 //!
 //! On Windows, [`dunce::canonicalize`] is used to strip the verbatim
 //! `\\?\` UNC prefix so that `Path::starts_with` comparisons remain
@@ -114,12 +113,6 @@ pub fn resolve_within_workspace(
     Ok(canonical)
 }
 
-/// Convenience predicate: `true` iff `resolve_within_workspace` succeeds.
-#[must_use]
-pub fn is_within_workspace(path: &Path, workspace_root: &Path) -> bool {
-    resolve_within_workspace(path, workspace_root).is_ok()
-}
-
 /// Canonicalise via `dunce` so Windows UNC `\\?\` prefixes are stripped
 /// for stable `starts_with` comparisons. On non-Windows targets, `dunce`
 /// transparently falls back to [`std::fs::canonicalize`].
@@ -174,7 +167,7 @@ mod tests {
         // mismatches.
         let expected = canonicalize(&inside).unwrap();
         assert_eq!(resolved, expected);
-        assert!(is_within_workspace(Path::new("inside.txt"), workspace));
+        assert!(resolve_within_workspace(Path::new("inside.txt"), workspace).is_ok());
     }
 
     #[test]
@@ -209,10 +202,7 @@ mod tests {
             matches!(result, Err(PathSafetyError::OutsideWorkspace(_))),
             "expected OutsideWorkspace error, got {result:?}"
         );
-        assert!(!is_within_workspace(
-            Path::new("../outside.txt"),
-            &workspace
-        ));
+        assert!(resolve_within_workspace(Path::new("../outside.txt"), &workspace).is_err());
     }
 
     #[test]
@@ -266,7 +256,7 @@ mod tests {
         // canonical real path.
         let expected = canonicalize(&real).unwrap();
         assert_eq!(resolved, expected);
-        assert!(is_within_workspace(Path::new("link.txt"), workspace));
+        assert!(resolve_within_workspace(Path::new("link.txt"), workspace).is_ok());
     }
 
     #[test]
@@ -306,16 +296,13 @@ mod tests {
     }
 
     #[test]
-    fn is_within_workspace_matches_resolve() {
+    fn resolve_reports_containment_as_result() {
         let tmp = TempDir::new().expect("tempdir");
         let workspace = tmp.path();
         let inside = workspace.join("inside.txt");
         fs::write(&inside, "data").expect("write inside file");
 
-        assert!(is_within_workspace(Path::new("inside.txt"), workspace));
-        assert!(!is_within_workspace(
-            Path::new("does-not-exist.txt"),
-            workspace
-        ));
+        assert!(resolve_within_workspace(Path::new("inside.txt"), workspace).is_ok());
+        assert!(resolve_within_workspace(Path::new("does-not-exist.txt"), workspace).is_err());
     }
 }

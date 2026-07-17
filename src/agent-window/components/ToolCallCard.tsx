@@ -23,6 +23,7 @@ import { FileIcon, FolderIcon } from "../../components/explorer/FileIcons";
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
 import { useAgentReviewStore } from "../store/useAgentReviewStore";
 import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
+import { describeToolActivity, type AgentActivityTarget } from "./activity";
 import { toolStatus, type ToolCall, type ToolStatus } from "./tool-call";
 import { parseToolResult } from "./tool-views/tool-result";
 import { ToolResultView } from "./tool-views/ToolResultView";
@@ -63,6 +64,7 @@ const HIDDEN_ARG_KEYS = new Set([
   "todos",
   "edits",
   "replacements",
+  "target_paths",
 ]);
 
 const SHELL_ARG_KEYS = new Set([
@@ -112,35 +114,6 @@ function partialString(raw: string, key: string): string | null {
   return out;
 }
 
-/**
- * Like `partialString`, but returns the value ONLY once its closing quote has
- * arrived — i.e. the field is fully streamed, even if the rest of the JSON is
- * still open. Returns null while the value is mid-stream.
- *
- * This is what the file chip/icon use: reading the path on every partial token
- * makes it flicker through each fragment ("s" → "src" → "src/com" → … →
- * "Foo.tsx"), and since the icon is derived from the name/extension, you see a
- * lightning-fast burst of changing file icons. Withholding until the value is
- * complete shows the real path once, no flicker.
- */
-function completedString(raw: string, key: string): string | null {
-  const at = raw.indexOf(`"${key}"`);
-  if (at < 0) return null;
-  const colon = raw.indexOf(":", at + key.length + 2);
-  if (colon < 0) return null;
-  const open = raw.indexOf('"', colon + 1);
-  if (open < 0) return null;
-  for (let i = open + 1; i < raw.length; i++) {
-    const c = raw[i];
-    if (c === "\\") {
-      i++;
-      continue;
-    }
-    if (c === '"') return raw.slice(open + 1, i).replace(/\\(.)/g, "$1"); // closed → complete
-  }
-  return null; // ran off the end → still streaming; withhold to avoid flicker
-}
-
 /** The streaming-content arg key per modify tool (single-edit shapes only). */
 function streamKeyFor(name: string): string | null {
   if (name === "file_create" || name === "file_write") return "content";
@@ -153,6 +126,11 @@ function streamKeyFor(name: string): string | null {
 function toolIcon(name: string): AgentIconName {
   const lower = name.toLowerCase();
   if (lower.startsWith("mcp_")) return "mcp";
+  if (lower === "browser_click") return "browser-click";
+  if (lower === "browser_fill") return "browser-fill";
+  if (lower === "browser_scroll") return "browser-scroll";
+  if (lower === "browser_screenshot") return "browser-screenshot";
+  if (lower === "browser_get_console_logs") return "terminal";
   if (lower.startsWith("browser_")) return "browser";
   // Dedicated per-action file glyphs (read / write / edit / move / delete),
   // each distinct so a glance at the card header tells you what happened.
@@ -170,10 +148,14 @@ function toolIcon(name: string): AgentIconName {
     return "file-delete";
   if (lower === "editor_open_file") return "files";
   if (lower === "grep") return "search";
-  if (lower === "workspace_tree" || lower === "folder_create") return "files";
+  if (lower === "workspace_tree") return "workspace-tree";
+  if (lower === "folder_create") return "files";
   if (lower === "shell_execute" || lower === "shell_spawn") return "terminal";
-  if (lower === "read_lints" || lower === "todo_write") return "review";
-  if (lower === "auroro_websearch" || lower === "auroro_web_search") return "browser";
+  if (lower === "shell_kill") return "process-stop";
+  if (lower === "shell_list_processes") return "process-list";
+  if (lower === "read_lints") return "diagnostics";
+  if (lower === "todo_write") return "task-list";
+  if (lower === "auroro_websearch" || lower === "auroro_web_search") return "search";
   if (lower === "ask_question") return "help";
   if (FILE_MODIFY_TOOLS.has(lower)) return "file-edit";
   return "diff";
@@ -215,20 +197,39 @@ export const ToolCallCard: React.FC<{
   const status = toolStatus(call, isActivelyStreaming);
   const title = getProfessionalToolName(call.name);
   const icon = toolIcon(call.name);
+  const activity = useMemo(
+    () => describeToolActivity(call.name, call.arguments),
+    [call.name, call.arguments],
+  );
 
-  // While args are still streaming, JSON.parse fails — fall back to a partial
-  // read for the path chip. Use the COMPLETED-value reader so the chip/icon
-  // appear once the path is fully received, never flickering through every
-  // fragment ("s" → "src" → … → "Foo.tsx") as tokens arrive.
-  const path =
-    pathOf(parsedArgs) ||
-    (status === "running"
-      ? completedString(call.arguments, "path") ||
-        completedString(call.arguments, "file_path") ||
-        ""
-      : "");
-  const fileName = path ? basename(path) : "";
-  const isFolder = FOLDER_TOOLS.has(call.name);
+  const path = activity.path || pathOf(parsedArgs);
+  const fileName = activity.name || (path ? basename(path) : "");
+  const isFolder =
+    activity.kind === "folder" || (!activity.kind && FOLDER_TOOLS.has(call.name));
+  const activityTargets: AgentActivityTarget[] =
+    activity.targets?.length
+      ? activity.targets
+      : path || isFolder
+        ? [
+            {
+              kind: isFolder ? "folder" : "file",
+              name: fileName || "directory",
+              path,
+            },
+          ]
+        : [];
+  const showEveryTarget =
+    activityTargets.length > 1 &&
+    (call.name === "file_edit" ||
+      call.name === "file_patch" ||
+      call.name === "search_replace" ||
+      call.name === "multi_search_replace");
+  const chipTargets = showEveryTarget
+    ? activityTargets
+    : activityTargets.slice(0, 1).map((target) => ({
+        ...target,
+        name: activity.name || target.name,
+      }));
 
   // Live content preview: the file being written, pulled from the partial args.
   const streamingPreview = useMemo(() => {
@@ -263,10 +264,11 @@ export const ToolCallCard: React.FC<{
     if (status === "failed") {
       const r = call.result || "";
       const m = r.match(/^\s*\[(?:error|rejected)\]\s*(.*)/i);
-      return (m?.[1]?.trim() || "Didn't complete").slice(0, 160);
+      const message = m?.[1]?.trim() || "Didn't complete";
+      return (path ? message.replaceAll(path, basename(path)) : message).slice(0, 160);
     }
     return parsed.summary || "";
-  }, [status, call.result, parsed.summary]);
+  }, [status, call.result, parsed.summary, path]);
 
   const hasResult = Boolean(
     parsed.tree ||
@@ -293,13 +295,21 @@ export const ToolCallCard: React.FC<{
   const open = (override ?? defaultOpen) && hasDetail;
   const toggle = () => setOverride(!(override ?? defaultOpen));
 
-  // A modify tool with a real diff → the file chip opens the Review panel
-  // focused on this file (expand + scroll). For a multi-file edit, focus the
-  // first touched file. `getState()` so the card itself doesn't re-render on
-  // dock/selection changes.
-  const reviewPath = parsed.diff?.path || parsed.diffs?.[0]?.path || path;
-  const canReview = Boolean((parsed.diff || parsed.diffs?.length) && reviewPath);
-  const openReview = (e: React.MouseEvent) => {
+  const reviewPaths = (
+    parsed.diffs?.map((diff) => diff.path) ?? (parsed.diff?.path ? [parsed.diff.path] : [])
+  ).filter((reviewPath): reviewPath is string => Boolean(reviewPath));
+  const reviewPathFor = (target: AgentActivityTarget, index: number) => {
+    const normalizedTarget = target.path.replaceAll("\\", "/").toLowerCase();
+    return (
+      reviewPaths.find(
+        (reviewPath) => reviewPath.replaceAll("\\", "/").toLowerCase() === normalizedTarget,
+      ) ||
+      reviewPaths.find((reviewPath) => basename(reviewPath) === basename(target.path)) ||
+      reviewPaths[index] ||
+      null
+    );
+  };
+  const openReview = (e: React.SyntheticEvent, reviewPath: string) => {
     e.stopPropagation();
     useAgentReviewStore.getState().setSelectedPath(reviewPath);
     useAgentWorkspaceStore.getState().openTab("review");
@@ -321,7 +331,7 @@ export const ToolCallCard: React.FC<{
           )}
         </span>
 
-        <AgentIcon name={icon} size={14} />
+        <AgentIcon name={icon} size={16} strokeWidth={1.5} />
 
         <span
           style={{
@@ -333,42 +343,63 @@ export const ToolCallCard: React.FC<{
           {title}
         </span>
 
-        {(fileName || isFolder) &&
-          (canReview ? (
-            <span
-              role="button"
-              tabIndex={0}
-              className="agw-tool-chip agw-tool-chip-btn"
-              title="Open in Review"
-              onClick={openReview}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") openReview(e as unknown as React.MouseEvent);
-              }}
-            >
-              {isFolder ? (
-                <FolderIcon name={fileName} className="agw-file-ico" />
+        {chipTargets.length > 0 && (
+          <span className="agw-tool-targets">
+            {chipTargets.map((target, index) => {
+              const reviewPath = reviewPathFor(target, index);
+              const chipContent = (
+                <>
+                  {target.kind === "folder" ? (
+                    <FolderIcon name={target.name} className="agw-file-ico" />
+                  ) : (
+                    <FileIcon
+                      name={basename(target.path) || target.name}
+                      path={target.path}
+                      className="agw-file-ico"
+                    />
+                  )}
+                  <span
+                    style={{
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {target.name}
+                  </span>
+                </>
+              );
+
+              return reviewPath ? (
+                <span
+                  key={`${target.path}:${index}`}
+                  role="button"
+                  tabIndex={0}
+                  className="agw-tool-chip agw-tool-chip-btn"
+                  title="Open in Review"
+                  onClick={(event) => openReview(event, reviewPath)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openReview(event, reviewPath);
+                    }
+                  }}
+                >
+                  {chipContent}
+                </span>
               ) : (
-                <FileIcon name={fileName} path={path} className="agw-file-ico" />
-              )}
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {fileName || "directory"}
-              </span>
-            </span>
-          ) : (
-            <span className="agw-tool-chip">
-              {isFolder ? (
-                <FolderIcon name={fileName} className="agw-file-ico" />
-              ) : (
-                <FileIcon name={fileName} path={path} className="agw-file-ico" />
-              )}
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {fileName || "directory"}
-              </span>
-            </span>
-          ))}
+                <span key={`${target.path}:${index}`} className="agw-tool-chip">
+                  {chipContent}
+                </span>
+              );
+            })}
+          </span>
+        )}
 
         {status === "running" ? (
-          <span className="agw-tool-summary agw-shimmer">Running…</span>
+          <span className="agw-tool-summary agw-shimmer">
+            {activity.name ? "Running…" : activity.label}
+          </span>
         ) : parsed.stat && (parsed.stat.added > 0 || parsed.stat.removed > 0) ? (
           <span className="agw-tool-summary" style={{ display: "inline-flex", gap: 8 }}>
             {parsed.stat.removed > 0 && (

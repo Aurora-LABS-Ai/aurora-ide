@@ -233,8 +233,7 @@ impl ProjectWorkspace {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut file =
-            with_io_retry(|| OpenOptions::new().create(true).append(true).open(&path))?;
+        let mut file = with_io_retry(|| OpenOptions::new().create(true).append(true).open(&path))?;
         let line = serde_json::to_string(event)?;
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;

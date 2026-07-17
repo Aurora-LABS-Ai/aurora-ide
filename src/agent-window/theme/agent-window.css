@@ -2272,6 +2272,14 @@
 }
 
 /* File / folder chip in the tool header. */
+.agw-tool-targets {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  max-width: 65%;
+}
 .agw-tool-chip {
   display: inline-flex;
   align-items: center;
@@ -2444,6 +2452,9 @@
   overflow: hidden;
 }
 .agw-multi-diff-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 5px 10px;
   font-size: var(--agw-fs-label);
   font-weight: 600;
@@ -2456,6 +2467,22 @@
 }
 .agw-multi-diff-file .agw-diff {
   border-radius: 0;
+}
+.agw-multi-read {
+  padding: 8px;
+}
+.agw-multi-read .agw-tool-result {
+  max-height: 240px;
+  margin: 0;
+  border-radius: 0;
+}
+.agw-multi-read .agw-tree-meta {
+  margin-left: auto;
+}
+.agw-multi-read-error {
+  padding: 10px;
+  color: var(--agw-removed);
+  font-size: var(--agw-fs-label);
 }
 
 /* Grouped tool run (≥6 calls) — the expanded cards live in a fixed-height "lock

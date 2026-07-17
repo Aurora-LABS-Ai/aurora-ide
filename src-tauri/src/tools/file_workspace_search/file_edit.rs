@@ -62,6 +62,8 @@ impl ToolExecutor for FileEditTool {
                           Many edits to ONE file: pass `edits` (an array) plus the top-level `path`. \
                           Edits across MULTIPLE files in ONE call: give each item in `edits` its own \
                           `path` (the top-level `path` becomes the default for items that omit it). \
+                          For a multi-file batch, emit `target_paths` first with every file path so \
+                          the interface can show all targets before the edit bodies stream. \
                           The whole batch is atomic — every edit applies against its file's original \
                           snapshot, and if any edit fails NO file is changed. old_string must match \
                           exactly and be unique unless replace_all=true. Read each file with \
@@ -70,6 +72,11 @@ impl ToolExecutor for FileEditTool {
             input_schema: json!({
                 "type": "object",
                 "properties": {
+                    "target_paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Streaming UI metadata for a multi-file batch. Emit this field first with every file that edits[] will target. It does not change which files are edited."
+                    },
                     "path": { "type": "string", "description": "The file to edit. Required for the single-edit form; in the batch form it is the DEFAULT path for edits that don't set their own." },
                     "old_string": { "type": "string", "description": "Single-edit form: exact text to find." },
                     "new_string": { "type": "string", "description": "Single-edit form: replacement text (may be empty to delete)." },
@@ -611,6 +618,22 @@ mod tests {
     fn mark_read(ctx: &ToolContext, abs: &std::path::Path) {
         let canonical = dunce::canonicalize(abs).unwrap();
         super::super::read_tracker::record(&ctx.session_id, &canonical.to_string_lossy());
+    }
+
+    #[test]
+    fn schema_exposes_early_multi_file_targets() {
+        let tool = FileEditTool::new(Arc::new(crate::tools::shell_editor_todo::NoopIdeEventSink));
+        let schema = tool.schema();
+        assert_eq!(
+            schema.input_schema["properties"]["target_paths"]["items"]["type"],
+            "string"
+        );
+        let first_property = schema.input_schema["properties"]
+            .as_object()
+            .and_then(|properties| properties.keys().next())
+            .map(String::as_str);
+        assert_eq!(first_property, Some("target_paths"));
+        assert!(schema.description.contains("emit `target_paths` first"));
     }
 
     #[tokio::test]

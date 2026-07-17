@@ -236,6 +236,47 @@ export class AgentService {
     return this.lastPromptOverhead;
   }
 
+  public async compactThread(callbacks: AgentCallbacks): Promise<{ beforeTokens: number; afterTokens: number } | null> {
+    const threadId = this.requireThreadId();
+    const providerConfig = this.requireProviderConfig();
+    const executionMode = normalizeAgentExecutionMode(this.config.executionMode);
+    const composedPrompt = await composeAgentSystemPrompt({
+      basePrompt: this.config.systemPrompt,
+      executionMode,
+      mcpSummary: getMcpToolsSummary(),
+      promptContext: { userMessage: "" },
+    });
+    const executionModeBlock = formatAgentExecutionModeRuntimeContext(executionMode);
+    const workspacePath =
+      this.config.workspacePath !== undefined
+        ? this.config.workspacePath
+        : useWorkspaceStore.getState().rootPath || null;
+
+    this.isRunning = true;
+    const client = new AgentRuntimeClient({
+      callbacks,
+      config: this.config,
+      threadId,
+      providerConfig,
+      beforeToolExecution: this.config.beforeToolExecution,
+    });
+    this.currentClient = client;
+
+    try {
+      return await client.compactThread({
+        systemPrompt: composedPrompt.systemPrompt,
+        ideContext: executionModeBlock,
+        tools: [],
+        workspacePath,
+        attachedSelectedElements: null,
+        attachedPromptChips: null,
+      });
+    } finally {
+      this.isRunning = false;
+      this.currentClient = null;
+    }
+  }
+
   /**
    * Run an agent turn against the Rust `agent_chat_v2` runtime.
    *

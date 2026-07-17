@@ -1012,7 +1012,10 @@ pub async fn agent_open_in_ide(
 /// `null` on a normal launch.
 #[tauri::command]
 pub fn take_pending_ide_open() -> Option<PendingIdeOpen> {
-    PENDING_IDE_OPEN.lock().ok().and_then(|mut guard| guard.take())
+    PENDING_IDE_OPEN
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
 }
 
 // ---------------------------------------------------------------------------

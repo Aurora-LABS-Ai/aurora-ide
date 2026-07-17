@@ -135,8 +135,8 @@ impl<'a> SettingsRepository<'a> {
                         .unwrap_or(settings.compaction_summary_budget)
                 }
                 "titleMakerEnabled" => {
-                    settings.title_maker_enabled = serde_json::from_str(&setting.value)
-                        .unwrap_or(settings.title_maker_enabled)
+                    settings.title_maker_enabled =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.title_maker_enabled)
                 }
                 "titleMakerBaseUrl" => {
                     settings.title_maker_base_url = serde_json::from_str(&setting.value)

@@ -558,11 +558,38 @@ impl ConversationRuntime {
             return;
         }
 
+        let _ = self
+            .compact_now(session, turn_id, seq, event_sink, cancel_token)
+            .await;
+    }
+
+    /// Force a compaction pass immediately, bypassing the configured threshold.
+    /// Returns the before/after token estimate when a marker was persisted.
+    pub async fn compact_now(
+        &self,
+        session: &mut Session,
+        turn_id: &str,
+        seq: &mut u64,
+        event_sink: &mpsc::Sender<AgentEventEnvelope>,
+        cancel_token: &CancellationToken,
+    ) -> Option<(u32, u32)> {
+        let Some(window) = self.config.context_window else {
+            return None;
+        };
+        if window == 0 {
+            return None;
+        }
+
+        let system_prompt = self.config.system_prompt.as_deref().unwrap_or("");
+        let system_tokens = estimate_text_tokens(system_prompt);
+        let projected = apply_compaction(session.messages())
+            .iter()
+            .map(estimate_message_tokens)
+            .fold(system_tokens, u32::saturating_add);
+
         // A user-boundary cut preserving ~COMPACT_TAIL_PCT of the window
         // verbatim. `None` => transcript too short to compact safely.
-        let Some(cut) = compaction_cut(session.messages(), window) else {
-            return;
-        };
+        let cut = compaction_cut(session.messages(), window)?;
 
         // Signal the UI: ring → spinner, live shimmer card.
         emit_native_tool_event(event_sink, turn_id, seq, AssistantEvent::CompactionStarted).await;
@@ -590,7 +617,7 @@ impl ConversationRuntime {
                     },
                 )
                 .await;
-                return;
+                return None;
             }
         };
 
@@ -631,6 +658,8 @@ impl ConversationRuntime {
             },
         )
         .await;
+
+        Some((projected, after))
     }
 
     /// One-shot summarization call for [`Self::maybe_compact`]. Drains the
@@ -912,6 +941,9 @@ fn truncate_tool_content(tool: &str, s: String) -> String {
     if s.len() <= cap {
         return s;
     }
+    if let Some(compacted) = compact_json_tool_content(&s, cap) {
+        return compacted;
+    }
     let original_len = s.len();
     // Walk char boundaries to find a safe slice point <= cap.
     let mut cut = cap;
@@ -927,6 +959,98 @@ fn truncate_tool_content(tool: &str, s: String) -> String {
         cut,
     ));
     out
+}
+
+fn compact_json_tool_content(raw: &str, cap: usize) -> Option<String> {
+    let original = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    let mut low = 0usize;
+    let mut high = cap;
+    let mut best: Option<String> = None;
+
+    while low <= high {
+        let limit = low + (high - low) / 2;
+        let mut candidate = original.clone();
+        if !shrink_history_payload_strings(&mut candidate, limit) {
+            return None;
+        }
+        if let serde_json::Value::Object(map) = &mut candidate {
+            map.insert("historyTruncated".into(), serde_json::Value::Bool(true));
+            map.insert(
+                "originalBytes".into(),
+                serde_json::Value::from(raw.len() as u64),
+            );
+        }
+        let serialized = serde_json::to_string(&candidate).ok()?;
+        if serialized.len() <= cap {
+            best = Some(serialized);
+            low = limit.saturating_add(1);
+        } else if limit == 0 {
+            break;
+        } else {
+            high = limit - 1;
+        }
+    }
+
+    if best.is_some() {
+        return best;
+    }
+
+    let mut fallback = serde_json::Map::new();
+    if let serde_json::Value::Object(map) = &original {
+        for key in ["success", "message", "error", "path"] {
+            if let Some(value) = map.get(key) {
+                if !value.is_array() && !value.is_object() {
+                    fallback.insert(key.to_string(), value.clone());
+                }
+            }
+        }
+    }
+    fallback.insert("historyTruncated".into(), serde_json::Value::Bool(true));
+    fallback.insert(
+        "originalBytes".into(),
+        serde_json::Value::from(raw.len() as u64),
+    );
+    let compacted = serde_json::to_string(&serde_json::Value::Object(fallback)).ok()?;
+    (compacted.len() <= cap).then_some(compacted)
+}
+
+fn shrink_history_payload_strings(value: &mut serde_json::Value, limit: usize) -> bool {
+    let mut changed = false;
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                changed |= shrink_history_payload_strings(item, limit);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if matches!(
+                    key.as_str(),
+                    "content" | "oldContent" | "newContent" | "stdout" | "stderr" | "output"
+                ) {
+                    if let serde_json::Value::String(text) = child {
+                        if text.len() > limit {
+                            let original_len = text.len();
+                            let mut cut = limit;
+                            while cut > 0 && !text.is_char_boundary(cut) {
+                                cut -= 1;
+                            }
+                            text.truncate(cut);
+                            text.push_str(&format!(
+                                "\n\n[truncated {} bytes in persisted history]",
+                                original_len.saturating_sub(cut),
+                            ));
+                            changed = true;
+                        }
+                    }
+                } else {
+                    changed |= shrink_history_payload_strings(child, limit);
+                }
+            }
+        }
+        _ => {}
+    }
+    changed
 }
 
 /// Backstop for the UI event payload. The model-history copy is hard
@@ -1634,6 +1758,75 @@ mod tests {
         );
         let out = truncate_tool_content("browser_screenshot", raw);
         assert!(out.contains(&b64), "inline base64 kept when there's no src");
+    }
+
+    #[test]
+    fn persisted_edit_result_stays_valid_json_when_large() {
+        let raw = serde_json::json!({
+            "success": true,
+            "path": "src/App.tsx",
+            "fullPath": "E:\\work\\src\\App.tsx",
+            "linesAdded": 2,
+            "linesRemoved": 2,
+            "oldContent": "a".repeat(20_000),
+            "newContent": "b".repeat(20_000),
+        })
+        .to_string();
+
+        let compacted = truncate_tool_content("file_edit", raw.clone());
+        assert!(compacted.len() <= MAX_TOOL_RESULT_LENGTH);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&compacted).expect("history result must stay valid JSON");
+        assert_eq!(parsed["path"], "src/App.tsx");
+        assert_eq!(parsed["historyTruncated"], true);
+        assert_eq!(parsed["originalBytes"], raw.len() as u64);
+        assert!(parsed["oldContent"].as_str().unwrap().contains("truncated"));
+        assert!(parsed["newContent"].as_str().unwrap().contains("truncated"));
+    }
+
+    #[test]
+    fn persisted_multi_read_keeps_each_file_as_valid_json() {
+        let raw = serde_json::json!({
+            "success": true,
+            "filesRead": 3,
+            "files": [
+                { "path": "a.ts", "success": true, "content": "a".repeat(240_000) },
+                { "path": "b.ts", "success": true, "content": "b".repeat(240_000) },
+                { "path": "c.ts", "success": true, "content": "c".repeat(240_000) },
+            ]
+        })
+        .to_string();
+
+        let compacted = truncate_tool_content("file_read", raw);
+        assert!(compacted.len() <= MAX_READ_RESULT_LENGTH);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&compacted).expect("batch read history must stay valid JSON");
+        let files = parsed["files"].as_array().expect("files array");
+        assert_eq!(files.len(), 3);
+        assert!(files.iter().all(|file| file["content"]
+            .as_str()
+            .is_some_and(|content| !content.is_empty())));
+    }
+
+    #[test]
+    fn persisted_structured_result_never_falls_back_to_broken_json() {
+        let raw = serde_json::json!({
+            "success": true,
+            "tree": (0..2_000)
+                .map(|index| serde_json::json!({
+                    "name": format!("file-{index}.ts"),
+                    "path": format!("src/generated/file-{index}.ts"),
+                    "type": "file",
+                }))
+                .collect::<Vec<_>>(),
+        })
+        .to_string();
+
+        let compacted = truncate_tool_content("workspace_tree", raw);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&compacted).expect("structured history must stay valid JSON");
+        assert_eq!(parsed["success"], true);
+        assert_eq!(parsed["historyTruncated"], true);
     }
 
     // ── Test doubles ────────────────────────────────────────────────

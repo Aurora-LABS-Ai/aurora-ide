@@ -39,9 +39,11 @@ pub async fn typing_assist_ensure_ready(
         .resource_dir()
         .map_err(|e| format!("resolve resource dir: {e}"))?;
     let st = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || crate::typing_assist::ensure_loaded(&st, &resource_dir))
-        .await
-        .map_err(|e| format!("typing-assist load task failed: {e}"))??;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::typing_assist::ensure_loaded(&st, &resource_dir)
+    })
+    .await
+    .map_err(|e| format!("typing-assist load task failed: {e}"))??;
     Ok(true)
 }
 

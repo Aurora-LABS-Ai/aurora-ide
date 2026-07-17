@@ -6,6 +6,10 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+src-tauri/target/
+src-tauri/crispasr-runtime/
+graphify-out
+
 .codex
 node_modules
 fireworks-docs

@@ -12,6 +12,17 @@
  */
 
 import { getProfessionalToolName } from "../../services/tool-display";
+import {
+  completedToolStringArrayArgument,
+  streamedToolStringArguments,
+  type StreamedToolStringArgument,
+} from "./tool-call";
+
+export interface AgentActivityTarget {
+  kind: "file" | "folder";
+  name: string;
+  path: string;
+}
 
 /** One narration frame. The header renders `verb [icon] name`, or just `label`. */
 export interface AgentActivity {
@@ -25,6 +36,7 @@ export interface AgentActivity {
   path?: string;
   /** Whether the target is a file or a folder — picks the icon. */
   kind?: "file" | "folder";
+  targets?: AgentActivityTarget[];
 }
 
 /** Present-continuous verb per tool. */
@@ -55,9 +67,10 @@ const TOOL_GERUND: Record<string, string> = {
   ask_question: "Waiting for your answer",
   browser_navigate: "Browsing to",
   browser_click: "Clicking",
-  browser_fill: "Typing into a field",
-  browser_scroll: "Scrolling the page",
-  browser_screenshot: "Capturing the page",
+  browser_fill: "Typing into",
+  browser_scroll: "Scrolling",
+  browser_screenshot: "Capturing",
+  browser_get_console_logs: "Reading console logs",
 };
 
 /** Tools whose path arg names a FILE → file-extension icon. */
@@ -100,6 +113,8 @@ function pathOf(args: Record<string, unknown>): string | null {
     asStr(args.filePath) ||
     asStr(args.target) ||
     asStr(args.source) ||
+    asStr(args.old_path) ||
+    asStr(args.new_path) ||
     null
   );
 }
@@ -110,13 +125,7 @@ function looksLikeFile(base: string): boolean {
   return i > 0 && i < base.length - 1;
 }
 
-/** A named file/folder target for the inline icon, or null (verb-only). */
-function targetOf(
-  name: string,
-  args: Record<string, unknown>,
-): { name: string; path: string; kind: "file" | "folder" } | null {
-  const path = pathOf(args);
-  if (!path) return null;
+function targetFor(name: string, path: string): AgentActivityTarget | null {
   const base = basename(path);
   if (!base || base === ".") return null; // workspace root — no icon
   if (FILE_ICON_TOOLS.has(name)) return { name: base, path, kind: "file" };
@@ -124,6 +133,56 @@ function targetOf(
   if (AMBIGUOUS_PATH_TOOLS.has(name))
     return { name: base, path, kind: looksLikeFile(base) ? "file" : "folder" };
   return null;
+}
+
+function editPaths(args: Record<string, unknown>): string[] {
+  const topPath = asStr(args.path);
+  const edits = Array.isArray(args.edits) ? args.edits : [];
+  if (edits.length === 0) return topPath ? [topPath] : [];
+  return edits.flatMap((edit) => {
+    if (!edit || typeof edit !== "object") return [];
+    const path = asStr((edit as Record<string, unknown>).path) || topPath;
+    return path ? [path] : [];
+  });
+}
+
+function targetsOf(
+  name: string,
+  args: Record<string, unknown>,
+  streamedPaths: string[],
+): AgentActivityTarget[] {
+  let paths: string[];
+  if (
+    (name === "file_read" || name === "multi_file_read" || name === "read_lints") &&
+    Array.isArray(args.paths)
+  ) {
+    paths = args.paths.filter((path): path is string => typeof path === "string");
+  } else if (
+    name === "file_edit" ||
+    name === "file_patch" ||
+    name === "search_replace" ||
+    name === "multi_search_replace"
+  ) {
+    const editTargets = editPaths(args);
+    const announcedTargets = Array.isArray(args.target_paths)
+      ? args.target_paths.filter((path): path is string => typeof path === "string")
+      : [];
+    paths =
+      editTargets.length > 0
+        ? [...editTargets, ...streamedPaths]
+        : [...announcedTargets, ...streamedPaths];
+  } else {
+    const path = pathOf(args);
+    paths = path ? [path] : streamedPaths;
+  }
+
+  const seen = new Set<string>();
+  return paths.flatMap((path) => {
+    if (seen.has(path)) return [];
+    seen.add(path);
+    const target = targetFor(name, path);
+    return target ? [target] : [];
+  });
 }
 
 /** The display arg for tools WITHOUT a named file/folder target (already clipped). */
@@ -134,21 +193,120 @@ function labelArg(name: string, args: Record<string, unknown>): string | null {
   }
   if (name === "auroro_websearch") {
     const q = asStr(args.query);
-    return q ? `"${clip(q, 40)}"` : null;
+    const url = asStr(args.url);
+    return q ? `"${clip(q, 40)}"` : url ? clip(url, 44) : null;
   }
   if (name === "shell_execute" || name === "shell_spawn") {
     const cmd = asStr(args.command);
     return cmd ? `\`${clip(cmd, 44)}\`` : null;
   }
+  if (name === "shell_kill") {
+    const id = asStr(args.processId) || asStr(args.requestId) || asStr(args.pid);
+    return id ? `\`${clip(id, 32)}\`` : null;
+  }
   if (name === "browser_navigate") {
     const url = asStr(args.url);
     return url ? clip(url, 44) : null;
   }
-  if (name === "multi_file_read" && Array.isArray(args.paths)) {
-    const n = args.paths.length;
-    return n ? `${n} file${n === 1 ? "" : "s"}` : null;
+  if (name === "browser_click") {
+    const selector = asStr(args.selector);
+    return selector ? `element "${clip(selector, 40)}"` : null;
+  }
+  if (name === "browser_fill" || name === "browser_screenshot") {
+    const selector = asStr(args.selector);
+    return selector ? `"${clip(selector, 40)}"` : null;
+  }
+  if (name === "browser_scroll") {
+    const selector = asStr(args.selector);
+    const direction = asStr(args.direction);
+    return selector ? `to "${clip(selector, 36)}"` : direction;
+  }
+  if (name === "browser_get_console_logs") {
+    const level = asStr(args.level);
+    return level ? `(${level})` : null;
   }
   return null;
+}
+
+const STREAMED_STRING_KEYS = [
+  "path",
+  "file_path",
+  "filePath",
+  "target",
+  "source",
+  "old_path",
+  "new_path",
+  "pattern",
+  "query",
+  "url",
+  "command",
+  "selector",
+  "direction",
+  "level",
+  "action",
+  "processId",
+  "requestId",
+  "pid",
+] as const;
+
+const STREAMED_PATH_KEYS = new Set([
+  "path",
+  "file_path",
+  "filePath",
+  "target",
+  "source",
+  "old_path",
+  "new_path",
+]);
+
+function partialPathIsReady(name: string, value: string): boolean {
+  return (
+    (FILE_ICON_TOOLS.has(name) || AMBIGUOUS_PATH_TOOLS.has(name)) &&
+    looksLikeFile(basename(value))
+  );
+}
+
+function firstUsableString(
+  name: string,
+  key: string,
+  values: StreamedToolStringArgument[] | undefined,
+): string | null {
+  const complete = values?.find((value) => value.complete)?.value;
+  if (complete) return complete;
+  const partial = values?.[0]?.value;
+  return partial && STREAMED_PATH_KEYS.has(key) && partialPathIsReady(name, partial)
+    ? partial
+    : null;
+}
+
+function activityArgs(
+  name: string,
+  argsJson: string,
+): { args: Record<string, unknown>; streamedPaths: string[] } {
+  const streamed = streamedToolStringArguments(argsJson, STREAMED_STRING_KEYS);
+  const streamedPaths = (streamed.path ?? [])
+    .filter((value) => value.complete || partialPathIsReady(name, value.value))
+    .map((value) => value.value);
+
+  try {
+    const parsed: unknown = JSON.parse(argsJson || "{}");
+    return {
+      args:
+        parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {},
+      streamedPaths,
+    };
+  } catch {
+    const args: Record<string, unknown> = {};
+    for (const key of STREAMED_STRING_KEYS) {
+      const value = firstUsableString(name, key, streamed[key]);
+      if (value) args[key] = value;
+    }
+    const paths = completedToolStringArrayArgument(argsJson, "paths");
+    if (paths.length > 0) args.paths = paths;
+    const targetPaths = completedToolStringArrayArgument(argsJson, "target_paths");
+    if (targetPaths.length > 0) args.target_paths = targetPaths;
+    return { args, streamedPaths };
+  }
 }
 
 /**
@@ -156,29 +314,51 @@ function labelArg(name: string, args: Record<string, unknown>): string | null {
  * verb-only label while arguments are still incomplete.
  */
 export function describeToolActivity(name: string, argsJson: string): AgentActivity {
-  let args: Record<string, unknown> = {};
-  try {
-    args = JSON.parse(argsJson || "{}") as Record<string, unknown>;
-  } catch {
-    args = {}; // partial mid-stream JSON — verb only, no icon yet
-  }
+  const { args, streamedPaths } = activityArgs(name, argsJson);
 
   // workspace_tree names a folder (or the root) — handle it explicitly so the
   // narrator reads "Inspecting src" with a folder icon, not "Scanning …".
   if (name === "workspace_tree") {
-    const target = targetOf("folder_create", args); // reuse folder detection
+    const target = targetsOf("folder_create", args, streamedPaths)[0];
     return target
-      ? { label: `Inspecting ${target.name}`, verb: "Inspecting", ...target }
+      ? {
+          label: `Inspecting ${target.name}`,
+          verb: "Inspecting",
+          ...target,
+          targets: [target],
+        }
       : { label: "Inspecting the workspace" };
+  }
+
+  const webUrl = asStr(args.url);
+  if (name === "auroro_websearch" && webUrl && !asStr(args.query)) {
+    return { label: `Fetching ${clip(webUrl, 44)}` };
+  }
+
+  if (name === "browser_screenshot" && !asStr(args.selector)) {
+    return { label: "Capturing the page" };
+  }
+
+  if (name === "browser_scroll" && !asStr(args.selector) && !asStr(args.direction)) {
+    return { label: "Scrolling the page" };
   }
 
   const verb = TOOL_GERUND[name];
 
   // Named file/folder target → the header shows its icon inline.
-  const target = targetOf(name, args);
+  const targets = targetsOf(name, args, streamedPaths);
+  const target = targets[0];
   if (target) {
     const v = verb ?? getProfessionalToolName(name);
-    return { label: `${v} ${target.name}`, verb: v, ...target };
+    const displayName =
+      targets.length === 1 ? target.name : `${target.name} +${targets.length - 1}`;
+    return {
+      label: `${v} ${displayName}`,
+      verb: v,
+      ...target,
+      name: displayName,
+      targets,
+    };
   }
 
   // Everything else (grep, shell, web, still-partial args) → text only.

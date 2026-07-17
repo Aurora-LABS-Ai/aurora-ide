@@ -25,8 +25,8 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-pub use engine::{Ghost, GhostKind};
 use engine::Engine;
+pub use engine::{Ghost, GhostKind};
 
 const FREQ_FILE: &str = "frequency_dictionary_en.txt";
 const BIGRAM_FILE: &str = "frequency_bigramdictionary_en.txt";

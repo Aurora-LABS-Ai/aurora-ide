@@ -36,6 +36,15 @@ export type AgentIconName =
   | "file-edit"
   | "file-move"
   | "file-delete"
+  | "workspace-tree"
+  | "process-stop"
+  | "process-list"
+  | "diagnostics"
+  | "task-list"
+  | "browser-click"
+  | "browser-fill"
+  | "browser-scroll"
+  | "browser-screenshot"
   | "layers"
   | "send"
   | "mic"
@@ -195,10 +204,12 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   // file_read — a document showing text lines (reading existing content).
   "file-read": (
     <>
-      <path d="M8 3.5h5.5L18 8v10.5A1.5 1.5 0 0 1 16.5 20h-9A1.5 1.5 0 0 1 6 18.5v-13A1.5 1.5 0 0 1 7.5 4z" />
-      <path d="M13.5 3.5V8H18" />
-      <path d="M8.8 12.3h6.4" />
-      <path d="M8.8 15.3h6.4" />
+      <path d="M6 3.5h6.5L16 7v4.3" />
+      <path d="M12.5 3.5V7H16" />
+      <path d="M6 3.5v17h6" />
+      <path d="M8.8 11h3.3" />
+      <circle cx="16.2" cy="16.2" r="3.4" />
+      <path d="m18.7 18.7 2.3 2.3" />
     </>
   ),
 
@@ -239,6 +250,97 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <path d="M13.5 3.5V8H18" />
       <path d="M10 12.4l4 4" />
       <path d="M14 12.4l-4 4" />
+    </>
+  ),
+
+  "workspace-tree": (
+    <>
+      <circle cx="6.5" cy="6" r="2" />
+      <path d="M6.5 8v10h3.5" />
+      <path d="M6.5 12h3.5" />
+      <circle cx="13" cy="12" r="1.6" />
+      <circle cx="13" cy="18" r="1.6" />
+      <circle cx="18.5" cy="6.5" r="0.9" fill="currentColor" stroke="none" opacity="0.4" />
+    </>
+  ),
+
+  "process-stop": (
+    <>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.2" />
+      <path d="M7.5 9.5l3 2.5-3 2.5" />
+      <path d="M14.5 10.5l4 4" />
+      <path d="M18.5 10.5l-4 4" />
+    </>
+  ),
+
+  "process-list": (
+    <>
+      <circle cx="5" cy="6.5" r="1" fill="currentColor" stroke="none" opacity="0.7" />
+      <path d="M9 6.5h11" />
+      <circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" opacity="0.5" />
+      <path d="M9 12h11" />
+      <circle cx="5" cy="17.5" r="1" fill="currentColor" stroke="none" opacity="0.3" />
+      <path d="M9 17.5h7" />
+    </>
+  ),
+
+  diagnostics: (
+    <>
+      <path d="M8 3.5h5.5L18 8v10.5A1.5 1.5 0 0 1 16.5 20h-9A1.5 1.5 0 0 1 6 18.5v-13A1.5 1.5 0 0 1 7.5 4z" />
+      <path d="M13.5 3.5V8H18" />
+      <path d="M9 12h6" />
+      <path d="M9 15h3" />
+      <path d="M14.2 17l1.4 1.4 3-3" />
+    </>
+  ),
+
+  "task-list": (
+    <>
+      <rect x="4" y="5" width="3" height="3" rx="0.7" />
+      <path d="M10 6.5h10" />
+      <rect x="4" y="10.5" width="3" height="3" rx="0.7" />
+      <path d="M10 12h10" />
+      <rect x="4" y="16" width="3" height="3" rx="0.7" />
+      <path d="M10 17.5h7" />
+    </>
+  ),
+
+  "browser-click": (
+    <>
+      <path d="M9.5 9.5l10 3.5-4.5 2-2 4.5z" />
+      <path d="M14.8 14.8l3.7 3.7" />
+      <path d="M9 5.5v-2" />
+      <path d="M5.5 9h-2" />
+      <path d="M6 6 4.5 4.5" />
+    </>
+  ),
+
+  "browser-fill": (
+    <>
+      <rect x="3.5" y="7.5" width="17" height="10" rx="2" />
+      <circle cx="7.5" cy="11" r="0.8" fill="currentColor" stroke="none" opacity="0.7" />
+      <circle cx="11" cy="11" r="0.8" fill="currentColor" stroke="none" opacity="0.7" />
+      <circle cx="14.5" cy="11" r="0.8" fill="currentColor" stroke="none" opacity="0.7" />
+      <circle cx="17.5" cy="11" r="0.8" fill="currentColor" stroke="none" opacity="0.4" />
+      <path d="M8 14.5h8" />
+    </>
+  ),
+
+  "browser-scroll": (
+    <>
+      <path d="M12 4v16" opacity="0.5" />
+      <path d="m8.5 7.5 3.5-3.5 3.5 3.5" />
+      <path d="m8.5 16.5 3.5 3.5 3.5-3.5" />
+      <circle cx="18.5" cy="12" r="0.9" fill="currentColor" stroke="none" opacity="0.4" />
+    </>
+  ),
+
+  "browser-screenshot": (
+    <>
+      <path d="M3.5 8.5H7l2-3h6l2 3h3.5v10H3.5z" />
+      <circle cx="12" cy="13" r="3.2" />
+      <circle cx="12" cy="13" r="0.9" fill="currentColor" stroke="none" opacity="0.7" />
+      <circle cx="18.2" cy="10.6" r="0.7" fill="currentColor" stroke="none" opacity="0.4" />
     </>
   ),
 

@@ -80,12 +80,9 @@ impl ToolExecutor for FileReadTool {
             return super::multi_file_read::read_many(input, ctx).await;
         }
 
-        let path = input
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                ToolError::InvalidInput("provide `path` (single) or `paths` (array)".into())
-            })?;
+        let path = input.get("path").and_then(Value::as_str).ok_or_else(|| {
+            ToolError::InvalidInput("provide `path` (single) or `paths` (array)".into())
+        })?;
 
         let resolved = match resolve_path_for_read(
             path,

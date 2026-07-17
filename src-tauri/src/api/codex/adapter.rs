@@ -16,9 +16,7 @@ use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYP
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent_runtime::api_client::{
-    ApiError, ApiRequest, StreamingApiClient, TurnUsage,
-};
+use crate::agent_runtime::api_client::{ApiError, ApiRequest, StreamingApiClient, TurnUsage};
 use crate::agent_runtime::events::AssistantEvent;
 
 use super::auth::{self, CodexAccess};
@@ -76,7 +74,10 @@ fn build_codex_headers(access: &CodexAccess, session_id: &str) -> Result<HeaderM
 }
 
 /// Build the request body: standard Responses shape minus the output cap.
-fn build_codex_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapshot) -> serde_json::Value {
+fn build_codex_body(
+    request: &ApiRequest<'_>,
+    config: &ProviderConfigSnapshot,
+) -> serde_json::Value {
     let mut body = build_responses_body(request, config);
     if let Some(obj) = body.as_object_mut() {
         obj.remove("max_output_tokens");
@@ -124,9 +125,7 @@ impl StreamingApiClient for CodexAdapter {
 
             if response.status().as_u16() == 401 && !refreshed_once {
                 refreshed_once = true;
-                access = auth::fresh_access(true)
-                    .await
-                    .map_err(ApiError::Provider)?;
+                access = auth::fresh_access(true).await.map_err(ApiError::Provider)?;
                 continue;
             }
             break response;

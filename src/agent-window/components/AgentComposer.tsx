@@ -63,6 +63,7 @@ interface AgentComposerProps {
   value?: string;
   onValueChange?: (value: string) => void;
   onSubmit?: (text: string, fileChips?: AttachedPromptChip[]) => void;
+  onActionCommand?: (actionId: "compact") => void;
   sending?: boolean;
   onStop?: () => void;
   connectedTop?: boolean;
@@ -73,10 +74,11 @@ const MENTION_RE = /(^|[\s(])@([^\s@]{0,48})$/;
 const SLASH_RE = /(^|\s)\/([\w-]{0,48})$/;
 
 /** Lucide-ish glyph per command kind (skills / rules / MCP). */
-const COMMAND_ICON: Record<PromptCommandKind, "book" | "shield" | "plug"> = {
+const COMMAND_ICON: Record<PromptCommandKind, "book" | "shield" | "plug" | "sparkle"> = {
   skill: "book",
   rule: "shield",
   mcp: "plug",
+  action: "sparkle",
 };
 
 /** Raw SVG paths for each command kind — for the INLINE pill, which is built
@@ -89,6 +91,8 @@ const COMMAND_ICON_PATHS: Record<PromptCommandKind, string> = {
     '<path d="M12 3 19 5.7v5.5c0 4.55-3 7.6-7 8.9-4-1.3-7-4.35-7-8.9V5.7z"/><path d="M9.1 11.9l2.1 2.1 3.7-3.9"/>',
   mcp:
     '<path d="M9 2.75v3.75M15 2.75v3.75"/><path d="M6.75 6.5h10.5v3.25a5.25 5.25 0 0 1-10.5 0z"/><path d="M12 15v6.25"/>',
+  action:
+    '<path d="m12 3 1.55 4.7L18.5 9.25l-4.95 1.55L12 15.5l-1.55-4.7L5.5 9.25l4.95-1.55z"/><path d="m19 14 .7 2.1 2.1.7-2.1.7L19 19.6l-.7-2.1-2.1-.7 2.1-.7z"/><path d="m5 15 .55 1.65 1.65.55-1.65.55L5 19.4l-.55-1.65-1.65-.55 1.65-.55z"/>',
 };
 function commandIconSvg(kind: PromptCommandKind): string {
   return `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${COMMAND_ICON_PATHS[kind]}</svg>`;
@@ -138,6 +142,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   value,
   onValueChange,
   onSubmit,
+  onActionCommand,
   sending = false,
   onStop,
   connectedTop = false,
@@ -225,10 +230,13 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   const addCommand = useAgentCommandStore((s) => s.add);
   const removeCommand = useAgentCommandStore((s) => s.remove);
 
-  const commandResults = useMemo(
-    () => (slash ? rankCommands(commandIndex, slash.query, 8) : []),
-    [slash, commandIndex],
-  );
+  const commandResults = useMemo(() => {
+    if (!slash) return [];
+    const available = onActionCommand
+      ? commandIndex
+      : commandIndex.filter((command) => command.kind !== "action");
+    return rankCommands(available, slash.query, 8);
+  }, [slash, commandIndex, onActionCommand]);
 
   const syncEmpty = () => {
     const el = editorRef.current;
@@ -389,11 +397,33 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
 
   // Pick a `/` directive (skill / rule / MCP): drop an INLINE pill right where you
   // typed `/`, exactly like an `@`-mention — so it's part of the text you can type
-  // around. The command is also staged in the store (deduped) for the send
-  // pipeline to thread into the turn; the pill serializes to nothing, so it never
-  // duplicates into the message text. Deleting the pill removes it from the store
-  // (reconciled in handleInput).
+  // around. Built-in action commands execute immediately instead of staging a
+  // directive pill or sending a chat message.
   const pickCommand = (c: PromptCommand) => {
+    if (c.kind === "action") {
+      if (c.actionId) onActionCommand?.(c.actionId);
+      const el = editorRef.current;
+      const s = window.getSelection();
+      if (el && s && s.rangeCount > 0) {
+        const node = s.anchorNode;
+        if (node && node.nodeType === Node.TEXT_NODE && el.contains(node)) {
+          const offset = s.anchorOffset;
+          const before = (node.textContent ?? "").slice(0, offset);
+          const m = before.match(SLASH_RE);
+          if (m) {
+            const range = document.createRange();
+            range.setStart(node, offset - (m[2].length + 1));
+            range.setEnd(node, offset);
+            range.deleteContents();
+          }
+        }
+      }
+      setSlash(null);
+      handleInput();
+      editorRef.current?.focus();
+      return;
+    }
+
     const el = editorRef.current;
     const s = window.getSelection();
     if (!el || !s || s.rangeCount === 0) return;

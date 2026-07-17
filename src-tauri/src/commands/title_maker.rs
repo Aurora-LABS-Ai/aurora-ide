@@ -60,11 +60,7 @@ pub async fn generate_thread_title(
 
     let client = reqwest::Client::new();
     let mut req = client.post(&url).json(&body);
-    if let Some(key) = api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|k| !k.is_empty())
-    {
+    if let Some(key) = api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
         req = req.bearer_auth(key);
     }
 
@@ -85,9 +81,7 @@ pub async fn generate_thread_title(
         .json()
         .await
         .map_err(|e| format!("title parse failed: {e}"))?;
-    let content = v["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or("");
+    let content = v["choices"][0]["message"]["content"].as_str().unwrap_or("");
     let title = clean_title(content);
     if title.is_empty() {
         return Err("title provider returned an empty title".to_string());
@@ -130,7 +124,11 @@ fn clean_title(raw: &str) -> String {
         .trim_end_matches(|c: char| c == '.' || c == '!' || c == '?' || c == ':')
         .trim();
 
-    let mut out: String = trimmed.split_whitespace().take(10).collect::<Vec<_>>().join(" ");
+    let mut out: String = trimmed
+        .split_whitespace()
+        .take(10)
+        .collect::<Vec<_>>()
+        .join(" ");
     if out.chars().count() > 70 {
         out = out.chars().take(70).collect::<String>().trim().to_string();
     }
@@ -151,7 +149,10 @@ mod tests {
 
     #[test]
     fn keeps_text_after_unclosed_reasoning() {
-        assert_eq!(clean_title("reasoning…</think>Add dark mode"), "Add dark mode");
+        assert_eq!(
+            clean_title("reasoning…</think>Add dark mode"),
+            "Add dark mode"
+        );
     }
 
     #[test]
@@ -161,6 +162,9 @@ mod tests {
 
     #[test]
     fn takes_first_line() {
-        assert_eq!(clean_title("Refactor auth module\nextra chatter"), "Refactor auth module");
+        assert_eq!(
+            clean_title("Refactor auth module\nextra chatter"),
+            "Refactor auth module"
+        );
     }
 }

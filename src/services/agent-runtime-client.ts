@@ -320,6 +320,7 @@ export const AGENT_TOOL_PENDING_CHANNEL = "agent_tool_pending";
 export const AGENT_PERMISSION_REQUEST_CHANNEL = "agent_permission_request";
 
 export const AGENT_CHAT_COMMAND = "agent_chat_v2";
+export const AGENT_COMPACT_THREAD_COMMAND = "agent_compact_thread";
 export const AGENT_CANCEL_COMMAND = "agent_cancel";
 export const AGENT_POST_TOOL_RESULT_COMMAND = "agent_post_tool_result";
 export const AGENT_GRANT_PERMISSION_COMMAND = "agent_grant_permission";
@@ -507,6 +508,60 @@ export class AgentRuntimeClient {
    * `agent_chat_v2` carries the same condition — we await it but
    * treat the events as authoritative.
    */
+  public async compactThread(input: Omit<AgentRuntimeChatInput, "userMessage">): Promise<{ beforeTokens: number; afterTokens: number } | null> {
+    if (this.currentTurnId) {
+      throw new Error("AgentRuntimeClient is already running a turn");
+    }
+
+    const turnId = generateTurnId();
+    this.currentTurnId = turnId;
+    const { callbacks, providerConfig, threadId, config } = this.options;
+    const request = AgentRuntimeClient.buildRequest({
+      turnId,
+      threadId,
+      input: { ...input, userMessage: "" },
+      providerConfig,
+      config,
+    });
+
+    callbacks.onStart?.();
+    let unsubscribe: (() => void) | null = null;
+    try {
+      unsubscribe = await auroraListen<AgentEventEnvelope>(
+        AGENT_EVENT_CHANNEL,
+        ({ payload }) => {
+          if (extractTurnId(payload) !== turnId) return;
+          this.dispatchAssistantEvent(payload.event);
+        },
+      );
+      const result = await auroraInvoke<null | [number, number] | { beforeTokens?: number; afterTokens?: number }>(
+        AGENT_COMPACT_THREAD_COMMAND,
+        { request },
+      );
+      if (Array.isArray(result)) {
+        return { beforeTokens: Number(result[0] ?? 0), afterTokens: Number(result[1] ?? 0) };
+      }
+      if (result && typeof result === "object") {
+        return {
+          beforeTokens: Number(result.beforeTokens ?? 0),
+          afterTokens: Number(result.afterTokens ?? 0),
+        };
+      }
+      return null;
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      callbacks.onTurnError?.({
+        turnId,
+        error: err.message,
+      });
+      callbacks.onError?.(err);
+      throw err;
+    } finally {
+      unsubscribe?.();
+      this.currentTurnId = null;
+    }
+  }
+
   public async chat(input: AgentRuntimeChatInput): Promise<AgentRuntimeChatResult> {
     if (this.currentTurnId) {
       throw new Error("AgentRuntimeClient is already running a turn");

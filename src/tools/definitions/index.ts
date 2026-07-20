@@ -16,6 +16,7 @@
  * - MCP: Tools are dynamically loaded from connected servers
  */
 import type { ToolDefinition } from "../types";
+import { artifactTools } from "./artifact-tools";
 import { editorTools } from "./editor-tools";
 import { fileTools } from "./file-tools";
 import { getEnhancedToolRiskLevel } from "./risk-levels-enhanced";
@@ -55,8 +56,11 @@ export * from './question-tools';
 
 export * from './todo-tools';
 
+export * from './artifact-tools';
+
 // All available tools (MCP tools are added dynamically from connected servers)
 export const allTools: ToolDefinition[] = [
+  ...artifactTools,
   ...fileTools,
   ...workspaceTools,
   ...shellTools,
@@ -70,6 +74,11 @@ export const allTools: ToolDefinition[] = [
 
 // Tool categories for UI organization
 export const toolCategories = {
+  artifact: {
+    name: 'Artifact Canvas',
+    description: 'Tools for presenting persistent visual and interactive artifacts.',
+    tools: artifactTools,
+  },
   file: {
     name: 'File Operations',
     description: 'Tools for reading, writing, and managing files',

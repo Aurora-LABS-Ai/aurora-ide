@@ -10,10 +10,35 @@
 import React, { useMemo } from "react";
 
 import { AgentIcon } from "../../shared/AgentIcon";
+import { hasAnsi, parseAnsi, type AnsiSpan } from "./ansi";
 import type { ShellOutputData } from "./tool-result";
 
 const MAX_CHARS = 60_000;
 const MAX_LINES = 600;
+
+/** Styled segment of terminal output — plain text stays plain (no span). */
+const AnsiText: React.FC<{ spans: AnsiSpan[] }> = ({ spans }) => (
+  <>
+    {spans.map((span, index) =>
+      span.color || span.bold || span.dim || span.italic || span.underline ? (
+        <span
+          key={index}
+          style={{
+            color: span.color,
+            fontWeight: span.bold ? 600 : undefined,
+            opacity: span.dim ? 0.65 : undefined,
+            fontStyle: span.italic ? "italic" : undefined,
+            textDecoration: span.underline ? "underline" : undefined,
+          }}
+        >
+          {span.text}
+        </span>
+      ) : (
+        span.text
+      ),
+    )}
+  </>
+);
 
 export const ShellOutputView: React.FC<{ data: ShellOutputData }> = ({ data }) => {
   const { text, trimmedLines } = useMemo(() => {
@@ -27,6 +52,10 @@ export const ShellOutputView: React.FC<{ data: ShellOutputData }> = ({ data }) =
     }
     return { text: working, trimmedLines };
   }, [data.output]);
+
+  // Colorized output (linters, test runners, git) renders through the ANSI
+  // parser; ANSI-free output takes the zero-cost plain path.
+  const ansiSpans = useMemo(() => (hasAnsi(text) ? parseAnsi(text) : null), [text]);
 
   return (
     <div className="agw-rv">
@@ -56,7 +85,9 @@ export const ShellOutputView: React.FC<{ data: ShellOutputData }> = ({ data }) =
 
       {text ? (
         <div className="agw-rv-body agw-scroll">
-          <pre className="agw-shell-out">{text}</pre>
+          <pre className="agw-shell-out">
+            {ansiSpans ? <AnsiText spans={ansiSpans} /> : text}
+          </pre>
         </div>
       ) : null}
     </div>

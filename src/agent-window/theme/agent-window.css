@@ -241,6 +241,9 @@
 .agw-shell-handle:hover {
   background: var(--agw-accent);
 }
+.agw-shell-flex[data-agw-dragging="true"] .agw-shell-handle {
+  background: var(--agw-accent);
+}
 
 /* Shared primitives used by the skeleton zones. */
 .agw-icon-btn {
@@ -342,6 +345,8 @@
  * (header · search · grouped rich rows · footer). All `--agw-*`. */
 .agw-model-trigger {
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
   /* Borderless on the composer — relies on the hover fill. */
   border: none;
 }
@@ -409,8 +414,29 @@
 }
 
 .agw-model-trigger-name {
+  min-width: 0;
+  overflow: hidden;
   font-weight: 600;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agw-model-selector {
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+}
+
+.agw-composer-actions-row,
+.agw-composer-actions {
+  min-width: 0;
+}
+.agw-composer-actions {
+  max-width: calc(100% - 34px);
+  justify-content: flex-end;
+}
+.agw-composer-actions .agw-icon-btn {
+  flex-shrink: 0;
 }
 @keyframes agw-model-name-shimmer {
   from {
@@ -899,6 +925,48 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* Inline rename — the row's label swaps to this input (F2 / double-click /
+ * context menu). Sized to the label so the row doesn't jump. */
+.agw-rail-rename {
+  width: 100%;
+  min-width: 0;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid var(--agw-accent);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-canvas);
+  color: var(--agw-text);
+  font: inherit;
+  font-size: inherit;
+  outline: none;
+}
+/* Rail context menu — full member of the composer popover family: same glass
+ * chrome as .agw-menu, same composer-surface tint as the model selector (see
+ * the family rule), with the model-menu's row anatomy so the whole set of
+ * popovers reads as ONE system. */
+.agw-rail-menu {
+  padding: 6px;
+}
+.agw-rail-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  font-size: var(--agw-fs-body);
+  text-align: left;
+  white-space: nowrap;
+}
+.agw-rail-menu-item svg {
+  flex-shrink: 0;
+  color: var(--agw-text-subtle);
+}
+.agw-rail-menu-item[data-danger],
+.agw-rail-menu-item[data-danger]:hover,
+.agw-rail-menu-item[data-danger] svg {
+  color: var(--agw-removed);
 }
 /* Pinned rows carry a project subtitle and stand a little taller. */
 .agw-rail-item-sub {
@@ -2240,6 +2308,96 @@
   box-shadow: inset 0 0 0 2px var(--agw-ring);
 }
 
+.agw-canvas-launch {
+  display: grid;
+  grid-template-columns: 16px 18px minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: 9px;
+  width: min(100%, 520px);
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--agw-accent) 24%, var(--agw-border));
+  border-radius: var(--agw-radius-md);
+  outline: none;
+  background: var(--agw-surface);
+  color: var(--agw-text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+.agw-canvas-launch:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--agw-accent) 58%, var(--agw-border));
+  background: var(--agw-hover);
+}
+.agw-canvas-launch:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+.agw-canvas-launch:disabled {
+  cursor: default;
+}
+.agw-canvas-launch-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--agw-added);
+}
+.agw-canvas-launch[data-status="failed"] .agw-canvas-launch-status,
+.agw-canvas-launch[data-status="failed"] .agw-canvas-launch-kicker {
+  color: var(--agw-removed);
+}
+.agw-canvas-launch-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--agw-accent);
+}
+.agw-canvas-launch-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.agw-canvas-launch-kicker {
+  color: var(--agw-accent);
+  font-size: var(--agw-fs-label);
+  font-weight: 650;
+  line-height: 1.1;
+}
+.agw-canvas-launch-title {
+  overflow: hidden;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-md);
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-canvas-launch-version {
+  padding: 2px 6px;
+  border: 1px solid var(--agw-border);
+  border-radius: 999px;
+  background: var(--agw-chip-surface);
+  color: var(--agw-text-muted);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  font-weight: 600;
+}
+.agw-canvas-launch-open {
+  color: var(--agw-text-subtle);
+}
+
+@media (max-width: 520px) {
+  .agw-canvas-launch {
+    grid-template-columns: 16px 18px minmax(0, 1fr) auto;
+    gap: 7px;
+  }
+  .agw-canvas-launch-open {
+    display: none;
+  }
+}
+
 /* Status sign (running spinner / done check / failed ✕) — just the colored
  * glyph, NO disc/wrapper behind it. The box only centers the icon. */
 .agw-tool-dot {
@@ -2275,10 +2433,26 @@
 .agw-tool-targets {
   display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex: 0 1 65%;
+  flex-wrap: nowrap;
   gap: 5px;
   min-width: 0;
   max-width: 65%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+  touch-action: pan-y;
+  cursor: inherit;
+}
+.agw-tool-targets[data-multi="true"] {
+  cursor: grab;
+}
+.agw-tool-targets::-webkit-scrollbar {
+  display: none;
+}
+.agw-tool-targets[data-dragging="true"] {
+  cursor: grabbing;
 }
 .agw-tool-chip {
   display: inline-flex;
@@ -2292,7 +2466,7 @@
   background: var(--agw-chip-surface);
   color: var(--agw-chip-text);
   font-size: var(--agw-fs-label);
-  flex-shrink: 1;
+  flex: 0 0 auto;
 }
 .agw-tool-chip svg {
   flex-shrink: 0;
@@ -2327,7 +2501,7 @@
   background: color-mix(in srgb, var(--agw-added, var(--agw-accent)) 16%, transparent);
   color: var(--agw-added, var(--agw-accent));
 }
-/* Clickable chip variant — opens the file in the Review panel. */
+/* Selectable chip variant — switches the active file in the expanded result. */
 .agw-tool-chip-btn {
   cursor: pointer;
   transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
@@ -2340,6 +2514,70 @@
 .agw-tool-chip-btn:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* Per-file diff counts inside a chip (multi-file edits): −removed +added. */
+.agw-chip-stat {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro, 10px);
+}
+.agw-chip-stat-del {
+  color: var(--agw-removed);
+}
+.agw-chip-stat-add {
+  color: var(--agw-added);
+}
+/* "+N" chip closing an overflowing file strip. */
+.agw-tool-chip-more {
+  font-family: var(--agw-font-code);
+  color: var(--agw-text-muted);
+  flex: 0 0 auto;
+}
+/* Portaled list of every file in an overflowing result. */
+.agw-chip-overflow {
+  padding: 4px;
+}
+.agw-chip-overflow-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: none;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.agw-chip-overflow-item:hover {
+  background: var(--agw-surface);
+}
+.agw-chip-overflow-item[data-active] {
+  background: color-mix(in srgb, var(--agw-accent) 12%, transparent);
+}
+.agw-chip-overflow-item:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+.agw-chip-overflow-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Quiet elapsed-time label on a settled tool row. */
+.agw-tool-time {
+  font-size: var(--agw-fs-label);
+  font-family: var(--agw-font-code);
+  color: var(--agw-text-subtle);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* Status / summary text (e.g. "+12  -3", "In Progress", error reason). */
@@ -2431,45 +2669,14 @@
   color: var(--agw-text);
 }
 
-/* Multi-file edit result — one labelled diff block per file the single
- * file_edit call touched. Each file gets a small sticky-ish header so the
- * stacked diffs stay legible. */
-.agw-multi-diff {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  /* A single call that edits many files stacks one diff per file — bound it to a
-   * lock area that scrolls instead of ballooning the card. */
-  max-height: 400px;
-  overflow-y: auto;
-  padding-bottom: 14px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--agw-scroll-thumb) transparent;
-}
-.agw-multi-diff-file {
-  border: 1px solid var(--agw-border);
-  border-radius: var(--agw-radius-sm);
-  overflow: hidden;
-}
-.agw-multi-diff-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  font-size: var(--agw-fs-label);
-  font-weight: 600;
-  color: var(--agw-text-muted);
-  background: var(--agw-surface);
-  border-bottom: 1px solid var(--agw-border);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.agw-multi-diff-file .agw-diff {
-  border-radius: 0;
+.agw-tool-chip[data-selected="true"] {
+  border-color: color-mix(in srgb, var(--agw-accent) 62%, var(--agw-border));
+  background: color-mix(in srgb, var(--agw-accent) 12%, var(--agw-chip-surface));
+  color: var(--agw-text);
 }
 .agw-multi-read {
   padding: 8px;
+  min-width: 0;
 }
 .agw-multi-read .agw-tool-result {
   max-height: 240px;
@@ -2503,7 +2710,6 @@
  * that fits (a short command / small output) shows NO fade at all. On engines
  * without scroll-driven animations the rule simply no-ops (no fade, no break). */
 .agw-tool-group-body,
-.agw-multi-diff,
 .agw-rv-body,
 .agw-tool-result,
 .agw-diff,
@@ -2551,6 +2757,95 @@
   letter-spacing: 0.06em;
   color: var(--agw-text-muted);
   white-space: nowrap;
+}
+/* Filename variant — real file names must keep their exact casing
+ * (`layout.tsx`, never `LAYOUT.TSX`), in the code font. */
+.agw-rv-title-file {
+  font-size: var(--agw-fs-label);
+  font-family: var(--agw-font-code);
+  color: var(--agw-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+/* Reply-suggestion drum — one visible NAKED text option above the composer;
+ * wheel-over rotates the set like an iOS picker wheel: the centered row is
+ * active, neighbors straddle the drum's edges (clipped mid-row) and dissolve
+ * through the vertical mask — the slot-reel look. No pill chrome. */
+.agw-suggest-drum {
+  position: relative;
+  height: 64px;
+  max-width: 896px;
+  margin: 0 auto 4px;
+  perspective: 340px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black 34%,
+    black 66%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black 34%,
+    black 66%,
+    transparent 100%
+  );
+  animation: agw-pop-in 0.14s ease;
+}
+.agw-suggest-item {
+  position: absolute;
+  left: 8px;
+  right: 64px;
+  top: calc(50% - 12px);
+  height: 24px;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transform-origin: center;
+  backface-visibility: hidden;
+  transition: transform 0.18s ease, opacity 0.18s ease, color 0.12s ease;
+}
+.agw-suggest-item[data-active]:hover {
+  color: var(--agw-text);
+}
+.agw-suggest-item[data-active]:active {
+  color: var(--agw-accent);
+}
+.agw-suggest-item:focus-visible {
+  outline: none;
+  border-radius: var(--agw-radius-sm);
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* Quiet position marker — signals there's more to roll. */
+.agw-suggest-count {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  pointer-events: none;
+}
+
+/* Quiet footer note when a persisted diff/read was clamped by history
+ * compaction — replaces the old fake "−[truncated…]/+[truncated…]" diff rows. */
+.agw-rv-trunc-note {
+  padding: 5px 10px;
+  border-top: 1px solid var(--agw-border);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
 }
 .agw-rv-path {
   font-family: var(--agw-font-code);
@@ -3078,13 +3373,14 @@
   box-shadow: 0 0 0 2px var(--agw-ring);
 }
 
-/* Per-message hover actions (Copy / Retry). Hidden until the message row is
- * hovered so the transcript stays clean; revealed via the `.agw-msg` wrapper. */
+/* Per-message actions (Copy / Retry). Always present but DIMMED so they're
+ * discoverable at a glance; hovering the message (or focusing an action)
+ * brings them to full strength. */
 .agw-msg-actions {
   display: flex;
   align-items: center;
   gap: 2px;
-  opacity: 0;
+  opacity: 0.35;
   transition: opacity 0.12s ease;
 }
 .agw-msg-assistant {
@@ -3298,9 +3594,11 @@
 /* ── Thinking / reasoning block ─────────────────────────────────────
  * Mirrors the IDE chat's ThinkingBlock: a quiet toggle over a left-railed body. */
 .agw-think-toggle {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
+  min-width: 0;
   padding: 2px 4px 2px 0;
   border: none;
   background: transparent;
@@ -3308,8 +3606,33 @@
   outline: none;
 }
 .agw-think-label {
+  flex-shrink: 0;
   font-size: var(--agw-fs-ui);
   font-weight: 500;
+}
+.agw-timeline-rule {
+  height: 1px;
+  min-width: 18px;
+  flex: 1;
+  margin-left: 3px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--agw-border-strong) 72%, transparent),
+    color-mix(in srgb, var(--agw-border) 34%, transparent) 58%,
+    transparent
+  );
+  opacity: 0.64;
+  pointer-events: none;
+  transition: opacity 0.14s ease;
+}
+.agw-think-toggle:hover .agw-timeline-rule,
+.agw-tool-group-head:hover .agw-timeline-rule {
+  opacity: 0.94;
+}
+.agw-think-toggle:focus-visible,
+.agw-tool-group-head:focus-visible {
+  border-radius: var(--agw-radius-sm);
+  box-shadow: 0 0 0 2px var(--agw-ring);
 }
 .agw-think-pulse {
   animation: agw-pulse 1.6s ease-in-out infinite;
@@ -3340,9 +3663,11 @@
   width: 100%;
 }
 .agw-tool-group-head {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 7px;
+  width: 100%;
+  min-width: 0;
   padding: 3px 4px 3px 0;
   border: none;
   background: transparent;
@@ -4335,6 +4660,374 @@
 .agw-tabpill-close:hover {
   background: var(--agw-hover);
   color: var(--agw-text);
+}
+
+.agw-canvas {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--agw-dock);
+}
+
+.agw-canvas-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 7px;
+  flex-shrink: 0;
+  min-height: 52px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--agw-border);
+}
+
+.agw-canvas-field {
+  display: flex;
+  min-width: 110px;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  font-weight: 600;
+}
+
+.agw-canvas-field .agw-csel-trigger {
+  height: 28px;
+  padding: 0 8px;
+  background: var(--agw-surface-elevated);
+}
+
+.agw-canvas-mode button:focus-visible,
+.agw-canvas-refresh:focus-visible,
+.agw-canvas-retry:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+.agw-canvas-version {
+  max-width: 78px;
+  min-width: 70px;
+}
+
+.agw-canvas-mode {
+  display: inline-flex;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-surface);
+}
+
+.agw-canvas-mode button {
+  padding: 0 9px;
+  border: 0;
+  border-radius: calc(var(--agw-radius-sm) - 2px);
+  outline: none;
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.agw-canvas-mode button[data-active] {
+  background: var(--agw-surface-elevated);
+  color: var(--agw-text);
+}
+
+.agw-canvas-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  outline: none;
+  background: transparent;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+}
+
+.agw-canvas-refresh:hover,
+.agw-canvas-retry:hover {
+  background: var(--agw-hover);
+  color: var(--agw-text);
+}
+
+.agw-canvas-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 10px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--agw-border);
+  color: var(--agw-text-subtle);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+}
+
+.agw-canvas-error {
+  flex-shrink: 0;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--agw-border);
+  background: var(--agw-removed-surface);
+  color: var(--agw-removed);
+  font-size: var(--agw-fs-label);
+  line-height: 1.4;
+}
+
+.agw-canvas-meta span:first-child {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--agw-text);
+  font-family: var(--agw-font-ui);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agw-canvas-body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--agw-conversation);
+}
+
+.agw-diagram-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--agw-conversation);
+  background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--agw-text-subtle) 24%, transparent) 1px,
+    transparent 1px
+  );
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.agw-diagram-stage[data-dragging] {
+  cursor: grabbing;
+}
+
+.agw-diagram-artwork {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.agw-diagram-artwork svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.agw-diagram-state,
+.agw-diagram-error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: min(440px, calc(100% - 40px));
+  transform: translate(-50%, -50%);
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-ui);
+}
+
+.agw-diagram-error {
+  align-items: flex-start;
+  width: min(440px, calc(100% - 40px));
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--agw-removed) 44%, var(--agw-border));
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-surface-elevated);
+  color: var(--agw-removed);
+  box-shadow: var(--agw-shadow-pop);
+}
+
+.agw-diagram-error > div {
+  min-width: 0;
+}
+
+.agw-diagram-error strong {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+}
+
+.agw-diagram-error pre {
+  max-height: 160px;
+  margin: 0;
+  overflow: auto;
+  color: var(--agw-text-muted);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.agw-diagram-controls {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 3px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-popover-surface);
+  box-shadow: var(--agw-shadow-pop);
+}
+
+.agw-diagram-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: var(--agw-radius-sm);
+  outline: none;
+  background: transparent;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+}
+
+.agw-diagram-controls button:hover:not(:disabled) {
+  background: var(--agw-hover);
+  color: var(--agw-text);
+}
+
+.agw-diagram-controls button:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+
+.agw-diagram-controls button:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.agw-diagram-zoom {
+  width: 48px;
+  color: var(--agw-text-muted);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.agw-diagram-control-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--agw-border);
+}
+
+.agw-diagram-hint {
+  position: absolute;
+  right: 12px;
+  bottom: 14px;
+  z-index: 2;
+  padding: 4px 7px;
+  border-radius: var(--agw-radius-sm);
+  background: color-mix(in srgb, var(--agw-conversation) 86%, transparent);
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  pointer-events: none;
+}
+
+@media (max-width: 560px) {
+  .agw-diagram-hint {
+    display: none;
+  }
+}
+
+.agw-canvas-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: white;
+}
+
+.agw-canvas-markdown {
+  width: 100%;
+  overflow: auto;
+  padding: 22px 24px 48px;
+}
+
+.agw-canvas-body > .agw-tool-result {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  overflow: auto;
+  padding: 18px;
+}
+
+.agw-canvas-empty {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  padding: 28px;
+  color: var(--agw-text-subtle);
+  text-align: center;
+}
+
+.agw-canvas-empty strong {
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+}
+
+.agw-canvas-empty span {
+  max-width: 280px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+}
+
+.agw-canvas-retry {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  outline: none;
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.agw-canvas-spin {
+  animation: agw-spin 0.9s linear infinite;
 }
 
 /* The + dropdown (Files / Browser / Terminal). */
@@ -6573,6 +7266,7 @@
 /* Custom select (replaces native <select>) */
 .agw-csel {
   position: relative;
+  min-width: 0;
 }
 .agw-csel-trigger {
   display: inline-flex;
@@ -6592,8 +7286,15 @@
   outline: none;
   transition: border-color 0.12s ease;
 }
+.agw-csel-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .agw-csel-trigger:hover {
   border-color: var(--agw-border-strong);
+}
+.agw-csel-trigger[data-open] {
+  border-color: var(--agw-accent);
 }
 .agw-csel-trigger:active {
   border-color: var(--agw-border-strong);
@@ -6601,6 +7302,17 @@
 }
 .agw-csel-trigger:focus-visible {
   box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-csel-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-csel-popover {
+  overflow-y: auto;
+  padding: 5px;
+  scrollbar-gutter: stable;
 }
 .agw-csel-menu {
   position: absolute;
@@ -6645,6 +7357,20 @@
 }
 .agw-csel-item[data-active] {
   color: var(--agw-text);
+}
+.agw-csel-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-csel-meta {
+  flex-shrink: 0;
+  margin-left: 8px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
 }
 
 /* ── Composer reasoning picker ────────────────────────────────────────── */
@@ -6692,13 +7418,15 @@
  * .agw-mention, so this rule only re-tints the family. */
 .agw-model-menu,
 .agw-reason-menu,
-.agw-mention {
+.agw-mention,
+.agw-rail-menu {
   background: color-mix(in srgb, var(--agw-composer-surface) 76%, transparent);
 }
 @supports not (backdrop-filter: blur(1px)) {
   .agw-model-menu,
   .agw-reason-menu,
-  .agw-mention {
+  .agw-mention,
+  .agw-rail-menu {
     background: var(--agw-composer-surface);
   }
 }

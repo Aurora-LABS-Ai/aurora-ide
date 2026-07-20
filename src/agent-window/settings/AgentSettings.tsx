@@ -9,12 +9,13 @@
  *      the agent's system prompt for EVERY workspace (Cursor-style "global rule").
  *   2. Execution mode — Agent (full toolset) vs Plan (read-only).
  *   3. Context compaction — when/how long history is summarized.
- *   4. Chat title maker — optional AI titling of new chats.
  *
- * The Agent Team lives on its own dedicated "Team" settings tab.
+ * The Agent Team lives on its own dedicated "Team" settings tab. Chat titling
+ * is a window preference, not agent behavior — it lives on the Preferences page
+ * next to Prompt refine (they can share the same local model).
  */
 
-import React, { useState } from "react";
+import React from "react";
 
 import {
   useSettingsStore,
@@ -23,12 +24,10 @@ import {
   COMPACTION_SUMMARY_BUDGET_MIN,
   COMPACTION_SUMMARY_BUDGET_MAX,
 } from "../../store/useSettingsStore";
-import { AgentIcon } from "../shared/AgentIcon";
 import {
   AgwPill,
   AgwSegmented,
   AgwSwitch,
-  AgwTextInput,
   SettingsBlock,
   SettingsRow,
   SettingsSection,
@@ -58,13 +57,6 @@ export const AgentSettings: React.FC = () => {
   const setCompactionThresholdPct = useSettingsStore((s) => s.setCompactionThresholdPct);
   const compactionSummaryBudget = useSettingsStore((s) => s.compactionSummaryBudget);
   const setCompactionSummaryBudget = useSettingsStore((s) => s.setCompactionSummaryBudget);
-
-  const titleMakerEnabled = useSettingsStore((s) => s.titleMakerEnabled);
-  const titleMakerBaseUrl = useSettingsStore((s) => s.titleMakerBaseUrl);
-  const titleMakerApiKey = useSettingsStore((s) => s.titleMakerApiKey);
-  const titleMakerModel = useSettingsStore((s) => s.titleMakerModel);
-  const setTitleMaker = useSettingsStore((s) => s.setTitleMaker);
-  const [showTitleKey, setShowTitleKey] = useState(false);
 
   const mode: Mode = executionMode === "plan" ? "plan" : "agent";
   const remaining = GLOBAL_INSTRUCTIONS_MAX - globalInstructions.length;
@@ -175,80 +167,6 @@ export const AgentSettings: React.FC = () => {
         </SettingsRow>
       </SettingsSection>
 
-      {/* Chat title maker */}
-      <SettingsSection
-        icon="message"
-        title="Chat title maker"
-        description="Generate a short title for each new chat from your first message, using your own OpenAI-compatible endpoint. Off uses the title derived from your message. Only the first message of a new chat is titled; if the request fails, the derived title is kept."
-        badge={
-          <AgwPill tone={titleMakerEnabled ? "success" : "neutral"}>
-            {titleMakerEnabled ? "Enabled" : "Disabled"}
-          </AgwPill>
-        }
-      >
-        <SettingsRow
-          label="Enable title maker"
-          hint="When on, the first message of every new chat is sent to the endpoint below to name the chat."
-        >
-          <AgwSwitch
-            checked={titleMakerEnabled}
-            onChange={(v) => setTitleMaker({ enabled: v })}
-            ariaLabel="Toggle chat title maker"
-          />
-        </SettingsRow>
-
-        <SettingsRow
-          label="Base URL"
-          hint="OpenAI-compatible endpoint root, e.g. https://api.openai.com/v1 or your local server."
-        >
-          <AgwTextInput
-            value={titleMakerBaseUrl}
-            placeholder="https://api.example.com/v1"
-            disabled={!titleMakerEnabled}
-            onChange={(e) => setTitleMaker({ baseUrl: e.target.value })}
-            style={{ width: 280 }}
-          />
-        </SettingsRow>
-
-        <SettingsRow
-          label="Model ID"
-          hint="The model to title with — exactly as the endpoint expects it (e.g. gpt-4o-mini)."
-        >
-          <AgwTextInput
-            value={titleMakerModel}
-            placeholder="gpt-4o-mini"
-            disabled={!titleMakerEnabled}
-            onChange={(e) => setTitleMaker({ model: e.target.value })}
-            style={{ width: 280 }}
-          />
-        </SettingsRow>
-
-        <SettingsRow
-          last
-          label="API key"
-          hint="Optional — leave blank for a local server that needs no key. Stored locally with your settings."
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <AgwTextInput
-              type={showTitleKey ? "text" : "password"}
-              value={titleMakerApiKey}
-              placeholder="sk-…"
-              disabled={!titleMakerEnabled}
-              onChange={(e) => setTitleMaker({ apiKey: e.target.value })}
-              style={{ width: 244 }}
-            />
-            <button
-              type="button"
-              className="agw-prov-icon-btn"
-              title={showTitleKey ? "Hide" : "Show"}
-              aria-label={showTitleKey ? "Hide API key" : "Show API key"}
-              onClick={() => setShowTitleKey((v) => !v)}
-            >
-              <AgentIcon name={showTitleKey ? "inspect" : "browser"} size={14} />
-            </button>
-          </div>
-        </SettingsRow>
-      </SettingsSection>
     </div>
   );
 };

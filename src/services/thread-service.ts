@@ -118,6 +118,8 @@ export interface DbMessage {
     name: string;
     arguments: string;
     result?: string | null;
+    /** Live-only wall-clock execution time; never persisted by Rust. */
+    durationMs?: number;
   }> | null;
   thinking?: string | null;
   isThinking?: boolean | null;

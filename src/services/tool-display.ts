@@ -28,6 +28,8 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   todo_write: "Update Task List",
   workspace_tree: "Inspect Workspace",
   ask_question: "Ask the User",
+  present_artifact: "Present on Canvas",
+  read_artifact: "Read Canvas Source",
   // Browser tools — keep the names short and verb-led so the chat
   // card reads like a human action ("Click Element" instead of
   // "Browser Click"). The legacy auto-title-case produced "Browser

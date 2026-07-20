@@ -405,7 +405,7 @@ describe("AgentRuntimeClient.chat — event routing", () => {
       expect.objectContaining({ promptTokens: 10, completionTokens: 20, totalTokens: 30 }),
     );
     expect(onMessageStop).toHaveBeenCalledWith("end_turn");
-    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: "soft error" }));
+    expect(onError).not.toHaveBeenCalled();
 
     dispatch(AGENT_TURN_COMPLETE_CHANNEL, { turnId, stop_reason: "end_turn", iterations: 1 });
     await promise;
@@ -724,6 +724,37 @@ describe("AgentRuntimeClient.chat — completion + cleanup", () => {
     for (const unsub of unsubsBefore) {
       expect(unsub).toHaveBeenCalledTimes(1);
     }
+  });
+
+  it("reports one error when a failed turn arrives through every terminal channel", async () => {
+    let rejectInvoke!: (error: Error) => void;
+    invokeMock.mockImplementation(
+      async (command) =>
+        command === AGENT_CHAT_COMMAND
+          ? new Promise<void>((_resolve, reject) => {
+              rejectInvoke = reject;
+            })
+          : undefined,
+    );
+    const onError = vi.fn();
+    const client = buildClient({ onError });
+    const promise = client.chat(sampleInput);
+    const { turnId } = await awaitChatInvocation();
+    const providerError = "provider returned HTTP 503 (request id: same-request)";
+
+    dispatch(AGENT_EVENT_CHANNEL, {
+      turnId,
+      seq: 1,
+      event: { type: "error", message: providerError, recoverable: true },
+    });
+    dispatch(AGENT_TURN_ERROR_CHANNEL, { turnId, error: providerError });
+    rejectInvoke(new Error(providerError));
+
+    await expect(promise).rejects.toThrow(providerError);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: providerError }),
+    );
   });
 
   it("rejects with AbortError when the runtime reports cancellation", async () => {

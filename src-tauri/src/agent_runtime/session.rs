@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::error::RuntimeError;
@@ -71,6 +72,36 @@ pub struct QueuedUserMessage {
     pub queued_at_ms: i64,
 }
 
+/// Full-fidelity copy of one tool result whose model-history copy was
+/// clamped by `truncate_tool_content`. Written to the
+/// `<thread_id>.rich.jsonl` sidecar at persist time so a reloaded thread
+/// can render the COMPLETE diff for an edit — the clamped copy inside the
+/// session JSONL stays the model-facing truth (context safety), this is
+/// display-only. Works regardless of whether the project is a git repo.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RichToolResult {
+    /// Provider-issued tool_use id — the join key back to the
+    /// `ContentBlock::ToolResult` this enriches.
+    pub tool_use_id: String,
+    /// Tool name, for diagnostics and future selective loading.
+    pub tool: String,
+    /// The UI-shaped result payload (same clamps as the live
+    /// `tool_execution_result` event: 512 KiB envelope, JSON kept valid).
+    pub content: String,
+}
+
+/// Shared slot for rich results produced mid-turn. Same shape as
+/// [`QueueSlot`]: an `Arc<std::sync::Mutex<…>>` so the tool-execution
+/// path (which only holds `&Session`) can push while the turn owns the
+/// session, and the persist path drains after `save_to_path`.
+pub type RichResultsSlot = Arc<StdMutex<Vec<RichToolResult>>>;
+
+#[must_use]
+pub fn empty_rich_results_slot() -> RichResultsSlot {
+    Arc::new(StdMutex::new(Vec::new()))
+}
+
 /// In-memory conversation state for one open chat thread.
 ///
 /// The agent runtime owns one [`Session`] per active thread. The
@@ -108,6 +139,10 @@ pub struct Session {
     /// Single-slot: a second enqueue replaces the previous one
     /// (matches the UI's "type to replace" pill behaviour).
     pub queued_message: QueueSlot,
+    /// Full-fidelity tool results accumulated during the current turn,
+    /// drained to the `.rich.jsonl` sidecar right after the session
+    /// persists. Not serialized into the message JSONL.
+    pub rich_results: RichResultsSlot,
 }
 
 impl Session {
@@ -124,7 +159,26 @@ impl Session {
             workspace_root: None,
             model: None,
             queued_message: empty_queue_slot(),
+            rich_results: empty_rich_results_slot(),
         }
+    }
+
+    /// Stash a full-fidelity tool result for the sidecar. `&self` on
+    /// purpose — the tool-execution path only holds a shared borrow.
+    pub fn push_rich_result(&self, entry: RichToolResult) {
+        if let Ok(mut g) = self.rich_results.lock() {
+            g.push(entry);
+        }
+    }
+
+    /// Take every stashed rich result, leaving the slot empty. Called
+    /// by the persist path after `save_to_path` succeeds.
+    #[must_use]
+    pub fn drain_rich_results(&self) -> Vec<RichToolResult> {
+        self.rich_results
+            .lock()
+            .map(|mut g| std::mem::take(&mut *g))
+            .unwrap_or_default()
     }
 
     /// Replace the queue slot with one created (or already populated)

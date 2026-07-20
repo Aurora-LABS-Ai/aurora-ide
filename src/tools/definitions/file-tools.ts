@@ -19,7 +19,7 @@ export const fileReadTool: ToolDefinition = {
   nativeRustOwned: true,
   function: {
     name: 'file_read',
-    description: `Read file content safely. Pass "path" to read ONE file (with an optional start_line/end_line window), or "paths" to read MANY files in parallel (10-100x faster than one at a time). Small files return in full; large files (>1500 lines or >500KB) return a bounded line window with largeFile=true. A missing path reports exists=false instead of failing.
+    description: `Read file content safely using exactly one form. For ONE file, pass a non-empty "path" with optional start_line/end_line/max_lines and omit "paths". For SEVERAL files, pass a non-empty "paths" array and omit "path" plus all line-range fields. Never send "paths": []. Small files return in full; large files (>1500 lines or >500KB) return a bounded line window with largeFile=true. A missing path reports exists=false instead of failing.
 
 Examples:
 - file_read(path="src/App.tsx")
@@ -30,12 +30,15 @@ Examples:
       properties: {
         path: {
           type: 'string',
-          description: 'Single-file form: the full path of the file to read.',
+          minLength: 1,
+          description: 'Single-file form only: one non-empty file path. Omit "paths".',
         },
         paths: {
           type: 'array',
-          items: { type: 'string' },
-          description: 'Batch form: multiple file paths to read in parallel (omit "path").',
+          minItems: 1,
+          maxItems: 20,
+          items: { type: 'string', minLength: 1 },
+          description: 'Batch form only: 1-20 non-empty paths. Omit "path" and line ranges; never send an empty array.',
         },
         start_line: {
           type: 'number',
@@ -50,6 +53,10 @@ Examples:
           description: 'Single-file form: optional maximum lines to return from start_line.',
         },
       },
+      oneOf: [
+        { required: ['path'] },
+        { required: ['paths'] },
+      ],
       required: [],
     },
   },

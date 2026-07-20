@@ -65,6 +65,7 @@ const TOOL_GERUND: Record<string, string> = {
   auroro_websearch: "Searching the web for",
   todo_write: "Updating the plan",
   ask_question: "Waiting for your answer",
+  present_artifact: "Presenting",
   browser_navigate: "Browsing to",
   browser_click: "Clicking",
   browser_fill: "Typing into",
@@ -224,6 +225,10 @@ function labelArg(name: string, args: Record<string, unknown>): string | null {
   if (name === "browser_get_console_logs") {
     const level = asStr(args.level);
     return level ? `(${level})` : null;
+  }
+  if (name === "present_artifact") {
+    const title = asStr(args.title);
+    return title ? `“${clip(title, 40)}”` : null;
   }
   return null;
 }

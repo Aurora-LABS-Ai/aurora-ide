@@ -36,24 +36,35 @@ impl ToolExecutor for FileReadTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "file_read".into(),
-            description: "Read file content safely. Pass `path` to read ONE file (with an optional \
-                          start_line/end_line window), or `paths` to read MANY files in parallel. \
-                          Small files return in full; large files (>1500 lines or >500KB) return a \
-                          bounded line window. A missing path reports exists=false rather than failing."
+            description: "Read file content safely using exactly one form. For ONE file, pass a \
+                          non-empty `path` and optional start_line/end_line/max_lines; omit `paths`. \
+                          For SEVERAL files, pass a non-empty `paths` array; omit `path` and all line \
+                          range fields. Never send `paths: []`. Small files return in full; large files \
+                          return a bounded line window. A missing path reports exists=false rather than failing."
                 .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Single-file form: full path to read." },
+                    "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Single-file form only: one non-empty file path. Omit `paths`."
+                    },
                     "paths": {
                         "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Batch form: multiple file paths to read in parallel (omit `path`)."
+                        "minItems": 1,
+                        "maxItems": 20,
+                        "items": { "type": "string", "minLength": 1 },
+                        "description": "Batch form only: 1-20 non-empty file paths. Omit `path` and line range fields; never send an empty array."
                     },
                     "start_line": { "type": "number", "description": "Single-file form: 1-based first line to return." },
                     "end_line": { "type": "number", "description": "Single-file form: 1-based inclusive last line to return." },
                     "max_lines": { "type": "number", "description": "Single-file form: maximum lines to return from start_line." }
                 },
+                "oneOf": [
+                    { "required": ["path"] },
+                    { "required": ["paths"] }
+                ],
                 "additionalProperties": false,
             }),
         }
@@ -62,10 +73,58 @@ impl ToolExecutor for FileReadTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
 
-        // Batch form: read many files in parallel. Record each requested
-        // path as "seen" so a later file_edit knows the agent looked at it,
-        // then delegate to the shared parallel reader.
-        if let Some(arr) = input.get("paths").and_then(Value::as_array) {
+        let path = match input.get("path") {
+            Some(Value::String(path)) if !path.trim().is_empty() => Some(path.as_str()),
+            Some(Value::String(_)) | Some(Value::Null) | None => None,
+            Some(_) => {
+                return Err(ToolError::InvalidInput(
+                    "`path` must be a non-empty string when provided".into(),
+                ))
+            }
+        };
+        let paths = match input.get("paths") {
+            Some(Value::Array(paths)) if !paths.is_empty() => Some(paths.as_slice()),
+            Some(Value::Array(_)) | Some(Value::Null) | None => None,
+            Some(_) => {
+                return Err(ToolError::InvalidInput(
+                    "`paths` must be a non-empty array of file path strings when provided".into(),
+                ))
+            }
+        };
+
+        if path.is_some() && paths.is_some() {
+            return Err(ToolError::InvalidInput(
+                "use exactly one file_read form: `path` for one file or `paths` for several files; do not send both"
+                    .into(),
+            ));
+        }
+
+        // An empty `paths` array is treated as an omitted optional placeholder
+        // only when a valid single-file `path` is present. This keeps a model's
+        // redundant default from overriding the unambiguous requested read.
+        if let Some(arr) = paths {
+            if input.get("start_line").is_some()
+                || input.get("end_line").is_some()
+                || input.get("max_lines").is_some()
+            {
+                return Err(ToolError::InvalidInput(
+                    "`start_line`, `end_line`, and `max_lines` only work with single-file `path`; omit them when using `paths`"
+                        .into(),
+                ));
+            }
+            if arr.iter().any(|entry| {
+                entry
+                    .as_str()
+                    .map(|value| value.trim().is_empty())
+                    .unwrap_or(true)
+            }) {
+                return Err(ToolError::InvalidInput(
+                    "every entry in `paths` must be a non-empty file path string".into(),
+                ));
+            }
+
+            // Record each requested path as "seen" so a later file_edit knows
+            // the agent looked at it, then delegate to the parallel reader.
             for entry in arr {
                 if let Some(p) = entry.as_str() {
                     if let Ok(resolved) = resolve_path_for_read(
@@ -80,8 +139,18 @@ impl ToolExecutor for FileReadTool {
             return super::multi_file_read::read_many(input, ctx).await;
         }
 
-        let path = input.get("path").and_then(Value::as_str).ok_or_else(|| {
-            ToolError::InvalidInput("provide `path` (single) or `paths` (array)".into())
+        let path = path.ok_or_else(|| {
+            if input.get("paths").and_then(Value::as_array).is_some() {
+                ToolError::InvalidInput(
+                    "`paths` must contain at least one file; use `path` for a single file and omit `paths`"
+                        .into(),
+                )
+            } else {
+                ToolError::InvalidInput(
+                    "provide exactly one file_read form: non-empty `path` or non-empty `paths`"
+                        .into(),
+                )
+            }
         })?;
 
         let resolved = match resolve_path_for_read(
@@ -314,6 +383,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn schema_requires_one_non_empty_read_form() {
+        let schema = FileReadTool.schema();
+        assert_eq!(schema.input_schema["oneOf"].as_array().unwrap().len(), 2);
+        assert_eq!(schema.input_schema["properties"]["paths"]["minItems"], 1);
+        assert_eq!(schema.input_schema["properties"]["path"]["minLength"], 1);
+    }
+
     #[tokio::test]
     async fn reads_small_file_in_full() {
         let tmp = tempfile::tempdir().unwrap();
@@ -331,6 +408,60 @@ mod tests {
         assert_eq!(body["success"], true);
         assert_eq!(body["content"], "hello\nworld\n");
         assert_eq!(body["largeFile"], false);
+    }
+
+    #[tokio::test]
+    async fn empty_paths_placeholder_does_not_override_single_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("knowledge.md"), "project memory").unwrap();
+
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "path": "knowledge.md",
+                    "paths": [],
+                    "start_line": 1,
+                    "end_line": 220,
+                    "max_lines": 220
+                }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("an empty batch placeholder should not hide a valid single path");
+        let body: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(body["success"], true);
+        assert_eq!(body["content"], "project memory");
+    }
+
+    #[tokio::test]
+    async fn rejects_ambiguous_non_empty_path_forms() {
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let err = tool
+            .execute(
+                serde_json::json!({ "path": "one.md", "paths": ["two.md"] }),
+                &ctx_for(None),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidInput(message) if message.contains("do not send both"))
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_line_ranges_on_batch_reads() {
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let err = tool
+            .execute(
+                serde_json::json!({ "paths": ["one.md", "two.md"], "start_line": 5 }),
+                &ctx_for(None),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidInput(message) if message.contains("only work with single-file `path`"))
+        );
     }
 
     #[tokio::test]

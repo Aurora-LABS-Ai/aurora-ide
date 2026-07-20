@@ -44,6 +44,18 @@ const RAIL_MAX = 28;
 const DOCK_MIN = 22;
 const DOCK_MAX = 85;
 const EXPANDED_DOCK = 72;
+const CENTER_MIN_PX = 480;
+
+interface ShellDrag {
+  which: "rail" | "dock";
+  pointerId: number;
+  handle: HTMLDivElement;
+  shell: HTMLDivElement;
+  shellWidth: number;
+  startX: number;
+  startPct: number;
+  maxPct: number;
+}
 
 export const AgentShell: React.FC = () => {
   // Keep the Files tree + @-mention index live with on-disk changes.
@@ -67,6 +79,7 @@ export const AgentShell: React.FC = () => {
   const railGlideMs = useAgentThemeStore((s) => s.railGlideMs);
 
   const shellRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<ShellDrag | null>(null);
   const [shellW, setShellW] = useState(0);
 
   // Measure the shell so the inner wrappers can be sized in FIXED pixels
@@ -81,10 +94,29 @@ export const AgentShell: React.FC = () => {
     return () => ro.disconnect();
   }, []);
 
-  const effectiveDockWidth = expanded ? EXPANDED_DOCK : dockWidth;
+  const centerMinPct = shellW > 0 ? Math.min(100, (CENTER_MIN_PX / shellW) * 100) : 0;
+  const railMaxForLayout =
+    dockOpen && shellW > 0
+      ? Math.min(RAIL_MAX, Math.max(RAIL_MIN, 100 - centerMinPct - DOCK_MIN))
+      : RAIL_MAX;
+  const effectiveRailWidth = Math.min(railWidth, railMaxForLayout);
+  const dockMaxForLayout =
+    shellW > 0
+      ? Math.min(
+          DOCK_MAX,
+          Math.max(
+            DOCK_MIN,
+            100 - centerMinPct - (railOpen ? effectiveRailWidth : 0),
+          ),
+        )
+      : DOCK_MAX;
+  const effectiveDockWidth = Math.min(
+    expanded ? EXPANDED_DOCK : dockWidth,
+    dockMaxForLayout,
+  );
   // Inner (content) pixel widths — constant during an open/close glide, so the
   // content never reflows; they only change when the stored size or window does.
-  const railPx = Math.round((railWidth / 100) * shellW);
+  const railPx = Math.round((effectiveRailWidth / 100) * shellW);
   const dockPx = Math.round((effectiveDockWidth / 100) * shellW);
 
   // Mount content on open; keep it mounted through the close animation, then
@@ -108,40 +140,74 @@ export const AgentShell: React.FC = () => {
   const railContentMounted = railGlide ? railMounted : railOpen;
   const dockContentMounted = railGlide ? dockMounted : dockOpen;
 
+  const finishDrag = useCallback((pointerId?: number) => {
+    const drag = dragRef.current;
+    if (!drag || (pointerId !== undefined && pointerId !== drag.pointerId)) return;
+    dragRef.current = null;
+    drag.shell.removeAttribute("data-agw-dragging");
+    if (drag.handle.hasPointerCapture(drag.pointerId)) {
+      drag.handle.releasePointerCapture(drag.pointerId);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onBlur = () => finishDrag();
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("blur", onBlur);
+      finishDrag();
+    };
+  }, [finishDrag]);
+
   const startDrag = useCallback(
-    (which: "rail" | "dock") => (e: React.PointerEvent) => {
-      if (which === "dock" && expanded) return; // dock size pinned in expand mode
-      e.preventDefault();
+    (which: "rail" | "dock") => (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0 || (which === "dock" && expanded)) return;
       const shell = shellRef.current;
       if (!shell) return;
+
+      event.preventDefault();
+      finishDrag();
       const shellWidth = shell.getBoundingClientRect().width || 1;
-      const startX = e.clientX;
-      // Read live from the store so mid-flight state changes don't stale-close.
-      const startPct =
-        which === "rail"
-          ? useAgentWorkspaceStore.getState().railWidth
-          : useAgentWorkspaceStore.getState().dockWidth;
-
+      dragRef.current = {
+        which,
+        pointerId: event.pointerId,
+        handle: event.currentTarget,
+        shell,
+        shellWidth,
+        startX: event.clientX,
+        startPct: which === "rail" ? effectiveRailWidth : effectiveDockWidth,
+        maxPct: which === "rail" ? railMaxForLayout : dockMaxForLayout,
+      };
       shell.setAttribute("data-agw-dragging", "true");
-
-      const onMove = (ev: PointerEvent) => {
-        const dxPct = ((ev.clientX - startX) / shellWidth) * 100;
-        if (which === "rail") {
-          setRailWidth(Math.min(RAIL_MAX, Math.max(RAIL_MIN, startPct + dxPct)));
-        } else {
-          // Dock sits on the right; drag its left handle leftward to widen.
-          setDockWidth(Math.min(DOCK_MAX, Math.max(DOCK_MIN, startPct - dxPct)));
-        }
-      };
-      const onUp = () => {
-        shell.removeAttribute("data-agw-dragging");
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
-      };
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
+      event.currentTarget.setPointerCapture(event.pointerId);
     },
-    [expanded, setRailWidth, setDockWidth],
+    [
+      dockMaxForLayout,
+      effectiveDockWidth,
+      effectiveRailWidth,
+      expanded,
+      finishDrag,
+      railMaxForLayout,
+    ],
+  );
+
+  const moveDrag = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      if ((event.buttons & 1) === 0) {
+        finishDrag(event.pointerId);
+        return;
+      }
+
+      const dxPct = ((event.clientX - drag.startX) / drag.shellWidth) * 100;
+      if (drag.which === "rail") {
+        setRailWidth(Math.min(drag.maxPct, Math.max(RAIL_MIN, drag.startPct + dxPct)));
+      } else {
+        setDockWidth(Math.min(drag.maxPct, Math.max(DOCK_MIN, drag.startPct - dxPct)));
+      }
+    },
+    [finishDrag, setDockWidth, setRailWidth],
   );
 
   return (
@@ -160,7 +226,7 @@ export const AgentShell: React.FC = () => {
       {/* Left rail — outer width glides to 0; inner stays fixed-width, clipped. */}
       <div
         className="agw-shell-side"
-        style={{ width: railOpen ? `${railWidth}%` : 0 }}
+        style={{ width: railOpen ? `${effectiveRailWidth}%` : 0 }}
         aria-hidden={!railOpen}
         onTransitionEnd={(e) => {
           if (e.propertyName === "width" && !railOpen) setRailMounted(false);
@@ -180,7 +246,12 @@ export const AgentShell: React.FC = () => {
           className="agw-shell-handle"
           role="separator"
           aria-orientation="vertical"
+          aria-label="Resize conversation and navigation"
           onPointerDown={startDrag("rail")}
+          onPointerMove={moveDrag}
+          onPointerUp={(event) => finishDrag(event.pointerId)}
+          onPointerCancel={(event) => finishDrag(event.pointerId)}
+          onLostPointerCapture={(event) => finishDrag(event.pointerId)}
         />
       )}
 
@@ -198,7 +269,12 @@ export const AgentShell: React.FC = () => {
           className="agw-shell-handle"
           role="separator"
           aria-orientation="vertical"
+          aria-label="Resize conversation and right panel"
           onPointerDown={startDrag("dock")}
+          onPointerMove={moveDrag}
+          onPointerUp={(event) => finishDrag(event.pointerId)}
+          onPointerCancel={(event) => finishDrag(event.pointerId)}
+          onLostPointerCapture={(event) => finishDrag(event.pointerId)}
         />
       )}
       <div

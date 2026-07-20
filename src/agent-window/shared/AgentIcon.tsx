@@ -27,6 +27,9 @@ export type AgentIconName =
   | "chevron-down"
   | "plus"
   | "search"
+  | "zoom-in"
+  | "zoom-out"
+  | "fit"
   | "message"
   | "chat"
   | "more"
@@ -85,7 +88,7 @@ export type AgentIconName =
   | "database"
   | "sort"
   | "eye"
-  | "sparkle"
+  | "refine"
   | "facet"
   | "book-open";
 
@@ -143,11 +146,14 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     </>
   ),
 
-  // Refine prompt — a four-point sparkle with a small companion star.
-  sparkle: (
+  // Refine / composer assists — a fountain-pen nib above its freshly written
+  // line. Bespoke mark (pairs with `facet`); deliberately NOT a sparkle.
+  refine: (
     <>
-      <path d="M12 3.5l1.7 4.8 4.8 1.7-4.8 1.7L12 16.5l-1.7-4.8L5.5 10l4.8-1.7z" />
-      <path d="M18.4 15.2l.65 1.85 1.85.65-1.85.65-.65 1.85-.65-1.85-1.85-.65 1.85-.65z" />
+      <path d="M8 4.5h8l1 5.5-5 6.5-5-6.5z" />
+      <circle cx="12" cy="8" r="1" />
+      <path d="M12 9.6v3.4" />
+      <path d="M6.5 20.5h11" />
     </>
   ),
 
@@ -164,6 +170,29 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     <>
       <circle cx="11" cy="11" r="6.4" />
       <path d="M20 20l-4.3-4.3" />
+    </>
+  ),
+
+  "zoom-in": (
+    <>
+      <circle cx="10.5" cy="10.5" r="6.25" />
+      <path d="M15.2 15.2 20 20" />
+      <path d="M10.5 7.7v5.6M7.7 10.5h5.6" />
+    </>
+  ),
+
+  "zoom-out": (
+    <>
+      <circle cx="10.5" cy="10.5" r="6.25" />
+      <path d="M15.2 15.2 20 20" />
+      <path d="M7.7 10.5h5.6" />
+    </>
+  ),
+
+  fit: (
+    <>
+      <path d="M9 4.5H4.5V9M15 4.5h4.5V9M9 19.5H4.5V15M15 19.5h4.5V15" />
+      <rect x="8" y="8" width="8" height="8" rx="1.5" />
     </>
   ),
 

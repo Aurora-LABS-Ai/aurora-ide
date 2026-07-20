@@ -138,6 +138,10 @@ impl<'a> SettingsRepository<'a> {
                     settings.title_maker_enabled =
                         serde_json::from_str(&setting.value).unwrap_or(settings.title_maker_enabled)
                 }
+                "titleMakerMode" => {
+                    settings.title_maker_mode = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.title_maker_mode.clone())
+                }
                 "titleMakerBaseUrl" => {
                     settings.title_maker_base_url = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.title_maker_base_url.clone())
@@ -329,6 +333,10 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting(
             "titleMakerEnabled",
             &serde_json::to_string(&settings.title_maker_enabled).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "titleMakerMode",
+            &serde_json::to_string(&settings.title_maker_mode).unwrap_or_default(),
         )?;
         self.set_setting(
             "titleMakerBaseUrl",

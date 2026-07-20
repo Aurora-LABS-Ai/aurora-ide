@@ -16,6 +16,15 @@ function extensionOf(path: string): string {
   return dot >= 0 ? base.slice(dot + 1).toLowerCase() : "";
 }
 
+/**
+ * Above this size, tokenizing blocks the renderer long enough to jank the
+ * whole window (and layout churn on that scale is what aggravates the
+ * WebView2 crash) — mirror the editor's medium-file rule and fall back to
+ * plaintext. Multi-file reads pass FULL file contents through here, so this
+ * is a real path, not an edge case.
+ */
+const HIGHLIGHT_MAX_CHARS = 50_000;
+
 export const ToolCode: React.FC<{ code: string; path: string | null }> = ({
   code,
   path,
@@ -24,8 +33,11 @@ export const ToolCode: React.FC<{ code: string; path: string | null }> = ({
   const syntaxOn = useAgentThemeStore((state) => state.syntaxHighlighting);
   const variant: ShikiThemeVariant = appearance === "light" ? "light" : "dark";
   const language = useMemo(
-    () => (syntaxOn && path ? extToShikiLang(extensionOf(path)) : null),
-    [syntaxOn, path],
+    () =>
+      syntaxOn && path && code.length <= HIGHLIGHT_MAX_CHARS
+        ? extToShikiLang(extensionOf(path))
+        : null,
+    [syntaxOn, path, code],
   );
   const tokens = useShikiTokens(code, language, variant);
 

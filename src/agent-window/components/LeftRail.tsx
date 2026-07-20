@@ -18,11 +18,12 @@
  */
 
 import React, { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { openFileDialog } from "../../lib/tauri";
 import { deriveThreadTitle } from "../../lib/thread-title";
-import { AgentIcon } from "../shared/AgentIcon";
+import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
 import { AgentConfirm } from "./AgentConfirm";
 import { useAgentChatStore } from "../store/useAgentChatStore";
 import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
@@ -163,6 +164,91 @@ const Collapse: React.FC<{ open: boolean; children: React.ReactNode }> = ({
   </AnimatePresence>
 );
 
+interface RailMenuItem {
+  icon: AgentIconName;
+  label: string;
+  danger?: boolean;
+  onSelect: () => void;
+}
+interface RailMenuState {
+  x: number;
+  y: number;
+  items: RailMenuItem[];
+}
+
+const RAIL_MENU_WIDTH = 228;
+const RAIL_MENU_ROW = 34;
+
+/**
+ * Right-click context menu for rail rows — the standard surface for row
+ * actions (hover buttons stay for the two most common ones). Portaled into
+ * the window root so the rail's own scroll/overflow can't clip it; closes on
+ * outside press, Escape, scroll, or after any pick.
+ */
+const RailMenu: React.FC<{ menu: RailMenuState; onClose: () => void }> = ({
+  menu,
+  onClose,
+}) => {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const el = document.querySelector(".agw-rail-menu");
+      if (el && el.contains(event.target as Node)) return;
+      onClose();
+    };
+    const onScroll = (event: Event) => {
+      const el = document.querySelector(".agw-rail-menu");
+      if (el && el.contains(event.target as Node)) return;
+      onClose();
+    };
+    const onResize = () => onClose();
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [onClose]);
+
+  const height = menu.items.length * RAIL_MENU_ROW + 12;
+  const left = Math.max(8, Math.min(menu.x, window.innerWidth - RAIL_MENU_WIDTH - 8));
+  const top = Math.max(8, Math.min(menu.y, window.innerHeight - height - 8));
+  const portalTarget =
+    (document.querySelector(".agw-root") as HTMLElement | null) ?? document.body;
+
+  return createPortal(
+    <div
+      className="agw-menu agw-rail-menu"
+      role="menu"
+      style={{ position: "fixed", left, top, width: RAIL_MENU_WIDTH, zIndex: 1000 }}
+    >
+      {menu.items.map((item) => (
+        <button
+          key={item.label}
+          type="button"
+          role="menuitem"
+          className="agw-menu-item agw-rail-menu-item"
+          data-danger={item.danger || undefined}
+          onClick={() => {
+            onClose();
+            item.onSelect();
+          }}
+        >
+          <AgentIcon name={item.icon} size={14} />
+          <span>{item.label}</span>
+        </button>
+      ))}
+    </div>,
+    portalTarget,
+  );
+};
+
 export const LeftRail: React.FC = () => {
   const toggleRail = useAgentWorkspaceStore((s) => s.toggleRail);
 
@@ -204,6 +290,7 @@ export const LeftRail: React.FC = () => {
   const togglePin = useAgentChatStore((s) => s.togglePin);
   const toggleArchive = useAgentChatStore((s) => s.toggleArchive);
   const deleteThread = useAgentChatStore((s) => s.deleteThread);
+  const renameThread = useAgentChatStore((s) => s.renameThread);
   // Background-turn indicators: which chats (and projects) are currently working.
   // We subscribe to a STABLE fingerprint of the live data (not the whole
   // `liveTurns` object, which changes on every streamed token) so the sidebar
@@ -275,6 +362,8 @@ export const LeftRail: React.FC = () => {
   const [query, setQuery] = useState("");
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ThreadSummary | null>(null);
+  const [menu, setMenu] = useState<RailMenuState | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const [projectsCollapsed, setProjectsCollapsed] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [pinnedProjects, setPinnedProjects] = useState<string[]>(loadPinnedProjects);
@@ -495,9 +584,92 @@ export const LeftRail: React.FC = () => {
     }
   };
 
+  const commitRename = (id: string, value: string) => {
+    setRenamingId(null);
+    void renameThread(id, value);
+  };
+
+  const openChatMenu = (event: React.MouseEvent, thread: ThreadSummary) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const items: RailMenuItem[] = thread.archivedAt
+      ? [
+          {
+            icon: "chat",
+            label: "Open chat",
+            onSelect: () => openChat(thread.id, thread.workspaceRoot),
+          },
+          {
+            icon: "reset",
+            label: "Restore chat",
+            onSelect: () => void toggleArchive(thread.id),
+          },
+          {
+            icon: "trash",
+            label: "Delete permanently…",
+            danger: true,
+            onSelect: () => setPendingDelete(thread),
+          },
+        ]
+      : [
+          {
+            icon: "file-edit",
+            label: "Rename chat",
+            onSelect: () => setRenamingId(thread.id),
+          },
+          {
+            icon: "pin",
+            label: thread.pinned ? "Unpin chat" : "Pin chat",
+            onSelect: () => void togglePin(thread.id),
+          },
+          {
+            icon: "archive",
+            label: "Archive chat",
+            onSelect: () => void toggleArchive(thread.id),
+          },
+          {
+            icon: "trash",
+            label: "Delete chat…",
+            danger: true,
+            onSelect: () => setPendingDelete(thread),
+          },
+        ];
+    setMenu({ x: event.clientX, y: event.clientY, items });
+  };
+
+  const openProjectMenu = (event: React.MouseEvent, root: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const projectPinned = pinnedProjectSet.has(root);
+    setMenu({
+      x: event.clientX,
+      y: event.clientY,
+      items: [
+        {
+          icon: "inspect",
+          label: "New chat here",
+          onSelect: () => newChatInProject(root),
+        },
+        {
+          icon: "pin",
+          label: projectPinned ? "Unpin project" : "Pin project",
+          onSelect: () => toggleProjectPin(root),
+        },
+        {
+          icon: "copy",
+          label: "Copy folder path",
+          onSelect: () => {
+            navigator.clipboard?.writeText(root).catch(() => undefined);
+          },
+        },
+      ],
+    });
+  };
+
   const renderChat = (thread: ThreadSummary, subtitle?: string) => {
     const active = thread.id === currentThreadId;
     const running = runningIds.has(thread.id);
+    const renaming = renamingId === thread.id;
     // A settled "done" dot for a background completion — never shown while the
     // spinner is up, and cleared the moment the chat is opened.
     const unseen = !running && !!unseenDone[thread.id];
@@ -517,11 +689,23 @@ export const LeftRail: React.FC = () => {
               ? `${thread.title} — finished`
               : thread.title
         }
-        onClick={() => openChat(thread.id, thread.workspaceRoot)}
+        onClick={() => {
+          if (renaming) return;
+          openChat(thread.id, thread.workspaceRoot);
+        }}
+        onDoubleClick={(e) => {
+          e.preventDefault();
+          setRenamingId(thread.id);
+        }}
+        onContextMenu={(e) => openChatMenu(e, thread)}
         onKeyDown={(e) => {
+          if (renaming) return;
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
             openChat(thread.id, thread.workspaceRoot);
+          } else if (e.key === "F2") {
+            e.preventDefault();
+            setRenamingId(thread.id);
           }
         }}
       >
@@ -539,8 +723,34 @@ export const LeftRail: React.FC = () => {
           )}
         </span>
         <div className="agw-rail-item-text">
-          <span className="agw-rail-item-label">{thread.title || "New Chat"}</span>
-          {subtitle && <span className="agw-rail-item-sub">{subtitle}</span>}
+          {renaming ? (
+            <input
+              className="agw-rail-rename"
+              defaultValue={thread.title || "New Chat"}
+              autoFocus
+              spellCheck={false}
+              aria-label="Rename chat"
+              onFocus={(e) => e.currentTarget.select()}
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") {
+                  commitRename(thread.id, e.currentTarget.value);
+                } else if (e.key === "Escape") {
+                  // Flag the discard so the unmount-blur can't commit it.
+                  e.currentTarget.dataset.cancel = "1";
+                  setRenamingId(null);
+                }
+              }}
+              onBlur={(e) => {
+                if (e.currentTarget.dataset.cancel) return;
+                commitRename(thread.id, e.currentTarget.value);
+              }}
+            />
+          ) : (
+            <span className="agw-rail-item-label">{thread.title || "New Chat"}</span>
+          )}
+          {!renaming && subtitle && <span className="agw-rail-item-sub">{subtitle}</span>}
         </div>
         {/* Trailing cluster — the always-on team badge sits alongside the
             hover-in archive / pin actions in one reserved lane, so they can
@@ -601,6 +811,7 @@ export const LeftRail: React.FC = () => {
         tabIndex={0}
         title={thread.title}
         onClick={() => openChat(thread.id, thread.workspaceRoot)}
+        onContextMenu={(e) => openChatMenu(e, thread)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
@@ -817,6 +1028,7 @@ export const LeftRail: React.FC = () => {
                     data-active={root === projectRoot || undefined}
                     data-open={open || undefined}
                     data-stale={age.stale || undefined}
+                    onContextMenu={(e) => openProjectMenu(e, root)}
                   >
                     <button
                       type="button"
@@ -971,8 +1183,11 @@ export const LeftRail: React.FC = () => {
         )}
       </div>
 
+      {/* Row context menu (chat / archived / project). */}
+      {menu && <RailMenu menu={menu} onClose={() => setMenu(null)} />}
+
       {/* Permanent-delete confirmation — archiving is reversible (silent), but
-          deleting an archived chat is destructive and irreversible. */}
+          deleting a chat is destructive and irreversible. */}
       <AgentConfirm
         open={pendingDelete !== null}
         title="Delete chat permanently?"

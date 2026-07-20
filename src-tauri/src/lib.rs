@@ -168,11 +168,7 @@ impl agent_runtime::team::TeamEventSink for TauriTeamEventSink {
     // Ephemeral token stream (NOT persisted) — carries an agent's tokens as
     // they arrive so the Team view streams in real time, on its own
     // `"team_stream"` channel so the durable `"team_event"` path is untouched.
-    fn emit_team_stream(
-        &self,
-        project_id: &str,
-        delta: &agent_runtime::team::TeamStreamDelta,
-    ) {
+    fn emit_team_stream(&self, project_id: &str, delta: &agent_runtime::team::TeamStreamDelta) {
         #[derive(Clone, serde::Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Payload<'a> {
@@ -322,6 +318,10 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::threads::thread_set_pinned,
             commands::threads::thread_set_archived,
             commands::threads::thread_cancel_current_turn,
+            commands::artifacts::thread_artifact_list,
+            commands::artifacts::thread_artifact_preview_patch,
+            commands::artifacts::thread_artifact_upsert,
+            commands::artifacts::thread_artifact_select,
             // Token counting commands
             commands::tokens::count_tokens,
             commands::tokens::count_chat_tokens,
@@ -532,6 +532,9 @@ pub fn run_with_args(cli_args: CliArgs) {
             // Composer prompt refinement (local llama.cpp GGUF)
             commands::prompt_refine::prompt_refine_validate,
             commands::prompt_refine::prompt_refine_run,
+            commands::prompt_refine::prompt_refine_title,
+            commands::prompt_refine::prompt_refine_dictation,
+            commands::prompt_refine::prompt_refine_suggest,
             commands::prompt_refine::prompt_refine_cancel,
         ])
         .setup(move |app| {

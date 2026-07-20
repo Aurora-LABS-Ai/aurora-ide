@@ -24,6 +24,7 @@ use tokio::process::Command as TokioCommand;
 
 pub mod agent_v2;
 pub mod agent_v2_permissions;
+pub mod artifacts;
 pub mod browser;
 pub mod chat;
 pub mod checkpoints;

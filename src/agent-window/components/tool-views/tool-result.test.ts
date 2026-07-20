@@ -78,6 +78,136 @@ describe("persisted file tool results", () => {
     ]);
   });
 
+  it("recovers complete workspace nodes from legacy history cut mid-JSON", () => {
+    const parsed = parseToolResult(
+      "workspace_tree",
+      { depth: 2 },
+      '{"success":true,"rootPath":"E:\\\\repo","tree":[{"name":"src","path":"E:\\\\repo\\\\src","type":"directory","children":[{"name":"a.ts","path":"E:\\\\repo\\\\src\\\\a.ts","type":"file","lineCount":3}]},{"name":"README.md","path":"E:\\\\repo\\\\README.md"\n\n[truncated 9000 bytes — tool returned 17192 bytes total, kept first 8192]',
+    );
+
+    expect(parsed.code).toBeNull();
+    expect(parsed.tree?.rootPath).toBe("E:\\repo");
+    expect(parsed.tree?.tree).toHaveLength(1);
+    expect(parsed.tree?.tree[0]).toMatchObject({
+      name: "src",
+      path: "E:\\repo\\src",
+      type: "directory",
+    });
+    expect(parsed.tree?.tree[0].children?.[0]).toMatchObject({
+      name: "a.ts",
+      path: "E:\\repo\\src\\a.ts",
+      type: "file",
+      lineCount: 3,
+    });
+  });
+
+  it("strips history-compaction markers from diffs instead of diffing them", () => {
+    const marker = (n: number) => `\n\n[truncated ${n} bytes in persisted history]`;
+    const parsed = parseToolResult(
+      "file_edit",
+      { target_paths: ["src/hero.tsx"] },
+      JSON.stringify({
+        success: true,
+        multiFile: true,
+        filesEdited: 1,
+        files: [
+          {
+            path: "src/hero.tsx",
+            oldContent: `const a = 1;${marker(4923)}`,
+            newContent: `const a = 2;${marker(4933)}`,
+            linesAdded: 17,
+            linesRemoved: 17,
+          },
+        ],
+      }),
+    );
+
+    expect(parsed.diffs).toHaveLength(1);
+    expect(parsed.diffs![0].oldText).toBe("const a = 1;");
+    expect(parsed.diffs![0].newText).toBe("const a = 2;");
+    expect(parsed.diffs![0].truncated).toBe(true);
+    // Untruncated results carry no flag.
+    const clean = parseToolResult(
+      "file_edit",
+      { path: "src/a.ts" },
+      JSON.stringify({ success: true, oldContent: "x", newContent: "y", path: "src/a.ts" }),
+    );
+    expect(clean.diff?.truncated).toBeUndefined();
+  });
+
+  it("strips history-compaction markers from persisted batch reads", () => {
+    const parsed = parseToolResult(
+      "file_read",
+      { paths: ["src/a.ts"] },
+      JSON.stringify({
+        success: true,
+        filesRead: 1,
+        files: [
+          {
+            path: "src/a.ts",
+            success: true,
+            content: "export const a = 1;\n\n[truncated 9000 bytes in persisted history]",
+            lines: 300,
+          },
+        ],
+      }),
+    );
+
+    expect(parsed.multiFile![0].content).toBe("export const a = 1;");
+    expect(parsed.multiFile![0].truncated).toBe(true);
+  });
+
+  it("surfaces the exit code in a failed shell summary", () => {
+    const parsed = parseToolResult(
+      "shell_execute",
+      { command: "pnpm test" },
+      JSON.stringify({
+        success: false,
+        exitCode: 1,
+        command: "pnpm test",
+        stdout: "",
+        stderr: "1 test failed",
+      }),
+    );
+
+    expect(parsed.summary).toBe("Command failed · exit 1");
+    expect(parsed.shell?.exitCode).toBe(1);
+  });
+
+  it("carries per-file line counts on multi-file edit diffs", () => {
+    const parsed = parseToolResult(
+      "file_edit",
+      { target_paths: ["src/a.ts", "src/b.ts"] },
+      JSON.stringify({
+        success: true,
+        multiFile: true,
+        filesEdited: 2,
+        files: [
+          {
+            path: "src/a.ts",
+            oldContent: "old a",
+            newContent: "new a",
+            linesAdded: 3,
+            linesRemoved: 1,
+          },
+          {
+            path: "src/b.ts",
+            oldContent: "old b",
+            newContent: "new b",
+            linesAdded: 7,
+            linesRemoved: 2,
+          },
+        ],
+      }),
+    );
+
+    expect(parsed.diffs?.map((d) => [d.added, d.removed])).toEqual([
+      [3, 1],
+      [7, 2],
+    ]);
+    expect(parsed.stat).toEqual({ added: 10, removed: 3 });
+  });
+
   it("does not repeat a completed file path in the toolbar summary", () => {
     const parsed = parseToolResult(
       "file_write",

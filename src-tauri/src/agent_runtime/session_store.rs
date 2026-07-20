@@ -44,6 +44,7 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -51,7 +52,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::error::RuntimeError;
-use super::session::Session;
+use super::session::{RichToolResult, Session};
 use super::types::{ContentBlock, MessageRole};
 
 // ============================================================================
@@ -231,6 +232,31 @@ impl SessionStore {
     #[must_use]
     pub fn meta_path(&self, thread_id: &str) -> PathBuf {
         self.dir.join(format!("{thread_id}.meta.json"))
+    }
+
+    /// Path to the full-fidelity tool-result sidecar for `thread_id`.
+    /// One JSON-serialized [`RichToolResult`] per line, append-only.
+    #[must_use]
+    pub fn rich_path(&self, thread_id: &str) -> PathBuf {
+        self.dir.join(format!("{thread_id}.rich.jsonl"))
+    }
+
+    /// Path to the optional Artifact Canvas sidecar for `thread_id`.
+    #[must_use]
+    pub fn artifacts_path(&self, thread_id: &str) -> PathBuf {
+        self.dir.join(format!("{thread_id}.artifacts.json"))
+    }
+
+    #[must_use]
+    pub fn artifacts_temp_path(&self, thread_id: &str) -> PathBuf {
+        self.artifacts_path(thread_id)
+            .with_extension("artifacts.json.tmp")
+    }
+
+    #[must_use]
+    pub fn artifacts_backup_path(&self, thread_id: &str) -> PathBuf {
+        self.artifacts_path(thread_id)
+            .with_extension("artifacts.json.bak")
     }
 
     /// `true` iff at least the message log exists. The metadata
@@ -619,10 +645,63 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Remove both the JSONL and metadata sidecar. Idempotent — a
+    /// Remove the JSONL and every thread-owned sidecar. Idempotent — a
     /// missing file is treated as success.
+    /// Append full-fidelity tool results to the `.rich.jsonl` sidecar.
+    /// Append-only and best-effort by design: a failed write costs the
+    /// reload-time diff quality of ONE turn, never the conversation.
+    pub fn append_rich_results(
+        &self,
+        thread_id: &str,
+        entries: &[RichToolResult],
+    ) -> Result<(), RuntimeError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        fs::create_dir_all(&self.dir)?;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.rich_path(thread_id))?;
+        for entry in entries {
+            let line = serde_json::to_string(entry)?;
+            file.write_all(line.as_bytes())?;
+            file.write_all(b"\n")?;
+        }
+        Ok(())
+    }
+
+    /// Load the rich sidecar as a `tool_use_id → content` map (last
+    /// write wins). Missing file or malformed lines degrade to fewer
+    /// entries, never an error — the clamped in-JSONL copy is always a
+    /// valid fallback.
+    #[must_use]
+    pub fn load_rich_results(&self, thread_id: &str) -> HashMap<String, String> {
+        let raw = match fs::read_to_string(self.rich_path(thread_id)) {
+            Ok(s) => s,
+            Err(_) => return HashMap::new(),
+        };
+        let mut map = HashMap::new();
+        for line in raw.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_str::<RichToolResult>(line) {
+                map.insert(entry.tool_use_id, entry.content);
+            }
+        }
+        map
+    }
+
     pub fn delete(&self, thread_id: &str) -> Result<(), RuntimeError> {
-        for path in [self.session_path(thread_id), self.meta_path(thread_id)] {
+        for path in [
+            self.session_path(thread_id),
+            self.meta_path(thread_id),
+            self.rich_path(thread_id),
+            self.artifacts_path(thread_id),
+            self.artifacts_temp_path(thread_id),
+            self.artifacts_backup_path(thread_id),
+        ] {
             match fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -773,20 +852,76 @@ mod tests {
     }
 
     #[test]
-    fn delete_removes_jsonl_and_meta() {
+    fn delete_removes_jsonl_meta_and_artifacts() {
         let (_g, store) = tmp_store();
         store.ensure_thread("d", None, None).unwrap();
+        std::fs::write(store.artifacts_path("d"), "{}").unwrap();
+        std::fs::write(store.artifacts_temp_path("d"), "{}").unwrap();
+        std::fs::write(store.artifacts_backup_path("d"), "{}").unwrap();
         assert!(store.session_path("d").exists());
         assert!(store.meta_path("d").exists());
+        assert!(store.artifacts_path("d").exists());
+        assert!(store.artifacts_temp_path("d").exists());
+        assert!(store.artifacts_backup_path("d").exists());
         store.delete("d").unwrap();
         assert!(!store.session_path("d").exists());
         assert!(!store.meta_path("d").exists());
+        assert!(!store.artifacts_path("d").exists());
+        assert!(!store.artifacts_temp_path("d").exists());
+        assert!(!store.artifacts_backup_path("d").exists());
     }
 
     #[test]
     fn delete_is_idempotent() {
         let (_g, store) = tmp_store();
         store.delete("nonexistent").expect("idempotent delete");
+    }
+
+    #[test]
+    fn rich_results_append_load_last_wins_and_delete() {
+        let (_g, store) = tmp_store();
+        store.ensure_thread("r1", None, None).unwrap();
+
+        store
+            .append_rich_results(
+                "r1",
+                &[RichToolResult {
+                    tool_use_id: "call-1".into(),
+                    tool: "file_edit".into(),
+                    content: "{\"v\":1}".into(),
+                }],
+            )
+            .unwrap();
+        store
+            .append_rich_results(
+                "r1",
+                &[
+                    RichToolResult {
+                        tool_use_id: "call-1".into(),
+                        tool: "file_edit".into(),
+                        content: "{\"v\":2}".into(),
+                    },
+                    RichToolResult {
+                        tool_use_id: "call-2".into(),
+                        tool: "file_write".into(),
+                        content: "full body".into(),
+                    },
+                ],
+            )
+            .unwrap();
+
+        let map = store.load_rich_results("r1");
+        assert_eq!(map.get("call-1").map(String::as_str), Some("{\"v\":2}"));
+        assert_eq!(map.get("call-2").map(String::as_str), Some("full body"));
+
+        // Missing sidecar degrades to empty, never errors.
+        assert!(store.load_rich_results("missing").is_empty());
+        // Empty batch is a no-op that must not create the file.
+        store.append_rich_results("empty", &[]).unwrap();
+        assert!(!store.rich_path("empty").exists());
+
+        store.delete("r1").unwrap();
+        assert!(!store.rich_path("r1").exists());
     }
 
     #[test]

@@ -57,7 +57,7 @@ use super::error::RuntimeError;
 use super::events::{AssistantEvent, TurnCompletion};
 use super::hooks::{Hook, NoopHook, ToolHookResult};
 use super::ipc::AgentEventEnvelope;
-use super::session::Session;
+use super::session::{RichToolResult, Session};
 use super::tool_executor::{ToolContext, ToolError, ToolRegistry};
 use super::types::{ContentBlock, ConversationMessage, MessageRole, TokenUsage};
 
@@ -818,6 +818,21 @@ impl ConversationRuntime {
             // history copy is truncated.
             let history_content = truncate_tool_content(&name, raw_content.clone());
 
+            // Edit results whose history copy was clamped get a full-fidelity
+            // sidecar copy (UI-shaped, so diffs render COMPLETE after a thread
+            // reload). Stashed on the session; the persist path writes it to
+            // `<thread_id>.rich.jsonl`. Model history stays clamped.
+            if is_error.is_none() && rich_persisted_tool(&name) {
+                let ui_copy = truncate_tool_content_for_ui(&name, raw_content.clone());
+                if ui_copy != history_content {
+                    session.push_rich_result(RichToolResult {
+                        tool_use_id: id.clone(),
+                        tool: name.clone(),
+                        content: ui_copy,
+                    });
+                }
+            }
+
             if !uses_frontend_lifecycle {
                 let ui_content = truncate_tool_content_for_ui(&name, raw_content);
                 emit_native_tool_event(
@@ -921,6 +936,22 @@ fn result_cap_for(tool: &str) -> usize {
     }
 }
 
+/// Tools whose clamped results earn a full-fidelity `.rich.jsonl` sidecar
+/// entry: the modify family, whose `oldContent`/`newContent` drive the
+/// reload-time diff view. Reads are excluded — their model cap already
+/// matches the UI cap, and re-persisting file bodies twice buys nothing.
+fn rich_persisted_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "file_edit"
+            | "file_write"
+            | "file_create"
+            | "file_patch"
+            | "search_replace"
+            | "multi_search_replace"
+    )
+}
+
 /// Clamp a tool's stringified result to its per-tool cap and append a
 /// `[truncated N bytes]` marker so the model knows the tail was dropped.
 /// Operates on char boundaries (not byte boundaries) so a truncation point
@@ -995,6 +1026,10 @@ fn compact_json_tool_content(raw: &str, cap: usize) -> Option<String> {
         return best;
     }
 
+    if let Some(compacted) = compact_json_arrays(&original, cap, raw.len()) {
+        return Some(compacted);
+    }
+
     let mut fallback = serde_json::Map::new();
     if let serde_json::Value::Object(map) = &original {
         for key in ["success", "message", "error", "path"] {
@@ -1012,6 +1047,63 @@ fn compact_json_tool_content(raw: &str, cap: usize) -> Option<String> {
     );
     let compacted = serde_json::to_string(&serde_json::Value::Object(fallback)).ok()?;
     (compacted.len() <= cap).then_some(compacted)
+}
+
+fn compact_json_arrays(
+    original: &serde_json::Value,
+    cap: usize,
+    original_len: usize,
+) -> Option<String> {
+    let mut candidate = original.clone();
+    if let serde_json::Value::Object(map) = &mut candidate {
+        map.insert("historyTruncated".into(), serde_json::Value::Bool(true));
+        map.insert(
+            "originalBytes".into(),
+            serde_json::Value::from(original_len as u64),
+        );
+    }
+
+    loop {
+        let serialized = serde_json::to_string(&candidate).ok()?;
+        if serialized.len() <= cap {
+            return Some(serialized);
+        }
+        let largest = largest_json_array_len(&candidate);
+        if largest == 0 || !shrink_json_arrays_of_len(&mut candidate, largest) {
+            return None;
+        }
+    }
+}
+
+fn largest_json_array_len(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(largest_json_array_len)
+            .fold(items.len(), usize::max),
+        serde_json::Value::Object(map) => {
+            map.values().map(largest_json_array_len).max().unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
+fn shrink_json_arrays_of_len(value: &mut serde_json::Value, target_len: usize) -> bool {
+    match value {
+        serde_json::Value::Array(items) => {
+            if items.len() == target_len {
+                items.truncate(items.len() / 2);
+                return true;
+            }
+            items.iter_mut().fold(false, |changed, item| {
+                shrink_json_arrays_of_len(item, target_len) || changed
+            })
+        }
+        serde_json::Value::Object(map) => map.values_mut().fold(false, |changed, child| {
+            shrink_json_arrays_of_len(child, target_len) || changed
+        }),
+        _ => false,
+    }
 }
 
 fn shrink_history_payload_strings(value: &mut serde_json::Value, limit: usize) -> bool {
@@ -1825,8 +1917,12 @@ mod tests {
         let compacted = truncate_tool_content("workspace_tree", raw);
         let parsed: serde_json::Value =
             serde_json::from_str(&compacted).expect("structured history must stay valid JSON");
+        assert!(compacted.len() <= MAX_TOOL_RESULT_LENGTH);
         assert_eq!(parsed["success"], true);
         assert_eq!(parsed["historyTruncated"], true);
+        assert!(parsed["tree"]
+            .as_array()
+            .is_some_and(|tree| !tree.is_empty()));
     }
 
     // ── Test doubles ────────────────────────────────────────────────

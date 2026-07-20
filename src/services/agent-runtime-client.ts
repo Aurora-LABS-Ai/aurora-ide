@@ -597,6 +597,7 @@ export class AgentRuntimeClient {
     const settleReject = (err: Error) => {
       if (settled) return;
       settled = true;
+      callbacks.onError?.(err);
       rejectTurn(err);
     };
 
@@ -652,7 +653,6 @@ export class AgentRuntimeClient {
         const err = isCancelled
           ? Object.assign(new Error("Request cancelled"), { name: "AbortError" })
           : new Error(payload.error || "agent_turn_error");
-        callbacks.onError?.(err);
         settleReject(err);
       },
     );
@@ -693,7 +693,6 @@ export class AgentRuntimeClient {
         const message = err instanceof Error ? err.message : String(err);
         console.error("[AgentRuntimeClient] agent_chat_v2 rejected:", message);
         const wrapped = new Error(message);
-        callbacks.onError?.(wrapped);
         settleReject(wrapped);
       });
 
@@ -813,7 +812,6 @@ export class AgentRuntimeClient {
         callbacks.onCompactionCompleted?.(event.before_tokens, event.after_tokens);
         break;
       case "error":
-        callbacks.onError?.(new Error(event.message));
         break;
       default: {
         // Defensive: log unknown event types so a future Sub-A
@@ -885,7 +883,7 @@ export class AgentRuntimeClient {
         `[agent-runtime-client] tool '${toolName}' reached the bridge with no frontend or Rust executor — registry gap?`,
       );
       content = JSON.stringify({
-        error: `Tool '${toolName}' is not registered. The Rust runtime has no executor for it, and the frontend bridge only handles MCP tools ('mcp_*') and Aurora frontend tools (aurora_skill_search, aurora_skill_load).`,
+        error: `Tool '${toolName}' is not registered. The Rust runtime has no executor for it, and the frontend bridge only handles MCP tools ('mcp_*') and registered Aurora frontend tools.`,
         tool: toolName,
       });
       isError = true;

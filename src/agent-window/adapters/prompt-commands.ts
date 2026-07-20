@@ -48,7 +48,7 @@ export interface PromptCommand {
   skillStorageKey?: string;
   ruleFilename?: string;
   mcpServerId?: string;
-  actionId?: "compact";
+  actionId?: "compact" | "suggest";
 }
 
 export function isDirectiveCommand(
@@ -125,7 +125,18 @@ function mapActionCommands(): PromptCommand[] {
     haystack: "compact context compact reduce compress summarize conversation history".toLowerCase(),
     actionId: "compact",
   };
-  return [compact];
+  // Matched by /s, /suggest, /suggestions, /p, /prompt via the haystack.
+  const suggest: PromptCommand = {
+    key: "action:suggest",
+    kind: "action",
+    title: "Suggest replies",
+    subtitle: "/suggest",
+    description: "Offer quick replies to the last response — scroll the wheel above the message box to browse them.",
+    sourceLabel: "Action",
+    haystack: "s suggest suggestions p prompt prompts reply replies quick answer next message".toLowerCase(),
+    actionId: "suggest",
+  };
+  return [compact, suggest];
 }
 
 async function build(root: string | null): Promise<PromptCommand[]> {

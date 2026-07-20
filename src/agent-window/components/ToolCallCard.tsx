@@ -15,18 +15,31 @@
  * `[error]`/`[rejected]` sentinel = failed; anything else = done.
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { getProfessionalToolName } from "../../services/tool-display";
 import { FileIcon, FolderIcon } from "../../components/explorer/FileIcons";
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
-import { useAgentReviewStore } from "../store/useAgentReviewStore";
+import { useAgentArtifactStore } from "../store/useAgentArtifactStore";
+import { useAgentChatStore } from "../store/useAgentChatStore";
 import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
 import { describeToolActivity, type AgentActivityTarget } from "./activity";
-import { toolStatus, type ToolCall, type ToolStatus } from "./tool-call";
+import {
+  formatToolDuration,
+  toolStatus,
+  type ToolCall,
+  type ToolStatus,
+} from "./tool-call";
 import { parseToolResult } from "./tool-views/tool-result";
 import { ToolResultView } from "./tool-views/ToolResultView";
+
+/** A header chip: an activity target plus optional per-file diff counts. */
+type ChipTarget = AgentActivityTarget & { added?: number; removed?: number };
+
+/** Max file chips shown inline before the strip collapses into a "+N" menu. */
+const CHIP_OVERFLOW_VISIBLE = 6;
 
 const FILE_MODIFY_TOOLS = new Set([
   // Current.
@@ -177,13 +190,248 @@ const DOT_ICON: Record<ToolStatus, AgentIconName | null> = {
   failed: "close",
 };
 
-export const ToolCallCard: React.FC<{
+const CanvasLaunchCard: React.FC<{
+  call: ToolCall;
+  isActivelyStreaming: boolean;
+}> = ({ call, isActivelyStreaming }) => {
+  const status = toolStatus(call, isActivelyStreaming);
+  let args: Record<string, unknown> = {};
+  let result: Record<string, unknown> = {};
+  try {
+    args = JSON.parse(call.arguments || "{}") as Record<string, unknown>;
+  } catch {
+    args = {};
+  }
+  try {
+    result = JSON.parse(call.result || "{}") as Record<string, unknown>;
+  } catch {
+    result = {};
+  }
+
+  const artifactId =
+    (typeof args.artifactId === "string" && args.artifactId) ||
+    partialString(call.arguments, "artifactId") ||
+    "";
+  const artifactTitle =
+    (typeof args.title === "string" && args.title) ||
+    partialString(call.arguments, "title") ||
+    "Canvas artifact";
+  const versionTag = typeof result.versionTag === "string" ? result.versionTag : "";
+  const canOpen = status === "done" && artifactId.length > 0;
+
+  const openCanvas = () => {
+    if (!canOpen) return;
+    const threadId = useAgentChatStore.getState().currentThreadId;
+    if (!threadId) return;
+    useAgentWorkspaceStore.getState().openTab("canvas");
+    if (versionTag) {
+      void useAgentArtifactStore
+        .getState()
+        .select(threadId, artifactId, versionTag)
+        .catch(() => undefined);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      className="agw-canvas-launch"
+      data-status={status}
+      disabled={!canOpen}
+      aria-label={canOpen ? `Open ${artifactTitle}${versionTag ? ` ${versionTag}` : ""} in Canvas` : undefined}
+      onClick={openCanvas}
+    >
+      <span className="agw-canvas-launch-status">
+        {status === "running" ? (
+          <span className="agw-spinner" aria-hidden />
+        ) : (
+          <AgentIcon
+            name={status === "done" ? "check" : "close"}
+            size={13}
+            strokeWidth={2.6}
+          />
+        )}
+      </span>
+      <span className="agw-canvas-launch-glyph">
+        <AgentIcon name="panel-right" size={16} />
+      </span>
+      <span className="agw-canvas-launch-copy">
+        <span className="agw-canvas-launch-kicker">
+          {status === "running"
+            ? "Creating on Canvas"
+            : status === "failed"
+              ? "Canvas creation failed"
+              : "Open in Canvas"}
+        </span>
+        <span className="agw-canvas-launch-title">{artifactTitle}</span>
+      </span>
+      {versionTag && <span className="agw-canvas-launch-version">{versionTag}</span>}
+      {canOpen && <AgentIcon name="external" size={14} className="agw-canvas-launch-open" />}
+    </button>
+  );
+};
+
+/**
+ * "+N" chip at the end of an overflowing file strip. Opens a portaled list of
+ * the files that did NOT fit inline (the visible chips already name the rest —
+ * repeating them here would just be noise). Picking one swaps it into the
+ * inline strip. Lives inside the card header <button>, so it's a role="button"
+ * span — the menu itself portals to the window root where real <button> rows
+ * are legal.
+ */
+const ChipOverflowMenu: React.FC<{
+  items: Array<{ target: ChipTarget; index: number }>;
+  onSelect: (event: React.SyntheticEvent, index: number) => void;
+}> = ({ items, onSelect }) => {
+  const [open, setOpen] = useState(false);
+  const [rect, setRect] = useState<{ left: number; top: number } | null>(null);
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  const triggerRef = useRef<HTMLSpanElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    // The card lives inside the transcript scroller — a fixed-position menu
+    // can't follow it, so any outside scroll just closes the menu.
+    const onScroll = (event: Event) => {
+      if (menuRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    };
+    const onResize = () => setOpen(false);
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [open]);
+
+  const toggle = (event: React.SyntheticEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    const anchor = triggerRef.current?.getBoundingClientRect();
+    if (!anchor) return;
+    const width = 280;
+    const margin = 12;
+    setPortalTarget(
+      (triggerRef.current?.closest(".agw-root") as HTMLElement) ?? document.body,
+    );
+    setRect({
+      left: Math.min(
+        Math.max(margin, anchor.left),
+        Math.max(margin, window.innerWidth - width - margin),
+      ),
+      top: anchor.bottom + 6,
+    });
+    setOpen(true);
+  };
+
+  return (
+    <>
+      <span
+        ref={triggerRef}
+        role="button"
+        tabIndex={0}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="agw-tool-chip agw-tool-chip-btn agw-tool-chip-more"
+        title={`Show ${items.length} more ${items.length === 1 ? "file" : "files"}`}
+        onClick={toggle}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") toggle(event);
+        }}
+      >
+        +{items.length}
+      </span>
+      {open &&
+        rect &&
+        portalTarget &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="listbox"
+            aria-label="More files in this tool result"
+            className="agw-menu agw-chip-overflow agw-scroll"
+            style={{
+              position: "fixed",
+              left: rect.left,
+              top: rect.top,
+              width: 280,
+              maxHeight: 300,
+              overflowY: "auto",
+              zIndex: 1000,
+            }}
+          >
+            {items.map(({ target, index }) => (
+              <button
+                key={`${target.path}:${index}`}
+                type="button"
+                role="option"
+                aria-selected={false}
+                className="agw-chip-overflow-item"
+                title={target.path}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onSelect(event, index);
+                  setOpen(false);
+                }}
+              >
+                {target.kind === "folder" ? (
+                  <FolderIcon name={target.name} className="agw-file-ico" />
+                ) : (
+                  <FileIcon name={target.name} path={target.path} className="agw-file-ico" />
+                )}
+                <span className="agw-chip-overflow-name">{target.name}</span>
+                {(target.added || target.removed) && (
+                  <span className="agw-chip-stat">
+                    {target.removed ? (
+                      <span className="agw-chip-stat-del">−{target.removed}</span>
+                    ) : null}
+                    {target.added ? (
+                      <span className="agw-chip-stat-add">+{target.added}</span>
+                    ) : null}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>,
+          portalTarget,
+        )}
+    </>
+  );
+};
+
+const StandardToolCallCard: React.FC<{
   call: ToolCall;
   isActivelyStreaming?: boolean;
 }> = ({ call, isActivelyStreaming = false }) => {
   // Derived open state (no setState-in-effect): failed tools default OPEN so the
   // reason is visible; a user toggle overrides that default for this card.
   const [override, setOverride] = useState<boolean | null>(null);
+  const [activeFileIndex, setActiveFileIndex] = useState(0);
+  const targetStripRef = useRef<HTMLSpanElement>(null);
+  const targetDragRef = useRef({
+    pointerId: -1,
+    startX: 0,
+    startScrollLeft: 0,
+    moved: false,
+  });
 
   const parsedArgs = useMemo<Record<string, unknown>>(() => {
     try {
@@ -201,12 +449,16 @@ export const ToolCallCard: React.FC<{
     () => describeToolActivity(call.name, call.arguments),
     [call.name, call.arguments],
   );
+  const parsed = useMemo(
+    () => parseToolResult(call.name, parsedArgs, call.result),
+    [call.name, parsedArgs, call.result],
+  );
 
   const path = activity.path || pathOf(parsedArgs);
   const fileName = activity.name || (path ? basename(path) : "");
   const isFolder =
     activity.kind === "folder" || (!activity.kind && FOLDER_TOOLS.has(call.name));
-  const activityTargets: AgentActivityTarget[] =
+  const narratedTargets: AgentActivityTarget[] =
     activity.targets?.length
       ? activity.targets
       : path || isFolder
@@ -218,18 +470,63 @@ export const ToolCallCard: React.FC<{
             },
           ]
         : [];
+  const resultFileTargets: ChipTarget[] = parsed.multiFile?.length
+    ? parsed.multiFile.map((file) => ({
+        kind: "file" as const,
+        name: basename(file.path),
+        path: file.fullPath ?? file.path,
+      }))
+    : parsed.diffs?.length
+      ? parsed.diffs.map((diff, index) => {
+          const diffPath = diff.fullPath ?? diff.path ?? `file ${index + 1}`;
+          return {
+            kind: "file" as const,
+            name: basename(diffPath),
+            path: diffPath,
+            added: diff.added,
+            removed: diff.removed,
+          };
+        })
+      : [];
+  const activityTargets = resultFileTargets.length > 0 ? resultFileTargets : narratedTargets;
+  const isSelectableMultiFileResult = resultFileTargets.length > 1;
+  const selectedFileIndex = isSelectableMultiFileResult
+    ? Math.min(activeFileIndex, activityTargets.length - 1)
+    : 0;
   const showEveryTarget =
-    activityTargets.length > 1 &&
-    (call.name === "file_edit" ||
-      call.name === "file_patch" ||
-      call.name === "search_replace" ||
-      call.name === "multi_search_replace");
-  const chipTargets = showEveryTarget
+    isSelectableMultiFileResult ||
+    (activityTargets.length > 1 &&
+      (call.name === "file_edit" ||
+        call.name === "file_patch" ||
+        call.name === "search_replace" ||
+        call.name === "multi_search_replace" ||
+        call.name === "file_read" ||
+        call.name === "multi_file_read"));
+  const chipTargets: ChipTarget[] = showEveryTarget
     ? activityTargets
     : activityTargets.slice(0, 1).map((target) => ({
         ...target,
         name: activity.name || target.name,
       }));
+  // Long batches collapse to the first chips + a "+N" menu instead of an
+  // endless drag strip. The selected file always stays visible (it swaps into
+  // the last inline slot when it lives past the cutoff).
+  const chipOverflow =
+    isSelectableMultiFileResult && chipTargets.length > CHIP_OVERFLOW_VISIBLE;
+  const visibleChips: Array<{ target: ChipTarget; index: number }> = chipOverflow
+    ? chipTargets.slice(0, CHIP_OVERFLOW_VISIBLE).map((target, index) => ({ target, index }))
+    : chipTargets.map((target, index) => ({ target, index }));
+  if (chipOverflow && !visibleChips.some((chip) => chip.index === selectedFileIndex)) {
+    visibleChips[CHIP_OVERFLOW_VISIBLE - 1] = {
+      target: chipTargets[selectedFileIndex],
+      index: selectedFileIndex,
+    };
+  }
+  const hiddenChips: Array<{ target: ChipTarget; index: number }> = chipOverflow
+    ? chipTargets
+        .map((target, index) => ({ target, index }))
+        .filter(({ index }) => !visibleChips.some((chip) => chip.index === index))
+    : [];
 
   // Live content preview: the file being written, pulled from the partial args.
   const streamingPreview = useMemo(() => {
@@ -245,11 +542,6 @@ export const ToolCallCard: React.FC<{
     // Follow the newest written lines as they stream in.
     if (previewRef.current) previewRef.current.scrollTop = previewRef.current.scrollHeight;
   }, [streamingPreview]);
-
-  const parsed = useMemo(
-    () => parseToolResult(call.name, parsedArgs, call.result),
-    [call.name, parsedArgs, call.result],
-  );
 
   const argChips = useMemo(
     () =>
@@ -294,25 +586,62 @@ export const ToolCallCard: React.FC<{
   const defaultOpen = status === "failed" && isActivelyStreaming;
   const open = (override ?? defaultOpen) && hasDetail;
   const toggle = () => setOverride(!(override ?? defaultOpen));
-
-  const reviewPaths = (
-    parsed.diffs?.map((diff) => diff.path) ?? (parsed.diff?.path ? [parsed.diff.path] : [])
-  ).filter((reviewPath): reviewPath is string => Boolean(reviewPath));
-  const reviewPathFor = (target: AgentActivityTarget, index: number) => {
-    const normalizedTarget = target.path.replaceAll("\\", "/").toLowerCase();
-    return (
-      reviewPaths.find(
-        (reviewPath) => reviewPath.replaceAll("\\", "/").toLowerCase() === normalizedTarget,
-      ) ||
-      reviewPaths.find((reviewPath) => basename(reviewPath) === basename(target.path)) ||
-      reviewPaths[index] ||
-      null
-    );
+  const selectFileTarget = (event: React.SyntheticEvent, index: number) => {
+    if (targetDragRef.current.moved) {
+      event.preventDefault();
+      event.stopPropagation();
+      targetDragRef.current.moved = false;
+      return;
+    }
+    event.stopPropagation();
+    setActiveFileIndex(index);
+    if (!open && hasDetail) setOverride(true);
   };
-  const openReview = (e: React.SyntheticEvent, reviewPath: string) => {
-    e.stopPropagation();
-    useAgentReviewStore.getState().setSelectedPath(reviewPath);
-    useAgentWorkspaceStore.getState().openTab("review");
+  const onTargetPointerDown = (event: React.PointerEvent<HTMLSpanElement>) => {
+    if (event.button !== 0 || event.currentTarget.scrollWidth <= event.currentTarget.clientWidth) {
+      return;
+    }
+    targetDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startScrollLeft: event.currentTarget.scrollLeft,
+      moved: false,
+    };
+    // Capture is deferred until real movement: pointer capture retargets the
+    // eventual `click` to the strip, which made every chip unclickable
+    // whenever the strip overflowed.
+  };
+  const onTargetPointerMove = (event: React.PointerEvent<HTMLSpanElement>) => {
+    const drag = targetDragRef.current;
+    if (drag.pointerId !== event.pointerId) return;
+    const delta = event.clientX - drag.startX;
+    if (!drag.moved && Math.abs(delta) > 3) {
+      drag.moved = true;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      event.currentTarget.dataset.dragging = "true";
+    }
+    if (!drag.moved) return;
+    event.preventDefault();
+    event.currentTarget.scrollLeft = drag.startScrollLeft - delta;
+  };
+  const finishTargetDrag = (event: React.PointerEvent<HTMLSpanElement>) => {
+    if (targetDragRef.current.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    event.currentTarget.removeAttribute("data-dragging");
+    targetDragRef.current.pointerId = -1;
+  };
+  // WebView2 150.x renderer CHECK (STATUS_BREAKPOINT sad page): a mouse-up
+  // while a text selection exists during style/layout churn kills the page —
+  // and clicking this header causes exactly that churn (expand animation +
+  // highlighter mount). Disarm both halves before the click lands: swallow
+  // double/triple-click word selection on the header, and collapse any live
+  // transcript selection before layout starts moving.
+  const disarmSelectionBeforeClick = (event: React.MouseEvent) => {
+    if (event.detail > 1) event.preventDefault();
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed) selection.removeAllRanges();
   };
 
   return (
@@ -321,6 +650,7 @@ export const ToolCallCard: React.FC<{
         type="button"
         className="agw-tool-head"
         aria-expanded={open}
+        onMouseDown={disarmSelectionBeforeClick}
         onClick={() => hasDetail && toggle()}
       >
         <span className={`agw-tool-dot agw-tool-dot-${status}`}>
@@ -344,9 +674,32 @@ export const ToolCallCard: React.FC<{
         </span>
 
         {chipTargets.length > 0 && (
-          <span className="agw-tool-targets">
-            {chipTargets.map((target, index) => {
-              const reviewPath = reviewPathFor(target, index);
+          <span
+            ref={targetStripRef}
+            className="agw-tool-targets"
+            role={isSelectableMultiFileResult ? "tablist" : undefined}
+            aria-label={isSelectableMultiFileResult ? "Files in this tool result" : undefined}
+            data-multi={chipTargets.length > 1 ? "true" : undefined}
+            onPointerDown={onTargetPointerDown}
+            onPointerMove={onTargetPointerMove}
+            onPointerUp={finishTargetDrag}
+            onPointerCancel={finishTargetDrag}
+            onClick={(event) => {
+              if (!targetDragRef.current.moved) return;
+              event.preventDefault();
+              event.stopPropagation();
+              targetDragRef.current.moved = false;
+            }}
+            onWheel={(event) => {
+              const strip = targetStripRef.current;
+              if (!strip || strip.scrollWidth <= strip.clientWidth) return;
+              if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+                event.preventDefault();
+                strip.scrollLeft += event.deltaY;
+              }
+            }}
+          >
+            {visibleChips.map(({ target, index }) => {
               const chipContent = (
                 <>
                   {target.kind === "folder" ? (
@@ -367,22 +720,57 @@ export const ToolCallCard: React.FC<{
                   >
                     {target.name}
                   </span>
+                  {(target.added || target.removed) && (
+                    <span className="agw-chip-stat">
+                      {target.removed ? (
+                        <span className="agw-chip-stat-del">−{target.removed}</span>
+                      ) : null}
+                      {target.added ? (
+                        <span className="agw-chip-stat-add">+{target.added}</span>
+                      ) : null}
+                    </span>
+                  )}
                 </>
               );
 
-              return reviewPath ? (
+              return isSelectableMultiFileResult ? (
                 <span
                   key={`${target.path}:${index}`}
-                  role="button"
-                  tabIndex={0}
+                  role="tab"
+                  tabIndex={selectedFileIndex === index ? 0 : -1}
+                  aria-selected={selectedFileIndex === index}
                   className="agw-tool-chip agw-tool-chip-btn"
-                  title="Open in Review"
-                  onClick={(event) => openReview(event, reviewPath)}
+                  title={target.path}
+                  data-index={index}
+                  data-selected={selectedFileIndex === index ? "true" : undefined}
+                  onClick={(event) => selectFileTarget(event, index)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
-                      openReview(event, reviewPath);
+                      selectFileTarget(event, index);
+                      return;
                     }
+                    const last = activityTargets.length - 1;
+                    const next =
+                      event.key === "ArrowRight"
+                        ? Math.min(index + 1, last)
+                        : event.key === "ArrowLeft"
+                          ? Math.max(index - 1, 0)
+                          : event.key === "Home"
+                            ? 0
+                            : event.key === "End"
+                              ? last
+                              : null;
+                    if (next === null) return;
+                    event.preventDefault();
+                    selectFileTarget(event, next);
+                    // The target chip may only become visible AFTER the swap-in
+                    // render (overflowed strips), so focus by index next frame.
+                    requestAnimationFrame(() => {
+                      targetStripRef.current
+                        ?.querySelector<HTMLElement>(`[role="tab"][data-index="${next}"]`)
+                        ?.focus();
+                    });
                   }}
                 >
                   {chipContent}
@@ -393,6 +781,9 @@ export const ToolCallCard: React.FC<{
                 </span>
               );
             })}
+            {hiddenChips.length > 0 && (
+              <ChipOverflowMenu items={hiddenChips} onSelect={selectFileTarget} />
+            )}
           </span>
         )}
 
@@ -421,6 +812,14 @@ export const ToolCallCard: React.FC<{
             </span>
           )
         )}
+
+        {/* Quiet elapsed time — only once settled, and only when it's long
+            enough to mean something (sub-500ms would just be row noise). */}
+        {status !== "running" &&
+          typeof call.durationMs === "number" &&
+          call.durationMs >= 500 && (
+            <span className="agw-tool-time">{formatToolDuration(call.durationMs)}</span>
+          )}
 
         <span style={{ flex: 1 }} />
 
@@ -473,7 +872,7 @@ export const ToolCallCard: React.FC<{
                   {streamingPreview}
                 </pre>
               ) : (
-                <ToolResultView parsed={parsed} />
+              <ToolResultView parsed={parsed} activeMultiFileIndex={selectedFileIndex} />
               )}
             </div>
           </motion.div>
@@ -482,3 +881,13 @@ export const ToolCallCard: React.FC<{
     </div>
   );
 };
+
+export const ToolCallCard: React.FC<{
+  call: ToolCall;
+  isActivelyStreaming?: boolean;
+}> = ({ call, isActivelyStreaming = false }) =>
+  call.name === "present_artifact" ? (
+    <CanvasLaunchCard call={call} isActivelyStreaming={isActivelyStreaming} />
+  ) : (
+    <StandardToolCallCard call={call} isActivelyStreaming={isActivelyStreaming} />
+  );

@@ -84,7 +84,20 @@ pub struct ThreadSummary {
 /// `Vec<Message>` shape the React layer renders. `Tool` messages are
 /// folded back into the prior assistant message's `tool_calls[].result`
 /// so the UI sees tool calls paired with their results.
+#[cfg(test)]
 fn session_to_db_messages(messages: &[ConversationMessage]) -> Vec<Message> {
+    session_to_db_messages_rich(messages, &std::collections::HashMap::new())
+}
+
+/// Same conversion, overlaying full-fidelity results from the
+/// `.rich.jsonl` sidecar: when a `ToolResult`'s history copy was clamped
+/// at persist time, the sidecar carries the complete (UI-shaped) payload
+/// keyed by `tool_use_id` — the reloaded card then renders the FULL diff
+/// instead of a truncated head. Errors never have rich copies.
+fn session_to_db_messages_rich(
+    messages: &[ConversationMessage],
+    rich: &std::collections::HashMap<String, String>,
+) -> Vec<Message> {
     let mut out: Vec<Message> = Vec::with_capacity(messages.len());
 
     for msg in messages {
@@ -221,7 +234,7 @@ fn session_to_db_messages(messages: &[ConversationMessage]) -> Vec<Message> {
                                     let formatted = if is_error.unwrap_or(false) {
                                         format!("[error] {content}")
                                     } else {
-                                        content.clone()
+                                        rich.get(tool_use_id).unwrap_or(content).clone()
                                     };
                                     call.result = Some(formatted);
                                 }
@@ -488,7 +501,8 @@ fn build_thread_state(
     let Some(loaded) = loaded else {
         return Ok(None);
     };
-    let messages = session_to_db_messages(loaded.session.messages());
+    let rich = store.load_rich_results(thread_id);
+    let messages = session_to_db_messages_rich(loaded.session.messages(), &rich);
     Ok(Some(ThreadState {
         id: thread_id.to_string(),
         title: loaded.metadata.title,
@@ -913,6 +927,44 @@ mod tests {
         assert_eq!(calls[0].id, "call-1");
         assert_eq!(calls[0].name, "list_dir");
         assert_eq!(calls[0].result.as_deref(), Some("FILES: a.rs b.rs"));
+    }
+
+    #[test]
+    fn rich_sidecar_overlays_clamped_tool_result() {
+        let messages = vec![
+            assistant_with_tool(
+                "call-1",
+                "file_edit",
+                serde_json::json!({"path": "a.ts"}),
+                1,
+            ),
+            tool_result(
+                "call-1",
+                "{\"oldContent\":\"head\\n\\n[truncated 4923 bytes in persisted history]\"}",
+                2,
+            ),
+        ];
+        let mut rich = std::collections::HashMap::new();
+        rich.insert(
+            "call-1".to_string(),
+            "{\"oldContent\":\"the full before\",\"newContent\":\"the full after\"}".to_string(),
+        );
+
+        let db = session_to_db_messages_rich(&messages, &rich);
+        let calls = db[0].tool_calls.as_ref().expect("tool_calls present");
+        assert_eq!(
+            calls[0].result.as_deref(),
+            Some("{\"oldContent\":\"the full before\",\"newContent\":\"the full after\"}"),
+        );
+
+        // Without a sidecar entry the clamped copy still renders.
+        let plain = session_to_db_messages(&messages);
+        let plain_calls = plain[0].tool_calls.as_ref().unwrap();
+        assert!(plain_calls[0]
+            .result
+            .as_deref()
+            .unwrap()
+            .contains("[truncated 4923 bytes in persisted history]"));
     }
 
     #[test]

@@ -58,12 +58,14 @@ impl ToolExecutor for FileEditTool {
         ToolSchema {
             name: "file_edit".into(),
             description: "Edit files by exact-text find-and-replace. \
+                          ALWAYS emit the file path(s) BEFORE any edit text, so the interface can \
+                          show which files are being edited while the arguments stream: in the \
+                          single-edit form emit `path` first, before old_string/new_string; in the \
+                          batch form emit `target_paths` first with every file path. \
                           Single edit: pass path + old_string + new_string. \
                           Many edits to ONE file: pass `edits` (an array) plus the top-level `path`. \
                           Edits across MULTIPLE files in ONE call: give each item in `edits` its own \
                           `path` (the top-level `path` becomes the default for items that omit it). \
-                          For a multi-file batch, emit `target_paths` first with every file path so \
-                          the interface can show all targets before the edit bodies stream. \
                           The whole batch is atomic — every edit applies against its file's original \
                           snapshot, and if any edit fails NO file is changed. old_string must match \
                           exactly and be unique unless replace_all=true. Read each file with \
@@ -75,9 +77,9 @@ impl ToolExecutor for FileEditTool {
                     "target_paths": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Streaming UI metadata for a multi-file batch. Emit this field first with every file that edits[] will target. It does not change which files are edited."
+                        "description": "Streaming UI metadata. Emit this FIRST — before path/old_string/edits — listing every file this call will edit (also for a single file). It does not change which files are edited."
                     },
-                    "path": { "type": "string", "description": "The file to edit. Required for the single-edit form; in the batch form it is the DEFAULT path for edits that don't set their own." },
+                    "path": { "type": "string", "description": "The file to edit. Emit it before old_string/new_string. Required for the single-edit form; in the batch form it is the DEFAULT path for edits that don't set their own." },
                     "old_string": { "type": "string", "description": "Single-edit form: exact text to find." },
                     "new_string": { "type": "string", "description": "Single-edit form: replacement text (may be empty to delete)." },
                     "replace_all": { "type": "boolean", "default": false, "description": "Single-edit form: replace every occurrence." },

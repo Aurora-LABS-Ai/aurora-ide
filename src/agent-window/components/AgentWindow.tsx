@@ -21,6 +21,7 @@ import { useAgentChatStore } from "../store/useAgentChatStore";
 import { useAgentQuestionStore } from "../store/useAgentQuestionStore";
 import { useAgentUiStore } from "../store/useAgentUiStore";
 import { AgentCommandCenter } from "./AgentCommandCenter";
+import { useAgentArtifactStore } from "../store/useAgentArtifactStore";
 
 /** Read the project this window is scoped to from the launch URL (`?ws=`). */
 function readProjectRootFromUrl(): string | null {
@@ -32,6 +33,7 @@ function readProjectRootFromUrl(): string | null {
 export const AgentWindow: React.FC = () => {
   const init = useAgentChatStore((s) => s.init);
   const projectRoot = useAgentChatStore((s) => s.projectRoot);
+  const currentThreadId = useAgentChatStore((s) => s.currentThreadId);
   const view = useAgentUiStore((s) => s.view);
 
   // Remember the OS window's size (and maximized state) across closes so the
@@ -78,6 +80,11 @@ export const AgentWindow: React.FC = () => {
     () => registerQuestionHandler((request) => useAgentQuestionStore.getState().ask(request)),
     [],
   );
+
+  useEffect(() => {
+    if (!currentThreadId) return;
+    void useAgentArtifactStore.getState().loadThread(currentThreadId).catch(() => undefined);
+  }, [currentThreadId]);
 
   // The expand/collapse glide (tool cards, reasoning) must feel exactly like the
   // IDE chat, which always animates. `reducedMotion="user"` was overriding that:

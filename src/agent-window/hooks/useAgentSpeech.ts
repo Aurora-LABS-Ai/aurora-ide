@@ -18,8 +18,43 @@ import type { RefObject } from "react";
 import { isAuroraRuntimeAvailable } from "../../lib/runtime";
 import { speechService } from "../../services/speech";
 import { useSettingsStore } from "../../store/useSettingsStore";
+import { runDictationCleanup } from "../adapters/prompt-refine";
+import { dictationCleanupReady, useAgentRefineStore } from "../store/useAgentRefineStore";
 
 const TARGET_SAMPLE_RATE = 16_000;
+
+/** Longest we let the local cleanup model hold up transcript insertion. */
+const DICTATION_CLEANUP_TIMEOUT_MS = 6_000;
+
+/**
+ * Optional pass over a fresh transcript: the local prompt-refine model adds
+ * punctuation/casing and strips filler words. Runs inside the existing
+ * "transcribing" spinner window; ANY failure (off, unconfigured, slow, model
+ * error) falls back to the raw transcript — dictation never breaks.
+ */
+async function polishTranscript(text: string): Promise<string> {
+  const refine = useAgentRefineStore.getState();
+  if (!dictationCleanupReady(refine)) return text;
+  try {
+    const cleaned = await Promise.race([
+      runDictationCleanup(`dictation_${Date.now()}`, text, {
+        llamaDir: refine.llamaDir,
+        modelPath: refine.modelPath,
+        device: refine.device,
+      }),
+      new Promise<string>((_, reject) =>
+        window.setTimeout(
+          () => reject(new Error("dictation cleanup timed out")),
+          DICTATION_CLEANUP_TIMEOUT_MS,
+        ),
+      ),
+    ]);
+    return cleaned.trim() || text;
+  } catch (err) {
+    console.warn("[agent-window] dictation cleanup skipped:", err);
+    return text;
+  }
+}
 
 /** How long a mic notice (warning/error) stays before it auto-dismisses. */
 const MIC_NOTICE_TTL_MS = 5_000;
@@ -409,7 +444,7 @@ export function useAgentSpeech(onTranscript: (text: string) => void): AgentSpeec
         runtimePath: speechRuntimePath,
       });
       const text = result.transcript.trim();
-      if (text) onTranscript(text);
+      if (text) onTranscript(await polishTranscript(text));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // "…did not return a transcript" (silence / no speech) is expected and

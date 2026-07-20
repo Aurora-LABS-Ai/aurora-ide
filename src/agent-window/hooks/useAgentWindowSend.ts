@@ -30,6 +30,7 @@ import {
   type ToolCallRequest,
 } from "../../services";
 import { reasoningIsOn, useSettingsStore } from "../../store/useSettingsStore";
+import { classifyError } from "../../lib/error-classifier";
 import type {
   AttachedPromptChip,
   DbMessage,
@@ -47,6 +48,13 @@ import {
   IMAGE_TOKEN_COST,
   type ChatMessageForCount,
 } from "../../services/token-service";
+import { runLocalTitle, runReplySuggestions } from "../adapters/prompt-refine";
+import {
+  refinePathsConfigured,
+  replySuggestionsReady,
+  useAgentRefineStore,
+} from "../store/useAgentRefineStore";
+import { useAgentSuggestStore } from "../store/useAgentSuggestStore";
 import { useAgentChatStore } from "../store/useAgentChatStore";
 import { useAgentContextStore } from "../store/useAgentContextStore";
 import { useAgentTaskStore, type Task } from "../store/useAgentTaskStore";
@@ -340,28 +348,40 @@ function buildMcpDirective(serverNames: string[]): string | null {
 }
 
 /**
- * AI title maker — for the FIRST message of a NEW chat only. When enabled and
- * configured, asks the user's OpenAI-compatible endpoint for a short title,
- * persists it, and reflects it in the live store + rail. Fully non-blocking and
- * non-fatal: any failure (disabled, unconfigured, network, bad key) silently
- * keeps the locally-derived title. The runtime's own auto-title is gated on the
- * sidecar still reading "New Chat", so whichever write lands first, this title
- * wins (and on failure the derived title stands).
+ * AI title maker — for the FIRST message of a NEW chat only. Depending on the
+ * configured mode, asks either the user's OpenAI-compatible endpoint (cloud)
+ * or the local prompt-refine llama.cpp model (local) for a short title,
+ * persists it, and reflects it in the live store + rail. Fully non-blocking
+ * and non-fatal: any failure (off, unconfigured, network, bad key) silently
+ * keeps the locally-derived title. The runtime's own auto-title is gated on
+ * the sidecar still reading "New Chat", so whichever write lands first, this
+ * title wins (and on failure the derived title stands).
  */
 async function maybeGenerateTitle(threadId: string, firstMessage: string): Promise<void> {
   const s = useSettingsStore.getState();
-  if (!s.titleMakerEnabled) return;
-  const baseUrl = s.titleMakerBaseUrl.trim();
-  const model = s.titleMakerModel.trim();
-  if (!baseUrl || !model || !firstMessage.trim()) return;
+  if (s.titleMakerMode === "off" || !firstMessage.trim()) return;
 
   try {
-    const title = await threadService.generateTitle({
-      baseUrl,
-      apiKey: s.titleMakerApiKey.trim() || null,
-      model,
-      userMessage: firstMessage,
-    });
+    let title: string;
+    if (s.titleMakerMode === "local") {
+      const refine = useAgentRefineStore.getState();
+      if (!refinePathsConfigured(refine)) return;
+      title = await runLocalTitle(`title_${threadId}`, firstMessage, {
+        llamaDir: refine.llamaDir,
+        modelPath: refine.modelPath,
+        device: refine.device,
+      });
+    } else {
+      const baseUrl = s.titleMakerBaseUrl.trim();
+      const model = s.titleMakerModel.trim();
+      if (!baseUrl || !model) return;
+      title = await threadService.generateTitle({
+        baseUrl,
+        apiKey: s.titleMakerApiKey.trim() || null,
+        model,
+        userMessage: firstMessage,
+      });
+    }
     const clean = (title ?? "").trim();
     if (!clean) return;
 
@@ -393,6 +413,67 @@ async function maybeGenerateTitle(threadId: string, firstMessage: string): Promi
  * turnId). Keyed by thread id; entries are removed when the turn settles.
  */
 const runningAgents = new Map<string, AgentService>();
+
+/**
+ * Reply suggestions — after a turn settles, ask the local prompt-refine model
+ * for up to 3 short replies the user could tap instead of typing. Fire-and-
+ * forget (the ~4s of model calls must never delay turn teardown); the
+ * assistant text is captured synchronously because the live turn closes right
+ * after this is invoked. Results are dropped if a new turn started meanwhile,
+ * and any failure simply means no chips. Gated on the shared composer-assists
+ * preference.
+ */
+function generateSuggestionsFrom(
+  threadId: string,
+  messages: Array<{ role: string; content?: string | null }>,
+): void {
+  const refine = useAgentRefineStore.getState();
+  const lastAssistant = [...messages]
+    .reverse()
+    .find((m) => m.role === "assistant" && (m.content ?? "").trim());
+  const text = (lastAssistant?.content ?? "").trim();
+  if (!text) return;
+  // The model role-plays as the USER — it needs to see what the user asked
+  // for, not just what the assistant answered.
+  const lastUser = [...messages]
+    .reverse()
+    .find((m) => m.role === "user" && (m.content ?? "").trim());
+  const userText = (lastUser?.content ?? "").trim();
+
+  void runReplySuggestions(`suggest_${threadId}_${Date.now()}`, userText, text, {
+    llamaDir: refine.llamaDir,
+    modelPath: refine.modelPath,
+    device: refine.device,
+  })
+    .then((suggestions) => {
+      // A newer turn owns the conversation now — these chips describe a
+      // message that's no longer the latest.
+      if (runningAgents.has(threadId)) return;
+      useAgentSuggestStore.getState().setSuggestions(threadId, suggestions);
+    })
+    .catch((err) => {
+      console.warn("[agent-window] reply suggestions skipped:", err);
+    });
+}
+
+function maybeSuggestReplies(threadId: string): void {
+  if (!replySuggestionsReady(useAgentRefineStore.getState())) return;
+  const messages = useAgentChatStore.getState().liveTurns[threadId]?.messages ?? [];
+  generateSuggestionsFrom(threadId, messages);
+}
+
+/**
+ * Manual `/suggest` trigger from the composer. Explicit intent — gated only
+ * on the local model being configured, NOT on the auto-suggestions toggle,
+ * and reads the SETTLED thread (live turns have already closed by the time
+ * the user can type a slash command).
+ */
+export function requestReplySuggestions(threadId: string): void {
+  if (!refinePathsConfigured(useAgentRefineStore.getState())) return;
+  if (runningAgents.has(threadId)) return; // mid-turn — chips would be stale
+  const messages = useAgentChatStore.getState().currentThread?.messages ?? [];
+  generateSuggestionsFrom(threadId, messages);
+}
 
 interface BackgroundSendTarget {
   threadId: string;
@@ -744,6 +825,36 @@ export function useAgentWindowSend(): AgentWindowSend {
       }
     };
 
+    // Wall-clock timing per tool call, anchored on the runtime's
+    // execution-start / result events. Native Rust tools emit execution_start
+    // BEFORE their permission gate, so approval windows are recorded
+    // separately and only the part overlapping [start, end] is subtracted —
+    // a 40-second approval must never read as a 40-second tool. Bridge tools
+    // (MCP) start AFTER approval, so their overlap is naturally zero.
+    const toolTimings = new Map<
+      string,
+      { start: number; approval: Array<{ from: number; to: number }> }
+    >();
+    const markToolStart = (id: string) => {
+      if (!toolTimings.has(id)) {
+        toolTimings.set(id, { start: performance.now(), approval: [] });
+      }
+    };
+    const settleToolDuration = (id: string): number | undefined => {
+      const timing = toolTimings.get(id);
+      if (!timing) return undefined;
+      toolTimings.delete(id);
+      const end = performance.now();
+      let approvalWait = 0;
+      for (const w of timing.approval) {
+        approvalWait += Math.max(
+          0,
+          Math.min(w.to, end) - Math.max(w.from, timing.start),
+        );
+      }
+      return Math.max(0, end - timing.start - approvalWait);
+    };
+
     const upsertToolCall = (tc: ToolCallRequest, result?: string | null) => {
       // Keep timeline order exact: buffered text lands BEFORE this tool event.
       flushStreamText();
@@ -755,6 +866,7 @@ export function useAgentWindowSend(): AgentWindowSend {
           name: tc.function.name,
           arguments: tc.function.arguments || "",
           result: result !== undefined ? result : idx >= 0 ? calls[idx].result : null,
+          durationMs: idx >= 0 ? calls[idx].durationMs : undefined,
         };
         if (idx >= 0) calls[idx] = next;
         else calls.push(next);
@@ -811,11 +923,13 @@ export function useAgentWindowSend(): AgentWindowSend {
       taskStore.setTasks(threadId, mapped);
     };
 
-    const setToolResult = (tc: ToolCallRequest, result: string) => {
+    const setToolResult = (tc: ToolCallRequest, result: string, durationMs?: number) => {
       flushStreamText();
       patchMessage(assistantId, (m) => {
         const calls = (m.tool_calls ?? []).map((c) =>
-          c.id === tc.id ? { ...c, result } : c,
+          c.id === tc.id
+            ? { ...c, result, durationMs: durationMs ?? c.durationMs }
+            : c,
         );
         const updated = calls.find((c) => c.id === tc.id);
         return {
@@ -982,6 +1096,8 @@ export function useAgentWindowSend(): AgentWindowSend {
     // threads keep their own client/config. Registered so `stop()` can target it.
     const agent = new AgentService();
     runningAgents.set(threadId, agent);
+    // A new message supersedes the previous turn's reply chips immediately.
+    useAgentSuggestStore.getState().clear(threadId);
     agent.setProvider(providerConfig);
     agent.setThreadId(threadId);
     agent.updateConfig({
@@ -1078,38 +1194,54 @@ export function useAgentWindowSend(): AgentWindowSend {
             captureTodos(tc);
           },
           onToolExecutionStart: (tc) => {
+            markToolStart(tc.id);
             setActivity(describeToolActivity(tc.function.name, tc.function.arguments || ""));
             upsertToolCall(tc);
             captureTodos(tc);
           },
-          onToolExecutionComplete: (tc, result) => setToolResult(tc, result),
+          onToolExecutionComplete: (tc, result) =>
+            setToolResult(tc, result, settleToolDuration(tc.id)),
           onToolExecutionError: (tc, error) =>
-            setToolResult(tc, `[error] ${error}`),
-          onToolRejected: (tc, reason) =>
-            setToolResult(tc, `[rejected] ${reason}`),
+            setToolResult(tc, `[error] ${error}`, settleToolDuration(tc.id)),
+          onToolRejected: (tc, reason) => {
+            toolTimings.delete(tc.id);
+            setToolResult(tc, `[rejected] ${reason}`);
+          },
           onToolApprovalRequired: async (tc) => {
-            const mode = settings.getToolApproval(tc.function.name);
-            if (settings.autoApproveTools || mode === "auto") return true;
-            if (mode === "deny") return false;
-            // always_ask → block on the inline prompt.
-            return await new Promise<boolean>((resolve) => {
-              approvalResolversRef.current.get(threadId)?.(false);
-              approvalResolversRef.current.set(threadId, resolve);
-              setPendingApprovals((current) => ({
-                ...current,
-                [threadId]: {
-                  id: tc.id,
-                  toolName: tc.function.name,
-                  args: tc.function.arguments || "",
-                },
-              }));
-            });
+            const approvalBegan = performance.now();
+            try {
+              const mode = settings.getToolApproval(tc.function.name);
+              if (settings.autoApproveTools || mode === "auto") return true;
+              if (mode === "deny") return false;
+              // always_ask → block on the inline prompt.
+              return await new Promise<boolean>((resolve) => {
+                approvalResolversRef.current.get(threadId)?.(false);
+                approvalResolversRef.current.set(threadId, resolve);
+                setPendingApprovals((current) => ({
+                  ...current,
+                  [threadId]: {
+                    id: tc.id,
+                    toolName: tc.function.name,
+                    args: tc.function.arguments || "",
+                  },
+                }));
+              });
+            } finally {
+              // Native tools are already timing (execution_start precedes their
+              // gate) — log the wait so it's excluded from the tool's duration.
+              toolTimings
+                .get(tc.id)
+                ?.approval.push({ from: approvalBegan, to: performance.now() });
+            }
           },
           onError: (error) => {
             const message =
               error instanceof Error ? error.message : String(error);
             if (/cancel|abort/i.test(message)) return; // user stop → not an error
-            const note = `\n\n**Error:** ${message}`;
+            const classified = classifyError(
+              error instanceof Error ? error : new Error(message),
+            );
+            const note = `\n\n**${classified.title}**\n\n${classified.message}\n\n${classified.suggestion}`;
             flushStreamText();
             patchMessage(assistantId, (m) => ({
               ...m,
@@ -1170,6 +1302,9 @@ export function useAgentWindowSend(): AgentWindowSend {
             });
         }
       }
+      // Turn settled cleanly → offer tappable follow-up replies (async, never
+      // blocks teardown; errored/cancelled turns skip this by construction).
+      maybeSuggestReplies(threadId);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (!/cancel|abort/i.test(message)) {

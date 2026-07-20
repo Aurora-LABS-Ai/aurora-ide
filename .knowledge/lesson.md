@@ -2,6 +2,21 @@
 
 Append 2-4 lines per mistake / broken assumption / project-specific warning.
 
+## Agent Window feature ideation must create desire, not process (2026-07-20)
+- The Why Graph recommendation over-indexed on provenance, verification, and engineering trust; the user did not
+  love it. For “next big thing” ideation, prioritize a visibly transformative interaction or capability first.
+- Do not disguise workflow infrastructure as a flagship product idea. Lead with something users would immediately
+  want to open, touch, and show someone else; reliability machinery can support it underneath.
+- A second recommendation still centered hidden worktree/checkpoint machinery. The user explicitly redirected the
+  brief to new visual features; describe the visible surface and interaction first, not backend value.
+
+## Pointer capture retargets `click` — and jsdom doesn't model it (2026-07-19)
+- `setPointerCapture` on pointerdown makes Chromium dispatch the eventual `click` at the CAPTURE element, not the
+  child under the cursor — child onClick handlers silently die. jsdom does no such retargeting, so component tests
+  stay green while the real UI is broken. Capture lazily (only once a drag threshold is crossed), never on press.
+- Symptom shape to remember: "clicking X does nothing, but only when the container overflows" → the overflow
+  condition gated the capture path. Test the invariant (capture NOT taken on a plain press), not just the click.
+
 ## "App broke with zero app changes" → check the WebView2 runtime date FIRST (2026-07-13)
 - The Evergreen WebView2 runtime auto-updates silently (`C:\Program Files (x86)\Microsoft\EdgeWebView\Application\<ver>` —
   check the folder's CreationTime). A renderer crash (STATUS_BREAKPOINT sad page) that "started yesterday" matched the
@@ -137,3 +152,55 @@ clean 199ms runtime verification of the typing-assist engine.
   not the Rust literal, when UI depends on streamed argument order.
 - Never persist a rich JSON tool result with a blind byte slice. It produces invalid JSON on reload and forces a raw-text
   fallback. Compact large payload fields inside the parsed value so the saved envelope stays structurally valid.
+
+## pnpm script probing (2026-07-17)
+- `pnpm dev -- --help` forwards a literal `--` to Vite in this project, so it starts instead of printing help and exiting.
+- Do not use that form to probe a long-running script; inspect `package.json` directly and validate the independent production command instead.
+
+## Pointer capture tests in jsdom (2026-07-17)
+- jsdom does not define `setPointerCapture`, `hasPointerCapture`, or `releasePointerCapture`, so `vi.spyOn` fails before a component test mounts.
+- Define those methods as configurable test-environment shims and remove them during cleanup; this models WebView2 without weakening production code.
+
+## Sparkle icons are banned in Aurora (2026-07-19)
+- The user considers sparkle/star glyphs "AI slop" — the `sparkle` AgentIcon was removed from the SET entirely and
+  replaced by the bespoke `refine` nib glyph. Never reintroduce sparkles for AI-adjacent features; design a
+  semantic bespoke mark in the AgentIcon style instead (24-box stroke primitives, like `facet`).
+
+## Prompt-engineering a 0.5B local model (2026-07-19, smoke-tested)
+- ALWAYS smoke-test prompts against the real GGUF before shipping (paths in knowledge.md). Patterns proved:
+  few-shot examples are mandatory for format adherence BUT the model will parrot a concrete example verbatim when
+  asked for multiple outputs — split multi-output tasks into one call per item. Explicit `--temp` matters (0.2-0.4);
+  default sampling drifts. Always sanitize outputs (label leaks like "Title:", list markers) and validate/filter —
+  design features so 0 usable outputs degrades to current behavior.
+
+## Canvas is a surface, not an AI action (2026-07-17)
+- Do not reuse the prompt-refinement sparkle for Canvas; it reads as generic AI decoration and ignores the Agent Window's semantic icon set.
+- Canvas opens the right rail, so reuse the bespoke `panel-right` glyph and the app's flat hover treatment. Avoid hover translation on dense transcript controls because it can collide with clipped message bounds.
+
+## Agent mutation tools need workflow-level preflight (2026-07-17)
+- Sequentially applying exact-text patches can misdiagnose overlap as a missing later match. Resolve every range against the unchanged base, reject intersecting ranges with both indices, and only materialize after the whole plan passes.
+- For immutable artifacts, format validation must happen before persistence. Use the backend's real patch engine to preview, validate the materialized Mermaid source, then commit with the same base tag so a race becomes a stale-version error instead of a broken snapshot.
+
+## Combined tool forms must encode their boundary (2026-07-18)
+- Optional `path` plus optional `paths` without non-empty or mutual-exclusion constraints encourages models to emit empty placeholder arrays that accidentally select the wrong executor branch.
+- Put the rule in the provider-facing schema and prompt, then validate again at execution: recover only an unambiguous empty placeholder and reject genuinely conflicting forms with corrective errors.
+
+## Terminal signals need one callback owner (2026-07-18)
+- A streamed error event, terminal event, and rejected IPC result can all describe one failed turn; guarding only promise settlement does not prevent duplicate UI side effects.
+- Put user notification inside the same idempotent settle function and treat the other signals as transport/recovery data, then test the full multi-signal sequence with one request id.
+
+## Check free space before linking Aurora's Rust test target (2026-07-18)
+- The CPU-only Rust test target can create hundreds of megabytes of loose codegen objects before archiving; starting it with less than 1 GB free can fill drive E and fail with OS error 112.
+- Check available space first and prefer `cargo check` when the user owns runtime verification; if linking is necessary, ensure several gigabytes are free before starting.
+
+## Shared multi-file UI must be result-driven (2026-07-18)
+- The earlier horizontal-selector work was applied only to read-tool names, leaving edit results on their separate stacked renderer and hidden Review click path.
+- When several tools share one visible interaction contract, derive selection from the parsed multi-file result shape and test every result family; do not stop after one tool-specific branch looks correct.
+
+## Identify the loaded Aurora build before judging HMR (2026-07-18)
+- A screenshot can be newer than a source fix while still showing old UI when the active process is the installed LocalAppData binary and no workspace Vite server is running.
+- Check the exact Aurora process command line and dev-port listener before treating a post-edit screenshot as evidence that the current source renderer failed.
+
+## MCP server ids can be prefixes of each other (2026-07-19)
+- Tool names are `mcp_{sanitizedServerId}_{toolName}`; sanitization maps "-" to "_", so "browser" is a prefix of "browser-testing" and first-match parsing routes calls to the wrong server with a misleading "not connected" error.
+- Any name scheme that concatenates ids with the same separator the ids may contain needs longest/advertised-match resolution, never first-match; and note the display-name cache can look right while routing is wrong.

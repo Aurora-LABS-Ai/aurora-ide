@@ -39,6 +39,10 @@ export interface AppSettings {
   compactionSummaryBudget?: number;
   /** AI title maker — generate a short chat title from the first message. */
   titleMakerEnabled?: boolean;
+  /** Title source: "off" (derived from the message), "local" (prompt-refine
+   *  llama.cpp model), or "cloud" (the endpoint below). Absent/empty on legacy
+   *  rows — derived from `titleMakerEnabled` instead. */
+  titleMakerMode?: string;
   titleMakerBaseUrl?: string;
   titleMakerApiKey?: string;
   titleMakerModel?: string;

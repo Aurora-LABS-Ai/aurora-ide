@@ -3,11 +3,11 @@
  *
  * A dynamic, browser-style tab system (Codex parity, CODEX-UI-REFERENCE §12.7):
  *  - Open surfaces are tab PILLS, closeable like browser tabs.
- *  - A `+` button opens a menu: Files / Browser / Terminal.
+ *  - A `+` button opens a menu: Canvas / Files / Browser / Terminal.
  *  - Files open as their own pills (titled by filename) via `openFileTab`.
  *  - An Expand toggle widens the panel toward full.
  *
- * Bodies: Review (diff), Files (tree + filter), per-file read-only viewer.
+ * Bodies: Review (diff), Canvas (persistent artifacts), Files (tree + filter), per-file read-only viewer.
  * Browser / Terminal are structurally present in the `+` menu but disabled until
  * their surfaces are wired — no fake "coming soon" content is ever rendered.
  * Themed entirely with `--agw-*`.
@@ -22,12 +22,14 @@ import { FilesPanel } from "./FilesPanel";
 import { FileViewer } from "./FileViewer";
 import { TerminalPanel } from "./TerminalPanel";
 import { BrowserPanel, closeAgentBrowser, hideAgentBrowser, showAgentBrowser } from "./BrowserPanel";
+import { CanvasPanel } from "./CanvasPanel";
 import type { DockSingletonKind, DockTabInstance } from "../types";
 import { DOCK_TAB_LABELS } from "../types";
 import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
 
 const SINGLETON_ICON: Record<DockSingletonKind, AgentIconName> = {
   review: "review",
+  canvas: "panel-right",
   files: "files",
   browser: "browser",
   terminal: "terminal",
@@ -35,6 +37,7 @@ const SINGLETON_ICON: Record<DockSingletonKind, AgentIconName> = {
 
 /** Entries in the `+` menu. `enabled:false` = structurally present, not wired. */
 const ADD_MENU: Array<{ kind: DockSingletonKind; shortcut?: string; enabled: boolean }> = [
+  { kind: "canvas", enabled: true },
   { kind: "files", shortcut: "Ctrl+P", enabled: true },
   { kind: "browser", shortcut: "Ctrl+T", enabled: true },
   { kind: "terminal", enabled: true },
@@ -141,6 +144,8 @@ const TabBody: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
   switch (tab.kind) {
     case "review":
       return <ReviewPanel />;
+    case "canvas":
+      return <CanvasPanel />;
     case "files":
       return <FilesPanel />;
     case "file":

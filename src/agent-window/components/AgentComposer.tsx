@@ -63,7 +63,7 @@ interface AgentComposerProps {
   value?: string;
   onValueChange?: (value: string) => void;
   onSubmit?: (text: string, fileChips?: AttachedPromptChip[]) => void;
-  onActionCommand?: (actionId: "compact") => void;
+  onActionCommand?: (actionId: "compact" | "suggest") => void;
   sending?: boolean;
   onStop?: () => void;
   connectedTop?: boolean;
@@ -74,11 +74,11 @@ const MENTION_RE = /(^|[\s(])@([^\s@]{0,48})$/;
 const SLASH_RE = /(^|\s)\/([\w-]{0,48})$/;
 
 /** Lucide-ish glyph per command kind (skills / rules / MCP). */
-const COMMAND_ICON: Record<PromptCommandKind, "book" | "shield" | "plug" | "sparkle"> = {
+const COMMAND_ICON: Record<PromptCommandKind, "book" | "shield" | "plug" | "refine"> = {
   skill: "book",
   rule: "shield",
   mcp: "plug",
-  action: "sparkle",
+  action: "refine",
 };
 
 /** Raw SVG paths for each command kind — for the INLINE pill, which is built
@@ -941,7 +941,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
         </div>
 
         {/* Bottom action row — attach (left) · reasoning + speech + send (right). */}
-        <div className="px-2 pb-1.5 flex items-center justify-between gap-1.5">
+        <div className="agw-composer-actions-row px-2 pb-1.5 flex items-center justify-between gap-1.5">
           <button
             type="button"
             className="agw-icon-btn"
@@ -954,7 +954,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
           >
             <AgentIcon name="plus" size={17} />
           </button>
-          <div className="flex items-center gap-1.5">
+          <div className="agw-composer-actions flex items-center gap-1.5">
           {modelSelectorPosition === "bottom" && (
             <ModelSelector align="right" streaming={sending} />
           )}
@@ -990,7 +990,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
               ) : refine.phase === "refined" ? (
                 <AgentIcon name="reset" size={15} />
               ) : (
-                <AgentIcon name="sparkle" size={16} />
+                <AgentIcon name="refine" size={16} />
               )}
             </button>
           )}

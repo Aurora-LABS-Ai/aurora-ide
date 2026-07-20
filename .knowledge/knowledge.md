@@ -1,6 +1,226 @@
 # Aurora IDE — Working Memory
 
+## Task (2026-07-20): Rust-owned left-rail context actions — IN PROGRESS
+- [x] Inspect current project/chat context menus and the existing Rust command/service boundaries.
+- [ ] Add native project actions: reveal in file manager and open a terminal at the project root.
+- [ ] Add native chat actions: duplicate the conversation and render a Markdown transcript for copying.
+- [ ] Wire polished menu rows, explicit success/error feedback, focused tests, and full validation.
+
+## Task (2026-07-20): Ten net-new visual Agent Window concepts — COMPLETE
+- [x] Excluded shipped surfaces and documented plans from the visual concept space.
+- [x] Checked current agent-product visual patterns so the list avoids obvious parity features.
+- [x] Developed ten distinct, visible, interaction-led concepts with a clear recommendation.
+
+### Progress
+- Avoided current/parity surfaces: canvases, session dashboards, browser tabs, tool-card polish, static Review,
+  settings, profile analytics, shimmer controls, and the planned LSP/team/A2A work.
+- Concepts focus on direct visual interaction: project activity map, context X-ray, branching conversations,
+  morphing diffs, responsive preview wall, markup, time-lapse, thread covers, chapters, and live focus ribbon.
+
+### Review
+- Strongest product bets are Direct Visual Markup, Context X-Ray, and Responsive Preview Wall; each reuses
+  Aurora foundations but creates an immediately visible behavior absent from the current source/plans.
+- No product code changed. Recommendations include reduced-motion/static fallbacks and avoid decorative AI motifs.
+
+## Task (2026-07-20): README refresh — DONE
+- Deep-read README vs package.json, DOCS/, agent-window, agent_runtime, provider kernel, tools index.
+- Rewrote README.md (~220 lines): Agent Window, Rust runtime/provider kernel, execution modes, Canvas/Team/Speech/Refine, updated docs index, fixed stale GPU/architecture claims.
+
+## Task (2026-07-20): Net-new Agent Window feature direction — RESEARCH COMPLETE
+- [x] Mapped the Agent Window's shipped capabilities from the graph, docs, and owning source modules.
+- [x] Identified documented planned/pending work so the recommendation does not repeat the backlog.
+- [x] Tested candidate directions against the current 2026 agent-product landscape and Aurora's foundations.
+
+### Progress
+- Ruled out isolated parallel worktrees, generic acceptance-criteria verification, and browser bug recording as
+  headline bets: useful, but already recognizable product categories rather than an Aurora-defining leap.
+- Strongest gap: a durable intent/provenance layer linking requirements and decisions to exact diff hunks,
+  tool evidence, tests, and future code history — the current transcript/timeline/Review data is rich but ephemeral.
+
+### Review
+- Recommended an Agent Window “Why Graph” / intent-aware Review: goal coverage, orphan-change detection,
+  evidence-linked completion, line-level “why does this exist?”, and contradiction/supersession across sessions.
+- Verified the concept is absent from current Aurora plans/source terminology; no product code was changed.
+
 Thin progress + working-memory layer. Append 2-4 lines per meaningful change.
+
+## Task (2026-07-19): Left rail — rename, context menus, direct delete — DONE (uncommitted, FE-only)
+User: "something is missing in the rail — think deeply, add micro-actions." Gap analysis found 3 real holes:
+NO rename anywhere, NO delete for active chats (had to archive first — hidden two-step), NO right-click surface.
+- `renameThread(id, title)` in useAgentChatStore: optimistic across threads/allThreads/currentThread/liveTurns,
+  server via threadService.updateTitle, revert on failure, whitespace-collapse + no-op guard.
+- `RailMenu` (LeftRail.tsx): right-click context menu portaled to .agw-root (CSS vars!), reuses .agw-menu glass +
+  .agw-menu-item rows, viewport-clamped, closes on outside/Esc/scroll/resize/pick. Chat: Rename/Pin/Archive/Delete…;
+  Archived: Open/Restore/Delete permanently…; Project: New chat here/Pin/Copy folder path.
+- Inline rename: label↔input swap in the row (double-click, F2, or menu), Enter/blur commit, Escape discards with a
+  dataset.cancel flag guarding the unmount-blur race (else blur would commit discarded text). Delete confirm reuses
+  the existing AgentConfirm (now reachable for ACTIVE chats too).
+- Verified: tsc, eslint, postcss, 191/191. Hot-reloads (no Rust).
+- Menu restyle (user: "cheap-looking"): `.agw-rail-menu` ADDED to the composer-family tint rule (the rule that makes
+  model/reason/mention popovers premium — base .agw-menu glass alone is NOT enough for family membership) + model-menu
+  row anatomy (228px wide, 34px rows, fs-body, gap 10, subtle icon color, danger rows fully red). Message actions
+  (Copy/Retry) now always visible dimmed 0.35 → full on message hover (was hidden-until-hover).
+
+## Task (2026-07-19): file_edit streaming chip + naked suggestion chips — DONE (uncommitted, NEEDS RUST REBUILD)
+- User report: single-file `file_edit` card streams as bare "Editing…" with NO file chip (file_write shows one).
+  FE extraction chain is fine (streamedToolStringArguments finds any depth "path"); root cause = the MODEL emits
+  old_string/new_string before any path, so nothing exists to extract. Same cure as file_write's earlier fix:
+  file_edit schema description now says ALWAYS emit path(s) first (single form: `path` before old/new_string;
+  batch: `target_paths` first, now "also for a single file"). Schema-nudge only — models that ignore it still get
+  chips at result time.
+- Suggestion chips restyled NAKED per user (pill wrapper = noise, consistent with the icon lesson): no border/bg,
+  muted text + "→ " ::before marker, hover→text, active→accent. `.agw-suggest-chip` in agent-window.css.
+- Placement v3 — DRUM PICKER (user's design; v2 transcript-stack rejected "lacks more"): back in the composer dock
+  (old position was right, presentation was the culprit), ONE visible naked-text option; wheel-over rotates
+  cyclically like a vertical cylinder (`SuggestDrum` in ConversationPane: rotateX ±42° + translateY ±18px + fade
+  falloff, perspective 340px, 110ms step cooldown, ArrowUp/Down too, "i / n" marker right). Arrow ::before marker
+  REMOVED per user. Click centered row → fills composer. `.agw-suggest-drum/-item/-count` CSS.
+- Drum v2 (user: top/bottom "terrible", wants iOS picker): height 64px, offsets ±28px so neighbor rows STRADDLE the
+  container edges (clipped mid-row), rotateX ±48°, opacity .45, and the iOS ingredient = vertical mask-image
+  gradient (transparent→black 34%/66%→transparent) so half-rows dissolve at the edges like a slot reel.
+- Drum v2.1: drum mount grows the dock AFTER auto-scroll released → reply tail hid behind it (user scrolled
+  manually). Effect on `suggestions.length>0`: if within 160px of bottom, smooth `bottomRef.scrollIntoView`
+  re-stick; readers scrolled up are left alone.
+- `/suggest` manual trigger: 2nd action command in prompt-commands.ts (haystack matches /s /suggest /suggestions
+  /p /prompt); onActionCommand widened to ("compact"|"suggest"); ConversationPane dispatches → new exported
+  `requestReplySuggestions(threadId)` in useAgentWindowSend — gated on refinePathsConfigured ONLY (explicit intent
+  bypasses the auto toggle), skips mid-turn, reads SETTLED currentThread.messages; core extracted to
+  `generateSuggestionsFrom` shared with the auto path.
+- Verified: cargo check, rustfmt, postcss, 191/191.
+
+## Task (2026-07-19): Qwen3.5-0.8B migration — raw-ChatML invocation fix — DONE (uncommitted, NEEDS RUST REBUILD)
+User replaced qwen2.5-0.5b with unsloth Qwen3.5-0.8B-BF16 (`C:\Users\Alvan\Documents\ALL-GGUF-MODELS\Aurora-ide\
+qwen-3.5-0.8b\`, mmproj sidecar unused). New hybrid arch (Gated DeltaNet). Debug journey:
+- b9957 llama-completion CRASHED 0xC0000409 (CPU+GPU, right after system_info). Latest release b10068
+  (`E:\llama-bin\llama-b10068-bin-win-cuda-13.3-x64`, user downloaded) ALSO crashed identically.
+- Isolation (user ran it): `-no-cnv` raw completion WORKS on the same exe+model; crash is ONLY in llama-completion's
+  `--jinja -sys -st` conversation path with Qwen3.5's template (which auto-opens `<think>`). Model+build fine.
+- FIX in run_completion: build ChatML ourselves (`build_chatml_prompt`) + `-no-cnv`; Qwen3-family models (path
+  contains qwen3/qwen-3) get empty `<think></think>` assistant prefill = non-thinking one-shots; user text strips
+  `<|im_` (turn-breakout guard). clean_output also strips leading think blocks + trailing `<|im_end|>`.
+- User decisions: NO OpenAI-compatible server integration EVER (LM Studio works but rejected as backend); NO
+  quantized GGUF (wants BF16); lmstudio-js SDK evaluated and rejected (Rust owns model IO).
+- Smoke-verified on Qwen3.5: title "Crash on double click file" (good), dictation w/ few-shot good.
+- **Suggestions v4 — few-shot playbook (harness-measured winner)**: user asked for a Python 3-prompt A/B harness
+  (`scratch/smoke_suggest.py`, replays the REAL example.txt exchange: "load surface and surface psychology compare
+  against this webapp" → full audit reply). Scores (avg chips/grounded over 3 runs): P1 instruction-only 1.7/1.0
+  (one run degenerated to "No action" x3), P2 case-playbook 3.3/3.3, **P3 few-shot w/ 2 worked examples 4.0/4.0**.
+  P3 promoted to SUGGEST_SYSTEM; exchange labels now "Developer's message:/Assistant's reply:/Suggestions:" (match
+  the examples), SUGGEST_INPUT_CHARS 1200→6000 (whole reply as plain prose — grounding needs the full findings,
+  ctx 8192 has room), n_predict 160. Production-shape rerun: 4/4 chips both runs. cargo check clean.
+- **Suggestions v3 — USER-designed "both sides" pattern (their idea, smoke-tested best)**: ONE call; system prompt
+  role-plays the model as the USER shown BOTH "My message:" (their last message, head 600 chars) and "Assistant's
+  reply:" (tail 1200, plain_prose'd) → 3 numbered next replies (intent-diverse; yes/no questions get accept+decline).
+  Beat every one-sided role design on the verbose no-question case. Rust `suggest_replies(user_text, assistant_text)`,
+  cmd gains userText, adapter+maybeSuggestReplies pass the last USER message. temp 0.7 (+`--top-p 0.8 --top-k 20` now
+  ride with ANY explicit temp in run_completion). Filter: 1-12 words, i-voice entries REMOVED from blocklist
+  (role-play makes "I'll…" legit), cap 4 chips. Known limit: yes/no-ending replies often yield only 1-2 chips.
+- cargo check --lib + --tests clean, rustfmt. User must point Preferences → Prompt refine llama.cpp folder to the
+  b10068 folder + model to the BF16 gguf, then restart pnpm tauri:dev.
+
+## Task (2026-07-19): Composer assists (dictation cleanup + reply suggestions) — DONE (uncommitted, NEEDS RUST REBUILD)
+User picked features 1+2 from my local-model ideas, ONE shared preference toggle for both. SMOKE-TESTED the real
+model first (exe `E:\llama-bin\llama-b9957-bin-win-cuda-13.3-x64`, model `C:\Users\Alvan\Documents\ALL-GGUF-MODELS\
+Aurora-ide\qwen-2.5-instruct\qwen2.5-0.5b-instruct-fp16.gguf`) — findings that drove the design:
+- Titles: instruction-only = lowercase echoes; FEW-SHOT examples + --temp 0.3 = real titles; model sometimes leaks
+  the "Title:" label → sanitize strips it + all sentence punctuation + trailing connector words. TITLE_SYSTEM updated.
+- Dictation: instruction-only only deletes "um/uh"; before→after EXAMPLE PAIR makes it fully punctuate/case/defiller.
+  temp 0.2. Length-divergence guard rejects rewrites that balloon/collapse (content change ≠ cleanup).
+- Suggestions: one "give 3" call FAILS on 0.5B (parrots the few-shot verbatim, or echoes the format scaffold);
+  ONE CALL PER ROLE works (accept / detail question / next step) → `suggest_replies` runs 3 sequential calls,
+  temp 0.4, then filters (2-10 words, no assistant-voice openers like "Please provide"/"I can") + word-overlap
+  dedupe (≥60% = dup). May return 0-3; zero chips = no UI.
+Rust: run_completion gained `temperature: Option<&str>` (refine keeps default sampling); clean_dictation +
+suggest_replies + sanitize/filter helpers in prompt_refine/mod.rs; cmds prompt_refine_dictation/_suggest.
+FE: TWO independent toggles (user corrected the one-switch design + flagged builder-facing hint copy via /surface):
+`dictationCleanupEnabled` + `replySuggestionsEnabled` on useAgentRefineStore (+`dictationCleanupReady`/
+`replySuggestionsReady` = own toggle AND paths; refine's own toggle NOT required); "Composer assists" section in
+Preferences with two rows ("Polish voice dictation" / "Suggest quick replies"), switches disabled until paths set,
+copy rewritten customer-grade (no failure-mode narration); speech hook `polishTranscript` (inside the transcribing
+spinner, 6s timeout, raw fallback); `useAgentSuggestStore` (per-thread, cleared at send); maybeSuggestReplies
+fires FIRE-AND-FORGET in send's try (text captured synchronously — liveTurns closes in finally), discards if a
+newer turn started; chips row above composer, tap fills draft (never auto-sends), hidden while streaming.
+ZERO-CHIPS BUG (user report, root-caused by replaying their real reply from example.txt): the model RAN (GPU
+spikes) but every output failed the 2-10-word filter — real agent replies (long, markdown/tables) made the 0.5B
+emit 13-21-word rambles/assistant-voice; empty Vec → silent no-UI. Fixes (kept MODEL-AGNOSTIC because the user is
+downloading a more capable GGUF — do NOT overfit to 0.5B; question-gating + deterministic chips were built then
+REVERTED on their instruction): `plain_prose` markdown stripper feeds the model prose (tables/fences/emphasis
+dropped — feeding tables back made it emit pseudo-headings), reworded 3 role prompts ("reply on behalf of the
+user"), filter relaxed to 1-12 words + junk-opener blocklist expanded. Swapping the model = just repointing the
+Prompt refine model path (all 4 features share it).
+ICON: user banned "sparkle" (AI slop) — replaced with bespoke `refine` glyph (fountain-pen nib + written line) in
+AgentIcon; ALL sparkle uses rewired (refine button, both Preferences sections); `sparkle` name deleted from the set.
+Verified: tsc, eslint, 191/191 FE tests, css parse. CARGO NOT CHECKED (user's pnpm dev owns the build lock — twice
+killed my checks at their request); compile verifies on their next dev restart.
+
+## Task (2026-07-19): Title maker → Preferences, Off/Local/Cloud — DONE (uncommitted, NEEDS RUST REBUILD)
+User: unify chat titling with the prompt refiner. Moved the whole section out of AgentSettings into
+PreferencesSettings ("Chat titles", right after Prompt refine) with a 3-way source: Off (derived first-message
+title) / Local (SAME llama.cpp+GGUF as prompt refine — new Rust `generate_title_local` in prompt_refine/mod.rs,
+`run_completion` extracted so refine+title share the invocation; TITLE_SYSTEM prompt, 1500-char input clamp,
+n_predict 48, `sanitize_title` first-line/8-word/60-char) / Cloud (existing generate_thread_title endpoint fields,
+UI moved verbatim). New `titleMakerMode` setting (store+database.ts+models.rs+settings.rs key-value, serde default;
+legacy rows derive mode from titleMakerEnabled → 'cloud'; setTitleMaker({mode}) keeps the legacy bool in lockstep).
+Local path gates on `refinePathsConfigured` (paths only — refine's ✦ toggle NOT required). New cmd
+`prompt_refine_title` registered in lib.rs. maybeGenerateTitle switches on mode; failures keep derived title.
+Verified: tsc, eslint, 189/189 FE tests, rustfmt. CARGO CHECK INTERRUPTED (user started pnpm tauri:dev which owns
+the build lock — only unverified piece; their dev build compile surfaces any error; first check failed only on the
+since-fixed AppSettings::default missing field). Suggestion replies = agreed future follow-up.
+
+## Task (2026-07-19): `.rich.jsonl` sidecar — full diffs survive thread reload — DONE (uncommitted, NEEDS RUST REBUILD)
+User: truncated reload diffs must show fully, git-independent, "extra metadata alongside session jsonl".
+Design mirrors the established sidecar family (`<id>.jsonl` / `<id>.meta.json` / `<id>.artifacts.json`):
+- **Write**: conversation.rs execute loop — for modify tools (`rich_persisted_tool`: file_edit/write/create/patch/
+  search_replace/multi_search_replace), when the UI-shaped copy (`truncate_tool_content_for_ui`, 512K/128K-per-field,
+  JSON-valid) differs from the clamped history copy and no error → `session.push_rich_result` (new
+  `RichResultsSlot = Arc<StdMutex<Vec<RichToolResult>>>` on Session, same pattern as QueueSlot since the exec path
+  only holds &Session). agent_v2 run_turn persist block drains + `store.append_rich_results` (append-only JSONL,
+  best-effort). Model history stays clamped — context safety unchanged.
+- **Read**: threads.rs `build_thread_state` (single funnel for ALL loads) → `store.load_rich_results` (tool_use_id→
+  content map, last-wins, malformed lines skipped) → `session_to_db_messages_rich` overlays in the Tool-fold
+  (non-error only). Old wrapper `session_to_db_messages` is now #[cfg(test)].
+- store.delete cleans `.rich.jsonl`; FE unchanged (truncation-note stays as fallback for pre-sidecar threads +
+  >512K pathological edits). Old threads can't be back-filled — marker note covers them.
+- Verified: cargo check --lib + --tests clean, rustfmt touched files, 2 new Rust tests (compile-verified only —
+  test exes can't launch on this machine). Runtime verify = user: restart pnpm tauri:dev, make a big edit (>8KB
+  result), reopen thread → full diff.
+
+## Task (2026-07-19): Tool-card intelligence pass — 6 features — DONE (uncommitted, FE-only)
+User picked from my suggestions: durations, per-chip diff stats, chip overflow, ANSI shell, highlight cap, disarm.
+- **Durations**: FE-measured only (persisting in JSONL = ~20 Rust ToolResult construction sites, rejected as too wide).
+  `useAgentWindowSend` toolTimings map anchored on onToolExecutionStart→Complete/Error; approval windows recorded in
+  onToolApprovalRequired and only the OVERLAP with [start,end] subtracted (native tools gate INSIDE execute; bridge
+  tools gate BEFORE start). `ToolCall.durationMs` (live-only, absent on reload); card shows ≥500ms via
+  `formatToolDuration`; ToolGroup header sums ("N calls · d done · 6.4s").
+- **Per-chip ±**: parsed.diffs entries carry per-file added/removed → `.agw-chip-stat` inside edit chips.
+- **Chip overflow**: >6 selectable chips → first 6 (selected swaps into slot 6 if hidden) + "+N" → portaled
+  `.agw-chip-overflow` menu listing ONLY hidden files (user corrected: not all). Arrow-key nav focuses by
+  `data-index` post-swap via rAF.
+- **ANSI**: new `tool-views/ansi.ts` (SGR only: 16/256/truecolor fg + bold/dim/italic/underline; bg + non-SGR CSI +
+  OSC stripped; `--agw-ansi-*` overridable palette). ShellOutputView renders spans; failed shell summary now
+  "Command failed · exit N". NOTE: ESC/BEL consts must be `String.fromCharCode` — literal control chars OR `\\u`
+  escapes both get mangled through the Bash tool layer here.
+- **Highlight cap**: ToolCode skips Shiki > 50K chars (multiFile passes FULL contents — real path).
+- **Disarm**: ConversationPane scroller onMouseDownCapture (streaming only) suppresses multi-click selection +
+  collapses stale selections (WebView2 crash surface). Idle transcripts untouched.
+- Also user-reported: `.agw-rv-title` uppercased filenames → new `.agw-rv-title-file` (exact case, code font) used by
+  MultiFileResultsView + ToolResultView diffs head.
+- Verified: 187/187 tests (12 new), tsc -b, eslint, postcss parse, production build exit 0. User watched via HMR.
+- Follow-up (user screenshot): reloaded-thread diffs showed FAKE red/green rows "−[truncated 4923 bytes in persisted
+  history]/+[truncated 4933…]" — Rust's compact-large-fields marker (conversation.rs:1101) lives INSIDE persisted
+  oldContent/newContent/content and got diffed. tool-result.ts `splitHistoryTruncation` now strips it at all 3
+  consumption points (multi-edit diffs, single diff, batch-read contents) and sets `truncated`; views render a quiet
+  `.agw-rv-trunc-note` ("Showing the beginning — full change too large to keep in this conversation"). 189/189.
+
+## Task (2026-07-19): Tool-card file chips dead + double-click STATUS_BREAKPOINT — FIXED (uncommitted, FE-only)
+Two bugs, one strip (`ToolCallCard.tsx`): (1) `onTargetPointerDown` eagerly `setPointerCapture`d the chip strip
+whenever it overflowed → Chromium retargets the subsequent `click` to the capture element → chip `onClick` never
+fired, the click bubbled to the header and just toggled the card ("clicking files doesn't change content"). Fix:
+capture lazily in pointermove only after the 3px drag threshold. (2) Double-click on a chip = word selection +
+first click's expand animation/highlighter mount = the exact WebView2 150.x selection-during-layout-churn CHECK
+(known STATUS_BREAKPOINT root cause, 2026-07-13). Fix: header `onMouseDown` disarm — `preventDefault` when
+`detail > 1` + collapse any live selection before layout churn starts. Verified: 175/175 tests (2 new), tsc -b,
+eslint. Needs interactive verify (click chips in an overflowing Read File card; double-click no longer crashes).
 
 ## Task (2026-07-14): Model selector ordering broken — grouped redesign — DONE (committed 6c54122)
 Two real defects in the flat sort: (1) models missing `createdAt` all tied at 0 → default "recently added"
@@ -1291,3 +1511,125 @@ the OUTER `.agw-shell-side` animates `width` (right-pinned inner revealed by its
   Rust test execution remains blocked by the known Windows `STATUS_ENTRYPOINT_NOT_FOUND` test-binary issue. Per user request,
   the final visual/manual product verification is intentionally left to the user.
 - Ran `graphify update .` after the implementation. The Codex-started Tauri dev process tree was stopped before handoff.
+
+## Artifact Canvas implementation (2026-07-17)
+- Added a thread-owned artifact sidecar contract with immutable backend-generated `v1`, `v2`, … snapshots and persisted artifact/version selection.
+- Wired the frontend `present_artifact` bridge to the existing right dock; current conversations open Canvas, while background conversations save without stealing focus.
+- Added sandboxed HTML/SVG preview, native Markdown rendering, source view, artifact/version controls, restoration, and deletion ownership.
+- TypeScript compilation and renderer tests pass; Rust compiled, but the Windows test executable hit the known `STATUS_ENTRYPOINT_NOT_FOUND` loader failure before tests could run.
+- Manual QA startup note: `scripts/tauri-dev-stable.mjs` fails at `spawn pnpm.cmd` with Node 22 `EINVAL`; use direct `pnpm exec tauri dev` for this verification rather than changing the unrelated launcher.
+
+### Review — Artifact Canvas complete
+- Verified 149/149 frontend tests, targeted ESLint (zero errors), TypeScript, production build, `cargo check --lib --tests`, touched Rust formatting, and `git diff --check`.
+- Rust unit-test execution remains blocked before test startup by the known Windows `STATUS_ENTRYPOINT_NOT_FOUND`; Rust library and test targets compile successfully.
+- Manual desktop inspection was handed to the user; the Codex-started Tauri process tree and orphaned linker were stopped so they cannot conflict with the user launch.
+- Ran `graphify update .` after the final implementation.
+
+## Dev startup asset generation (2026-07-17)
+- Removed unconditional icon regeneration from `dev` and `build`: all 2,677 generated Material/VS Code SVGs are committed, so rewriting them on every launch was redundant and generated unnecessary filesystem activity.
+- Added explicit `pnpm icons:sync` for dependency/icon-theme updates. The reported long Tauri wait remains Rust compilation/linking, which runs concurrently after the icon script finishes.
+
+## Agent Window interaction repair (2026-07-17)
+- Fix the shell divider so pointer capture survives crossing the Canvas iframe and every release/cancel/blur ends the drag.
+- Preserve a usable conversation width and make the composer size against its column rather than viewport breakpoints.
+- Replace Canvas native Artifact/Version selects with the shared Aurora custom selector architecture.
+- Keep Canvas visibility and expansion user-owned: conversation loading restores data only, while new presentations may reveal Canvas compactly without forcing expansion.
+
+### Review — Canvas interaction and revision workflow complete
+- Canvas now uses captured, defensively terminated divider drags, a protected conversation minimum, responsive composer controls, custom Aurora selectors, and a dedicated non-expandable chat launcher.
+- Canvas remains closed when a user left it closed, never restores or forces expanded mode, and new/updated artifacts reveal only the compact dock.
+- Added atomic exact-text patch revisions that still persist complete immutable snapshots, plus `read_artifact` for full historical source or focused line-numbered excerpts before patching.
+- Verified 154/154 frontend tests, targeted ESLint, TypeScript/production build, Rust `cargo check --lib --tests`, rustfmt, and `git diff --check`; manual visual QA remains with the user by request.
+
+## Canvas launcher visual correction (2026-07-17)
+- Replaced the generic prompt-refinement sparkle with Aurora's existing `panel-right` glyph in both the chat launcher and Canvas dock tab; removed the decorative icon tile.
+- Removed the hover translation and gradient swap, using the standard flat hover surface and an inset focus ring so the control cannot lift into or clip against its message container.
+- Focused launcher tests, targeted ESLint (zero errors), CSS parsing, and the production build pass; visual confirmation remains with the user by request.
+
+## Active: first-class Canvas diagrams (2026-07-17)
+- Mermaid 11.12.2 is already installed, so reuse it rather than adding Excalidraw or building a diagram engine. Add `mermaid` as a persisted artifact kind across the tool, frontend, and Rust contract.
+- Render Mermaid lazily in a dedicated Aurora diagram viewport with strict security, theme tokens, pan/zoom/fit, grid, clear error states, Source mode, immutable versions, and the existing exact-text patch flow.
+- Keep the first version agent-authored and view-focused; do not add a parallel mutable drawing document or duplicate persistence system.
+
+### Reality change — artifact patch overlap diagnostics
+- Live agent feedback exposed that sequential patch mutation can erase a later overlapping `find`, which is then falsely reported as absent even though it exists in the saved base.
+- Preflight every patch match against the unchanged base, reject intersecting ranges atomically, and name both conflicting patch indices before applying any replacement.
+
+### Review — diagram artifacts, safe revisions, and timeline seams complete
+- Added a first-class immutable Mermaid artifact kind with lazy strict-mode rendering, Aurora theme tokens, responsive pan/zoom/fit controls, source inspection, and diagram-specific size/error handling.
+- Patch revisions now plan every match against one unchanged base, reject overlap/dependency/ambiguity/no-op/stale cases actionably, and preview Mermaid patches through the same Rust engine before syntax validation and commit. Invalid updates never create a version.
+- Reasoning and grouped-tool headers now share a restrained Aurora-token divider inspired by the supplied reference while preserving the existing icons, chronology, collapse state, focus behavior, and responsive layout.
+- Focused frontend regressions passed 25/25 before the final input/no-op guards; final TypeScript and targeted ESLint are clean, Rust test targets compile, and Rust execution remains blocked before the harness by the known Windows `STATUS_ENTRYPOINT_NOT_FOUND`. Runtime/visual verification remains with the user as requested.
+- Handoff state: the user is running `pnpm dev`; do not launch, stop, reload, or otherwise interfere with that session. The user owns final runtime and visual acceptance.
+
+## Active: harden `file_read` single/batch input contract (2026-07-18)
+- Make the Rust-owned model schema distinguish one-file `path` calls from non-empty multi-file `paths` calls and document that the forms must never be combined.
+- Defensively recover the observed `path` plus empty `paths` payload as a single-file read, while rejecting genuinely ambiguous or malformed combinations with actionable errors.
+- Add focused regressions for the emitted schema and executor behavior, then compile the Rust test target and refresh the project graph without touching the user's running dev session.
+
+### Review — `file_read` contract hardened
+- The provider-facing Rust schema now requires one read form, bounds batch arrays to 1-20 non-empty paths, and states the single/batch exclusions in both the tool description and Agent prompt.
+- The executor recovers `path` plus an empty `paths` placeholder as the unambiguous single-file call, but rejects two real forms, empty-only batches, malformed entries, and batch line ranges with corrective errors.
+- TypeScript typecheck, targeted ESLint, Rust library/test-target compilation, rustfmt, and diff checks pass. The focused Rust tests compiled but could not launch because of the documented Windows `STATUS_ENTRYPOINT_NOT_FOUND` test-binary issue; the user's Vite session was not touched.
+
+## Active: deduplicate terminal provider errors (2026-07-18)
+- Trace a single provider failure through the Rust event stream, frontend callbacks, live-turn store, persisted thread projection, and transcript rendering before editing.
+- Lock the confirmed owning boundary with one failing regression, then ensure one failed turn produces one calm, recoverable error instead of repeated raw provider payloads.
+- Inspect the existing left-rail information architecture after the fix and propose only additions that fit its project/chat ownership and current interaction patterns.
+
+### Progress — one terminal owner confirmed
+- One provider failure was represented as an assistant error event, `agent_turn_error`, and a rejected Tauri command; all three independently called the UI error callback even though promise settlement was guarded.
+- `AgentRuntimeClient` now owns UI failure notification inside idempotent rejection settlement, and Agent Window reuses the established error classifier instead of rendering raw provider JSON.
+- The exact three-signal regression passes alongside TypeScript and targeted ESLint; left-rail review confirms search, pinning, sort, status cues, project actions, and archive already exist.
+
+### Review — duplicate provider error fixed
+- One failed turn now produces one Agent Window error block even when the stream event, terminal event, and IPC rejection all arrive; cancellation and listener-setup behavior remain covered.
+- Known provider failures render the existing polished title, explanation, and recovery guidance instead of raw provider JSON or request ids.
+- Verified the focused runtime suite (20/20), TypeScript, targeted ESLint, `git diff --check`, and refreshed graphify. Runtime/visual acceptance remains with the user as requested.
+
+## Analysis: projectless Agent Window chat (2026-07-18)
+- Projectless persistence is already supported: the window can launch without `?ws`, threads accept `workspaceRoot=null`, and transcripts live in app data rather than inside a project.
+- The required work is boundary hardening and presentation: general chats need their own rail group, project-only UI removed, and Rust must omit workspace/file/shell tools whenever `workspacePath` is absent because current no-root path resolution falls back to raw process-relative paths.
+- Recommended first version uses no temp directory and a strict chat-safe tool catalogue. Add a persistent app-data scratch workspace only as an explicit later capability for file-producing conversations; never rely on the OS temp directory for reopenable chats.
+
+## Active: stabilize rich read/tree tool results (2026-07-18)
+- Normalize live and persisted `file_read` and `workspace_tree` result envelopes before presentation, with failing regressions for every observed shape.
+- Replace stacked multi-file bodies with a bounded horizontal file selector and one active syntax-highlighted document so expansion cost is independent of file count.
+- Preserve Aurora tokens and keyboard/accessibility behavior, validate narrow-width overflow, and leave the user's running dev session untouched.
+
+### Progress — active-only reads and structured tree history
+- Completed batch reads now expose every file as a bounded horizontal selector; selecting a chip opens/switches the card while only one syntax-highlighted document is mounted.
+- Legacy workspace trees cut mid-JSON recover their complete nodes, and new object-heavy tree history is compacted by pruning arrays inside valid JSON instead of slicing serialized bytes.
+- Focused UI/parser regressions pass 11/11 and the TypeScript project build is clean; Rust formatting/compilation and final graph refresh remain.
+
+### Reality change — Rust test target exhausted drive space
+- Rust library compilation and rustfmt pass, but linking the separate test target failed when drive E reached 0.32 GB free while building `libaurora_lib.rlib`.
+- The failed link left roughly 0.54 GB of timestamped loose object files in `build/debug/deps`; automated removal was blocked by the execution policy, so no user build data was deleted.
+
+### Review — rich read/tree results stabilized
+- Batch-read headers now show every file in a bounded horizontal strip with mouse/touch scrolling, keyboard navigation, and direct selection; the body keeps exactly one file/highlighter mounted.
+- Current tree history remains valid JSON through array-aware compaction, while legacy byte-cut tree results recover every complete node instead of displaying raw JSON.
+- Focused interaction/parser tests pass 12/12 and the full Agent Window suite passes 54/54; TypeScript, targeted ESLint, rustfmt, CPU-only Rust library compilation, diff checks, and graphify update pass. Visual Tauri acceptance remains with the user.
+- Validation cleanup: stopped the exact orphaned Cargo/Rustc processes from the timed-out test link. Drive E has about 0.20 GB free; the incomplete object files remain because automated deletion was policy-blocked.
+
+## Active: unify multi-file tool-card interaction (2026-07-18)
+- Make multi-file edits use the same bounded horizontal selector and single active body already used by multi-file reads.
+- Remove competing header behaviors: ordinary header/chip-strip clicks toggle the card, selectable file chips choose/open one result, and only a real drag suppresses the toggle.
+- Preserve Aurora tokens, keyboard navigation, and user-owned runtime verification; add focused regressions before changing the renderer.
+
+### Progress (2026-07-18)
+- Confirmed two distinct branches caused the bug: edit results mounted every diff, while edit chips and blank strip areas intercepted the header toggle.
+- Unified completed multi-file read/edit results behind one selected-file index; single-file chips now toggle the card, while true horizontal drag gestures remain non-opening.
+- Added exact regressions for diff switching and the dead chip hit area; TypeScript, focused ESLint, and the complete 173-test frontend suite pass.
+
+### Review (2026-07-18)
+- Multi-file edit chips now open one selected diff, switch in place by click or keyboard, and never stack every edited file in the dropdown.
+- The card has one consistent collapsed/expanded toggle surface; selectable file tabs are the only secondary action, and drag-to-scroll remains gesture-safe.
+- Verified with a production build, focused lint, exact mounted-DOM interactions, and 33 test files / 173 tests passing. Live Tauri inspection remains with the user as requested.
+- Follow-up screenshot at 13:00 showed the pre-fix stacked UI because the active process was the installed `C:\Users\Alvan\AppData\Local\Aurora\aurora.exe`; no workspace Vite process or port 5173 listener was active.
+- Final Graphify refresh initially refused a 10-node decrease; manifest/graph inspection confirmed every removed node belonged to the temporary `.debug-journal.md`, so a deletion-aware forced refresh is safe and required.
+
+### Progress (2026-07-19) — MCP tool misrouting fix
+- Root-caused agent-window "MCP server browser is not connected" while calling browser-testing tools: `parseMcpToolName` in src/services/mcp-tools.ts used first-match server-prefix scanning, so with servers "browser" + "browser-testing" the tool `mcp_browser_testing_browser_connect` routed to server "browser" as tool "testing_browser_connect". Display labels stayed correct (separate cache), only execution/approval/plan-mode routing broke.
+- Fix: collect all matching server prefixes; prefer the server that advertises the parsed tool name in its tools list; tie-break on longest prefix. Covers executeMcpTool, plan-mode filtering, auto-approve, and display fallback via the single parse path.
+- Verified: new src/services/mcp-tools.test.ts (6 regressions incl. ambiguous-prefix routing, longest-prefix fallback, cache invalidation) passes; tsc + eslint clean. Frontend-only change, hot-reloads.

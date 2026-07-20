@@ -49,6 +49,20 @@ export interface MultiFileEntry {
   truncated?: boolean;
 }
 
+/**
+ * Rust compacts oversized string fields before persisting a tool result,
+ * appending this marker INSIDE the field. Left alone it leaks into diffs as a
+ * fake red/green change line ("−[truncated 4923 bytes…] / +[truncated 4933
+ * bytes…]") — strip it and let the view render an honest note instead.
+ */
+const HISTORY_TRUNCATION_MARKER = /\n*\[truncated \d+ bytes in persisted history\]\s*$/;
+
+function splitHistoryTruncation(text: string): { text: string; truncated: boolean } {
+  const match = text.match(HISTORY_TRUNCATION_MARKER);
+  if (!match || match.index === undefined) return { text, truncated: false };
+  return { text: text.slice(0, match.index), truncated: true };
+}
+
 export interface GrepMatch {
   file: string;
   line: number;
@@ -91,12 +105,29 @@ export interface ParsedToolResult {
   /** Full before/after content for a REAL line diff (modify tools that emit
    *  `oldContent`/`newContent`). Preferred over `edit` when present. `fullPath`
    *  is the absolute path (for opening the file in the IDE across windows). */
-  diff: { oldText: string; newText: string; path?: string; fullPath?: string } | null;
+  diff: {
+    oldText: string;
+    newText: string;
+    path?: string;
+    fullPath?: string;
+    truncated?: boolean;
+  } | null;
   /** One entry per file for a multi-file edit (`file_edit` with per-item paths).
    *  Each carries its own before/after so the UI can draw a diff for every file
-   *  the single call touched. `null` for single-file results. */
+   *  the single call touched. `added`/`removed` are that file's own line-change
+   *  counts (rendered inside its header chip). `null` for single-file results. */
   diffs:
-    | Array<{ oldText: string; newText: string; path?: string; fullPath?: string }>
+    | Array<{
+        oldText: string;
+        newText: string;
+        path?: string;
+        fullPath?: string;
+        added?: number;
+        removed?: number;
+        /** Persisted history clamped this file's before/after — the rendered
+         *  diff is the kept head, not the whole change. */
+        truncated?: boolean;
+      }>
     | null;
   /** Cleaned text fallback when no rich view applies. */
   code: string | null;
@@ -351,6 +382,64 @@ function recoverTruncatedRead(
   return true;
 }
 
+function completeJsonArrayItems(raw: string, arrayStart: number): unknown[] {
+  const items: unknown[] = [];
+  let itemStart = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = arrayStart + 1; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      if (itemStart < 0) itemStart = index;
+      continue;
+    }
+    if (itemStart < 0) {
+      if (/\s|,/.test(char)) continue;
+      if (char === "]") break;
+      itemStart = index;
+    }
+    if (char === "{" || char === "[") depth += 1;
+    else if (char === "}" || char === "]") depth -= 1;
+
+    if (depth === 0 && (char === "}" || char === "]")) {
+      try {
+        items.push(JSON.parse(raw.slice(itemStart, index + 1)));
+      } catch {
+        break;
+      }
+      itemStart = -1;
+    }
+  }
+  return items;
+}
+
+function recoverTruncatedWorkspaceTree(
+  out: ParsedToolResult,
+  name: string,
+  raw: string,
+): boolean {
+  if (name !== "workspace_tree" || !raw.includes("[truncated ")) return false;
+  const treeKey = raw.indexOf('"tree"');
+  const arrayStart = treeKey < 0 ? -1 : raw.indexOf("[", treeKey);
+  if (arrayStart < 0) return false;
+  const nodes = toTreeNodes(completeJsonArrayItems(raw, arrayStart));
+  if (nodes.length === 0) return false;
+
+  const rootPath = streamedToolStringArguments(raw, ["rootPath"]).rootPath?.[0]?.value;
+  out.tree = { rootPath, tree: nodes };
+  out.summary = `${nodes.length}+ ${nodes.length === 1 ? "node" : "nodes"}`;
+  return true;
+}
+
 const EMPTY: ParsedToolResult = {
   summary: null,
   tree: null,
@@ -417,6 +506,7 @@ export function parseToolResult(
   // Non-JSON (plain text, error sentinel, truncated) → text fallback.
   if (!parsed) {
     if (recoverTruncatedRead(out, name, args, result)) return out;
+    if (recoverTruncatedWorkspaceTree(out, name, result)) return out;
 
     const argumentDiffs = editDiffsFromArgs(args);
     if (argumentDiffs.length > 1) {
@@ -464,16 +554,23 @@ export function parseToolResult(
     for (const f of files) {
       const o = rec(f);
       if (!o) continue;
-      added += asNum(o.linesAdded) ?? 0;
-      removed += asNum(o.linesRemoved) ?? 0;
+      const fileAdded = asNum(o.linesAdded);
+      const fileRemoved = asNum(o.linesRemoved);
+      added += fileAdded ?? 0;
+      removed += fileRemoved ?? 0;
       const fo = o.oldContent;
       const fn = o.newContent;
       if (typeof fo === "string" && typeof fn === "string") {
+        const oldSide = splitHistoryTruncation(fo);
+        const newSide = splitHistoryTruncation(fn);
         diffs.push({
-          oldText: fo,
-          newText: fn,
+          oldText: oldSide.text,
+          newText: newSide.text,
           path: asStr(o.path),
           fullPath: asStr(o.fullPath),
+          added: fileAdded,
+          removed: fileRemoved,
+          truncated: oldSide.truncated || newSide.truncated || undefined,
         });
       } else if (typeof fn === "string") {
         newOnly.push({ path: asStr(o.path), fullPath: asStr(o.fullPath), content: fn });
@@ -506,11 +603,14 @@ export function parseToolResult(
   const oldC = parsed.oldContent;
   const newC = parsed.newContent;
   if (typeof oldC === "string" && typeof newC === "string") {
+    const oldSide = splitHistoryTruncation(oldC);
+    const newSide = splitHistoryTruncation(newC);
     out.diff = {
-      oldText: oldC,
-      newText: newC,
+      oldText: oldSide.text,
+      newText: newSide.text,
       path: asStr(parsed.path) ?? asStr(args.path) ?? asStr(args.file_path),
       fullPath: asStr(parsed.fullPath),
+      truncated: oldSide.truncated || newSide.truncated || undefined,
     };
   }
 
@@ -532,7 +632,13 @@ export function parseToolResult(
       output: clampShellOutput(pieces.join("\n")),
       success,
     };
-    out.summary = success ? "Ran command" : "Command failed";
+    // Surface the exit code on the COLLAPSED row for failures — "exit 1" is
+    // the single most useful fact before deciding whether to expand.
+    out.summary = success
+      ? "Ran command"
+      : typeof exit === "number"
+        ? `Command failed · exit ${exit}`
+        : "Command failed";
     return out;
   }
 
@@ -544,14 +650,19 @@ export function parseToolResult(
     for (const f of files) {
       const o = rec(f);
       if (!o) continue;
+      const content =
+        typeof o.content === "string" ? splitHistoryTruncation(o.content) : null;
       entries.push({
         path: asStr(o.path) ?? "",
         success: o.success !== false,
         lines: asNum(o.lines),
         error: asStr(o.error),
-        content: typeof o.content === "string" ? o.content : undefined,
+        content: content?.text,
         fullPath: asStr(o.fullPath),
-        truncated: o.truncated === true || parsed.historyTruncated === true,
+        truncated:
+          o.truncated === true ||
+          parsed.historyTruncated === true ||
+          content?.truncated === true,
       });
     }
     out.multiFile = entries;

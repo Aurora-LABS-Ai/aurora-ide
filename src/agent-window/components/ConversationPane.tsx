@@ -9,7 +9,7 @@
  * them together. All chrome reads `--agw-*`.
  */
 
-import React, { useCallback, useEffect, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { AgentIcon } from "../shared/AgentIcon";
@@ -29,11 +29,101 @@ import { useAgentChatStore } from "../store/useAgentChatStore";
 import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
 import { useAgentUiStore } from "../store/useAgentUiStore";
 import { useAgentDraftStore } from "../store/useAgentDraftStore";
+import { useAgentSuggestStore } from "../store/useAgentSuggestStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { FileIcon, FolderIcon } from "../../components/explorer/FileIcons";
 import { useAgentAutoScroll } from "../hooks/useAgentAutoScroll";
-import { useAgentWindowSend } from "../hooks/useAgentWindowSend";
+import {
+  requestReplySuggestions,
+  useAgentWindowSend,
+} from "../hooks/useAgentWindowSend";
 import { useAgentTeamNotifier } from "../hooks/useAgentTeamNotifier";
+
+/** Stable empty array so the suggestion selector never re-renders on misses. */
+const EMPTY_SUGGESTIONS: string[] = [];
+
+/** Wheel steps rate-limit for the suggestion drum (ms between rotations). */
+const DRUM_STEP_COOLDOWN_MS = 110;
+
+/**
+ * Reply-suggestion drum — one visible option above the composer; hovering it
+ * and rolling the mouse wheel rotates through the rest like a vertical
+ * cylinder picker (the centered row is active; neighbors curve away with a
+ * rotateX falloff). Click the centered row to fill the composer. Naked text,
+ * no chrome — a quiet "i / n" on the right signals there's more to roll.
+ */
+const SuggestDrum: React.FC<{
+  suggestions: string[];
+  onPick: (text: string) => void;
+}> = ({ suggestions, onPick }) => {
+  const [active, setActive] = useState(0);
+  const lastStepRef = useRef(0);
+  const count = suggestions.length;
+  const index = Math.min(active, count - 1);
+
+  const step = (direction: number) =>
+    setActive((current) => (Math.min(current, count - 1) + direction + count) % count);
+
+  return (
+    <div
+      className="agw-suggest-drum"
+      role="listbox"
+      aria-label="Suggested replies — scroll to rotate, click to use"
+      onWheel={(event) => {
+        if (count < 2) return;
+        event.preventDefault();
+        const now = Date.now();
+        if (now - lastStepRef.current < DRUM_STEP_COOLDOWN_MS) return;
+        lastStepRef.current = now;
+        step(event.deltaY > 0 ? 1 : -1);
+      }}
+    >
+      {suggestions.map((suggestion, itemIndex) => {
+        // Shortest cyclic distance so wrap-around rotates naturally.
+        let offset = itemIndex - index;
+        if (offset > count / 2) offset -= count;
+        if (offset < -count / 2) offset += count;
+        const isActive = offset === 0;
+        const isVisible = Math.abs(offset) <= 1;
+        return (
+          <button
+            key={suggestion}
+            type="button"
+            role="option"
+            aria-selected={isActive}
+            tabIndex={isActive ? 0 : -1}
+            className="agw-suggest-item"
+            data-active={isActive || undefined}
+            style={{
+              opacity: isVisible ? (isActive ? 1 : 0.45) : 0,
+              // Neighbors straddle the drum's edges — the container clips them
+              // mid-row and its mask fades them out, the iOS reel look.
+              transform: `translateY(${offset * 28}px) rotateX(${offset * -48}deg) scale(${isActive ? 1 : 0.94})`,
+              pointerEvents: isActive ? "auto" : "none",
+            }}
+            onClick={() => isActive && onPick(suggestion)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                step(1);
+              } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                step(-1);
+              }
+            }}
+          >
+            {suggestion}
+          </button>
+        );
+      })}
+      {count > 1 && (
+        <span className="agw-suggest-count" aria-hidden>
+          {index + 1} / {count}
+        </span>
+      )}
+    </div>
+  );
+};
 
 export const ConversationPane: React.FC = () => {
   const railOpen = useAgentWorkspaceStore((s) => s.railOpen);
@@ -57,6 +147,13 @@ export const ConversationPane: React.FC = () => {
   const draftKey = currentThreadId ?? "";
   const draft = useAgentDraftStore((s) => s.drafts[draftKey] ?? "");
   const setDraft = useAgentDraftStore((s) => s.setDraft);
+
+  // Tappable reply suggestions for THIS chat's last settled turn (composer
+  // assists preference). Empty array when off, pending, or filtered out.
+  const suggestions = useAgentSuggestStore((s) =>
+    currentThreadId ? (s.byThread[currentThreadId] ?? EMPTY_SUGGESTIONS) : EMPTY_SUGGESTIONS,
+  );
+  const clearSuggestions = useAgentSuggestStore((s) => s.clear);
 
   // `send.sending` already reflects ONLY the open thread (a backgrounded turn in
   // another chat/project doesn't lock or animate the view you're reading).
@@ -103,6 +200,21 @@ export const ConversationPane: React.FC = () => {
     resetKey: currentThreadId,
     growthKey: messages.length,
   });
+
+  // The suggestion drum mounts AFTER the turn settles (auto-scroll already
+  // released) and grows the dock, shrinking the transcript viewport — without
+  // this, the reply's last lines hide behind it and the user must scroll.
+  // Re-stick to the bottom, but only when they were already reading the end.
+  const hasSuggestions = suggestions.length > 0;
+  useEffect(() => {
+    if (!hasSuggestions) return;
+    const el = containerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < 160) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  }, [hasSuggestions, containerRef, bottomRef]);
 
   // Jump rail (Codex-style): one pin per USER turn down the right edge. Clicking
   // a pin scroll-jumps to that message; the pin nearest the top of the viewport
@@ -270,6 +382,21 @@ export const ConversationPane: React.FC = () => {
               scrollbarGutter: "stable",
               overscrollBehavior: "contain",
             }}
+            // WebView2 150.x renderer CHECK (STATUS_BREAKPOINT): a mouse-up
+            // while a text selection exists during style/layout churn kills
+            // the page — and a streaming transcript IS constant layout churn.
+            // While this thread streams, swallow double/triple-click word
+            // selection and collapse any stale selection before the press
+            // lands. Idle transcripts keep full native selection behavior.
+            onMouseDownCapture={
+              openIsStreaming
+                ? (event) => {
+                    if (event.detail > 1) event.preventDefault();
+                    const selection = window.getSelection();
+                    if (selection && !selection.isCollapsed) selection.removeAllRanges();
+                  }
+                : undefined
+            }
           >
             {threadLoading && messages.length === 0 ? (
               <CenterNote text="Loading…" />
@@ -360,7 +487,7 @@ export const ConversationPane: React.FC = () => {
           {/* Composer dock. NB: no `overflow-x:hidden` here — that would force
               overflow-y to `auto` and clip the model selector's upward dropdown. */}
           <div
-            className="shrink-0 min-w-0 px-4 md:px-8 lg:px-16 pt-4 pb-2 relative"
+            className="shrink-0 min-w-0 px-4 pt-4 pb-2 relative"
             style={{ background: "var(--agw-conversation)" }}
           >
             {/* Docked checklist (todo_write) for the open thread — sits above
@@ -383,11 +510,28 @@ export const ConversationPane: React.FC = () => {
                 exactly like the task panel: narrower so it clears the composer's
                 rounded corners, tucked ~12px behind its top edge. */}
             <QuestionPrompt />
+            {/* Reply-suggestion drum — hidden while streaming; a new send
+                clears the suggestions themselves. */}
+            {!openIsStreaming && suggestions.length > 0 && (
+              <SuggestDrum
+                suggestions={suggestions}
+                onPick={(text) => {
+                  setDraft(draftKey, text);
+                  if (currentThreadId) clearSuggestions(currentThreadId);
+                }}
+              />
+            )}
             <AgentComposer
               value={draft}
               onValueChange={(text) => setDraft(draftKey, text)}
               onSubmit={send.send}
-              onActionCommand={() => void send.compact()}
+              onActionCommand={(actionId) => {
+                if (actionId === "suggest") {
+                  if (currentThreadId) requestReplySuggestions(currentThreadId);
+                } else {
+                  void send.compact();
+                }
+              }}
               sending={openIsStreaming}
               onStop={send.stop}
             />

@@ -23,7 +23,7 @@ import { AnimatePresence, motion } from "framer-motion";
 
 import { AgentIcon } from "../shared/AgentIcon";
 import { ToolCallCard } from "./ToolCallCard";
-import { toolStatus, type ToolCall } from "./tool-call";
+import { formatToolDuration, toolStatus, type ToolCall } from "./tool-call";
 import { TOOL_GROUP_MIN } from "./timeline";
 
 /**
@@ -44,12 +44,14 @@ const ToolGroupImpl: React.FC<{
   const stats = useMemo(() => {
     let done = 0;
     let failed = 0;
+    let totalMs = 0;
     for (const t of tools) {
       const s = toolStatus(t, isActivelyStreaming);
       if (s === "done") done += 1;
       else if (s === "failed") failed += 1;
+      totalMs += t.durationMs ?? 0;
     }
-    return { done, failed };
+    return { done, failed, totalMs };
   }, [tools, isActivelyStreaming]);
 
   // Same trick as the IDE: remember the user's toggle, but key it to the
@@ -103,10 +105,12 @@ const ToolGroupImpl: React.FC<{
             />
             <span style={{ color: "var(--agw-text-muted)" }}>
               {tools.length} {tools.length === 1 ? "call" : "calls"} · {stats.done} done
+              {stats.totalMs >= 1000 && ` · ${formatToolDuration(stats.totalMs)}`}
             </span>
             {stats.failed > 0 && (
               <span className="agw-tool-group-badge">{stats.failed} failed</span>
             )}
+            <span className="agw-timeline-rule" aria-hidden="true" />
           </motion.button>
         )}
       </AnimatePresence>

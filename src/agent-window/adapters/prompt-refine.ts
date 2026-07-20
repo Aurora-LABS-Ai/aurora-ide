@@ -53,6 +53,52 @@ export async function runRefine(
   return auroraInvoke<string>("prompt_refine_run", { requestId, text, config });
 }
 
+/**
+ * Generate a short chat title from the first user message with the SAME local
+ * llama.cpp setup as refine. Rejects on any error — the caller keeps the
+ * locally-derived title, so this is always safe to attempt.
+ */
+export async function runLocalTitle(
+  requestId: string,
+  text: string,
+  config: RefineConfig,
+): Promise<string> {
+  return auroraInvoke<string>("prompt_refine_title", { requestId, text, config });
+}
+
+/**
+ * Rewrite a voice-dictation transcript into clean written text (punctuation,
+ * casing, filler removal) with the local model. Rejects on any error — the
+ * caller inserts the raw transcript unchanged.
+ */
+export async function runDictationCleanup(
+  requestId: string,
+  text: string,
+  config: RefineConfig,
+): Promise<string> {
+  return auroraInvoke<string>("prompt_refine_dictation", { requestId, text, config });
+}
+
+/**
+ * Generate up to 4 tappable reply suggestions from the last exchange. The
+ * model sees the user's own message AND the assistant's reply, and answers as
+ * the user. May resolve with fewer (or an empty array) when the model's
+ * output fails the backend quality filters.
+ */
+export async function runReplySuggestions(
+  requestId: string,
+  userText: string,
+  text: string,
+  config: RefineConfig,
+): Promise<string[]> {
+  return auroraInvoke<string[]>("prompt_refine_suggest", {
+    requestId,
+    userText,
+    text,
+    config,
+  });
+}
+
 /** Cancel an in-flight refine (kills the child process). */
 export async function cancelRefine(requestId: string): Promise<boolean> {
   if (!isDesktopRuntime()) return false;

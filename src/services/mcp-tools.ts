@@ -376,19 +376,46 @@ export function parseMcpToolName(toolName: string): ParsedMcpToolName | null {
   }
 
   // Format: mcp_{serverId}_{toolName}
-  // Need to find the server ID from the tool name.
+  //
+  // Server ids can be prefixes of each other after sanitization ("browser"
+  // vs "browser-testing" → `mcp_browser_` vs `mcp_browser_testing_`), so a
+  // first-match scan can route a tool to the wrong server — e.g.
+  // `mcp_browser_testing_browser_connect` landing on server "browser" as
+  // tool "testing_browser_connect". Collect every matching prefix, prefer
+  // the server that actually advertises the parsed tool name, and fall back
+  // to the longest (most specific) prefix when tools aren't loaded yet.
+  let best:
+    | { advertised: boolean; prefix: string; server: McpServerState }
+    | null = null;
   for (const server of servers) {
     const serverPrefix = `mcp_${server.config.id.replace(/[^a-zA-Z0-9]/g, "_")}_`;
-    if (toolName.startsWith(serverPrefix)) {
-      const parsed: ParsedMcpToolName = {
-        serverId: server.config.id,
-        serverName: server.config.name,
-        originalToolName: toolName.slice(serverPrefix.length),
-        autoApprove: server.config.autoApprove,
-      };
-      mcpToolParseCache.set(toolName, parsed);
-      return parsed;
+    if (
+      !toolName.startsWith(serverPrefix) ||
+      toolName.length <= serverPrefix.length
+    ) {
+      continue;
     }
+    const candidateTool = toolName.slice(serverPrefix.length);
+    const advertised = server.tools.some((t) => t.name === candidateTool);
+    if (
+      !best ||
+      (advertised && !best.advertised) ||
+      (advertised === best.advertised &&
+        serverPrefix.length > best.prefix.length)
+    ) {
+      best = { advertised, prefix: serverPrefix, server };
+    }
+  }
+
+  if (best) {
+    const parsed: ParsedMcpToolName = {
+      serverId: best.server.config.id,
+      serverName: best.server.config.name,
+      originalToolName: toolName.slice(best.prefix.length),
+      autoApprove: best.server.config.autoApprove,
+    };
+    mcpToolParseCache.set(toolName, parsed);
+    return parsed;
   }
 
   mcpToolParseCache.set(toolName, null);

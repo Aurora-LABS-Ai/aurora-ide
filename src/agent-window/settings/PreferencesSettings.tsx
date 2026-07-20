@@ -13,11 +13,12 @@
 import React from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import { useSettingsStore } from "../../store/useSettingsStore";
+import { useSettingsStore, type TitleMakerMode } from "../../store/useSettingsStore";
 import { useAgentThemeStore } from "../store/useAgentThemeStore";
 import { useAgentTypingStore } from "../store/useAgentTypingStore";
 import {
   refineConfigured,
+  refinePathsConfigured,
   useAgentRefineStore,
   type RefineDevice,
 } from "../store/useAgentRefineStore";
@@ -70,6 +71,20 @@ export const PreferencesSettings: React.FC = () => {
   const refineDevice = useAgentRefineStore((s) => s.device);
   const setRefineDevice = useAgentRefineStore((s) => s.setDevice);
   const refineReady = useAgentRefineStore(refineConfigured);
+
+  const refinePathsReady = useAgentRefineStore(refinePathsConfigured);
+  const dictationCleanupEnabled = useAgentRefineStore((s) => s.dictationCleanupEnabled);
+  const setDictationCleanupEnabled = useAgentRefineStore((s) => s.setDictationCleanupEnabled);
+  const replySuggestionsEnabled = useAgentRefineStore((s) => s.replySuggestionsEnabled);
+  const setReplySuggestionsEnabled = useAgentRefineStore((s) => s.setReplySuggestionsEnabled);
+
+  // Chat titles (shared store — the runtime reads these on a chat's first message).
+  const titleMode = useSettingsStore((s) => s.titleMakerMode);
+  const titleBaseUrl = useSettingsStore((s) => s.titleMakerBaseUrl);
+  const titleApiKey = useSettingsStore((s) => s.titleMakerApiKey);
+  const titleModel = useSettingsStore((s) => s.titleMakerModel);
+  const setTitleMaker = useSettingsStore((s) => s.setTitleMaker);
+  const [showTitleKey, setShowTitleKey] = React.useState(false);
 
   const [refineCheck, setRefineCheck] = React.useState<RefineValidation | null>(null);
   const [refineChecking, setRefineChecking] = React.useState(false);
@@ -221,7 +236,7 @@ export const PreferencesSettings: React.FC = () => {
       </SettingsSection>
 
       <SettingsSection
-        icon="sparkle"
+        icon="refine"
         title="Prompt refine"
         description="A ✦ button in the composer rewrites your prompt to be clearer without changing its intent — runs fully locally on a small GGUF model through your own llama.cpp build (no server, nothing leaves your machine)."
       >
@@ -323,6 +338,130 @@ export const PreferencesSettings: React.FC = () => {
                 </p>
               </SettingsBlock>
             )}
+          </>
+        )}
+      </SettingsSection>
+
+      <SettingsSection
+        icon="refine"
+        title="Composer assists"
+        description={
+          refinePathsReady
+            ? "Writing help that runs on the model configured under Prompt refine. Everything stays on this computer."
+            : "Writing help that runs on a local model. Set the llama.cpp folder and model under Prompt refine to turn these on."
+        }
+      >
+        <SettingsRow
+          label="Polish voice dictation"
+          hint="Add punctuation and remove filler words from voice input before it appears in the message box."
+        >
+          <AgwSwitch
+            checked={dictationCleanupEnabled}
+            onChange={setDictationCleanupEnabled}
+            disabled={!refinePathsReady}
+            ariaLabel="Polish voice dictation with the local model"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          last
+          label="Suggest quick replies"
+          hint="After each response, show up to three tappable replies. Tapping one fills the message box; press Enter to send."
+        >
+          <AgwSwitch
+            checked={replySuggestionsEnabled}
+            onChange={setReplySuggestionsEnabled}
+            disabled={!refinePathsReady}
+            ariaLabel="Suggest quick replies after each response"
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection
+        icon="message"
+        title="Chat titles"
+        description="How each new chat gets its name in the sidebar. Only the first message of a chat is used; if generation fails, the name derived from your message is kept."
+      >
+        <SettingsRow
+          label="Title source"
+          hint="Off names the chat from your first message. Local uses the same on-device model as Prompt refine — nothing leaves your machine. Cloud asks the endpoint you set below."
+          last={titleMode === "off"}
+        >
+          <AgwSegmented<TitleMakerMode>
+            value={titleMode}
+            ariaLabel="Chat title source"
+            options={[
+              { value: "off", label: "Off" },
+              { value: "local", label: "Local" },
+              { value: "cloud", label: "Cloud" },
+            ]}
+            onChange={(mode) => setTitleMaker({ mode })}
+          />
+        </SettingsRow>
+
+        {titleMode === "local" && (
+          <SettingsRow
+            last
+            label="Local model"
+            hint={
+              refinePathsReady
+                ? "Titles run on the llama.cpp model configured under Prompt refine."
+                : "Set the llama.cpp folder and model under Prompt refine above — titles use the same setup."
+            }
+          >
+            <AgwPill tone={refinePathsReady ? "success" : "warning"}>
+              {refinePathsReady ? "Ready" : "Needs setup"}
+            </AgwPill>
+          </SettingsRow>
+        )}
+
+        {titleMode === "cloud" && (
+          <>
+            <SettingsRow
+              label="Base URL"
+              hint="OpenAI-compatible endpoint root, e.g. https://api.openai.com/v1 or your local server."
+            >
+              <AgwTextInput
+                value={titleBaseUrl}
+                placeholder="https://api.example.com/v1"
+                onChange={(e) => setTitleMaker({ baseUrl: e.target.value })}
+                style={{ width: 280 }}
+              />
+            </SettingsRow>
+
+            <SettingsRow
+              label="Model ID"
+              hint="The model to title with — exactly as the endpoint expects it (e.g. gpt-4o-mini)."
+            >
+              <AgwTextInput
+                value={titleModel}
+                placeholder="gpt-4o-mini"
+                onChange={(e) => setTitleMaker({ model: e.target.value })}
+                style={{ width: 280 }}
+              />
+            </SettingsRow>
+
+            <SettingsRow
+              last
+              label="API key"
+              hint="Optional — leave blank for a local server that needs no key. Stored locally with your settings."
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <AgwTextInput
+                  type={showTitleKey ? "text" : "password"}
+                  value={titleApiKey}
+                  placeholder="sk-…"
+                  onChange={(e) => setTitleMaker({ apiKey: e.target.value })}
+                  style={{ width: 244 }}
+                />
+                <AgwButton
+                  icon={showTitleKey ? "inspect" : "browser"}
+                  onClick={() => setShowTitleKey((v) => !v)}
+                >
+                  {showTitleKey ? "Hide" : "Show"}
+                </AgwButton>
+              </div>
+            </SettingsRow>
           </>
         )}
       </SettingsSection>

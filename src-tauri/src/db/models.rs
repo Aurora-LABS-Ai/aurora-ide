@@ -410,6 +410,12 @@ pub struct AppSettings {
     /// derived title on any error). All `serde(default)` so legacy rows load.
     #[serde(default)]
     pub title_maker_enabled: bool,
+    /// Title source: `"off"` (derived from the first message), `"local"`
+    /// (the prompt-refine llama.cpp model), or `"cloud"` (the endpoint
+    /// below). Empty string = legacy row; the frontend derives the mode
+    /// from `title_maker_enabled`.
+    #[serde(default)]
+    pub title_maker_mode: String,
     #[serde(default)]
     pub title_maker_base_url: String,
     #[serde(default)]
@@ -479,6 +485,7 @@ impl Default for AppSettings {
             compaction_threshold_pct: 80.0,
             compaction_summary_budget: 8192,
             title_maker_enabled: false,
+            title_maker_mode: String::new(),
             title_maker_base_url: String::new(),
             title_maker_api_key: String::new(),
             title_maker_model: String::new(),

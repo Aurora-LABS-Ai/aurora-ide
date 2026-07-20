@@ -8,8 +8,8 @@
  * frontend bridge (`src/services/mcp-tools.ts`) because they call
  * out to user-configured MCP servers.
  *
- * Skill discovery (`aurora_skill_search`, `aurora_skill_load`) is a
- * third category: it is genuinely frontend-native. The skill catalog
+ * Skill discovery (`aurora_skill_search`, `aurora_skill_load`) and local
+ * Artifact Canvas presentation are genuinely frontend-native. The skill catalog
  * lives in `src/services/skills.ts` — built-in skills are hardcoded
  * TS literals, workspace skills are discovered by scanning
  * `.aurora/skills/` and `.agents/skills/` through Tauri `fs` IPC,
@@ -35,10 +35,9 @@
  *
  * Risk
  * ----
- * Both currently registered tools are read-only (see
- * `risk-levels-enhanced.ts` — both classified `low`) so the
- * bridge auto-approves them without surfacing the tool-approval
- * modal.
+ * Registered tools are read-only or limited to conversation-owned UI state.
+ * They are classified `low`, so the bridge auto-approves them without
+ * surfacing the tool-approval modal.
  */
 import {
   normalizeAskQuestionArgs,
@@ -46,6 +45,16 @@ import {
   type AskQuestionItem,
 } from "./question-bridge";
 import { findSkillById, searchSkillCandidates } from "./skills";
+import { useAgentArtifactStore } from "../agent-window/store/useAgentArtifactStore";
+import { useAgentChatStore } from "../agent-window/store/useAgentChatStore";
+import { useAgentWorkspaceStore } from "../agent-window/store/useAgentWorkspaceStore";
+import type {
+  AgentArtifactKind,
+  ArtifactTextPatch,
+  PresentArtifactInput,
+} from "./agent-artifacts";
+import { previewThreadArtifactPatch } from "./agent-artifacts";
+import { describeMermaidError, validateMermaidSource } from "./mermaid-artifacts";
 import {
   executeTeamLeadTool,
   isTeamLeadTool,
@@ -56,9 +65,9 @@ import {
  * Names of Aurora tools that are implemented in TypeScript on the
  * frontend rather than in the Rust runtime.
  *
- * Keep this list narrow: each entry is intentionally read-only and
- * runs without the tool-approval modal. Anything that mutates state
- * or talks to an external service should live in the Rust runtime
+ * Keep this list narrow: each entry runs without the tool-approval modal.
+ * Anything that mutates project/system state or talks to an external service
+ * should live in the Rust runtime
  * (or be an MCP server) so it benefits from the runtime's safety
  * checks, audit logging, and cancellation handling.
  */
@@ -69,6 +78,8 @@ const AURORA_FRONTEND_TOOLS = new Set<string>([
   // it can't mutate anything, it just collects the user's answer and blocks the
   // turn until they respond (or skip).
   "ask_question",
+  "present_artifact",
+  "read_artifact",
 ]);
 
 /**
@@ -80,7 +91,7 @@ export function isAuroraFrontendTool(toolName: string): boolean {
 }
 
 /**
- * `true` for frontend Aurora tools that are read-only and safe to
+ * `true` for frontend Aurora tools that are safe to
  * run without the approval modal.
  *
  * Currently every entry in {@link AURORA_FRONTEND_TOOLS} qualifies,
@@ -215,6 +226,197 @@ async function runAskQuestion(rawArgs: Record<string, unknown>): Promise<string>
   return JSON.stringify({ skipped: result.skipped, responses });
 }
 
+interface PresentArtifactArgs {
+  artifactId?: unknown;
+  title?: unknown;
+  kind?: unknown;
+  content?: unknown;
+  baseVersionTag?: unknown;
+  patches?: unknown;
+}
+
+interface ReadArtifactArgs {
+  artifactId?: unknown;
+  versionTag?: unknown;
+  query?: unknown;
+  contextLines?: unknown;
+}
+
+function sourceExcerpts(content: string, query: string, contextLines: number) {
+  const lines = content.split("\n");
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (let index = 0; index < lines.length; index++) {
+    if (!lines[index].includes(query)) continue;
+    const start = Math.max(0, index - contextLines);
+    const end = Math.min(lines.length - 1, index + contextLines);
+    const previous = ranges[ranges.length - 1];
+    if (previous && start <= previous.end + 1) {
+      previous.end = Math.max(previous.end, end);
+    } else if (ranges.length < 20) {
+      ranges.push({ start, end });
+    }
+  }
+  return ranges.map(({ start, end }) => ({
+    startLine: start + 1,
+    endLine: end + 1,
+    content: lines.slice(start, end + 1).join("\n"),
+  }));
+}
+
+async function runReadArtifact(
+  rawArgs: Record<string, unknown>,
+  ctx?: TeamToolContext,
+): Promise<string> {
+  const threadId = ctx?.threadId?.trim();
+  if (!threadId) throw new Error("read_artifact: a saved conversation is required");
+
+  const args = rawArgs as ReadArtifactArgs;
+  const artifactId = typeof args.artifactId === "string" ? args.artifactId.trim() : "";
+  const versionTag = typeof args.versionTag === "string" ? args.versionTag.trim() : "";
+  const query = typeof args.query === "string" ? args.query : "";
+  const contextLines = args.contextLines === undefined ? 2 : Number(args.contextLines);
+  if (!artifactId) throw new Error("read_artifact: artifactId is required");
+  if (!Number.isInteger(contextLines) || contextLines < 0 || contextLines > 20) {
+    throw new Error("read_artifact: contextLines must be an integer from 0 to 20");
+  }
+
+  const bundle = await useAgentArtifactStore.getState().loadThread(threadId);
+  const artifact = bundle.artifacts.find((entry) => entry.id === artifactId);
+  if (!artifact) throw new Error(`read_artifact: artifact '${artifactId}' does not exist`);
+  const version = versionTag
+    ? artifact.versions.find((entry) => entry.tag === versionTag)
+    : artifact.versions[artifact.versions.length - 1];
+  if (!version) {
+    throw new Error(
+      `read_artifact: version '${versionTag || "latest"}' does not exist for '${artifactId}'`,
+    );
+  }
+
+  const base = {
+    success: true,
+    artifactId,
+    title: artifact.title,
+    kind: artifact.kind,
+    versionTag: version.tag,
+  };
+  return query
+    ? JSON.stringify({ ...base, query, excerpts: sourceExcerpts(version.content, query, contextLines) })
+    : JSON.stringify({ ...base, content: version.content });
+}
+
+async function runPresentArtifact(
+  rawArgs: Record<string, unknown>,
+  ctx?: TeamToolContext,
+): Promise<string> {
+  const threadId = ctx?.threadId?.trim();
+  if (!threadId) {
+    throw new Error("present_artifact: a saved conversation is required");
+  }
+  const args = rawArgs as PresentArtifactArgs;
+  const artifactId = typeof args.artifactId === "string" ? args.artifactId.trim() : "";
+  const title = typeof args.title === "string" ? args.title.trim() : "";
+  const kind = args.kind;
+  if (!artifactId || !title || !["html", "svg", "markdown", "mermaid"].includes(String(kind))) {
+    throw new Error(
+      "present_artifact: artifactId, title, and kind (html|svg|markdown|mermaid) are required",
+    );
+  }
+
+  if (args.content !== undefined && typeof args.content !== "string") {
+    throw new Error("present_artifact: content must be a string");
+  }
+  if (typeof args.content === "string" && args.content.trim().length === 0) {
+    throw new Error("present_artifact: content cannot be empty");
+  }
+  if (args.patches !== undefined && !Array.isArray(args.patches)) {
+    throw new Error("present_artifact: patches must be an array");
+  }
+  const content = typeof args.content === "string" ? args.content : null;
+  const baseVersionTag =
+    typeof args.baseVersionTag === "string" ? args.baseVersionTag.trim() : "";
+  const patches: ArtifactTextPatch[] | null = Array.isArray(args.patches)
+    ? args.patches.map((entry, index) => {
+        if (!entry || typeof entry !== "object") {
+          throw new Error(`present_artifact: patches[${index}] must be an object`);
+        }
+        const patch = entry as Record<string, unknown>;
+        if (typeof patch.find !== "string" || patch.find.length === 0) {
+          throw new Error(`present_artifact: patches[${index}].find is required`);
+        }
+        if (typeof patch.replace !== "string") {
+          throw new Error(`present_artifact: patches[${index}].replace must be a string`);
+        }
+        if (patch.all !== undefined && typeof patch.all !== "boolean") {
+          throw new Error(`present_artifact: patches[${index}].all must be a boolean`);
+        }
+        return {
+          find: patch.find,
+          replace: patch.replace,
+          ...(patch.all === true ? { all: true } : {}),
+        };
+      })
+    : null;
+  const hasPatchUpdate = Boolean(baseVersionTag && patches && patches.length > 0);
+  if (Boolean(content) === hasPatchUpdate) {
+    throw new Error(
+      "present_artifact: provide either content, or baseVersionTag with one or more patches, but not both",
+    );
+  }
+
+  if (kind === "mermaid" && content) {
+    try {
+      await validateMermaidSource(content);
+    } catch (reason: unknown) {
+      throw new Error(
+        `present_artifact: Mermaid source is invalid and was not saved. ${describeMermaidError(reason)} Correct the source and retry with raw Mermaid syntax, not a Markdown code fence.`,
+      );
+    }
+  }
+
+  type PatchArtifactInput = Extract<PresentArtifactInput, { baseVersionTag: string }>;
+  let input: PresentArtifactInput;
+  let patchInput: PatchArtifactInput | null = null;
+  if (content) {
+    input = { artifactId, title, kind: kind as AgentArtifactKind, content };
+  } else {
+    patchInput = {
+      artifactId,
+      title,
+      kind: kind as AgentArtifactKind,
+      baseVersionTag,
+      patches: patches ?? [],
+    };
+    input = patchInput;
+  }
+
+  if (kind === "mermaid" && patchInput) {
+    const preview = await previewThreadArtifactPatch(threadId, patchInput);
+    try {
+      await validateMermaidSource(preview);
+    } catch (reason: unknown) {
+      throw new Error(
+        `present_artifact: patches would create invalid Mermaid source and were not saved. ${describeMermaidError(reason)} Read ${artifactId} ${baseVersionTag}, correct the patch, and retry.`,
+      );
+    }
+  }
+
+  const bundle = await useAgentArtifactStore.getState().present(threadId, input);
+  const versionTag = bundle.selectedVersionTag;
+
+  if (useAgentChatStore.getState().currentThreadId === threadId) {
+    useAgentWorkspaceStore.getState().openTab("canvas");
+  }
+
+  return JSON.stringify({
+    success: true,
+    artifactId,
+    title,
+    kind,
+    versionTag,
+    message: `Presented ${title}${versionTag ? ` (${versionTag})` : ""} in Canvas`,
+  });
+}
+
 /**
  * Dispatch a frontend-native Aurora tool. Returns the JSON-stringified
  * tool result on success; throws on any failure (the bridge wraps the
@@ -236,6 +438,10 @@ export async function executeAuroraFrontendTool(
       return runSkillLoad(args, ctx?.workspacePath ?? null);
     case "ask_question":
       return runAskQuestion(args);
+    case "present_artifact":
+      return runPresentArtifact(args, ctx);
+    case "read_artifact":
+      return runReadArtifact(args, ctx);
     default:
       // Defensive: the bridge gates on `isAuroraFrontendTool` before
       // calling us, so this branch only fires if the two lists drift.

@@ -13,6 +13,7 @@ export interface FunctionDefinition {
 
 // OpenAI-compatible function parameter schema
 export interface FunctionParameters {
+  oneOf?: Array<{ required: string[] }>;
   properties: Record<string, PropertyDefinition>;
   required: string[];
   type: 'object';
@@ -29,6 +30,9 @@ export interface PropertyDefinition {
   /** JSON-Schema numeric bounds (e.g. an integer member count ≥ 1). */
   minimum?: number;
   maximum?: number;
+  minItems?: number;
+  maxItems?: number;
+  minLength?: number;
 }
 
 // Tool registry entry — frontend metadata only. Executors live in
@@ -79,7 +83,7 @@ export interface ToolDefinition {
 
 // Internal tool call tracking
 export interface TrackedToolCall {
-  args: Record<string, any>;
+  args: Record<string, unknown>;
   endTime?: number;
   error?: string;
   id: string;

@@ -11,6 +11,7 @@ import React, { useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { isTauri } from "../../../lib/tauri";
+import { FileIcon } from "../../../components/explorer/FileIcons";
 import { AgentImageModal } from "../AgentImageModal";
 import { DiffView } from "./DiffView";
 import { GrepResultsView } from "./GrepResultsView";
@@ -70,36 +71,59 @@ const ScreenshotResult: React.FC<{
   );
 };
 
-export const ToolResultView: React.FC<{ parsed: ParsedToolResult }> = ({ parsed }) => {
+export const ToolResultView: React.FC<{
+  parsed: ParsedToolResult;
+  activeMultiFileIndex?: number;
+}> = ({ parsed, activeMultiFileIndex = 0 }) => {
   if (parsed.screenshot) return <ScreenshotResult shot={parsed.screenshot} />;
   if (parsed.tree) return <WorkspaceTreeView data={parsed.tree} />;
   if (parsed.multiFile && parsed.multiFile.length > 0)
-    return <MultiFileResultsView files={parsed.multiFile} />;
+    return <MultiFileResultsView files={parsed.multiFile} activeIndex={activeMultiFileIndex} />;
   if (parsed.grep && parsed.grep.matches.length > 0)
     return <GrepResultsView data={parsed.grep} />;
   if (parsed.shell && parsed.shell.output) return <ShellOutputView data={parsed.shell} />;
   if (parsed.fileList && parsed.fileList.length > 0)
     return <FileListView files={parsed.fileList} />;
 
-  // Multi-file edit — one labelled diff per file the single call touched.
   if (parsed.diffs && parsed.diffs.length > 0) {
+    const selectedIndex = Math.min(Math.max(activeMultiFileIndex, 0), parsed.diffs.length - 1);
+    const diff = parsed.diffs[selectedIndex];
+    const path = diff.fullPath ?? diff.path ?? `file ${selectedIndex + 1}`;
     return (
-      <div className="agw-multi-diff">
-        {parsed.diffs.map((d, i) => (
-          <div className="agw-multi-diff-file" key={d.path ?? d.fullPath ?? i}>
-            <div className="agw-multi-diff-head" title={d.path ?? d.fullPath}>
-              {baseName(d.path ?? d.fullPath ?? `file ${i + 1}`)}
-            </div>
-            <DiffView oldText={d.oldText} newText={d.newText} maxHeight={240} />
+      <div className="agw-rv">
+        <div className="agw-rv-head">
+          <FileIcon name={baseName(path)} path={path} className="agw-file-ico" />
+          <span className="agw-rv-title-file">{baseName(path)}</span>
+          <span className="agw-rv-stats">
+            <span>{selectedIndex + 1} / {parsed.diffs.length}</span>
+          </span>
+        </div>
+        <div className="agw-multi-read">
+          <DiffView oldText={diff.oldText} newText={diff.newText} maxHeight={300} />
+        </div>
+        {diff.truncated && (
+          <div className="agw-rv-trunc-note" role="note">
+            Showing the beginning — the full change was too large to keep in
+            this conversation. The line counts above are complete.
           </div>
-        ))}
+        )}
       </div>
     );
   }
 
   // Real line diff (full before/after) — preferred over the args-only hunk.
   if (parsed.diff) {
-    return <DiffView oldText={parsed.diff.oldText} newText={parsed.diff.newText} maxHeight={300} />;
+    return (
+      <>
+        <DiffView oldText={parsed.diff.oldText} newText={parsed.diff.newText} maxHeight={300} />
+        {parsed.diff.truncated && (
+          <div className="agw-rv-trunc-note" role="note">
+            Showing the beginning — the full change was too large to keep in
+            this conversation.
+          </div>
+        )}
+      </>
+    );
   }
 
   if (parsed.edit && (parsed.edit.removed || parsed.edit.added)) {

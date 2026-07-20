@@ -99,6 +99,9 @@ export const COMPACTION_THRESHOLD_MAX = 95;
 export const DEFAULT_COMPACTION_SUMMARY_BUDGET = 8192;
 export const COMPACTION_SUMMARY_BUDGET_MIN = 2000;
 export const COMPACTION_SUMMARY_BUDGET_MAX = 16000;
+
+/** Chat-title source: derived first message, local llama.cpp, or a cloud endpoint. */
+export type TitleMakerMode = 'off' | 'local' | 'cloud';
 const clampCompactionThreshold = (value: number): number =>
   Math.min(
     COMPACTION_THRESHOLD_MAX,
@@ -182,15 +185,19 @@ interface SettingsState {
   compactionSummaryBudget: number;
   setCompactionSummaryBudget: (value: number) => void;
 
-  // AI Title Maker — generate a short chat title from the first message via an
-  // OpenAI-compatible endpoint. Disabled → the derived title is used as before.
+  // AI Title Maker — generate a short chat title from the first message.
+  // `titleMakerMode` picks the source: "off" keeps the derived title, "local"
+  // uses the prompt-refine llama.cpp model, "cloud" calls the endpoint below.
+  // `titleMakerEnabled` is the legacy flag kept in lockstep for old readers.
   titleMakerEnabled: boolean;
+  titleMakerMode: TitleMakerMode;
   titleMakerBaseUrl: string;
   titleMakerApiKey: string;
   titleMakerModel: string;
   setTitleMaker: (
     value: Partial<{
       enabled: boolean;
+      mode: TitleMakerMode;
       baseUrl: string;
       apiKey: string;
       model: string;
@@ -968,6 +975,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   // AI Title Maker — off by default; the derived title is used until enabled.
   titleMakerEnabled: false,
+  titleMakerMode: 'off' as TitleMakerMode,
   titleMakerBaseUrl: '',
   titleMakerApiKey: '',
   titleMakerModel: '',
@@ -1229,6 +1237,13 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
             appSettings.compactionSummaryBudget ?? DEFAULT_COMPACTION_SUMMARY_BUDGET,
           ),
           titleMakerEnabled: appSettings.titleMakerEnabled ?? false,
+          // Legacy rows have no mode — a previously enabled title maker was
+          // always the cloud endpoint.
+          titleMakerMode: (['off', 'local', 'cloud'].includes(appSettings.titleMakerMode ?? '')
+            ? appSettings.titleMakerMode
+            : appSettings.titleMakerEnabled
+              ? 'cloud'
+              : 'off') as TitleMakerMode,
           titleMakerBaseUrl: appSettings.titleMakerBaseUrl ?? '',
           titleMakerApiKey: appSettings.titleMakerApiKey ?? '',
           titleMakerModel: appSettings.titleMakerModel ?? '',
@@ -1328,6 +1343,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         compactionThresholdPct: state.compactionThresholdPct,
         compactionSummaryBudget: state.compactionSummaryBudget,
         titleMakerEnabled: state.titleMakerEnabled,
+        titleMakerMode: state.titleMakerMode,
         titleMakerBaseUrl: state.titleMakerBaseUrl,
         titleMakerApiKey: state.titleMakerApiKey,
         titleMakerModel: state.titleMakerModel,
@@ -1794,6 +1810,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setTitleMaker: (value) => {
     const patch: Partial<SettingsState> = {};
+    if (value.mode !== undefined) {
+      patch.titleMakerMode = value.mode;
+      // Keep the legacy boolean in lockstep for anything still reading it.
+      patch.titleMakerEnabled = value.mode === 'cloud';
+    }
     if (value.enabled !== undefined) patch.titleMakerEnabled = value.enabled;
     if (value.baseUrl !== undefined) patch.titleMakerBaseUrl = value.baseUrl;
     if (value.apiKey !== undefined) patch.titleMakerApiKey = value.apiKey;

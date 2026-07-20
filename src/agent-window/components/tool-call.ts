@@ -12,6 +12,10 @@ export interface ToolCall {
   /** JSON-encoded argument object (provider format). */
   arguments: string;
   result?: string | null;
+  /** Wall-clock execution time, measured live in the frontend between the
+   *  runtime's execution-start and result events (approval wait excluded).
+   *  Absent on calls reloaded from history — the JSONL doesn't persist it. */
+  durationMs?: number;
 }
 
 export type ToolStatus = "running" | "done" | "failed";
@@ -126,6 +130,20 @@ export function completedToolStringArrayArgument(raw: string, key: string): stri
     );
   });
   return values;
+}
+
+/**
+ * Compact human duration for tool cards: "0.4s", "1.2s", "14s", "1m 12s".
+ * Sub-10s keeps one decimal (that's where most tools live); minutes drop
+ * the decimal entirely.
+ */
+export function formatToolDuration(ms: number): string {
+  if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`;
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
 }
 
 /**

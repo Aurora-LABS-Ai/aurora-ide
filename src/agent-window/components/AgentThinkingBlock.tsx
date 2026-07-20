@@ -50,6 +50,7 @@ const AgentThinkingBlockImpl: React.FC<{
         >
           {isGenerating ? "Thinking…" : "Reasoning"}
         </span>
+        <span className="agw-timeline-rule" aria-hidden="true" />
       </button>
 
       <AnimatePresence initial={false}>

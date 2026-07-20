@@ -90,15 +90,16 @@ export interface AgentTheme {
 /**
  * Surfaces hosted by the right side dock. Codex models this as a dynamic,
  * browser-style tab system (see CODEX-UI-REFERENCE §12.7): singleton surfaces
- * (Review / Files / Browser / Terminal) plus one `file` tab per opened file.
+ * (Review / Canvas / Files / Browser / Terminal) plus one `file` tab per opened file.
  */
-export type DockTabKind = "review" | "files" | "browser" | "terminal" | "file";
+export type DockTabKind = "review" | "canvas" | "files" | "browser" | "terminal" | "file";
 
 /** The singleton (one-instance) tab kinds — everything except per-file tabs. */
 export type DockSingletonKind = Exclude<DockTabKind, "file">;
 
 export const DOCK_TAB_LABELS: Record<DockSingletonKind, string> = {
   review: "Review",
+  canvas: "Canvas",
   files: "Files",
   browser: "Browser",
   terminal: "Terminal",

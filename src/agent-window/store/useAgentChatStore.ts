@@ -163,6 +163,8 @@ interface AgentChatState {
   selectThread: (id: string, workspaceRoot?: string | null) => Promise<void>;
   /** Delete a chat; clears the view if it was open. */
   deleteThread: (id: string) => Promise<void>;
+  /** Rename a chat (persisted); reflects everywhere it renders optimistically. */
+  renameThread: (id: string, title: string) => Promise<void>;
   /** Pin or unpin a chat (persisted); updates the in-memory list optimistically. */
   togglePin: (id: string) => Promise<void>;
   /**
@@ -401,6 +403,33 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       currentThreadId: state.currentThreadId === id ? null : state.currentThreadId,
       currentThread: state.currentThreadId === id ? null : state.currentThread,
     }));
+  },
+
+  renameThread: async (id, title) => {
+    const clean = title.replace(/\s+/g, " ").trim();
+    const current =
+      get().allThreads.find((t) => t.id === id) ?? get().threads.find((t) => t.id === id);
+    if (!clean || clean === current?.title) return;
+    const apply = (value: string) => (state: AgentChatState) => ({
+      threads: state.threads.map((t) => (t.id === id ? { ...t, title: value } : t)),
+      allThreads: state.allThreads.map((t) => (t.id === id ? { ...t, title: value } : t)),
+      currentThread:
+        state.currentThreadId === id && state.currentThread
+          ? { ...state.currentThread, title: value }
+          : state.currentThread,
+      liveTurns: state.liveTurns[id]
+        ? { ...state.liveTurns, [id]: { ...state.liveTurns[id], title: value } }
+        : state.liveTurns,
+    });
+    // Optimistic — the row, header, and live turn all rename instantly.
+    set(apply(clean));
+    if (!isTauri()) return;
+    try {
+      await threadService.updateTitle(id, clean);
+    } catch (err) {
+      console.error(`[agent-chat] failed to rename chat ${id}:`, err);
+      if (current) set(apply(current.title));
+    }
   },
 
   togglePin: async (id) => {

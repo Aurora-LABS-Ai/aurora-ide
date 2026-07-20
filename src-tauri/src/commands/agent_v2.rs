@@ -791,6 +791,19 @@ impl<E: EventEmitter> TurnDriver<E> {
                     "agent_v2: failed to persist session for thread {thread_id}: {persist_err}"
                 );
             }
+            // Full-fidelity edit results accumulated this turn ride the
+            // `.rich.jsonl` sidecar so a reloaded thread renders complete
+            // diffs. Best-effort: losing them degrades one turn's reload
+            // view to the clamped copy, never the conversation itself.
+            let rich = session.drain_rich_results();
+            if !rich.is_empty() {
+                if let Err(rich_err) = self.registry.store().append_rich_results(&thread_id, &rich)
+                {
+                    eprintln!(
+                        "agent_v2: failed to persist rich tool results for thread {thread_id}: {rich_err}"
+                    );
+                }
+            }
         }
 
         // 9b. Refresh the metadata sidecar so the chat list reflects

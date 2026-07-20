@@ -79,10 +79,10 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
       setRailOpen: (open) => set({ railOpen: open }),
       setRailWidth: (width) => set({ railWidth: width }),
 
-      closeDock: () => set({ dockOpen: false }),
+      closeDock: () => set({ dockOpen: false, expanded: false }),
       toggleDock: () =>
         set((s) => {
-          if (s.dockOpen) return { dockOpen: false };
+          if (s.dockOpen) return { dockOpen: false, expanded: false };
           if (s.tabs.length === 0) {
             const tab: DockTabInstance = { id: "files", kind: "files", title: DOCK_TAB_LABELS.files };
             return { dockOpen: true, tabs: [tab], activeTabId: tab.id };
@@ -126,7 +126,8 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
             const neighbor = tabs[idx] ?? tabs[idx - 1] ?? null;
             activeTabId = neighbor?.id ?? null;
           }
-          return { tabs, activeTabId, dockOpen: tabs.length > 0 && s.dockOpen };
+          const dockOpen = tabs.length > 0 && s.dockOpen;
+          return { tabs, activeTabId, dockOpen, expanded: dockOpen ? s.expanded : false };
         }),
     }),
     {
@@ -135,7 +136,6 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
         railOpen: s.railOpen,
         railWidth: s.railWidth,
         dockWidth: s.dockWidth,
-        expanded: s.expanded,
         diffMode: s.diffMode,
         // Only singleton tabs survive a reload — file tabs are project-specific.
         tabs: s.tabs.filter((t) => t.kind !== "file"),
@@ -149,7 +149,7 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
           p.activeTabId && tabs.some((t) => t.id === p.activeTabId)
             ? p.activeTabId
             : (tabs[0]?.id ?? null);
-        return { ...current, ...p, tabs, activeTabId };
+        return { ...current, ...p, tabs, activeTabId, expanded: false };
       },
     },
   ),

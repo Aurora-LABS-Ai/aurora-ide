@@ -1,5 +1,17 @@
 {
   "mcpServers": {
+    "browser_testing": {
+      "command": "node",
+      "args": [
+        "E:\\QuantumHUB-Infrustructure\\tools\\browser-testing-mcp\\dist\\index.js"
+      ],
+      "env": {
+        "MCP_BRIDGE_PORT": "9223"
+      },
+      "enabled": true,
+      "startup_timeout_sec": 15,
+      "tool_timeout_sec": 60
+    },
     "qg-probe": {
       "command": "uv",
       "args": [
@@ -10,7 +22,10 @@
       ],
       "env": {
         "QG_PROBE_EXE": "C:\\Users\\Alvan\\Documents\\ALL-MCP-SERVER\\qg-win-control\\QgProbe\\bin\\Release\\net9.0-windows\\win-x64\\publish\\QgProbe.exe"
-      }
+      },
+      "enabled": true,
+      "startup_timeout_sec": 30,
+      "tool_timeout_sec": 60
     }
   }
 }

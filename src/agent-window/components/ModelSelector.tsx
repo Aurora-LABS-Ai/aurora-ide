@@ -341,7 +341,7 @@ export const ModelSelector: React.FC<{
   };
 
   return (
-    <div ref={rootRef} style={{ position: "relative" }}>
+    <div ref={rootRef} className="agw-model-selector" style={{ position: "relative" }}>
       <button
         ref={triggerRef}
         type="button"

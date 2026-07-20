@@ -116,6 +116,9 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   // ============================================
   ask_question: 'low',             // Renders a prompt; user answers in the UI
 
+  present_artifact: 'low',
+  read_artifact: 'low',
+
   // ============================================
   // AGENT TEAM (LEAD CONTROL) TOOLS
   // Auto-approval is driven by shouldAutoApproveAuroraFrontendTool

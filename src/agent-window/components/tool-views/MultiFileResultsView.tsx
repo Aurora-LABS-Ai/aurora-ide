@@ -1,86 +1,47 @@
 /**
  * Agent Window — multi_file_read view [tool result].
  *
- * One row per file: a status glyph (read / failed), a file icon, the name, and a
- * line count or error. Re-themed with `--agw-*` + `AgentIcon`; no editor-open
- * wiring yet (the agent window has no Monaco), so rows are non-interactive.
+ * The header owns file selection. This body mounts exactly one file at a time so
+ * a large batch read cannot instantiate several syntax highlighters at once.
  */
 
 import React from "react";
 
-import { AgentIcon } from "../../shared/AgentIcon";
 import { FileIcon } from "../../../components/explorer/FileIcons";
 import { baseName, type MultiFileEntry } from "./tool-result";
 import { ToolCode } from "./ToolCode";
 
-export const MultiFileResultsView: React.FC<{ files: MultiFileEntry[] }> = ({ files }) => {
-  const hasContent = files.some((file) => file.content !== undefined);
+export const MultiFileResultsView: React.FC<{
+  files: MultiFileEntry[];
+  activeIndex?: number;
+}> = ({ files, activeIndex = 0 }) => {
+  const selectedIndex = Math.min(Math.max(activeIndex, 0), files.length - 1);
+  const file = files[selectedIndex];
+  if (!file) return null;
 
   return (
     <div className="agw-rv">
       <div className="agw-rv-head">
-        <AgentIcon name="diff" size={11} style={{ color: "var(--agw-text-subtle)" }} />
-        <span className="agw-rv-title">Files Read</span>
+        <FileIcon name={baseName(file.path)} path={file.path} className="agw-file-ico" />
+        <span className="agw-rv-title-file">{baseName(file.path)}</span>
         <span className="agw-rv-stats">
-          <span>
-            {files.length} {files.length === 1 ? "file" : "files"}
-          </span>
+          {typeof file.lines === "number" && <span>{file.lines.toLocaleString()} L</span>}
+          <span>{selectedIndex + 1} / {files.length}</span>
         </span>
       </div>
-      {hasContent ? (
-        <div className="agw-multi-diff agw-multi-read">
-          {files.map((file, index) => (
-            <div className="agw-multi-diff-file" key={`${file.path}-${index}`}>
-              <div className="agw-multi-diff-head">
-                <FileIcon
-                  name={baseName(file.path)}
-                  path={file.path}
-                  className="agw-file-ico"
-                />
-                <span>{baseName(file.path)}</span>
-                {typeof file.lines === "number" && (
-                  <span className="agw-tree-meta">{file.lines.toLocaleString()} L</span>
-                )}
-              </div>
-              {file.content !== undefined ? (
-                <ToolCode code={file.content} path={file.fullPath ?? file.path} />
-              ) : (
-                <div className="agw-multi-read-error">
-                  {file.error || "This file could not be read."}
-                </div>
-              )}
+      {file.content !== undefined ? (
+        <div className="agw-multi-read">
+          <ToolCode code={file.content} path={file.fullPath ?? file.path} />
+          {file.truncated && (
+            <div className="agw-rv-trunc-note" role="note">
+              Showing the beginning — the full file was too large to keep in
+              this conversation.
             </div>
-          ))}
+          )}
         </div>
       ) : (
-        <div className="agw-rv-body agw-scroll">
-          {files.map((file, index) => (
-            <div
-              key={`${file.path}-${index}`}
-              className="agw-tree-row"
-              data-ok={file.success ? "true" : "false"}
-            >
-              <span className="agw-tree-caret">
-                <AgentIcon
-                  name={file.success ? "check" : "close"}
-                  size={10}
-                  strokeWidth={2.6}
-                  style={{
-                    color: file.success ? "var(--agw-added)" : "var(--agw-removed)",
-                  }}
-                />
-              </span>
-              <FileIcon name={baseName(file.path)} path={file.path} className="agw-file-ico" />
-              <span className="agw-tree-name">{baseName(file.path)}</span>
-              <span className="agw-tree-meta">
-                {file.success
-                  ? typeof file.lines === "number"
-                    ? `${file.lines.toLocaleString()} L`
-                    : ""
-                  : (file.error || "failed").slice(0, 40)}
-              </span>
-            </div>
-          ))}
+        <div className="agw-multi-read-error" role="status">
+          {file.error || "This file could not be read."}
         </div>
       )}
     </div>

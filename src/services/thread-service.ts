@@ -231,6 +231,16 @@ class ThreadServiceClass {
     await invoke('thread_delete', { threadId });
   }
 
+  /** Duplicate the persisted transcript as a new active, unpinned chat. */
+  async duplicateThread(threadId: string): Promise<ThreadSummary> {
+    return await invoke<ThreadSummary>('thread_duplicate', { threadId });
+  }
+
+  /** Render the visible conversation as Markdown and copy it natively. */
+  async copyThreadAsMarkdown(threadId: string): Promise<void> {
+    await invoke('thread_copy_markdown', { threadId });
+  }
+
   /**
    * List threads. Pass `workspaceRoot` to get only that project's
    * chats (the agent window's project-scoped list); omit it for the

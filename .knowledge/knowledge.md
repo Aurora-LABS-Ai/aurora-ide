@@ -1,10 +1,14 @@
 # Aurora IDE — Working Memory
 
-## Task (2026-07-20): Rust-owned left-rail context actions — IN PROGRESS
+## Task (2026-07-20): Rust-owned left-rail context actions — COMPLETE
 - [x] Inspect current project/chat context menus and the existing Rust command/service boundaries.
-- [ ] Add native project actions: reveal in file manager and open a terminal at the project root.
-- [ ] Add native chat actions: duplicate the conversation and render a Markdown transcript for copying.
-- [ ] Wire polished menu rows, explicit success/error feedback, focused tests, and full validation.
+- [x] Add native project actions: reveal in file manager and open a terminal at the project root.
+- [x] Add native chat actions: duplicate the conversation and render a Markdown transcript for copying.
+- [x] Wire polished menu rows, explicit success/error feedback, focused tests, and full validation.
+
+Progress: reused the existing Rust `reveal_in_explorer` and `open_in_terminal` commands instead of creating a parallel native-action layer. Added Rust-owned transcript duplication (including rich tool results and Canvas artifacts) plus native Markdown clipboard export; React now only invokes these actions and renders transient success/error feedback.
+
+Review: project menus now expose File Explorer and terminal actions; active and archived chat menus expose duplicate and copy-as-Markdown, with grouped rows and accessible transient feedback. Verified with Rust check, Rust test-target compilation, TypeScript, targeted ESLint, production frontend build, 197/197 frontend tests, diff checks, and `graphify update .`; Rust test execution remains blocked before the harness by the documented Windows `STATUS_ENTRYPOINT_NOT_FOUND` native-DLL issue, and full Clippy remains blocked by 38 unrelated existing warnings promoted to errors.
 
 ## Task (2026-07-20): Ten net-new visual Agent Window concepts — COMPLETE
 - [x] Excluded shipped surfaces and documented plans from the visual concept space.
@@ -1633,3 +1637,14 @@ the OUTER `.agw-shell-side` animates `width` (right-pinned inner revealed by its
 - Root-caused agent-window "MCP server browser is not connected" while calling browser-testing tools: `parseMcpToolName` in src/services/mcp-tools.ts used first-match server-prefix scanning, so with servers "browser" + "browser-testing" the tool `mcp_browser_testing_browser_connect` routed to server "browser" as tool "testing_browser_connect". Display labels stayed correct (separate cache), only execution/approval/plan-mode routing broke.
 - Fix: collect all matching server prefixes; prefer the server that advertises the parsed tool name in its tools list; tie-break on longest prefix. Covers executeMcpTool, plan-mode filtering, auto-approve, and display fallback via the single parse path.
 - Verified: new src/services/mcp-tools.test.ts (6 regressions incl. ambiguous-prefix routing, longest-prefix fallback, cache invalidation) passes; tsc + eslint clean. Frontend-only change, hot-reloads.
+
+### Analysis (2026-07-21) — Agent window "premiumness" gap vs Kimi desktop
+- Side-by-side screenshot comparison (qg-probe captures at 4K) of Aurora Agent window vs Kimi desktop; user's complaint is text-rendering "premiumness", not color themes.
+- Verified via 2x glyph zoom: Inter IS loading correctly (not a Segoe fallback); the gap is typographic tuning + chrome noise, not the font face or rasterization.
+- Findings (all in src/agent-window/theme/agent-window.css + ConversationPane.tsx):
+  1. No negative letter-spacing on 15px Inter body (.agw-md) — untracked Inter reads loose/generic; Inter dynamic metrics call for ~-0.01em at 15px, ~-0.017em on 600-weight headings.
+  2. Inline code chips (.agw-code-inline) have a 1px border + near-body size (0.88em) — every chip reads as a button; heaviest single source of visual noise in transcripts.
+  3. Transcript measure is 896px (ConversationPane maxWidth) → ~110 chars/line at 15px; premium chat UIs cap prose ~720-780px.
+  4. Flat tone hierarchy: body, bold, and headings all #ededed; premium UIs dim body slightly and reserve brighter white for headings/strong.
+  5. Full-width hr + "Reasoning" rules + mono metadata ("Read 26 lines") + saturated file-type icons and green checks add terminal/dev-tool energy vs Kimi's monochrome-plus-one-accent restraint.
+- No fixes applied yet; awaiting user direction on the tuning pass.

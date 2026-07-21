@@ -625,6 +625,75 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Create an independent copy of a stored conversation.
+    ///
+    /// The transcript and full-fidelity tool-result sidecar are copied, while
+    /// rail state is intentionally reset: a duplicate starts active and
+    /// unpinned with fresh timestamps. Artifact Canvas data is owned by the
+    /// artifacts command module and is copied there under its storage lock.
+    pub fn duplicate(
+        &self,
+        source_thread_id: &str,
+        new_thread_id: &str,
+        title: String,
+    ) -> Result<SessionMetadata, RuntimeError> {
+        if self.exists(new_thread_id) || self.meta_path(new_thread_id).exists() {
+            return Err(RuntimeError::InvalidState(format!(
+                "thread {new_thread_id} already exists"
+            )));
+        }
+
+        let loaded = self.load(source_thread_id)?.ok_or_else(|| {
+            RuntimeError::InvalidState(format!("thread {source_thread_id} does not exist"))
+        })?;
+
+        let mut duplicate = Session::new(new_thread_id);
+        if let Some(workspace_root) = loaded.metadata.workspace_root.as_deref() {
+            duplicate = duplicate.with_workspace_root(workspace_root);
+        }
+        if let Some(model) = loaded.metadata.model.as_deref() {
+            duplicate = duplicate.with_model(model);
+        }
+        for message in loaded.session.messages() {
+            duplicate.append_message(message.clone());
+        }
+
+        fs::create_dir_all(&self.dir)?;
+        if let Err(error) = duplicate.save_to_path(self.session_path(new_thread_id)) {
+            let _ = self.delete(new_thread_id);
+            return Err(error);
+        }
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let metadata = SessionMetadata {
+            thread_id: new_thread_id.to_string(),
+            title,
+            workspace_root: loaded.metadata.workspace_root,
+            model: loaded.metadata.model,
+            token_usage: loaded.metadata.token_usage,
+            context_usage: loaded.metadata.context_usage,
+            pinned: false,
+            archived_at: None,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+
+        if let Err(error) = self.save_metadata(&metadata) {
+            let _ = self.delete(new_thread_id);
+            return Err(error);
+        }
+
+        let source_rich = self.rich_path(source_thread_id);
+        if source_rich.exists() {
+            if let Err(error) = fs::copy(source_rich, self.rich_path(new_thread_id)) {
+                let _ = self.delete(new_thread_id);
+                return Err(RuntimeError::from(error));
+            }
+        }
+
+        Ok(metadata)
+    }
+
     /// Atomically replace the metadata sidecar. The actual JSONL is
     /// owned by `Session::save_to_path` / `Session::append_to_path`.
     fn save_metadata(&self, meta: &SessionMetadata) -> Result<(), RuntimeError> {
@@ -849,6 +918,60 @@ mod tests {
         let meta = store.load_metadata("u").unwrap();
         assert_eq!(meta.token_usage.as_ref().unwrap().prompt_tokens, 10);
         assert_eq!(meta.context_usage.as_ref().unwrap().used_tokens, 100);
+    }
+
+    #[test]
+    fn duplicate_copies_transcript_and_rich_results_with_fresh_rail_state() {
+        let (_g, store) = tmp_store();
+        store
+            .ensure_thread(
+                "source",
+                Some("Original".into()),
+                Some("C:/work/project".into()),
+            )
+            .unwrap();
+        store.set_pinned("source", true).unwrap();
+        store.set_archived("source", true).unwrap();
+
+        let mut session = Session::new("source").with_workspace_root("C:/work/project");
+        session.append_message(ConversationMessage::user_text("hello", 1));
+        session.append_message(ConversationMessage::assistant(
+            vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+            2,
+        ));
+        session.save_to_path(store.session_path("source")).unwrap();
+        store
+            .append_rich_results(
+                "source",
+                &[RichToolResult {
+                    tool_use_id: "call-1".into(),
+                    tool: "file_edit".into(),
+                    content: "full result".into(),
+                }],
+            )
+            .unwrap();
+
+        let metadata = store
+            .duplicate("source", "copy", "Original (copy)".into())
+            .unwrap();
+        let copied = store.load("copy").unwrap().expect("copied session");
+
+        assert_eq!(metadata.title, "Original (copy)");
+        assert_eq!(metadata.workspace_root.as_deref(), Some("C:/work/project"));
+        assert!(!metadata.pinned);
+        assert!(metadata.archived_at.is_none());
+        assert_eq!(copied.session.messages(), session.messages());
+        assert_eq!(
+            store
+                .load_rich_results("copy")
+                .get("call-1")
+                .map(String::as_str),
+            Some("full result")
+        );
+        assert!(store.load_metadata("source").unwrap().pinned);
+        assert!(store.load_metadata("source").unwrap().archived_at.is_some());
     }
 
     #[test]

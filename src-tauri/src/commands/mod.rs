@@ -1807,13 +1807,16 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         // Try xdg-open first, then fall back to common file managers
-        let result = Command::new("xdg-open")
-            .arg(reveal_path.to_string_lossy().to_string())
-            .spawn();
-
-        if result.is_err() {
-            // Try nautilus (GNOME)
-            let _ = Command::new("nautilus").arg("--select").arg(&path).spawn();
+        if let Err(xdg_error) = Command::new("xdg-open").arg(reveal_path).spawn() {
+            Command::new("nautilus")
+                .arg("--select")
+                .arg(&path)
+                .spawn()
+                .map_err(|nautilus_error| {
+                    format!(
+                        "Failed to open a file manager (xdg-open: {xdg_error}; nautilus: {nautilus_error})"
+                    )
+                })?;
         }
     }
 
@@ -1825,6 +1828,10 @@ pub async fn reveal_in_explorer(path: String) -> Result<(), String> {
 pub async fn open_in_terminal(path: String) -> Result<(), String> {
     let target_path = Path::new(&path);
 
+    if !target_path.exists() {
+        return Err(format!("Path does not exist: {}", target_path.display()));
+    }
+
     // Use the path directly if it's a directory, otherwise use its parent
     let terminal_path = if target_path.is_dir() {
         target_path.to_path_buf()
@@ -1835,24 +1842,22 @@ pub async fn open_in_terminal(path: String) -> Result<(), String> {
             .unwrap_or_else(|| target_path.to_path_buf())
     };
 
-    if !terminal_path.exists() {
-        return Err(format!("Path does not exist: {}", terminal_path.display()));
-    }
-
     #[cfg(target_os = "windows")]
     {
-        // Try Windows Terminal first, then fall back to cmd
+        // Try Windows Terminal first, then fall back to PowerShell.
         let wt_result = Command::new("wt")
             .arg("-d")
             .arg(terminal_path.to_string_lossy().to_string())
             .spawn();
 
         if wt_result.is_err() {
-            // Fall back to PowerShell in a new window
+            // Fall back to PowerShell in a new window. `current_dir` avoids
+            // interpolating a user path into a command string (and correctly
+            // handles folders containing quotes or shell metacharacters).
             Command::new("powershell")
+                .arg("-NoLogo")
                 .arg("-NoExit")
-                .arg("-Command")
-                .arg(format!("cd '{}'", terminal_path.display()))
+                .current_dir(&terminal_path)
                 .spawn()
                 .map_err(|e| format!("Failed to open terminal: {}", e))?;
         }
@@ -1860,14 +1865,9 @@ pub async fn open_in_terminal(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     {
-        // Open Terminal.app with the specified directory
-        let script = format!(
-            "tell application \"Terminal\" to do script \"cd '{}'\"",
-            terminal_path.display()
-        );
-        Command::new("osascript")
-            .arg("-e")
-            .arg(&script)
+        Command::new("open")
+            .args(["-a", "Terminal"])
+            .arg(&terminal_path)
             .spawn()
             .map_err(|e| format!("Failed to open Terminal: {}", e))?;
     }

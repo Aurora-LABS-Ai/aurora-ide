@@ -352,6 +352,27 @@ fn save_bundle(store: &SessionStore, bundle: &ThreadArtifactBundle) -> Result<()
     replace_file(&store.artifacts_path(&bundle.thread_id), &bytes)
 }
 
+/// Copy a conversation's optional Canvas bundle while holding the same lock as
+/// every other artifact read-modify-write operation. Empty conversations do not
+/// gain an unnecessary sidecar.
+pub(crate) fn duplicate_thread_artifacts(
+    store: &SessionStore,
+    source_thread_id: &str,
+    new_thread_id: &str,
+) -> Result<(), String> {
+    let _guard = lock_artifacts()?;
+    if !store.artifacts_path(source_thread_id).exists()
+        && !store.artifacts_backup_path(source_thread_id).exists()
+    {
+        return Ok(());
+    }
+
+    validate_key(new_thread_id, "threadId", 128)?;
+    let mut bundle = load_bundle_unlocked(store, source_thread_id)?;
+    bundle.thread_id = new_thread_id.to_string();
+    save_bundle(store, &bundle)
+}
+
 fn upsert(
     store: &SessionStore,
     request: ArtifactUpsertRequest,
@@ -626,6 +647,22 @@ mod tests {
         assert_eq!(selected.selected_version_tag.as_deref(), Some("v1"));
         let reloaded = load_bundle_unlocked(&store, "thread-1").unwrap();
         assert_eq!(reloaded.selected_version_tag.as_deref(), Some("v1"));
+    }
+
+    #[test]
+    fn duplicate_thread_artifacts_rehomes_the_bundle() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(directory.path().to_path_buf());
+        store.ensure_thread("thread-1", None, None).unwrap();
+        store.ensure_thread("thread-2", None, None).unwrap();
+        upsert(&store, request("<h1>First</h1>")).unwrap();
+
+        duplicate_thread_artifacts(&store, "thread-1", "thread-2").unwrap();
+
+        let copied = load_bundle_unlocked(&store, "thread-2").unwrap();
+        assert_eq!(copied.thread_id, "thread-2");
+        assert_eq!(copied.artifacts.len(), 1);
+        assert_eq!(copied.artifacts[0].versions[0].content, "<h1>First</h1>");
     }
 
     #[test]

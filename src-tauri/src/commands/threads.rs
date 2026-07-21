@@ -46,6 +46,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::agent_runtime::session_store::{ContextUsageMeta, SessionStore, TokenUsageMeta};
 use crate::agent_runtime::types::{ContentBlock, ConversationMessage, MessageRole};
@@ -396,6 +397,46 @@ fn push_with_newline(out: &mut String, s: &str) {
     out.push_str(s);
 }
 
+fn duplicate_title(title: &str) -> String {
+    let title = title.trim();
+    let base = if title.is_empty() { "New Chat" } else { title };
+    format!("{base} (copy)")
+}
+
+/// Produce a clean, portable transcript. Internal system messages, model
+/// thinking, tool calls, and tool results are deliberately omitted; only the
+/// same user/assistant prose visible in the conversation is exported.
+fn render_thread_markdown(title: &str, messages: &[ConversationMessage]) -> String {
+    let clean_title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let clean_title = if clean_title.is_empty() {
+        "Chat"
+    } else {
+        clean_title.as_str()
+    };
+    let mut markdown = format!("# {clean_title}\n");
+
+    for message in messages {
+        let role = match message.role {
+            MessageRole::User => "You",
+            MessageRole::Assistant => "Aurora",
+            MessageRole::System | MessageRole::Tool => continue,
+        };
+        let visible = collect_text_blocks(&message.blocks);
+        let visible = crate::agent_runtime::title::strip_aurora_image_blocks(&visible);
+        let visible = visible.trim();
+        if visible.is_empty() {
+            continue;
+        }
+        markdown.push_str("\n## ");
+        markdown.push_str(role);
+        markdown.push_str("\n\n");
+        markdown.push_str(visible);
+        markdown.push('\n');
+    }
+
+    markdown
+}
+
 fn millis_to_rfc3339(millis: i64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(millis)
         .unwrap_or_else(chrono::Utc::now)
@@ -619,6 +660,92 @@ pub fn thread_create(
     Ok(state)
 }
 
+/// Duplicate a persisted conversation as a new, active chat. The Rust store
+/// owns the full operation so the frontend never reconstructs or rewrites
+/// transcript data.
+#[tauri::command]
+pub async fn thread_duplicate(
+    thread_id: String,
+    registry: State<'_, Arc<AgentRegistry>>,
+    app: AppHandle,
+) -> Result<ThreadSummary, String> {
+    let store = store_from_state(registry.inner());
+    let new_thread_id = uuid::Uuid::new_v4().to_string();
+    let source_thread_id = thread_id.clone();
+    let worker_store = store.clone();
+    let worker_new_thread_id = new_thread_id.clone();
+
+    let summary = tokio::task::spawn_blocking(move || {
+        let source = worker_store
+            .load(&source_thread_id)
+            .map_err(|error| format!("Failed to load chat for duplication: {error}"))?
+            .ok_or_else(|| "The chat no longer exists".to_string())?;
+        let title = duplicate_title(&source.metadata.title);
+        drop(source);
+
+        worker_store
+            .duplicate(&source_thread_id, &worker_new_thread_id, title)
+            .map_err(|error| format!("Failed to duplicate chat: {error}"))?;
+
+        if let Err(error) = crate::commands::artifacts::duplicate_thread_artifacts(
+            &worker_store,
+            &source_thread_id,
+            &worker_new_thread_id,
+        ) {
+            let _ = worker_store.delete(&worker_new_thread_id);
+            return Err(format!("Failed to duplicate chat artifacts: {error}"));
+        }
+
+        worker_store
+            .list_summaries()
+            .map_err(|error| format!("Failed to read duplicated chat: {error}"))?
+            .into_iter()
+            .find(|entry| entry.id == worker_new_thread_id)
+            .map(build_thread_summary)
+            .ok_or_else(|| "The duplicated chat could not be found after saving".to_string())
+    })
+    .await
+    .map_err(|error| format!("Chat duplication task failed: {error}"))??;
+
+    emit(
+        &app,
+        "thread-created",
+        &ThreadCreatedPayload {
+            thread: summary.clone(),
+        },
+    );
+    Ok(summary)
+}
+
+/// Render the visible conversation as Markdown and write it to the native
+/// clipboard. Clipboard ownership stays in Rust; the React layer only invokes
+/// the command and presents feedback.
+#[tauri::command]
+pub async fn thread_copy_markdown(
+    thread_id: String,
+    registry: State<'_, Arc<AgentRegistry>>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let store = store_from_state(registry.inner());
+    let markdown = tokio::task::spawn_blocking(move || {
+        let loaded = store
+            .load(&thread_id)
+            .map_err(|error| format!("Failed to load chat for export: {error}"))?
+            .ok_or_else(|| "The chat no longer exists".to_string())?;
+        let markdown = render_thread_markdown(&loaded.metadata.title, loaded.session.messages());
+        if !markdown.contains("\n## ") {
+            return Err("This chat has no visible messages to copy".to_string());
+        }
+        Ok(markdown)
+    })
+    .await
+    .map_err(|error| format!("Chat export task failed: {error}"))??;
+
+    app.clipboard()
+        .write_text(markdown)
+        .map_err(|error| format!("Failed to write chat to the clipboard: {error}"))
+}
+
 /// Read a full thread (metadata + transcript) for the chat panel.
 #[tauri::command]
 pub fn thread_load(
@@ -827,6 +954,49 @@ mod tests {
             }],
             ts,
         )
+    }
+
+    #[test]
+    fn markdown_export_contains_only_visible_conversation_text() {
+        let messages = vec![
+            user_msg("Please inspect this", 1),
+            ConversationMessage::assistant(
+                vec![
+                    ContentBlock::Thinking {
+                        text: "private reasoning".into(),
+                        signature: None,
+                    },
+                    ContentBlock::Text {
+                        text: "Here is the answer".into(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call-1".into(),
+                        name: "read_file".into(),
+                        input: serde_json::json!({ "path": "secret.txt" }),
+                    },
+                ],
+                2,
+            ),
+            tool_result("call-1", "private tool output", 3),
+        ];
+
+        let markdown = render_thread_markdown("  Export   test  ", &messages);
+
+        assert!(markdown.starts_with("# Export test\n"));
+        assert!(markdown.contains("## You\n\nPlease inspect this"));
+        assert!(markdown.contains("## Aurora\n\nHere is the answer"));
+        assert!(!markdown.contains("private reasoning"));
+        assert!(!markdown.contains("private tool output"));
+        assert!(!markdown.contains("secret.txt"));
+    }
+
+    #[test]
+    fn duplicate_title_uses_a_customer_ready_suffix() {
+        assert_eq!(
+            duplicate_title("Architecture review"),
+            "Architecture review (copy)"
+        );
+        assert_eq!(duplicate_title("  "), "New Chat (copy)");
     }
 
     fn assistant_with_tool(

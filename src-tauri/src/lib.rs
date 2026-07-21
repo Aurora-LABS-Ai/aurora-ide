@@ -307,6 +307,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             // agent_v2 SessionStore (see commands/threads.rs).
             commands::threads::thread_save,
             commands::threads::thread_create,
+            commands::threads::thread_duplicate,
+            commands::threads::thread_copy_markdown,
             commands::threads::thread_load,
             commands::threads::thread_delete,
             commands::threads::thread_list_summaries,

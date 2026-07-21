@@ -21,7 +21,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 
-import { openFileDialog } from "../../lib/tauri";
+import { writeClipboardText } from "../../lib/clipboard";
+import { openFileDialog, openInTerminal, revealInExplorer } from "../../lib/tauri";
 import { deriveThreadTitle } from "../../lib/thread-title";
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
 import { AgentConfirm } from "./AgentConfirm";
@@ -31,7 +32,11 @@ import { useAgentUiStore } from "../store/useAgentUiStore";
 import { useTeamHistoryStore } from "../store/useTeamHistoryStore";
 import { useTeamStore } from "../../store/useTeamStore";
 import { PHASE_LABEL, isActivePhase, teamProgress } from "./team/team-ui";
-import type { DbThread, ThreadSummary } from "../../services/thread-service";
+import {
+  threadService,
+  type DbThread,
+  type ThreadSummary,
+} from "../../services/thread-service";
 
 type ProjectSort = "recent" | "name" | "oldest";
 const SORT_LABEL: Record<ProjectSort, string> = {
@@ -168,12 +173,18 @@ interface RailMenuItem {
   icon: AgentIconName;
   label: string;
   danger?: boolean;
+  separatorBefore?: boolean;
   onSelect: () => void;
 }
 interface RailMenuState {
   x: number;
   y: number;
   items: RailMenuItem[];
+}
+
+interface RailActionNotice {
+  message: string;
+  tone: "success" | "error";
 }
 
 const RAIL_MENU_WIDTH = 228;
@@ -216,7 +227,11 @@ const RailMenu: React.FC<{ menu: RailMenuState; onClose: () => void }> = ({
     };
   }, [onClose]);
 
-  const height = menu.items.length * RAIL_MENU_ROW + 12;
+  const separatorCount = menu.items.reduce(
+    (count, item) => count + (item.separatorBefore ? 1 : 0),
+    0,
+  );
+  const height = menu.items.length * RAIL_MENU_ROW + separatorCount * 7 + 12;
   const left = Math.max(8, Math.min(menu.x, window.innerWidth - RAIL_MENU_WIDTH - 8));
   const top = Math.max(8, Math.min(menu.y, window.innerHeight - height - 8));
   const portalTarget =
@@ -229,20 +244,22 @@ const RailMenu: React.FC<{ menu: RailMenuState; onClose: () => void }> = ({
       style={{ position: "fixed", left, top, width: RAIL_MENU_WIDTH, zIndex: 1000 }}
     >
       {menu.items.map((item) => (
-        <button
-          key={item.label}
-          type="button"
-          role="menuitem"
-          className="agw-menu-item agw-rail-menu-item"
-          data-danger={item.danger || undefined}
-          onClick={() => {
-            onClose();
-            item.onSelect();
-          }}
-        >
-          <AgentIcon name={item.icon} size={14} />
-          <span>{item.label}</span>
-        </button>
+        <React.Fragment key={item.label}>
+          {item.separatorBefore && <div className="agw-rail-menu-separator" role="separator" />}
+          <button
+            type="button"
+            role="menuitem"
+            className="agw-menu-item agw-rail-menu-item"
+            data-danger={item.danger || undefined}
+            onClick={() => {
+              onClose();
+              item.onSelect();
+            }}
+          >
+            <AgentIcon name={item.icon} size={14} />
+            <span>{item.label}</span>
+          </button>
+        </React.Fragment>
       ))}
     </div>,
     portalTarget,
@@ -291,6 +308,7 @@ export const LeftRail: React.FC = () => {
   const toggleArchive = useAgentChatStore((s) => s.toggleArchive);
   const deleteThread = useAgentChatStore((s) => s.deleteThread);
   const renameThread = useAgentChatStore((s) => s.renameThread);
+  const refreshThreads = useAgentChatStore((s) => s.refreshThreads);
   // Background-turn indicators: which chats (and projects) are currently working.
   // We subscribe to a STABLE fingerprint of the live data (not the whole
   // `liveTurns` object, which changes on every streamed token) so the sidebar
@@ -363,6 +381,7 @@ export const LeftRail: React.FC = () => {
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ThreadSummary | null>(null);
   const [menu, setMenu] = useState<RailMenuState | null>(null);
+  const [actionNotice, setActionNotice] = useState<RailActionNotice | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [projectsCollapsed, setProjectsCollapsed] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -378,6 +397,12 @@ export const LeftRail: React.FC = () => {
   );
 
   const q = query.trim().toLowerCase();
+
+  useEffect(() => {
+    if (!actionNotice) return;
+    const timeoutId = window.setTimeout(() => setActionNotice(null), 3200);
+    return () => window.clearTimeout(timeoutId);
+  }, [actionNotice]);
 
   // The active tree never shows archived chats — those live in the Archived
   // view. In-flight (live) chats are folded in via `allWithLive`.
@@ -589,6 +614,69 @@ export const LeftRail: React.FC = () => {
     void renameThread(id, value);
   };
 
+  const duplicateChat = async (thread: ThreadSummary) => {
+    try {
+      const duplicate = await threadService.duplicateThread(thread.id);
+      await refreshThreads();
+      openChat(duplicate.id, duplicate.workspaceRoot);
+      setActionNotice({ message: "Chat duplicated", tone: "success" });
+    } catch (error) {
+      console.error("[left-rail] duplicate chat failed:", error);
+      setActionNotice({
+        message: "Couldn’t duplicate this chat. Try again.",
+        tone: "error",
+      });
+    }
+  };
+
+  const copyChatAsMarkdown = async (threadId: string) => {
+    try {
+      await threadService.copyThreadAsMarkdown(threadId);
+      setActionNotice({ message: "Chat copied as Markdown", tone: "success" });
+    } catch (error) {
+      console.error("[left-rail] copy chat as Markdown failed:", error);
+      setActionNotice({
+        message: "Couldn’t copy this chat. Try again.",
+        tone: "error",
+      });
+    }
+  };
+
+  const revealProject = async (root: string) => {
+    try {
+      await revealInExplorer(root);
+      setActionNotice({ message: "Opened in File Explorer", tone: "success" });
+    } catch (error) {
+      console.error("[left-rail] reveal project failed:", error);
+      setActionNotice({
+        message: "Couldn’t open this project in File Explorer.",
+        tone: "error",
+      });
+    }
+  };
+
+  const openProjectTerminal = async (root: string) => {
+    try {
+      await openInTerminal(root);
+      setActionNotice({ message: "Terminal opened", tone: "success" });
+    } catch (error) {
+      console.error("[left-rail] open project terminal failed:", error);
+      setActionNotice({
+        message: "Couldn’t open a terminal for this project.",
+        tone: "error",
+      });
+    }
+  };
+
+  const copyProjectPath = async (root: string) => {
+    const copied = await writeClipboardText(root);
+    setActionNotice(
+      copied
+        ? { message: "Folder path copied", tone: "success" }
+        : { message: "Couldn’t copy the folder path.", tone: "error" },
+    );
+  };
+
   const openChatMenu = (event: React.MouseEvent, thread: ThreadSummary) => {
     event.preventDefault();
     event.stopPropagation();
@@ -605,9 +693,21 @@ export const LeftRail: React.FC = () => {
             onSelect: () => void toggleArchive(thread.id),
           },
           {
+            icon: "files",
+            label: "Duplicate chat",
+            separatorBefore: true,
+            onSelect: () => void duplicateChat(thread),
+          },
+          {
+            icon: "copy",
+            label: "Copy chat as Markdown",
+            onSelect: () => void copyChatAsMarkdown(thread.id),
+          },
+          {
             icon: "trash",
             label: "Delete permanently…",
             danger: true,
+            separatorBefore: true,
             onSelect: () => setPendingDelete(thread),
           },
         ]
@@ -618,8 +718,19 @@ export const LeftRail: React.FC = () => {
             onSelect: () => setRenamingId(thread.id),
           },
           {
+            icon: "files",
+            label: "Duplicate chat",
+            onSelect: () => void duplicateChat(thread),
+          },
+          {
+            icon: "copy",
+            label: "Copy chat as Markdown",
+            onSelect: () => void copyChatAsMarkdown(thread.id),
+          },
+          {
             icon: "pin",
             label: thread.pinned ? "Unpin chat" : "Pin chat",
+            separatorBefore: true,
             onSelect: () => void togglePin(thread.id),
           },
           {
@@ -631,6 +742,7 @@ export const LeftRail: React.FC = () => {
             icon: "trash",
             label: "Delete chat…",
             danger: true,
+            separatorBefore: true,
             onSelect: () => setPendingDelete(thread),
           },
         ];
@@ -651,16 +763,26 @@ export const LeftRail: React.FC = () => {
           onSelect: () => newChatInProject(root),
         },
         {
+          icon: "external",
+          label: "Open in File Explorer",
+          separatorBefore: true,
+          onSelect: () => void revealProject(root),
+        },
+        {
+          icon: "terminal",
+          label: "Open terminal here",
+          onSelect: () => void openProjectTerminal(root),
+        },
+        {
           icon: "pin",
           label: projectPinned ? "Unpin project" : "Pin project",
+          separatorBefore: true,
           onSelect: () => toggleProjectPin(root),
         },
         {
           icon: "copy",
           label: "Copy folder path",
-          onSelect: () => {
-            navigator.clipboard?.writeText(root).catch(() => undefined);
-          },
+          onSelect: () => void copyProjectPath(root),
         },
       ],
     });
@@ -861,7 +983,11 @@ export const LeftRail: React.FC = () => {
   return (
     <div
       className="agw-zone"
-      style={{ background: "var(--agw-rail)", borderRight: "1px solid var(--agw-border)" }}
+      style={{
+        position: "relative",
+        background: "var(--agw-rail)",
+        borderRight: "1px solid var(--agw-border)",
+      }}
     >
       {/* Header — add project + collapse rail. */}
       <div
@@ -1182,6 +1308,27 @@ export const LeftRail: React.FC = () => {
           </div>
         )}
       </div>
+
+      <AnimatePresence>
+        {actionNotice && (
+          <motion.div
+            className="agw-rail-action-notice"
+            data-tone={actionNotice.tone}
+            role={actionNotice.tone === "error" ? "alert" : "status"}
+            aria-live={actionNotice.tone === "error" ? "assertive" : "polite"}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 4 }}
+            transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+          >
+            <AgentIcon
+              name={actionNotice.tone === "error" ? "diagnostics" : "check"}
+              size={14}
+            />
+            <span>{actionNotice.message}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Row context menu (chat / archived / project). */}
       {menu && <RailMenu menu={menu} onClose={() => setMenu(null)} />}

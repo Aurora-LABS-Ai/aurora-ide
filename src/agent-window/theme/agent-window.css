@@ -948,6 +948,11 @@
 .agw-rail-menu {
   padding: 6px;
 }
+.agw-rail-menu-separator {
+  height: 1px;
+  margin: 3px 8px;
+  background: var(--agw-border);
+}
 .agw-rail-menu-item {
   display: flex;
   align-items: center;
@@ -966,6 +971,37 @@
 .agw-rail-menu-item[data-danger],
 .agw-rail-menu-item[data-danger]:hover,
 .agw-rail-menu-item[data-danger] svg {
+  color: var(--agw-removed);
+}
+.agw-rail-action-notice {
+  position: absolute;
+  z-index: 20;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-md);
+  background: color-mix(in srgb, var(--agw-surface-elevated) 92%, transparent);
+  box-shadow: var(--agw-shadow-pop);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  line-height: 1.35;
+  pointer-events: none;
+  backdrop-filter: blur(12px) saturate(1.1);
+}
+.agw-rail-action-notice svg {
+  flex: 0 0 auto;
+  color: var(--agw-added);
+}
+.agw-rail-action-notice[data-tone="error"] {
+  border-color: color-mix(in srgb, var(--agw-removed) 38%, var(--agw-border));
+}
+.agw-rail-action-notice[data-tone="error"] svg {
   color: var(--agw-removed);
 }
 /* Pinned rows carry a project subtitle and stand a little taller. */

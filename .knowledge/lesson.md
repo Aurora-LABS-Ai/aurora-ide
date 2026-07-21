@@ -204,3 +204,10 @@ clean 199ms runtime verification of the typing-assist engine.
 ## MCP server ids can be prefixes of each other (2026-07-19)
 - Tool names are `mcp_{sanitizedServerId}_{toolName}`; sanitization maps "-" to "_", so "browser" is a prefix of "browser-testing" and first-match parsing routes calls to the wrong server with a misleading "not connected" error.
 - Any name scheme that concatenates ids with the same separator the ids may contain needs longest/advertised-match resolution, never first-match; and note the display-name cache can look right while routing is wrong.
+
+## 2026-07-21 — Inline-vs-block code detection by className is fragile
+- AgentMarkdown detected fenced code by `language-*` class; unlabeled fences (very common from models) were silently styled as INLINE code chips. The bug was invisible for months because the chip background happened to equal the code-block background — a later chip retint exposed it as gray bands behind every line.
+- Lesson: never distinguish inline vs block markdown code by language class; use structural context (inside <pre> or not). When two tokens share a color by coincidence, a latent styling bug can hide behind it — changing one token can "cause" a bug that was always there.
+
+## 2026-07-21 — One visual concept spread across several tokens needs linked controls
+- The two-layer frame is painted by three tokens (canvas/rail/dock). The Appearance "Background" quick control set only canvas, so one click fractured the frame into two tones (user-visible seam band). When a design tier spans multiple tokens, the primary control must move them together; per-token pickers are for deliberate divergence only.

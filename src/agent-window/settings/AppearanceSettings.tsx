@@ -53,6 +53,27 @@ interface TokenGroup {
 // repaints everywhere on purpose — hence the explicit hint).
 const REGION_GROUPS: TokenGroup[] = [
   {
+    title: "Content sheet",
+    icon: "chat",
+    description:
+      "The recessed panel inset into the window frame — it holds the conversation, the settings pages, and the dock's content areas.",
+    fields: [
+      { key: "conversation", label: "Sheet fill", hint: "The rounded content panel the conversation and settings sit on." },
+      { key: "bubbleUser", label: "Your message", hint: "The filled bubble around messages you send." },
+      { key: "bubbleAssistant", label: "Assistant message", hint: "The background behind each assistant turn; transparent keeps it unboxed." },
+    ],
+  },
+  {
+    title: "Window frame — rail & dock",
+    icon: "panel-left",
+    description:
+      "The frame around the content sheet. Both panels follow the Window frame colour in Quick controls until you set them here.",
+    fields: [
+      { key: "rail", label: "Left rail", hint: "The project and chat navigator. The titlebar and the gutters around the content sheet follow this colour." },
+      { key: "dock", label: "Right dock", hint: "The chrome of the Files, Browser, Terminal, and Review panel." },
+    ],
+  },
+  {
     title: "Composer — input box",
     icon: "send",
     description: "Scoped to the message input only.",
@@ -62,28 +83,10 @@ const REGION_GROUPS: TokenGroup[] = [
     ],
   },
   {
-    title: "Conversation",
-    icon: "chat",
-    description: "The message thread and its bubbles.",
-    fields: [
-      { key: "conversation", label: "Thread background", hint: "The center conversation canvas behind every turn." },
-      { key: "bubbleUser", label: "Your message", hint: "The filled bubble around messages you send." },
-      { key: "bubbleAssistant", label: "Assistant message", hint: "The background behind each assistant turn; transparent keeps it unboxed." },
-    ],
-  },
-  {
-    title: "Panels — rail & dock",
-    icon: "panel-left",
-    description: "The left conversation rail and the right tool dock.",
-    fields: [
-      { key: "rail", label: "Left rail", hint: "The project and chat navigator background." },
-      { key: "dock", label: "Right dock", hint: "The Files, Browser, Terminal, and Review panel background." },
-    ],
-  },
-  {
     title: "Text",
     icon: "type",
-    description: "Foreground text at three emphasis levels (window-wide).",
+    description:
+      "Foreground text at three emphasis levels (window-wide). Selection highlights, active tabs, and quiet control fills are derived from Primary automatically, so they stay visible on any background you choose.",
     fields: [
       { key: "text", label: "Primary", hint: "Main message, heading, button, and input text." },
       { key: "textMuted", label: "Muted", hint: "Secondary labels, inactive controls, and supporting values." },
@@ -120,8 +123,8 @@ const REGION_GROUPS: TokenGroup[] = [
     description:
       "These are reused across the whole window — editing one repaints menus, pills, cards, selected rows and dividers everywhere. That's expected.",
     fields: [
-      { key: "surface", label: "Quiet surface", hint: "Resting buttons, quiet cards, unselected tiles, and inset panels." },
-      { key: "surfaceElevated", label: "Elevated surface", hint: "Popover menus, selected rows and tabs, dialog panels, and the command center." },
+      { key: "surface", label: "Quiet surface", hint: "Resting cards, hover fills on list rows, and inset panels." },
+      { key: "surfaceElevated", label: "Elevated surface", hint: "Popover menus, dialog panels, and the command center. Selected rows and tabs no longer use this — they derive from Primary text." },
       { key: "overlay", label: "Modal backdrop", hint: "The full-window scrim behind dialogs, image preview, and the command center." },
       { key: "border", label: "Divider line", hint: "Standard separators and outlines between rows, cards, fields, and panels." },
       { key: "borderStrong", label: "Strong line", hint: "Higher-emphasis outlines on popovers, dialogs, active fields, and resize handles." },
@@ -453,11 +456,19 @@ export const AppearanceSettings: React.FC = () => {
         <ColorRow
           field={{
             key: "canvas",
-            label: "Background",
-            hint: "The base canvas behind the whole window (behind the rail, thread and dock).",
+            label: "Window frame",
+            hint: "The frame around the content sheet — titlebar, gutters, and both side panels recolor together.",
           }}
           value={tokens.canvas}
-          onChange={(v) => setToken("canvas", v)}
+          onChange={(v) => {
+            // The frame is ONE visual tier painted by three tokens. Moving
+            // only `canvas` would recolor just the titlebar + gutters and
+            // leave the rail/dock behind — a visible fractured seam. The
+            // per-panel pickers below still allow deliberate divergence.
+            setToken("canvas", v);
+            setToken("rail", v);
+            setToken("dock", v);
+          }}
         />
         <ColorRow
           field={{

@@ -739,7 +739,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   return (
     <div
       ref={composerRef}
-      className={`agw-composer z-10 w-full max-w-4xl mx-auto relative${
+      className={`agw-composer z-10 w-full max-w-3xl mx-auto relative${
         isDragOver ? " agw-composer-drop" : ""
       }`}
     >

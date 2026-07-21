@@ -127,7 +127,9 @@ export async function openAgentWindow(workspaceRoot?: string | null): Promise<vo
         center: true,
         resizable: true,
         focus: true,
-        decorations: true,
+        // Frameless — the window renders its own themed titlebar
+        // (AgentTitlebar); keep in sync with the Rust agent-mode launch path.
+        decorations: false,
         maximized: bounds.maximized,
       });
 

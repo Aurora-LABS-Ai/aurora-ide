@@ -410,7 +410,12 @@ export const ConversationPane: React.FC = () => {
                 <div
                   className="select-text"
                   style={{
-                    maxWidth: 896,
+                    // 768px column → ~720px measure at 15px. The old 896px ran
+                    // ~110 chars/line, which reads as a document dump; premium
+                    // chat surfaces cap prose near this width and let the
+                    // side whitespace breathe. Keep in sync with the composer
+                    // (max-w-3xl) and .agw-tasks/.agw-queued (45rem).
+                    maxWidth: 768,
                     margin: "0 auto",
                     padding: "24px 24px 16px",
                     display: "flex",

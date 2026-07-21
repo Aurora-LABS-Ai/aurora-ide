@@ -186,7 +186,9 @@ export const RightDock: React.FC = () => {
   return (
     <div
       className="agw-zone"
-      style={{ background: "var(--agw-dock)", borderLeft: "1px solid var(--agw-border)" }}
+      // Frame tier — continuous with the canvas gutters; the recessed center
+      // sheet's own edge does the separating, so no divider line here.
+      style={{ background: "var(--agw-dock)" }}
     >
       {/* Tab strip */}
       <div className="agw-tabstrip">

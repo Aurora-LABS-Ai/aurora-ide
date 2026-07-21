@@ -849,6 +849,9 @@ pub fn run_with_args(cli_args: CliArgs) {
                 .min_inner_size(820.0, 560.0)
                 .center()
                 .resizable(true)
+                // Frameless — the frontend renders its own themed titlebar
+                // (AgentTitlebar); keep in sync with the JS `openAgentWindow`.
+                .decorations(false)
                 .maximized(maximized)
                 .build()
                 {

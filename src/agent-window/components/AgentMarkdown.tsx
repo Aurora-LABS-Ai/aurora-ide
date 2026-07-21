@@ -10,7 +10,7 @@
  * everything else is styled by the scoped `.agw-md` rules in agent-window.css.
  */
 
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useContext, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 
 import { writeClipboardText } from "../../lib/clipboard";
@@ -27,6 +27,33 @@ function collectText(node: React.ReactNode): string {
     return collectText((node.props as { children?: React.ReactNode }).children);
   }
   return "";
+}
+
+/**
+ * True while rendering inside a fenced `<pre>` block. The `code` mapper needs
+ * this because a fence with NO language tag also has no `language-*` class —
+ * className alone can't tell it apart from real inline code, and wrapping a
+ * whole block in the inline chip paints the chip background behind every line.
+ */
+const PreContext = React.createContext(false);
+
+/** First `language-*` tag found in a fence's rendered tree (e.g. "tsx"). */
+function findFenceLanguage(node: React.ReactNode): string | null {
+  if (node == null || typeof node !== "object") return null;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findFenceLanguage(child);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (React.isValidElement(node)) {
+    const props = node.props as { className?: string; children?: React.ReactNode };
+    const match = props.className?.match(/language-([\w+#.-]+)/);
+    if (match) return match[1];
+    return findFenceLanguage(props.children);
+  }
+  return null;
 }
 
 /** Copy affordance for a fenced code block (reads text at click time). */
@@ -48,10 +75,11 @@ const CodeCopy: React.FC<{ getText: () => string }> = ({ getText }) => {
   );
 };
 
-/** Fenced code block — themed wrapper + Shiki-highlighted body + copy. Must be a
- *  top-level component (not an inline fn in `components`) so its hooks are legal. */
+/** Fenced code block — header (language tag + copy) over the Shiki body. Must be
+ *  a top-level component (not an inline fn in `components`) so its hooks are legal. */
 const PreBlock: React.FC<React.HTMLAttributes<HTMLPreElement>> = ({ children }) => {
   const codeRef = useRef<HTMLPreElement>(null);
+  const language = useMemo(() => findFenceLanguage(children) ?? "plain", [children]);
   const getText = useCallback(() => {
     const fromTree = collectText(children);
     if (fromTree.trim().length > 0) return fromTree;
@@ -60,34 +88,42 @@ const PreBlock: React.FC<React.HTMLAttributes<HTMLPreElement>> = ({ children }) 
 
   return (
     <div className="agw-codeblock group/code">
-      <CodeCopy getText={getText} />
+      <div className="agw-codeblock-head">
+        <span className="agw-codeblock-lang">{language}</span>
+        <CodeCopy getText={getText} />
+      </div>
       <pre ref={codeRef} className="agw-codeblock-pre agw-scroll">
-        {children}
+        <PreContext.Provider value={true}>{children}</PreContext.Provider>
       </pre>
     </div>
   );
 };
 
-const components = {
-  pre: PreBlock,
-
-  // Inline vs block code. Block code (inside <pre>) carries `language-*` and
-  // already has Shiki colour on its spans, so we only set the family. Inline
-  // code gets the agw chip treatment.
-  code: ({ className, children, ...props }: React.HTMLAttributes<HTMLElement>) => {
-    if (className?.includes("language-")) {
-      return (
-        <code className={className} {...props}>
-          {children}
-        </code>
-      );
-    }
+/** Inline vs block code. Anything inside a `<pre>` (language-tagged or not) is
+ *  block code and renders bare; only true inline code gets the chip. */
+const CodeEl: React.FC<React.HTMLAttributes<HTMLElement>> = ({
+  className,
+  children,
+  ...props
+}) => {
+  const inPre = useContext(PreContext);
+  if (inPre || className?.includes("language-")) {
     return (
-      <code className="agw-code-inline" {...props}>
+      <code className={className} {...props}>
         {children}
       </code>
     );
-  },
+  }
+  return (
+    <code className="agw-code-inline" {...props}>
+      {children}
+    </code>
+  );
+};
+
+const components = {
+  pre: PreBlock,
+  code: CodeEl,
 
   a: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
     <a href={href} target="_blank" rel="noopener noreferrer" {...props}>

@@ -255,12 +255,16 @@ export const AgentShell: React.FC = () => {
         />
       )}
 
-      {/* Center conversation — takes the remaining space. Plain block wrapper
+      {/* Center conversation — takes the remaining space. Plain block wrappers
           (NOT display:flex) so the child `.agw-zone` fills its full width; a
           flex-row wrapper would let the zone shrink to its content and pin the
-          conversation to the left. */}
-      <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-        {centerView === "team" ? <TeamScreen /> : <ConversationPane />}
+          conversation to the left.
+          Two-layer shell: the FRAME (gutter padding, canvas shows through)
+          holds the recessed content SHEET (rounded, hairline border). */}
+      <div className="agw-center-frame">
+        <div className="agw-center-sheet">
+          {centerView === "team" ? <TeamScreen /> : <ConversationPane />}
+        </div>
       </div>
 
       {/* Right dock — mirror of the rail, pinned to the right edge. */}

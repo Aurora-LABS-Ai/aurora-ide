@@ -985,8 +985,9 @@ export const LeftRail: React.FC = () => {
       className="agw-zone"
       style={{
         position: "relative",
+        // Frame tier — continuous with the canvas gutters; the recessed center
+        // sheet's own edge does the separating, so no divider line here.
         background: "var(--agw-rail)",
-        borderRight: "1px solid var(--agw-border)",
       }}
     >
       {/* Header — add project + collapse rail. */}
@@ -1030,7 +1031,8 @@ export const LeftRail: React.FC = () => {
             padding: "0 10px",
             borderRadius: "var(--agw-radius-md)",
             border: "1px solid var(--agw-border)",
-            background: "var(--agw-canvas)",
+            // Derived quiet fill — stays visible on any rail colour.
+            background: "var(--agw-state-quiet)",
             color: "var(--agw-text-subtle)",
             fontSize: 12,
           }}

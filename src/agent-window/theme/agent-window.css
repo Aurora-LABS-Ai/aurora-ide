@@ -25,6 +25,17 @@
   --agw-popover-surface: var(--agw-surface-elevated);
   --agw-modal-blur: blur(8px) saturate(0.85);
 
+  /* Selected/active fill for rows, tabs and nav items. DERIVED from the text
+   * colour (not an absolute surface token) so it stays visible on ANY
+   * background combination the user picks in Appearance — absolute fills can
+   * be tuned to coincide with a panel colour and make selection invisible.
+   * Same 9% text-mix precedent as .agw-model-item / .agw-reason-item.
+   * --agw-state-quiet is the resting tier of the same idea: quiet raised
+   * controls (rail search, Team button, inactive tabs) that must stay
+   * distinguishable from whatever panel colour they sit on. */
+  --agw-state-selected: color-mix(in srgb, var(--agw-text) 9%, transparent);
+  --agw-state-quiet: color-mix(in srgb, var(--agw-text) 5%, transparent);
+
   /* ── Type scale ──────────────────────────────────────────────────────────
    * SIX sizes for the whole window. The half-pixel one-off sizes that grew
    * organically (9.5 / 10.5 / 11.5 / 12.5 / 13.5 / 14.5) collapsed onto this
@@ -50,6 +61,11 @@
   /* Base bumped 13 → 14px for a more comfortable read in the agent window. */
   font-size: var(--agw-fs-body);
   line-height: 1.55;
+  /* Inter is designed to be tracked tighter as it grows (dynamic metrics):
+   * untracked Inter at UI sizes reads loose/"default". ~-0.006em is the
+   * metric-correct value for the 14px base; reading text and headings tighten
+   * further below. Mono opts back out (negative tracking hurts code). */
+  letter-spacing: -0.006em;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   /* The app shell sets `body { user-select: none }` globally (index.css) for a
@@ -92,6 +108,8 @@
 .agw-root pre,
 .agw-code {
   font-family: var(--agw-font-code);
+  /* Mono must not inherit the UI font's negative tracking. */
+  letter-spacing: normal;
 }
 
 /* Jump rail — vertical strip of per-user-message pins on the right edge of the
@@ -223,11 +241,83 @@
 .agw-shell-side-right {
   right: 0;
 }
-/* 1px visible grip with a wider invisible hit zone for easy grabbing. */
+/* ── Custom titlebar (frameless OS window) ───────────────────────────
+ * Frame-tier strip. Reads the RAIL token (not canvas) so the titlebar always
+ * follows the colour the side panels use — recolouring the rail in Appearance
+ * carries the titlebar and gutters with it, never leaving a mismatched band.
+ * Buttons opt out of the drag region globally (index.css). */
+.agw-titlebar {
+  display: flex;
+  align-items: center;
+  height: 38px;
+  flex-shrink: 0;
+  padding-left: 14px;
+  background: var(--agw-rail);
+}
+.agw-titlebar-title {
+  font-size: var(--agw-fs-ui);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--agw-text-muted);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.agw-titlebar-controls {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  margin-left: auto;
+}
+.agw-titlebar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  border: none;
+  background: transparent;
+  color: var(--agw-text-muted);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.agw-titlebar-btn:hover {
+  background: var(--agw-hover);
+  color: var(--agw-text);
+}
+/* Close keeps the platform convention: destructive red fill on hover. */
+.agw-titlebar-btn-close:hover {
+  background: var(--agw-removed);
+  color: #ffffff;
+}
+
+/* ── Two-layer shell: frame + recessed content sheet ─────────────────
+ * The frame shows through the gutter padding; the center content sits on a
+ * darker rounded sheet with a hairline edge. The SURFACE CONTRAST does the
+ * layering — no dividing lines between frame zones. The shell row paints the
+ * RAIL token so gutters and resize lanes always match the side panels (and the
+ * titlebar above) — never the base canvas alone. */
+.agw-shell-flex {
+  background: var(--agw-rail);
+}
+.agw-center-frame {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 8px;
+}
+.agw-center-sheet {
+  height: 100%;
+  min-width: 0;
+  background: var(--agw-conversation);
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-lg);
+  overflow: hidden;
+}
+
+/* Invisible grip (the frame gutter reads as the seam); a wider hit zone for
+ * easy grabbing, and the accent line appears on hover / while dragging. */
 .agw-shell-handle {
   flex: none;
   width: 1px;
-  background: var(--agw-border);
+  background: transparent;
   cursor: col-resize;
   position: relative;
   transition: background 0.12s ease;
@@ -905,7 +995,7 @@
   color: var(--agw-text);
 }
 .agw-rail-item[data-active="true"] {
-  background: var(--agw-surface);
+  background: var(--agw-state-selected);
   color: var(--agw-text);
 }
 .agw-rail-item:focus-visible {
@@ -1427,7 +1517,9 @@
   margin-bottom: 4px;
   border: 1px solid var(--agw-border);
   border-radius: var(--agw-radius-md);
-  background: var(--agw-canvas);
+  /* Derived quiet fill — an absolute token here melts into the rail whenever
+   * the user's Appearance colours coincide. */
+  background: var(--agw-state-quiet);
   color: var(--agw-text);
   cursor: pointer;
   font-size: var(--agw-fs-md);
@@ -1606,7 +1698,7 @@
 }
 
 /* ── Docked task panel (todo_write checklist) ─────────────────────────
- * Sits above the composer, width-matched to it (max-w-4xl). Collapsible head
+ * Sits above the composer, width-matched to it (max-w-3xl). Collapsible head
  * doubles as a live summary; rows show per-task status. */
 /* The task panel tucks its bottom ~12px BEHIND the composer's top edge, so it
    reads as growing out from behind the composer (the composer carries `z-10` and
@@ -1615,7 +1707,7 @@
    corner clash. Only the top corners are rounded; the bottom is hidden. */
 .agw-tasks {
   width: calc(100% - 48px); /* 24px inset each side — clears the composer corners */
-  max-width: 53rem; /* composer is 56rem (max-w-4xl) → ~24px inset when wide */
+  max-width: 45rem; /* composer is 48rem (max-w-3xl) → ~24px inset when wide */
   margin: 0 auto -12px; /* tuck 12px behind the composer's top edge */
   padding-bottom: 12px; /* the tucked strip the composer paints over */
   border: 1px solid var(--agw-border-strong);
@@ -2277,7 +2369,7 @@
  * tucks 12px behind the composer's top edge. */
 .agw-queued {
   width: calc(100% - 48px);
-  max-width: 53rem;
+  max-width: 45rem;
   margin: 0 auto -12px;
   padding-bottom: 12px;
   border: 1px solid var(--agw-border-strong);
@@ -2446,7 +2538,9 @@
   transition: color 0.3s ease;
 }
 .agw-tool-dot-done {
-  color: var(--agw-added);
+  /* Softened toward muted — a full-saturation check on every settled row makes
+   * the transcript read as a status board. Failure keeps full strength. */
+  color: color-mix(in srgb, var(--agw-added) 62%, var(--agw-text-muted));
 }
 .agw-tool-dot-failed {
   color: var(--agw-removed);
@@ -2515,6 +2609,9 @@
   height: 14px;
   flex-shrink: 0;
   object-fit: contain;
+  /* Take the candy out of the Material file icons — recognisable hue, less
+   * saturation, so the accent colour stays the loudest thing in the window. */
+  filter: saturate(0.8);
 }
 .agw-pill-ico {
   width: 13px;
@@ -2567,7 +2664,7 @@
 }
 /* "+N" chip closing an overflowing file strip. */
 .agw-tool-chip-more {
-  font-family: var(--agw-font-code);
+  font-variant-numeric: tabular-nums;
   color: var(--agw-text-muted);
   flex: 0 0 auto;
 }
@@ -2607,10 +2704,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Quiet elapsed-time label on a settled tool row. */
+/* Quiet elapsed-time label on a settled tool row.
+ * UI face + tabular numerals (not mono) — mono metadata on every row is
+ * terminal energy; tabular figures keep counts steady without it. */
 .agw-tool-time {
   font-size: var(--agw-fs-label);
-  font-family: var(--agw-font-code);
+  font-variant-numeric: tabular-nums;
   color: var(--agw-text-subtle);
   white-space: nowrap;
   flex-shrink: 0;
@@ -2619,7 +2718,7 @@
 /* Status / summary text (e.g. "+12  -3", "In Progress", error reason). */
 .agw-tool-summary {
   font-size: var(--agw-fs-label);
-  font-family: var(--agw-font-code);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2812,7 +2911,7 @@
 .agw-suggest-drum {
   position: relative;
   height: 64px;
-  max-width: 896px;
+  max-width: 768px; /* tracks the transcript/composer column */
   margin: 0 auto 4px;
   perspective: 340px;
   overflow: hidden;
@@ -3337,7 +3436,7 @@
   color: var(--agw-text);
 }
 .agw-rv-seg[data-active] {
-  background: var(--agw-surface);
+  background: var(--agw-state-selected);
   color: var(--agw-accent);
 }
 .agw-rv-seg:focus-visible {
@@ -3454,12 +3553,17 @@
  * Scoped under `.agw-md` so react-markdown's default element tree is styled
  * without per-element inline styles. Colour is all `--agw-*`. */
 .agw-md {
-  color: var(--agw-text);
+  /* Body sits one step DIMMER than headings/strong (mixed toward the canvas so
+   * it adapts to any theme). This two-tone hierarchy is what makes long answers
+   * read layered instead of a flat wall of one brightness. */
+  color: color-mix(in srgb, var(--agw-text) 90%, var(--agw-canvas));
   /* Premium reading size — 15px on a 28px line (matches the reference's
    * text-[15px] leading-7). The bigger, airier type is what reads as
    * "heavyweight" instead of cramped/cheap. */
   font-size: var(--agw-fs-title);
   line-height: 1.75;
+  /* Inter dynamic-metrics tracking at 15px. */
+  letter-spacing: -0.009em;
   word-break: break-word;
   overflow-wrap: anywhere;
 }
@@ -3476,13 +3580,17 @@
 .agw-md h2,
 .agw-md h3,
 .agw-md h4 {
-  margin: 18px 0 8px;
+  /* Full text colour (body is dimmed) + tighter tracking at display sizes +
+   * more air above — headings anchor sections instead of crowding them. */
+  margin: 22px 0 9px;
   font-weight: 600;
   line-height: 1.3;
+  letter-spacing: -0.014em;
   color: var(--agw-text);
 }
 .agw-md h1 {
   font-size: 1.4em;
+  letter-spacing: -0.017em;
 }
 .agw-md h2 {
   font-size: 1.22em;
@@ -3521,8 +3629,9 @@
 }
 .agw-md hr {
   border: none;
-  border-top: 1px solid var(--agw-border);
-  margin: 16px 0;
+  /* Faded + airier — a section breath, not a harsh full-width cut. */
+  border-top: 1px solid color-mix(in srgb, var(--agw-border) 70%, transparent);
+  margin: 20px 0;
 }
 .agw-md blockquote {
   margin: 0 0 10px;
@@ -3530,15 +3639,28 @@
   border-left: 2px solid var(--agw-border-strong);
   color: var(--agw-text-muted);
 }
-/* Inline code (themed chip; block code is handled by .agw-codeblock). */
+/* Inline code (themed chip; block code is handled by .agw-codeblock).
+ * FLAT tinted chip, no border — a bordered box on every identifier reads as a
+ * row of buttons and is the single heaviest source of transcript noise. The
+ * tint derives from the text colour so it holds in any theme, and the colour
+ * inherits so chips sit inside the sentence (dim in body, bright in bold). */
 .agw-md .agw-code-inline {
   font-family: var(--agw-font-code);
-  font-size: 0.88em;
-  padding: 1.5px 5px;
+  font-size: 0.85em;
+  padding: 1px 5px;
   border-radius: var(--agw-radius-sm);
-  background: var(--agw-code-surface);
-  border: 1px solid var(--agw-code-border);
-  color: var(--agw-text);
+  background: color-mix(in srgb, var(--agw-text) 7%, transparent);
+  color: inherit;
+}
+/* Inside headings the chip chrome drops entirely — mono face alone carries the
+ * distinction; a padded box inside a heading breaks its optical line. */
+.agw-md h1 .agw-code-inline,
+.agw-md h2 .agw-code-inline,
+.agw-md h3 .agw-code-inline,
+.agw-md h4 .agw-code-inline {
+  background: none;
+  padding: 0;
+  font-size: 0.92em;
 }
 /* Fenced code block — themed wrapper around Shiki output, with hover copy. */
 .agw-codeblock {
@@ -3549,13 +3671,33 @@
   border: 1px solid var(--agw-code-border);
   overflow: hidden;
 }
+/* Header strip — language tag left, always-visible copy right. Gives the block
+ * a labeled structure instead of a naked box with a hover-only affordance. */
+.agw-codeblock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 4px 14px;
+  border-bottom: 1px solid var(--agw-code-border);
+  background: color-mix(in srgb, var(--agw-text) 3%, transparent);
+}
+.agw-codeblock-lang {
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  letter-spacing: 0.02em;
+  -webkit-user-select: none;
+  user-select: none;
+}
 .agw-codeblock-pre {
   margin: 0;
-  padding: 12px 14px;
+  padding: 13px 16px;
   overflow-x: auto;
   font-family: var(--agw-font-code);
-  font-size: var(--agw-fs-ui);
-  line-height: 1.55;
+  /* 13px mono on a roomy 1.7 line — the old 12px/1.55 read dense/cramped next
+   * to the 15px prose around it. */
+  font-size: var(--agw-fs-md);
+  line-height: 1.7;
 }
 .agw-codeblock-pre code {
   font-family: var(--agw-font-code);
@@ -3578,25 +3720,19 @@
   background: transparent !important;
   margin: 0;
 }
+/* Copy — lives in the header strip, always visible (quiet until hovered). */
 .agw-code-copy {
-  position: absolute;
-  top: 6px;
-  right: 6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
-  border: 1px solid var(--agw-border);
+  width: 24px;
+  height: 24px;
+  border: none;
   border-radius: var(--agw-radius-sm);
-  background: var(--agw-surface);
+  background: transparent;
   color: var(--agw-text-subtle);
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
-}
-.agw-codeblock:hover .agw-code-copy {
-  opacity: 1;
+  transition: color 0.12s ease, background 0.12s ease;
 }
 .agw-code-copy:hover {
   color: var(--agw-text);
@@ -3998,7 +4134,7 @@
    * corners are rounded; the tucked bottom strip is hidden. This keeps the
    * composer's roundness intact instead of squaring it off. */
   width: calc(100% - 48px);
-  max-width: 53rem;
+  max-width: 45rem;
   margin: 0 auto; /* centered; the composer tuck (-12px) lives on the motion wrapper */
   padding-bottom: 12px; /* the tucked strip the composer paints over */
   /* Part of the composer stack (it tucks behind the composer), so it tracks the
@@ -4217,7 +4353,8 @@
   height: 28px;
   padding: 0 8px;
   border-radius: var(--agw-radius-sm);
-  background: var(--agw-surface);
+  /* Derived quiet fill — stays visible on any dock colour the user picks. */
+  background: var(--agw-state-quiet);
   border: 1px solid var(--agw-border);
   /* No focus glow — deliberately flat (the input owns no halo). */
 }
@@ -4633,7 +4770,9 @@
   height: 30px;
   padding-right: 3px;
   border-radius: var(--agw-radius-sm);
-  background: transparent;
+  /* Quiet derived fill so resting tabs read as buttons on any dock colour;
+   * hover and the active pill step up from here. */
+  background: var(--agw-state-quiet);
   color: var(--agw-text-muted);
   flex-shrink: 0;
   max-width: 200px;
@@ -4643,7 +4782,7 @@
   background: var(--agw-hover);
 }
 .agw-tabpill[data-active] {
-  background: var(--agw-surface-elevated);
+  background: var(--agw-state-selected);
   color: var(--agw-text);
 }
 .agw-tabpill-main {
@@ -4768,7 +4907,7 @@
 }
 
 .agw-canvas-mode button[data-active] {
-  background: var(--agw-surface-elevated);
+  background: var(--agw-state-selected);
   color: var(--agw-text);
 }
 
@@ -5168,6 +5307,7 @@
   height: 24px;
   padding-right: 2px;
   border-radius: var(--agw-radius-sm);
+  background: var(--agw-state-quiet);
   color: var(--agw-text-muted);
   flex-shrink: 0;
   max-width: 160px;
@@ -5177,7 +5317,7 @@
   background: var(--agw-hover);
 }
 .agw-term-pill[data-active] {
-  background: var(--agw-surface-elevated);
+  background: var(--agw-state-selected);
   color: var(--agw-text);
 }
 .agw-term-pill-main {
@@ -5304,7 +5444,8 @@
   height: 28px;
   padding: 0 10px;
   border-radius: 999px;
-  background: var(--agw-surface);
+  /* Derived quiet fill — also used by the settings search box. */
+  background: var(--agw-state-quiet);
   border: 1px solid var(--agw-border);
 }
 .agw-br-input {
@@ -5571,7 +5712,7 @@
      SEPARATE variables on purpose — a future theme can recolor the settings nav
      without touching the chat rail (and vice-versa). Never an accent/blue fill. */
   --agw-set-nav-hover-bg: var(--agw-hover);
-  --agw-set-nav-active-bg: var(--agw-surface);
+  --agw-set-nav-active-bg: var(--agw-state-selected);
   --agw-set-nav-active-fg: var(--agw-text);
 }
 .agw-settings-nav-head {
@@ -5657,6 +5798,11 @@
   flex-direction: column;
   flex: 1;
   min-width: 0;
+  /* Two-layer shell: the nav is FRAME tier (rail), the whole main column —
+   * header + content — is the recessed SHEET tier. Without this the content
+   * sat on the frame colour: cards lost their contrast and the sheet-coloured
+   * header read as a dark band on a lighter body (inverted depth). */
+  background: var(--agw-conversation);
 }
 .agw-settings-header {
   display: flex;
@@ -5935,7 +6081,7 @@
   box-shadow: 0 0 0 2px var(--agw-ring);
 }
 .agw-seg-btn[data-active] {
-  background: var(--agw-surface-elevated);
+  background: var(--agw-state-selected);
   color: var(--agw-text);
   box-shadow: 0 1px 3px color-mix(in srgb, #000 28%, transparent);
 }
@@ -7176,7 +7322,7 @@
   background: var(--agw-hover);
 }
 .agw-prov-item[data-active] {
-  background: var(--agw-surface-elevated);
+  background: var(--agw-state-selected);
 }
 /* Pressed (after [data-active] so selecting an already-active row still
    acknowledges the click with a deeper shade). */

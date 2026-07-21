@@ -89,7 +89,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
         padding: "32px 20px",
       }}
     >
-      <div className="w-full max-w-4xl mx-auto">
+      <div className="w-full max-w-3xl mx-auto">
         {/* Heading — text only, no icon (matches Codex home). */}
         <div className="text-center mb-6">
           <h1

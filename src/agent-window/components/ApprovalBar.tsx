@@ -48,7 +48,7 @@ export const ApprovalBar: React.FC<ApprovalBarProps> = ({
 
   return (
     <div
-      className="w-full max-w-4xl mx-auto"
+      className="w-full max-w-3xl mx-auto"
       style={{
         marginBottom: 8,
         padding: "10px 12px",

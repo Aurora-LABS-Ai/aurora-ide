@@ -1648,3 +1648,44 @@ the OUTER `.agw-shell-side` animates `width` (right-pinned inner revealed by its
   4. Flat tone hierarchy: body, bold, and headings all #ededed; premium UIs dim body slightly and reserve brighter white for headings/strong.
   5. Full-width hr + "Reasoning" rules + mono metadata ("Read 26 lines") + saturated file-type icons and green checks add terminal/dev-tool energy vs Kimi's monochrome-plus-one-accent restraint.
 - No fixes applied yet; awaiting user direction on the tuning pass.
+
+### Progress (2026-07-21) — Premium typography tuning pass (applied)
+- agent-window.css: base -0.006em Inter tracking on .agw-root (mono resets to normal); .agw-md gets -0.009em, dimmed body color (color-mix 90% text/canvas) with headings+strong staying full text color; headings -0.014em (h1 -0.017em) and airier margins (22px top); hr faded 70% + 20px margins.
+- Inline code chips: border removed, 0.85em, flat text-derived tint (7% text mix), color inherits; chips inside h1-h4 drop all chrome (mono face only).
+- Chrome: .agw-tool-summary/.agw-tool-time/.agw-tool-chip-more mono → UI face + tabular-nums; done-check softened (62% added/muted mix, failures stay full red); .agw-file-ico saturate(0.8).
+- Measure: transcript column 896→768 (ConversationPane), composer/approval/empty-state max-w-4xl→3xl, .agw-tasks/.agw-queued/.agw-qp 53rem→45rem, suggest drum 896→768. All width comments updated.
+### Review (2026-07-21)
+- Verified: 36 test files / 197 tests pass, tsc --noEmit clean, eslint clean on the 4 touched TSX files. NOT verified live in Tauri (agent window was closed mid-session; Vite 5173 still up so CSS hot-applies on relaunch) — live eyeball remains with the user per standing preference.
+- Live-verified (2026-07-21): relaunched tauri dev, screenshotted agent window at 4K + native-pixel crops — flat chips, two-tone hierarchy, tighter tracking, 768px column all rendering as intended.
+
+### Progress (2026-07-21) — Two-layer shell (frame + recessed sheet)
+- Verified Kimi's layering by pixel-scanning screenshots (frame #181817 around a darker inset #121212 rounded content panel), then implemented Aurora's own version (not a copy): frame tier canvas/rail/dock #161616, recessed conversation sheet #0f0f0f; light theme inverts (frame #f0f1f4, sheet #ffffff).
+- AgentShell: center wrapped in .agw-center-frame (8px gutters, canvas shows through) + .agw-center-sheet (radius-lg, 1px --agw-border, overflow hidden, bg conversation). Covers ConversationPane AND TeamScreen.
+- Removed frame-to-frame divider lines (LeftRail borderRight, RightDock borderLeft); .agw-shell-handle now transparent (accent on hover/drag only) — surface contrast does the layering.
+- Verified: 197 tests pass, tsc clean, eslint clean (1 pre-existing RightDock exhaustive-deps warning, untouched); live pixel-scan of running app confirms frame #161616 / sheet #0f0f0f / #262626 hairline / ~8px gutters / rounded corners.
+- Note: custom user themes stored in DB keep their own token values; the new layering colors apply to the built-in Aurora Dark/Daylight themes.
+
+### Progress (2026-07-21) — Code block fix + premium code chrome
+- Root-caused the "gray clipping layer" in transcript code blocks: AgentMarkdown's `code` mapper used `className.includes("language-")` to detect block code, so a fence with NO language tag fell into the inline branch and the whole multi-line block got wrapped in .agw-code-inline — an inline chip whose background paints per line box (the gray bands, #292929 = 7% text-mix over #1a1a1a). Latent bug: the old chip bg matched codeSurface exactly, so it was invisible until the chip tint changed.
+- Fix: PreContext (React context) set by PreBlock; CodeEl treats any code inside <pre> as block regardless of language class. Also added Kimi-style block header (.agw-codeblock-head: language tag or "plain" + always-visible copy) replacing the hover-only floating copy, and bumped block mono 12px/1.55 → 13px/1.7 with more padding.
+- Verified: 197 tests + tsc clean; user confirmed live ("yeah it is working").
+
+### Progress (2026-07-21) — Settings re-tier fix + custom agent-window titlebar
+- Settings depth inversion fixed: .agw-settings-main now paints --agw-conversation (sheet tier) so header+content match and cards regain contrast; nav stays rail/frame tier. Full-bleed sections (Providers) inherit correctly.
+- Agent window is now FRAMELESS: decorations:false in BOTH launch paths (adapters/window.ts openAgentWindow + lib.rs agent-mode builder — keep in sync). New AgentTitlebar.tsx: 38px frame-tier drag-region strip, muted "Aurora Agent" title, custom min/max-restore/close SVG caption glyphs; close hover uses --agw-removed. Buttons excluded from drag via existing index.css [data-tauri-drag-region] rules; window permissions already in capabilities/default.json.
+- Theme reflection guaranteed: every new surface reads var(--agw-*) or a color-mix of them; tokensToCssVars maps ALL tokens automatically and Appearance exposes canvas/rail/dock/conversation pickers.
+- Verified: 197 tests, tsc, eslint, cargo check all clean; live UIA test confirmed Maximize→Restore cycle + glyph swap; titlebar accessible (UIA names Minimize/Maximize/Close).
+- Note: frameless windows lose the Win11 Snap-Layouts hover popup on the maximize button (drag-to-edge snapping still works) — same tradeoff as the main IDE window.
+
+### Progress (2026-07-21) — Frame-seam band fix (Appearance "Background" picker)
+- User reported a ~8px odd-toned vertical band between rail and sheet. Pixel-measured from their screenshot: rail #161616, gutter #121212, sheet #0f0f0f — the gutter (painted by --agw-canvas) had been customized alone via Appearance Quick controls "Background", which only set the canvas token; rail/dock stayed at the built-in, fracturing the frame tier.
+- Fix: Quick controls picker renamed "Window frame"; its onChange now sets canvas + rail + dock together (the frame is one visual tier across three tokens). The Panels group keeps per-panel pickers for deliberate divergence, with an updated description.
+- Existing mismatched customizations self-heal on the next frame-picker change, or via Appearance reset.
+- Follow-up (same day): user wanted titlebar to FOLLOW the rail colour rather than canvas. .agw-titlebar and .agw-shell-flex now paint var(--agw-rail) (canvas stays the base token for the ~35 other component fills); rail picker hint documents that titlebar+gutters follow it. Pixel-verified live: rail/gutter/titlebar all uniform #121212 against sheet #0f0f0f.
+
+### Progress (2026-07-21) — Selection states made background-independent
+- User reported invisible active states (rail chat row, settings nav, dock tabs) after their Appearance tweaks. Root cause: selected fills used ABSOLUTE tokens (--agw-surface / --agw-surface-elevated) which user customization can tune to coincide with panel backgrounds.
+- Fix: new derived token --agw-state-selected = color-mix(text 9%, transparent) on .agw-root (same precedent as .agw-model-item/.agw-reason-item), swapped into 8 active fills: rail-item, tabpill, term-pill, rv-seg, settings-nav (via --agw-set-nav-active-bg), canvas-mode, seg-btn, prov-item. Selection now guaranteed visible on ANY background combination.
+- Verified: tests+tsc clean; live screenshot shows active chat row pill clearly against user's #121212 frame.
+- Follow-up: rail search box + Team button painted var(--agw-canvas) (melts into rail when frame == canvas) and dock/terminal tab pills were transparent at rest. Added --agw-state-quiet (5% text-mix) companion token; applied to rail search, .agw-rail-team, .agw-tabpill, .agw-term-pill. Resting-control tier now: quiet 5% → hover → selected 9%. Verified live.
+- Follow-up: dock "Filter files" box (.agw-files-search) + .agw-br-address (browser address / settings search) moved from absolute --agw-surface to --agw-state-quiet. Appearance page reshaped for accuracy: groups reordered (Content sheet → Window frame rail&dock → Composer → …), conversation relabeled "Sheet fill", rail hint documents titlebar/gutters follow it, Text group documents derived selection states, surfaceElevated hint notes selected rows/tabs no longer use it. No hardcoded colors anywhere — all var()/color-mix over tokens.

@@ -10,6 +10,7 @@
 import React, { useEffect } from "react";
 import { MotionConfig } from "framer-motion";
 import { AgentThemeProvider } from "./AgentThemeProvider";
+import { AgentTitlebar } from "./AgentTitlebar";
 import { AgentShell } from "./AgentShell";
 import { SettingsPage } from "../settings/SettingsPage";
 import { registerQuestionHandler } from "../../services/question-bridge";
@@ -94,6 +95,8 @@ export const AgentWindow: React.FC = () => {
   return (
     <MotionConfig reducedMotion="never">
       <AgentThemeProvider>
+        {/* Frameless window — the themed titlebar replaces the native caption. */}
+        <AgentTitlebar />
         {view === "settings" ? <SettingsPage /> : <AgentShell />}
         <AgentCommandCenter />
       </AgentThemeProvider>

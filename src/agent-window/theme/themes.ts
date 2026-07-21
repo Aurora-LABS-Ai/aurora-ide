@@ -25,18 +25,21 @@ const SHARED_TYPE = {
   radiusLg: "14px",
 } as const;
 
-/** Default dark theme — sampled from Codex (#101010 canvas / #2E2E2E input). */
+/** Default dark theme — two-layer shell: a lighter FRAME (canvas/rail/dock +
+ * gutters) around a darker recessed content SHEET (conversation). The sheet
+ * reads as a stage sunken into a bezel — the frame/sheet contrast does the
+ * layering, not lines. Input fill (#2E2E2E) retained from the Codex sample. */
 export const agentDark: AgentTheme = {
   id: "agent-dark",
   name: "Aurora Dark",
   appearance: "dark",
   tokens: {
-    // surfaces — Codex uses ONE flat near-black for canvas, rail, dock & thread
-    canvas: "#101010",
-    rail: "#101010",
-    conversation: "#101010",
-    dock: "#101010",
-    surface: "#1a1a1a", // subtle hover / quiet cards (Codex row hover)
+    // surfaces — frame tier (canvas/rail/dock) sits LIGHTER than the sheet
+    canvas: "#161616",
+    rail: "#161616",
+    conversation: "#0f0f0f", // recessed content sheet
+    dock: "#161616",
+    surface: "#1d1d1d", // subtle hover / quiet cards
     surfaceElevated: "#2e2e2e", // menus, pills, selected rows (Codex input fill)
     composerSurface: "#2e2e2e", // message input — own token, defaults to elevated
     overlay: "#000000aa",
@@ -85,16 +88,17 @@ export const agentDark: AgentTheme = {
   },
 };
 
-/** Companion light theme. Soft paper canvas, same iris accent. */
+/** Companion light theme. Same two-layer shell, inverted for light: the frame
+ * is a soft cool gray and the recessed sheet is brighter paper white. */
 export const agentLight: AgentTheme = {
   id: "agent-light",
   name: "Agent — Daylight",
   appearance: "light",
   tokens: {
-    canvas: "#fbfbfc",
-    rail: "#f4f5f7",
-    conversation: "#fbfbfc",
-    dock: "#f4f5f7",
+    canvas: "#f0f1f4",
+    rail: "#f0f1f4",
+    conversation: "#ffffff",
+    dock: "#f0f1f4",
     surface: "#ffffff",
     surfaceElevated: "#ffffff",
     composerSurface: "#ffffff",

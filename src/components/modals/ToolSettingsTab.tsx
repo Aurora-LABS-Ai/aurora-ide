@@ -105,13 +105,9 @@ const TOOL_CATEGORIES: Record<string, ToolCategory> = {
     label: 'Browser (Read-only)',
     icon: Globe,
     description:
-      'Open browser windows, read DOM, inspect elements, capture screenshots, and read JS console logs. Safe by default.',
+      'Inspect exact element state, capture screenshots, and read console logs from the agent browser.',
     tools: [
-      'browser_open',
-      'browser_close',
-      'browser_list_windows',
-      'browser_get_url',
-      'browser_get_dom',
+      'browser_page_outline',
       'browser_inspect_element',
       'browser_get_console_logs',
       'browser_screenshot',
@@ -127,7 +123,7 @@ const TOOL_CATEGORIES: Record<string, ToolCategory> = {
       'browser_navigate',
       'browser_click',
       'browser_fill',
-      'browser_wait_for',
+      'browser_scroll',
     ],
   },
   browserEval: {

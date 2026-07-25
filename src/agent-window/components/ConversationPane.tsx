@@ -15,6 +15,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { AgentIcon } from "../shared/AgentIcon";
 import { AgentComposer } from "./AgentComposer";
 import { AgentTaskPanel } from "./AgentTaskPanel";
+import { BackgroundTaskDock } from "./BackgroundTaskDock";
 import { AgentQueuedDock } from "./AgentQueuedDock";
 import { ApprovalBar } from "./ApprovalBar";
 import { ContextRing } from "./ContextRing";
@@ -58,25 +59,39 @@ const SuggestDrum: React.FC<{
 }> = ({ suggestions, onPick }) => {
   const [active, setActive] = useState(0);
   const lastStepRef = useRef(0);
+  const drumRef = useRef<HTMLDivElement>(null);
   const count = suggestions.length;
   const index = Math.min(active, count - 1);
 
   const step = (direction: number) =>
     setActive((current) => (Math.min(current, count - 1) + direction + count) % count);
 
+  /**
+   * Bound natively: React delegates `wheel` at the root with `{ passive: true }`,
+   * so `preventDefault()` from an `onWheel` prop is discarded (and warns). The
+   * drum has to swallow the wheel or the transcript scrolls away underneath
+   * while the user is rotating through replies.
+   */
+  useEffect(() => {
+    const drum = drumRef.current;
+    if (!drum || count < 2) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const now = Date.now();
+      if (now - lastStepRef.current < DRUM_STEP_COOLDOWN_MS) return;
+      lastStepRef.current = now;
+      setActive((current) => (Math.min(current, count - 1) + (event.deltaY > 0 ? 1 : -1) + count) % count);
+    };
+    drum.addEventListener("wheel", onWheel, { passive: false });
+    return () => drum.removeEventListener("wheel", onWheel);
+  }, [count]);
+
   return (
     <div
+      ref={drumRef}
       className="agw-suggest-drum"
       role="listbox"
       aria-label="Suggested replies — scroll to rotate, click to use"
-      onWheel={(event) => {
-        if (count < 2) return;
-        event.preventDefault();
-        const now = Date.now();
-        if (now - lastStepRef.current < DRUM_STEP_COOLDOWN_MS) return;
-        lastStepRef.current = now;
-        step(event.deltaY > 0 ? 1 : -1);
-      }}
     >
       {suggestions.map((suggestion, itemIndex) => {
         // Shortest cyclic distance so wrap-around rotates naturally.
@@ -491,13 +506,23 @@ export const ConversationPane: React.FC = () => {
 
           {/* Composer dock. NB: no `overflow-x:hidden` here — that would force
               overflow-y to `auto` and clip the model selector's upward dropdown. */}
+          {/* `data-drum` tells the docked cards to stop tucking. They hide
+              their bottom edge 12px behind whatever follows, which works only
+              because the composer is opaque and paints over the strip — the
+              suggestion drum is chrome-less and masked, so a card tucked
+              behind it shows its own open edge and the drum's rows land on
+              top of the card. */}
           <div
-            className="shrink-0 min-w-0 px-4 pt-4 pb-2 relative"
-            style={{ background: "var(--agw-conversation)" }}
+            className="agw-composer-dock"
+            data-drum={(!openIsStreaming && suggestions.length > 0) || undefined}
           >
             {/* Docked checklist (todo_write) for the open thread — sits above
                 the composer, per-thread so background turns don't bleed in. */}
             <AgentTaskPanel />
+            {/* Live background processes (shell_spawn). Sits under the
+                checklist: a running dev server is the thing most likely to
+                need stopping, so it stays within reach of the composer. */}
+            <BackgroundTaskDock />
             {/* Docked "queued message" card — a mid-turn injection waiting to
                 ride in with the next tool result. Stacks under the task panel,
                 directly above the composer (same dock slot). */}

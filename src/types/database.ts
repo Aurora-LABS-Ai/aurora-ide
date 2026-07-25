@@ -60,6 +60,12 @@ export interface AppSettings {
   fontSize: number;
   fireworksAccountId?: string;
   fireworksTabEnabled?: boolean;
+  /**
+   * Provider ids the user has REMOVED from the Providers page. Built-in
+   * presets are otherwise re-injected on every launch, so removal is
+   * recorded here and filtered out of the seeded list. Reversible.
+   */
+  removedProviderIds?: string[];
   maxTokens: number;
   maxToolCallsPerRequest: number;
   projectLayoutEnabled?: boolean; // Include file tree in first message
@@ -96,6 +102,13 @@ export interface AppSettings {
 // previously on this type are gone.
 export interface DbLLMProvider {
   apiKey: string;
+  /**
+   * API-key POOL (v20+). When it holds more than one key the runtime
+   * rotates them round-robin per turn and fails over to the next on an
+   * auth / rate-limit / server error. `null`/`[]` → the single `apiKey`
+   * is used. Persisted as a JSON array in the `api_keys` column.
+   */
+  apiKeys: string[] | null;
   baseUrl: string;
   contextWindow: number;
   createdAt: string;

@@ -108,7 +108,47 @@ export type McpServerStatus = 'disconnected' | 'connecting' | 'connected' | 'err
 // ============================================
 // TYPES
 // ============================================
-export type McpTransportType = 'stdio' | 'sse';
+// 'sse' is the legacy HTTP+SSE transport (MCP 2024-11-05); 'http' is
+// Streamable HTTP (2025-03-26+), which config files spell as `httpUrl`.
+// They are not interchangeable — a Streamable HTTP server answers the SSE
+// handshake with 405 Method Not Allowed.
+export type McpTransportType = 'stdio' | 'sse' | 'http';
+
+// ============================================
+// PASTED-CONFIG PARSING
+// ============================================
+//
+// Both settings surfaces (agent window + main window) accept a pasted
+// Claude/Cursor `mcpServers` block, so the mapping from that shape to our
+// config lives here rather than being reimplemented per UI. Mirrors
+// `McpServerEntry::resolve_transport` in `src-tauri/src/mcp/config.rs`.
+
+/**
+ * Decide which transport a pasted server entry describes.
+ *
+ * An explicit `type`/`transport` wins. Otherwise infer — and `httpUrl` must
+ * map to `http`, not `sse`: a Streamable HTTP server rejects the SSE
+ * handshake's opening GET with 405, so guessing wrong is a hard failure.
+ */
+export function resolveTransport(raw: Record<string, unknown>): McpTransportType {
+  const declared = typeof raw.type === 'string' ? raw.type : raw.transport;
+  if (typeof declared === 'string') {
+    const normalized = declared.toLowerCase().replace(/[-_]/g, '');
+    if (normalized === 'stdio') return 'stdio';
+    if (normalized === 'sse') return 'sse';
+    if (normalized === 'http' || normalized === 'streamablehttp') return 'http';
+  }
+  if (typeof raw.httpUrl === 'string') return 'http';
+  if (typeof raw.url === 'string') return 'sse';
+  return 'stdio';
+}
+
+/** The endpoint of a pasted entry, under either key it may use. */
+export function resolveServerUrl(raw: Record<string, unknown>): string | undefined {
+  if (typeof raw.url === 'string') return raw.url;
+  if (typeof raw.httpUrl === 'string') return raw.httpUrl;
+  return undefined;
+}
 
 // ============================================
 // AUTO-START HELPER

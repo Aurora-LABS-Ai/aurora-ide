@@ -20,6 +20,7 @@ import {
 import { providerCatalogService, type ProviderCatalogPreset } from "../services/provider-catalog";
 import { ATLAS_CLOUD_PRESET } from "../services/atlascloud";
 import { CODEX_PRESET } from "../services/codex";
+import { AGENT_ROUTER_PRESET } from "../services/agentrouter";
 import type { ProviderConfig } from "../services/providers/types";
 import { MAX_ENABLED_SKILLS } from "../services/skills";
 import type {
@@ -230,6 +231,20 @@ interface SettingsState {
   autoSave: 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange';
   autoSaveDelay: number; // in milliseconds
   deleteProvider: (id: string) => void;
+  /**
+   * Remove a provider from the Providers page PERMANENTLY. Custom providers
+   * are deleted outright (delegates to {@link deleteProvider}); built-in
+   * presets can't be deleted (they re-seed each launch), so their id is
+   * recorded in {@link removedProviderIds} and filtered out of the seeded
+   * list — that record is the only reason "gone" survives a restart. There is
+   * no restore: removal is final.
+   */
+  removeProvider: (id: string) => void;
+  /**
+   * Preset provider ids the user removed. Internal bookkeeping only (no UI) —
+   * it stops a removed built-in from silently re-seeding on the next launch.
+   */
+  removedProviderIds: string[];
 
   // Editor Settings
   explorerIconPack: ExplorerIconPackId;
@@ -391,6 +406,14 @@ interface SettingsState {
 // never round-tripped to the `llm_providers` table.
 export interface LLMProvider {
   apiKey: string;
+  /**
+   * API-key POOL (v20+). When more than one non-blank key is present the
+   * Rust runtime rotates them round-robin per turn and fails over to the
+   * next key on an auth / rate-limit / server error — same request, next
+   * key. Empty/undefined → only `apiKey` is used. Generic across providers
+   * (AgentRouter, with its 5+ accounts, is the first consumer).
+   */
+  apiKeys?: string[];
   baseUrl: string;
   contextWindow: number;
 
@@ -498,6 +521,10 @@ const presetToProvider = (preset: ProviderCatalogPreset): LLMProvider => ({
   defaultTemperature: preset.defaultTemperature,
   defaultMaxTokens: preset.defaultMaxTokens,
   requiresApiKey: preset.requiresApiKey,
+  // Frontend presets (AgentRouter, …) can ship required transport headers
+  // pre-filled — e.g. AgentRouter's client fingerprint (`User-Agent` +
+  // `X-Title`), without which it returns 401. Rust catalog presets omit it.
+  customHeaders: preset.customHeaders,
   apiKey: "",
   enabled: true,
   isCustom: false,
@@ -638,6 +665,7 @@ function dbToProvider(db: DbLLMProvider): LLMProvider {
     name: db.name,
     baseUrl: db.baseUrl,
     apiKey: db.apiKey,
+    apiKeys: db.apiKeys && db.apiKeys.length > 0 ? db.apiKeys : undefined,
     model: db.model,
     contextWindow: db.contextWindow,
     maxOutputTokens: db.maxOutputTokens,
@@ -666,6 +694,10 @@ function providerToDb(provider: LLMProvider, sortOrder: number): DbLLMProvider {
     name: provider.name,
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey,
+    apiKeys:
+      provider.apiKeys && provider.apiKeys.some((k) => k.trim().length > 0)
+        ? provider.apiKeys.filter((k) => k.trim().length > 0)
+        : null,
     model: provider.model,
     contextWindow: provider.contextWindow,
     maxOutputTokens: provider.maxOutputTokens,
@@ -1007,6 +1039,9 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   fireworksTabEnabled: false,
   fireworksAccountId: "",
 
+  // Providers the user removed from the Providers page (presets re-seed
+  // each launch, so removal is tracked here and filtered out on merge).
+  removedProviderIds: [],
 
   // Theme
   theme: "dark",
@@ -1065,6 +1100,35 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       // auth + routing (`api::codex`); this just seeds the provider row.
       if (!presetProviders.some((p) => p.id === CODEX_PRESET.id)) {
         presetProviders.push(CODEX_PRESET);
+      }
+
+      // AgentRouter (OpenAI-compatible proxy). Frontend preset — seeds the
+      // provider row + its required client-fingerprint headers so it works
+      // the moment the user pastes a key (or a key pool).
+      if (!presetProviders.some((p) => p.id === AGENT_ROUTER_PRESET.id)) {
+        presetProviders.push(AGENT_ROUTER_PRESET);
+      }
+
+      // Drop any preset the user REMOVED from the Providers page. Presets are
+      // re-injected every launch, so a plain delete can't stick — removal is
+      // recorded in `removedProviderIds` (app_settings) and filtered here,
+      // BEFORE the merge/seed below, so a removed built-in never re-seeds.
+      // Fetched up-front (the full app-settings load happens later); failure
+      // defaults to "nothing removed".
+      let removedProviderIds: string[] = [];
+      try {
+        const earlySettings = await databaseService.getAppSettings();
+        if (Array.isArray(earlySettings?.removedProviderIds)) {
+          removedProviderIds = earlySettings.removedProviderIds;
+        }
+      } catch {
+        // ignore — treat as nothing removed
+      }
+      if (removedProviderIds.length > 0) {
+        const removedSet = new Set(removedProviderIds);
+        for (let i = presetProviders.length - 1; i >= 0; i--) {
+          if (removedSet.has(presetProviders[i].id)) presetProviders.splice(i, 1);
+        }
       }
 
       // Check if we have providers in the database
@@ -1266,6 +1330,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           speechLanguage: appSettings.speechLanguage ?? "auto",
           fireworksTabEnabled: appSettings.fireworksTabEnabled ?? false,
           fireworksAccountId: appSettings.fireworksAccountId ?? "",
+          removedProviderIds: appSettings.removedProviderIds ?? [],
           fontSize: appSettings.fontSize ?? 14,
           wrapMode: appSettings.wrapMode ?? true,
           theme: (appSettings.theme as 'dark' | 'light') || "dark",
@@ -1367,6 +1432,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         speechLanguage: state.speechLanguage,
         fireworksTabEnabled: state.fireworksTabEnabled,
         fireworksAccountId: state.fireworksAccountId,
+        removedProviderIds: state.removedProviderIds,
         fontSize: state.fontSize,
         wrapMode: state.wrapMode,
         theme: state.theme,
@@ -1608,6 +1674,46 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       databaseService.deleteProvider(id).catch(console.error);
       get().saveToDatabase();
     }
+  },
+
+  removeProvider: (id: string) => {
+    const state = get();
+    const provider = state.providers.find((p: LLMProvider) => p.id === id);
+    if (!provider) return;
+
+    // Custom providers are truly deleted — nothing re-seeds them.
+    if (provider.isCustom) {
+      get().deleteProvider(id);
+      return;
+    }
+
+    // Built-in preset: it would re-seed on the next launch, so record its id
+    // in `removedProviderIds` (persisted) AND drop it (+ its models) from the
+    // live state now. Also delete its DB row. This is permanent — the recorded
+    // id is the only thing keeping the preset from silently re-seeding.
+    set((s: SettingsState) => {
+      const removedProviderIds = s.removedProviderIds.includes(id)
+        ? s.removedProviderIds
+        : [...s.removedProviderIds, id];
+      const nextProviders = s.providers.filter((p: LLMProvider) => p.id !== id);
+      const nextModels = s.models.filter((m) => m.providerId !== id);
+      const nextSelected = s.selectedModel.startsWith(id + ":")
+        ? DEFAULT_SELECTED_MODEL
+        : s.selectedModel;
+      const synthesized = synthesizeLegacyProviderFields(
+        nextProviders,
+        nextModels,
+        nextSelected,
+      );
+      return {
+        removedProviderIds,
+        providers: synthesized,
+        models: nextModels,
+        selectedModel: nextSelected,
+      };
+    });
+    databaseService.deleteProvider(id).catch(console.error);
+    get().saveToDatabase();
   },
 
   setSelectedModel: (model: string) => {
@@ -2085,6 +2191,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         name: provider.name,
         baseUrl: provider.baseUrl,
         apiKey: provider.apiKey,
+        apiKeys: provider.apiKeys,
         model: resolved?.modelKey || modelKey || provider.model,
         maxOutputTokens: resolved?.resolvedMaxOutputTokens ?? provider.maxOutputTokens,
         contextWindow: resolved?.resolvedContextWindow ?? provider.contextWindow,
@@ -2117,6 +2224,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         name: fallback.name,
         baseUrl: fallback.baseUrl,
         apiKey: fallback.apiKey,
+        apiKeys: fallback.apiKeys,
         model: resolved?.modelKey || fallback.model,
         maxOutputTokens: resolved?.resolvedMaxOutputTokens ?? fallback.maxOutputTokens,
         contextWindow: resolved?.resolvedContextWindow ?? fallback.contextWindow,

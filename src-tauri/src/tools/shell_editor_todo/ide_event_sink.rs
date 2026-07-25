@@ -15,8 +15,8 @@
 //! - **`spawn_shell_stream`** is async because the production impl
 //!   hands the work off to a `tokio::spawn` that re-enters
 //!   `crate::commands::execute_command_stream` (which itself
-//!   awaits). The tool returns the request_id immediately, like the
-//!   TS executor does.
+//!   awaits). Production confirms that a long-running command survives
+//!   its short startup window before returning the request id.
 //!
 //! The verify crate uses [`RecordingIdeEventSink`] and asserts on
 //! `events()` to verify each tool emits the right event channel + payload.
@@ -177,11 +177,45 @@ impl FileChangedPayload {
 /// records them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellStreamRequest {
+    pub process_id: String,
     pub request_id: String,
+    /// Thread this process belongs to. The sink uses it to place the output
+    /// log beside the thread, so it is cleaned up with the thread and can be
+    /// read back later with `file_read`.
+    pub session_id: String,
+    pub name: Option<String>,
     pub command: String,
     pub cwd: Option<String>,
     pub shell: Option<String>,
     pub timeout_ms: Option<u64>,
+}
+
+/// Result of a streamed foreground command.
+///
+/// Mirrors `crate::commands::CommandOutput` without depending on it, so the
+/// sink trait stays self-contained for the standalone verify crates.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShellRunOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+    pub success: bool,
+}
+
+/// What a background spawn looked like after its startup window.
+///
+/// `shell_spawn` is for long-running work, so a process that exits straight
+/// away is worth reporting — but *how* it exited decides whether that is a
+/// failure. A port collision exits non-zero and genuinely failed to start; a
+/// script that simply did its job quickly exited zero and succeeded. Folding
+/// both into one error told the model a working command had failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpawnOutcome {
+    /// Still running when the startup window elapsed, with the file its
+    /// output is being mirrored into (absent if the log could not be opened).
+    Running { output_file: Option<String> },
+    /// Exited within the startup window, with whatever it produced.
+    Exited(ShellRunOutput),
 }
 
 /// Recorded emission for the verify crate.
@@ -242,7 +276,17 @@ pub trait IdeEventSink: Send + Sync + 'static {
     /// [`crate::commands::execute_command_stream`]; the request_id
     /// becomes the channel suffix the frontend already listens on
     /// (`shell-stream-{request_id}`). Tests just record the request.
-    async fn spawn_shell_stream(&self, req: ShellStreamRequest) -> Result<(), String>;
+    async fn spawn_shell_stream(&self, req: ShellStreamRequest) -> Result<SpawnOutcome, String>;
+
+    /// Run a command to completion **while streaming its output live** on
+    /// `shell-stream-{request_id}`, then return the full result.
+    ///
+    /// This is what makes a foreground `shell_execute` render like a real
+    /// terminal instead of appearing all at once when the process exits. It
+    /// is the same emit path `spawn_shell_stream` uses — the only difference
+    /// is that this one awaits the process and hands the collected output
+    /// back to the tool, so the model still receives one complete result.
+    async fn run_shell_stream(&self, req: ShellStreamRequest) -> Result<ShellRunOutput, String>;
 
     /// Emit the [`FILE_CHANGED_EVENT`] Tauri event so the frontend can
     /// refresh open Monaco buffers, the explorer tree, and the
@@ -278,8 +322,30 @@ impl IdeEventSink for NoopIdeEventSink {
         Ok(())
     }
 
-    async fn spawn_shell_stream(&self, _req: ShellStreamRequest) -> Result<(), String> {
-        Ok(())
+    async fn spawn_shell_stream(&self, _req: ShellStreamRequest) -> Result<SpawnOutcome, String> {
+        Ok(SpawnOutcome::Running { output_file: None })
+    }
+
+    /// No Tauri app to stream through, so the command runs unstreamed. The
+    /// tool result is byte-identical to the streamed path — only the live
+    /// rendering is missing — which keeps unit tests exercising real
+    /// execution rather than a stub.
+    #[cfg(not(feature = "verify_only"))]
+    async fn run_shell_stream(&self, req: ShellStreamRequest) -> Result<ShellRunOutput, String> {
+        let output =
+            crate::commands::execute_command(req.command, req.cwd, req.shell, req.timeout_ms)
+                .await?;
+        Ok(ShellRunOutput {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            exit_code: output.exit_code,
+            success: output.success,
+        })
+    }
+
+    #[cfg(feature = "verify_only")]
+    async fn run_shell_stream(&self, _req: ShellStreamRequest) -> Result<ShellRunOutput, String> {
+        Err("shell command execution disabled in verify_only".into())
     }
 
     fn emit_file_changed(&self, _payload: &FileChangedPayload) -> Result<(), String> {
@@ -359,8 +425,20 @@ impl IdeEventSink for RecordingIdeEventSink {
         })
     }
 
-    async fn spawn_shell_stream(&self, req: ShellStreamRequest) -> Result<(), String> {
-        self.record(RecordedEvent::ShellStream(req))
+    async fn spawn_shell_stream(&self, req: ShellStreamRequest) -> Result<SpawnOutcome, String> {
+        self.record(RecordedEvent::ShellStream(req))?;
+        Ok(SpawnOutcome::Running { output_file: None })
+    }
+
+    /// Records the request and returns a successful empty result — tests
+    /// assert on *what was requested*, never on a real process.
+    async fn run_shell_stream(&self, req: ShellStreamRequest) -> Result<ShellRunOutput, String> {
+        self.record(RecordedEvent::ShellStream(req))?;
+        Ok(ShellRunOutput {
+            success: true,
+            exit_code: Some(0),
+            ..ShellRunOutput::default()
+        })
     }
 
     fn emit_file_changed(&self, payload: &FileChangedPayload) -> Result<(), String> {
@@ -417,7 +495,10 @@ mod tests {
         sink.fail_next("shell err");
         let err = sink
             .spawn_shell_stream(ShellStreamRequest {
+                process_id: "bg-r1".into(),
                 request_id: "r1".into(),
+                session_id: "s1".into(),
+                name: Some("test".into()),
                 command: "ls".into(),
                 cwd: None,
                 shell: None,

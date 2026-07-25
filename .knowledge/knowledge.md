@@ -1,5 +1,416 @@
 # Aurora IDE — Working Memory
 
+## Task (2026-07-25): agent harness reliability trio — DONE (uncommitted, NEEDS RUST REBUILD)
+User: "frontier models like Opus call the wrong tools — our implementation has an issue; it isn't mature enough
+for a large project." Audited the loop (not the tools — the tool layer is fine: read-before-edit guard, spill,
+per-tool caps). Six defects found; user picked the reliability trio (1+3+4). #2 (no prompt caching at all —
+`grep -c cache_control src-tauri/src` was **0**), #5 (tool calls dispatch strictly sequentially,
+`conversation.rs` `for call in calls`) and #6 (no repeated-failure breaker; `stop_reason=="length"` unhandled)
+are DIAGNOSED BUT NOT BUILT — #3 below was the prerequisite for #2.
+- **#1 The big one: malformed tool args were silently replaced with `{}`.** `parse_tool_input`
+  (`provider_kernel_adapter.rs`) and a duplicate in `anthropic.rs` both did
+  `serde_json::from_str(raw).unwrap_or(json!({}))` — and a test PINNED that behaviour. A call truncated by the
+  output cap or carrying a bad escape reached the executor with NO arguments, so `file_edit` answered "`path`
+  is required" to a model that had sent `path`. The model can't reconcile that, so it retries, rephrases, and
+  switches tools. **What looks like a model calling the wrong tool is the harness eating its arguments.**
+  Fix: a failed parse now yields `Value::String(raw)` (no magic key, no type churn — every schema is
+  `type:object`, so a non-object input is unambiguously broken). `conversation.rs` checks
+  `malformed_tool_input()` BEFORE lookup and never dispatches; `malformed_input_error()` returns a message
+  naming the tool, quoting head+tail of what actually arrived, and distinguishing an EOF parse failure
+  ("cut off by the output cap — re-issue smaller") from a syntax error ("unescaped backslash…").
+  `tool_input_for_wire()` sanitizes back to `{}` at both request-body sites, or one malformed block would 400
+  every SUBSEQUENT turn (providers require `tool_use.input` to be an object).
+  anthropic.rs now calls the shared `parse_tool_input` — it had been missing the Windows-path repair entirely.
+- **#3 Tool schemas shipped in random order every request.** `ToolRegistry` is a `DashMap`; `schemas()` is
+  re-read inside the turn loop and `names()` even documented "non-deterministic order". Registry now stores
+  `(registration_index, executor)`; `register()` PRESERVES an existing index so `install_permission_gate`'s
+  in-place re-registration can't reshuffle. This is a hard prerequisite for prompt caching (#2): a cached
+  prefix that reorders every request never hits.
+- **#4 Unknown tool was a dead end.** `tool not found: browser_eval`, no roster, no near-match — the model's
+  only move was another guess. New `agent_runtime/tool_suggest.rs` (Levenshtein, length-scaled tolerance,
+  prefix tie-break, returns None rather than a bad guess) + `ToolRegistry::unknown_tool_error()` which appends
+  "Did you mean `x`?" and the real roster (summarized past 60 names so MCP-heavy workspaces don't flood).
+  Payoff: DELETED the `agent-prompt.ts` paragraph enumerating withdrawn browser tools and pleading "do not
+  apologise for not having them" — that text existed only to paper over this error.
+- **#2 Prompt caching — Aurora sent ZERO `cache_control`.** Now sets 3 breakpoints in `build_anthropic_body`
+  (Anthropic prefix order is tools → system → messages): last tool schema, the system block (which forces the
+  ARRAY form — a plain string has nowhere to hang the marker), and the last content block of the last message
+  (rolling, so the next iteration reads all prior history from cache and writes only the delta). Gated hard on
+  `provider_id == "anthropic"` via `supports_prompt_caching` — MiniMax rides the SAME adapter and has never
+  seen the field, and an unknown field is how Aurora has been 400'd before (`oneOf` on xAI). Max 4 breakpoints
+  allowed; a test pins ≤ 4. Response-side `cache_read/creation_input_tokens` parsing already existed.
+- **#5 Parallel dispatch.** New `ToolExecutor::concurrency_safe()` (default FALSE). `execute_tool_calls` now
+  walks maximal runs of safe calls and `join_all`s them; the first unsafe call splits the batch, so
+  `[read,read,write,read]` → {2},{1},{1} and relative order with writes is preserved. Result blocks always
+  follow the model's CALL order, not completion order. Opted in: file_read, grep, workspace_tree,
+  auroro_websearch, read_lints, shell_list_processes. Browser tools deliberately NOT opted in (one shared
+  panel). `PermissionGuardedExecutor` overrides to false explicitly (prompts are answered one at a time).
+- **#6 Loop breaker + `length` stop.** `FailureLoopGuard` keys on `(tool, args-json)` per batch: 2nd identical
+  failure appends "SECOND time … change something concrete first", 3rd+ appends "STOP". A SUCCESS with those
+  exact args clears the counter. Separately, `stop_reason ∈ {length, max_tokens}` with no pending tools now
+  emits a recoverable Error event — it used to end the turn indistinguishably from a clean stop, so a
+  truncated reply looked complete.
+- ⚠️ **The Rust test suite had NEVER run on Windows** (0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND, recorded here as
+  an environment limitation). Root-caused and FIXED — see lesson.md. 703 tests ran for the first time; 15
+  failed. **All 15 now fixed**, and 5 were real product bugs, not stale tests:
+  1. `trim_to_budget` iterated `user_indices[..max_cut]` — included the no-op cut at index 0 and EXCLUDED the
+     largest legal boundary. Context trimming under-dropped by one turn always, and with exactly 3 user turns
+     never fired at all. Now `[1..=max_cut]`. (fixed 3 tests)
+  2. `compact_json_tool_content` did `if !shrink(...) { return None }` — but `false` only means "nothing
+     exceeded this probe limit". `workspace_tree` (no payload-string keys) bailed instantly and never reached
+     `compact_json_arrays`, written for exactly that shape; a batch `file_read` whose per-file contents are
+     each under the first probe did the same. Both fell through to the blind byte clamp → invalid JSON.
+  3. `truncate_tool_content` cut at exactly `cap` then APPENDED the marker, exceeding the cap it enforces.
+     Now reserves `TRUNCATION_MARKER_RESERVE`.
+  4. `TeamPhase::Planning` was declared and **assigned nowhere** — a convened team with locked assignments
+     still reported `Forming` ("Roster not yet assembled"). runner.rs:398 even said "phase stays Planning".
+     New `mark_team_planning()` called from both planning entry points. (`convene` correctly stays Forming.)
+  5. `is_meta_role("review-page-owner")` → true, so a real builder got relabelled out from under the Lead.
+     Rule now: inside a `…-owner` suffix a meta word is meta only when it IS the thing owned
+     (`integration-owner` = meta) not when it qualifies one (`review-page-owner` = builder).
+  The other 10 were stale tests: scope_guard ×4 encoded the OLD "deny anything outside your scope" rule
+  (superseded by "only a PEER's scope is off-limits" — see `unassigned_path_is_allowed_as_open_ground`, which
+  passes); `register_builtin_tools_is_idempotent` asserted 16 where its sibling asserts 15;
+  `scan_merge_adds_new_profiles` contradicted the stale-profile pruning rule; read_lints asserted a substring
+  against `display()`, which renders args with `{:?}` and so escapes Windows separators.
+- Verified: **712/712 Rust tests pass** (0 failures — first fully green run ever), `cargo check --lib --tests`
+  0 post-rustfmt, `tsc -b` 0, eslint 0 errors, vitest 200/200, `vite build` 0. NOT runtime-verified — needs a
+  `pnpm tauri:dev` restart.
+
+## Task (2026-07-25): type + radius system pass, and the home wordmark light (uncommitted)
+User: "the next maturity gain is the UI — text rendering and the size/radius of elements."
+Audited, then implemented. Probes at `C:\Users\Alvan\Documents\aurora-type-radius-system.html` and
+`…\aurora-wordmark-sheen.html`.
+- **Prose was never on the type scale.** The CHROME was systematised into 6 sizes long ago (with a comment
+  explaining that near-duplicate sizes read as noise), but `.agw-md` still used compounding `em`: 1.4/1.22/1.08
+  off a 14px base rendered **19.6 / 17.08 / 15.12px**, inline code 0.85em → **11.9px**. Fractional sizes shift
+  stem weights and baselines between headings under Windows subpixel rendering — that was the "text doesn't
+  feel finished" complaint. New tier `--agw-fs-h1..h4` = 20/17/15/14 and `--agw-fs-code` = 13 (which also makes
+  inline code MATCH the fenced block, already `--agw-fs-md`; they disagreed by 1.1px). Code-inside-a-heading
+  got explicit per-level sizes (18/16/14/13) — a shared `em` factor would have reintroduced the fractions.
+- **Radius: one scale.** `themes.ts` 14→12, 10→8 (so `sm` 6 nested in `lg` 12 with 6px padding is concentric),
+  added `radiusPill`, retired **55 hardcoded `999px`**. Settings' fork (`--agw-set-r-card` 16 / `-inner` 12) now
+  ALIASES onto the scale — its comment said the bigger radii were deliberate, so the names stay as the one
+  tuning point, but there is a single source of truth. NOT touched (would visibly reshape the most prominent
+  element, and the probe never previewed it): the composer's Tailwind literal `rounded-[16px]`, and 19 bare
+  `rounded` utilities. The 22px drag-drop ring is NOT drift — it is 16+6, concentric with the composer; now
+  commented so nobody "fixes" it.
+- **Home wordmark — per-character arrival light.** User wanted the light to move ONE GLYPH AT A TIME; a
+  gradient sweep cannot do that (it is continuous, so it always straddles 2+ glyphs). So the glyph is now the
+  unit of animation: `EmptyState` splits "aurora" into inline spans carrying `--agw-lit-i`, staggered
+  0.11s apart with a 0.55s hold (~1.1s to cross). **`@property --agw-lit` is load-bearing** — a plain custom
+  property is a token stream and cannot be interpolated, so it would never animate inside `color-mix()`.
+  Fallback on an engine without @property is the old resting fill, i.e. today's look. Split is a11y-safe: the
+  mark is already `aria-hidden`. The vertical (180deg) base gradient is what makes per-letter splitting safe —
+  a horizontal one would have broken across the letter boxes.
+- Reference implementations reviewed (tryelements TextShimmer, React Bits ShinyText): both drive it with a
+  permanent JS rAF/motion loop — rejected for a home screen that sits open for hours; CSS keyframes give the
+  compositor the work. Both expose a rest-between-passes control, which is why a single pass (not a loop) is
+  the default here: a travelling sheen is the skeleton-LOADING gesture, and looping it forever makes an idle
+  screen read as still loading.
+- Verified: `tsc -b` 0, eslint 0, postcss parse OK, vitest 200/200, `vite build` 0. NOT runtime-verified.
+
+## Task (2026-07-25): budget slider popover — 2 bugs FIXED (uncommitted)
+User: "the popup opens, then vanishes as soon as I click and drag the slider."
+- **Dismissal:** the panel is portaled to `.agw-root`, so it is NOT inside `.agw-model-menu` in the DOM — and
+  the menu's outside-click test is pure `rootRef.contains(target)`. Pressing the slider read as a click
+  outside the picker, closed the whole menu, and unmounted the panel with it. Portaling escapes the clipping
+  container AND the containment check; fixing one exposed the other. Fix: the panel carries
+  `data-agw-portal-child` and the menu's handler skips `target.closest("[data-agw-portal-child]")`. **Reusable
+  convention — any future portaled popover owned by a menu must set that attribute.**
+- **Perf:** `useSettingsStore.updateModel` issues a SQLite upsert on EVERY call, and a range input fires
+  `change` on every step — so dragging was a DB round-trip per pixel. Now a local `draftPos` drives the
+  control and the store is written once, on `pointerup` / `keyup` / `blur` (blur is the backstop so a pointer
+  released outside the thumb still commits).
+
+## Task (2026-07-25): reasoning BUDGET control — DONE (uncommitted, NEEDS RUST REBUILD)
+User: "we don't have a budget slider for reasoning models." Audit found the value was dropped END TO END, not
+just missing a control: `ModelReasoning{type:"budget",min,max,default}` already existed and models.dev already
+mapped `budget_tokens` into it, but (a) the picker row rendered a control only for `type:"effort"`, (b)
+`useAgentWindowSend` reduced budget models to a bare thinking on/off (`// toggle / budget` branch), and (c) no
+adapter could receive a number anyway. So Providers → Min/Max budget configured a range NOTHING consumed.
+- **Wire (new, first-class — NOT customParams, because the shape differs per provider):** `AgentConfig.
+  thinkingBudgetTokens` → `AgentChatRequest.thinkingBudgetTokens` (agent-runtime-client, `null` when ≤0) →
+  Rust `ipc.rs::thinking_budget_tokens` → `build_runtime_config` (`.filter(|b| *b > 0)`) →
+  `RuntimeConfig.thinking_budget_tokens` → `ApiRequest.thinking_budget_tokens` (9 construction sites, all
+  others `None` — compaction + team runners deliberately never spend the user's budget).
+- **Anthropic** (`provider_kernel_adapter::anthropic_thinking_budget`) now takes `explicit` FIRST: a user
+  budget wins over the effort-tier fraction and is only CLAMPED to `1024..=max_tokens-1` (clamp, not reject —
+  a budget set against a big cap must survive the user lowering Max output). `0` = "no explicit budget".
+- **OpenAI-compat** (`build_openai_body`) adds `budget_tokens` INSIDE the existing `thinking` object ONLY when
+  the user explicitly set one; the default stays the bare `{"type":"enabled"}` we always sent, because compat
+  backends 400 on unknown fields. Responses/DeepSeek/Codex paths untouched (no budget concept).
+- **UI = probe variant 02** (user picked from `C:\Users\Alvan\Documents\aurora-reasoning-budget-slider.html`,
+  4 variants): the row chip reuses `.agw-model-effort` verbatim so budget and effort rows keep IDENTICAL
+  heights; clicking opens a 244px panel — log-scaled slider (linear spends 90% of the track on values nobody
+  distinguishes; log gives each doubling equal width), presets min/4k/16k/32k/Max filtered to the model's own
+  range, and a hint stating the % of the model's output cap.
+  The slider CEILING is `maxOutputTokens - 1`, not `maxOutputTokens` — a budget must be strictly below
+  max_tokens, so otherwise the "Max" preset produces a value the provider rejects. The only warn state left is
+  the genuinely broken one: an output cap ≤ 1024, where Rust omits `thinking` and reasoning silently stops.
+  ⚠️ The panel is PORTALED to `.agw-root` — `.agw-model-menu` is `overflow: hidden` and would clip it.
+  Closes on outside mousedown / Escape / any scroll (a scroll strands the measured anchor).
+- Writes land on `reasoning.default` (same field effort tiers use) ⇒ no new storage, no migration.
+- Providers page: added a "Default budget" range row above Min/Max (`.agw-set-range` + `AgwPill`, same family
+  as the compaction rows), and the model chip now reads `Reasoning · 16k`.
+- **Pre-existing bug fixed on the way:** the Reasoning type segmented control carried `default` across types,
+  so effort→budget left `default:"medium"` (a budget of NaN) and budget→effort sent `reasoning_effort:"8000"`.
+  Both branches now coerce by type.
+- Verified: `cargo check --lib --tests` clean (post-rustfmt), `tsc -b`, eslint (0 errors on touched files),
+  postcss parse, `vite build` exit 0, 200/200 FE tests (1 new: budget forwarding + 0/undefined → null).
+  Rust unit tests still CANNOT LAUNCH here (0xc0000139 — documented) so the 2 new adapter tests compile but
+  never ran. NOT runtime-verified: needs `pnpm tauri:dev` restart, then a budget model + a real send.
+
+## Build status (2026-07-24): `pnpm tauri build` PASSED — exit 0, release in 10m05s
+Carries all four uncommitted fixes below (file_read `oneOf`, effort→`thinking` translation, effort-scaled
+`budget_tokens`, empty-thinking guards). Artifacts: `build\release\aurora.exe`, plus MSI + NSIS bundles under
+`build\release\bundle\` (named Aurora_**2.0.0**_x64 — CLAUDE.md still says v1.5.0, stale). `cargo check --lib`,
+`--tests`, and `tsc -b` all clean. STILL UNVERIFIED AT RUNTIME: no request has been made against the new
+binary — the grok `oneOf` fix and the FABLE effort→reasoning fix both need a real send to confirm.
+NOTE: the Rust lib TEST BINARY still cannot launch here (0xc0000139) — new unit tests compile but never run.
+
+## Task (2026-07-24): stray "…" rows in the transcript — FIXED (uncommitted, NEEDS RUST REBUILD)
+User circled bare "…" rows appearing between tool cards on AgentRouter/Claude Opus 4.8 and asked whether they
+were leaked reasoning content. They are NOT — verified by curl against the same proxy (api.443.hk):
+- `/v1/chat/completions` (OpenAI-compat) for `claude-opus-4-8` returns **zero** `reasoning_content`, with or
+  without a `thinking` param — only `content` + `tool_calls`. (grok-4.5 on the same proxy DOES stream it.)
+- The proxy ALSO speaks native `/v1/messages` (accepts both `x-api-key` and `Authorization: Bearer`), and there
+  thinking works — but ONLY with the LEGACY `thinking:{"type":"enabled","budget_tokens":N}`. The modern
+  `{"type":"adaptive","display":"summarized"}` is accepted (200) and silently yields NO thinking block at all.
+  Aurora's `build_anthropic_body` already sends the legacy shape, so the Anthropic path gets real reasoning.
+  Tools work there too (`thinking` + `tool_use` both returned). No provider-settings change was needed.
+- ROOT CAUSE of the "…": the proxy opens each thinking block with an empty `"thinking":""` delta, and
+  `api/anthropic.rs` had **no empty-text guard** (unlike `openai_compat.rs`, which checks `!is_empty()`).
+  Second source: `anthropic.rs` content_block_stop deliberately sends `Thinking{text:String::new()}` just to
+  carry the signature. Chain: empty Thinking event → `onThinking("")` → `appendThinking(tl,"")` → a real
+  `{kind:"thinking",text:""}` row (`timeline.ts:238` does NOT filter empty rows) → `AgentThinkingBlock`'s
+  `{content || "…"}` (AgentThinkingBlock.tsx:68) paints "…". It lands BETWEEN TOOL CARDS because
+  `appendThinking` only merges into a previous thinking segment — after a tool row it can't, so it starts a
+  new empty one.
+- Fix (both ends): `anthropic.rs` thinking_delta now skips zero-length deltas; `useAgentWindowSend.ts`
+  `onThinking` early-returns on empty text (kills the signature-only event and covers reload/other providers).
+- ⚠️ CORRECTION (same day): the `anthropic.rs` half is a REAL latent bug but is NOT what produced the user's
+  "…" — every one of their providers is `provider_type:"openai"` (see the provider table below), so
+  `ProviderKind::detect` routes to OpenAICompat and `anthropic.rs` never runs. The `onThinking` guard is the
+  half that actually applies. Root cause on the OpenAI-compat path remains UNPROVEN — do not claim otherwise.
+  Later screenshot showed the Reasoning block rendering correctly with no stray "…", so it is intermittent.
+- Verify: NOT yet compiled/run — needs `pnpm tauri:dev` restart.
+
+## Reference (2026-07-24): api.443.hk proxy + provider wiring — MEASURED, not inferred
+- **DB lives at `C:\Users\Alvan\AppData\Local\AuroraIDE\data\aurora.db`** — CLAUDE.md's
+  `%APPDATA%/com.aurora.agent/aurora.db` is STALE. Must copy `aurora.db` + `-wal` + `-shm` together to read it.
+- User's providers (all `provider_type:"openai"` ⇒ OpenAICompat adapter ⇒ `/v1/chat/completions`):
+  GREY / GROK / FABLE → `https://api.443.hk/v1`; AgentRouter → `https://agentrouter.org/v1`; plus deepseek,
+  codex, openai-responses, KimChi, KAT-coder, openference, Routing Run, META.
+- **Reasoning exposure is PER-PROVIDER, not per-model** (measured with curl):
+  - `api.443.hk` `/v1/chat/completions` + Claude models → **0** reasoning deltas under EVERY config tried
+    (`reasoning_effort:"max"`, `thinking:{enabled,budget_tokens}`, plain). grok-4.5 there DOES stream it.
+  - `api.443.hk` `/v1/messages` (native Anthropic; accepts BOTH `x-api-key` and `Authorization: Bearer`) →
+    real `thinking` blocks + signature, and tools work (`thinking` + `tool_use` both returned).
+  - `agentrouter.org` `/v1/chat/completions` + Claude → reasoning DOES flow (confirmed by user screenshot).
+- **Thinking-config compatibility on api.443.hk `/v1/messages`:** `claude-opus-4-8` gets thinking ONLY from the
+  legacy `{"type":"enabled","budget_tokens":N}`; `{"type":"adaptive",...}` is accepted (200) but yields NO
+  thinking block. `claude-fable-5` works with BOTH. Aurora's `build_anthropic_body` already sends the legacy
+  shape ⇒ compatible with both; "modernizing" it to `adaptive` would SILENTLY kill opus-4-8 reasoning.
+- The proxy is PERMISSIVE — accepts `temperature` and `budget_tokens` that real Anthropic 400s on for Fable 5,
+  and caches identical prompts (two calls with the same body returned an identical thinking signature — vary
+  the prompt when probing or you will "test" a cache hit).
+- Aurora hardcodes `budget_tokens: 1024` (`provider_kernel_adapter.rs` build_anthropic_body); the provider
+  page's effort setting does NOT feed it on the Anthropic path.
+
+## Task (2026-07-24): grok/xAI provider HTTP 400 "Upstream error: 400" — FIXED (uncommitted, NEEDS RUST REBUILD)
+User added a custom OpenAI-compat provider (api.443.hk, model grok-4.5); every agent request failed with
+`Something Went Wrong / invalid request: HTTP 400: {"error":{"message":"Upstream error: 400","type":"invalid_request_error"}}`
+while a plain curl worked. Root-caused by bisecting the outgoing body against the live endpoint: stream,
+temperature, max_tokens, stream_options, the non-standard `thinking` field, system msg, `additionalProperties:false`,
+and even a `"type":["string","number"]` union (shell_kill) ALL return 200. The single offender is a top-level
+**`oneOf`** in a tool's `parameters` — xAI/grok's function-schema validator rejects `oneOf`/`anyOf`/`allOf` with
+a 400 byte-identical to the user's error. `file_read` (`tools/file_workspace_search/file_read.rs`) was the ONLY
+tool using `oneOf` (grepped anyOf/allOf/$ref too — none), and it's sent every turn, so every grok request died.
+- Fix: removed the `oneOf` from file_read's schema. The "exactly one of path/paths" contract was redundant there —
+  it's documented in the field descriptions AND enforced at runtime in `execute()` (rejects both-present + empty
+  array). Updated the schema test to assert `oneOf` is absent.
+- Also added an OPT-IN request trace in `api/openai_compat.rs` (env `AURORA_DEBUG_API=1`): prints the exact
+  outgoing body + any non-2xx upstream response body via eprintln (project convention — no tracing crate). Inert
+  by default. Lesson: keep tool `parameters` schemas to the strict-provider-safe subset (no oneOf/anyOf/allOf).
+- Verify: schema logic + live-endpoint bisection confirmed; NOT cargo-checked (user owns build lock via tauri:dev)
+  — their rebuild compiles it.
+
+## Task (2026-07-23): Browser tool misuse — root cause found; TS half FIXED, Rust half PENDING
+Symptom: every model fabricates deep structural selectors and loops on
+"No element matches `div#root > div > div:nth-of-type(2) > main > ...`" (`tools/browser/mod.rs:455`).
+Two independent causes:
+- **A — prompt/registry contradiction (FIXED, `src/services/agent-prompt.ts`).** Rust `browser::register()`
+  mounts SEVEN tools including `BrowserInspectElementTool`, but the system prompt said "you have exactly
+  six" and listed `browser_inspect_element` among tools "intentionally removed — do not try to call them".
+  So the model saw the schema advertised AND was told it doesn't exist. Fixed: six→seven, moved
+  `browser_inspect_element` into the read-only group, added it to the verification loop, and added an
+  explicit "where selectors come from" rule (derive from SOURCE via grep for id/data-testid/aria-label/
+  class/text — a screenshot is a picture and does not reveal markup; confirm with `browser_inspect_element`
+  before clicking; never retry a failed click with another guess). Display layers (`tool-display.ts`,
+  `activity.ts`, `ToolSettingsTab.tsx`) already knew the tool — ONLY the prompt denied it.
+- **B — no selector-discovery tool at all (FIXED with a NEW tool).** The agent's only page-observation
+  channel was `browser_screenshot` (base64 PNG + URL — no DOM, no element map), while
+  `inspect_element`/`click`/`fill` all REQUIRE a selector. Guessing was structurally forced.
+  Registering `BrowserGetDomTool` was NOT viable: it calls `require_label` with `label` REQUIRED in its
+  schema (targets a standalone `browser_open` window, not the right-rail panel), and non-`file_read` tool
+  results are clamped to 8 KiB (`conversation.rs:949`) so a 200 KB DOM arrives truncated mid-tag.
+  Added `browser_page_outline` instead (`tools/browser/mod.rs`): runs `PAGE_OUTLINE_JS` via
+  `eval_with_result` on AGENT_BROWSER_LABEL, returns visible interactive elements each with a selector
+  VERIFIED unique via `querySelectorAll(...).length === 1`. Selector priority `#id` → data-testid/name/
+  aria-label → `a[href]` → tag+class → id-anchored `:nth-of-type`; framework classes (`css-`/`sc-`/`ng-`)
+  skipped as build-unstable; no stable selector ⇒ emits `null` rather than a fragile path. Args:
+  `selector` (scope), `query` (text/id filter), `limit` (default 60, max 200). Read-only, no permission.
+- Also fixed: `BUILTIN_TOOL_COUNT` was **21 but the real total was 22** (browser bucket had grown to 7).
+  `builtin_tool_count_is_correct` would have caught it, but the lib-test binary can't launch here
+  (0xc0000139), so the drift sat unnoticed. Now 23 (9 + 6 + 8), with both asserts updated.
+- Frontend surfaces updated for the new tool: `tool-display.ts` ("Map Page Elements"), `activity.ts`
+  ("Mapping page"), `ToolSettingsTab.tsx` read-only group. Prompt rewritten to lead with
+  "NEVER invent a CSS selector — get it from `browser_page_outline`".
+- Verify: `cargo check` clean, `tsc -b` + eslint clean. NOT runtime-verified (needs `pnpm tauri dev`).
+
+## Task (2026-07-23): ONE browser — IDE browser tab + standalone OS windows REMOVED (uncommitted)
+User: "only one browser stays, the right-rail panel, all tools around it — no IDE browser, no separate
+window." Executed.
+- **Deleted files:** `components/editor/BrowserTab.tsx` (1306 lines, iframe + pop-out native window),
+  `components/layout/TitleBarBrowserButton.tsx` (adopt-a-window popover), `store/useBrowserWindowsStore.ts`.
+- **Rust `browser_runtime.rs::create_window` is EMBEDDED-ONLY.** The `embed: None` →
+  `WebviewWindowBuilder` branch (~4.9 KB incl. the per-window Destroyed listener) is gone; `embed` is now
+  required and its absence is an explicit error. Also removed the orphaned `WebviewWindowBuilder` import,
+  `BrowserWindowClosedPayload`, and the `aurora:browser-window-closed` contract (embedded webviews die with
+  the host; cleanup goes through `close`).
+  ⚠️ GOTCHA when editing this fn: `if let Some(embed) = &opts.embed {` appears TWICE — the FIRST is the
+  "window already exists → re-embed/navigate" early-return, the SECOND was the build branch. Naive
+  `str.index` hits the wrong one and silently unbalances the braces.
+- **Rust `tools/browser/mod.rs`:** deleted the 7 unregistered structs (`BrowserOpenTool`, `Close`,
+  `ListWindows`, `GetUrl`, `GetDom`, `WaitFor`, `Eval`) and the now-orphaned `extract_label` /
+  `resolve_label` / `require_label` helpers + `CreateBrowserWindow` import. Every struct in the file is
+  now registered — no compiled-but-unadvertised tier.
+- **Editor plumbing:** `Tab.type` is `'file'` only (`types/index.ts`), `adoptedBrowserLabel` gone;
+  `openBrowserTab`/`updateBrowserTab`/`OpenBrowserTabOptions` removed from `useEditorStore`; the four
+  now-vacuous `tab.type !== 'browser'` guards cleaned from TabBar/useCheckpointStore/useEditorStore/
+  useWorkspaceStore (tsc found them all — the union narrowing makes them compile errors).
+- **`browser-service.ts`** trimmed of exports the deletion orphaned: `browserWindowLabelFor`,
+  `onBrowserWindowOpened`/`Closed`, `BrowserWindowClosedEvent`, `BrowserWindowOpenedEvent`,
+  `clearInspectorSelection`, `activateStagewise`/`deactivateStagewise`, `readBrowserThemeTokens`.
+- **Left dormant on purpose:** Rust stagewise methods + their Tauri commands (no frontend caller now),
+  and the IDE chat's picked-element plumbing (`useChatStore.selectedElements`, `context-builder`) which
+  nothing populates without the IDE browser. Out of scope for this cut; flag before relying on either.
+- Verify: `cargo check` clean (no browser warnings), `tsc -b` clean, eslint 0 errors on touched files,
+  `vite build` clean, 199/199 tests across 36 files. NOT runtime-verified.
+
+## Browser: standalone OS-window mode — SCOPING (2026-07-23, superseded by the entry above)
+`BrowserManager::create_window` has TWO modes: `embed: Some(EmbedConfig)` builds a child webview pinned
+inside a host window, `embed: None` builds a standalone `WebviewWindowBuilder` OS window.
+- `BrowserPanel.tsx` (agent right rail) and the agent tools → ALWAYS embedded. Unaffected.
+- `BrowserTab.tsx:333` (`openNative`, IDE editor tab, 1306 lines) is the ONLY caller that omits `embed`
+  → it is the sole source of standalone OS browser windows. `TitleBarBrowserButton.tsx` lists those
+  windows and can "adopt" one back into a tab; `useBrowserWindowsStore` tracks them.
+User asked for the standalone OS window to be removed entirely — scope (kill only `openNative`+adoption,
+vs. delete the whole IDE BrowserTab feature) confirmed with the user before executing.
+
+## Task (2026-07-23): Browser picks become INLINE composer pills — DONE (uncommitted, FE-only)
+User: `@file` pills sit inline in the input (correct), but inspector picks appeared as a detached chip row
+ABOVE it (wrong). The composer already had the answer in its own comment — `/` directives were migrated
+inline earlier and the selection row was simply left behind, so the one attachment kind the user did NOT
+type was the one furthest from where they type.
+- `AgentComposer.tsx`: deleted the `.agw-sel-row` JSX. New module-level `buildSelectionPill(entry)` builds
+  a `.agw-pill-inline.agw-pill-sel` with `data-sel=<entry.id>`, mirroring `pickCommand`'s `data-cmd` pill.
+- Three-part contract, same as `/` pills: `serializeEditor` SKIPS `[data-sel]` (threaded via the store, not
+  the text) · `handleInput` reconciles store→DOM (backspacing a pill calls `removeSelected`, so it can't
+  ride along invisibly) · a `useEffect` on `selected` mirrors DOM←store for picks that arrive
+  asynchronously from the inspector (inserts missing, removes stale on `clear()` at send).
+- Insert point: at the caret ONLY when the composer already owns it, else `appendChild` — deliberately no
+  `el.focus()`, or picking a second element in the Browser panel would yank focus off the page mid-pick.
+- Placeholder gate is `blank && selected.length === 0`: `blank` is measured from the editor DOM, which the
+  async pill sync writes to OUTSIDE React, so a pick landing on an untouched composer would otherwise leave
+  the placeholder painted over the new pill. Checked against the store instead of adding `[data-sel]` to
+  `syncEmpty` — one mechanism per path, and it keeps the effect setState-free (repo lints
+  `react-hooks/set-state-in-effect` as an ERROR).
+- Removed now-dead `.agw-sel-row` / `.agw-sel-x` CSS; `.agw-sel-chip/-tag/-text` stay (transcript bubble).
+  NOTE: `.agw-cmd-row` / `.agw-cmd-chip` are also dead from the earlier `/`-inline migration — left alone.
+- **Backspace couldn't delete ANY pill** (pre-existing, all three kinds — the file header claimed
+  "backspace deletes a whole pill" but it never did; user had to Ctrl+A). Cause: `.agw-pill-inline` sets
+  `user-select: none`, so Chromium refuses to extend a selection over the atomic span and the native
+  "Backspace removes the widget" path silently no-ops. Fix: `deletePillBeforeCaret(root)` in
+  `AgentComposer.tsx` removes the pill before a COLLAPSED caret (element-container → `childNodes[offset-1]`;
+  text-node-at-offset-0 → `previousSibling`), wired into `handleKeyDown` after `typing.onKeyDown` (which
+  owns Backspace for correction-undo) and only for bare Backspace — Ctrl/Alt and range deletes stay native.
+  Calls `handleInput()` after, so the store reconcile detaches the command/pick.
+- **Right-click was dead in the composer**: `App.tsx`'s global `contextmenu` handler `preventDefault()`s
+  everything except INPUT/TEXTAREA/`.select-text`/`.markdown-content`. Hooks run before the
+  `if (isAgentWindow) return <AgentWindow/>` early return, so it applies to the agent window too, and the
+  composer is a contenteditable DIV. Added an `target.isContentEditable` allow.
+- Verify: `tsc -b`, eslint (agent-window: 0 errors), `vite build`, 76/76 tests. NOT visually verified —
+  caret/selection behavior and the context menu both need the real app.
+
+## Task (2026-07-23): Long-message bounding in the transcript — DONE (uncommitted, FE-only)
+Neither long-message surface was bounded, so a pasted spec ran the full height of the turn.
+Two DELIBERATELY different treatments (user's call):
+- **Mid-turn user message** (`.agw-injection`, the accent-bordered `user_injection` timeline row) → inline
+  scroller. `.agw-injection > span` gets `max-height: calc(1.45em * 9)` + `overflow-y: auto` +
+  `overscroll-behavior: contain` (so hitting the end doesn't chain-scroll the transcript) + `flex: 1 1 auto`
+  (stable right edge for the scrollbar). Added to the shared `agw-scroll-fade-b` selector list, so it
+  inherits the scroll-aware bottom fade — no fade at all when the text fits.
+- **User message bubble** (`UserBubble`) → clamp + chevron, NOT a scroller: a nested scroll area inside a
+  right-aligned bubble fights the transcript's own scroll. New `CollapsibleBubbleBody` wraps chips+text in
+  `.agw-bubble-body[data-collapsed]` (`max-height: calc(1.55em * 6)` + bottom mask fade) with a full-width
+  `.agw-bubble-more` chevron button underneath that rotates 180° when expanded.
+- Overflow detection compares `scrollHeight` against `computed line-height × 6`, NOT the usual
+  `scrollHeight > clientHeight` — that comparison goes false the moment the body expands, which would hide
+  the control needed to collapse it again. `useLayoutEffect` (pre-paint, else a long message renders full
+  height for a frame then snaps) + `ResizeObserver` for rail/dock width changes; falling back below the
+  clamp also resets `expanded`.
+- Verify: `tsc -b` + eslint clean; 59/59 agent-window component tests pass. NOT visually verified in the
+  running app — needs `pnpm tauri dev`.
+
+## Task (2026-07-23): MCP Streamable HTTP transport — DONE (uncommitted, needs Rust rebuild)
+User pasted `{"mcpServers":{"untitledui":{"httpUrl":"https://www.untitledui.com/react/api/mcp"}}}` and hit
+"SSE endpoint returned status: 405 Method Not Allowed". Two independent bugs:
+1. **Aurora only spoke legacy HTTP+SSE** (MCP 2024-11-05: GET → `endpoint` event → POST there). That endpoint
+   is **Streamable HTTP** (2025-03-26+): POST JSON-RPC at the single URL. Such servers answer a bare GET with
+   405 *by spec*, so it was never a URL/auth problem. Probed live: GET→405, POST initialize→200.
+2. **`httpUrl` was read nowhere in the codebase.** Both JSON importers did `raw.url ? 'sse' : 'stdio'`, so that
+   paste silently produced a stdio server with no command — no error, just a dead entry.
+- Rust: `McpTransportType::Http` (+ serde aliases `streamable-http`/`streamablehttp`/`streamable_http`);
+  `connect_http` + `http_actor` in `mcp/manager.rs` — POSTs every frame, `Accept: application/json,
+  text/event-stream`, carries `Mcp-Session-Id` (captured from the initialize response headers) and
+  `MCP-Protocol-Version` (mirrors whatever the server negotiates), decodes BOTH reply representations
+  (json body, or a `text/event-stream` scanned for the frame matching our id), treats 202 as Ok(Null),
+  and sends a best-effort DELETE on shutdown. `handshake()` now takes a `protocol_version` param
+  (legacy `2024-11-05` for stdio/sse, `2025-06-18` for http).
+- `mcp/config.rs`: `McpServerEntry` gained `transport` (alias `type`) + `http_url`; `resolve_transport()`
+  (explicit wins → `httpUrl`⇒http → `url`⇒sse → stdio) and `from_config()` which writes the transport
+  EXPLICITLY so a save/reload round-trip can't downgrade http→sse.
+- Frontend: `useMcpStore.ts` owns the shared `resolveTransport()`/`resolveServerUrl()` parsers (both settings
+  surfaces import them instead of duplicating); transport unions gained `'http'`; url/headers gating moved
+  from `=== 'sse'` to `!== 'stdio'` in BOTH `agent-window/settings/McpSettings.tsx` and
+  `components/modals/McpSettingsTab.tsx` (each has an add-form AND an edit-form copy — 4 sites total).
+- UX: agent-window segmented control is now `Stdio | HTTP | SSE` (short labels — 3 pills ellipsize in the
+  half-width `.agw-mcp-grid2` cell) with a per-transport hint line under the URL field reusing
+  `.agw-set-row-hint`; card subtitle names the transport ("Streamable HTTP" vs "HTTP+SSE"). Both 405 paths
+  now explain the fix instead of printing a bare status.
+- Verify: `cargo check` clean; 5 new config tests pass via standalone verify crate (main lib-test binary
+  still can't launch — 0xc0000139); `tsc -b` + eslint clean; live handshake replayed against untitledui
+  (initialize→session id, initialized→202, tools/list→7 tools, resources/list→ok). NOT yet verified in the
+  running app — needs `pnpm tauri:dev` restart.
+
+## Task (2026-07-21): OpenCode-style brand landing for new chat — DONE (uncommitted, FE-only)
+User: agent window's new-chat landing should show "aurora" the way OpenCode shows its ghost wordmark;
+then iterated: size OK but needs presence/depth; last "a" clips; nudge down; letters must feel like
+standing characters; move group a bit to the top.
+- `EmptyState.tsx`: "What should we build in X?" heading REPLACED by a giant ghost wordmark
+  (`aria-hidden`, span inside `.agw-home-wordmark`); group biased above centre via container
+  `padding-bottom: clamp(128px, 18vh, 200px)`; suggestions + per-project draft logic untouched.
+- `agent-window.css`: `.agw-home-column { container-type: inline-size }` + wordmark sized
+  `min(248px, 31cqi)` — cqi measures the PANE, fixing the last-"a" clip that vw sizing caused when
+  rails squeezed the conversation. Paint = rim-lit gradient (16%→8%→5% of `--agw-text`) clipped to
+  text + ::before overhead light pool + ::after floor contact shadow (0.38 dark / 0.12 light) = the
+  "standing characters" depth. NO drop-shadow filter: fill is 84-95% transparent so a behind-glyph
+  shadow bleeds through and silhouettes the letters (measured: lum 24 vs expected 50 at 16%).
+- Verified via pixel-measured puppeteer-core harness (Temp\opencode\wordmark-harness, Edge headless):
+  glyph lum 45→28 top→bottom vs bg 15; dark + light themes; tsc, eslint, postcss, 197/197 tests.
+
 ## Task (2026-07-20): Rust-owned left-rail context actions — COMPLETE
 - [x] Inspect current project/chat context menus and the existing Rust command/service boundaries.
 - [x] Add native project actions: reveal in file manager and open a terminal at the project root.
@@ -1689,3 +2100,501 @@ the OUTER `.agw-shell-side` animates `width` (right-pinned inner revealed by its
 - Verified: tests+tsc clean; live screenshot shows active chat row pill clearly against user's #121212 frame.
 - Follow-up: rail search box + Team button painted var(--agw-canvas) (melts into rail when frame == canvas) and dock/terminal tab pills were transparent at rest. Added --agw-state-quiet (5% text-mix) companion token; applied to rail search, .agw-rail-team, .agw-tabpill, .agw-term-pill. Resting-control tier now: quiet 5% → hover → selected 9%. Verified live.
 - Follow-up: dock "Filter files" box (.agw-files-search) + .agw-br-address (browser address / settings search) moved from absolute --agw-surface to --agw-state-quiet. Appearance page reshaped for accuracy: groups reordered (Content sheet → Window frame rail&dock → Composer → …), conversation relabeled "Sheet fill", rail hint documents titlebar/gutters follow it, Text group documents derived selection states, surfaceElevated hint notes selected rows/tabs no longer use it. No hardcoded colors anywhere — all var()/color-mix over tokens.
+
+## 2026-07-21 — Agent Window end-to-end theme/CSS audit (mapping only, no edits)
+
+Scope: mapped every agent-window surface, its token pipeline, and audited agent-window.css.
+
+**Pipeline (verified, single path, no ambiguity):**
+`themes.ts` (39 tokens, agentDark/agentLight literals) → `useAgentThemeStore` (activeThemeId + per-theme `customizations` + contrast, persisted `aurora-agent-window-theme`) → `resolveAgentTheme()` (base → overrides → `applyContrast`) → `tokensToCssVars()` (camelCase → `--agw-kebab`) → `AgentThemeProvider` applies as INLINE style on `.agw-root` + sets `data-appearance/-translucent/-reduce-motion`. Only `AgentWindow.tsx` mounts it; only `AgentThemeProvider` imports the CSS.
+
+**Why the CSS is ~10k LOC (9,928):** NOT duplication (only 8 duplicated selectors) and NOT hardcoded colour sprawl (29 hex literals total, mostly legit #000/#fff in masks/color-mix). It is monolithic-by-design: ONE global stylesheet, ONE import site, 1,318 selector blocks / 1,310 distinct, serving ~60 components across 35+ class families (.agw-rail 95, .agw-prov 92, .agw-set 90, .agw-model 66, .agw-atlas 65, .agw-mcp 59, .agw-skill 51 …). Settings/provider/MCP/skills/atlas chrome is roughly half the file. There is no CSS-module or per-component co-location anywhere in src/agent-window.
+
+**Real token mismatches found (all still present, NOT fixed in this pass):**
+1. `--agw-font-mono` referenced 4x (agent-window.css 8553/8660/8705/8753, Catalog/skills section) — token does not exist; real one is `--agw-font-code`. Falls back to `ui-monospace`, so the user's Appearance "Code font" silently does not apply there. 44 other sites correctly use `--agw-font-code`.
+2. `--agw-bg` at line 2874 (`.agw-tool-shot-img` background) — not a token, not declared, NO fallback → resolves to nothing. Screenshot thumbnails get a transparent backdrop.
+3. Scrollbars: `src/index.css` styles `*` / `::-webkit-scrollbar-*` from the IDE's `--aurora-common-*`. The agent window only escapes this where markup opts into `.agw-scroll` (41 usages). `.agw-diagram-error pre`, `.agw-canvas-body > .agw-tool-result`, `.agw-img-stage` do NOT opt in → they render IDE-themed scrollbars, ignoring the Appearance "Scrollbar"/"Scrollbar hover" tokens.
+4. `.agw-root[data-translucent]` (8351-8352) redeclares `--agw-rail`/`--agw-dock` as `color-mix(surface 55%)`. Turning on "Translucent sidebar" silently discards whatever the user picked in the per-region Left rail / Right dock colour pickers.
+5. Tailwind utilities leak into 3 agent-window files (AgentComposer.tsx 831/916/944/957/998, PreferencesSettings.tsx 261/278/310, SkillsSettings.tsx) despite README's "`--agw-*` ONLY, no Tailwind" rule.
+
+**Coverage state:** Appearance UI exposes ALL 39 tokens (quick controls + 7 REGION_GROUPS + radius presets + fonts). `appearance-token-coverage.test.ts` passes (4/4) but guards only token→consumer; the REVERSE direction (a `var(--agw-*)` in CSS with no matching token) is unguarded — that's exactly how findings 1 and 2 survived. 21 CSS-local vars (`--agw-fs-*`, `--agw-set-*`, `--agw-popover-surface`, `--agw-state-*`, `--agw-mode-mask`, `--agw-modal-blur`) are derived/structural and intentionally not user-themeable.
+
+### Same session — fixes applied
+
+CSS/token fixes (all in agent-window.css unless noted):
+1. `--agw-font-mono` (4 sites) → `var(--agw-font-code)`. Appearance "Code font" now reaches the skills/catalog counters.
+2. `.agw-tool-shot-img` `--agw-bg` → `var(--agw-surface)` (matches its button frame; was resolving to nothing).
+3. Scrollbars: added a blanket `.agw-root, .agw-root *` + `.agw-root *::-webkit-scrollbar-*` rule that reclaims the subtree from index.css's IDE-themed `*` rules. Deliberately placed FIRST in the file (before `.agw-jumprail`) — `.agw-root *` is (0,1,0), the same specificity as a single class, so later `scrollbar-width: none` rules still win and can hide their bars. **Do not move it below them.** Fixes the 3 known unthemed containers AND every future one.
+4. Translucent sidebar: introduced `--agw-rail-paint` / `--agw-dock-paint` aliases (default `var(--agw-rail)` / `var(--agw-dock)`); `[data-translucent]` now writes the ALIAS as `color-mix(<user's own rail/dock> 55%, transparent)` instead of redeclaring the token. Enabling translucency keeps the user's chosen frame colour. All 7 frame paint sites moved to the aliases. Also extended the backdrop-blur to titlebar/canvas/prov-side (was settings-nav only).
+5. Tailwind removed from the module (README says `--agw-*`/plain-CSS only). New real rules: `.agw-composer-band`, `.agw-composer-actions-row`, `.agw-composer-actions`, `.agw-composer-speech`, `.agw-composer-dock`, `.agw-set-field-row`, `.agw-set-inline-row`; `.agw-ce-wrap` absorbed `px-3 pb-2 relative`. Touched AgentComposer.tsx (5), ConversationPane.tsx (1), PreferencesSettings.tsx (3). Those classes previously had NO CSS — Tailwind was doing all their layout.
+6. Skills card: removed `transform: translateY(-1px)` hover lift (and dropped `transform` from its transition). Hover now reads through border+background only.
+
+Audit re-run: orphan `var(--agw-*)` 3 → 1 (`--agw-rail-anim`, legitimately set inline by AgentShell.tsx:223). Zero shadowed tokens remain.
+
+**`agw` / `aurora --agent` chats invisible in the left rail — ROOT CAUSE + FIX:**
+Chain: cli.rs documented "Path is ignored" for `--agent` → lib.rs built the window as `WebviewUrl::App("agent-window")` with **no `?ws=`** → `AgentWindow.tsx:30 readProjectRootFromUrl()` returns null → `init(null)` → `projectRoot = null` → `useAgentChatStore` line ~623 `createThread(title, null)` persists `workspaceRoot = null` → `LeftRail.tsx:490` builds its project tree with `if (t.workspaceRoot) set.add(...)`, so a null-root chat gets **no project bucket and renders nowhere**. The pencil-icon path works because the window already carries a projectRoot. The chat was always saved correctly — only unrenderable.
+Fix: new `CliArgs::agent_workspace_root()` (cli.rs) = resolved path arg, else `current_dir()`, normalized; new dependency-free `cli::encode_query_component()` mirroring JS `encodeURIComponent`; lib.rs now builds `agent-window?ws=<encoded>`, matching the shape `agentWindowUrl()` in agent-window/adapters/window.ts already produced. Stale "Path is ignored" help text corrected.
+
+Verified: `npx tsc --noEmit` clean; `pnpm vitest run src/agent-window` 17 files / 74 tests pass. **Rust NOT compiled by me** — user was running `pnpm tauri dev` and held the cargo lock; the `agw` fix needs a rebuild + a real `agw` run in a project dir to confirm end-to-end.
+
+### Same session — tool-result surface mismatch (multi_file_read vs file_read)
+
+User saw a multi-file read render in a different colour than a single read below it in the same transcript.
+
+Cause: `.agw-rv` (the shared framed tool-result container used by Grep / Shell / FileList / WorkspaceTree / MultiFile / diffs) paints `--agw-code-surface` and expects its body to be transparent — which is exactly what `.agw-rv-body` does. But `.agw-multi-read` (the body used by multi_file_read AND the diff branch of ToolResultView) wrapped a `pre.agw-tool-result` that painted its OWN `--agw-surface`, inset by 8px. Result: two different greys stacked, plus square inner corners vs the rounded bare view. Meanwhile a SINGLE file_read falls through `ToolResultView` to bare `ToolCode` → `pre.agw-tool-result` → `--agw-surface`. So framed views were code-surface and bare views were surface.
+
+Fix (both halves needed — either alone leaves a mismatch):
+1. `.agw-tool-result, .agw-diff` background `--agw-surface` → `--agw-code-surface`. This is what Appearance → "Code & chips → Code fill" is documented to govern ("fenced code blocks, inline code panels, and tool output code"); `--agw-surface` is documented as "resting cards / hover fills / inset panels". Bare single reads now match the framed views. `.agw-diff-added` / `.agw-diff-removed` still override with their own semantic fills, so diffs are unaffected.
+2. `.agw-multi-read` dropped its 8px inset and its child `.agw-tool-result` is now `background: transparent` — same one-surface contract as `.agw-rv-body`.
+3. Added `.agw-multi-read .agw-diffview { border:0; border-radius:0; background:transparent }` — the diff branch shares `.agw-multi-read`, and `.agw-diffview` carries its own border + radius-md + code-surface, so removing the inset would otherwise have produced a bordered box flush inside a bordered box.
+
+Rule to keep: inside `.agw-rv`, the FRAME owns border + radius + surface; bodies stay transparent. Verified: 20 tests pass (theme + tool-views).
+
+### Same session — shell card banding (`.agw-shell-command`)
+
+User: the Run Command expanded card renders in three differently-coloured horizontal bands.
+
+Cause: inside `.agw-rv` (frame = `--agw-code-surface`), `.agw-rv-head` and `.agw-rv-body` are both transparent, so they show the frame. `.agw-shell-command` was the ONLY band painting its own `background: var(--agw-surface)`. Since `--agw-surface` and `--agw-code-surface` are edited INDEPENDENTLY in Appearance, that band can land lighter, darker, or identical to the frame depending on the user's theme — the banding was unpredictable, not designed.
+
+Fix: `.agw-shell-command` → `background: var(--agw-state-quiet)` (the existing text-derived 5% tint). It now always reads as exactly one subtle step up from whatever the frame colour is, on any theme. Same precedent as the earlier --agw-state-selected / --agw-state-quiet work.
+
+`.agw-shell-trim` deliberately keeps `--agw-removed-surface` — that band is a semantic warning, not chrome.
+
+General rule now holding across the module: inside `.agw-rv`, the frame owns the surface; bands that need separation use a DERIVED tint (`--agw-state-*`), never an independently-themeable absolute surface token. Verified: 17 files / 74 tests pass.
+
+### Same session — shell card dressed to match the file-read card (user request)
+
+Follow-up to the banding fix above: user asked the shell dropdown to look identical to the read dropdown. This SUPERSEDES the `--agw-state-quiet` choice made one step earlier — read has no tinted band at all, so matching it means no fill, not a better fill.
+
+Changes:
+- `.agw-shell-command` background `--agw-state-quiet` → `transparent`. Separation is now a hairline `border-bottom` only, the same device `.agw-rv-head` uses. The accent `$` sigil + bold command text carry the emphasis without a band.
+- `.agw-shell-out` metrics aligned to `.agw-tool-result` (the file-read body): padding `6px 10px` → `8px 10px`, font-size `--agw-fs-label` → `--agw-fs-ui`, line-height `1.55` → `1.5`.
+- Added `.agw-rv-body:has(> .agw-shell-out) { padding: 0 }`. `.agw-rv-body` carries `4px 0` for the ROW-style views (grep / file list / tree); shell output is a single `<pre>` that owns its inset, so the two stacked and made the shell card taller than an equivalent read. `:has()` is safe here — the file already relies on `color-mix`, `scrollbar-gutter` and `animation-timeline: scroll()`.
+
+Result: both card types are now one frame surface top-to-bottom, rows divided by hairlines, identical type + inset. `.agw-shell-trim` still keeps `--agw-removed-surface` (semantic warning band, intentionally distinct).
+
+Verified: 17 files / 74 tests pass; token audit unchanged (1 orphan, the legitimate inline `--agw-rail-anim`).
+
+### Same session — send button felt cheap vs peer apps (Kimi comparison)
+
+User compared Aurora's send disc to Kimi's and asked why ours looks cheap. Four compounding causes, in order of impact:
+
+1. **No hierarchy (the big one).** `.agw-send` was `28x28` — the EXACT size of `.agw-icon-btn` (also 28x28), its neighbours in the action row (attach / reasoning / mic). Five equal-weight icons, no primary. Kimi's send disc is visibly larger than everything around it. Size is the hierarchy. → 32x32 + `flex-shrink: 0`.
+2. **No hover state at all.** Every colour was an INLINE style on the element (`style={{ background: isEmpty ? ... }}`), so `:hover` / `:active` / `:focus-visible` could not express anything. The button was inert on pointer-over. → all state colour moved into CSS; inline styles removed from both the send and stop branches.
+3. **Near-invisible rest state.** Disabled used `--agw-control-muted` (~8% white) on the composer surface — a barely-there smudge that reads as broken rather than waiting. → `--agw-state-selected` (text-derived tint, stays visible on any composer colour the user themes) + `--agw-text-muted` glyph.
+4. **Undersized, thin glyph.** 15px icon at strokeWidth 2/2.3 inside the disc. → 17px at a constant 2.4.
+
+Also added: subtle resting `box-shadow` (a flat disc on a flat panel reads as a sticker), accent-hover fill + accent-tinted glow on hover, and `:focus-visible` ring.
+
+Note the disabled fill CANNOT be `--agw-surface-elevated` — that's `#2e2e2e`, identical to `composerSurface`, so the disc would vanish into the composer it sits on. Derived tint is required here.
+
+Verified: `npx tsc --noEmit` clean; 17 files / 74 tests pass.
+
+### Same session — send button, second pass (contrast, not effects)
+
+First pass (size 28→32, shadow, accent glow, hover) did NOT satisfy — user still felt it lacked premiumness. Correct diagnosis on the retry:
+
+**The variable that matters is LUMINANCE CONTRAST, not size or effects.** `--agw-accent` is a mid-luminance blue (~45%) on a ~10% panel — it cannot pop no matter how large it is or what shadow it carries. Kimi/ChatGPT/Claude all converge on a near-white disc on dark (~90% vs ~10%).
+
+Changes:
+- Fill `--agw-accent` → `var(--agw-text)`; glyph `--agw-on-accent` → `var(--agw-conversation)`. The foreground token is BY DEFINITION the highest-contrast value in the theme, so this yields a near-white disc on dark and near-black on light automatically — derived, theme-aware, nothing hardcoded. **Revert path: swap those two lines back to --agw-accent / --agw-on-accent; nothing else depends on it.**
+- REMOVED the drop shadow and the accent hover glow added in the first pass. On a dark panel a dark shadow is invisible and only muds the edge; a coloured glow reads as gamer-RGB, the opposite of premium. Restraint is the cue.
+- Hover is now `opacity: .88 + scale(1.04)` (a recolour can only reduce contrast once the fill is already maximal). Active `scale(.9)` → `.94` — 0.9 was a cartoonish squash; premium micro-interaction stays under ~6%.
+- Glyph strokeWidth 2.4 → 2.6: a DARK glyph on a LIGHT disc reads optically thinner than the reverse.
+- Focus ring gap uses `--agw-composer-surface` (what the disc actually sits on), not `--agw-conversation`.
+- Size 32 → 34 (siblings are 28).
+
+Lesson: when something "looks cheap", check luminance contrast and effect restraint BEFORE adding size/shadow/glow. Adding effects made it worse in pass one.
+
+Verified: tsc clean; 17 files / 74 tests pass.
+
+### Same session — model selector: selected model duplicated its highlight
+
+User report: the selected model rendered highlighted in the Recent strip AND again in its provider group, so the menu looked like it had multiple selections.
+
+**Process note (my mistake):** on the first pass I misread this as a general "the selector looks bad" complaint and restyled the reasoning switches, effort chips and row heights without being asked. User told me to revert. All of that was reverted; ONLY the requested change stands. Lesson: when a report names a specific symptom, fix that symptom — do not expand scope into an unrequested redesign.
+
+Restructure implemented (ModelSelector.tsx):
+- New `selectedRow` memo derived from `filtered` — the selected model is lifted into its own **"Selected"** section rendered first in the list.
+- `groups`: `continue`s past the selected id when bucketing, so it no longer appears under its provider. A provider group left empty as a result is simply not emitted.
+- `recentRows`: filters out the selected id (and gained `selectedModel` in its dep array).
+- Result: the selected model appears EXACTLY once, at the top, and is the only row carrying `data-active`.
+
+Also kept from the earlier pass (user explicitly asked for it): provider name renders INLINE inside `.agw-model-nameline` instead of as a subline, so Recent rows are the same height as provider-grouped rows. `.agw-model-sub` got `flex: 0 1 auto; min-width: 0` so it yields/truncates before the model name does.
+
+Deriving `selectedRow` from `filtered` (not `options`) keeps search behaviour consistent — the Selected section only shows when it matches the active query.
+
+Verified: tsc clean; 17 files / 74 tests pass.
+
+### Same session — context tooltip unified with the model selector surface
+
+User asked why the model selector and the context-usage tooltip show different colours, then asked to make the tooltip match.
+
+Both already referenced the SAME token (`--agw-popover-surface` → `--agw-surface-elevated` → `#2e2e2e` dark), but rendered differently:
+- `.agw-menu` (model selector): `color-mix(--agw-popover-surface 78%, transparent)` + `backdrop-filter: blur(24px) saturate(140%)` — translucent glass.
+- `.agw-ctx-card`: `background: var(--agw-popover-surface)` — fully OPAQUE, no blur.
+
+Its own comment claimed it "shares the popover role token ... one surface for the whole family" — true at the token level, false at the rendered level. Same token ≠ same surface when one member applies glass and the other doesn't.
+
+Fix: `.agw-ctx-card` added to the `.agw-menu` selector (and to the `@supports not (backdrop-filter)` opaque fallback), and its own `background` / `border` / `box-shadow` declarations REMOVED so it inherits the one shared recipe. Its later block keeps only what makes it distinct: `min-width`, `padding`, `border-radius: var(--agw-radius-md)` (tighter than the family's radius-lg) and its own `agw-ctx-pop` entry animation. Those override correctly because the ctx-card block sits later in the file at equal specificity.
+
+Key rule: do NOT re-declare `background` in `.agw-ctx-card` — that is exactly what broke it away from the family.
+
+Verified: 17 files / 74 tests pass.
+
+### Same session — hover fill too weak on popovers (context menu + model selector)
+
+User: hover fill on the left-rail right-click menu and the model selector reads much weaker than on the rail itself, and correctly guessed the cause — "cuz its lil bit brighter then left rail".
+
+**Root cause is perceptual, not a missing rule.** `--agw-hover` is a flat overlay (`#ffffff0a`, 4% white) applied identically on every surface. Perceived lift tracks the RATIO to the base, not the absolute delta (Weber's law):
+- rail `#161616` (22): 22 + .04x233 ≈ 31 → **+42%** relative lift
+- popover `#2e2e2e` (46): 46 + .04x209 ≈ 54 → **+18%** relative lift
+
+Same overlay, less than half the felt change on the brighter ground. Both `.agw-rail-menu` and `.agw-model-menu` are `.agw-menu`, which sits on `--agw-surface-elevated`.
+
+Fix — `--agw-hover-paint` alias (same pattern as `--agw-rail-paint` / `--agw-dock-paint`):
+- `.agw-root { --agw-hover-paint: var(--agw-hover) }` — the default, unchanged behaviour everywhere.
+- All **77** hover call sites swapped from `var(--agw-hover)` → `var(--agw-hover-paint)` (global replace). `--agw-hover` is now referenced ONLY in the two alias definitions.
+- `.agw-menu, .agw-ctx-card` re-point the alias to `color-mix(--agw-hover 50%, color-mix(--agw-text 14%, transparent) 50%)` → alpha .04 → **.09 (2.25x)**, giving ~+37% relative lift on `#2e2e2e`, matching the rail's +42%.
+
+Crucially the boost is MIXED WITH the user's own `--agw-hover` rather than replacing it, so Appearance → "Hover fill" still works inside menus — it's amplified, not overridden. (Contrast with the old `[data-translucent]` bug, which replaced tokens outright and discarded user choice.)
+
+Because it re-points a CSS variable on the popover ROOT, every row type inside (menu items, model rows, mention / command / context rows) inherits the boost with zero per-selector edits.
+
+Verified: token audit shows no new orphans; 17 files / 74 tests pass.
+
+### Same session — why "Elevated surface" moved the tooltip but not the model selector / rail menu
+
+User edited Appearance → Elevated surface, saw the context tooltip change but NOT the model selector or the rail right-click menu, and asked whether that's intended.
+
+Answer: **two of the three were intended, one was a bug.**
+
+There is a deliberate "composer family" rule (agent-window.css ~7890) that re-tints certain popovers from `--agw-composer-surface` instead of `--agw-popover-surface`, so the composer input and the pickers it opens stay one colour:
+- `.agw-model-menu`, `.agw-reason-menu`, `.agw-mention` → **correct**, these are composer children.
+- `.agw-ctx-card` / other menus → `--agw-popover-surface` → `--agw-surface-elevated`, so the tooltip responding to Elevated surface is **correct**.
+- `.agw-rail-menu` was ALSO in that list → **BUG**. The left-rail right-click menu has nothing to do with the composer, yet "Composer → Input fill" recoloured it while "Elevated surface" (whose hint promises it covers popover menus) did nothing. Removed from the composer-family rule and its `@supports` fallback; it now follows the popover family.
+
+Also corrected the misleading Appearance hints that caused the confusion:
+- "Elevated surface" now names the context tooltip AND states that the composer's own pickers follow Input fill instead.
+- "Input fill" now states it also covers the model / reasoning / @ / pickers.
+
+Note `.agw-mention` carries BOTH `agw-menu` and `agw-mention` in markup (AgentComposer.tsx:750,781), so it picks up the shared glass + hover boost and only overrides the tint. Its own block redundantly restates blur/border/radius/shadow — harmless, but it is duplication that could be folded into the shared popover rule later.
+
+Verified: tsc clean; 17 files / 74 tests pass.
+
+### Same session — popover translucency made "same token" != "same colour"
+
+User: the rail context menu and the context-usage tooltip still don't match, even after both were put on the same shared rule.
+
+They were right, and the CSS was NOT the problem — declarations were byte-identical (`.agw-rail-menu` carries only `padding: 6px`; `.agw-ctx-card` only sizing/radius/animation; both inherit the shared `.agw-menu` rule).
+
+**Cause: `backdrop-filter` + a 78% tint means rendered colour = 78% token + 22% BACKDROP.** The two popovers sit over different things:
+- rail context menu → over the rail (`#161616`) → ~`#292929`
+- context tooltip → rendered from `ConversationPane.tsx:337`, so it floats over the conversation sheet (`#0f0f0f`) → ~`#272727`
+
+`saturate(140%)` and the blur sampling nearby text/borders widen it further. Translucent surfaces can never be guaranteed to match — that is inherent, not a bug.
+
+Asked the user to choose (opaque / near-opaque+blur / keep glass). **They chose near-opaque with blur retained.**
+- `.agw-menu, .agw-ctx-card`: 78% → **95%**
+- composer family (`.agw-model-menu, .agw-reason-menu, .agw-mention`): 76% → **95%**
+
+Backdrop now contributes ~5%, so the difference is imperceptible while the panels still read as floating/blurred.
+
+Other popovers already opaque on `--agw-popover-surface` (lines ~5358, 5499, 5911) were left alone.
+
+Rule going forward: if two surfaces must provably match, they cannot be meaningfully translucent. Verified: 17 files / 74 tests pass; audit clean.
+
+### Same session — fonts: variable Inter + bundled JetBrains Mono
+
+Two font problems found while answering "are we using any fonts for agent window":
+
+1. **`font-weight: 650` (16 uses) and `550` (1) were dead.** `@fontsource/inter` is the STATIC package (400/500/600/700 only). Per CSS font matching, a requested weight >500 searches upward first, so 650 rendered as **700** and 550 as **600** — the intended half-steps never existed.
+2. **JetBrains Mono was named but never shipped.** `fontCode` listed it first, but no package provided it, so any machine without it installed silently fell back to Cascadia Code.
+
+Fixes (user chose variable Inter + embedding the fonts):
+- `pnpm add @fontsource-variable/inter @fontsource/jetbrains-mono`
+- `AgentThemeProvider.tsx`: the four static Inter imports replaced by `import "@fontsource-variable/inter"`; added `@fontsource/jetbrains-mono/400.css` + `600.css`.
+- **`themes.ts` `fontUi` MUST lead with `"Inter Variable"`** — that is the family name @fontsource-variable registers, and it is NOT interchangeable with `"Inter"`. Leaving `"Inter"` first would match the IDE's still-installed static face and silently snap weights again, exactly reproducing the bug. Plain `"Inter"` kept as a following fallback.
+- Appearance `UI_FONT_SUGGESTIONS[0]` updated to the same string.
+
+Weight choice rationale: Inter needed the variable axis (650/550 in use). Code font uses ONLY 400 and 600 — both real static weights, no snapping — so static JetBrains Mono is correct there; a variable cut would have forced a `"JetBrains Mono Variable"` family rename for no benefit.
+
+Measured payload (latin woff2): variable Inter **48,256 B** replacing 4 statics at ~23.7 KB each (~95 KB) → net smaller AND all weights. JetBrains Mono 400 = 21,168 B, 600 = 21,860 B. Note this is a TAURI DESKTOP app — fonts load from disk, so bytes affect installer size only, not runtime.
+
+Licensing: Inter and JetBrains Mono are both SIL OFL 1.1; bundling/redistribution inside an application is expressly permitted.
+
+The IDE (`src/main.tsx`) still imports static Inter 400/500/600 + Manrope — intentionally untouched, separate family, no conflict.
+
+**Caveat:** a user who already customised "UI font" in Appearance has a persisted override containing the old `"Inter", ...` string; they keep the static face (and the weight snapping) until they reset or pick the new suggestion.
+
+Verified: tsc clean; 17 files / 74 tests pass.
+
+### Same session — dynamic starter prompts (PLAN written, not implemented)
+
+User wants EmptyState's 4 hardcoded starters replaced by per-project, model-generated ones. Plan written to **DOCS/agent-window-starter-prompts.md**.
+
+Investigation of the existing "assist" family first (all four share one engine):
+- **Chat titles have THREE modes** — off (Rust heuristic `derive_thread_title`) / local (llama.cpp) / cloud (own baseUrl+model+key). I initially said "no model at all" after reading only `title.rs` and was corrected — `runLocalTitle` exists and `PreferencesSettings.tsx:388` has the tri-mode segmented control.
+- Prompt refine ✦, dictation cleanup, reply suggestions: local llama.cpp only, sharing `llamaDir`/`modelPath`/`device` from `useAgentRefineStore`.
+- Speech = Qwen3-ASR (Rust/candle) → `runDictationCleanup`.
+- All local tasks live in ONE module `src-tauri/src/prompt_refine/mod.rs`: each task = `*_SYSTEM` const + input cap + n_predict + sanitizer. `suggest_replies` already returns `Vec<String>` with quality filters — the natural template for a 5th task.
+
+Session persistence inventory (asked "what else besides jsonl + meta json"): **three** sidecars per thread under `<app_data>/agent_v2/` — `{id}.jsonl`, `{id}.meta.json` (SessionMetadata: title, workspace_root, model, token/context usage, pinned, archived_at, timestamps), and `{id}.rich.jsonl` (RichToolResult: tool_use_id, tool name, UI payload). Per-project team brain at `~/.aurora/projects/<slug>/`. Plus SQLite (workspace_state, editor_state, explorer_state, checkpoints, semantic_indexes) and 7 persisted zustand stores + 6 raw localStorage keys.
+
+**Key correction made to the user's proposal:** starters cannot live in `meta.json` — that file is per-THREAD; starters are per-PROJECT. Plan puts them in `~/.aurora/projects/<slug>/starters.jsonl` (append-only pool) + `starters.state.json` (rotation cursor + fingerprint), reusing `paths::team_projects_dir()`.
+
+Design decisions in the plan: model NEVER called on open (only on refresh click); shown row is always composed 2 pool + 1 derived + 1 static so ≥50% is project-grounded even with an empty pool; a no-LLM `derived` generator from open tabs / thread titles / git branch / package scripts; auto-seed once ONLY in local mode (free, on-device) never in cloud mode; path validation against `loadFileIndex()` to kill hallucinated file refs; dedup by normalised prompt hash; pool capped at 40; staleness shown as a dot on refresh, never auto-regenerated.
+
+### Same session — starter-prompt smoke harness (scratch/smoke_starters.py)
+
+Built a sibling of `scratch/smoke_suggest.py` for the planned starter prompts, using Aurora IDE itself as the project. Same raw-ChatML invocation as the Rust pipeline, real context (package.json scripts, top-level dirs, git branch + commits, README prose, session titles), 4 candidate system prompts x 3 runs, scored on parsed / grounded / **bad paths**.
+
+**Two bugs the harness caught before any feature code was written:**
+1. Session sidecars are serialized **camelCase** (`workspaceRoot`, `updatedAt`, `archivedAt`) despite the Rust struct being snake_case — there is a `rename_all` on `SessionMetadata`. Reading snake_case yields ZERO titles and looks like "no history" rather than a bug. Any future consumer of `sessions/*.meta.json` must use camelCase.
+2. README badge rows / shields.io URLs / centering `<div>`s dominate the context AND poison the grounding vocabulary with words like `img`, `shields`, `badge` — junk starters then score as "grounded". Must strip markdown images/links + HTML before use.
+
+**Finding: this repo has 0 agent chats against it.** All 289 sessions belong to other workspaces (`aurora-testing` 32, `gadget-and-power`, etc.), so the default run exercises the COLD-START path. `ROOT` is overridable via argv[1] to test the warm path.
+
+**Results (avg of 3 runs each, Qwen3.5-0.8B):**
+
+| prompt | parsed | grounded | bad paths |
+|---|---|---|---|
+| S1-direct (prose) | 4.0/4 | 3.3 | **0.3** |
+| S2-playbook (instructions) | 1.7/4 | 1.7 | 0.0 |
+| S3-fewshot `label \| prompt` | 4.0/4 | 3.0 | 0.0 |
+| S4-fewshot + no-paths clause | 4.0/4 | 3.0 | 0.0 |
+
+Conclusions carried into the design:
+- **Path validation is mandatory, confirmed empirically.** S1's first run invented `src/src-tauri/src/main.rs` on ALL FOUR starters — an entire dead row. Banning paths outright (S4) cost nothing in grounding, so the system prompt should forbid file paths AND the validator should stay as a second line of defence.
+- **Few-shot >> instruction playbook for a 0.8B model.** S2 (categorised playbook, no examples) scored 1.7/4 and frequently echoed its own category headers ("UNDERSTAND:", "FIX:") as prose. S3/S4 with two worked examples hit 4.0/4 every run.
+- **Structured `label | prompt` output IS reliable** at this model size (4.0/4) — answers the plan's open question. The model can produce the button label; we do not need to derive it.
+- **Format placeholders must use a real digit.** Writing `N. <label> | <prompt>` made the model emit a literal `N.` prefix on every line; changing it to `1. <label> | <prompt>` fixed it. Small models copy the spec verbatim.
+- **The grounding metric has false positives** — word overlap is not correctness. S1 scored 4.0 "grounded" while claiming `src` holds the Rust backend (it is React; `src-tauri` is Rust) and suggesting the user *create* a directory that already exists. A vocabulary check cannot catch a wrong claim; only path/script existence checks can.
+
+Recommendation: ship **S4** (few-shot, structured, explicit no-paths) as `STARTER_SYSTEM`.
+
+### Same session — starter smoke, WARM path (project with real chat history)
+
+Ran `scratch/smoke_starters.py "E:\PIANOROLL-STUDIO-BACKEND-NEW-APP\AURORA-MELODY-INFRUSTRUCTURE"` (16 sessions → 8 recent chat titles in context). Results differ sharply from the cold-start run and exposed **two failure modes the original metric was actively rewarding**.
+
+**1. Chat-title regurgitation (the big one).** With history in context, the model re-offers conversations the developer ALREADY had, sometimes verbatim. S1 run 1 returned 4/4 echoes — "Audit the END-USER PURCHASE + ACCOUNT JOURNEY", "Give me a high-level tour of this project", and "Scale and Key Selector Design" (not even a prompt — a noun-phrase title copied straight out). The grounding metric scored this **4.0/4** because copying maximises word overlap. Added an `echoed` metric (≥70% content-word overlap with any recent title).
+
+**2. Few-shot example leakage.** S4 produced "Finish the storefront checkout retry fix" and "Run the migration script" on a project with no checkout, retry, or migrations — copied from the shopfront example in the prompt. Added a `leaked` metric (tokens present only in the few-shot examples and absent from real project vocab).
+
+**Warm-path scores (3 runs each):**
+
+| prompt | parsed | grounded | bad paths | echoed | leaked |
+|---|---|---|---|---|---|
+| S1-direct | 3.7/4 | 3.3 | 0.0 | **2.7** | 0.0 |
+| S2-playbook | 2.7/4 | 2.3 | 0.0 | 1.7 | 0.0 |
+| **S3-fewshot** | 3.0/4 | 2.7 | 0.0 | **0.7** | 0.0 |
+| S4-nopaths | 3.3/4 | 2.0 | 0.0 | 0.7 | 0.3 |
+
+**Cold vs warm flips the ranking.** Cold start: S1 looked best on raw numbers but invented paths (4/4 dead in one run). Warm: S1 collapses to 2.7 echoes/run. S3 is the only candidate that is acceptable on BOTH — never invents paths, lowest echo rate, no example leakage.
+
+**Design consequences (update DOCS/agent-window-starter-prompts.md before implementing):**
+- `STARTER_SYSTEM` must explicitly instruct: propose the NEXT step, never restate a past chat. Recent titles are context for what the developer cares about, not a menu to copy.
+- Add an `echoed` filter in the Rust sanitizer — reject any candidate with ≥70% content-word overlap against the recent-title list. Cheap and deterministic.
+- Few-shot examples must use a domain far from any plausible real project, or be filtered by an example-token blocklist. The shopfront/checkout example bled into a music-plugin project.
+- **Never trust word-overlap grounding alone** — it rewards both regurgitation and example-copying. Always pair it with echo + leak + path-existence checks.
+
+Leading candidate remains **S3** (few-shot, structured `label | prompt`), with an added anti-echo clause and an echo filter to test next.
+
+## 2026-07-22 — Provider management overhaul + generic API-key pool (AgentRouter)
+
+**Goal (user):** (1) let users REMOVE unused seeded providers (Fireworks, Atlas Cloud, GLM, MiniMax, LM Studio, Ollama) from the agent-window Providers page — today presets can only be toggled off, never removed (initializeFromDatabase re-injects every preset each launch; only isCustom providers have delete). (2) Generic, built-in multi-API-key POOL with failover ("bad response → next key, same request") — not AgentRouter-specific; AgentRouter is today's consumer. (3) Ship an AgentRouter preset. (4) Context-usage tooltip must reflect tokens correctly.
+
+**AgentRouter facts (verified live with a temp key):**
+- Two endpoints: OpenAI-compat `https://agentrouter.org/v1` (models glm-5.2, gpt-5.5, gpt-5.5/glm-5.2) and Anthropic-messages `https://agentrouter.org`. User uses the OpenAI-compat one → preset ships OpenAI-compat.
+- **Client fingerprinting**: REQUIRES headers `User-Agent: opencode/1.17.18` + `X-Title: opencode` (+ `Authorization: Bearer <key>`). Any other UA → HTTP 401 `unauthorized_client_error`. (`claude-cli/1.0.0 (external, cli)` also passed, but ship `opencode`.)
+- **Non-streaming** response includes a rich custom `billing` block: `billing.request.tokens` (input/cache_creation/cache_read/output/reasoning/total) + `billing.request.cost_cny` (CNY!) + `billing.api_key_period` (per-key usage stats — 0 on temp key). Standard `usage.prompt_tokens_details` is null.
+- **Streaming** (Aurora's mode, verified): only the standard OpenAI final usage chunk (`prompt_tokens/completion_tokens/total_tokens`, `prompt_tokens_details: null`). **NO billing block, NO cost.** → Cost-from-billing is NOT achievable in streaming without a wasteful 2nd non-streaming call. Decision: skip cost; make tooltip correct via standard usage; add standard `prompt_tokens_details.cached_tokens` parsing (generic OpenAI win) since Aurora's OpenAiUsageData currently only parses DeepSeek `prompt_cache_hit_tokens`.
+
+**Architecture notes for impl:**
+- Per-turn client build: `RealApiFactory.build` (lib.rs:207) calls `api::build_api_client(config)` every turn. Team paths call build_api_client directly (build_runner/integration_runner/runner). → Wrapping the pool INSIDE build_api_client covers all paths.
+- `ApiRequest<'a>` derives Copy → a pool wrapper can re-issue the same request across keys.
+- ApiError variants: Network, Provider, Decode, InvalidRequest, RateLimit, Unauthorized, Cancelled. Failover-retryable (all raised at the pre-stream status check, so no emitted-content/duplicate risk) = {Unauthorized(401), RateLimit(429), Provider(5xx)}. Do NOT retry Network/Decode (may be mid-stream) / InvalidRequest(400, same for all keys) / Cancelled.
+- Provider persistence: SQLite llm_providers via versioned migrations (ADD COLUMN pattern, see nickname/model_aliases migrations). apiKey is a column. Store key pool as new `api_keys TEXT` (JSON array) column. custom_params/custom_headers reach body/headers so must NOT hold keys.
+
+**Plan (phased):**
+- C. Remove providers (frontend, no rebuild): persisted `removedProviderIds` (app_settings), filter presets in initializeFromDatabase merge, Remove button for ANY provider in ProvidersSettings + a "restore hidden" affordance. Reversible (not code deletion).
+- D. AgentRouter preset (frontend): OpenAI-compat, base https://agentrouter.org/v1, opencode UA+X-Title in customHeaders, seed glm-5.2 + gpt-5.5, key-pool field. Frontend preset like ATLAS/CODEX or a Rust catalog entry.
+- B. Generic key pool + failover (Rust, rebuild): add `apiKeys: Vec<String>` to ProviderConfigSnapshot (api/client.rs) + snapshot builder (agent-runtime-client.ts) + LLMProvider.apiKeys + DB column; new api/pool.rs PooledStreamingClient wrapping build_single_api_client, round-robin start via AtomicUsize, failover on {Unauthorized,RateLimit,Provider}. Multi-key editor UI in ProvidersSettings.
+- A. Tooltip/cache: add prompt_tokens_details.cached_tokens to OpenAiUsageData (openai_compat), verify header usage event mapping. No cost (streaming has none).
+
+### Progress 2026-07-22 (session 1) — Rust core key-pool DONE (unverified: disk)
+Implemented the generic, provider-agnostic key pool (Phase B core):
+- `api/client.rs`: ProviderConfigSnapshot gains `api_keys: Option<Vec<String>>` (camelCase `apiKeys`) + `effective_keys()` (dedup/blank-strip/fallback). Split factory: `build_api_client` wraps in pool when >1 effective key, else calls new `build_single_api_client` (the old match). Tests added.
+- `api/pool.rs` (NEW): `PooledStreamingClient` — per-turn round-robin via AtomicUsize cursor + failover on {Unauthorized(401), RateLimit(429), Provider(5xx)} ONLY (all pre-stream status-check errors → no duplicated output). Retries same request (ApiRequest is Copy) with next key, cloning the mpsc sender. Network/Decode NOT retried (may be mid-stream). Tests added.
+- `api/mod.rs`: `pub mod pool;`.
+- Patched all 6 literal ProviderConfigSnapshot constructions (ipc.rs, codex/adapter.rs, deepseek.rs, responses.rs, agent_v2.rs, client.rs tests) with `api_keys: None`.
+
+**BLOCKER: drive E only 1.4 GB free (100% full). Cannot cargo check/build — Tauri rebuild needs several GB (OS error 112 risk per lesson). Rust changes are written-to-compile but UNVERIFIED. User must free disk on E before the Rust side can build/run.**
+
+**Remaining (not yet done):**
+- Rust: DB `api_keys TEXT` column (models.rs DbLLMProvider, schema.rs, migrations.rs new version, provider repo read/write); AppSettings `removed_provider_ids` (models.rs struct + repositories/settings.rs get/save arms); parse standard `prompt_tokens_details.cached_tokens` in OpenAiUsageData (provider_kernel_adapter.rs) → emit as cache_read so tooltip shows cache.
+- Frontend: LLMProvider.apiKeys + dbToProvider/providerToDb mapping; snapshot builder (agent-runtime-client.ts buildProviderConfigSnapshot) send apiKeys; removedProviderIds store state + removeProvider/restoreProvider(All) actions + filter in initializeFromDatabase merge; ProvidersSettings.tsx Remove button (all providers) + restore-hidden affordance + multi-key pool editor; AgentRouter frontend preset (services/agentrouter.ts, OpenAI-compat, base https://agentrouter.org/v1, customHeaders {User-Agent: opencode/1.17.18, X-Title: opencode}, seed glm-5.2+gpt-5.5) injected like ATLAS/CODEX; types/database.ts AppSettings.removedProviderIds + DbLLMProvider.apiKeys.
+
+### Progress 2026-07-22 (session 1) — FEATURE COMPLETE (frontend typechecks; Rust unverified: build pending)
+Full stack implemented. Frontend `npx tsc -b --force` = exit 0 (clean). Rust written-to-compile but NOT built (user rebuilds via `pnpm tauri dev`).
+
+**AgentRouter facts locked:** OpenAI-compat `https://agentrouter.org/v1`, Bearer auth, REQUIRES headers `User-Agent: opencode/1.17.18` + `X-Title: opencode` (else 401 unauthorized_client_error). Streaming = standard usage only (no billing/cost block; that's non-streaming only). Verified `headers.insert` override + adapter sets no default UA → custom UA header works.
+
+**Rust (all done):** api/client.rs (apiKeys+effective_keys+split factory), api/pool.rs (PooledStreamingClient round-robin+failover on 401/429/5xx), api/mod.rs (pub mod pool), 6 snapshot literals patched, DB api_keys column (schema+migration v20 [SCHEMA_VERSION 19→20]+model+repo read idx20/write ?21), AppSettings.removed_provider_ids (struct+default+get/save arms), OpenAiUsageData.prompt_tokens_details + cache_read_tokens() helper wired into openai_compat mapping.
+
+**Frontend (all done, typechecks):** types/database.ts (DbLLMProvider.apiKeys, AppSettings.removedProviderIds); useSettingsStore (LLMProvider.apiKeys, dbToProvider/providerToDb map, removedProviderIds state+default+load+save, removeProvider/restoreProvider/restoreRemovedProviders actions [restore uses saveToDatabaseImmediate before re-init to avoid stale debounced read], init filters removed presets BEFORE merge, AgentRouter preset injected, getLLMConfig sends apiKeys x2); provider-catalog.ts (ProviderCatalogPreset.customHeaders) + presetToProvider maps it; services/agentrouter.ts (AGENT_ROUTER_PRESET, opencode headers, glm-5.2+gpt-5.5); providers/types.ts ProviderConfig.apiKeys; agent-runtime-client.ts snapshot apiKeys (only sends when >1 non-blank); ProvidersSettings.tsx (ApiKeyPoolEditor, uniform Remove btn w/ 2-click confirm for ALL providers, removed-restore sidebar section, providerReady/keyPoolSize/hasAnyKey pool-aware); agent-window.css (removed-list + remove-btn styles).
+
+**TEST after `pnpm tauri dev` rebuild:** (1) migration v20 runs clean; (2) AgentRouter appears in Providers with opencode headers pre-filled — paste key(s) → glm-5.2 works; (3) add 2+ keys to pool → verify round-robin/failover (kill one key); (4) Remove Fireworks/Atlas etc → gone + persists across restart → Restore brings back; (5) context tooltip tokens correct.
+
+### Progress 2026-07-22 (session 2) - agent-window "maturity feel" audit (diagnosis only, no code changes)
+User: "agent window works (runs commands, edits files) but does not FEEL mature vs Cursor/Codex - why?" Audited MessageBubble/ToolCallCard/AgentMarkdown/ConversationPane/useAgentWindowSend/useSmoothReveal: UI layer is at parity or beyond (optimistic echo, per-frame text coalescing, eased reveal, live write previews, approval-adjusted durations, shimmer thinking, compaction cards, jump rail, suggest drum). Conclusion: gap is behavioral, not visual - prime suspect is the MODEL (AgentRouter seed = GLM-5.2 vs Cursor=Claude 4.x / Codex=GPT-5-codex frontier agentic-RL models: terse narration, batched parallel reads, first-try edits, self-verifying builds), #2 relay latency rhythm (agentrouter.org hop + TTFT between tool calls), #3 voice rules exist in agent-prompt.ts but weaker models ignore them. Proposed 2-min test: run window on Claude/GPT-5.x same task -> if feel changes, UI was never the issue. Awaiting user reply on which model they run.
+
+## 2026-07-22 — Apply Agent Window harness test summary 1
+
+**Goal:** Apply the four recommendations from `E:\VOID-EDITOR\aurora-harness-test\aurora-agent-window-harness-test-results-summary-1.md`: vanilla HTML/CSS/JS diagnostics, unified background-process visibility, Git-aware harness guidance, and read-only browser DOM/state inspection.
+
+**Plan:**
+- Trace each report symptom to its owning tool definition, executor, backend command, and UI result renderer while preserving the heavily modified worktree.
+- Implement focused fixes with strict contracts and tests; treat tool output as an expert developer-facing surface with clear recovery guidance.
+- Run focused frontend/Rust validation, build checks as disk permits, and `graphify update .`; record all failures and retest evidence.
+
+**Reality update:** `graphify query` could not start because the installed launcher raises `ModuleNotFoundError: graphify.__main__`; use scoped `rg`/source tracing as the fallback. The global `project-overview` skill describes LobeChat and is not authoritative for Aurora, so repository docs and implementation own the architecture for this task.
+
+**User validation constraint:** After applying the fixes, run pnpm-based frontend validation only. Do not run Cargo, rustc, rustfmt, Clippy, or any other Rust command; Alvan will validate/rebuild the Rust side.
+
+**Reality update:** The first combined process patch was rejected atomically because the `ide_event_sink.rs` test fixture context did not match the inspected slice. No source edit landed; continue with small patches against exact current snippets and verify after each group.
+
+**Reality update:** The first source-consistency command was rejected by PowerShell parsing because a final regex embedded an unescaped double quote. No checks from that command ran; rerun with separate literal-safe `rg` expressions.
+
+**Reality update:** Repository-wide `git diff --check` is not actionable because pre-existing broad LF→CRLF conversions make Git flag nearly every changed line as trailing whitespace. Restrict diff checks to task-owned paths and use `--ignore-space-at-eol`; do not normalize unrelated files.
+
+**Added user finding:** Failed tools currently duplicate the raw execution error in both the ToolCallCard header and its expanded dropdown (screenshot: failed `browser_click` selector). Keep only failure affordance/icon/duration in the header; render the actionable error once inside the dropdown.
+
+### Progress — harness recommendations and error surface implemented
+- `read_lints` now runs vanilla `.js/.mjs/.cjs` through direct `node --check` args (no shell interpolation) and returns project-command guidance for uncovered HTML/CSS/JSX/TS paths.
+- Background spawn/list/kill now share one stable `bg-*` identity backed by an authoritative Rust ledger registered before the async task starts; listing returns command/name/cwd/pid/start time.
+- Registered bounded `browser_inspect_element` for the single agent browser with text, attributes, form state, visibility, bounds, and key styles; kept full-page DOM/eval hidden.
+- Failed ToolCallCard headers no longer repeat raw result errors; the dropdown remains the single error-detail surface. The external harness is now an unstaged Git repository for follow-up testing.
+
+**Validation reality update:** Focused UI tests pass 34/34 and the full frontend suite passes 199/199. Repository-wide `pnpm lint` fails with 66 errors/7 warnings in unrelated existing modules (MarkdownPreview, QuickOpenModal, StatusBar, SearchPanel, etc.); run task-scoped ESLint to prove these edits add no lint failure, and report the global gate honestly without expanding into a broad cleanup.
+
+### Completion review — harness fixes
+- Implemented real vanilla JavaScript syntax diagnostics and actionable HTML/CSS guidance, stable background-process spawn/list/kill identity, bounded browser element-state inspection, and a single dropdown-owned failure detail surface for Agent Window tool cards.
+- Initialized the external harness as a Git repository without staging or committing its files. Focused tests pass 34/34, the full pnpm suite passes 199/199, task-scoped ESLint is clean, and `pnpm run build` succeeds.
+- Repository-wide `pnpm lint` remains blocked by 66 errors/7 warnings in unrelated existing files. No Cargo, rustc, rustfmt, Clippy, or other Rust command was run; Rust validation is intentionally left to Alvan.
+- Required `graphify update .` was attempted but the installed launcher still fails before project analysis with `ModuleNotFoundError: No module named 'graphify.__main__'`; graph output could not be refreshed.
+
+## 2026-07-22 — Apply Agent Window harness test summary 2
+
+**Goal:** Fix the two remaining regressions proven by `aurora-agent-window-harness-test-results-summary-2.md`: Node diagnostics receiving Windows verbatim (`\\?\`) paths, and `shell_spawn` process IDs disappearing before list/kill can resolve them.
+
+**Plan:**
+- Trace both values from agent-facing schema through executor routing into the native command, including whether `shell_spawn` is actually using the Rust sink or a legacy frontend executor.
+- Add focused regression coverage first, then fix Windows Node-path conversion and make background-process ownership durable until the real descendant process exits or is killed.
+- Run pnpm-only validation, manually audit Rust changes, and retry the required Graphify update. Do not run any Rust command.
+
+**Root-cause evidence:** The persisted run-2 transcript proves native routing was active. Run 1's server survived because its old split `bg-*`/UUID kill path only reported success; run 2 then spawned onto the occupied port and `curl` reached the stale run-1 server. A later retest repeated the contamination by running `node server.mjs &` through `shell_execute` before `shell_spawn`. A clean Windows ancestry probe then exposed the independent product bug: `Git\\bin\\bash.exe` is a short-lived launcher that hands work to `Git\\usr\\bin\\bash.exe`, so Aurora tracked and cleaned the shim PID while npm/Node continued elsewhere. Launching `usr\\bin\\bash.exe` directly kept the listener under the tracked tree, and `taskkill /T` removed it.
+
+**Implementation progress:** JavaScript checker arguments are now workspace-relative (preventing Windows `\\?\` paths). Shell discovery now prefers Git's real `usr\\bin\\bash.exe`, preserving the tracked PID ancestry for list/kill. Production background spawn also waits through a one-second startup window and returns early-exit output as an actionable error; process termination checks and reports the real `taskkill`/`kill` result instead of silently succeeding.
+
+### Completion review — summary 2
+- Confirmed with a live non-Rust Windows process probe that `Git\\bin\\bash.exe` loses the npm/Node tree while `Git\\usr\\bin\\bash.exe` remains its ancestor and `taskkill /T` frees the port. Ports 4173 and 4174 were clean after the probe.
+- Permitted validation passed: full pnpm suite 199/199, `pnpm run build`, all three harness `node --check` calls through `pnpm exec`, and the harness test script. Task-owned source whitespace/conflict scan is clean.
+- No Cargo, rustc, rustfmt, Clippy, or other Rust command was run. `graphify update .` was attempted again and remains blocked by the installed launcher's missing `graphify.__main__` module.
+
+## 2026-07-23 — Background process termination is recorded in the log file
+
+**Problem:** A background process's log ended wherever its output ended. A reader (the agent, later) could not tell a user stop from a crash, a clean exit, or a stalled writer — five explanations, no evidence. Verified against Claude Code's own harness: stopping a background task there leaves the same silent truncation, so this is a real class of bug, not an Aurora quirk.
+
+**Change:** `ProcessLog` (`src-tauri/src/commands/mod.rs`) replaces the bare `Option<File>` and tracks line position, so every run now closes with one `[aurora] …` line naming how it ended: exit code, timeout, spawn failure, stopped by the user, or stopped by `shell_kill`. `StopReason` (User | Agent) is carried on `CommandStreamInfo` and set by `cancel_tracked_command_stream`, so the file distinguishes who stopped it. `cancel_command_stream` takes an optional `reason` ("user" default). `shell_spawn`'s `readOutputWith` now tells the model that the absence of an `[aurora]` line means the process is still running.
+
+**Also fixed:** the cancel path never emitted the `done: true` meta chunk that the natural-exit path emits, so a cancelled stream's live view stayed spinning on a dead process. All loop exits now emit it. The dock's stop only enqueues a note to the agent when `liveTurns[threadId]` is set (the rule `useAgentTeamNotifier.ts` already follows) — with no live turn the queued slot has no boundary to drain at, and the note surfaces later inside an unrelated turn.
+
+**Verified:** `rustfmt --edition 2021 --check` parses all four edited Rust files (only a pre-existing formatting diff at `mod.rs:427` remains); `tsc --noEmit` and ESLint clean on the changed TS. Five unit tests added in `commands/mod.rs` cover footer placement, the no-file case, `StopReason` parsing, and duration formatting — not run here, Rust validation is Alvan's. Nothing verified in the running app.
+
+## 2026-07-23 — Composer picker keyboard nav + dock/drum overlap
+
+**Arrow keys snapped back:** `AgentComposer` runs `refreshPickers` on `onKeyUp`, and `refreshMention`/`refreshSlash` called `setSel(0)`/`setCmdSel(0)` unconditionally — so the keyup of the very arrow key that moved the highlight reset it. Both refreshers now funnel through `applyMentionQuery`/`applySlashQuery`, which compare against a query ref and do nothing when the query is unchanged. Side effect: Escape now actually dismisses (previously the following keyup reopened the menu immediately). Row `onMouseEnter` → `onMouseMove` so a list scrolling under a resting cursor cannot steal the highlight, and the active row `scrollIntoView({block:"nearest"})` so keyboard-only nav can see rows past the 280px fold.
+
+**Drum overlap:** docked cards tuck their bottom 12px behind the next element, which only works because the composer is opaque. The suggestion drum is chrome-less and mask-faded, so a tucked card showed its own open bottom edge and the drum's neighbour rows painted over the card. `ConversationPane` now sets `data-drum` on `.agw-composer-dock` when the drum will render, and the cards close themselves (border + full radius, 6px gap) instead of tucking.
+
+**Verified:** `tsc --noEmit` and ESLint clean; CSS braces balanced. Not verified in the running app — no interactive check of the picker or the dock.
+
+## 2026-07-25 — React `onWheel` cannot preventDefault (three canvases fixed)
+
+**Problem:** `CanvasDiagram.tsx:183` logged "Unable to preventDefault inside passive event listener invocation." React 17+ delegates `wheel` (plus `touchstart`/`touchmove`) at the ROOT container with `{ passive: true }`, so `preventDefault()` from an `onWheel` prop is discarded by the browser. Every wheel gesture over the diagram therefore scrolled the surrounding dock at the same time as it zoomed/panned.
+
+**Change:** the three surfaces that need to swallow the wheel now bind natively on their own element with `{ passive: false }` in a `useEffect`: the Mermaid canvas (`CanvasDiagram`), the reply-suggestion drum (`ConversationPane`), and the tool-card chip strip (`ToolCallCard`). `CanvasDiagram`'s `zoomAt(nextScale, …)` became `zoomBy(factor, …)` reading the current scale inside the `setViewport` updater, so the listener stays bound across viewport changes instead of resubscribing per zoom frame. `isControl` hoisted to module scope.
+
+**Verified:** `tsc -b` 0, ESLint 0 on all three files, vitest 36 files / 200 tests, `vite build` 0. Not verified in the running app — no interactive wheel check.
+
+## 2026-07-25 — workspace_tree measured: the model's first tool call loses 98.5% of the tree
+
+**Investigation, not a change yet.** Reproduced Aurora's `workspace_tree` output shape + `conversation.rs`'s history compactor against this repo (probe script kept in the session scratchpad). Default args (`depth:3`, `include_file_stats:true`, `max_files_for_stats:300`):
+
+- walks 3,066 nodes; reads **127 MB of file CONTENT** (sequentially, one `spawn_blocking` at a time) purely to compute `lineCount` — ten `graphify-out/*.json` files at ~11 MB each are inside the first 300 stat'd
+- raw payload ≈ 469 KB (~117k tokens); `result_cap_for("workspace_tree")` = 8 KiB
+- `compact_json_arrays` halves the largest array 17 times → **47 of 3,066 nodes survive (1.53%)**
+- because halving keeps the FIRST half of a dirs-first-alphabetical list, the survivors are `.aurora`…`DOCS`, `example-themes`; **`src/`, `src-tauri/`, `scripts/`, `public/` are dropped entirely**. No per-directory marker says so — only a top-level `historyTruncated: true`.
+
+**Other findings:** `grep` shells out to a bare `rg` from PATH with no bundling (`tauri.conf.json` ships only ONNX dlls + typing-assist txt) — the `grep`/`grep-regex`/`grep-searcher` crates ARE in Cargo.toml but unused anywhere. No glob/find-by-name tool exists. `read_directory` drops `node_modules|target|dist|.pnpm|.git` as entries entirely (name never reaches the tree) while `ARTIFACT_DIRS` shows the rest name-only — two different policies. Tree ignores `.gitignore`; `rg` honours it — so the tree lists files grep will never search. `size` is `content.len()` after a full read although `entry.metadata()` already had it. `file_cache::read_files_parallel` (rayon) exists and is not used here.
+
+**Also confirmed:** the Agent Window sends NO project layout — `useAgentWindowSend.ts:974` sends only `<workspace_root>`. So `workspace_tree` really is the model's first call on every non-trivial task.
+
+## 2026-07-25 — ripgrep is now bundled; `grep` no longer depends on the user's PATH
+
+**Problem:** `ripgrep_search` spawned a bare `rg` from `PATH`. Nothing bundled it (`tauri.conf.json` shipped only ONNX dlls + typing-assist text), so on any machine without ripgrep — i.e. most end-user machines — the agent's primary content-search tool returned `Failed to execute rg` and the model lost code search entirely.
+
+**Change:** vendored `rg` 14.1.1 at `src-tauri/binaries/rg-<target-triple>.exe` and shipped it via `bundle.externalBin`. New `src-tauri/src/sidecar.rs` resolves it once per process: bundled copy next to the app executable first, user's `PATH` second, `None` third (with an actionable message naming reinstall + the ripgrep URL instead of a raw spawn error). Bundled deliberately WINS over PATH — rg's `--json` event stream is a versioned interface and the parser in `ripgrep_search` is only tested against the pinned binary. `build.rs::stage_sidecar_binaries` mirrors the bundler's rename into the Cargo target dir (root + `deps/` + `examples/`) so `cargo run`, `cargo test` and `tauri dev` resolve identically to a shipped install — search working in dev and failing in the installer is the worst possible split. `files_are_identical` lost its `#[cfg(windows)]` since both stagers use it now.
+
+**Note on git:** unlike the ONNX dlls (explicitly gitignored, "each developer populates locally"), the rg binary is left TRACKED on purpose — an untracked build input would let a clean clone or CI produce an installer with no ripgrep, silently restoring the bug. 5.16 MB. Alvan's call to override.
+
+**Verified:** `cargo check` 0 (5 pre-existing warnings, none new); `cargo test --lib` **717/717**; confirmed `build/debug/rg.exe` and `build/debug/deps/rg.exe` staged and `--version` runs. Note `.cargo/config.toml` sets `target-dir = "build"`, so artifacts are under `build/`, not `target/`. Not verified in a packaged installer — no `tauri:build` run.
+
+## 2026-07-25 — Workspace tools redesigned: `glob` added, `workspace_tree` rebuilt, `shell` made explicit
+
+**`workspace_tree` rebuilt** (`tools/file_workspace_search/workspace_tree.rs`). Walk and stats are now separate passes: the walk does no file I/O, selection fits the budget, and only the SURVIVING files are stat'd (`size` from metadata, `lineCount` from a streaming byte scan, rayon-parallel, files >2 MB skip the count). Selection is one rule — every directory lists at most `q` entries, `q` found by binary search — so a directory can never vanish because an unrelated one was large. Four markers make a childless directory unambiguous: `artifact` / `hidden` / `depthLimited` / `elided: N`, plus a top-level `truncated` + `note`. Payload made terse (workspace-relative forward-slashed paths matching glob/grep, no `extension`, `largeFile` only when true, `size` only without `lineCount`, empty `children` omitted). **Measured on this repo: 469 KB payload + 127 MB read → 49 KB in 27 ms, 500 of 3069 nodes, `src`/`src-tauri`/`scripts`/`public` all present.**
+
+**`result_cap_for("workspace_tree")` = 64 KiB** (new `MAX_TREE_RESULT_LENGTH`). The generic 8 KiB cap was below what any useful map costs, so EVERY call hit `compact_json_arrays` — the pass that left 47/3066 nodes with `src/` deleted. A default call now never reaches the compactor.
+
+**`glob` added** (10th bucket tool; BUILTIN_TOOL_COUNT 23→24). `rg --files --null --glob`, newest-first, honours .gitignore, reports true total + recovery on truncation. **Gotcha:** ripgrep anchors slash-bearing globs to the CWD, not the path operand — so it runs *in* the search root with no path argument (passing the root as an operand made `src/**/*.ts` silently match nothing while `**/*.rs` worked).
+
+**Shell made explicit.** `shell` is now REQUIRED on `shell_execute`/`shell_spawn` and the enum is emitted whenever ≥1 shell is usable (was ≥2, so single-shell machines had no parameter at all). The user-chosen default is gone entirely — `ShellProfiles::default_id`, `shell_profiles_set_default`, and the "Use by default" button. The fallback is derived (POSIX first, Ready>Degraded) and now only covers the terminal/diagnostics. Legacy persisted `defaultId` is ignored by serde, not fatal (pinned by a test).
+
+**PTY terminal wired to the registry.** `shell-config.ts` hardcoded `C:\Program Files\Git\bin\bash.exe` + bare `pwsh.exe` — so a user whose Git lived elsewhere got a terminal that would not start while Settings → Shells listed the verified path. New `shell_interactive_config` command + `shell::resolve_interactive` (finally using `ShellKind::interactive_args`, which was dead). Rust returns exe + interactive flags + env overlay (incl. the MSYS PATH repair the frontend never had); the frontend appends only its prompt init. No fallback guess: an unregistered shell says so and points at Settings.
+
+**Verified:** cargo test --lib **742/742**, zero Rust warnings; tsc 0; eslint 0 errors; vitest 36 files/200 tests; vite build 0. Not verified in the running app.
+
+## 2026-07-25 — Dev build config was tuned for CI, not for the edit→rebuild loop
+
+**Machine is not the bottleneck:** i5-12600K (10c/16t), 32 GB, NVMe. The config was.
+
+**Three changes.** `.cargo/config.toml` dropped `CARGO_INCREMENTAL = "0"` — right for CI (nothing is reused between runs), exactly wrong locally, where it made every Rust edit under `tauri dev` recompile the whole `aurora` crate from scratch. Deliberately NOT replaced with `"1"`: an env var applies to every profile and would enable incremental for RELEASE too, fighting `codegen-units = 1` + `lto = true`. It now lives as `incremental = true` under `[profile.dev]`.
+
+`[profile.dev] opt-level = 1` (which applied to `aurora` itself) moved to `[profile.dev.package.aurora] opt-level = 0`, plus `debug = "line-tables-only"` there. `[profile.dev.package."*"] opt-level = 2` is unchanged — the speech path needs it, and deps compile once.
+
+**Why per-package scoping matters:** cargo's `"*"` glob covers dependencies only, never workspace members, so `[profile.dev]` settings apply to deps by default. Putting `debug`/`opt-level` directly on `[profile.dev]` would have invalidated candle/ONNX/tokenizers/tauri and forced a full-tree rebuild. Scoped to `[profile.dev.package.aurora]`, only Aurora rebuilds.
+
+**Verified:** TOML re-read, package name confirmed `aurora`, no `[workspace]` section (src-tauri is the root package, so its `[profile.*]` is honoured). NOT compiled — the build dir was locked by a running `pnpm tauri dev`. Also noted but not changed: `build/` is 17.4 GB (eleven stale `__verify_phase*` crates), `lld-link.exe` is installed but unconfigured, no sccache.
+
+## 2026-07-25 — Background process dock lost live processes on project switch
+
+**Bug (user-reported regression):** start a background process in project A, switch to project B, come back — the dock is empty while the process is still running, and there is no way to stop it except asking the agent.
+
+**Root cause:** `useAgentBackgroundStore` was a frontend-only shadow copy of state Rust owns. It was built ONLY from `shell_spawn` tool results and read ONLY as `byThread[currentThreadId]`, while Rust's `ACTIVE_COMMAND_STREAMS` ledger is process-global and knows nothing about threads or projects. Switching project changed the thread key → dock found nothing; reloading the window emptied the store entirely while processes kept running.
+
+**Fix.** New `#[tauri::command] shell_background_processes()` in `commands/mod.rs` exposes the ledger to the UI (it was previously reachable only by the MODEL via `shell_list_processes`). `BackgroundTaskDock` reconciles against it on mount, on thread change, and on a 15s poll — adopting live processes it never saw and settling rows Rust no longer lists (fixes stale "Running" after a reload). The dock now renders `byThread[current]` UNION every running process from any thread: a running process is a machine-level fact, so it stays reachable and stoppable from any project; finished rows stay scoped to their thread as history.
+
+**Also:** `settle`/`dismiss` dropped their `threadId` parameter and now search all threads by process id. Thread-scoped mutation was the second half of the bug — stopping an adopted process from another project would have silently done nothing.
+
+**Verified:** cargo test --lib **747/747** (three new shell_spawn tests; two existing ones updated — they used `workspace_root: None` and now hit the cwd guard, which is the intended new contract), vitest 36 files/203 tests, tsc 0, eslint 0, cargo check 0.
+
+## 2026-07-25 — Production build green; ripgrep sidecar confirmed in both installers
+
+`pnpm tauri build` exit 0 in **5m24s** (release compile of the `aurora` crate). Artifacts: `build/release/bundle/msi/Aurora_2.0.0_x64_en-US.msi` (212 MB) and `build/release/bundle/nsis/Aurora_2.0.0_x64-setup.exe` (107 MB). Zero warnings from `aurora`; the only Rust warning is upstream (`esaxx-rs` MSVC `-std=c++11`).
+
+**Sidecar verified end-to-end, not assumed.** `build.rs` staged `rg.exe` beside `build/release/aurora.exe` (what `sidecar::ripgrep()` resolves at runtime), and BOTH installer manifests reference it — `wix/x64/main.wxs` → `rg.exe`, `nsis/x64/installer.nsi` → `rg.exe` + `rg-x86_64-pc-windows-msvc.exe`. So `glob` and `ripgrep_search` work on a clean machine with no ripgrep on PATH.
+
+**Deliberately NOT fixed — the "TOOL NAME" card.** `getProfessionalToolName` title-cases any unmapped name, so a model hallucinating `TOOL_NAME` renders as "TOOL NAME" mid-stream. Distinguishing unknown from known requires the tool roster, which lives in the Rust registry as the single source of truth; duplicating it in the frontend would recreate the exact drift class of bug as the dock regression above. The card already settles to a red error when the result lands.
+
+**Reported, not fixed (pre-existing):** `toolStatus()` decides failure from an `[error]`/`[rejected]` string PREFIX rather than the structured `is_error` flag that already exists on both paths. Works today because both paths add the prefix — a convention standing in for a field.

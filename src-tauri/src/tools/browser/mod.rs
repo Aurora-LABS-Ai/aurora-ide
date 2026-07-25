@@ -8,25 +8,34 @@
 //! reused browser, so the chat timeline reads like a recipe, not a debugger
 //! session juggling windows.
 //!
-//! Six tools:
+//! Eight tools:
 //! * **Read-only** (`requires_permission == false`): `browser_screenshot`,
-//!   `browser_get_console_logs`.
+//!   `browser_get_console_logs`, `browser_page_outline`,
+//!   `browser_inspect_element`.
 //! * **Page interaction** (`requires_permission == true`): `browser_navigate`,
 //!   `browser_click`, `browser_fill`, `browser_scroll`.
 //!
 //! `browser_navigate` is the entry point — it opens the right-rail panel and
 //! loads a URL. The others operate on whatever the panel is currently showing.
 //!
-//! Deliberately not on the agent surface:
+//! `browser_page_outline` is what makes the `selector`-taking tools usable. It
+//! is the only way the agent can DISCOVER a selector: a screenshot is pixels,
+//! and `browser_inspect_element` needs the selector before it can help. Without
+//! it the model could only guess structural paths off an image, which is why
+//! every model produced brittle `div > div:nth-of-type(2) > …` chains and then
+//! looped retrying them.
+//!
+//! Removed, not merely hidden:
 //! * `browser_open` / `browser_close` / `browser_list_windows` — window
-//!   management is meaningless now that there is exactly one embedded browser.
-//! * `browser_eval` — arbitrary JS in the page is a foot-gun. The Rust
-//!   `BrowserManager` still uses it internally to implement the other tools.
-//! * `browser_get_dom` — burned up to 200 KB of context; screenshot instead.
-//! * `browser_get_url`, `browser_inspect_element`, `browser_wait_for` — folded
-//!   into the tools that need them (`browser_click` auto-waits, etc.). The IDE
-//!   still calls all of these via the Tauri IPC commands when the *user* drives
-//!   a browser tab directly.
+//!   management is meaningless with exactly one embedded browser.
+//! * `browser_eval` — arbitrary JS in the page is a foot-gun. `BrowserManager`
+//!   still uses eval internally to implement the other tools.
+//! * `browser_get_dom` — burned up to 200 KB of context against an 8 KiB
+//!   result clamp (`conversation.rs::MAX_TOOL_RESULT_LENGTH`), so the model saw
+//!   a snapshot truncated mid-tag. `browser_page_outline` covers the reason
+//!   anyone wanted it (finding a selector) in a few KB.
+//! * `browser_get_url`, `browser_wait_for` — folded into the tools that need
+//!   them (`browser_click` auto-waits, etc.).
 //!
 //! `browser_screenshot` returns a structured string containing an
 //! `<aurora_image media_type="image/png">BASE64</aurora_image>` marker
@@ -52,10 +61,107 @@ use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor, ToolRegistry};
-use crate::services::browser_runtime::{BrowserManager, BrowserResult, CreateBrowserWindow};
+use crate::services::browser_runtime::{BrowserManager, BrowserResult};
 
 /// The one browser the agent drives: the agent window's right-dock panel.
 const AGENT_BROWSER_LABEL: &str = "browser-agentwin";
+
+/// Page-outline scan. Collects the elements an agent can actually ACT on and
+/// derives a *stable, verified-unique* CSS selector for each.
+///
+/// This exists because every other page tool takes a `selector` the model has
+/// no way to obtain: a screenshot is pixels, and `browser_inspect_element`
+/// needs the answer before it can help. Without this the model can only invent
+/// structural paths off a picture — the
+/// `div#root > div > div:nth-of-type(2) > main > …` guesses that fail on any
+/// re-render, then get retried with another guess.
+///
+/// Selector priority is deliberate: `#id` → `data-testid`/`name`/`aria-label`
+/// → `a[href]` → tag + class → an id-anchored `:nth-of-type` — and every
+/// candidate is confirmed to match exactly one node via `querySelectorAll`
+/// before being emitted. An element with no stable selector reports `null`
+/// rather than a fragile path, because a plausible-but-wrong selector is worse
+/// than an admitted gap: it sends the model down a retry loop.
+///
+/// Framework-generated class names (`css-`, `sc-`, `ng-`) are skipped — they
+/// change on every build, so a selector built from one is stale immediately.
+const PAGE_OUTLINE_JS: &str = r#"(() => {
+  const LIMIT = __LIMIT__, SCOPE = __SCOPE__, QUERY = __QUERY__;
+  const root = SCOPE ? document.querySelector(SCOPE) : document.body;
+  if (!root) return null;
+
+  const CAND = 'a[href],button,input,select,textarea,summary,label,[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="menuitem"],[role="option"],[contenteditable="true"],[data-testid],[onclick]';
+  const esc = (s) => (window.CSS && CSS.escape) ? CSS.escape(String(s)) : String(s).replace(/[^\w-]/g, '\\$&');
+  const attr = (v) => '"' + String(v).replace(/["\\]/g, '\\$&') + '"';
+  const unique = (s) => { try { return document.querySelectorAll(s).length === 1; } catch (e) { return false; } };
+
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return false;
+    const cs = getComputedStyle(el);
+    return cs.visibility !== 'hidden' && cs.display !== 'none' && cs.opacity !== '0';
+  };
+
+  const selectorFor = (el) => {
+    const tag = el.tagName.toLowerCase();
+    if (el.id && unique('#' + esc(el.id))) return '#' + esc(el.id);
+    for (const a of ['data-testid', 'data-test-id', 'data-test', 'name', 'aria-label']) {
+      const v = el.getAttribute(a);
+      if (v) { const s = tag + '[' + a + '=' + attr(v) + ']'; if (unique(s)) return s; }
+    }
+    if (tag === 'a') {
+      const href = el.getAttribute('href');
+      if (href) { const s = 'a[href=' + attr(href) + ']'; if (unique(s)) return s; }
+    }
+    const cls = typeof el.className === 'string'
+      ? el.className.trim().split(/\s+/).filter((c) => c && c.length < 30 && !/^(css-|sc-|ng-)/.test(c)).slice(0, 2)
+      : [];
+    if (cls.length) { const s = tag + '.' + cls.map(esc).join('.'); if (unique(s)) return s; }
+    const p = el.parentElement;
+    if (p && p.id) {
+      const sibs = Array.from(p.children).filter((c) => c.tagName === el.tagName);
+      const s = '#' + esc(p.id) + ' > ' + tag + ':nth-of-type(' + (sibs.indexOf(el) + 1) + ')';
+      if (unique(s)) return s;
+    }
+    return null;
+  };
+
+  const labelOf = (el) => {
+    const t = (el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
+               el.getAttribute('title') || el.innerText || el.value || '').replace(/\s+/g, ' ').trim();
+    return t.length > 60 ? t.slice(0, 60) + '\u2026' : t;
+  };
+
+  const stateOf = (el) => {
+    const bits = [], tag = el.tagName.toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+      if (el.type) bits.push('type=' + el.type);
+      if (el.type === 'checkbox' || el.type === 'radio') bits.push(el.checked ? 'checked' : 'unchecked');
+      else if (el.value) bits.push('value=' + attr(String(el.value).slice(0, 30)));
+      if (el.required) bits.push('required');
+    }
+    if (el.disabled) bits.push('disabled');
+    const role = el.getAttribute('role');
+    if (role) bits.push('role=' + role);
+    return bits.join(' ');
+  };
+
+  const q = QUERY ? QUERY.toLowerCase() : null;
+  const out = [];
+  let more = 0;
+  for (const el of root.querySelectorAll(CAND)) {
+    if (!visible(el)) continue;
+    const text = labelOf(el);
+    if (q && !(text.toLowerCase().includes(q) || (el.id || '').toLowerCase().includes(q))) continue;
+    if (out.length >= LIMIT) { more++; continue; }
+    const row = { tag: el.tagName.toLowerCase(), selector: selectorFor(el) };
+    if (text) row.text = text;
+    const st = stateOf(el);
+    if (st) row.state = st;
+    out.push(row);
+  }
+  return { url: location.href, title: document.title, shown: out.length, more, elements: out };
+})()"#;
 
 /// Names of every tool this bucket registers, in roster order. Pinned
 /// by the bucket-level test below.
@@ -67,6 +173,8 @@ pub const TOOL_NAMES: &[&str] = &[
     "browser_navigate",
     "browser_screenshot",
     "browser_get_console_logs",
+    "browser_page_outline",
+    "browser_inspect_element",
     "browser_click",
     "browser_fill",
     "browser_scroll",
@@ -92,16 +200,20 @@ pub const VISION_REQUIRED_TOOLS: &[&str] = &["browser_screenshot"];
 
 /// Mount every tool in this bucket onto `reg`. Idempotent.
 ///
-/// The window-management (`BrowserOpenTool`, `BrowserCloseTool`,
-/// `BrowserListWindowsTool`) and low-level (`BrowserGetUrlTool`,
-/// `BrowserGetDomTool`, `BrowserInspectElementTool`, `BrowserWaitForTool`,
-/// `BrowserEvalTool`) structs remain compiled but unregistered — the IPC layer
-/// still calls the underlying manager methods so the human-driven browser tab
-/// UI keeps every capability; the agent surface just doesn't advertise them.
+/// Every tool defined in this module is registered — there is no
+/// compiled-but-unadvertised tier any more. The window-management and
+/// low-level structs that used to sit here unregistered
+/// (`BrowserOpenTool`, `BrowserCloseTool`, `BrowserListWindowsTool`,
+/// `BrowserGetUrlTool`, `BrowserGetDomTool`, `BrowserWaitForTool`,
+/// `BrowserEvalTool`) were deleted along with the standalone browser
+/// window they addressed: they resolved a `label`, and there is now exactly
+/// one browser, addressed by [`AGENT_BROWSER_LABEL`].
 pub fn register(reg: &mut ToolRegistry, manager: Arc<BrowserManager>) {
     reg.register(Arc::new(BrowserNavigateTool::new(manager.clone())));
     reg.register(Arc::new(BrowserScreenshotTool::new(manager.clone())));
     reg.register(Arc::new(BrowserGetConsoleLogsTool::new(manager.clone())));
+    reg.register(Arc::new(BrowserPageOutlineTool::new(manager.clone())));
+    reg.register(Arc::new(BrowserInspectElementTool::new(manager.clone())));
     reg.register(Arc::new(BrowserClickTool::new(manager.clone())));
     reg.register(Arc::new(BrowserFillTool::new(manager.clone())));
     reg.register(Arc::new(BrowserScrollTool::new(manager)));
@@ -110,39 +222,6 @@ pub fn register(reg: &mut ToolRegistry, manager: Arc<BrowserManager>) {
 // ---------------------------------------------------------------------------
 // Helpers shared by every tool in the bucket
 // ---------------------------------------------------------------------------
-
-/// Validate that `label` either looks like a `browser-*` window label
-/// the manager owns, or is omitted (we'll synthesise one). Tools accept
-/// both `label` and the legacy `windowLabel` key for ergonomics.
-fn extract_label(input: &Value) -> Option<String> {
-    input
-        .get("label")
-        .and_then(Value::as_str)
-        .or_else(|| input.get("windowLabel").and_then(Value::as_str))
-        .map(str::to_string)
-}
-
-/// Pick the label the tool should act on. Tries (in order):
-///   1. `label` / `windowLabel` from the tool arguments
-///   2. The manager's `last_active_label` (last opened or navigated)
-///
-/// Returns an `InvalidInput` error only when no window has ever been
-/// opened — agents that don't track labels still work as long as
-/// there is exactly one window open, which is the common case.
-fn resolve_label(input: &Value, manager: &BrowserManager) -> Result<String, ToolError> {
-    if let Some(label) = extract_label(input) {
-        return Ok(label);
-    }
-    manager.last_active_label().ok_or_else(|| {
-        ToolError::InvalidInput(
-            "no browser window is open — call browser_open first or pass `label`".into(),
-        )
-    })
-}
-
-fn require_label(input: &Value) -> Result<String, ToolError> {
-    extract_label(input).ok_or_else(|| ToolError::InvalidInput("`label` must be a string".into()))
-}
 
 fn require_string<'a>(input: &'a Value, key: &str) -> Result<&'a str, ToolError> {
     input
@@ -193,219 +272,6 @@ fn unwrap_browser_result(result: BrowserResult) -> Result<Value, ToolError> {
 // Tier 1 — read-only
 // ---------------------------------------------------------------------------
 
-pub struct BrowserOpenTool {
-    manager: Arc<BrowserManager>,
-}
-impl BrowserOpenTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self {
-        Self { manager }
-    }
-}
-#[async_trait]
-impl ToolExecutor for BrowserOpenTool {
-    fn name(&self) -> &str {
-        "browser_open"
-    }
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "browser_open".into(),
-            description: "Open a native browser preview window pointing at `url`. \
-                Returns the assigned `label` so subsequent browser_* calls can target it. \
-                If `label` is omitted, a fresh `browser-agent-<n>` label is generated."
-                .into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "Initial URL to load (must start with http:// or https://)."},
-                    "label": {"type": "string", "description": "Optional explicit window label, must start with 'browser-'."},
-                    "title": {"type": "string"},
-                    "width": {"type": "number"},
-                    "height": {"type": "number"}
-                },
-                "required": ["url"]
-            }),
-        }
-    }
-    async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
-        ctx.bail_if_cancelled()?;
-        let url = require_string(&input, "url")?.to_string();
-        let label =
-            extract_label(&input).unwrap_or_else(|| format!("browser-agent-{}", uuid_short()));
-        let opts = CreateBrowserWindow {
-            label: label.clone(),
-            url: url.clone(),
-            title: input
-                .get("title")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            width: input.get("width").and_then(Value::as_f64),
-            height: input.get("height").and_then(Value::as_f64),
-            x: None,
-            y: None,
-            always_on_top: None,
-            embed: None,
-        };
-        self.manager
-            .create_window(opts)
-            .map_err(ToolError::Execution)?;
-        Ok(json!({ "ok": true, "label": label, "url": url }).to_string())
-    }
-}
-
-pub struct BrowserCloseTool {
-    manager: Arc<BrowserManager>,
-}
-impl BrowserCloseTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self {
-        Self { manager }
-    }
-}
-#[async_trait]
-impl ToolExecutor for BrowserCloseTool {
-    fn name(&self) -> &str {
-        "browser_close"
-    }
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "browser_close".into(),
-            description: "Close a browser window opened by the agent. \
-                `label` is optional — when omitted, closes the most \
-                recently used window."
-                .into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": { "label": {"type": "string"} },
-                "required": []
-            }),
-        }
-    }
-    async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
-        ctx.bail_if_cancelled()?;
-        let label = resolve_label(&input, &self.manager)?;
-        self.manager.close(&label).map_err(ToolError::Execution)?;
-        Ok(json!({ "ok": true, "label": label }).to_string())
-    }
-}
-
-pub struct BrowserListWindowsTool {
-    manager: Arc<BrowserManager>,
-}
-impl BrowserListWindowsTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self {
-        Self { manager }
-    }
-}
-#[async_trait]
-impl ToolExecutor for BrowserListWindowsTool {
-    fn name(&self) -> &str {
-        "browser_list_windows"
-    }
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "browser_list_windows".into(),
-            description: "List every browser preview window currently open, with its \
-                label, URL, and inspector/stagewise state. Call this BEFORE \
-                browser_open whenever the task is about a page that might already \
-                be open (the user's running dev server, a previous turn's window, a \
-                page the user opened via the IDE's '+ Browser' tab). If the URL you \
-                want is already in the result, pass that label to browser_navigate / \
-                browser_screenshot / browser_click instead of opening a new window."
-                .into(),
-            input_schema: json!({ "type": "object", "properties": {} }),
-        }
-    }
-    async fn execute(&self, _input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
-        ctx.bail_if_cancelled()?;
-        let windows = self.manager.list_windows();
-        Ok(json!({ "windows": windows }).to_string())
-    }
-}
-
-pub struct BrowserGetUrlTool {
-    manager: Arc<BrowserManager>,
-}
-impl BrowserGetUrlTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self {
-        Self { manager }
-    }
-}
-#[async_trait]
-impl ToolExecutor for BrowserGetUrlTool {
-    fn name(&self) -> &str {
-        "browser_get_url"
-    }
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "browser_get_url".into(),
-            description: "Return the current URL of a browser window — including any \
-                in-page navigation the runtime is aware of."
-                .into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": { "label": {"type": "string"} },
-                "required": ["label"]
-            }),
-        }
-    }
-    async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
-        ctx.bail_if_cancelled()?;
-        let label = require_label(&input)?;
-        let url = self
-            .manager
-            .current_url(&label)
-            .map_err(ToolError::Execution)?;
-        Ok(json!({ "label": label, "url": url }).to_string())
-    }
-}
-
-pub struct BrowserGetDomTool {
-    manager: Arc<BrowserManager>,
-}
-impl BrowserGetDomTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self {
-        Self { manager }
-    }
-}
-#[async_trait]
-impl ToolExecutor for BrowserGetDomTool {
-    fn name(&self) -> &str {
-        "browser_get_dom"
-    }
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "browser_get_dom".into(),
-            description: "Return the outerHTML of the page (or a single CSS selector if \
-                provided). Capped at 200 KB to protect the context window."
-                .into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "label": {"type": "string"},
-                    "selector": {"type": "string", "description": "Optional CSS selector. Omit for full document."}
-                },
-                "required": ["label"]
-            }),
-        }
-    }
-    async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
-        ctx.bail_if_cancelled()?;
-        let label = require_label(&input)?;
-        let selector = input.get("selector").and_then(Value::as_str);
-        let result = self
-            .manager
-            .get_dom(&label, selector)
-            .await
-            .map_err(ToolError::Execution)?;
-        let value = unwrap_browser_result(result)?;
-        Ok(json!({
-            "label": label,
-            "selector": selector,
-            "html": value,
-        })
-        .to_string())
-    }
-}
-
 pub struct BrowserInspectElementTool {
     manager: Arc<BrowserManager>,
 }
@@ -422,32 +288,117 @@ impl ToolExecutor for BrowserInspectElementTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_inspect_element".into(),
-            description: "Inspect a single element by CSS selector. Returns tag, attributes, \
-                bounding rect, computed text, visibility, and a small subset of computed \
-                styles (display, visibility, opacity, color, background, font-size, \
-                font-weight)."
+            description: "Read the current state of one element in the agent browser by CSS \
+                selector. Returns exact text, attributes, form value/checked/selected/disabled \
+                state, visibility, bounds, and key computed styles. Read-only and bounded."
                 .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "label": {"type": "string"},
-                    "selector": {"type": "string"}
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector for the element to inspect."
+                    }
                 },
-                "required": ["label", "selector"]
+                "required": ["selector"]
             }),
         }
     }
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-        let label = require_label(&input)?;
         let selector = require_string(&input, "selector")?;
+        ensure_agent_browser(&self.manager, None).await?;
         let result = self
             .manager
-            .inspect_element(&label, selector)
+            .inspect_element(AGENT_BROWSER_LABEL, selector)
             .await
             .map_err(ToolError::Execution)?;
         let value = unwrap_browser_result(result)?;
-        Ok(json!({ "label": label, "selector": selector, "element": value }).to_string())
+        if value.is_null() {
+            return Err(ToolError::Execution(format!(
+                "No element matches `{selector}` in the current page. Inspect the latest UI and retry with a current CSS selector."
+            )));
+        }
+        Ok(json!({ "selector": selector, "element": value }).to_string())
+    }
+}
+
+pub struct BrowserPageOutlineTool {
+    manager: Arc<BrowserManager>,
+}
+impl BrowserPageOutlineTool {
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
+}
+#[async_trait]
+impl ToolExecutor for BrowserPageOutlineTool {
+    fn name(&self) -> &str {
+        "browser_page_outline"
+    }
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "browser_page_outline".into(),
+            description: "List the interactive elements on the current page — links, buttons, \
+                inputs, selects, tabs, and anything with a role or data-testid — each with a \
+                READY-TO-USE CSS selector verified to match exactly one element, plus its visible \
+                text and form state. This is where selectors come from: call it before \
+                browser_click / browser_fill / browser_inspect_element instead of guessing a \
+                selector from a screenshot. Read-only and bounded (no raw DOM dump)."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "Optional CSS selector to scope the scan to one region (e.g. `main`, `#sidebar`). Omit to scan the whole page."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional case-insensitive filter on the element's visible text or id — e.g. `save` to find the Save button."
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum elements to return (default 60, max 200). Any beyond this are reported as a `more` count."
+                    }
+                },
+                "required": []
+            }),
+        }
+    }
+    async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
+        ctx.bail_if_cancelled()?;
+        ensure_agent_browser(&self.manager, None).await?;
+        let scope = input.get("selector").and_then(Value::as_str);
+        let query = input.get("query").and_then(Value::as_str);
+        let limit = input
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(60)
+            .clamp(1, 200);
+
+        // `replace` rather than `format!` — the script is mostly braces, and
+        // escaping every one of them for a format string is how a working
+        // selector scanner turns into an unreadable one.
+        let script = PAGE_OUTLINE_JS
+            .replace("__LIMIT__", &limit.to_string())
+            .replace("__SCOPE__", &json!(scope).to_string())
+            .replace("__QUERY__", &json!(query).to_string());
+
+        let result = self
+            .manager
+            .eval_with_result(AGENT_BROWSER_LABEL, &script)
+            .await
+            .map_err(ToolError::Execution)?;
+        let value = unwrap_browser_result(result)?;
+        if value.is_null() {
+            return Err(ToolError::Execution(format!(
+                "No element matches the scope selector `{}` — outline nothing to scan. Omit \
+                 `selector` to scan the whole page.",
+                scope.unwrap_or("")
+            )));
+        }
+        Ok(value.to_string())
     }
 }
 
@@ -744,58 +695,6 @@ impl ToolExecutor for BrowserFillTool {
     }
 }
 
-pub struct BrowserWaitForTool {
-    manager: Arc<BrowserManager>,
-}
-impl BrowserWaitForTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self {
-        Self { manager }
-    }
-}
-#[async_trait]
-impl ToolExecutor for BrowserWaitForTool {
-    fn name(&self) -> &str {
-        "browser_wait_for"
-    }
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "browser_wait_for".into(),
-            description: "Block until `selector` is present and visible (non-zero bounding \
-                rect). Returns `{ ok, found, waitedMs }`. `timeoutMs` defaults to 8000, \
-                capped at 60000."
-                .into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "label": {"type": "string"},
-                    "selector": {"type": "string"},
-                    "timeoutMs": {"type": "number"}
-                },
-                "required": ["label", "selector"]
-            }),
-        }
-    }
-    fn requires_permission(&self) -> bool {
-        true
-    }
-    async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
-        ctx.bail_if_cancelled()?;
-        let label = require_label(&input)?;
-        let selector = require_string(&input, "selector")?;
-        let timeout = input.get("timeoutMs").and_then(Value::as_u64);
-        let result = self
-            .manager
-            .wait_for(&label, selector, timeout)
-            .await
-            .map_err(ToolError::Execution)?;
-        Ok(unwrap_browser_result(result)?.to_string())
-    }
-}
-
-/// Scroll the page in a cardinal direction or bring a specific
-/// element into view. Replaces the only legitimate use-case agents
-/// had for `browser_eval` — programmatic scrolling — without exposing
-/// the broader eval foot-gun.
 pub struct BrowserScrollTool {
     manager: Arc<BrowserManager>,
 }
@@ -864,97 +763,3 @@ impl ToolExecutor for BrowserScrollTool {
 // Compiled-but-unregistered tools (kept for IPC-driven IDE features and
 // for completeness; the agent surface no longer advertises them).
 // ---------------------------------------------------------------------------
-
-pub struct BrowserEvalTool {
-    manager: Arc<BrowserManager>,
-}
-impl BrowserEvalTool {
-    pub fn new(manager: Arc<BrowserManager>) -> Self {
-        Self { manager }
-    }
-}
-#[async_trait]
-impl ToolExecutor for BrowserEvalTool {
-    fn name(&self) -> &str {
-        "browser_eval"
-    }
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "browser_eval".into(),
-            description: "DANGEROUS — evaluate an arbitrary JS expression in the page and \
-                return the JSON-stringified result. The expression runs with full page \
-                privileges, so it can read storage, mutate the DOM, call APIs, exfiltrate \
-                cookies, etc. Always require explicit user approval — never auto-approve."
-                .into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "label": {"type": "string"},
-                    "expression": {"type": "string", "description": "JS expression. May be async/return a promise."}
-                },
-                "required": ["label", "expression"]
-            }),
-        }
-    }
-    fn requires_permission(&self) -> bool {
-        true
-    }
-    async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
-        ctx.bail_if_cancelled()?;
-        let label = require_label(&input)?;
-        let expression = require_string(&input, "expression")?;
-        let result = self
-            .manager
-            .eval_with_result(&label, expression)
-            .await
-            .map_err(ToolError::Execution)?;
-        let value = unwrap_browser_result(result)?;
-        Ok(json!({ "label": label, "value": value }).to_string())
-    }
-}
-
-fn uuid_short() -> String {
-    let raw = uuid::Uuid::new_v4().to_string();
-    raw.split('-').next().unwrap_or(&raw).to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tool_name_roster_count() {
-        // Six tools: one embedded right-rail browser, no window management.
-        assert_eq!(TOOL_NAMES.len(), 6);
-    }
-
-    #[test]
-    fn dangerous_tools_are_unregistered() {
-        // Explicitly assert the foot-gun and now-obsolete window-management
-        // tools are not exposed to the agent surface. Catches accidental
-        // re-registration.
-        for hidden in [
-            "browser_open",
-            "browser_close",
-            "browser_list_windows",
-            "browser_eval",
-            "browser_get_dom",
-            "browser_get_url",
-            "browser_inspect_element",
-            "browser_wait_for",
-        ] {
-            assert!(
-                !TOOL_NAMES.contains(&hidden),
-                "{hidden} must not be advertised to the agent"
-            );
-        }
-    }
-
-    #[test]
-    fn permission_required_set_matches_constants() {
-        let names: std::collections::HashSet<_> = TOOL_NAMES.iter().copied().collect();
-        for &n in TOOLS_REQUIRING_PERMISSION {
-            assert!(names.contains(n), "permission tool {n} not in roster");
-        }
-    }
-}

@@ -9,7 +9,13 @@
  * mirrors the IDE's `ChatMessage` timeline rendering, re-themed with `--agw-*`.
  */
 
-import React, { useCallback, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { writeClipboardText } from "../../lib/clipboard";
 import { AgentIcon } from "../shared/AgentIcon";
@@ -139,6 +145,88 @@ const CopyAction: React.FC<{ text: string }> = ({ text }) => {
   );
 };
 
+/**
+ * Lines of a long user message kept visible while collapsed. Must match the
+ * `calc(1.55em * 6)` clamp on `.agw-bubble-body[data-collapsed]` — the CSS owns
+ * the height, this only decides when the chevron is worth showing.
+ */
+const USER_BUBBLE_CLAMP_LINES = 6;
+
+/**
+ * Bubble content that clamps to its first lines and expands in place.
+ *
+ * Overflow is derived from the measured line-height rather than the usual
+ * `scrollHeight > clientHeight`, because that comparison collapses to false the
+ * moment the body expands — which would hide the control the reader needs to
+ * collapse it again. `scrollHeight` reports full content height in BOTH states,
+ * so comparing it against the clamp height stays correct throughout.
+ */
+const CollapsibleBubbleBody: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+
+  // Layout timing, not effect timing: the clamp has to be applied before paint,
+  // or a long message renders at full height for one frame and then snaps
+  // shorter — a visible jolt part-way up the transcript.
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+
+    const measure = () => {
+      const lineHeight = Number.parseFloat(getComputedStyle(el).lineHeight);
+      // A non-numeric `line-height: normal` has no reliable px value; fall back
+      // to the bubble's 14px × 1.55 so the estimate stays in the right range.
+      const line = Number.isFinite(lineHeight) ? lineHeight : 21.7;
+      // +1px absorbs sub-pixel rounding, which otherwise shows a chevron that
+      // expands to reveal nothing.
+      const next = el.scrollHeight > line * USER_BUBBLE_CLAMP_LINES + 1;
+      setOverflows(next);
+      // Widening the window can make an expanded message fit again. Drop the
+      // expanded flag with it, so it doesn't silently reappear expanded the
+      // next time the pane narrows.
+      if (!next) setExpanded(false);
+    };
+
+    measure();
+    // Re-measure on width changes: the rails and the right dock resize the
+    // transcript, and rewrapped text changes how many lines the same message
+    // occupies.
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [children]);
+
+  const collapsed = overflows && !expanded;
+
+  return (
+    <>
+      <div
+        ref={bodyRef}
+        className="agw-bubble-body"
+        data-collapsed={collapsed || undefined}
+      >
+        {children}
+      </div>
+      {overflows && (
+        <button
+          type="button"
+          className="agw-bubble-more"
+          data-expanded={expanded || undefined}
+          aria-expanded={expanded}
+          title={expanded ? "Show less" : "Show full message"}
+          aria-label={expanded ? "Show less" : "Show full message"}
+          onClick={() => setExpanded((v) => !v)}
+        >
+          <AgentIcon name="chevron-down" size={15} />
+        </button>
+      )}
+    </>
+  );
+};
+
 /** Right-aligned user turn. Renders any embedded images above the text; an
  *  image click opens the full-size preview modal. */
 const UserBubble: React.FC<{
@@ -200,59 +288,61 @@ const UserBubble: React.FC<{
             border: "1px solid var(--agw-border)",
           }}
         >
-          {cmdChips.length > 0 && (
-            <div
-              className="agw-bubble-selected"
-              style={{ marginBottom: text || chips.length > 0 ? 7 : 0 }}
-            >
-              {cmdChips.map((c, i) => (
-                <span
-                  key={`${c.kind}-${c.title}-${i}`}
-                  className="agw-pill-inline agw-pill-cmd"
-                  data-cmd-kind={c.kind}
-                  title={`${c.kind} · ${c.title}`}
-                >
-                  <span className="agw-pill-cmd-ico">
-                    <AgentIcon name={COMMAND_CHIP_ICON[c.kind]} size={11} />
+          <CollapsibleBubbleBody>
+            {cmdChips.length > 0 && (
+              <div
+                className="agw-bubble-selected"
+                style={{ marginBottom: text || chips.length > 0 ? 7 : 0 }}
+              >
+                {cmdChips.map((c, i) => (
+                  <span
+                    key={`${c.kind}-${c.title}-${i}`}
+                    className="agw-pill-inline agw-pill-cmd"
+                    data-cmd-kind={c.kind}
+                    title={`${c.kind} · ${c.title}`}
+                  >
+                    <span className="agw-pill-cmd-ico">
+                      <AgentIcon name={COMMAND_CHIP_ICON[c.kind]} size={11} />
+                    </span>
+                    <span>{c.title}</span>
                   </span>
-                  <span>{c.title}</span>
-                </span>
-              ))}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
 
-          {chips.length > 0 && (
-            <div
-              className="agw-bubble-selected"
-              style={{ marginBottom: text ? 7 : 0 }}
-            >
-              {chips.map((el) => {
-                const elText = (el.text ?? "").trim();
-                const tip = [
-                  `selector: ${el.selector}`,
-                  `tag: <${el.tagName}>`,
-                  el.url ? `url: ${el.url}` : null,
-                ]
-                  .filter(Boolean)
-                  .join("\n");
-                return (
-                  <span key={el.index} className="agw-sel-chip" title={tip}>
-                    <AgentIcon name="inspect" size={11} />
-                    <span className="agw-sel-tag">{`<${el.tagName}>`}</span>
-                    {elText && (
-                      <span className="agw-sel-text">{elText.slice(0, 24)}</span>
-                    )}
-                  </span>
-                );
-              })}
-            </div>
-          )}
+            {chips.length > 0 && (
+              <div
+                className="agw-bubble-selected"
+                style={{ marginBottom: text ? 7 : 0 }}
+              >
+                {chips.map((el) => {
+                  const elText = (el.text ?? "").trim();
+                  const tip = [
+                    `selector: ${el.selector}`,
+                    `tag: <${el.tagName}>`,
+                    el.url ? `url: ${el.url}` : null,
+                  ]
+                    .filter(Boolean)
+                    .join("\n");
+                  return (
+                    <span key={el.index} className="agw-sel-chip" title={tip}>
+                      <AgentIcon name="inspect" size={11} />
+                      <span className="agw-sel-tag">{`<${el.tagName}>`}</span>
+                      {elText && (
+                        <span className="agw-sel-text">{elText.slice(0, 24)}</span>
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
 
-          {text && (
-            <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-              {renderUserText(text, exactChips)}
-            </div>
-          )}
+            {text && (
+              <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                {renderUserText(text, exactChips)}
+              </div>
+            )}
+          </CollapsibleBubbleBody>
         </div>
       )}
 

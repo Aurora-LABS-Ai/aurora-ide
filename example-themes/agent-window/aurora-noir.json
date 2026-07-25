@@ -1,0 +1,55 @@
+{
+  "id": "agent-aurora-noir",
+  "name": "Aurora Noir",
+  "appearance": "dark",
+  "tokens": {
+    "canvas": "#171717",
+    "rail": "#171717",
+    "conversation": "#0f0f0f",
+    "dock": "#171717",
+    "surface": "#1e1e1e",
+    "surfaceElevated": "#2a2a2a",
+    "composerSurface": "#202020",
+    "overlay": "#000000a3",
+
+    "text": "#ededed",
+    "textMuted": "#a3a3a3",
+    "textSubtle": "#828282",
+    "onAccent": "#ffffff",
+
+    "border": "#232323",
+    "borderStrong": "#343434",
+    "ring": "#45a0c8",
+
+    "accent": "#45a0c8",
+    "accentHover": "#57b2da",
+
+    "added": "#3fb950",
+    "addedSurface": "#3fb95024",
+    "removed": "#e5534b",
+    "removedSurface": "#e5534b21",
+    "warning": "#d9a441",
+    "info": "#58a6ff",
+
+    "bubbleUser": "#ffffff0d",
+    "bubbleAssistant": "transparent",
+    "codeSurface": "#161616",
+    "codeBorder": "#242424",
+    "chipSurface": "#1c1c1c",
+    "chipText": "#a3a3a3",
+    "controlMuted": "#ffffff14",
+    "hover": "#ffffff0e",
+
+    "scrollThumb": "#ffffff24",
+    "scrollThumbHover": "#ffffff3d",
+
+    "shadowPop": "0 12px 32px rgba(0, 0, 0, 0.55)",
+
+    "fontUi": "\"Inter Variable\", \"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif",
+    "fontCode": "\"JetBrains Mono\", \"Cascadia Code\", \"Cascadia Mono\", Consolas, \"Fira Code\", ui-monospace, monospace",
+
+    "radiusSm": "6px",
+    "radiusMd": "10px",
+    "radiusLg": "14px"
+  }
+}

@@ -86,9 +86,9 @@ pub struct CliArgs {
     #[arg(long)]
     pub new_empty_window: bool,
 
-    /// Open ONLY the Aurora Agent window (no IDE). Path is ignored — the agent
-    /// window opens regardless of where the command is run. Accepts `--agent`
-    /// or `--agents`; short shim: `agw`.
+    /// Open ONLY the Aurora Agent window (no IDE), scoped to the given path —
+    /// or the current directory when no path is passed. Accepts `--agent` or
+    /// `--agents`; short shim: `agw`.
     #[arg(long, visible_alias = "agents")]
     pub agent: bool,
 
@@ -165,6 +165,22 @@ impl CliArgs {
         }
     }
 
+    /// Workspace root for an agent-mode launch (`agw` / `aurora --agent`).
+    ///
+    /// Unlike `get_workspace_root`, this falls back to the process working
+    /// directory when no path argument was given. Running `agw` inside a
+    /// project MUST bind the window to that project: the agent window creates
+    /// each chat with the window's `projectRoot` as its `workspaceRoot`, and
+    /// the left rail is a per-project tree keyed on that value. A null root
+    /// therefore produces a chat with no project bucket — it is persisted
+    /// correctly but rendered nowhere, which reads to the user as a lost
+    /// conversation.
+    pub fn agent_workspace_root(&self) -> Option<PathBuf> {
+        self.get_workspace_root()
+            .or_else(|| std::env::current_dir().ok())
+            .map(|path| normalize_path(&path))
+    }
+
     /// Get the file to open (if path is a file)
     pub fn get_file_to_open(&self) -> Option<PathBuf> {
         let resolved = self.resolve_path()?;
@@ -186,6 +202,35 @@ impl CliArgs {
             None => Ok(false),
         }
     }
+}
+
+/// Percent-encode a string for use as a URL query-parameter VALUE.
+///
+/// Mirrors JS `encodeURIComponent` (see `agentWindowUrl` in
+/// `src/agent-window/adapters/window.ts`) so both launch paths hand the window
+/// an identically-shaped `?ws=`. Written by hand rather than pulling in a crate
+/// — this is the only place the app needs it, and Windows roots (`E:\a b\c`)
+/// only exercise the drive-colon, backslash, and space cases.
+pub fn encode_query_component(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => out.push(*byte as char),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
 }
 
 /// Data structure to pass to frontend via Tauri event

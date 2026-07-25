@@ -94,6 +94,12 @@ pub struct RuntimeConfig {
     /// silently drops it on providers that don't support thinking.
     pub thinking_enabled: bool,
 
+    /// Explicit thinking token budget for models whose reasoning control
+    /// is a budget rather than an effort tier. `None` lets the adapter
+    /// derive one (Anthropic scales the effort tier against
+    /// `default_max_output_tokens`). Only read when `thinking_enabled`.
+    pub thinking_budget_tokens: Option<u32>,
+
     /// Default sampling temperature applied to every API call.
     /// `None` defers to the provider preset (some, like DeepSeek's
     /// reasoner, ignore the field entirely). Phase 2.3 lets the
@@ -143,6 +149,7 @@ impl Default for RuntimeConfig {
             system_prompt: None,
             default_max_output_tokens: 8192,
             thinking_enabled: false,
+            thinking_budget_tokens: None,
             default_temperature: None,
             ide_context: None,
             context_window: None,
@@ -165,6 +172,10 @@ pub struct ConversationRuntime {
     /// existing `ConversationRuntime::new` call site is unaffected.
     /// Replace via [`ConversationRuntime::with_hook`].
     hook: Arc<dyn Hook>,
+    /// Session-store root, used to place spilled tool output beside the
+    /// thread it belongs to. `None` disables spilling — results are then
+    /// clamped as before, which is what tests and non-persisting callers get.
+    store_dir: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for ConversationRuntime {
@@ -188,7 +199,27 @@ impl ConversationRuntime {
             tools,
             config,
             hook: Arc::new(NoopHook),
+            store_dir: None,
         }
+    }
+
+    /// Point the runtime at the session store's directory so oversized tool
+    /// output can be spilled to a file the model can read back, instead of
+    /// being clamped away. See [`super::tool_spill`].
+    #[must_use]
+    pub fn with_store_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.store_dir = Some(dir.into());
+        self
+    }
+
+    /// Move oversized payloads in `raw` onto disk, returning the content with
+    /// a head+tail preview and the file's path. A no-op without a store dir.
+    fn spill_tool_output(&self, session: &Session, tool_call_id: &str, raw: String) -> String {
+        let Some(root) = self.store_dir.as_deref() else {
+            return raw;
+        };
+        let dir = super::session_store::tool_results_dir_in(root, &session.thread_id);
+        super::tool_spill::spill_oversized(&dir, tool_call_id, raw)
     }
 
     /// Builder-style override that swaps the runtime's no-op hook for
@@ -353,6 +384,7 @@ impl ConversationRuntime {
                 temperature: self.config.default_temperature,
                 max_output_tokens: self.config.default_max_output_tokens,
                 thinking_enabled: self.config.thinking_enabled,
+                thinking_budget_tokens: self.config.thinking_budget_tokens,
             };
 
             let stream_result = self
@@ -442,6 +474,29 @@ impl ConversationRuntime {
                 // No more tools — the turn is done. We don't need to
                 // bump `seq` again; nothing reads it after the break.
                 stop_reason = turn.stop_reason;
+
+                // `length` means the model was cut off mid-sentence by the
+                // output cap, not that it finished. This used to end the
+                // turn indistinguishably from a clean stop, so a truncated
+                // answer looked like a complete one — the user's only clue
+                // was prose that stopped mid-word. Say it out loud.
+                if is_length_stop(&stop_reason) {
+                    seq += 1;
+                    let _ = event_sink
+                        .send(AgentEventEnvelope {
+                            turn_id: turn_id.clone(),
+                            seq,
+                            event: AssistantEvent::Error {
+                                message: "The model hit its output-token limit and this reply is \
+                                          cut off. Raise `Max output` for this model, or ask it \
+                                          to continue."
+                                    .to_string(),
+                                recoverable: true,
+                            },
+                        })
+                        .await;
+                }
+
                 let envelope = AgentEventEnvelope {
                     turn_id: turn_id.clone(),
                     seq,
@@ -700,6 +755,9 @@ impl ConversationRuntime {
             temperature: Some(0.3),
             max_output_tokens: self.config.compaction_summary_budget,
             thinking_enabled: false,
+            // Summarization is a mechanical call — never spend the user's
+            // reasoning budget on it.
+            thinking_budget_tokens: None,
         };
         let result = self
             .api_client
@@ -718,9 +776,51 @@ impl ConversationRuntime {
     /// one `MessageRole::Tool` message, and return it. The caller
     /// appends to the session.
     ///
-    /// Each tool runs sequentially in this Phase 2.1 skeleton.
-    /// Phase 4 will introduce parallel dispatch with a join policy
-    /// keyed off tool risk level.
+    /// How many calls starting at `calls[0]` may run concurrently.
+    ///
+    /// Returns the length of the leading run of concurrency-safe calls, or
+    /// `1` when the first call must run alone. Splitting on the first
+    /// unsafe call (rather than partitioning the whole batch) preserves
+    /// relative order between a read and a write the model deliberately
+    /// sequenced — `[read a, read b, write a, read c]` runs `{a,b}`
+    /// concurrently, then the write, then `c`.
+    fn concurrent_batch_len(&self, calls: &[PendingToolCall]) -> usize {
+        if calls.first().is_none_or(|call| !self.is_batchable(call)) {
+            return 1;
+        }
+        calls
+            .iter()
+            .take_while(|call| self.is_batchable(call))
+            .count()
+    }
+
+    /// Whether a call can share a batch with its neighbours.
+    ///
+    /// Calls that never reach an executor — malformed arguments, unknown
+    /// tool names — are trivially safe: they produce an error string with
+    /// no side effect at all.
+    fn is_batchable(&self, call: &PendingToolCall) -> bool {
+        if crate::api::provider_kernel_adapter::malformed_tool_input(&call.input).is_some() {
+            return true;
+        }
+        self.tools
+            .get(&call.name)
+            .is_none_or(|tool| tool.concurrency_safe())
+    }
+
+    /// Independent read-only calls in the batch run **concurrently**;
+    /// everything else stays strictly sequential and in order.
+    ///
+    /// Models routinely emit four to six independent reads in a single
+    /// message. Running those one at a time made a step that should cost
+    /// one round-trip cost six, which is most of why Aurora felt slow on a
+    /// large repo. Concurrency is opt-in per executor via
+    /// [`ToolExecutor::concurrency_safe`] (default `false`), so anything
+    /// that mutates the workspace, prompts for permission, or drives the
+    /// single shared browser panel keeps its ordering guarantees.
+    ///
+    /// Result blocks are always emitted in the model's original call order
+    /// regardless of completion order.
     async fn execute_tool_calls(
         &self,
         calls: Vec<PendingToolCall>,
@@ -731,44 +831,49 @@ impl ConversationRuntime {
         seq: &mut u64,
     ) -> Result<ConversationMessage, RuntimeError> {
         let mut result_blocks = Vec::with_capacity(calls.len());
+        // Repeat-failure detector, scoped to this batch's turn. See
+        // `FailureLoopGuard` — a model that re-issues an identical failing
+        // call needs to be told so, or it will keep re-issuing it.
+        let mut loop_guard = FailureLoopGuard::default();
 
-        for call in calls {
-            let PendingToolCall { id, name, input } = call;
-            let context = ToolContext {
-                turn_id: turn_id.to_string(),
-                tool_call_id: id.clone(),
-                session_id: session.session_id.clone(),
-                workspace_root: session
-                    .workspace_root
-                    .as_ref()
-                    .map(std::path::PathBuf::from),
-                allow_outside_workspace: self.config.allow_outside_workspace,
-                cancel_token: cancel_token.clone(),
-            };
+        let mut cursor = 0usize;
+        while cursor < calls.len() {
+            let batch_len = self.concurrent_batch_len(&calls[cursor..]);
+            let batch = &calls[cursor..cursor + batch_len];
+            cursor += batch_len;
 
-            // Phase 4 pre-tool-use hook fires before lookup so audit
-            // trails capture even tools that resolve to NotFound.
-            self.hook.pre_tool_use(&name, &input).await;
+            // ── Announce ──────────────────────────────────────────────
+            // Every start event fires before any execution begins, so a
+            // concurrent batch lights up all its cards at once instead of
+            // appearing to run one by one.
+            let mut lifecycles = Vec::with_capacity(batch.len());
+            for call in batch {
+                // Phase 4 pre-tool-use hook fires before lookup so audit
+                // trails capture even tools that resolve to NotFound.
+                self.hook.pre_tool_use(&call.name, &call.input).await;
 
-            let tool = self.tools.get(&name);
-            let uses_frontend_lifecycle = tool
-                .as_ref()
-                .is_some_and(|executor| executor.uses_frontend_lifecycle());
+                let uses_frontend_lifecycle = self
+                    .tools
+                    .get(&call.name)
+                    .is_some_and(|executor| executor.uses_frontend_lifecycle());
+                lifecycles.push(uses_frontend_lifecycle);
 
-            if !uses_frontend_lifecycle {
-                emit_native_tool_event(
-                    event_sink,
-                    turn_id,
-                    seq,
-                    AssistantEvent::ToolExecutionStart {
-                        id: id.clone(),
-                        name: name.clone(),
-                        input: input.clone(),
-                    },
-                )
-                .await;
+                if !uses_frontend_lifecycle {
+                    emit_native_tool_event(
+                        event_sink,
+                        turn_id,
+                        seq,
+                        AssistantEvent::ToolExecutionStart {
+                            id: call.id.clone(),
+                            name: call.name.clone(),
+                            input: call.input.clone(),
+                        },
+                    )
+                    .await;
+                }
             }
 
+            // ── Execute ───────────────────────────────────────────────
             // The permission gate is wired into the registry: any tool
             // whose `requires_permission()` returns `true` was wrapped
             // by `install_permission_gate` in `lib.rs::setup` with a
@@ -782,79 +887,145 @@ impl ConversationRuntime {
             // card overrides that visual state by gating purely on
             // `pendingApproval.id === tool.id` — see ToolTimeline's
             // `isAwaitingApproval` predicate.
-            let outcome = match tool {
-                Some(tool) => tool.execute(input.clone(), &context).await,
-                None => Err(ToolError::NotFound(name.clone())),
-            };
-
-            // Phase 4 post-tool-use hook fires regardless of success
-            // or failure, mirroring Anthropic CC's lifecycle. Borrow
-            // through ToolHookResult so the success payload doesn't
-            // need to be cloned just to satisfy the hook surface.
-            let hook_result = match &outcome {
-                Ok(s) => ToolHookResult::Success(s.as_str()),
-                Err(e) => ToolHookResult::Error(e),
-            };
-            self.hook.post_tool_use(&name, hook_result).await;
-
-            // A cancellation during a tool propagates immediately.
-            if matches!(&outcome, Err(ToolError::Cancelled)) {
-                return Err(RuntimeError::Cancelled);
-            }
-
-            let (raw_content, is_error) = match outcome {
-                Ok(s) => (s, None),
-                Err(e) => (e.to_string(), Some(true)),
-            };
-
-            // Decouple the UI event payload from the model-history payload.
-            // The 8 KiB clamp protects the conversation history / JSONL log /
-            // API request body from megabyte-scale tool output, but ride-sharing
-            // the same string with the UI event chops structured JSON results
-            // (workspace_tree, grep, multi_file_read) mid-string. The frontend
-            // then fails `JSON.parse` and falls back to dumping the raw
-            // truncated bytes — that's the "sometimes tree, sometimes raw JSON"
-            // artifact users see. Send the full payload to the UI; only the
-            // history copy is truncated.
-            let history_content = truncate_tool_content(&name, raw_content.clone());
-
-            // Edit results whose history copy was clamped get a full-fidelity
-            // sidecar copy (UI-shaped, so diffs render COMPLETE after a thread
-            // reload). Stashed on the session; the persist path writes it to
-            // `<thread_id>.rich.jsonl`. Model history stays clamped.
-            if is_error.is_none() && rich_persisted_tool(&name) {
-                let ui_copy = truncate_tool_content_for_ui(&name, raw_content.clone());
-                if ui_copy != history_content {
-                    session.push_rich_result(RichToolResult {
-                        tool_use_id: id.clone(),
-                        tool: name.clone(),
-                        content: ui_copy,
-                    });
+            let outcomes = futures_util::future::join_all(batch.iter().map(|call| {
+                let context = ToolContext {
+                    turn_id: turn_id.to_string(),
+                    tool_call_id: call.id.clone(),
+                    session_id: session.session_id.clone(),
+                    workspace_root: session
+                        .workspace_root
+                        .as_ref()
+                        .map(std::path::PathBuf::from),
+                    allow_outside_workspace: self.config.allow_outside_workspace,
+                    cancel_token: cancel_token.clone(),
+                };
+                async move {
+                    // Three distinct failures, three distinct messages.
+                    // Collapsing any two of them is what makes a capable
+                    // model look erratic: it retries, rephrases, and
+                    // switches tools because the error it got back does
+                    // not describe what it actually did.
+                    match crate::api::provider_kernel_adapter::malformed_tool_input(&call.input) {
+                        // The arguments never survived the stream. Do NOT
+                        // dispatch: the executor would report a missing
+                        // field to a model that sent it. Quote back what
+                        // arrived so the model can see the truncation
+                        // point and re-emit.
+                        Some(raw) => Err(malformed_input_error(&call.name, raw)),
+                        None => match self.tools.get(&call.name) {
+                            Some(tool) => tool.execute(call.input.clone(), &context).await,
+                            // Unknown name — hand back the nearest match and
+                            // the real roster so this costs one iteration,
+                            // not five.
+                            None => Err(self.tools.unknown_tool_error(&call.name)),
+                        },
+                    }
                 }
-            }
+            }))
+            .await;
 
-            if !uses_frontend_lifecycle {
-                let ui_content = truncate_tool_content_for_ui(&name, raw_content);
-                emit_native_tool_event(
-                    event_sink,
-                    turn_id,
-                    seq,
-                    AssistantEvent::ToolExecutionResult {
-                        id: id.clone(),
-                        name,
-                        input,
-                        content: ui_content,
-                        is_error: is_error.unwrap_or(false),
-                    },
-                )
-                .await;
-            }
+            // ── Fold ──────────────────────────────────────────────────
+            // Sequential and in call order: session spill, rich sidecars,
+            // and result blocks all depend on a stable order.
+            for ((call, outcome), uses_frontend_lifecycle) in
+                batch.iter().zip(outcomes).zip(lifecycles)
+            {
+                let id = call.id.clone();
+                let name = call.name.clone();
+                let input = call.input.clone();
 
-            result_blocks.push(ContentBlock::ToolResult {
-                tool_use_id: id,
-                content: history_content,
-                is_error,
-            });
+                // Phase 4 post-tool-use hook fires regardless of success
+                // or failure, mirroring Anthropic CC's lifecycle. Borrow
+                // through ToolHookResult so the success payload doesn't
+                // need to be cloned just to satisfy the hook surface.
+                let hook_result = match &outcome {
+                    Ok(s) => ToolHookResult::Success(s.as_str()),
+                    Err(e) => ToolHookResult::Error(e),
+                };
+                self.hook.post_tool_use(&name, hook_result).await;
+
+                // A cancellation during a tool propagates immediately.
+                if matches!(&outcome, Err(ToolError::Cancelled)) {
+                    return Err(RuntimeError::Cancelled);
+                }
+
+                let (raw_content, is_error) = match outcome {
+                    Ok(s) => {
+                        loop_guard.clear(&name, &input);
+                        (s, None)
+                    }
+                    Err(e) => {
+                        // Repeating an identical failing call is the most
+                        // expensive thing a model can do here, and nothing used
+                        // to interrupt it. Escalate the message itself so the
+                        // second attempt reads differently from the first.
+                        let mut message = e.to_string();
+                        if let Some(note) = loop_guard.record_failure(&name, &input) {
+                            message.push_str(&note);
+                        }
+                        (message, Some(true))
+                    }
+                };
+
+                // Decouple the UI event payload from the model-history payload.
+                // The 8 KiB clamp protects the conversation history / JSONL log /
+                // API request body from megabyte-scale tool output, but ride-sharing
+                // the same string with the UI event chops structured JSON results
+                // (workspace_tree, grep, multi_file_read) mid-string. The frontend
+                // then fails `JSON.parse` and falls back to dumping the raw
+                // truncated bytes — that's the "sometimes tree, sometimes raw JSON"
+                // artifact users see. Send the full payload to the UI; only the
+                // history copy is truncated.
+                //
+                // The spill applies to the MODEL's copy only. Oversized output is
+                // written to a file beside the thread and replaced with a head+tail
+                // preview carrying that path — without it the clamp keeps only the
+                // HEAD, which for a failing build is precisely the half that does
+                // not contain the error, and the dropped bytes are unrecoverable
+                // once the process has exited. The UI keeps the untouched payload
+                // and applies its own display clamp, so a tool card never shows the
+                // model's "read this file" instruction.
+                let history_source = self.spill_tool_output(session, &id, raw_content.clone());
+                let history_content = truncate_tool_content(&name, history_source);
+
+                // Edit results whose history copy was clamped get a full-fidelity
+                // sidecar copy (UI-shaped, so diffs render COMPLETE after a thread
+                // reload). Stashed on the session; the persist path writes it to
+                // `<thread_id>.rich.jsonl`. Model history stays clamped.
+                if is_error.is_none() && rich_persisted_tool(&name) {
+                    let ui_copy = truncate_tool_content_for_ui(&name, raw_content.clone());
+                    if ui_copy != history_content {
+                        session.push_rich_result(RichToolResult {
+                            tool_use_id: id.clone(),
+                            tool: name.clone(),
+                            content: ui_copy,
+                        });
+                    }
+                }
+
+                if !uses_frontend_lifecycle {
+                    let ui_content = truncate_tool_content_for_ui(&name, raw_content);
+                    emit_native_tool_event(
+                        event_sink,
+                        turn_id,
+                        seq,
+                        AssistantEvent::ToolExecutionResult {
+                            id: id.clone(),
+                            name,
+                            input,
+                            content: ui_content,
+                            is_error: is_error.unwrap_or(false),
+                        },
+                    )
+                    .await;
+                }
+
+                result_blocks.push(ContentBlock::ToolResult {
+                    tool_use_id: id,
+                    content: history_content,
+                    is_error,
+                });
+            }
         }
 
         Ok(ConversationMessage {
@@ -874,6 +1045,129 @@ struct PendingToolCall {
     id: String,
     name: String,
     input: serde_json::Value,
+}
+
+/// Whether a stop reason means "cut off by the output cap".
+///
+/// Providers disagree on the spelling: Anthropic says `max_tokens`, the
+/// OpenAI family says `length`. Both mean the reply is incomplete.
+fn is_length_stop(stop_reason: &str) -> bool {
+    matches!(stop_reason, "length" | "max_tokens")
+}
+
+/// Detects a model re-issuing a tool call that has already failed with the
+/// exact same arguments, and escalates the error text when it does.
+///
+/// Nothing used to interrupt this. A `file_edit` whose `old_string` doesn't
+/// match fails identically however many times it is retried, and because
+/// each attempt returns the same message, the model has no signal that it is
+/// repeating itself rather than making progress — so it burns the whole
+/// iteration budget on one edit. The fix is not to block the call (a retry
+/// after an intervening read is legitimate and often correct); it is to make
+/// the second identical failure *read differently* from the first.
+///
+/// Scoped to a single batch of tool calls, keyed on `(tool, arguments)`.
+/// A success clears the entry, so read → failed-edit → read → same-edit is
+/// still treated as a repeat: only a successful call with those exact
+/// arguments means the situation genuinely changed.
+#[derive(Default)]
+struct FailureLoopGuard {
+    failures: std::collections::HashMap<(String, String), u32>,
+}
+
+impl FailureLoopGuard {
+    fn key(tool: &str, input: &serde_json::Value) -> (String, String) {
+        (tool.to_string(), input.to_string())
+    }
+
+    /// Record a failure and return the escalation to append, if any.
+    fn record_failure(&mut self, tool: &str, input: &serde_json::Value) -> Option<String> {
+        let count = self
+            .failures
+            .entry(Self::key(tool, input))
+            .and_modify(|n| *n += 1)
+            .or_insert(1);
+
+        match *count {
+            1 => None,
+            2 => Some(format!(
+                "\n\nNOTE: this is the SECOND time `{tool}` has been called with these exact \
+                 arguments in this turn, and it failed identically both times. Repeating it \
+                 will not produce a different result. Change something concrete first — re-read \
+                 the file to get its current exact text, widen or narrow the match, or use a \
+                 different tool."
+            )),
+            n => Some(format!(
+                "\n\nSTOP: `{tool}` has now failed {n} times with these exact arguments. Do not \
+                 issue this call again. Either take a different approach, or explain to the user \
+                 what is blocking you and what you need from them."
+            )),
+        }
+    }
+
+    /// A call with these exact arguments succeeded — the state it depends
+    /// on has genuinely changed, so a later failure starts counting fresh.
+    fn clear(&mut self, tool: &str, input: &serde_json::Value) {
+        self.failures.remove(&Self::key(tool, input));
+    }
+}
+
+/// How much of an unparseable argument payload to quote back to the model.
+/// Head and tail both, because the head shows which call it was and the
+/// tail shows where it stopped — and for a truncated call the tail is the
+/// only part that identifies the cause.
+const MALFORMED_HEAD_CHARS: usize = 400;
+const MALFORMED_TAIL_CHARS: usize = 200;
+
+/// Build the error for a tool call whose arguments never parsed.
+///
+/// The goal is a message a model can act on in one step. That needs three
+/// things the old `{}` substitution destroyed: that the call did **not**
+/// run, what Aurora actually received, and which of the two causes it was.
+/// A payload that ends mid-token was cut off by the output cap and should
+/// be re-issued smaller; anything else is a syntax error the model can fix
+/// in place.
+fn malformed_input_error(tool: &str, raw: &str) -> ToolError {
+    let char_count = raw.chars().count();
+    let parse_error = serde_json::from_str::<serde_json::Value>(raw).err();
+    let truncated = parse_error
+        .as_ref()
+        .is_some_and(|e| e.classify() == serde_json::error::Category::Eof);
+
+    let detail = parse_error.map_or_else(
+        || "the arguments parsed but were not a JSON object".to_string(),
+        |e| e.to_string(),
+    );
+
+    let mut message = format!(
+        "`{tool}` was NOT executed — its arguments did not parse as a JSON object.\n\
+         Aurora received {char_count} characters; the parser reported: {detail}.\n\n"
+    );
+
+    if char_count <= MALFORMED_HEAD_CHARS + MALFORMED_TAIL_CHARS {
+        message.push_str(&format!("Received verbatim:\n{raw}\n\n"));
+    } else {
+        let head: String = raw.chars().take(MALFORMED_HEAD_CHARS).collect();
+        let tail: String = raw
+            .chars()
+            .skip(char_count - MALFORMED_TAIL_CHARS)
+            .collect();
+        message.push_str(&format!(
+            "First {MALFORMED_HEAD_CHARS} characters:\n{head}\n\n\
+             Last {MALFORMED_TAIL_CHARS} characters:\n{tail}\n\n"
+        ));
+    }
+
+    message.push_str(if truncated {
+        "The payload ends mid-value, so it was almost certainly cut off by the output-token \
+         limit rather than written incorrectly. Re-issue this call with a smaller payload — \
+         fewer edits per call, a narrower range, or several calls in sequence."
+    } else {
+        "Re-issue the call with valid JSON. Common causes: an unescaped backslash or quote \
+         inside a string value, or a newline written literally instead of as `\\n`."
+    });
+
+    ToolError::MalformedInput(message)
 }
 
 /// Outcome of [`trim_to_budget`]: the (possibly shrunken) message list
@@ -925,13 +1219,34 @@ const MAX_TOOL_RESULT_LENGTH: usize = 8_192;
 /// read through in full while still backstopping a pathological blob.
 const MAX_READ_RESULT_LENGTH: usize = 512 * 1024;
 
+/// Bytes held back from the clamp budget for the `[truncated …]` marker, so
+/// the finished string still fits under its cap. The marker runs ~90 bytes
+/// with realistic byte counts; 128 leaves headroom without being worth
+/// computing exactly.
+const TRUNCATION_MARKER_RESERVE: usize = 128;
+
+/// Model-history cap for the workspace map.
+///
+/// `workspace_tree` self-limits by node budget (default 500 nodes at ~60 bytes
+/// each), so it does not need a byte clamp to stay sane — it needs one only as
+/// a backstop for an explicit `max_nodes` request. The generic 8 KiB cap was
+/// far below what any useful map costs, which meant EVERY call went through
+/// [`compact_json_arrays`]; that pass halves the largest array repeatedly, and
+/// on Aurora's own repo it left 47 of 3,066 nodes with `src/` and `src-tauri/`
+/// deleted outright and nothing in the payload admitting it. A clamp that
+/// silently destroys the result it is meant to bound is worse than a bigger
+/// clamp.
+const MAX_TREE_RESULT_LENGTH: usize = 64 * 1024;
+
 /// The model-history clamp for a given tool's result. Reads get the large
 /// [`MAX_READ_RESULT_LENGTH`] (they self-limit and the model needs the
-/// content); everything else keeps the tight [`MAX_TOOL_RESULT_LENGTH`]
-/// that stops grep / websearch megabytes from flooding the context window.
+/// content); the workspace map gets [`MAX_TREE_RESULT_LENGTH`] for the same
+/// reason; everything else keeps the tight [`MAX_TOOL_RESULT_LENGTH`] that
+/// stops grep / websearch megabytes from flooding the context window.
 fn result_cap_for(tool: &str) -> usize {
     match tool {
         "file_read" | "multi_file_read" => MAX_READ_RESULT_LENGTH,
+        "workspace_tree" => MAX_TREE_RESULT_LENGTH,
         _ => MAX_TOOL_RESULT_LENGTH,
     }
 }
@@ -976,8 +1291,10 @@ fn truncate_tool_content(tool: &str, s: String) -> String {
         return compacted;
     }
     let original_len = s.len();
-    // Walk char boundaries to find a safe slice point <= cap.
-    let mut cut = cap;
+    // Walk char boundaries to find a safe slice point, leaving room for the
+    // marker. Cutting at exactly `cap` and *then* appending the marker put
+    // the result OVER the cap the function exists to enforce.
+    let mut cut = cap.saturating_sub(TRUNCATION_MARKER_RESERVE);
     while cut > 0 && !s.is_char_boundary(cut) {
         cut -= 1;
     }
@@ -1001,9 +1318,20 @@ fn compact_json_tool_content(raw: &str, cap: usize) -> Option<String> {
     while low <= high {
         let limit = low + (high - low) / 2;
         let mut candidate = original.clone();
-        if !shrink_history_payload_strings(&mut candidate, limit) {
-            return None;
-        }
+        // A `false` return means "no payload string was longer than
+        // `limit`" — NOT failure. Bailing out on it was wrong twice over:
+        //   * `workspace_tree` has no payload-string keys at all, so the
+        //     very first probe returned false and this aborted before ever
+        //     reaching `compact_json_arrays` — the function written for
+        //     exactly that shape. The result fell through to the blind byte
+        //     clamp and came back as invalid JSON.
+        //   * A batch `file_read` whose per-file contents are each smaller
+        //     than the first probe (but huge in aggregate) hit the same
+        //     path, so the one case the binary search exists to solve was
+        //     the one it refused.
+        // The serialized size below is the real signal; an unchanged
+        // candidate simply measures too big and the search moves lower.
+        let _ = shrink_history_payload_strings(&mut candidate, limit);
         if let serde_json::Value::Object(map) = &mut candidate {
             map.insert("historyTruncated".into(), serde_json::Value::Bool(true));
             map.insert(
@@ -1530,10 +1858,20 @@ fn trim_to_budget(
     // Greedy: pick the latest cut point that gets us under threshold.
     // Walking from oldest user-boundary to newest preserves "drop the
     // smallest amount of history needed".
+    // Candidate cut points are the 2nd..=`max_cut`-th user boundaries.
+    //
+    // Both ends were wrong. Cutting at `user_indices[0]` is index 0, which
+    // drops nothing — so the first candidate was always a no-op. And the
+    // range excluded `max_cut` itself, even though cutting there still
+    // leaves PRESERVE_LAST_USER_TURNS turns standing. Net effect: the trim
+    // always under-dropped by one turn, and with exactly three user turns
+    // (`max_cut == 1`) the only candidate was the no-op, so trimming never
+    // fired at all — the request went out over budget and the provider
+    // rejected it.
     let max_cut = user_indices.len() - PRESERVE_LAST_USER_TURNS;
     let mut best_cut_msg_idx = 0;
     let mut running = total;
-    for &cut_idx in &user_indices[..max_cut] {
+    for &cut_idx in &user_indices[1..=max_cut] {
         // If we cut here we drop messages [0..cut_idx).
         // Subtract their token counts from `running`.
         // (We've previously subtracted everything up to the *previous*
@@ -1902,9 +2240,12 @@ mod tests {
 
     #[test]
     fn persisted_structured_result_never_falls_back_to_broken_json() {
+        // Well past even the tree's own cap, so the compactor is guaranteed to
+        // engage — this test is about it producing VALID JSON, not about where
+        // the threshold sits.
         let raw = serde_json::json!({
             "success": true,
-            "tree": (0..2_000)
+            "tree": (0..40_000)
                 .map(|index| serde_json::json!({
                     "name": format!("file-{index}.ts"),
                     "path": format!("src/generated/file-{index}.ts"),
@@ -1917,12 +2258,41 @@ mod tests {
         let compacted = truncate_tool_content("workspace_tree", raw);
         let parsed: serde_json::Value =
             serde_json::from_str(&compacted).expect("structured history must stay valid JSON");
-        assert!(compacted.len() <= MAX_TOOL_RESULT_LENGTH);
+        // The tree has its own, larger cap — `MAX_TOOL_RESULT_LENGTH` would be
+        // the wrong bound to assert here. See `result_cap_for`.
+        assert!(compacted.len() <= result_cap_for("workspace_tree"));
         assert_eq!(parsed["success"], true);
         assert_eq!(parsed["historyTruncated"], true);
         assert!(parsed["tree"]
             .as_array()
             .is_some_and(|tree| !tree.is_empty()));
+    }
+
+    /// A real-shaped `workspace_tree` result must reach the model INTACT. The
+    /// tool now fits its own budget, so the compactor should never engage —
+    /// that pass is what silently deleted `src/` from Aurora's own map.
+    #[test]
+    fn a_default_sized_tree_is_never_compacted() {
+        // 500 nodes (the tool's default budget) at a realistic path length.
+        let raw = serde_json::json!({
+            "success": true,
+            "rootPath": r"E:\VOID-EDITOR\Aurora-Agent-IDE",
+            "tree": (0..500)
+                .map(|index| serde_json::json!({
+                    "name": format!("some_module_{index}.rs"),
+                    "path": format!("src-tauri/src/tools/file_workspace_search/some_module_{index}.rs"),
+                    "type": "file",
+                    "lineCount": 420,
+                }))
+                .collect::<Vec<_>>(),
+        })
+        .to_string();
+
+        let compacted = truncate_tool_content("workspace_tree", raw.clone());
+        assert_eq!(compacted, raw, "a default-budget tree must pass through whole");
+        let parsed: serde_json::Value = serde_json::from_str(&compacted).unwrap();
+        assert!(parsed.get("historyTruncated").is_none());
+        assert_eq!(parsed["tree"].as_array().unwrap().len(), 500);
     }
 
     // ── Test doubles ────────────────────────────────────────────────
@@ -2254,6 +2624,345 @@ mod tests {
             }
             other => panic!("expected ToolResult, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn malformed_input_error_quotes_what_arrived_and_names_the_cause() {
+        // Cut off mid-string — the shape an output cap produces.
+        let cut = r#"{"path":"src/main.rs","content":"fn main() {"#;
+        let message = malformed_input_error("file_write", cut).to_string();
+
+        assert!(message.contains("`file_write` was NOT executed"));
+        assert!(message.contains(cut), "must quote the raw payload");
+        assert!(
+            message.contains("output-token limit"),
+            "an EOF parse failure is a truncation, not a syntax error: {message}"
+        );
+
+        // A syntax error gets the other diagnosis and the other advice.
+        let broken = r#"{"path":"C:\Users\x"}"#;
+        let message = malformed_input_error("file_read", broken).to_string();
+        assert!(
+            !message.contains("output-token limit"),
+            "complete-but-invalid JSON is not a truncation: {message}"
+        );
+        assert!(message.contains("unescaped backslash"));
+    }
+
+    #[test]
+    fn malformed_input_error_elides_the_middle_of_a_huge_payload() {
+        let raw = format!(r#"{{"content":"{}"#, "x".repeat(5_000));
+        let message = malformed_input_error("file_write", &raw).to_string();
+
+        assert!(message.contains("First 400 characters"));
+        assert!(message.contains("Last 200 characters"));
+        assert!(
+            message.len() < 2_000,
+            "the error must not itself flood the context: {} chars",
+            message.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn run_turn_does_not_dispatch_a_tool_whose_arguments_never_parsed() {
+        // `parse_tool_input` encodes an unparseable payload as a raw string.
+        // The dispatcher must answer it with MalformedInput instead of
+        // handing the executor an empty object and letting it report a
+        // missing field to a model that sent one.
+        let raw = r#"{"msg":"unterminated"#;
+        let api = Arc::new(MockApi::new(vec![
+            TurnScript {
+                events: vec![],
+                result: Ok(turn_usage(
+                    assistant_tool_use("call-bad", "echo", serde_json::json!(raw)),
+                    "tool_use",
+                )),
+            },
+            TurnScript {
+                events: vec![],
+                result: Ok(turn_usage(assistant_text("ok"), "end_turn")),
+            },
+        ]));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let tools = Arc::new(ToolRegistry::new());
+        tools.register(Arc::new(RecordingTool {
+            name: "echo",
+            seen: seen.clone(),
+            response: "should never run".into(),
+        }));
+        let runtime = ConversationRuntime::new(api, tools, RuntimeConfig::default());
+
+        let mut session = Session::new("t");
+        let (tx, _rx) = mpsc::channel(32);
+
+        let summary = runtime
+            .run_turn(&mut session, user_msg("?"), tx, CancellationToken::new())
+            .await
+            .expect("ok");
+
+        assert!(
+            seen.lock().expect("seen mutex").is_empty(),
+            "the executor must never be reached with fabricated arguments"
+        );
+
+        match &summary.tool_results[0].blocks[0] {
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                assert_eq!(*is_error, Some(true));
+                assert!(content.contains("was NOT executed"), "{content}");
+                assert!(content.contains(raw), "must quote the payload: {content}");
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failure_loop_guard_escalates_only_on_repeats() {
+        let mut guard = FailureLoopGuard::default();
+        let args = serde_json::json!({"path": "a.rs", "old_string": "x"});
+
+        // First failure reads normally — a single miss is not a loop.
+        assert!(guard.record_failure("file_edit", &args).is_none());
+
+        let second = guard
+            .record_failure("file_edit", &args)
+            .expect("escalation");
+        assert!(second.contains("SECOND time"));
+        assert!(second.contains("re-read the file"));
+
+        let third = guard
+            .record_failure("file_edit", &args)
+            .expect("escalation");
+        assert!(third.contains("STOP"));
+        assert!(third.contains("failed 3 times"));
+
+        // Different arguments are a different attempt, not a repeat.
+        let other = serde_json::json!({"path": "b.rs", "old_string": "x"});
+        assert!(guard.record_failure("file_edit", &other).is_none());
+        // …and so is the same arguments on a different tool.
+        assert!(guard.record_failure("search_replace", &args).is_none());
+    }
+
+    #[test]
+    fn failure_loop_guard_resets_after_a_success() {
+        let mut guard = FailureLoopGuard::default();
+        let args = serde_json::json!({"command": "cargo test"});
+
+        assert!(guard.record_failure("shell_execute", &args).is_none());
+        guard.clear("shell_execute", &args);
+        assert!(
+            guard.record_failure("shell_execute", &args).is_none(),
+            "a success means the situation changed — counting starts fresh"
+        );
+    }
+
+    #[test]
+    fn length_stop_is_recognized_across_provider_spellings() {
+        assert!(is_length_stop("length"));
+        assert!(is_length_stop("max_tokens"));
+        assert!(!is_length_stop("end_turn"));
+        assert!(!is_length_stop("tool_use"));
+        assert!(!is_length_stop("stop"));
+    }
+
+    /// Executor that blocks until released, so a test can prove two calls
+    /// were genuinely in flight at once rather than merely fast.
+    struct GateTool {
+        name: &'static str,
+        concurrent: bool,
+        entered: Arc<tokio::sync::Semaphore>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl super::super::tool_executor::ToolExecutor for GateTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn concurrency_safe(&self) -> bool {
+            self.concurrent
+        }
+        fn schema(&self) -> super::super::api_client::ToolSchema {
+            super::super::api_client::ToolSchema {
+                name: self.name.into(),
+                description: "gate".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+            }
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<String, ToolError> {
+            self.entered.add_permits(1);
+            self.release.notified().await;
+            Ok("done".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrency_safe_calls_in_one_batch_run_at_the_same_time() {
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Notify::new());
+
+        let tools = Arc::new(ToolRegistry::new());
+        tools.register(Arc::new(GateTool {
+            name: "reader",
+            concurrent: true,
+            entered: entered.clone(),
+            release: release.clone(),
+        }));
+
+        let calls: Vec<PendingToolCall> = (0..3)
+            .map(|i| PendingToolCall {
+                id: format!("call-{i}"),
+                name: "reader".into(),
+                input: serde_json::json!({ "n": i }),
+            })
+            .collect();
+
+        let runtime = ConversationRuntime::new(
+            Arc::new(MockApi::new(vec![])),
+            tools,
+            RuntimeConfig::default(),
+        );
+        let session = Session::new("t");
+        let (tx, _rx) = mpsc::channel(64);
+        let cancel = CancellationToken::new();
+        let mut seq = 0u64;
+
+        // Release only once all three have entered. If dispatch were
+        // sequential this would deadlock, so the timeout IS the assertion.
+        let waiter = tokio::spawn({
+            let entered = entered.clone();
+            let release = release.clone();
+            async move {
+                let _ = entered.acquire_many(3).await.expect("all three entered");
+                release.notify_waiters();
+            }
+        });
+
+        let message = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            runtime.execute_tool_calls(calls, &session, "turn-1", &cancel, &tx, &mut seq),
+        )
+        .await
+        .expect("three concurrency-safe calls must overlap, not serialize")
+        .expect("ok");
+
+        waiter.await.expect("waiter");
+        assert_eq!(message.blocks.len(), 3);
+        // Order follows the model's call order, not completion order.
+        for (i, block) in message.blocks.iter().enumerate() {
+            match block {
+                ContentBlock::ToolResult { tool_use_id, .. } => {
+                    assert_eq!(tool_use_id, &format!("call-{i}"));
+                }
+                other => panic!("expected ToolResult, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_non_concurrent_tool_splits_the_batch_and_keeps_order() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let tools = Arc::new(ToolRegistry::new());
+        tools.register(Arc::new(RecordingTool {
+            name: "reader",
+            seen: seen.clone(),
+            response: "r".into(),
+        }));
+        tools.register(Arc::new(RecordingTool {
+            name: "writer",
+            seen: seen.clone(),
+            response: "w".into(),
+        }));
+
+        let runtime = ConversationRuntime::new(
+            Arc::new(MockApi::new(vec![])),
+            tools.clone(),
+            RuntimeConfig::default(),
+        );
+
+        // RecordingTool leaves `concurrency_safe` at its default (false),
+        // so every call must run alone.
+        let calls: Vec<PendingToolCall> = ["reader", "writer", "reader"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| PendingToolCall {
+                id: format!("c{i}"),
+                name: (*name).into(),
+                input: serde_json::json!({ "i": i }),
+            })
+            .collect();
+
+        assert_eq!(
+            runtime.concurrent_batch_len(&calls),
+            1,
+            "an unsafe tool at the head must run alone"
+        );
+
+        let session = Session::new("t");
+        let (tx, _rx) = mpsc::channel(64);
+        let mut seq = 0u64;
+        let message = runtime
+            .execute_tool_calls(
+                calls,
+                &session,
+                "turn-1",
+                &CancellationToken::new(),
+                &tx,
+                &mut seq,
+            )
+            .await
+            .expect("ok");
+
+        assert_eq!(message.blocks.len(), 3);
+        assert_eq!(seen.lock().expect("seen").len(), 3);
+    }
+
+    #[test]
+    fn batch_splits_at_the_first_unsafe_call() {
+        let tools = Arc::new(ToolRegistry::new());
+        tools.register(Arc::new(GateTool {
+            name: "reader",
+            concurrent: true,
+            entered: Arc::new(tokio::sync::Semaphore::new(0)),
+            release: Arc::new(tokio::sync::Notify::new()),
+        }));
+        tools.register(Arc::new(GateTool {
+            name: "writer",
+            concurrent: false,
+            entered: Arc::new(tokio::sync::Semaphore::new(0)),
+            release: Arc::new(tokio::sync::Notify::new()),
+        }));
+        let runtime = ConversationRuntime::new(
+            Arc::new(MockApi::new(vec![])),
+            tools,
+            RuntimeConfig::default(),
+        );
+
+        let call = |name: &str, i: usize| PendingToolCall {
+            id: format!("c{i}"),
+            name: name.into(),
+            input: serde_json::json!({}),
+        };
+
+        // [read, read, write, read] → batch of 2, then 1, then 1.
+        let calls = vec![
+            call("reader", 0),
+            call("reader", 1),
+            call("writer", 2),
+            call("reader", 3),
+        ];
+        assert_eq!(runtime.concurrent_batch_len(&calls), 2);
+        assert_eq!(runtime.concurrent_batch_len(&calls[2..]), 1);
+        assert_eq!(runtime.concurrent_batch_len(&calls[3..]), 1);
+
+        // An unknown tool never executes, so it cannot conflict with anything.
+        let unknown = vec![call("nope", 0), call("reader", 1)];
+        assert_eq!(runtime.concurrent_batch_len(&unknown), 2);
     }
 
     #[tokio::test]

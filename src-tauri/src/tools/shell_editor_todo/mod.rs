@@ -75,12 +75,16 @@ pub use ide_event_sink::{
 /// Used by the bucket-level smoke test, the verify crate's
 /// `register_mounts_all_7_tools` assertion, and Sub-E's composer
 /// test.
+/// `editor_open_file` is deliberately absent. Opening a file is a *viewing*
+/// action, and the Agent Window shows files in its own right rail — asking the
+/// model to drive the IDE's Monaco editor sent the user's attention to another
+/// window mid-turn. The frontend now routes every open into the rail, so the
+/// model does not need (or get) a tool for it.
 pub const TOOL_NAMES: &[&str] = &[
     "shell_execute",
     "shell_spawn",
     "shell_kill",
     "shell_list_processes",
-    "editor_open_file",
     "read_lints",
     "todo_write",
 ];
@@ -101,9 +105,10 @@ pub fn register(reg: &mut ToolRegistry, sink: Arc<dyn IdeEventSink>) {
     reg.register(Arc::new(shell_spawn::ShellSpawnTool::new(sink.clone())));
     reg.register(Arc::new(shell_kill::ShellKillTool));
     reg.register(Arc::new(shell_list_processes::ShellListProcessesTool));
-    reg.register(Arc::new(editor_open_file::EditorOpenFileTool::new(
-        sink.clone(),
-    )));
+    // `editor_open_file` is intentionally NOT registered — see TOOL_NAMES.
+    // The executor and its `agent_editor_open` event remain compiled because
+    // the Agent Window still listens on that channel to open files in its
+    // right rail.
     reg.register(Arc::new(read_lints::ReadLintsTool::new(sink.clone())));
     reg.register(Arc::new(todo_write::TodoWriteTool::new(sink)));
 }
@@ -114,10 +119,14 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn register_mounts_all_7_tools() {
+    fn register_mounts_every_bucket_tool() {
         let mut reg = ToolRegistry::new();
         register(&mut reg, Arc::new(NoopIdeEventSink));
-        assert_eq!(reg.len(), TOOL_NAMES.len(), "expected 7 tools in bucket");
+        assert_eq!(reg.len(), TOOL_NAMES.len(), "expected 6 tools in bucket");
+        assert!(
+            !reg.names().contains(&"editor_open_file".to_string()),
+            "editor_open_file must not be offered to the model — opens route to the right rail"
+        );
 
         let registered: HashSet<String> = reg.names().into_iter().collect();
         for &name in TOOL_NAMES {

@@ -2,6 +2,75 @@ import { describe, expect, it } from "vitest";
 
 import { parseToolResult } from "./tool-result";
 
+describe("glob results", () => {
+  it("parses matches into a path list rather than falling through to raw JSON", () => {
+    const parsed = parseToolResult(
+      "glob",
+      { pattern: "**/*.ts" },
+      JSON.stringify({
+        success: true,
+        tool: "glob",
+        pattern: "**/*.ts",
+        files: ["src/api/mod.ts", "src/api/client.ts", "index.ts"],
+        count: 3,
+        truncated: false,
+      }),
+    );
+
+    expect(parsed.glob?.files).toEqual(["src/api/mod.ts", "src/api/client.ts", "index.ts"]);
+    expect(parsed.glob?.pattern).toBe("**/*.ts");
+    expect(parsed.glob?.total).toBe(3);
+    expect(parsed.summary).toBe("3 files");
+    // Must NOT be mistaken for a generic file list, which drops the directory.
+    expect(parsed.fileList).toBeNull();
+    expect(parsed.code).toBeNull();
+  });
+
+  it("keeps the true total and the recovery note when the list was capped", () => {
+    const parsed = parseToolResult(
+      "glob",
+      { pattern: "**/*", limit: 2 },
+      JSON.stringify({
+        success: true,
+        tool: "glob",
+        pattern: "**/*",
+        files: ["a.ts", "b.ts"],
+        count: 340,
+        truncated: true,
+        note: "Showing 2 of 340 matches (newest first). Narrow `pattern`…",
+      }),
+    );
+
+    expect(parsed.glob?.files).toHaveLength(2);
+    expect(parsed.glob?.total).toBe(340);
+    expect(parsed.glob?.truncated).toBe(true);
+    expect(parsed.glob?.note).toContain("340");
+    // The header must report the real total, not the shown count.
+    expect(parsed.summary).toBe("340 files");
+  });
+
+  it("treats no matches as an answer, not an empty payload", () => {
+    const parsed = parseToolResult(
+      "glob",
+      { pattern: "**/*.zzz" },
+      JSON.stringify({
+        success: true,
+        tool: "glob",
+        pattern: "**/*.zzz",
+        files: [],
+        count: 0,
+        truncated: false,
+        note: "No files matched. Check the pattern uses forward slashes…",
+      }),
+    );
+
+    expect(parsed.glob).not.toBeNull();
+    expect(parsed.glob?.files).toEqual([]);
+    expect(parsed.summary).toBe("No matches");
+    expect(parsed.glob?.note).toContain("No files matched");
+  });
+});
+
 describe("persisted file tool results", () => {
   it("recovers a truncated file read as highlighted source content", () => {
     const parsed = parseToolResult(

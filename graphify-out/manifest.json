@@ -675,8 +675,8 @@
     "semantic_hash": "549f55990b1410139176d503bc21d955"
   },
   "src-tauri/src/lib.rs": {
-    "mtime": 1784520601.5625267,
-    "ast_hash": "0230e29d3f0ff29e640047c538bbbc37",
+    "mtime": 1784604732.0644906,
+    "ast_hash": "03f2607bac32cf71d5af6961dcf6c86a",
     "semantic_hash": ""
   },
   "src-tauri/src/main.rs": {
@@ -2260,13 +2260,13 @@
     "semantic_hash": ""
   },
   "src/agent-window/adapters/window.ts": {
-    "mtime": 1783568662.7847588,
-    "ast_hash": "da04da8a667eacb2001e95c1b8f8e289",
+    "mtime": 1784604729.5506866,
+    "ast_hash": "6d54599e6ea17c4bb66b4b29072f5521",
     "semantic_hash": ""
   },
   "src/agent-window/components/AgentComposer.tsx": {
-    "mtime": 1784415503.2652524,
-    "ast_hash": "3a94ac33c35e04a99bb5dbf2b0944e03",
+    "mtime": 1784602048.2305763,
+    "ast_hash": "cd40d201aad5a8ef894884a5a675886f",
     "semantic_hash": ""
   },
   "src/agent-window/components/AgentConfirm.tsx": {
@@ -2280,8 +2280,8 @@
     "semantic_hash": ""
   },
   "src/agent-window/components/AgentMarkdown.tsx": {
-    "mtime": 1784034725.117521,
-    "ast_hash": "7f8e1dc236f6801cbc639db91d957ac0",
+    "mtime": 1784603654.2238925,
+    "ast_hash": "8d4dab8e1bf816868ae1850fd37495ec",
     "semantic_hash": ""
   },
   "src/agent-window/components/AgentQueuedDock.tsx": {
@@ -2290,8 +2290,8 @@
     "semantic_hash": ""
   },
   "src/agent-window/components/AgentShell.tsx": {
-    "mtime": 1784300751.9605658,
-    "ast_hash": "10a1a630e1a924b0fdcf768f2b69e362",
+    "mtime": 1784603007.0507495,
+    "ast_hash": "194fe7b1f9bfa88b2322cbbcba881420",
     "semantic_hash": ""
   },
   "src/agent-window/components/AgentTaskPanel.tsx": {
@@ -2310,13 +2310,13 @@
     "semantic_hash": ""
   },
   "src/agent-window/components/AgentWindow.tsx": {
-    "mtime": 1784300785.116372,
-    "ast_hash": "6baab6035ed505dcb4a2af6128bb2fb0",
+    "mtime": 1784604728.161074,
+    "ast_hash": "75a09a2668403b8a791f79e453ad142c",
     "semantic_hash": ""
   },
   "src/agent-window/components/ApprovalBar.tsx": {
-    "mtime": 1782451996.03878,
-    "ast_hash": "a4fb49d14d6a499b8d78a7b6ed81c485",
+    "mtime": 1784602049.672804,
+    "ast_hash": "d6d84c4365f20ecb276b9882640b68e4",
     "semantic_hash": ""
   },
   "src/agent-window/components/BrowserPanel.tsx": {
@@ -2335,13 +2335,13 @@
     "semantic_hash": ""
   },
   "src/agent-window/components/ConversationPane.tsx": {
-    "mtime": 1784415529.6158185,
-    "ast_hash": "94f7297dbc9d86a9b3f82e3d4965c27f",
+    "mtime": 1784602040.8284516,
+    "ast_hash": "926dd187b3b421e567a02469c291dd31",
     "semantic_hash": ""
   },
   "src/agent-window/components/EmptyState.tsx": {
-    "mtime": 1783748890.9516587,
-    "ast_hash": "531ef442e1e2e9f10cdc962a3d0ab8fb",
+    "mtime": 1784616154.4581797,
+    "ast_hash": "cad08231b84872ce72b693028e46185c",
     "semantic_hash": ""
   },
   "src/agent-window/components/FileViewer.tsx": {
@@ -2360,8 +2360,8 @@
     "semantic_hash": ""
   },
   "src/agent-window/components/LeftRail.tsx": {
-    "mtime": 1784520995.7676942,
-    "ast_hash": "49f31f9c66fe81cbc78e9f9d830fa05c",
+    "mtime": 1784606731.076278,
+    "ast_hash": "962dbdf0a0fa9f1762ce1c42a7879ba6",
     "semantic_hash": ""
   },
   "src/agent-window/components/MessageBubble.tsx": {
@@ -2385,8 +2385,8 @@
     "semantic_hash": ""
   },
   "src/agent-window/components/RightDock.tsx": {
-    "mtime": 1784302466.3282354,
-    "ast_hash": "57a190e86b5662ba27bad58084377504",
+    "mtime": 1784603030.1987543,
+    "ast_hash": "945ea556f26e38cf7c129b4218f468d1",
     "semantic_hash": ""
   },
   "src/agent-window/components/StreamingDotMatrix.tsx": {
@@ -2545,8 +2545,8 @@
     "semantic_hash": ""
   },
   "src/agent-window/settings/AppearanceSettings.tsx": {
-    "mtime": 1783731504.2993734,
-    "ast_hash": "aa053c104c8ba6233ba406633b84c45b",
+    "mtime": 1784606979.1641302,
+    "ast_hash": "6c3b7ac222e87b3e5fa17d6dadd57b3c",
     "semantic_hash": ""
   },
   "src/agent-window/settings/McpSettings.tsx": {
@@ -2675,8 +2675,8 @@
     "semantic_hash": ""
   },
   "src/agent-window/theme/themes.ts": {
-    "mtime": 1782514311.8313608,
-    "ast_hash": "5df8881091971e6eb9c63937be89fbe4",
+    "mtime": 1784602991.7158887,
+    "ast_hash": "492de5ed2e202ce5e15b332ac517790d",
     "semantic_hash": ""
   },
   "src/agent-window/types.ts": {
@@ -2720,13 +2720,13 @@
     "semantic_hash": ""
   },
   ".knowledge/knowledge.md": {
-    "mtime": 1784520739.3692217,
-    "ast_hash": "45029179c9a2c3b0ccce21ca4cf806fd",
+    "mtime": 1784616289.013069,
+    "ast_hash": "f1ec15af79c58241e481d6d604fbbb66",
     "semantic_hash": ""
   },
   ".knowledge/lesson.md": {
-    "mtime": 1784519671.3791423,
-    "ast_hash": "b55568800f679b6c3bddf2531deed7ee",
+    "mtime": 1784616326.408457,
+    "ast_hash": "6c4835a332e1a3a626203a1a828d9fc2",
     "semantic_hash": ""
   },
   "README.md": {
@@ -16807,6 +16807,11 @@
   "src/services/mcp-tools.test.ts": {
     "mtime": 1784425359.431446,
     "ast_hash": "50a2212a1b9aba6ae262dbb47d1fa8a6",
+    "semantic_hash": ""
+  },
+  "src/agent-window/components/AgentTitlebar.tsx": {
+    "mtime": 1784604702.191769,
+    "ast_hash": "10ea9180e4d5301add70c92695b2a2ff",
     "semantic_hash": ""
   }
 }

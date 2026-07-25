@@ -35,6 +35,10 @@ let renderSequence = 0;
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
+/** Wheel/click landed on the floating zoom controls, not the canvas itself. */
+const isControl = (target: EventTarget | null) =>
+  target instanceof Element && Boolean(target.closest(".agw-diagram-controls"));
+
 const readPalette = (element: HTMLElement): MermaidPalette => {
   const root = element.closest<HTMLElement>(".agw-root") ?? element;
   const styles = getComputedStyle(root);
@@ -138,10 +142,18 @@ export const CanvasDiagram: React.FC<CanvasDiagramProps> = ({ source, title, ref
     if (svg && autoFit) fit();
   }, [autoFit, fit, svg]);
 
-  const zoomAt = useCallback((nextScale: number, x: number, y: number) => {
+  /**
+   * Scale by `factor`, keeping the point (x, y) — in stage coordinates —
+   * pinned under the cursor.
+   *
+   * Reads the current scale from inside the updater rather than from the
+   * render closure so the native wheel listener below can stay bound across
+   * viewport changes instead of re-subscribing on every zoom frame.
+   */
+  const zoomBy = useCallback((factor: number, x: number, y: number) => {
     setAutoFit(false);
     setViewport((current) => {
-      const scale = clamp(nextScale, MIN_SCALE, MAX_SCALE);
+      const scale = clamp(current.scale * factor, MIN_SCALE, MAX_SCALE);
       const ratio = scale / current.scale;
       return {
         scale,
@@ -152,15 +164,43 @@ export const CanvasDiagram: React.FC<CanvasDiagramProps> = ({ source, title, ref
   }, []);
 
   const zoomFromCenter = (factor: number) => {
-    zoomAt(
-      viewport.scale * factor,
-      stageSize.width / 2,
-      stageSize.height / 2,
-    );
+    zoomBy(factor, stageSize.width / 2, stageSize.height / 2);
   };
 
-  const isControl = (target: EventTarget | null) =>
-    target instanceof Element && Boolean(target.closest(".agw-diagram-controls"));
+  /**
+   * Wheel pan/zoom, bound natively because React cannot do it.
+   *
+   * React 17+ attaches its delegated `wheel` listener at the root container
+   * with `{ passive: true }`, so `preventDefault()` from an `onWheel` prop is
+   * discarded and the browser warns. The canvas must consume the wheel — if it
+   * doesn't, the dock scrolls out from under the diagram mid-zoom — so the
+   * listener has to sit on the stage itself with `{ passive: false }`.
+   */
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage || !svg) return;
+    const onWheel = (event: WheelEvent) => {
+      if (isControl(event.target)) return;
+      event.preventDefault();
+      if (event.ctrlKey || event.metaKey) {
+        const rect = stage.getBoundingClientRect();
+        zoomBy(
+          Math.exp(-event.deltaY * 0.002),
+          event.clientX - rect.left,
+          event.clientY - rect.top,
+        );
+        return;
+      }
+      setAutoFit(false);
+      setViewport((current) => ({
+        ...current,
+        x: current.x - event.deltaX,
+        y: current.y - event.deltaY,
+      }));
+    };
+    stage.addEventListener("wheel", onWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", onWheel);
+  }, [svg, zoomBy]);
 
   return (
     <div
@@ -177,25 +217,6 @@ export const CanvasDiagram: React.FC<CanvasDiagramProps> = ({ source, title, ref
         if (isControl(event.target)) return;
         setAutoFit(true);
         fit();
-      }}
-      onWheel={(event) => {
-        if (isControl(event.target) || !svg) return;
-        event.preventDefault();
-        if (event.ctrlKey || event.metaKey) {
-          const rect = event.currentTarget.getBoundingClientRect();
-          zoomAt(
-            viewport.scale * Math.exp(-event.deltaY * 0.002),
-            event.clientX - rect.left,
-            event.clientY - rect.top,
-          );
-          return;
-        }
-        setAutoFit(false);
-        setViewport((current) => ({
-          ...current,
-          x: current.x - event.deltaX,
-          y: current.y - event.deltaY,
-        }));
       }}
       onPointerDown={(event) => {
         if (isControl(event.target) || !svg || (event.button !== 0 && event.button !== 1)) return;

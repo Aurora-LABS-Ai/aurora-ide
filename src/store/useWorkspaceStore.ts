@@ -218,7 +218,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     ) {
       const editorStore = useEditorStore.getState();
       const dirtyTabs = editorStore.tabs.filter(
-        (tab) => tab.isDirty && tab.type !== "browser",
+        (tab) => tab.isDirty,
       );
       if (dirtyTabs.length > 0) {
         console.log(
@@ -524,7 +524,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     if (isAuroraRuntimeAvailable()) {
       const editorStore = useEditorStore.getState();
       const dirtyTabs = editorStore.tabs.filter(
-        (tab) => tab.isDirty && tab.type !== "browser",
+        (tab) => tab.isDirty,
       );
       for (const tab of dirtyTabs) {
         editorStore.saveTabToDisk(tab.id).catch((err) => {

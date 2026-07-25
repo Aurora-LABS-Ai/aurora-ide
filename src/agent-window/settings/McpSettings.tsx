@@ -19,6 +19,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import {
+  resolveServerUrl,
+  resolveTransport,
   useMcpStore,
   type McpServerConfig,
   type McpServerState,
@@ -29,10 +31,38 @@ import { writeClipboardText } from "../../lib/clipboard";
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
 import { AgwButton, AgwPill, AgwSegmented, AgwSwitch, AgwTextInput } from "./primitives";
 
+// Three transports fit the pill only with short labels, so the segmented
+// control carries the name each server's own docs use and the field below
+// carries the explanation.
 const TRANSPORT_OPTIONS = [
-  { value: "stdio" as const, label: "Stdio · local process" },
-  { value: "sse" as const, label: "SSE · HTTP server" },
+  { value: "stdio" as const, label: "Stdio" },
+  { value: "http" as const, label: "HTTP" },
+  { value: "sse" as const, label: "SSE" },
 ];
+
+/** A local process; everything else talks to a server over HTTP. */
+const isRemote = (transport: McpTransportType): boolean => transport !== "stdio";
+
+const URL_PLACEHOLDER: Record<string, string> = {
+  http: "https://example.com/api/mcp",
+  sse: "http://localhost:3000/sse",
+};
+
+// Picking the wrong one of these two fails with a bare HTTP status, so the
+// difference has to be readable at the moment of choosing rather than
+// discoverable afterwards.
+// Shown on the collapsed card. The two HTTP transports are named apart so a
+// server's transport is legible without opening the editor.
+const TRANSPORT_SUMMARY: Record<McpTransportType, string> = {
+  stdio: "Local process",
+  http: "Streamable HTTP",
+  sse: "HTTP+SSE",
+};
+
+const TRANSPORT_HINT: Record<string, string> = {
+  http: "Streamable HTTP. Most hosted servers use this — their setup snippets call it httpUrl.",
+  sse: "Legacy HTTP+SSE. Only for older servers that publish a separate event stream.",
+};
 
 const EXAMPLE_JSON = `{
   "mcpServers": {
@@ -40,6 +70,9 @@ const EXAMPLE_JSON = `{
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-git"],
       "env": {}
+    },
+    "hosted-server": {
+      "httpUrl": "https://example.com/api/mcp"
     }
   }
 }`;
@@ -169,9 +202,10 @@ const ConnectionFields: React.FC<{
         <span>URL</span>
         <AgwTextInput
           value={form.url}
-          placeholder="http://localhost:3000/sse"
+          placeholder={URL_PLACEHOLDER[form.transport]}
           onChange={(e) => patch({ url: e.target.value })}
         />
+        <span className="agw-set-row-hint">{TRANSPORT_HINT[form.transport]}</span>
       </label>
     )}
 
@@ -187,7 +221,7 @@ const ConnectionFields: React.FC<{
       />
     </label>
 
-    {form.transport === "sse" && (
+    {isRemote(form.transport) && (
       <label className="agw-prov-edit-field">
         <span>Headers (KEY=VALUE, one per line)</span>
         <textarea
@@ -242,9 +276,9 @@ const AddServerCard: React.FC<{
         transport: form.transport,
         command: form.transport === "stdio" ? form.command.trim() : undefined,
         args: parseArgs(form.args),
-        url: form.transport === "sse" ? form.url.trim() : undefined,
+        url: isRemote(form.transport) ? form.url.trim() : undefined,
         env: parseKv(form.env),
-        headers: form.transport === "sse" ? parseKv(form.headers) : {},
+        headers: isRemote(form.transport) ? parseKv(form.headers) : {},
         enabled: true,
         autoStart,
         autoApprove,
@@ -270,7 +304,7 @@ const AddServerCard: React.FC<{
       serverName: string,
       raw: Record<string, unknown>,
     ): Omit<McpServerConfig, "id"> => {
-      const t: McpTransportType = raw.url ? "sse" : "stdio";
+      const t = resolveTransport(raw);
       return {
         name: serverName,
         transport: t,
@@ -280,7 +314,7 @@ const AddServerCard: React.FC<{
           typeof raw.env === "object" && raw.env !== null
             ? (raw.env as Record<string, string>)
             : {},
-        url: typeof raw.url === "string" ? raw.url : undefined,
+        url: resolveServerUrl(raw),
         headers:
           typeof raw.headers === "object" && raw.headers !== null
             ? (raw.headers as Record<string, string>)
@@ -303,10 +337,12 @@ const AddServerCard: React.FC<{
       for (const [serverName, cfg] of entries) {
         configs.push(toConfig(serverName, cfg as Record<string, unknown>));
       }
-    } else if (root.name || root.command || root.url) {
+    } else if (root.name || root.command || root.url || root.httpUrl) {
       configs.push(toConfig((root.name as string) || "Unnamed server", root));
     } else {
-      setJsonError('JSON needs an "mcpServers" object, or at least "name" plus "command" or "url".');
+      setJsonError(
+        'JSON needs an "mcpServers" object, or at least "name" plus "command", "url", or "httpUrl".',
+      );
       return;
     }
 
@@ -459,9 +495,9 @@ const ServerCard: React.FC<{
         transport: form.transport,
         command: form.transport === "stdio" ? form.command.trim() : undefined,
         args: parseArgs(form.args),
-        url: form.transport === "sse" ? form.url.trim() : undefined,
+        url: isRemote(form.transport) ? form.url.trim() : undefined,
         env: parseKv(form.env),
-        headers: form.transport === "sse" ? parseKv(form.headers) : {},
+        headers: isRemote(form.transport) ? parseKv(form.headers) : {},
         autoStart,
       });
       setEditing(false);
@@ -473,7 +509,7 @@ const ServerCard: React.FC<{
   const transportIcon: AgentIconName = config.transport === "stdio" ? "terminal" : "browser";
   const connecting = status === "connecting";
   const connected = status === "connected";
-  const sub = `${config.transport === "stdio" ? "Local process" : "HTTP server"} · ${
+  const sub = `${TRANSPORT_SUMMARY[config.transport]} · ${
     config.enabled ? statusLabel(status) : "Disabled"
   }${server.tools.length > 0 ? ` · ${server.tools.length} tools` : ""}`;
 

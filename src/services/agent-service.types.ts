@@ -52,6 +52,13 @@ export interface AgentConfig {
   systemPrompt?: string;
   temperature?: number;
   thinkingEnabled?: boolean;
+  /**
+   * Explicit extended-thinking token budget for models whose reasoning control
+   * is a budget rather than an effort tier (chosen per model in the composer's
+   * model picker). Only read when `thinkingEnabled` — a budget never turns
+   * thinking on by itself. `undefined` lets the provider adapter derive one.
+   */
+  thinkingBudgetTokens?: number;
   threadId?: string;
   /**
    * Explicit workspace root for this turn. When set, it overrides the global

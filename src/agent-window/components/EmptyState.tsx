@@ -1,15 +1,16 @@
 /**
  * Agent Window — empty / home state [view].
  *
- * Shown when no conversation is open (fresh window or after "New chat"). Mirrors
- * the Codex home layout: a centered heading, the composer in the middle of the
- * pane (not docked at the bottom), and a row of suggestion starters underneath.
+ * Shown when no conversation is open (fresh window or after "New chat"). The
+ * layout is the OpenCode-style brand landing: a giant ghost "aurora" wordmark
+ * floats above the centered composer (not docked at the bottom), with a row of
+ * suggestion starters underneath.
  *
  * Isolated by design — all colour comes from `--agw-*` tokens; the composer is
  * reused (controlled here so a suggestion can prefill the draft).
  */
 
-import React, { useMemo } from "react";
+import React from "react";
 
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
 import { useAgentChatStore } from "../store/useAgentChatStore";
@@ -55,6 +56,28 @@ interface EmptyStateProps {
   onStop?: () => void;
 }
 
+/** Last segment of a path — the folder you actually think of the project as. */
+function folderName(path: string): string {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+/**
+ * Everything above the folder, kept as context but visually subordinate.
+ *
+ * Long paths are elided from the LEFT (`…\Users\Alvan\projects`) because the
+ * segments nearest the project are the ones that disambiguate it — truncating
+ * the tail would strip exactly the part that tells two same-named folders
+ * apart.
+ */
+function parentPath(path: string): string {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  if (parts.length <= 1) return "";
+  const parent = parts.slice(0, -1);
+  const shown = parent.length > 3 ? ["…", ...parent.slice(-3)] : parent;
+  return shown.join(" / ");
+}
+
 export const EmptyState: React.FC<EmptyStateProps> = ({
   onSubmit,
   sending = false,
@@ -69,12 +92,6 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   const setDraftText = useAgentDraftStore((s) => s.setDraft);
   const setDraft = (text: string) => setDraftText(draftKey, text);
 
-  const folder = useMemo(() => {
-    if (!projectRoot) return null;
-    const parts = projectRoot.split(/[\\/]/).filter(Boolean);
-    return parts[parts.length - 1] ?? projectRoot;
-  }, [projectRoot]);
-
   return (
     <div
       className="agw-scroll"
@@ -86,30 +103,55 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
-        padding: "32px 20px",
+        // Extra bottom padding biases the centred group above true centre —
+        // the wordmark + composer sit in the upper half like the reference
+        // landing instead of floating at dead centre.
+        padding: "32px 20px clamp(128px, 18vh, 200px)",
       }}
     >
-      <div className="w-full max-w-3xl mx-auto">
-        {/* Heading — text only, no icon (matches Codex home). */}
-        <div className="text-center mb-6">
-          <h1
-            style={{
-              fontSize: 27,
-              fontWeight: 600,
-              letterSpacing: "-0.01em",
-              color: "var(--agw-text)",
-              margin: 0,
-            }}
-          >
-            What should we build{folder ? "" : "?"}
-            {folder && (
-              <span style={{ color: "var(--agw-text-muted)", fontWeight: 600 }}>
-                {" in "}
-                {folder}?
-              </span>
-            )}
-          </h1>
+      <div className="w-full max-w-3xl mx-auto agw-home-column">
+        {/* Brand wordmark — a rim-lit ghost watermark (decorative, hence
+         *  aria-hidden). Sized in cqi so it tracks the PANE width (never clips
+         *  when the rails squeeze the conversation). Each span owns its own
+         *  gradient paint; the ::before light pool and ::after floor shadow sit
+         *  behind the whole mark.
+         *
+         *  Split per LETTER so the arrival light can travel one glyph at a
+         *  time. A gradient sweep cannot do that — it is continuous, so at any
+         *  instant it straddles whatever glyphs it overlaps and lights two at
+         *  once. Making the glyph the unit of animation is the only way to step
+         *  it. Kept as inline spans (not flex items) so normal text layout,
+         *  letter-spacing and centring are untouched.
+         *
+         *  Safe to split for a11y: the mark is already aria-hidden, so no
+         *  screen reader ever spells it out letter by letter. */}
+        <div className="agw-home-wordmark" aria-hidden="true">
+          {[..."aurora"].map((glyph, index) => (
+            <span
+              key={index}
+              data-glyph={glyph}
+              style={{ ["--agw-lit-i" as string]: String(index) }}
+            >
+              {glyph}
+            </span>
+          ))}
         </div>
+
+        {/* Workspace the window is scoped to. It sits between the mark and the
+         *  composer because that is the order the questions arrive in: what is
+         *  this, WHERE am I about to act, then the input. An empty state's job
+         *  is to orient before it invites action, and "which folder is this
+         *  agent pointed at" is the one fact you cannot recover from an empty
+         *  transcript. Hidden entirely when no workspace is open rather than
+         *  showing a placeholder — an empty path row would raise the question
+         *  it exists to answer. */}
+        {projectRoot && (
+          <div className="agw-home-root" title={projectRoot}>
+            <AgentIcon name="files" size={13} />
+            <span className="agw-home-root-name">{folderName(projectRoot)}</span>
+            <span className="agw-home-root-path">{parentPath(projectRoot)}</span>
+          </div>
+        )}
 
         {/* Composer (centered) */}
         <AgentComposer

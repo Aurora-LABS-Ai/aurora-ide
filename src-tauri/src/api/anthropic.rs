@@ -301,12 +301,20 @@ async fn handle_anthropic_event(
                         if let BlockState::Thinking { text, .. } = state {
                             text.push_str(&thinking);
                         }
-                        let _ = event_sink
-                            .send(AssistantEvent::Thinking {
-                                text: thinking,
-                                signature: None,
-                            })
-                            .await;
+                        // Skip zero-length deltas. Some providers open a thinking
+                        // block with an empty `"thinking":""` delta; forwarding it
+                        // makes the UI open a reasoning segment with no text, which
+                        // renders as a bare "…" placeholder in the transcript
+                        // (AgentThinkingBlock's `content || "…"` fallback). Mirrors
+                        // the same guard the OpenAI-compat adapter already applies.
+                        if !thinking.is_empty() {
+                            let _ = event_sink
+                                .send(AssistantEvent::Thinking {
+                                    text: thinking,
+                                    signature: None,
+                                })
+                                .await;
+                        }
                     }
                 }
                 "signature_delta" => {
@@ -371,11 +379,12 @@ async fn handle_anthropic_event(
                     name,
                     raw_input,
                 } => {
-                    let input: Value = if raw_input.trim().is_empty() {
-                        serde_json::json!({})
-                    } else {
-                        serde_json::from_str(raw_input).unwrap_or(serde_json::json!({}))
-                    };
+                    // Shared with the OpenAI-compat and Responses paths:
+                    // repairs unescaped Windows paths, and preserves the raw
+                    // text when the arguments never parsed instead of
+                    // fabricating an empty object.
+                    let input: Value =
+                        crate::api::provider_kernel_adapter::parse_tool_input(raw_input);
                     let _ = event_sink
                         .send(AssistantEvent::ToolUse {
                             id: id.clone(),

@@ -25,9 +25,11 @@
 //! * `activate_stagewise` / `deactivate_stagewise` → eval a floating
 //!   toolbar that lets the user mark up the page (select +
 //!   comment), backed by the same picked-element pipeline.
-//! * The window's destroy listener cleans the entry from `windows` and
-//!   emits `aurora:browser-window-closed` so the frontend tab can
-//!   react.
+//! Every browser is an EMBEDDED child webview (see `create_window`) — it dies
+//! with its host window, so cleanup runs through `close` rather than a
+//! per-window destroy listener. Standalone browser windows, and the
+//! `aurora:browser-window-closed` event that announced their demise, were
+//! removed: Aurora has exactly one browser, the agent window's right-rail panel.
 //!
 //! All scripts assume `withGlobalTauri = true` (set in
 //! `tauri.conf.json`) so `window.__TAURI_INTERNALS__.invoke(...)` is
@@ -41,10 +43,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::webview::WebviewBuilder;
-use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Webview, WebviewUrl,
-    WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Webview, WebviewUrl};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -215,90 +214,29 @@ impl BrowserManager {
                 .map_err(|e| format!("invalid url '{}': {e}", opts.url))?,
         );
 
-        if let Some(embed) = &opts.embed {
-            // Embedded mode: pin a child webview inside the host window's
-            // content area. It shares the SAME init script + IPC pipeline as a
-            // standalone browser window, so the inspector, screenshots, and all
-            // agent browser tools work identically — just rendered in-tab.
-            let host = self
-                .app
-                .get_window(&embed.host_label)
-                .ok_or_else(|| format!("embed host window '{}' not found", embed.host_label))?;
-            let builder =
-                WebviewBuilder::new(&label, url).initialization_script(BROWSER_INIT_SCRIPT);
-            host.add_child(
-                builder,
-                LogicalPosition::new(embed.x, embed.y),
-                LogicalSize::new(embed.width.max(1.0), embed.height.max(1.0)),
-            )
-            .map_err(|e| format!("failed to embed browser '{label}': {e}"))?;
-        } else {
-            let mut builder = WebviewWindowBuilder::new(&self.app, &label, url)
-                .title(opts.title.as_deref().unwrap_or("Aurora Browser"))
-                .inner_size(opts.width.unwrap_or(1280.0), opts.height.unwrap_or(800.0))
-                .resizable(true)
-                .focused(true)
-                .initialization_script(BROWSER_INIT_SCRIPT);
+        // Embedded ONLY. Aurora has exactly one browser — the agent window's
+        // right-rail panel — so a browser is always a child webview pinned
+        // inside a host window. The standalone `WebviewWindowBuilder` branch
+        // that used to live here (and the IDE browser tab that drove it) was
+        // removed: a floating OS window meant a second browser to keep in
+        // sync, with its own lifecycle, adoption UI, and window registry.
+        let embed = opts.embed.as_ref().ok_or_else(|| {
+            format!("browser '{label}' must be embedded — standalone browser windows were removed")
+        })?;
 
-            if let (Some(x), Some(y)) = (opts.x, opts.y) {
-                builder = builder.position(x, y);
-            }
-
-            if let Some(true) = opts.always_on_top {
-                builder = builder.always_on_top(true);
-            }
-
-            let window = builder
-                .build()
-                .map_err(|e| format!("failed to build browser window '{label}': {e}"))?;
-
-            // When the window is destroyed externally (X button, Alt-F4)
-            // drop our state, fail any pending two-way IPC requests bound
-            // to this window, and tell the frontend so the tab can show a
-            // closed-state badge. (Embedded webviews die with the host
-            // window; their cleanup goes through `close`.)
-            let app = self.app.clone();
-            let windows = self.windows.clone();
-            let pending = self.pending.clone();
-            let last_active = self.last_active_label.clone();
-            let label_for_close = label.clone();
-            window.on_window_event(move |event| {
-                if matches!(event, tauri::WindowEvent::Destroyed) {
-                    // Drain in-flight requests so callers don't sit for
-                    // 30s waiting on a page-side helper that's gone.
-                    let mut to_drop = Vec::new();
-                    for entry in pending.iter() {
-                        if entry.value().label == label_for_close {
-                            to_drop.push(entry.key().clone());
-                        }
-                    }
-                    for id in to_drop {
-                        if let Some((_, request)) = pending.remove(&id) {
-                            let _ = request.sender.send(BrowserResult {
-                                ok: false,
-                                value: None,
-                                error: Some(format!(
-                                    "browser request superseded — window closed for '{}'",
-                                    label_for_close
-                                )),
-                            });
-                        }
-                    }
-                    windows.remove(&label_for_close);
-                    if let Ok(mut guard) = last_active.lock() {
-                        if guard.as_deref() == Some(label_for_close.as_str()) {
-                            *guard = None;
-                        }
-                    }
-                    let _ = app.emit(
-                        "aurora:browser-window-closed",
-                        BrowserWindowClosedPayload {
-                            label: label_for_close.clone(),
-                        },
-                    );
-                }
-            });
-        }
+        // Shares the SAME init script + IPC pipeline the agent tools drive, so
+        // inspector, screenshots, console capture and element-pick all work.
+        let host = self
+            .app
+            .get_window(&embed.host_label)
+            .ok_or_else(|| format!("embed host window '{}' not found", embed.host_label))?;
+        let builder = WebviewBuilder::new(&label, url).initialization_script(BROWSER_INIT_SCRIPT);
+        host.add_child(
+            builder,
+            LogicalPosition::new(embed.x, embed.y),
+            LogicalSize::new(embed.width.max(1.0), embed.height.max(1.0)),
+        )
+        .map_err(|e| format!("failed to embed browser '{label}': {e}"))?;
 
         self.windows.insert(
             label.clone(),
@@ -663,11 +601,26 @@ impl BrowserManager {
                 const cs = window.getComputedStyle(el);
                 const attrs = {{}};
                 for (const a of el.attributes) attrs[a.name] = a.value;
+                const hasValue = 'value' in el;
+                const selectedOptions = el.tagName === 'SELECT'
+                    ? Array.from(el.selectedOptions || []).map((option) => ({{
+                        value: String(option.value || '').slice(0, 400),
+                        text: String(option.textContent || '').trim().slice(0, 400),
+                    }}))
+                    : null;
                 return {{
                     tagName: el.tagName.toLowerCase(),
                     id: el.id || null,
                     className: typeof el.className === 'string' ? el.className : null,
-                    text: (el.textContent || '').trim().slice(0, 400),
+                    text: String(el.innerText || el.textContent || '').trim().slice(0, 2000),
+                    value: hasValue ? String(el.value ?? '').slice(0, 2000) : null,
+                    checked: typeof el.checked === 'boolean' ? el.checked : null,
+                    selected: typeof el.selected === 'boolean' ? el.selected : null,
+                    selectedOptions,
+                    disabled: typeof el.disabled === 'boolean' ? el.disabled : null,
+                    readOnly: typeof el.readOnly === 'boolean' ? el.readOnly : null,
+                    role: el.getAttribute('role'),
+                    ariaLabel: el.getAttribute('aria-label'),
                     boundingRect: {{ x: r.x, y: r.y, width: r.width, height: r.height }},
                     attributes: attrs,
                     visible: r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none',
@@ -1200,13 +1153,6 @@ pub struct EmbedConfig {
     pub y: f64,
     pub width: f64,
     pub height: f64,
-}
-
-/// Payload emitted on `aurora:browser-window-closed`.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BrowserWindowClosedPayload {
-    label: String,
 }
 
 /// Payload emitted on `aurora:browser-window-opened` whenever

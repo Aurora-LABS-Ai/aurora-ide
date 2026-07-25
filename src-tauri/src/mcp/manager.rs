@@ -69,6 +69,17 @@ const CONNECT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
 /// Enough stderr to explain a startup crash without flooding the settings UI.
 const STDERR_TAIL_LINES: usize = 8;
 
+/// Protocol version we advertise on stdio and legacy HTTP+SSE. Held at the
+/// original revision because that is the last one the `endpoint`-event
+/// handshake belongs to.
+const PROTOCOL_VERSION_LEGACY: &str = "2024-11-05";
+
+/// Protocol version we advertise on Streamable HTTP. Servers echo back
+/// whichever revision they actually speak and we mirror that in the
+/// `MCP-Protocol-Version` header on every later request, so naming the
+/// current revision here does not lock out older Streamable HTTP servers.
+const PROTOCOL_VERSION_HTTP: &str = "2025-06-18";
+
 /// One outbound JSON-RPC message bound for the server. Callers fill in
 /// `method` + `params`; the actor allocates the `id` and parks
 /// `response_tx` in its pending map. `is_notification` skips the id
@@ -289,6 +300,7 @@ impl McpManager {
         let result = match config.transport {
             McpTransportType::Stdio => self.connect_stdio(id, &config).await,
             McpTransportType::Sse => self.connect_sse(id, &config).await,
+            McpTransportType::Http => self.connect_http(id, &config).await,
         };
 
         if let Err(err) = &result {
@@ -399,7 +411,7 @@ impl McpManager {
         // Run the MCP handshake through the freshly-built actor. If any
         // step fails, drop the handle locally — that signals the actor
         // to shut down and kills the child via `kill_on_drop`.
-        match handshake(&request_tx).await {
+        match handshake(&request_tx, PROTOCOL_VERSION_LEGACY).await {
             Ok((server_info, tools, resources)) => {
                 self.connections.write().insert(id.to_string(), handle);
 
@@ -444,9 +456,19 @@ impl McpManager {
             .await
             .map_err(|e| format!("Failed to connect to SSE endpoint: {}", e))?;
         if !response.status().is_success() {
+            // 405 here is the signature of a Streamable HTTP server: the spec
+            // lets a server with no server-initiated stream reject the SSE
+            // handshake's opening GET that way, so the fix is a transport
+            // change, not anything about the URL or credentials.
+            let hint = if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+                " — this endpoint rejects GET, which means it speaks Streamable HTTP; switch its transport to HTTP (or configure it with `httpUrl`)"
+            } else {
+                ""
+            };
             return Err(format!(
-                "SSE endpoint returned status: {}",
-                response.status()
+                "SSE endpoint returned status: {}{}",
+                response.status(),
+                hint
             ));
         }
 
@@ -516,7 +538,68 @@ impl McpManager {
             _join: join,
         };
 
-        match handshake(&request_tx).await {
+        match handshake(&request_tx, PROTOCOL_VERSION_LEGACY).await {
+            Ok((server_info, tools, resources)) => {
+                self.connections.write().insert(id.to_string(), handle);
+
+                let mut servers = self.servers.write();
+                let state = servers
+                    .get_mut(id)
+                    .ok_or_else(|| format!("Server '{}' not found after connection", id))?;
+                state.status = McpServerStatus::Connected;
+                state.error = None;
+                state.tools = tools;
+                state.resources = resources;
+                state.server_info = server_info;
+                Ok(state.clone())
+            }
+            Err(err) => {
+                drop(handle);
+                Err(err)
+            }
+        }
+    }
+
+    /// Connect over Streamable HTTP (spec 2025-03-26 and later).
+    ///
+    /// Unlike [`Self::connect_sse`] there is no opening `GET` and no
+    /// `endpoint` event: the single configured URL *is* the JSON-RPC
+    /// endpoint and we POST straight at it. Issuing the SSE handshake's
+    /// `GET` against such a server is what produces the
+    /// "SSE endpoint returned status: 405 Method Not Allowed" report — the
+    /// spec explicitly allows a server with no server-initiated stream to
+    /// reject `GET` that way.
+    async fn connect_http(
+        &self,
+        id: &str,
+        config: &McpServerConfig,
+    ) -> Result<McpServerState, String> {
+        let url = config
+            .url
+            .as_ref()
+            .ok_or_else(|| "No URL specified for HTTP transport".to_string())?
+            .clone();
+
+        let (request_tx, request_rx) = mpsc::unbounded_channel::<OutboundRequest>();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let join = tokio::spawn(http_actor(
+            id.to_string(),
+            Client::new(),
+            url,
+            config.headers.clone(),
+            request_rx,
+            shutdown_rx,
+        ));
+
+        let handle = ConnectionHandle {
+            request_tx: request_tx.clone(),
+            _transport: McpTransportType::Http,
+            _shutdown: shutdown_tx,
+            _join: join,
+        };
+
+        match handshake(&request_tx, PROTOCOL_VERSION_HTTP).await {
             Ok((server_info, tools, resources)) => {
                 self.connections.write().insert(id.to_string(), handle);
 
@@ -952,6 +1035,228 @@ async fn sse_actor(
     eprintln!("[mcp:{}] sse actor exited", server_id);
 }
 
+/// Streamable HTTP actor (MCP spec 2025-03-26 and later).
+///
+/// Every JSON-RPC frame is POSTed to the one configured URL and the reply
+/// comes back on that same HTTP response — either as `application/json` or
+/// as a short `text/event-stream` carrying the response frame. Like the SSE
+/// actor we don't need an id-correlation table because the HTTP request is
+/// itself the correlator; the actor exists to serialise id allocation and
+/// to carry the two pieces of per-connection state the transport adds:
+/// the `Mcp-Session-Id` the server hands out at initialize, and the
+/// protocol revision it negotiated.
+async fn http_actor(
+    server_id: String,
+    client: Client,
+    endpoint: String,
+    headers: HashMap<String, String>,
+    mut request_rx: mpsc::UnboundedReceiver<OutboundRequest>,
+    mut shutdown_rx: oneshot::Receiver<()>,
+) {
+    let mut next_id: i64 = 0;
+    let mut session_id: Option<String> = None;
+    let mut protocol_version: Option<String> = None;
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut shutdown_rx => break,
+            maybe_req = request_rx.recv() => {
+                let Some(req) = maybe_req else { break; };
+
+                let request_id = if req.is_notification {
+                    None
+                } else {
+                    next_id += 1;
+                    Some(next_id)
+                };
+                let frame = match request_id {
+                    Some(id) => json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": req.method,
+                        "params": req.params,
+                    }),
+                    None => json!({
+                        "jsonrpc": "2.0",
+                        "method": req.method,
+                        "params": req.params,
+                    }),
+                };
+
+                let mut builder = client
+                    .post(&endpoint)
+                    // Both are required: the spec lets the server answer a
+                    // POST with either representation, and servers reject
+                    // the request outright if we don't accept both.
+                    .header("Accept", "application/json, text/event-stream")
+                    .json(&frame);
+                for (k, v) in headers.iter() {
+                    builder = builder.header(k, v);
+                }
+                if let Some(sid) = &session_id {
+                    builder = builder.header("Mcp-Session-Id", sid);
+                }
+                if let Some(version) = &protocol_version {
+                    builder = builder.header("MCP-Protocol-Version", version);
+                }
+
+                match http_round_trip(&server_id, builder, request_id).await {
+                    Ok(reply) => {
+                        if let Some(sid) = reply.session_id {
+                            session_id = Some(sid);
+                        }
+                        // Mirror back whatever revision the server picked so
+                        // later requests carry the header it expects.
+                        if req.method == "initialize" {
+                            if let Some(v) =
+                                reply.result.get("protocolVersion").and_then(|v| v.as_str())
+                            {
+                                protocol_version = Some(v.to_string());
+                            }
+                        }
+                        let _ = req.response_tx.send(Ok(reply.result));
+                    }
+                    Err(err) => {
+                        let _ = req.response_tx.send(Err(err));
+                    }
+                }
+            }
+        }
+    }
+
+    // The spec says a client that holds a session SHOULD release it on
+    // shutdown. Best-effort: a server that doesn't implement DELETE answers
+    // 405 and we neither retry nor report, since we're already tearing down.
+    if let Some(sid) = session_id {
+        let mut builder = client.delete(&endpoint).header("Mcp-Session-Id", sid);
+        for (k, v) in headers.iter() {
+            builder = builder.header(k, v);
+        }
+        let _ = builder.send().await;
+    }
+    eprintln!("[mcp:{}] http actor exited", server_id);
+}
+
+/// One Streamable HTTP request/response exchange.
+struct HttpReply {
+    result: Value,
+    /// Present when the server issued or rotated a session id.
+    session_id: Option<String>,
+}
+
+/// Send one Streamable HTTP frame and decode the reply, handling both
+/// response representations the spec permits.
+async fn http_round_trip(
+    server_id: &str,
+    builder: reqwest::RequestBuilder,
+    request_id: Option<i64>,
+) -> Result<HttpReply, String> {
+    let resp = builder
+        .send()
+        .await
+        .map_err(|e| format!("HTTP send failed: {}", e))?;
+
+    let status = resp.status();
+    let session_id = resp
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(describe_http_failure(status, &body));
+    }
+
+    // Notifications get 202 Accepted with no body, and so does any request
+    // the server acknowledges without answering inline.
+    let Some(request_id) = request_id else {
+        return Ok(HttpReply {
+            result: Value::Null,
+            session_id,
+        });
+    };
+    if status == reqwest::StatusCode::ACCEPTED {
+        return Ok(HttpReply {
+            result: Value::Null,
+            session_id,
+        });
+    }
+
+    if content_type.contains("text/event-stream") {
+        let mut stream = resp.bytes_stream().eventsource();
+        while let Some(event) = stream.next().await {
+            let event = event.map_err(|e| format!("Malformed SSE frame: {}", e))?;
+            if event.data.trim().is_empty() {
+                continue;
+            }
+            let Ok(body) = serde_json::from_str::<Value>(&event.data) else {
+                continue;
+            };
+            // Servers may interleave notifications and their own requests on
+            // this stream; only the frame carrying our id is the answer.
+            if body.get("id").and_then(|v| v.as_i64()) != Some(request_id) {
+                if let Some(method) = body.get("method").and_then(|v| v.as_str()) {
+                    eprintln!("[mcp:{}] http stream '{}' (ignored)", server_id, method);
+                }
+                continue;
+            }
+            return Ok(HttpReply {
+                result: extract_jsonrpc_result(&body)?,
+                session_id,
+            });
+        }
+        return Err("Response stream ended before the reply arrived".to_string());
+    }
+
+    let body = resp
+        .json::<Value>()
+        .await
+        .map_err(|e| format!("Failed to parse JSON response: {}", e))?;
+    Ok(HttpReply {
+        result: extract_jsonrpc_result(&body)?,
+        session_id,
+    })
+}
+
+/// Unwrap a JSON-RPC envelope into its `result`, surfacing `error.message`.
+fn extract_jsonrpc_result(body: &Value) -> Result<Value, String> {
+    if let Some(err) = body.get("error") {
+        return Err(err
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown JSON-RPC error")
+            .to_string());
+    }
+    Ok(body.get("result").cloned().unwrap_or(Value::Null))
+}
+
+/// Turn an HTTP failure into something the settings UI can act on. The
+/// status alone ("HTTP 405") sends users hunting through the wrong layer,
+/// which is exactly how the transport mismatch this transport was added to
+/// fix stayed unexplained.
+fn describe_http_failure(status: reqwest::StatusCode, body: &str) -> String {
+    let hint = match status.as_u16() {
+        405 => " — this endpoint rejects POST, so it is likely a legacy HTTP+SSE server; switch its transport to SSE",
+        404 => " — the MCP session may have expired; reconnect the server",
+        401 | 403 => " — the server rejected our credentials; check this server's custom headers",
+        _ => "",
+    };
+    let snippet: String = body.trim().chars().take(300).collect();
+    if snippet.is_empty() {
+        format!("HTTP {} from MCP endpoint{}", status, hint)
+    } else {
+        format!("HTTP {} from MCP endpoint{}: {}", status, hint, snippet)
+    }
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -1132,10 +1437,12 @@ fn dispatch_inbound(
 }
 
 /// Run the MCP initialize → initialized → tools/list → resources/list
-/// handshake through `request_tx`. Shared by stdio and SSE since the
-/// JSON-RPC envelope is transport-independent.
+/// handshake through `request_tx`. Shared by every transport since the
+/// JSON-RPC envelope is transport-independent; only the advertised
+/// `protocol_version` differs.
 async fn handshake(
     request_tx: &mpsc::UnboundedSender<OutboundRequest>,
+    protocol_version: &str,
 ) -> Result<
     (
         Option<McpServerInfo>,
@@ -1149,7 +1456,7 @@ async fn handshake(
         request_tx,
         "initialize",
         json!({
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": protocol_version,
             "capabilities": {},
             "clientInfo": { "name": "Aurora", "version": "1.0.0" }
         }),

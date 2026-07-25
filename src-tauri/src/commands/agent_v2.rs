@@ -108,7 +108,7 @@ use crate::agent_runtime::session::Session;
 use crate::agent_runtime::session_store::SessionStore;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor, ToolRegistry};
 use crate::agent_runtime::types::ConversationMessage;
-use crate::agent_safety::bash_validation::{validate_command, ExecutionMode};
+use crate::agent_safety::bash_validation::ExecutionMode;
 
 // ============================================================================
 // API factory — dyn-trait so the real provider builder drops in unchanged
@@ -558,7 +558,10 @@ impl<E: EventEmitter> TurnDriver<E> {
                 request.execution_mode,
             )),
             build_runtime_config(&request),
-        );
+        )
+        // Oversized tool output lands beside the thread rather than being
+        // clamped away, so the model can read the part it needs back.
+        .with_store_dir(self.registry.store().dir());
 
         let (event_tx, mut event_rx) = mpsc::channel::<AgentEventEnvelope>(64);
         let emitter_for_task = self.emitter.clone();
@@ -661,7 +664,10 @@ impl<E: EventEmitter> TurnDriver<E> {
             api_client,
             Arc::new(per_turn_tools),
             build_runtime_config(&request),
-        );
+        )
+        // Oversized tool output lands beside the thread rather than being
+        // clamped away, so the model can read the part it needs back.
+        .with_store_dir(self.registry.store().dir());
 
         // 5. Wrap the raw user message string into a Text-block
         //    ConversationMessage. The runtime appends it to the session
@@ -899,6 +905,10 @@ fn build_runtime_config(request: &AgentChatRequest) -> RuntimeConfig {
         thinking_enabled: request
             .thinking_enabled
             .unwrap_or(defaults.thinking_enabled),
+        // A budget of 0 is the frontend's "no explicit budget" encoding for a
+        // model whose reasoning control isn't a budget — treat it as absent so
+        // the adapter falls back to its effort-derived default.
+        thinking_budget_tokens: request.thinking_budget_tokens.filter(|b| *b > 0),
         default_temperature: request.temperature.or(defaults.default_temperature),
         ide_context: request.ide_context.clone(),
         // Budget-aware trim engages only when the frontend supplies the
@@ -954,6 +964,7 @@ fn build_per_turn_tool_registry(
     // 1. Bridge fallback for every AllowedTool the model can see.
     for tool in tools {
         if vision_blocked(&tool.name)
+            || is_withdrawn_tool(&tool.name)
             || (execution_mode == AgentExecutionMode::Plan && is_plan_mutating_tool(&tool.name))
         {
             continue;
@@ -971,6 +982,7 @@ fn build_per_turn_tool_registry(
     //    bridge entry registered above with the same name.
     for name in base.names() {
         if vision_blocked(&name)
+            || is_withdrawn_tool(&name)
             || (execution_mode == AgentExecutionMode::Plan && is_plan_mutating_tool(&name))
         {
             continue;
@@ -984,6 +996,20 @@ fn build_per_turn_tool_registry(
         }
     }
     registry
+}
+
+/// Tools withdrawn from the model's roster entirely.
+///
+/// Filtered here as well as at the registration site because the frontend
+/// supplies its own `AllowedTool` list; without this, a stale frontend entry
+/// would quietly re-introduce the tool as a bridge executor.
+///
+/// `editor_open_file` was withdrawn when file opening moved to the Agent
+/// Window's right rail — the model no longer drives the IDE's editor.
+const WITHDRAWN_TOOLS: &[&str] = &["editor_open_file"];
+
+fn is_withdrawn_tool(name: &str) -> bool {
+    WITHDRAWN_TOOLS.contains(&name)
 }
 
 const PLAN_MUTATING_TOOLS: &[&str] = &[
@@ -1032,7 +1058,16 @@ impl ToolExecutor for PlanShellExecutor {
                     .into(),
             ));
         }
-        validate_command(command, ExecutionMode::ReadOnly).map_err(|error| {
+        // Validate against the shell the command will run in — a PowerShell
+        // or cmd write is invisible to the POSIX read-only rules.
+        let requested_shell = input.get("shell").and_then(serde_json::Value::as_str);
+        crate::agent_safety::shell_validation::validate_for_shell(
+            command,
+            ExecutionMode::ReadOnly,
+            crate::shell::resolve_kind(requested_shell),
+            None,
+        )
+        .map_err(|error| {
             ToolError::PolicyViolation(format!(
                 "Plan mode allows read-only shell commands only: {error}"
             ))
@@ -1575,6 +1610,7 @@ mod tests {
             provider_id: "mock-provider".into(),
             base_url: "https://example.invalid/v1".into(),
             api_key: "mock-key".into(),
+            api_keys: None,
             model: "mock-model".into(),
             custom_headers: None,
             custom_params: None,
@@ -1601,6 +1637,7 @@ mod tests {
             temperature: None,
             max_output_tokens: None,
             thinking_enabled: None,
+            thinking_budget_tokens: None,
             context_window: None,
             attached_selected_elements: None,
             attached_prompt_chips: None,

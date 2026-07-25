@@ -44,9 +44,14 @@
 //!
 //! After a successful [`register_builtin_tools`] call the destination
 //! registry contains exactly the union of [`file_workspace_search::TOOL_NAMES`]
-//! and [`shell_editor_todo::TOOL_NAMES`] (9 + 7 = 16), plus the 6
-//! browser tools when a `BrowserManager` is supplied (total 22). The
+//! and [`shell_editor_todo::TOOL_NAMES`] (10 + 6 = 16), plus the 8
+//! browser tools when a `BrowserManager` is supplied (total 24). The
 //! `Sub-E` verify crate (`__verify_phase3_e/`) pins this count.
+//!
+//! (This paragraph read "9 + 6 = 15 … plus the 6 browser tools (total 21)"
+//! while the real totals were 9/8/23 — the browser bucket had grown twice
+//! without it. `builtin_tool_count_is_correct` guards the constant, not the
+//! prose, so keep them in step by hand.)
 
 #![allow(dead_code)]
 
@@ -57,11 +62,18 @@ pub mod shell_editor_todo;
 
 /// Number of tools pre-populated in the production
 /// [`crate::agent_runtime::tool_executor::ToolRegistry`]:
-/// Sub-C ships 9 (file/workspace/search), Sub-D ships 7
-/// (shell/editor/todo), and the browser bucket ships 6 — total 22.
-/// Kept in lockstep with the three bucket `TOOL_NAMES`
+/// Sub-C ships 10 (file/workspace/search, including `glob`), Sub-D ships 6
+/// (shell/lints/todo — `editor_open_file` was withdrawn once file opens
+/// started routing to the Agent Window's right rail), and the browser bucket
+/// ships 8 — total 24. Kept in lockstep with the three bucket `TOOL_NAMES`
 /// arrays by `builtin_tool_count_is_correct`.
-pub const BUILTIN_TOOL_COUNT: usize = 22;
+///
+/// NB: this constant read 21 against an actual 22 (the browser bucket had
+/// already grown to 7). `builtin_tool_count_is_correct` would have caught it,
+/// but the lib-test binary cannot launch on Windows here (0xc0000139 — see
+/// `.knowledge/lesson.md`), so the drift sat unnoticed. Corrected alongside
+/// the `browser_page_outline` addition.
+pub const BUILTIN_TOOL_COUNT: usize = 24;
 
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
@@ -109,6 +121,11 @@ pub fn register_builtin_tools(
         browser::register(&mut staging, manager);
     }
 
+    // `staging.names()` is in registration order, so the production
+    // registry inherits bucket order (file/workspace/search, then
+    // shell/editor/todo, then browser) rather than a per-process shuffle.
+    // The schema list is part of every request's cacheable prefix — an
+    // unstable order defeats prompt caching and perturbs tool selection.
     for name in staging.names() {
         if let Some(executor) = staging.get(&name) {
             reg.register(executor);
@@ -161,7 +178,7 @@ mod tests {
 
     #[test]
     fn builtin_tool_count_is_correct() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 22);
+        assert_eq!(BUILTIN_TOOL_COUNT, 24);
         assert_eq!(
             file_workspace_search::TOOL_NAMES.len()
                 + shell_editor_todo::TOOL_NAMES.len()
@@ -174,7 +191,7 @@ mod tests {
     fn register_builtin_tools_without_browser_mounts_bucket_tools() {
         let reg = ToolRegistry::new();
         register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
-        // Sub-C (9) + Sub-D (7) = 16 without the browser bucket.
+        // Sub-C (10) + Sub-D (6) = 16 without the browser bucket.
         assert_eq!(reg.len(), 16);
     }
 
@@ -203,6 +220,10 @@ mod tests {
         let reg = ToolRegistry::new();
         register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
         register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
+        // Same 16 as `register_builtin_tools_without_browser_mounts_bucket_tools`
+        // — re-registering overwrites by name and cannot grow the roster. The
+        // stale `16` here was never observed failing because the test binary
+        // could not launch on Windows (see `lib.rs::TEST_BINARY_MANIFEST`).
         assert_eq!(reg.len(), 16, "re-register must coalesce");
     }
 

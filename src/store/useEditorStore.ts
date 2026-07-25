@@ -11,16 +11,6 @@ import type {
 } from "../types/database";
 import { useCheckpointStore } from "./useCheckpointStore";
 
-/**
- * Options for {@link EditorState.openBrowserTab}. When `adoptedLabel`
- * is set the new tab adopts an existing native WebView window (the
- * agent's, typically) instead of spawning a fresh one. The tab's
- * lifecycle no longer owns the window — closing the tab detaches.
- */
-export interface OpenBrowserTabOptions {
-  adoptedLabel?: string;
-}
-
 interface EditorState {
   activeTabId: string | null;
   closeTab: (tabId: string, options?: { skipUnsavedWarning?: boolean }) => void;
@@ -28,9 +18,6 @@ interface EditorState {
 
   // Mark tab as deleted (file was removed from filesystem)
   markTabAsDeleted: (tabId: string) => void;
-
-  // Browser tab actions
-  openBrowserTab: (url?: string, options?: OpenBrowserTabOptions) => void;
 
   // Actions
   openFile: (
@@ -70,12 +57,6 @@ interface EditorState {
   setWorkspacePath: (path: string | null) => void;
   editorRevealRequest: EditorRevealRequest | null;
   tabs: Tab[];
-  updateBrowserTab: (
-    tabId: string,
-    updates: Partial<
-      Pick<Tab, "url" | "filename" | "favicon" | "canGoBack" | "canGoForward">
-    >,
-  ) => void;
   updateTabContent: (tabId: string, content: string) => void;
 }
 
@@ -335,70 +316,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setFontSize: (fontSize) => set({ fontSize }),
 
-  // Browser tab actions
-  openBrowserTab: (url = "about:blank", options?: OpenBrowserTabOptions) => {
-    const adoptedLabel = options?.adoptedLabel;
-    // If the user is adopting an already-open window, see if a tab
-    // is already bound to that label and just focus it instead of
-    // duplicating. Two BrowserTabs targeting the same window would
-    // race each other on every inspector toggle.
-    if (adoptedLabel) {
-      const existing = get().tabs.find(
-        (t) => t.type === 'browser' && t.adoptedBrowserLabel === adoptedLabel,
-      );
-      if (existing) {
-        set({ activeTabId: existing.id });
-        return;
-      }
-    }
-
-    const tabId = `browser-${Date.now()}`;
-    const filename =
-      url === "about:blank"
-        ? "New Browser"
-        : (() => {
-            try {
-              const parsed = new URL(url);
-              if (
-                parsed.hostname === "localhost" ||
-                parsed.hostname === "127.0.0.1"
-              ) {
-                return `localhost:${parsed.port || "80"}`;
-              }
-              return parsed.hostname;
-            } catch {
-              return "Browser";
-            }
-          })();
-
-    const newTab: Tab = {
-      id: tabId,
-      path: tabId,
-      filename,
-      content: "",
-      isDirty: false,
-      language: "browser",
-      type: "browser",
-      url,
-      canGoBack: false,
-      canGoForward: false,
-      adoptedBrowserLabel: adoptedLabel,
-    };
-
-    set((state) => ({
-      tabs: [...state.tabs, newTab],
-      activeTabId: tabId,
-    }));
-  },
-
-  updateBrowserTab: (tabId, updates) => {
-    set((state) => ({
-      tabs: state.tabs.map((tab) =>
-        tab.id === tabId ? { ...tab, ...updates } : tab,
-      ),
-    }));
-  },
-
   saveTabToDisk: async (tabId) => {
     const state = get();
     const tab = state.tabs.find((t) => t.id === tabId);
@@ -489,9 +406,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
       const { tabs, activeTabId } = get();
 
-      // Convert store tabs to database tabs (filter out browser tabs)
       const tabStates: TabState[] = tabs
-        .filter((tab) => tab.type !== "browser" && tab.path)
+        .filter((tab) => tab.path)
         .map((tab) => ({
           path: tab.path,
           is_active: tab.id === activeTabId,

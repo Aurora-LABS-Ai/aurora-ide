@@ -30,6 +30,13 @@ export interface ProviderCatalogPreset {
   requiresApiKey: boolean;
   /** Keyed by API model id; missing entries fall back to user input. */
   modelPricing?: Record<string, ProviderCatalogModelPricing>;
+  /**
+   * Transport headers to seed onto the created provider. Used by frontend
+   * presets (e.g. AgentRouter) that require specific headers to authenticate
+   * — AgentRouter fingerprints the client via `User-Agent` + `X-Title` and
+   * returns 401 without them. Rust catalog presets omit this.
+   */
+  customHeaders?: Record<string, string>;
 }
 
 class ProviderCatalogService {

@@ -78,7 +78,7 @@ const REGION_GROUPS: TokenGroup[] = [
     icon: "send",
     description: "Scoped to the message input only.",
     fields: [
-      { key: "composerSurface", label: "Input fill", hint: "The message composer and its inner typing surface." },
+      { key: "composerSurface", label: "Input fill", hint: "The message composer, its inner typing surface, and the pickers it opens — model, reasoning, and the @ / menus." },
       { key: "controlMuted", label: "Idle control", hint: "Off switches, counters, quiet status pills, and range tracks." },
     ],
   },
@@ -124,7 +124,7 @@ const REGION_GROUPS: TokenGroup[] = [
       "These are reused across the whole window — editing one repaints menus, pills, cards, selected rows and dividers everywhere. That's expected.",
     fields: [
       { key: "surface", label: "Quiet surface", hint: "Resting cards, hover fills on list rows, and inset panels." },
-      { key: "surfaceElevated", label: "Elevated surface", hint: "Popover menus, dialog panels, and the command center. Selected rows and tabs no longer use this — they derive from Primary text." },
+      { key: "surfaceElevated", label: "Elevated surface", hint: "Popover menus, dialog panels, the context tooltip, and the command center. The composer's own pickers (model, reasoning, @ and /) follow Input fill instead, so the input cluster stays one colour. Selected rows and tabs derive from Primary text." },
       { key: "overlay", label: "Modal backdrop", hint: "The full-window scrim behind dialogs, image preview, and the command center." },
       { key: "border", label: "Divider line", hint: "Standard separators and outlines between rows, cards, fields, and panels." },
       { key: "borderStrong", label: "Strong line", hint: "Higher-emphasis outlines on popovers, dialogs, active fields, and resize handles." },
@@ -138,8 +138,10 @@ const REGION_GROUPS: TokenGroup[] = [
   },
 ];
 
+// "Inter Variable" and "JetBrains Mono" ship with the app; everything else
+// depends on the font being installed on the machine.
 const UI_FONT_SUGGESTIONS = [
-  '"Inter", "Segoe UI", system-ui, sans-serif',
+  '"Inter Variable", "Inter", "Segoe UI", system-ui, sans-serif',
   "system-ui, -apple-system, sans-serif",
   '"Segoe UI", system-ui, sans-serif',
   '"Roboto", system-ui, sans-serif',
@@ -439,7 +441,7 @@ export const AppearanceSettings: React.FC = () => {
           field={{
             key: "accent",
             label: "Accent",
-            hint: "The primary highlight — send button, links, active/selected rows, focus rings and the effort label.",
+            hint: "The one brand colour, used sparingly so it keeps meaning: links, the reasoning switch when on, effort and mode chips, pinned and active markers in the rail, progress and activity indicators, and the mic waveform. Selected rows and the send button are deliberately neutral, and the focus outline has its own Focus ring setting.",
           }}
           value={tokens.accent}
           onChange={(v) => setToken("accent", v)}
@@ -448,7 +450,7 @@ export const AppearanceSettings: React.FC = () => {
           field={{
             key: "accentHover",
             label: "Accent (hover)",
-            hint: "The accent's hover shade — accent buttons and controls when you point at them.",
+            hint: "Only used while pointing at a filled accent button — Confirm in dialogs, primary buttons in Settings, the microphone permission prompt, and Done in the image editor. Usually a shade or two lighter than Accent.",
           }}
           value={tokens.accentHover}
           onChange={(v) => setToken("accentHover", v)}
@@ -610,14 +612,22 @@ export const AppearanceSettings: React.FC = () => {
               </SettingsRow>
             )}
             {group.fields.map((field, i) => {
+              // `key` is passed to the element directly and deliberately kept
+              // OUT of this object. React treats `key` as a reserved directive,
+              // not a prop, so spreading it in makes React fall back to reading
+              // it off the spread — a pattern that warns in 18.x and stops
+              // working in 19.
               const props = {
-                key: field.key,
                 field,
                 value: tokens[field.key],
                 last: i === group.fields.length - 1,
                 onChange: (value: string) => setToken(field.key, value),
               };
-              return field.editor === "text" ? <TextTokenRow {...props} /> : <ColorRow {...props} />;
+              return field.editor === "text" ? (
+                <TextTokenRow key={field.key} {...props} />
+              ) : (
+                <ColorRow key={field.key} {...props} />
+              );
             })}
           </SettingsSection>
         );

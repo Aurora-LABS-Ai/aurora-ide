@@ -10,14 +10,24 @@
 import React, { useMemo } from "react";
 import { useAgentThemeStore, resolveAgentTheme } from "../store/useAgentThemeStore";
 import { tokensToCssVars } from "../theme/tokens";
-// Dedicated UI font for the agent window. Bundled offline via @fontsource so
-// `--agw-font-ui: "Inter"` renders a real face instead of falling back to the
-// system UI font. Registering @font-face is global, but only the agent window
-// opts into using it (the IDE keeps its own --aurora-* font stack).
-import "@fontsource/inter/400.css";
-import "@fontsource/inter/500.css";
-import "@fontsource/inter/600.css";
-import "@fontsource/inter/700.css";
+// Dedicated fonts for the agent window, bundled offline via @fontsource (the
+// .woff2 files ship inside the app — no network fetch, no Google Fonts).
+// Registering @font-face is global, but only the agent window opts into using
+// them (the IDE keeps its own --aurora-* font stack).
+//
+// Inter is the VARIABLE cut (family: "Inter Variable", axis 100–900). The four
+// static weights this replaced only provided 400/500/600/700, so the ~16 rules
+// asking for `font-weight: 650` were silently snapping up to 700 and `550` to
+// 600 — the intended half-steps never rendered. The variable axis makes them
+// real, and is a smaller download than the four statics it replaces.
+import "@fontsource-variable/inter";
+// JetBrains Mono, bundled at the two weights the code styles actually use
+// (400 body, 600 for the shell command line). Previously it was named first in
+// `fontCode` but never shipped, so any machine without it installed silently
+// fell back to Cascadia Code. Both faces are SIL OFL 1.1 — redistribution in
+// an application is expressly permitted.
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/600.css";
 import "../theme/agent-window.css";
 
 interface AgentThemeProviderProps {

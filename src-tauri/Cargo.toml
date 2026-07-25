@@ -111,7 +111,9 @@ single-instance = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# `Win32_Globalization` supplies MultiByteToWideChar, used to decode console
+# output that PowerShell / cmd emit in the OEM code page rather than UTF-8.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 # Higher-level COM-friendly bindings used by the WebView2-native screenshot
 # path in `services::browser_native_capture::windows`. The version is pinned
 # to whatever `webview2-com` itself depends on so we share one copy of the
@@ -168,10 +170,34 @@ cli-mode = []
 # `#[allow(unexpected_cfgs)]` across every module that touches it.
 verify_only = []
 
-# Dev profile: enable some optimizations for better dev mode performance
+# ── Dev profile ──────────────────────────────────────────────────────────────
+#
+# Tuned for the edit → rebuild loop, not for a clean build. The split matters:
+# dependencies compile ONCE and are cached, so they can afford optimization;
+# `aurora` itself is recompiled on every save, so it must not.
+#
+# Everything below is scoped so a change here invalidates only `aurora` — the
+# cached dependency artifacts (candle, ONNX, tokenizers, tauri) stay valid.
+# Putting `debug` or `opt-level` on `[profile.dev]` itself would apply to
+# dependencies too and force a full rebuild of the whole tree.
 [profile.dev]
-opt-level = 1
+# Restores cargo's default for this profile, replacing the `CARGO_INCREMENTAL`
+# env var that used to disable it for every profile. See `.cargo/config.toml`.
+incremental = true
 
+[profile.dev.package.aurora]
+# Was 1, via `[profile.dev]`. The optimizer ran over the whole crate on every
+# rebuild for a runtime gain that belongs to the dependencies below, not to
+# Aurora's own glue code.
+opt-level = 0
+# Backtraces keep file:line; what goes is variable-level inspection, which also
+# shrinks the PDB the linker writes on every rebuild. Set back to `true` if you
+# need to attach a debugger and step through Rust state.
+debug = "line-tables-only"
+
+# Dependencies only — cargo's `"*"` glob excludes workspace members. Kept at 2
+# because the speech path (candle / ONNX / tokenizers) is genuinely unusable
+# with unoptimized dependencies.
 [profile.dev.package."*"]
 opt-level = 2
 

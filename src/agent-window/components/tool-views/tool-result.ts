@@ -26,17 +26,28 @@ export interface WorkspaceTreeNode {
   largeFile?: boolean;
   /** A build/dependency dir shown by name only — its contents weren't walked. */
   artifact?: boolean;
+  /** A dot-directory listed but not walked (pass include_hidden to expand). */
+  hidden?: boolean;
+  /** The walk stopped here at the depth limit — NOT an empty directory. */
+  depthLimited?: boolean;
+  /** Entries the node budget left out of THIS directory. */
+  elided?: number;
 }
 
 export interface WorkspaceTreeStats {
   filesRead?: number;
   filesSkipped?: number;
+  nodesReturned?: number;
+  nodesDiscovered?: number;
 }
 
 export interface WorkspaceTreeData {
   rootPath?: string;
   tree: WorkspaceTreeNode[];
   stats?: WorkspaceTreeStats;
+  /** The map is partial. `note` says what was left out and how to get it. */
+  truncated?: boolean;
+  note?: string;
 }
 
 export interface MultiFileEntry {
@@ -76,6 +87,24 @@ export interface GrepData {
   truncated?: boolean;
 }
 
+/**
+ * `glob` result — files matched by NAME rather than content.
+ *
+ * Distinct from `fileList` (a flat bag of names) because the answer to "where
+ * is this file" is the *path*, not the basename, and because a truncated match
+ * set has to report its real total the same way grep does.
+ */
+export interface GlobData {
+  /** Workspace-relative paths, newest-modified first. */
+  files: string[];
+  pattern?: string;
+  /** Total matches found, which may exceed `files.length`. */
+  total?: number;
+  truncated?: boolean;
+  /** What was left out and how to get it, straight from the tool. */
+  note?: string;
+}
+
 export interface ShellOutputData {
   command?: string;
   cwd?: string;
@@ -96,6 +125,7 @@ export interface ParsedToolResult {
   tree: WorkspaceTreeData | null;
   multiFile: MultiFileEntry[] | null;
   grep: GrepData | null;
+  glob: GlobData | null;
   shell: ShellOutputData | null;
   fileList: FileEntry[] | null;
   /** Edit preview built from the call ARGS (modify tools). */
@@ -274,6 +304,9 @@ function toTreeNodes(v: unknown): WorkspaceTreeNode[] {
       size: asNum(o.size),
       largeFile: o.largeFile === true,
       artifact: o.artifact === true,
+      hidden: o.hidden === true,
+      depthLimited: o.depthLimited === true,
+      elided: asNum(o.elided),
       children: o.children ? toTreeNodes(o.children) : undefined,
     });
   }
@@ -445,6 +478,7 @@ const EMPTY: ParsedToolResult = {
   tree: null,
   multiFile: null,
   grep: null,
+  glob: null,
   shell: null,
   fileList: null,
   edit: null,
@@ -677,11 +711,40 @@ export function parseToolResult(
       rootPath: asStr(parsed.rootPath),
       tree: toTreeNodes(parsed.tree),
       stats: stats
-        ? { filesRead: asNum(stats.filesRead), filesSkipped: asNum(stats.filesSkipped) }
+        ? {
+            filesRead: asNum(stats.filesRead),
+            filesSkipped: asNum(stats.filesSkipped),
+            nodesReturned: asNum(stats.nodesReturned),
+            nodesDiscovered: asNum(stats.nodesDiscovered),
+          }
         : undefined,
+      truncated: parsed.truncated === true,
+      note: asStr(parsed.note),
     };
     const fileCount = asNum(stats?.filesRead);
     out.summary = fileCount !== undefined ? `${fileCount} files` : null;
+    return out;
+  }
+
+  // `glob` before the generic file-list paths below: it also returns a `files`
+  // array, but the paths are the answer (not decoration on a basename), and it
+  // carries a true total plus a recovery note that a flat list would discard.
+  if (name === "glob" && Array.isArray(parsed.files)) {
+    const files = (asArr(parsed.files) ?? [])
+      .map((p) => asStr(p))
+      .filter((p): p is string => !!p);
+    const total = asNum(parsed.count) ?? files.length;
+    out.glob = {
+      files,
+      pattern: asStr(parsed.pattern) ?? asStr(args.pattern) ?? undefined,
+      total,
+      truncated: parsed.truncated === true,
+      note: asStr(parsed.note) ?? undefined,
+    };
+    out.summary =
+      total === 0
+        ? "No matches"
+        : `${total} ${total === 1 ? "file" : "files"}`;
     return out;
   }
 

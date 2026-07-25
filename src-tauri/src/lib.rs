@@ -1,6 +1,36 @@
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
+/// Linker directive that gives **test binaries only** a Windows application
+/// manifest declaring Common-Controls v6.
+///
+/// `tauri_build::build()` embeds a manifest into binary targets, but a
+/// `cargo test` executable is a separate target and got none. Without one,
+/// the loader binds the System32 `comctl32.dll` (v5.82) instead of the
+/// side-by-side v6 assembly — and v5.82 does not export
+/// `TaskDialogIndirect`, which the dialog stack statically imports. Every
+/// test binary therefore died at load with STATUS_ENTRYPOINT_NOT_FOUND
+/// (0xc0000139) before reaching `main`, so the entire Rust suite was
+/// unrunnable on Windows while the app itself worked fine. The failure
+/// looked like a broken toolchain, which is why it went unfixed long enough
+/// for real drift to accumulate behind it (see `BUILTIN_TOOL_COUNT`).
+///
+/// `.drectve` is how MSVC object files pass switches to the linker — the
+/// equivalent of `#pragma comment(linker, ...)` in C++. `#[cfg(test)]`
+/// scopes it to the test build of this crate, so the app's own
+/// Tauri-generated manifest is untouched. `build.rs` cannot do this:
+/// `cargo:rustc-link-arg-tests` applies only to `tests/` integration
+/// targets, and unit tests compile into the lib target.
+///
+/// Only `/MANIFESTDEPENDENCY:` is listed — `rust-lld` rejects `/MANIFEST:`
+/// inside `.drectve`. The linker therefore writes a side-by-side
+/// `<test-exe>.manifest` next to the binary rather than embedding it, which
+/// the loader honours identically.
+#[cfg(all(windows, test))]
+#[used]
+#[unsafe(link_section = ".drectve")]
+static TEST_BINARY_MANIFEST: [u8; 167] = *b" /MANIFESTDEPENDENCY:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"";
+
 mod agent_runtime;
 mod agent_safety;
 mod api;
@@ -15,6 +45,10 @@ pub mod icon_pack;
 mod mcp;
 mod paths;
 mod services;
+mod shell;
+/// Helper executables Aurora ships next to its own binary (currently ripgrep,
+/// which backs the agent's `grep` tool).
+mod sidecar;
 // Phase 3 native tool buckets. Sub-C lands `file_workspace_search`;
 // Sub-D adds `shell_editor_todo` + `permissions`; Sub-E composes
 // them into `register_builtin_tools` and wires the bucket into the
@@ -63,6 +97,45 @@ impl ProductionIdeEventSink {
     ) -> Result<(), String> {
         self.app.emit(channel, payload).map_err(|e| e.to_string())
     }
+
+    /// Where a background process's output is mirrored.
+    ///
+    /// Lives in the thread's `tool-results` directory, so it is cleaned up
+    /// with the thread and sits alongside spilled tool output. `None` when the
+    /// registry is not yet managed or the directory cannot be created — the
+    /// process still runs and still streams to the UI, the agent just cannot
+    /// read it back.
+    fn background_log_path(&self, session_id: &str, process_id: &str) -> Option<String> {
+        use tauri::Manager;
+
+        let registry = self
+            .app
+            .try_state::<std::sync::Arc<commands::agent_v2::AgentRegistry>>()?;
+        let dir =
+            agent_runtime::session_store::tool_results_dir_in(registry.store().dir(), session_id);
+        std::fs::create_dir_all(&dir).ok()?;
+
+        // Process ids are Aurora-generated (`bg-<hex>-<epoch>`), but keep the
+        // same defensive filter used for spilled output.
+        let stem: String = process_id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .take(64)
+            .collect();
+        let path = dir.join(format!("{stem}.log"));
+        Some(
+            dunce::canonicalize(&path)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .to_string(),
+        )
+    }
 }
 
 #[async_trait::async_trait]
@@ -104,24 +177,97 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
     async fn spawn_shell_stream(
         &self,
         req: tools::shell_editor_todo::ide_event_sink::ShellStreamRequest,
-    ) -> Result<(), String> {
+    ) -> Result<tools::shell_editor_todo::ide_event_sink::SpawnOutcome, String> {
+        use tools::shell_editor_todo::ide_event_sink::{ShellRunOutput, SpawnOutcome};
+
+        // A background process streams to the UI, which the model never sees.
+        // Mirror it into a file beside the thread so the agent can read what
+        // its dev server actually printed — the same shape as spilled tool
+        // output, and cleaned up with the thread.
+        let log_path = self.background_log_path(&req.session_id, &req.process_id);
+
+        // Register synchronously before yielding to the spawned task. This
+        // makes an immediate shell_list_processes call see the new process.
+        commands::register_command_stream(
+            req.request_id.clone(),
+            req.process_id.clone(),
+            req.name.clone(),
+            req.command.clone(),
+            req.cwd.clone(),
+            log_path.clone(),
+        );
         let app = self.app.clone();
-        // Mirrors the legacy TS executor: queue the streaming command
-        // and return immediately. The frontend already listens on
-        // `shell-stream-{request_id}` so events flow through the
-        // existing emit path.
+        let process_id = req.process_id.clone();
+        let log_for_task = log_path.clone();
+        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+        // Queue the streaming command. The frontend already listens on
+        // `shell-stream-{request_id}` so events flow through the existing
+        // emit path; the short wait below only confirms startup.
         tokio::spawn(async move {
-            let _ = commands::execute_command_stream(
+            let result = commands::execute_command_stream(
                 app,
                 req.request_id,
                 req.command,
                 req.cwd,
                 req.shell,
                 req.timeout_ms,
+                log_for_task,
             )
             .await;
+            let _ = completion_tx.send(result);
         });
-        Ok(())
+
+        // shell_spawn is specifically for long-running work. Give the wrapper
+        // a short window to settle before claiming it started; otherwise a port
+        // collision such as EADDRINUSE returns a plausible process ID that is
+        // already absent from the ledger by the next tool call.
+        //
+        // Exiting inside that window is reported, not judged: the caller
+        // decides, because exit 0 means the command simply finished quickly
+        // while a non-zero exit means it never got going.
+        match tokio::time::timeout(std::time::Duration::from_millis(1_000), completion_rx).await {
+            Err(_) => Ok(SpawnOutcome::Running {
+                output_file: log_path,
+            }),
+            Ok(Ok(Ok(output))) => Ok(SpawnOutcome::Exited(ShellRunOutput {
+                stdout: output.stdout,
+                stderr: output.stderr,
+                exit_code: output.exit_code,
+                success: output.success,
+            })),
+            Ok(Ok(Err(error))) => Err(error),
+            Ok(Err(_)) => Err(format!(
+                "background process {process_id} stopped before startup could be confirmed"
+            )),
+        }
+    }
+
+    async fn run_shell_stream(
+        &self,
+        req: tools::shell_editor_todo::ide_event_sink::ShellStreamRequest,
+    ) -> Result<tools::shell_editor_todo::ide_event_sink::ShellRunOutput, String> {
+        // `execute_command_stream` registers the process itself, emits
+        // `shell-stream-{request_id}` chunks as they arrive, and resolves with
+        // the complete output. Awaiting it gives the tool one final result
+        // while the UI has already been painting the output live.
+        let output = commands::execute_command_stream(
+            self.app.clone(),
+            req.request_id,
+            req.command,
+            req.cwd,
+            req.shell,
+            req.timeout_ms,
+            // No log file: a foreground command's full output already reaches
+            // the model in the tool result, and oversized output spills there.
+            None,
+        )
+        .await?;
+        Ok(tools::shell_editor_todo::ide_event_sink::ShellRunOutput {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            exit_code: output.exit_code,
+            success: output.success,
+        })
     }
 
     fn emit_file_changed(
@@ -222,6 +368,15 @@ pub fn run_with_args(cli_args: CliArgs) {
     // `agw` / `aurora --agent`: open ONLY the agent window (no IDE). Captured
     // here so the `move` setup closure can act on it.
     let agent_mode = cli_args.agent;
+    // The directory `agw` was run from. Passed to the window as `?ws=` so its
+    // chats are scoped to that project — without it every chat started from the
+    // CLI is created with a null workspace root and never appears in the left
+    // rail, which groups chats into a per-project tree.
+    let agent_workspace = if agent_mode {
+        cli_args.agent_workspace_root()
+    } else {
+        None
+    };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -242,6 +397,15 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::execute_command_stream,
             commands::cancel_command_stream,
             commands::get_system_info,
+            // Shell registry (Settings → Tools → Shell)
+            commands::shell_profiles::shell_profiles_get,
+            commands::shell_profiles::shell_profiles_scan,
+            commands::shell_profiles::shell_profiles_add,
+            commands::shell_profiles::shell_profiles_remove,
+            commands::shell_profiles::shell_profiles_set_enabled,
+            commands::shell_profiles::shell_profiles_verify,
+            commands::shell_profiles::shell_interactive_config,
+            commands::shell_background_processes,
             commands::create_file,
             commands::create_folder,
             commands::delete_path,
@@ -593,6 +757,11 @@ pub fn run_with_args(cli_args: CliArgs) {
             // Store database in app state (wrapped in Mutex for thread safety)
             app.manage(Mutex::new(db));
 
+            // Populate the shell registry. On a first run this scans the
+            // machine so the agent has a verified, correctly configured shell
+            // before the user ever opens settings. Runs off the startup path.
+            commands::shell_profiles::bootstrap(app.handle().clone());
+
             // Store shared chat state for multi-window sync
             app.manage(commands::chat::SharedChatState::default());
 
@@ -803,12 +972,24 @@ pub fn run_with_args(cli_args: CliArgs) {
             }
 
             // Agent-only launch: build the agent window (route `/agent-window`,
-            // no `?ws=` — it opens regardless of the working directory) and close
-            // the auto-created IDE window so the agent window is all that shows.
-            // If building it fails, re-show the IDE so the launch isn't a black
-            // hole.
+            // scoped to the directory the command was run in via `?ws=`) and
+            // close the auto-created IDE window so the agent window is all that
+            // shows. If building it fails, re-show the IDE so the launch isn't a
+            // black hole.
             if agent_mode {
                 use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+                // Same shape the JS launcher produces (`agentWindowUrl` in
+                // agent-window/adapters/window.ts) so both paths bind the window
+                // identically. No root resolvable (e.g. the CWD was deleted out
+                // from under the process) → open unscoped rather than fail.
+                let agent_route = match agent_workspace.as_ref() {
+                    Some(root) => format!(
+                        "agent-window?ws={}",
+                        cli::encode_query_component(&root.to_string_lossy())
+                    ),
+                    None => "agent-window".to_string(),
+                };
 
                 // Reopen at the size the user last set. The agent window
                 // persists `{width, height, maximized}` (logical px) to
@@ -842,7 +1023,7 @@ pub fn run_with_args(cli_args: CliArgs) {
                 match WebviewWindowBuilder::new(
                     app.handle(),
                     "agent-window",
-                    WebviewUrl::App("agent-window".into()),
+                    WebviewUrl::App(agent_route.into()),
                 )
                 .title("Aurora Agent")
                 .inner_size(width, height)

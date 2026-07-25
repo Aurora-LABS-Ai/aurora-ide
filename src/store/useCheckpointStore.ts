@@ -185,7 +185,7 @@ export const useCheckpointStore = create<CheckpointState & CheckpointActions>(
               ]);
             const editorStore = useEditorStore.getState();
             const reloadJobs = editorStore.tabs
-              .filter((tab) => !tab.isDirty && tab.type !== "browser")
+              .filter((tab) => !tab.isDirty)
               .map(async (tab) => {
                 try {
                   const newContent = await readFileContent(tab.path);

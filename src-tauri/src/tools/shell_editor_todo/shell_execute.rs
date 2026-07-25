@@ -21,12 +21,10 @@ use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
-use crate::agent_safety::bash_validation::{
-    classify_intent, validate_command, validate_command_with_workspace, BashValidationError,
-    ExecutionMode,
-};
+use crate::agent_safety::bash_validation::{classify_intent, BashValidationError, ExecutionMode};
+use crate::agent_safety::shell_validation::validate_for_shell;
 
-use super::ide_event_sink::IdeEventSink;
+use super::ide_event_sink::{IdeEventSink, ShellStreamRequest};
 
 /// Default timeout — matches the TS `DEFAULT_SHELL_TIMEOUT_MS`.
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
@@ -46,13 +44,10 @@ const MIN_TIMEOUT_MS: u64 = 1_000;
 const SHELL_EXECUTION_MODE: ExecutionMode = ExecutionMode::WorkspaceWrite;
 
 pub struct ShellExecuteTool {
-    /// Held for parity with the rest of the shell-tool family — the
-    /// inline executor doesn't currently emit IDE events (the
-    /// frontend renders the tool card from the JSON result), but
-    /// `shell_spawn` does, and keeping the field here lets a future
-    /// refactor route progress / streaming output through the same
-    /// sink without changing the constructor signature.
-    #[allow(dead_code)]
+    /// Routes execution through [`IdeEventSink::run_shell_stream`] so output
+    /// is emitted on `shell-stream-{tool_call_id}` as it arrives. The tool
+    /// card renders the command live — the way a terminal does — instead of
+    /// staying empty until the process exits.
     sink: Arc<dyn IdeEventSink>,
 }
 
@@ -70,41 +65,43 @@ impl ToolExecutor for ShellExecuteTool {
     }
 
     fn schema(&self) -> ToolSchema {
+        let mut properties = json!({
+            "command": {
+                "type": "string",
+                "description": "The shell command to execute"
+            },
+            "cwd": {
+                "type": "string",
+                "description": "Working directory for the command. Defaults to workspace root."
+            },
+            "timeout": {
+                "type": "number",
+                "description": "Timeout in milliseconds. Defaults to 30000 (30 seconds), maximum 300000 (5 minutes)."
+            }
+            // No `type: inline|terminal`. It advertised routing a command to
+            // the IDE terminal, but the executor never read it and the Agent
+            // Window has no editor terminal to route to — the model could only
+            // ever waste a turn discovering that both values behave alike.
+            // Output now streams live into the tool card either way.
+        });
+        let shell_argument = shell_argument_schema();
+        if let Some(shell) = shell_argument.clone() {
+            properties
+                .as_object_mut()
+                .expect("object literal")
+                .insert("shell".into(), shell);
+        }
+
         ToolSchema {
             name: "shell_execute".into(),
-            description: "Execute a shell command in the workspace directory. Returns stdout, \
-                          stderr, and exit code. Runs in Git Bash (POSIX/bash syntax) by default \
-                          on Windows when available, otherwise PowerShell — prefer POSIX commands \
-                          (ls, cat, rm, &&, |, single-quote quoting). Use with caution as this can \
-                          modify the system."
-                .into(),
+            description: shell_tool_description(
+                "Execute a shell command in the workspace directory. Returns stdout, stderr, and \
+                 exit code. Use with caution as this can modify the system.",
+            ),
             input_schema: json!({
                 "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "The shell command to execute"
-                    },
-                    "cwd": {
-                        "type": "string",
-                        "description": "Working directory for the command. Defaults to workspace root."
-                    },
-                    "shell": {
-                        "type": "string",
-                        "enum": ["bash", "powershell"],
-                        "description": "Shell to run in. Defaults to bash (Git Bash) when available; pass \"powershell\" only for genuinely PowerShell-specific commands."
-                    },
-                    "timeout": {
-                        "type": "number",
-                        "description": "Timeout in milliseconds. Defaults to 30000 (30 seconds), maximum 300000 (5 minutes)."
-                    },
-                    "type": {
-                        "type": "string",
-                        "enum": ["inline", "terminal"],
-                        "description": "Render mode. Inline (default) runs in the tool dropdown; terminal routes to the IDE terminal."
-                    }
-                },
-                "required": ["command"]
+                "properties": properties,
+                "required": shell_required_arguments(&["command"], shell_argument.is_some()),
             }),
         }
     }
@@ -126,40 +123,31 @@ impl ToolExecutor for ShellExecuteTool {
             ));
         }
 
-        // Prefer the workspace-aware validator when we have a folder
-        // open: it adds the path-traversal stage (`../`, `~/`,
-        // `$HOME`) that catches commands trying to escape the
-        // workspace. Fall back to the workspace-free pipeline when
-        // running outside a workspace (e.g. agent invoked from CLI
-        // before opening a folder).
-        if let Some(workspace) = ctx.workspace_root.as_ref() {
-            validate_command_with_workspace(command, SHELL_EXECUTION_MODE, workspace)
-                .map_err(map_bash_error)?;
-        } else {
-            validate_command(command, SHELL_EXECUTION_MODE).map_err(map_bash_error)?;
-        }
+        let requested_shell = input.get("shell").and_then(Value::as_str);
+        // Validate against the shell the command will *actually* run in.
+        // A PowerShell `Remove-Item -Recurse -Force` means nothing to the
+        // POSIX validator, so the kind has to be resolved before the gate.
+        let resolved = crate::shell::resolve(requested_shell);
+        let kind = resolved
+            .as_ref()
+            .map_or_else(|| crate::shell::resolve_kind(requested_shell), |r| r.kind);
+
+        validate_for_shell(
+            command,
+            SHELL_EXECUTION_MODE,
+            kind,
+            ctx.workspace_root.as_deref(),
+        )
+        .map_err(map_bash_error)?;
 
         // Tag the result with the semantic intent so the audit log /
         // chat UI can render risk-aware affordances ("destructive",
         // "network", …) without re-parsing the command string in JS.
         let intent = classify_intent(command).as_str();
 
-        let cwd = input
-            .get("cwd")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| {
-                ctx.workspace_root
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string())
-            });
+        let cwd = Some(resolve_working_directory(&input, ctx)?);
 
-        let shell = resolve_shell(
-            input
-                .get("shell")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        );
+        let shell = resolve_shell(requested_shell.map(str::to_string));
 
         let timeout_ms = input
             .get("timeout")
@@ -167,6 +155,19 @@ impl ToolExecutor for ShellExecuteTool {
             .and_then(Value::as_u64)
             .map(|v| v.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS))
             .unwrap_or(DEFAULT_TIMEOUT_MS);
+
+        // The stream id is the tool call id, so the card that renders this
+        // call is exactly the surface that receives its output.
+        let request = ShellStreamRequest {
+            process_id: ctx.tool_call_id.clone(),
+            request_id: ctx.tool_call_id.clone(),
+            session_id: ctx.session_id.clone(),
+            name: None,
+            command: command.to_string(),
+            cwd: cwd.clone(),
+            shell,
+            timeout_ms: Some(timeout_ms),
+        };
 
         // Race the underlying command against the cancel token so a
         // mid-flight cancel returns Cancelled (matches the agent_v2
@@ -178,8 +179,20 @@ impl ToolExecutor for ShellExecuteTool {
             () = ctx.cancel_token.cancelled() => {
                 return Err(ToolError::Cancelled);
             }
-            res = run_command(command_string.clone(), cwd.clone(), shell.clone(), timeout_ms) => res,
+            res = self.sink.run_shell_stream(request) => res,
         };
+
+        // Report a shell substitution instead of letting the model believe
+        // its command ran under the shell it named.
+        let shell_note = resolved.as_ref().and_then(|r| {
+            r.substituted_from.as_ref().map(|requested| {
+                format!(
+                    "'{requested}' is not configured; ran in {} instead. Registered shells are \
+                     managed in Settings → Tools.",
+                    r.label
+                )
+            })
+        });
 
         match result {
             Ok(output) => Ok(json!({
@@ -188,6 +201,8 @@ impl ToolExecutor for ShellExecuteTool {
                 "command": command_string,
                 "intent": intent,
                 "cwd": cwd,
+                "shell": resolved.as_ref().map(|r| r.kind.id()),
+                "shellNote": shell_note,
                 "stdout": output.stdout,
                 "stderr": output.stderr,
                 "exitCode": output.exit_code,
@@ -199,6 +214,8 @@ impl ToolExecutor for ShellExecuteTool {
                 "command": command_string,
                 "intent": intent,
                 "cwd": cwd,
+                "shell": resolved.as_ref().map(|r| r.kind.id()),
+                "shellNote": shell_note,
                 "error": err,
             })
             .to_string()),
@@ -206,15 +223,125 @@ impl ToolExecutor for ShellExecuteTool {
     }
 }
 
+/// The `shell` argument, enumerated from the shells the user left enabled.
+///
+/// Emitted whenever the registry knows of at least ONE usable shell — including
+/// the single-shell case. It previously required two, which meant that on a
+/// one-shell machine the parameter vanished entirely and the model could not
+/// state where its command ran even if it wanted to. The enum is the honest
+/// answer either way: one option is still an answer.
+///
+/// Returns `None` only before the first scan, when the registry is empty and we
+/// genuinely do not know what exists.
+pub(crate) fn shell_argument_schema() -> Option<Value> {
+    let kinds = crate::shell::available_kinds();
+    if kinds.is_empty() {
+        return None;
+    }
+    let ids: Vec<&str> = kinds.iter().map(|kind| kind.id()).collect();
+    Some(json!({
+        "type": "string",
+        "enum": ids,
+        "description": "The shell this command is written for. Required — command syntax is not \
+                        portable between these, so pick the one whose syntax you used."
+    }))
+}
+
+/// The directory a shell command runs in — explicit `cwd`, else the workspace
+/// root, and an error if neither exists.
+///
+/// It must never be `None`. `build_shell_command` only calls `current_dir` when
+/// it has a path, so a `None` here silently hands the child **Aurora's own**
+/// working directory — the app install dir, or `C:\Windows\System32` depending
+/// on how the app was launched. A relative command then runs somewhere nobody
+/// chose: `dir /s /b *.ts` walking from a drive root returns
+/// `Access denied - \` and looks like a Windows permissions problem rather than
+/// a harness bug, which is exactly how it was first misdiagnosed.
+///
+/// A non-existent path is rejected here too, so a typo'd `cwd` says so instead
+/// of surfacing as an opaque spawn failure.
+pub(crate) fn resolve_working_directory(
+    input: &Value,
+    ctx: &ToolContext,
+) -> Result<String, ToolError> {
+    if let Some(requested) = input
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let path = std::path::Path::new(requested);
+        let resolved = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            match ctx.workspace_root.as_ref() {
+                Some(root) => root.join(path),
+                None => path.to_path_buf(),
+            }
+        };
+        if !resolved.is_dir() {
+            return Err(ToolError::InvalidInput(format!(
+                "`cwd` '{requested}' is not a directory. Pass an existing path, or omit `cwd` to \
+                 run in the workspace root."
+            )));
+        }
+        return Ok(resolved.to_string_lossy().to_string());
+    }
+
+    ctx.workspace_root
+        .as_ref()
+        .map(|root| root.to_string_lossy().to_string())
+        .ok_or_else(|| {
+            ToolError::InvalidInput(
+                "No workspace is open, so there is no directory to run this command in. Open a \
+                 folder in Aurora, or pass an absolute `cwd`."
+                    .into(),
+            )
+        })
+}
+
+/// A shell tool's `required` list: its own mandatory arguments, plus `shell`
+/// whenever the registry knows what shells exist.
+///
+/// Making `shell` required is the point of the change: a command is written in
+/// exactly one shell's syntax, so which shell that is belongs to the model that
+/// wrote it, not to a setting. Before this, `shell` was optional and Aurora
+/// silently picked, which is how a POSIX one-liner could end up in PowerShell.
+///
+/// It stays optional in the one case where requiring it would be a lie — an
+/// unscanned registry, where there is no enum to choose from.
+pub(crate) fn shell_required_arguments(base: &[&str], has_shell_argument: bool) -> Value {
+    let mut required: Vec<&str> = base.to_vec();
+    if has_shell_argument {
+        required.push("shell");
+    }
+    json!(required)
+}
+
+/// Append the live shell inventory to a tool description, so the guidance the
+/// model reads always matches what is installed.
+pub(crate) fn shell_tool_description(base: &str) -> String {
+    match crate::shell::model_facing_summary() {
+        Some(summary) => format!("{base} {summary}"),
+        None => format!(
+            "{base} Runs in a POSIX shell (bash) when one is available, otherwise the platform \
+             default — prefer POSIX commands (ls, cat, rm, &&, |, single-quote quoting)."
+        ),
+    }
+}
+
 /// Pick the shell for an agent command.
 ///
-/// An explicit `shell` arg always wins. Otherwise we default to Git Bash when
-/// it's installed (so the model's POSIX/bash habits — and the bash-oriented
-/// safety validator — line up with what actually runs), falling back to `None`
-/// (→ the platform default, PowerShell on Windows) when Git Bash is absent.
-/// Shared with `shell_spawn` so background processes use the same default.
+/// Resolution happens once, here, and the result is passed downstream as a
+/// concrete **profile id** — so the shell that was validated is provably the
+/// shell that runs, with no second resolution that could pick differently.
+/// Falls back to the pre-registry behaviour (Git Bash when installed) only
+/// while the registry is still empty. Shared with `shell_spawn`.
 #[must_use]
 pub(crate) fn resolve_shell(requested: Option<String>) -> Option<String> {
+    if let Some(resolved) = crate::shell::resolve(requested.as_deref()) {
+        return Some(resolved.profile_id);
+    }
     if requested.is_some() {
         return requested;
     }
@@ -242,30 +369,10 @@ pub fn map_bash_error(err: BashValidationError) -> ToolError {
     }
 }
 
-#[cfg(not(feature = "verify_only"))]
-async fn run_command(
-    command: String,
-    cwd: Option<String>,
-    shell: Option<String>,
-    timeout_ms: u64,
-) -> Result<crate::commands::CommandOutput, String> {
-    crate::commands::execute_command(command, cwd, shell, Some(timeout_ms)).await
-}
-
-// In the verify crate we never actually shell out — every test of
-// shell_execute either returns at the validation gate or stubs the
-// run via the cancel-token short-circuit. Keep a placeholder that
-// always errors so the type-checker is happy even with the
-// verify_only feature on.
-#[cfg(feature = "verify_only")]
-async fn run_command(
-    _command: String,
-    _cwd: Option<String>,
-    _shell: Option<String>,
-    _timeout_ms: u64,
-) -> Result<crate::commands::CommandOutput, String> {
-    Err("shell command execution disabled in verify_only".into())
-}
+// Execution now goes through `IdeEventSink::run_shell_stream` so the output
+// streams to the tool card while it runs. The sink implementations own the
+// platform detail: production streams through Tauri, the no-op sink runs the
+// command unstreamed, and the verify crate refuses to shell out at all.
 
 #[cfg(test)]
 mod tests {
@@ -349,6 +456,56 @@ mod tests {
             .await
             .expect_err("must cancel");
         assert!(matches!(err, ToolError::Cancelled));
+    }
+
+    /// The bug this guard exists for: with no workspace and no `cwd`, the
+    /// child used to inherit Aurora's own working directory and run somewhere
+    /// nobody chose. Refusing is the only honest answer.
+    #[tokio::test]
+    async fn refuses_to_run_with_no_workspace_and_no_cwd() {
+        let err = tool()
+            .execute(json!({ "command": "ls" }), &ctx())
+            .await
+            .expect_err("must not inherit Aurora's cwd");
+        match err {
+            ToolError::InvalidInput(message) => {
+                assert!(message.contains("No workspace is open"), "{message}");
+                assert!(message.contains("cwd"), "must name the way out: {message}");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_a_cwd_that_is_not_a_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut context = ctx();
+        context.workspace_root = Some(tmp.path().to_path_buf());
+        let err = tool()
+            .execute(json!({ "command": "ls", "cwd": "does/not/exist" }), &context)
+            .await
+            .expect_err("a typo'd cwd must be named, not spawned into");
+        assert!(matches!(err, ToolError::InvalidInput(_)), "{err:?}");
+    }
+
+    #[test]
+    fn workspace_root_is_the_default_working_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut context = ctx();
+        context.workspace_root = Some(tmp.path().to_path_buf());
+        let resolved = resolve_working_directory(&json!({}), &context).expect("resolves");
+        assert_eq!(resolved, tmp.path().to_string_lossy());
+    }
+
+    #[test]
+    fn a_relative_cwd_anchors_to_the_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("packages/api")).unwrap();
+        let mut context = ctx();
+        context.workspace_root = Some(tmp.path().to_path_buf());
+        let resolved =
+            resolve_working_directory(&json!({ "cwd": "packages/api" }), &context).expect("ok");
+        assert_eq!(resolved, tmp.path().join("packages/api").to_string_lossy());
     }
 
     #[test]

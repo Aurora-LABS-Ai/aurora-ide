@@ -202,8 +202,28 @@ describe("AgentRuntimeClient.buildRequest", () => {
     expect(request.temperature).toBeNull();
     expect(request.maxOutputTokens).toBeNull();
     expect(request.thinkingEnabled).toBeNull();
+    expect(request.thinkingBudgetTokens).toBeNull();
     // Provider's window still flows through even with a minimal config.
     expect(request.contextWindow).toBe(128000);
+  });
+
+  it("forwards an explicit thinking budget and nulls a non-positive one", () => {
+    const build = (thinkingBudgetTokens?: number) =>
+      AgentRuntimeClient.buildRequest({
+        turnId: "t",
+        threadId: "thread-1",
+        input: sampleInput,
+        providerConfig: sampleProviderConfig,
+        config: { thinkingEnabled: true, thinkingBudgetTokens },
+      });
+
+    expect(build(16000).thinkingBudgetTokens).toBe(16000);
+    // Rounded — the slider is log-scaled and can land on a fraction.
+    expect(build(16000.4).thinkingBudgetTokens).toBe(16000);
+    // 0 / undefined both mean "no explicit budget": the Rust adapter then
+    // derives one from the effort tier instead of sending a bogus 0.
+    expect(build(0).thinkingBudgetTokens).toBeNull();
+    expect(build().thinkingBudgetTokens).toBeNull();
   });
 
   it("nulls contextWindow when the provider doesn't advertise one", () => {

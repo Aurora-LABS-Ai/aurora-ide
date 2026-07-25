@@ -36,6 +36,26 @@
   --agw-state-selected: color-mix(in srgb, var(--agw-text) 9%, transparent);
   --agw-state-quiet: color-mix(in srgb, var(--agw-text) 5%, transparent);
 
+  /* The PAINT aliases for the frame. Everything that fills the rail/dock tier
+   * must use these, never --agw-rail / --agw-dock directly: the translucent
+   * option re-derives the paint from the user's chosen colour instead of
+   * replacing the token. Redeclaring the token itself (what this used to do)
+   * silently threw away whatever the user picked in Appearance → Window frame
+   * the moment they enabled Translucent sidebar. */
+  --agw-rail-paint: var(--agw-rail);
+  --agw-dock-paint: var(--agw-dock);
+
+  /* The PAINT alias for hover fills. EVERY hover in this file uses this, never
+   * --agw-hover directly, so a surface that needs a different hover strength
+   * can re-point the alias once and have all its rows follow.
+   *
+   * Why that's needed: --agw-hover is a flat overlay (4% white by default).
+   * Perceived lift tracks the RATIO to the base, not the absolute delta, so the
+   * same 4% reads as roughly +42% on the rail (#161616) but only +18% on a
+   * popover (#2e2e2e) — the brighter the surface, the weaker it looks. The
+   * popover family compensates below. */
+  --agw-hover-paint: var(--agw-hover);
+
   /* ── Type scale ──────────────────────────────────────────────────────────
    * SIX sizes for the whole window. The half-pixel one-off sizes that grew
    * organically (9.5 / 10.5 / 11.5 / 12.5 / 13.5 / 14.5) collapsed onto this
@@ -48,6 +68,33 @@
   --agw-fs-md: 13px;     /* emphasized UI, headers, empty states */
   --agw-fs-body: 14px;   /* transcript / reading text            */
   --agw-fs-title: 15px;  /* pane titles                          */
+
+  /* ── Prose tier ──────────────────────────────────────────────────────────
+   * The scale above fixed the CHROME. Prose — the surface actually read most —
+   * was left on compounding `em` multipliers off the 14px base, so every
+   * transcript heading landed on a fraction of a pixel: 1.4em/1.22em/1.08em
+   * rendered 19.6 / 17.08 / 15.12px, and inline code 0.85em rendered 11.9px.
+   * Windows uses subpixel (RGB) rendering, where a fractional size shifts stem
+   * weights and baseline positions BETWEEN headings — the same "almost
+   * aligned" noise the chrome scale was created to kill, in the one place the
+   * user spends all their time.
+   *
+   * Whole pixels, and the scale continues upward from --agw-fs-title (15)
+   * rather than forking. Code is 13px flat: it matches the fenced block
+   * (--agw-fs-md), and mono at 13 sits optically level with sans at 14. */
+  --agw-fs-h1: 20px;
+  --agw-fs-h2: 17px;
+  --agw-fs-h3: 15px;
+  --agw-fs-h4: 14px;   /* = body: an h4 is a bold lead-in, not a size step */
+  --agw-fs-code: 13px; /* inline code, in body copy                       */
+
+  /* Code set inside a heading drops its chrome and sizes down ~1 step so the
+   * mono face doesn't outweigh the heading it sits in. Explicit per level —
+   * a shared `em` factor here would reintroduce the fractions above. */
+  --agw-fs-code-h1: 18px;
+  --agw-fs-code-h2: 16px;
+  --agw-fs-code-h3: 14px;
+  --agw-fs-code-h4: 13px;
 
   height: 100%;
   width: 100%;
@@ -66,8 +113,19 @@
    * metric-correct value for the 14px base; reading text and headings tighten
    * further below. Mono opts back out (negative tracking hurts code). */
   letter-spacing: -0.006em;
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
+  /* NOT `-webkit-font-smoothing: antialiased`.
+   *
+   * That is a macOS habit. On Windows it switches Chromium from subpixel (RGB)
+   * rendering to grayscale, which drops roughly a third of the horizontal
+   * resolution used to draw a stem — every glyph comes out thinner, lower in
+   * contrast and slightly soft. Next to an app that left the default alone,
+   * the same font at the same size reads washed out and blurry.
+   *
+   * `text-rendering: optimizeLegibility` is dropped for the same reason: in
+   * Chromium it changes kerning/ligature handling with no legibility win at UI
+   * sizes, and its metric shifts are a known source of subtle reflow. */
+  -webkit-font-smoothing: auto;
+  text-rendering: auto;
   /* The app shell sets `body { user-select: none }` globally (index.css) for a
    * native feel — which also killed selection in this window. Re-enable it here
    * so transcript text is copyable; interactive controls opt back out below. */
@@ -112,6 +170,42 @@
   letter-spacing: normal;
 }
 
+/* ── Scrollbars: reclaim the whole subtree from the IDE ─────────────────────
+ * `src/index.css` styles `*` and `::-webkit-scrollbar-*` from the IDE's
+ * `--aurora-common-*` palette. Without a blanket counter-rule, ANY scroll
+ * container in this window that forgot to opt into `.agw-scroll` silently
+ * renders IDE-coloured bars and ignores the Appearance "Scrollbar" tokens.
+ * Scoping to `.agw-root *` fixes that for every current AND future container.
+ *
+ * Deliberately placed FIRST: `.agw-root *` is (0,1,0), the same specificity as
+ * a single class, so later rules like `.agw-jumprail { scrollbar-width: none }`
+ * still win and can hide their bars. Never move this below them. */
+.agw-root,
+.agw-root * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--agw-scroll-thumb) transparent;
+}
+.agw-root *::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.agw-root *::-webkit-scrollbar-track {
+  background: transparent;
+}
+.agw-root *::-webkit-scrollbar-thumb {
+  background: var(--agw-scroll-thumb);
+  border-radius: var(--agw-radius-md);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.agw-root *::-webkit-scrollbar-thumb:hover {
+  background: var(--agw-scroll-thumb-hover);
+  background-clip: content-box;
+}
+.agw-root *::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* Jump rail — vertical strip of per-user-message pins on the right edge of the
  * conversation. Each pin is a short dash that widens + tints on hover/active. */
 .agw-jumprail {
@@ -142,7 +236,7 @@
    * transition turns the per-frame width updates into a smooth glide. */
   height: 3px;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-border-strong);
   cursor: pointer;
   padding: 0;
@@ -169,7 +263,7 @@
   background: var(--agw-chip-surface);
   border: 1px solid var(--agw-border);
   color: var(--agw-chip-text);
-  font-size: 0.86em;
+  font-size: var(--agw-fs-ui);
   line-height: 1.4;
   white-space: nowrap;
 }
@@ -252,7 +346,7 @@
   height: 38px;
   flex-shrink: 0;
   padding-left: 14px;
-  background: var(--agw-rail);
+  background: var(--agw-rail-paint);
 }
 .agw-titlebar-title {
   font-size: var(--agw-fs-ui);
@@ -279,7 +373,7 @@
   transition: background 0.12s ease, color 0.12s ease;
 }
 .agw-titlebar-btn:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 /* Close keeps the platform convention: destructive red fill on hover. */
@@ -295,7 +389,7 @@
  * RAIL token so gutters and resize lanes always match the side panels (and the
  * titlebar above) — never the base canvas alone. */
 .agw-shell-flex {
-  background: var(--agw-rail);
+  background: var(--agw-rail-paint);
 }
 .agw-center-frame {
   flex: 1;
@@ -351,14 +445,14 @@
   outline: none;
 }
 .agw-icon-btn:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 /* Pressed: one perceptible step past hover. Mixing a little foreground into
    the hover fill deepens it in BOTH light and dark themes (text is always
    the high-contrast pole), so the press reads with any user palette. */
 .agw-icon-btn:active {
-  background: color-mix(in srgb, var(--agw-hover) 88%, var(--agw-text) 12%);
+  background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 12%);
 }
 .agw-icon-btn:focus-visible {
   box-shadow: 0 0 0 2px var(--agw-ring);
@@ -382,14 +476,14 @@
   border: 1px solid var(--agw-border);
   background: transparent;
   color: var(--agw-text);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   font-size: var(--agw-fs-ui);
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease;
   outline: none;
 }
 .agw-pill:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   border-color: var(--agw-border-strong);
 }
 /* Active while its popover is open — reads as connected to the menu. */
@@ -404,11 +498,40 @@
 
 /* Popover menu — shares the composer's surface + border family so it reads as
  * part of the same control, not a detached box. Used by the model selector. */
-.agw-menu {
-  /* Codex-style glass: the popover is a translucent tint of its surface with
-     a heavy backdrop blur, so the conversation shimmers through. The opaque
-     fallback below keeps older WebViews correct. */
-  background: color-mix(in srgb, var(--agw-popover-surface) 78%, transparent);
+/* The floating-popover family. Members share ONE surface recipe here rather
+ * than each restating it — previously `.agw-ctx-card` referenced the same
+ * `--agw-popover-surface` token but painted it OPAQUE with no blur, so it read
+ * as a different colour than the model menu despite the "one surface for the
+ * whole family" claim. Members may still override radius/animation below. */
+.agw-menu,
+.agw-ctx-card {
+  /* Hover boost for the whole popover subtree. Popovers sit on the ELEVATED
+   * surface, which is much brighter than the rail/dock, so the plain 4% hover
+   * overlay loses more than half its perceived strength here (see the
+   * --agw-hover-paint note on .agw-root). Roughly 2.2x the alpha restores the
+   * same felt lift.
+   *
+   * Still MIXED WITH the user's own --agw-hover rather than replacing it, so
+   * the Appearance → "Hover fill" control keeps working inside menus; it just
+   * gets amplified for the brighter ground. Re-pointing the alias means every
+   * row type in here (menu items, model rows, mention/command/context rows)
+   * inherits this with no per-selector changes. */
+  --agw-hover-paint: color-mix(
+    in srgb,
+    var(--agw-hover) 50%,
+    color-mix(in srgb, var(--agw-text) 14%, transparent) 50%
+  );
+
+  /* Near-opaque glass. The blur is kept for depth, but the tint is 95% so the
+   * BACKDROP contributes almost nothing to the final colour.
+   *
+   * At the previous 78%, a popover's rendered colour was 22% whatever sat
+   * behind it — so the rail context menu (over the rail, #161616) landed near
+   * #292929 while the context tooltip (over the conversation sheet, #0f0f0f)
+   * landed near #272727, despite sharing this exact rule. Translucent
+   * surfaces cannot be guaranteed to match; 95% makes the difference
+   * imperceptible while still reading as a floating, blurred panel. */
+  background: color-mix(in srgb, var(--agw-popover-surface) 95%, transparent);
   -webkit-backdrop-filter: blur(24px) saturate(140%);
   backdrop-filter: blur(24px) saturate(140%);
   border: 1px solid var(--agw-border-strong);
@@ -417,7 +540,8 @@
   animation: agw-pop-in 0.12s cubic-bezier(0.2, 0.9, 0.3, 1);
 }
 @supports not (backdrop-filter: blur(1px)) {
-  .agw-menu {
+  .agw-menu,
+  .agw-ctx-card {
     background: var(--agw-surface-elevated);
   }
 }
@@ -517,13 +641,101 @@
   flex: 0 1 auto;
 }
 
+/* The composer dock at the bottom of the conversation column.
+ * NB: no `overflow-x: hidden` here — that would force overflow-y to `auto` and
+ * clip the model selector's upward dropdown. */
+.agw-composer-dock {
+  position: relative;
+  flex-shrink: 0;
+  min-width: 0;
+  padding: 16px 16px 8px;
+  background: var(--agw-conversation);
+}
+
+/* ── The docked stack ──────────────────────────────────────────────────────
+ * The checklist, the background processes and the queued message are three
+ * independent components, but to the user they are one surface attached to
+ * the composer. `.agw-dock-card` marks them as members of that stack.
+ *
+ * Each one hides its bottom 12px behind the element below it, which reads
+ * correctly only when that element is the composer: the composer is opaque,
+ * so it paints over the strip and the card appears to rise from behind it.
+ * Stacked against each other they instead tuck into each other — two identical
+ * headers, doubled edges, and a card whose bottom is swallowed by its
+ * neighbour. It reads as a pile rather than a panel.
+ *
+ * So: a card followed by another card JOINS to it — no tuck, square joint,
+ * one hairline between the sections. Only the last card tucks, and only the
+ * composer is ever behind it. */
+/* The cards take their tint from the composer family (model selector, context
+   tooltip) further down the file, so all of them move together. They do NOT
+   take its backdrop blur: those popovers float over the scrolling transcript,
+   while these sit on the dock's own opaque background — a blur there would
+   cost a compositing layer per card and change nothing on screen. */
+.agw-composer-dock > .agw-dock-card:has(+ .agw-dock-card) {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.agw-composer-dock > .agw-dock-card + .agw-dock-card {
+  /* The seam between two separate concerns. It carries the card's own edge
+     colour on purpose: a fainter line reads as a rendering artefact, while
+     this one reads as a deliberate break between sections. */
+  border-top: 1px solid var(--agw-border-strong);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+/* The suggestion drum breaks the tuck for a different reason: it is
+ * deliberately chrome-less and mask-faded, so it hides nothing. A card tucked
+ * behind it shows its own bottomless edge, and the drum's neighbouring rows
+ * (which straddle the container by design) paint straight over the card.
+ *
+ * With the drum up, the last card closes itself instead of tucking. Only the
+ * last — the joints above it stay square. `data-drum` is set by
+ * ConversationPane, which already knows whether the drum will render. */
+.agw-composer-dock[data-drum] > .agw-dock-card:not(:has(+ .agw-dock-card)) {
+  margin-bottom: 6px;
+  padding-bottom: 0;
+  border-bottom: 1px solid var(--agw-border-strong);
+  border-bottom-left-radius: var(--agw-radius-lg);
+  border-bottom-right-radius: var(--agw-radius-lg);
+}
+
+/* Composer rows own their layout HERE, not via Tailwind utilities in the JSX —
+ * this module is `--agw-*` / plain-CSS only (see agent-window/README.md) so the
+ * whole window restyles from one stylesheet and never depends on the IDE's
+ * Tailwind build. */
+.agw-composer-band {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 6px;
+}
+.agw-composer-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 8px 6px;
+}
 .agw-composer-actions-row,
 .agw-composer-actions {
   min-width: 0;
 }
 .agw-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   max-width: calc(100% - 34px);
   justify-content: flex-end;
+}
+/* Mic + waveform cluster inside the actions row. */
+.agw-composer-speech {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .agw-composer-actions .agw-icon-btn {
   flex-shrink: 0;
@@ -599,7 +811,7 @@
   width: 18px;
   height: 18px;
   font-size: var(--agw-fs-micro);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
 }
 .agw-model-menu {
   display: flex;
@@ -629,7 +841,7 @@
   color: var(--agw-text-subtle);
   padding: 1px 7px;
   border: 1px solid var(--agw-border);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
 }
 .agw-model-search {
   display: flex;
@@ -720,7 +932,7 @@
   font-size: var(--agw-fs-label);
 }
 .agw-model-item:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-model-item[data-active] {
@@ -764,7 +976,7 @@
   height: 16px;
   padding: 0 6px;
   border: 1px solid var(--agw-border);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   font-size: var(--agw-fs-micro);
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -791,7 +1003,7 @@
   height: 18px;
   padding: 0 7px;
   border: 1px solid var(--agw-border);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: transparent;
   color: var(--agw-accent);
   font-size: var(--agw-fs-micro);
@@ -808,6 +1020,141 @@
 .agw-model-effort:focus-visible {
   box-shadow: 0 0 0 2px var(--agw-ring);
 }
+/* Budget models: the chip is the same `.agw-model-effort` pill (so budget and
+   effort rows keep identical heights); this wrapper just anchors its popover. */
+.agw-model-reason-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* ── Thinking-budget popover ─────────────────────────────────────────────────
+ * PORTALED to `.agw-root` (`.agw-model-menu` clips with `overflow: hidden`, so
+ * an in-row absolute panel would be cut off). Member of the composer popover
+ * family — the tint rule below gives it the same premium glass as the model
+ * and mention pickers. */
+.agw-bud-pop {
+  z-index: 1000;
+  padding: 12px;
+  /* Same glass + entrance as `.agw-menu` / `.agw-mention`; the composer-family
+     rule near the end of this file supplies the tint. */
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  backdrop-filter: blur(24px) saturate(140%);
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-lg);
+  background: var(--agw-popover-surface);
+  box-shadow: var(--agw-shadow-pop);
+  animation: agw-pop-in 0.12s cubic-bezier(0.2, 0.9, 0.3, 1);
+  cursor: default;
+}
+.agw-bud-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.agw-bud-title {
+  font-size: var(--agw-fs-ui);
+  font-weight: 600;
+  color: var(--agw-text);
+}
+.agw-bud-value {
+  font-family: var(--agw-font-mono);
+  font-size: var(--agw-fs-md);
+  color: var(--agw-accent);
+  font-variant-numeric: tabular-nums;
+}
+/* The track paints its own fill from `--agw-bud-pct` (set inline) so the filled
+   portion reads as "spent" without relying on `accent-color`, which can't be
+   split into two colors. */
+.agw-bud-range {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 18px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.agw-bud-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: var(--agw-radius-pill);
+  background: linear-gradient(
+    to right,
+    var(--agw-accent) var(--agw-bud-pct, 50%),
+    var(--agw-control-muted) var(--agw-bud-pct, 50%)
+  );
+}
+.agw-bud-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: var(--agw-text);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--agw-text) 30%, transparent);
+  transition: transform 0.12s ease;
+}
+.agw-bud-range:hover::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+.agw-bud-range:focus-visible {
+  outline: none;
+}
+.agw-bud-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px var(--agw-ring);
+}
+.agw-bud-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-family: var(--agw-font-mono);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+.agw-bud-presets {
+  display: flex;
+  gap: 4px;
+  margin-top: 11px;
+}
+.agw-bud-preset {
+  flex: 1;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-micro);
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.agw-bud-preset:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-bud-preset[data-on] {
+  background: color-mix(in srgb, var(--agw-accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--agw-accent) 45%, transparent);
+  color: var(--agw-accent);
+}
+.agw-bud-preset:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-bud-hint {
+  margin: 10px 0 0;
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text-subtle);
+}
+.agw-bud-hint[data-tone="warn"] {
+  color: var(--agw-warning);
+}
+
 /* Compact reasoning switch — same token scheme as .agw-switch, smaller. */
 .agw-mswitch {
   position: relative;
@@ -816,7 +1163,7 @@
   height: 17px;
   padding: 0;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-control-muted);
   cursor: pointer;
   transition: background 0.18s ease;
@@ -858,7 +1205,7 @@
   gap: 2px;
   padding: 2px;
   border: 1px solid var(--agw-border);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-surface);
 }
 .agw-model-mode-btn {
@@ -868,7 +1215,7 @@
   height: 20px;
   padding: 0 9px;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: transparent;
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
@@ -894,7 +1241,12 @@
 .agw-model-mode-btn:focus-visible {
   box-shadow: 0 0 0 2px var(--agw-ring);
 }
+/* Provider name on Recent rows — renders inline after the capability chips, so
+ * a Recent row is the same height as a provider-grouped row. It yields space
+ * before the model name does (the name is the identifying label). */
 .agw-model-sub {
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
   white-space: nowrap;
@@ -933,7 +1285,7 @@
   outline: none;
 }
 .agw-menu-item:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-menu-item[aria-selected="true"] {
@@ -964,7 +1316,7 @@
 }
 .agw-project-trigger:hover,
 .agw-project-trigger[data-open] {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-project-trigger:focus-visible {
   box-shadow: 0 0 0 2px var(--agw-ring);
@@ -991,7 +1343,7 @@
   outline: none;
 }
 .agw-rail-item:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-rail-item[data-active="true"] {
@@ -1161,7 +1513,7 @@
   opacity: 1;
 }
 .agw-rail-pin:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-rail-pin:focus-visible {
@@ -1230,7 +1582,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-control-muted);
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
@@ -1291,7 +1643,7 @@
   font-size: var(--agw-fs-label);
   font-weight: 600;
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   color: var(--agw-accent);
   background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
 }
@@ -1302,13 +1654,13 @@
 .agw-team-progress {
   width: 90px;
   height: 5px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-border);
   overflow: hidden;
 }
 .agw-team-progress-fill {
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-accent);
   transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -1347,7 +1699,7 @@
   color: var(--agw-text);
 }
 .agw-team-member:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-team-member[data-active="true"] {
   background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
@@ -1526,7 +1878,7 @@
   font-weight: 600;
 }
 .agw-rail-team:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-rail-team[data-active="true"] {
   background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
@@ -1575,7 +1927,7 @@
   height: 26px;
   max-width: 260px;
   padding: 0 10px 0 8px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   border: 1px solid color-mix(in srgb, var(--agw-accent) 40%, var(--agw-border));
   background: color-mix(in srgb, var(--agw-accent) 12%, var(--agw-canvas));
   color: var(--agw-text);
@@ -1649,7 +2001,7 @@
   flex: 0 0 auto;
   width: 104px;
   height: 14px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   position: relative;
   overflow: hidden;
   box-sizing: border-box;
@@ -1716,6 +2068,136 @@
   background: var(--agw-surface);
   overflow: hidden;
 }
+/* ── Background processes (shell_spawn) ───────────────────────────────────
+ * The same card as the checklist above it. `.agw-tasks` supplies the width
+ * inset, tuck, border and radius; `.agw-tasks-head` the header; and each
+ * process is an `.agw-task-row` with the checklist's own status glyphs. The
+ * dock reads as one surface rather than a pile of unrelated panels.
+ *
+ * The one thing a checklist item does not have is output, so a process row
+ * unfolds: click it and what it has printed appears beneath the row. */
+.agw-bgtask-item {
+  display: flex;
+  flex-direction: column;
+}
+/* A settled process is history, not status — recede so a live one leads. */
+.agw-bgtask-item[data-status="stopped"] .agw-task-row,
+.agw-bgtask-item[data-status="exited"] .agw-task-row {
+  opacity: 0.72;
+}
+/* The row's own hit area: everything except the trailing button. */
+.agw-bgtask-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+}
+.agw-bgtask-open:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+  border-radius: var(--agw-radius-sm);
+}
+.agw-bgtask-state {
+  flex: 0 0 auto;
+  font-size: var(--agw-fs-label);
+  font-weight: 600;
+  color: var(--agw-text-muted);
+  background: var(--agw-control-muted);
+  padding: 1px 7px;
+  border-radius: var(--agw-radius-pill);
+}
+.agw-bgtask-item[data-status="running"] .agw-bgtask-state {
+  color: var(--agw-accent);
+}
+/* A non-zero exit is the one ending worth colouring — the run is over either
+   way, but this is the one you may need to act on. */
+.agw-bgtask-state[data-fail] {
+  color: var(--agw-danger, #e5484d);
+}
+/* Stop / dismiss — sized to the row, not to a card header. */
+.agw-bgtask-stop,
+.agw-bgtask-x {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: none;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  outline: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.agw-bgtask-stop:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--agw-removed) 16%, transparent);
+  color: var(--agw-removed);
+}
+.agw-bgtask-x:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-bgtask-stop:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.agw-bgtask-stop:focus-visible,
+.agw-bgtask-x:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+/* The unfolded output carries no surface of its own.
+ *
+ * The card has two layers and only two: the header band, and the content well
+ * the rows sit in. A row title is text in that well — clicking it reveals more
+ * text underneath. Giving the output its own fill made it a third panel inside
+ * the second, which is what made one process look like a stack of boxes. */
+.agw-bgtask-body {
+  margin: 0;
+  background: none;
+}
+.agw-bgtask-cmd {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--agw-border);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+}
+.agw-bgtask-cmd code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-bgtask-log {
+  max-height: 200px;
+  overflow: auto;
+}
+/* Aligned under the title, not under the card: 8px row inset + 16px glyph +
+   10px gap is where the title's own text starts, so the output reads as
+   belonging to that row rather than to the panel. */
+.agw-bgtask-log .agw-shell-out {
+  padding: 0 10px 6px 34px;
+}
+.agw-bgtask-note {
+  margin: 0;
+  padding: 0 10px 6px 34px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+
 .agw-tasks-head {
   display: flex;
   align-items: stretch;
@@ -1728,14 +2210,16 @@
   gap: 10px;
   padding: 8px 10px 8px 12px;
   border: none;
-  background: var(--agw-surface-elevated);
+  /* Transparent: the card's own surface IS the header band, and the content
+     well below is what recedes from it. Hover still lifts. */
+  background: transparent;
   color: var(--agw-text);
   cursor: pointer;
   text-align: left;
   outline: none;
 }
 .agw-tasks-toggle:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 /* Dismiss (X) — removes the list for this thread; separate from the toggle so
    it never trips the expand/collapse. */
@@ -1746,14 +2230,14 @@
   justify-content: center;
   width: 34px;
   border: none;
-  background: var(--agw-surface-elevated);
+  background: transparent;
   color: var(--agw-text-muted);
   cursor: pointer;
   outline: none;
   transition: background 0.12s ease, color 0.12s ease;
 }
 .agw-tasks-x:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-tasks-toggle:focus-visible,
@@ -1777,7 +2261,7 @@
   color: var(--agw-text-muted);
   background: var(--agw-control-muted);
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
 }
 .agw-tasks-chev {
   flex: 0 0 auto;
@@ -1788,6 +2272,9 @@
 .agw-tasks-chev[data-collapsed] {
   transform: rotate(-90deg);
 }
+/* The content well. The card's own tint belongs to the header band; without a
+   recess here the whole card was one flat colour from title to last row, and a
+   panel with no depth reads as a placeholder. */
 .agw-tasks-list {
   list-style: none;
   margin: 0;
@@ -1795,6 +2282,8 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  background: color-mix(in srgb, var(--agw-code-surface) 60%, transparent);
+  border-top: 1px solid var(--agw-border);
 }
 .agw-task-row {
   display: flex;
@@ -1807,7 +2296,7 @@
   color: var(--agw-text);
 }
 .agw-task-row[data-status="in_progress"] {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-task-row[data-status="completed"] .agw-task-label {
   color: var(--agw-text-subtle);
@@ -1847,6 +2336,12 @@
   height: 14px;
   border: 1.5px solid var(--agw-border-strong);
 }
+/* A process you stopped on purpose is not a failure. Red belongs to a non-zero
+   exit; a deliberate stop is simply over. */
+.agw-task-ico-stopped {
+  color: var(--agw-text-subtle);
+  background: var(--agw-control-muted);
+}
 .agw-task-spin {
   margin: 1px; /* visually align the 13px ring within the 16px icon column */
 }
@@ -1865,20 +2360,19 @@
   transition: background 0.12s ease;
 }
 .agw-ctx-ring:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-ctx-ring:focus-visible {
   box-shadow: 0 0 0 2px var(--agw-ring);
 }
+/* Surface, border and shadow come from the shared popover-family rule above —
+ * this only sets what makes the context card its own thing (tighter radius,
+ * its own entry animation). Do NOT re-declare `background` here; that is what
+ * previously broke it away from the model menu's glass. */
 .agw-ctx-card {
   min-width: 210px;
   padding: 10px 11px;
-  /* Floating popover → shares the popover role token with the model selector,
-   * + dropdown, and browser suggestions (one surface for the whole family). */
-  background: var(--agw-popover-surface);
-  border: 1px solid var(--agw-border-strong);
   border-radius: var(--agw-radius-md);
-  box-shadow: var(--agw-shadow-pop);
   animation: agw-ctx-pop 0.12s ease-out;
 }
 @keyframes agw-ctx-pop {
@@ -1915,13 +2409,13 @@
 .agw-ctx-bar {
   height: 5px;
   margin: 6px 0 4px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   overflow: hidden;
   background: color-mix(in srgb, var(--agw-text) 12%, transparent);
 }
 .agw-ctx-bar-fill {
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   transition: width 0.5s ease;
 }
 .agw-ctx-sub {
@@ -2001,7 +2495,7 @@
   outline: none;
 }
 .agw-rail-sort:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-rail-sort:focus-visible {
@@ -2027,7 +2521,7 @@
   transition: transform 0.12s ease;
 }
 .agw-rail-collapse-all:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-rail-collapse-all:focus-visible {
@@ -2043,7 +2537,7 @@
   transition: background 0.12s ease;
 }
 .agw-rail-project:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-rail-project-main {
   flex: 1;
@@ -2140,7 +2634,7 @@
   opacity: 1;
 }
 .agw-rail-newchat:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-rail-newchat:focus-visible {
@@ -2180,12 +2674,193 @@
   transition: transform 0.18s ease;
 }
 .agw-rail-show-more:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-rail-show-more:focus-visible {
   outline: 2px solid var(--agw-accent);
   outline-offset: -2px;
+}
+
+/* Home ghost wordmark — the new-chat landing brands itself with a giant
+ * "aurora" watermark above the composer (OpenCode-style), lit like standing
+ * characters on a stage: a rim-lit gradient (bright crown softening to
+ * visible feet) + a faint overhead light pool + a floor contact shadow the
+ * letters stand on. Every stop is a fraction of the theme's text colour, so
+ * the effect follows Appearance retheming in dark AND light palettes.
+ * Sizing is container-relative (cqi), NOT viewport-relative: the wordmark
+ * lives in the conversation pane, and vw ignores the rails — at narrower
+ * pane widths vw sizing overflowed and sliced the last letter. 31cqi keeps
+ * the ~2.86em-wide word at ~89% of the column with clear air both sides. */
+.agw-home-column {
+  container-type: inline-size;
+}
+.agw-home-wordmark {
+  /* Wordmark light — all timing in one place.
+     One full cycle is 7s: each glyph lights for ~0.8s of it (the 0→4→11%
+     keyframe head) and the remaining ~6.2s is the rest. 6 glyphs stepped
+     0.13s apart means the light crosses the word in ~0.8s, then the mark sits
+     still until the next pass. */
+  --agw-home-lit-cycle: 7s;
+  --agw-home-lit-step: 0.13s;
+  --agw-home-lit-lead: 0.35s;
+
+  position: relative; /* containing block for the pool + floor shadow */
+  z-index: 0; /* own stacking context: they can't slip behind ancestor paints */
+  font-size: min(248px, 31cqi);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+  margin: clamp(16px, 4vh, 36px) 0 clamp(32px, 6vh, 64px);
+}
+/* The gradient lives on the span; the pseudo-element lighting sits behind
+ * it. No drop-shadow filter: the fill is 84-95% transparent, so a shadow
+ * bleeding through the glyphs turns them into dark silhouettes — grounding
+ * comes from the ::after floor shadow UNDER the letters instead. */
+.agw-home-wordmark > span {
+  /* inline-BLOCK, not inline: the overlay below is absolutely positioned, and
+     an inline box split across line boxes gives it an ambiguous containing
+     block. A single glyph lays out identically either way. */
+  display: inline-block;
+  position: relative;
+  color: transparent;
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--agw-text) 16%, transparent) 0%,
+    color-mix(in srgb, var(--agw-text) 8%, transparent) 48%,
+    color-mix(in srgb, var(--agw-text) 5%, transparent) 92%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+/* Arrival light — a BRIGHT DUPLICATE of each glyph, faded in and out.
+ *
+ * The obvious implementation (animate a registered `@property` percentage
+ * inside the `color-mix()` above) needs three separate things to hold: the
+ * property registration, a calc() percentage inside color-mix, and the engine
+ * re-resolving `background-image` every frame. Any one failing silently
+ * produces a mark that never lights — which is exactly what it did. This
+ * version animates nothing but `opacity` on a normally-painted duplicate, so
+ * it has one failure mode instead of three, and the compositor handles it.
+ *
+ * `content: attr(data-glyph)` keeps the letter out of the accessibility tree
+ * twice over: generated content is not exposed, and the whole mark is already
+ * aria-hidden. */
+.agw-home-wordmark > span::after {
+  content: attr(data-glyph);
+  position: absolute;
+  inset: 0;
+  color: color-mix(in srgb, var(--agw-text) 88%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  /* LOOPS, with a long rest between passes, rather than firing once on mount.
+     A single pass is the better resting design, but it is unverifiable: it is
+     over ~1.5s after the window paints, so "I never saw it" and "it is broken"
+     look identical — which is exactly how this went wrong three times. A
+     cycle that repeats every few seconds can always be confirmed by waiting.
+     The rest is what keeps it from reading as a loading skeleton; drop
+     --agw-home-lit-rest to 0 for a continuous shimmer, or set the animation to
+     `1 both` for the one-shot. */
+  animation: agw-home-lit var(--agw-home-lit-cycle) linear infinite;
+  animation-delay: calc(
+    var(--agw-home-lit-lead) + var(--agw-lit-i, 0) * var(--agw-home-lit-step)
+  );
+}
+
+/* One glyph's turn occupies only the head of the cycle; the rest of the
+ * timeline is the pause. CSS has no `repeat-delay`, so the pause has to live
+ * inside the keyframes — hence the flat tail. */
+@keyframes agw-home-lit {
+  0% {
+    opacity: 0;
+  }
+  4% {
+    opacity: 1;
+  }
+  11% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* The wordmark is decoration; it is the first thing to go. */
+@media (prefers-reduced-motion: reduce) {
+  .agw-home-wordmark > span::after {
+    animation: none;
+  }
+}
+/* Workspace scope line — sits under the mark, above the composer.
+ * Quiet by construction: it orients, it is not an action. The folder name
+ * carries the weight; its parent path trails behind at label size so the eye
+ * lands on the project, not the drive letter. */
+.agw-home-root {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0 0 clamp(14px, 2.2vh, 22px);
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-ui);
+  line-height: 1.4;
+}
+.agw-home-root-name {
+  color: var(--agw-text-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.agw-home-root-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--agw-fs-label);
+  /* Sits behind the name in the hierarchy — present for disambiguation, not
+     for reading. */
+  opacity: 0.72;
+}
+
+/* Faint pool of overhead light the letters stand in. */
+.agw-home-wordmark::before {
+  content: "";
+  position: absolute;
+  inset: -32% -14%;
+  background: radial-gradient(
+    52% 56% at 50% 36%,
+    color-mix(in srgb, var(--agw-text) 4.5%, transparent) 0%,
+    transparent 72%
+  );
+  z-index: -1;
+}
+/* Floor contact shadow — the "ground" the characters stand on. Weaker in
+ * the light theme (same philosophy as --agw-shadow-pop). */
+.agw-home-wordmark::after {
+  content: "";
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  top: 98%;
+  height: 22%;
+  background: radial-gradient(
+    50% 55% at 50% 0%,
+    rgba(0, 0, 0, 0.38) 0%,
+    transparent 70%
+  );
+  z-index: -1;
+}
+.agw-root[data-appearance="light"] .agw-home-wordmark::after {
+  background: radial-gradient(
+    50% 55% at 50% 0%,
+    rgba(0, 0, 0, 0.12) 0%,
+    transparent 70%
+  );
 }
 
 /* Suggestion starter — a PLAIN row (no box), divider between rows, à la Codex.
@@ -2347,14 +3022,24 @@
   margin: 8px 0;
   padding: 7px 11px;
   border-left: 2px solid var(--agw-accent);
-  border-radius: 0 8px 8px 0;
+  border-radius: 0 var(--agw-radius-md) var(--agw-radius-md) 0;
   background: color-mix(in srgb, var(--agw-accent) 8%, transparent);
   color: var(--agw-text);
   font-size: var(--agw-fs-md);
   line-height: 1.45;
 }
+/* The text scrolls inside the marker, the marker never grows. A mid-turn note
+ * can be a pasted spec or a stack trace; letting it run full height buries the
+ * agent's own output below it. Capped at ~9 lines, then it scrolls in place —
+ * `flex: 1` so the scrollbar sits at a stable right edge instead of hugging a
+ * short first line, and `overscroll-behavior` so reaching the end doesn't hand
+ * the gesture to the transcript and yank the reader away. */
 .agw-injection > span {
   min-width: 0;
+  flex: 1 1 auto;
+  max-height: calc(1.45em * 9);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -2429,7 +3114,7 @@
   outline: none;
 }
 .agw-tool-head:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-tool-head:focus-visible {
@@ -2455,7 +3140,7 @@
 }
 .agw-canvas-launch:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--agw-accent) 58%, var(--agw-border));
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-canvas-launch:focus-visible {
   box-shadow: inset 0 0 0 2px var(--agw-ring);
@@ -2505,7 +3190,7 @@
 .agw-canvas-launch-version {
   padding: 2px 6px;
   border: 1px solid var(--agw-border);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-chip-surface);
   color: var(--agw-text-muted);
   font-family: var(--agw-font-code);
@@ -2548,7 +3233,7 @@
 .agw-spinner {
   width: 12px;
   height: 12px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   border: 1.6px solid color-mix(in srgb, var(--agw-accent) 28%, transparent);
   border-top-color: var(--agw-accent);
   animation: agw-spin 0.7s linear infinite;
@@ -2633,6 +3318,22 @@
 .agw-pill-cmd[data-cmd-kind="mcp"] {
   background: color-mix(in srgb, var(--agw-added, var(--agw-accent)) 16%, transparent);
   color: var(--agw-added, var(--agw-accent));
+}
+/* Inline inspector-pick pill — same form as the `@` file and `/` directive
+   pills so all three attachment kinds read as one object type. The tag keeps
+   the code font (it IS markup) and the element's text stays muted, so the pill
+   scans as "<td> · its label" rather than one undifferentiated string. */
+.agw-pill-sel .agw-sel-tag {
+  font-family: var(--agw-font-code);
+  font-weight: 600;
+}
+.agw-pill-sel .agw-sel-text {
+  max-width: 15ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--agw-accent) 72%, var(--agw-text-muted));
+  font-weight: 500;
 }
 /* Selectable chip variant — switches the active file in the expanded result. */
 .agw-tool-chip-btn {
@@ -2760,7 +3461,12 @@
   white-space: pre-wrap;
   word-break: break-word;
   border-radius: var(--agw-radius-sm);
-  background: var(--agw-surface);
+  /* Code fill, NOT --agw-surface. This paints file/tool CODE output, which is
+   * what Appearance → "Code & chips → Code fill" governs. It also keeps a bare
+   * single-file read the same colour as the framed rich views (.agw-rv), which
+   * already use --agw-code-surface — otherwise two reads sitting next to each
+   * other in one transcript render in two different greys. */
+  background: var(--agw-code-surface);
   color: var(--agw-text-muted);
 }
 /* Live write preview while a file tool runs — a few lines, auto-scrolled. */
@@ -2793,7 +3499,8 @@
   max-width: 420px;
   max-height: 320px;
   object-fit: contain;
-  background: var(--agw-bg);
+  /* Letterbox fill behind a `contain`-fitted shot — matches the button frame. */
+  background: var(--agw-surface);
 }
 .agw-diff-added {
   background: var(--agw-added-surface);
@@ -2809,14 +3516,26 @@
   background: color-mix(in srgb, var(--agw-accent) 12%, var(--agw-chip-surface));
   color: var(--agw-text);
 }
+/* Body of a framed (.agw-rv) file/diff result. The FRAME owns the surface — the
+ * same contract as .agw-rv-body — so the code inside must stay transparent.
+ * Painting its own fill here stacked two greys separated by an inset, which is
+ * what made a multi-file read look like a different component than a single
+ * read of the same file. */
 .agw-multi-read {
-  padding: 8px;
   min-width: 0;
 }
 .agw-multi-read .agw-tool-result {
   max-height: 240px;
   margin: 0;
   border-radius: 0;
+  background: transparent;
+}
+/* Same contract for the diff body: the frame already supplies border, radius
+   and surface, so a nested bordered box would read as a double frame. */
+.agw-multi-read .agw-diffview {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 .agw-multi-read .agw-tree-meta {
   margin-left: auto;
@@ -2850,6 +3569,7 @@
 .agw-diff,
 .agw-diffview,
 .agw-tool-stream,
+.agw-injection > span,
 .agw-shell-command code {
   animation-name: agw-scroll-fade-b;
   animation-duration: auto; /* span the full scroll range (scroll-driven) */
@@ -3051,7 +3771,7 @@
   cursor: pointer;
 }
 .agw-tree-row:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-tree-caret {
   display: inline-flex;
@@ -3082,6 +3802,19 @@
   color: var(--agw-text-subtle);
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+/* "The map is partial, and here is how to get the rest." Sits under the tree
+   rather than in the header because it is a footnote about the whole result,
+   not a statistic — and because a reader should reach it after seeing what IS
+   there, not before. Quiet on purpose: it explains, it does not warn. */
+.agw-tree-note {
+  margin: 0;
+  padding: 8px 10px;
+  border-top: 1px solid var(--agw-border);
+  font-size: var(--agw-fs-micro);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
 }
 
 /* Grep — file group with line/content hits. */
@@ -3118,7 +3851,7 @@
   padding: 1px 10px;
 }
 .agw-grep-hit:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-grep-line {
   width: 36px;
@@ -3145,8 +3878,13 @@
   align-items: flex-start;
   gap: 8px;
   padding: 8px 10px;
+  /* Separated by a hairline ONLY — no fill. This is the same device
+   * `.agw-rv-head` uses, so a shell card reads as the identical component as a
+   * file-read card: one frame surface top-to-bottom, rows divided by rules.
+   * The `$` sigil (accent) and the bold command text carry the emphasis, so a
+   * background band isn't needed to set this row apart. */
   border-bottom: 1px solid var(--agw-border);
-  background: var(--agw-surface);
+  background: transparent;
   color: var(--agw-accent);
 }
 .agw-shell-command code {
@@ -3173,15 +3911,39 @@
   border-bottom: 1px solid var(--agw-border);
   background: var(--agw-removed-surface);
 }
+/* `.agw-rv-body` adds `4px 0` for the ROW-style views (grep, file list, tree).
+ * Shell output is a single <pre> that owns its own inset, so that padding would
+ * stack on top and leave the card taller than an equivalent file read. */
+.agw-rv-body:has(> .agw-shell-out) {
+  padding: 0;
+}
+/* Metrics deliberately mirror `.agw-tool-result` (the file-read body) so shell
+ * output and file content are the same size, rhythm and inset — the two card
+ * types differ only in what they contain, never in how they're dressed. */
 .agw-shell-out {
   margin: 0;
-  padding: 6px 10px;
+  padding: 8px 10px;
   white-space: pre-wrap;
   word-break: break-all;
   font-family: var(--agw-font-code);
-  font-size: var(--agw-fs-label);
-  line-height: 1.55;
+  font-size: var(--agw-fs-ui);
+  line-height: 1.5;
   color: var(--agw-text-muted);
+}
+
+/* ── Live command output (ShellStreamView) ────────────────────────────
+ * Same body metrics as the settled view above, so output does not re-flow
+ * when the process exits — it simply stops moving and gains an exit code. */
+.agw-shell-live {
+  color: var(--agw-accent);
+  border-color: color-mix(in srgb, var(--agw-accent) 34%, transparent);
+  background: color-mix(in srgb, var(--agw-accent) 12%, transparent);
+}
+.agw-shell-waiting {
+  padding: 8px 10px;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text-subtle);
 }
 
 /* ── Unified diff view (DiffView) ─────────────────────────────────────
@@ -3321,7 +4083,7 @@
   transition: background 0.12s ease;
 }
 .agw-rv-file-head:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 /* The path/caret region toggles the diff; the row's other controls sit beside it. */
 .agw-rv-file-toggle {
@@ -3384,7 +4146,7 @@
   outline: none;
 }
 .agw-rv-tool:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
   border-color: var(--agw-border-strong);
 }
@@ -3491,7 +4253,7 @@
   color: var(--agw-text-muted);
 }
 .agw-btn-ghost:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-btn-primary {
@@ -3542,7 +4304,7 @@
   outline: none;
 }
 .agw-msg-action:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-msg-action:focus-visible {
@@ -3589,17 +4351,17 @@
   color: var(--agw-text);
 }
 .agw-md h1 {
-  font-size: 1.4em;
+  font-size: var(--agw-fs-h1);
   letter-spacing: -0.017em;
 }
 .agw-md h2 {
-  font-size: 1.22em;
+  font-size: var(--agw-fs-h2);
 }
 .agw-md h3 {
-  font-size: 1.08em;
+  font-size: var(--agw-fs-h3);
 }
 .agw-md h4 {
-  font-size: 1em;
+  font-size: var(--agw-fs-h4);
 }
 .agw-md ul,
 .agw-md ol {
@@ -3646,7 +4408,7 @@
  * inherits so chips sit inside the sentence (dim in body, bright in bold). */
 .agw-md .agw-code-inline {
   font-family: var(--agw-font-code);
-  font-size: 0.85em;
+  font-size: var(--agw-fs-code);
   padding: 1px 5px;
   border-radius: var(--agw-radius-sm);
   background: color-mix(in srgb, var(--agw-text) 7%, transparent);
@@ -3660,7 +4422,18 @@
 .agw-md h4 .agw-code-inline {
   background: none;
   padding: 0;
-  font-size: 0.92em;
+}
+.agw-md h1 .agw-code-inline {
+  font-size: var(--agw-fs-code-h1);
+}
+.agw-md h2 .agw-code-inline {
+  font-size: var(--agw-fs-code-h2);
+}
+.agw-md h3 .agw-code-inline {
+  font-size: var(--agw-fs-code-h3);
+}
+.agw-md h4 .agw-code-inline {
+  font-size: var(--agw-fs-code-h4);
 }
 /* Fenced code block — themed wrapper around Shiki output, with hover copy. */
 .agw-codeblock {
@@ -3736,7 +4509,7 @@
 }
 .agw-code-copy:hover {
   color: var(--agw-text);
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-md table {
   border-collapse: collapse;
@@ -3852,7 +4625,7 @@
 }
 .agw-tool-group-badge {
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   font-size: var(--agw-fs-micro);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -3906,19 +4679,117 @@
 /* ── Composer send button ─────────────────────────────────────────────
  * Circular disc; fills with accent when there's something to send. Tactile
  * press (scale-down on :active) — NOT a hover lift. */
+/* Primary action disc.
+ *
+ * Deliberately LARGER than the 28px `.agw-icon-btn` siblings sitting beside it
+ * (attach, reasoning, mic). At matching sizes the action row read as five
+ * equal-weight icons with no primary — the single biggest reason this control
+ * felt cheap next to peer apps. Size IS the hierarchy here.
+ *
+ * State colours live in CSS, not inline on the element, so :hover / :active /
+ * :focus-visible can actually apply — previously every colour was an inline
+ * style, which made hover impossible to express and left the button feeling
+ * inert on pointer-over. */
 .agw-send {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 28px;
-  width: 28px;
+  height: 34px;
+  width: 34px;
+  flex-shrink: 0;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   outline: none;
-  transition: background 0.12s ease, transform 0.12s cubic-bezier(0.2, 0, 0, 1);
+  /* The disc is CONSTANT — the same muted fill whether empty or typed, it never
+   * changes. Only the icon reacts (dim when empty → lit when there's text, see
+   * below). */
+  background: var(--agw-state-selected);
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  transition: opacity 0.14s ease, color 0.2s ease,
+    transform 0.14s cubic-bezier(0.2, 0, 0, 1);
+}
+.agw-send:hover:not(:disabled) {
+  /* Slight dim only — no scale. The lift (scale 1.04) read as a jitter/shake on
+   * the round disc, so hover is now a still, calm dim of the max-contrast fill. */
+  opacity: 0.88;
+}
+.agw-send:focus-visible {
+  /* Gap ring in the COMPOSER fill (what the disc actually sits on), then the
+   * focus colour — so the ring reads as separated rather than fused. */
+  box-shadow: 0 0 0 2px var(--agw-composer-surface), 0 0 0 4px var(--agw-ring);
 }
 .agw-send:not(:disabled):active {
-  transform: scale(0.9);
+  /* 0.9 was a cartoonish squash; premium micro-interactions stay under ~6%. */
+  transform: scale(0.94);
+}
+
+/* Streaming stop button. At rest: no disc — just the pulsing dot-matrix (the
+ * "working" signal, same as the titlebar). On hover: a frosted-glass disc
+ * (translucent + backdrop blur, like the model-selector surface) fades in with
+ * a dark stop square, so the click target reads unmistakably as Stop. The two
+ * layers CROSS-FADE (stacked + opacity), never a hard swap. */
+.agw-send-stream {
+  position: relative;
+  /* At rest the matrix floats free — no disc, no rim, no blur (override the
+   * base glass). The frosted disc only materialises on hover. */
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  color: var(--agw-conversation);
+  transition: background 0.22s ease, box-shadow 0.22s ease,
+    -webkit-backdrop-filter 0.22s ease, backdrop-filter 0.22s ease;
+}
+.agw-send-stream .agw-send-stream-matrix,
+.agw-send-stream .agw-send-stream-stop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.2s ease;
+}
+.agw-send-stream .agw-send-stream-matrix {
+  opacity: 1;
+}
+.agw-send-stream .agw-send-stream-stop {
+  opacity: 0;
+}
+.agw-send-stream:hover:not(:disabled) {
+  /* No disc — on hover the matrix cross-fades out and only the red stop square
+   * shows (transparent background, no rim). */
+  background: transparent;
+  box-shadow: none;
+  color: var(--agw-removed);
+  opacity: 1;
+}
+.agw-send-stream:hover .agw-send-stream-matrix {
+  opacity: 0;
+}
+.agw-send-stream:hover .agw-send-stream-stop {
+  opacity: 1;
+}
+/* Nothing to send yet → the icon is "off" (dim). The disc is already the muted
+ * fill from the base rule, so it doesn't change; only the cursor differs. */
+.agw-send:disabled {
+  cursor: not-allowed;
+}
+
+/* Text present → the send arrow lights up: the ON-ACCENT colour (the
+ * high-contrast glyph colour, not the mid-luminance accent which reads muddy on
+ * thin strokes) plus a soft glow, so typing visibly switches the icon on. The
+ * DISC does nothing. Scoped to the send arrow (not the streaming stop button).
+ * Transitions so it eases on. */
+.agw-send:not(.agw-send-stream) svg {
+  transition: filter 0.2s ease;
+}
+.agw-send:not(.agw-send-stream):not(:disabled) {
+  color: var(--agw-on-accent);
+}
+.agw-send:not(.agw-send-stream):not(:disabled) svg {
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--agw-on-accent) 55%, transparent))
+    drop-shadow(0 0 9px color-mix(in srgb, var(--agw-on-accent) 30%, transparent));
 }
 
 /* ── @-mention file picker ─────────────────────────────────────────────
@@ -3958,7 +4829,7 @@
 }
 .agw-mention-item[data-active],
 .agw-mention-item:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-mention-name {
@@ -3990,7 +4861,7 @@
   gap: 5px;
   height: 24px;
   padding: 0 4px 0 8px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   border: 1px solid var(--agw-border-strong);
   background: var(--agw-surface);
   color: var(--agw-text);
@@ -4013,14 +4884,14 @@
   width: 16px;
   height: 16px;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: transparent;
   color: var(--agw-text-subtle);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
 }
 .agw-attach-x:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 
@@ -4061,7 +4932,8 @@
    - selector at TOP → the band above already provides spacing, so a small 4px.
    ▶ Change the 16px to move the resting placeholder up/down. */
 .agw-ce-wrap {
-  padding-top: 16px;
+  position: relative;
+  padding: 16px 12px 8px;
 }
 .agw-ce-wrap[data-top-selector] {
   padding-top: 4px;
@@ -4097,7 +4969,7 @@
   margin-left: 6px;
   color: var(--agw-accent);
   font-weight: 700;
-  font-size: 0.9em;
+  font-size: var(--agw-fs-ui);
 }
 
 /* Composer top band — only rendered when the model selector is top-positioned
@@ -4230,7 +5102,7 @@
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 .agw-qp-opt:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-qp-opt:focus-visible {
@@ -4385,7 +5257,7 @@
   transition: background 0.12s ease, color 0.12s ease;
 }
 .agw-files-clear:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-files-tool {
@@ -4404,7 +5276,7 @@
   outline: none;
 }
 .agw-files-tool:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
   border-color: var(--agw-border-strong);
 }
@@ -4432,7 +5304,7 @@
   outline: none;
 }
 .agw-tree-row:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-tree-row[data-selected] {
@@ -4529,7 +5401,7 @@
   outline: none;
 }
 .agw-fv-back:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-fv-back:focus-visible {
@@ -4573,7 +5445,7 @@
   outline: none;
 }
 .agw-fv-openide:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
   border-color: var(--agw-border-strong);
 }
@@ -4651,7 +5523,7 @@
   color: var(--agw-text);
 }
 .agw-fv-seg button[data-active] {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-fv-seg button:focus-visible {
@@ -4708,7 +5580,7 @@
   bottom: 10px;
   right: 12px;
   padding: 3px 8px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
   font-family: var(--agw-font-code);
@@ -4779,7 +5651,7 @@
   transition: background 0.12s ease, color 0.12s ease;
 }
 .agw-tabpill:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-tabpill[data-active] {
   background: var(--agw-state-selected);
@@ -4833,7 +5705,7 @@
   opacity: 1;
 }
 .agw-tabpill-close:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 
@@ -4843,7 +5715,7 @@
   min-width: 0;
   min-height: 0;
   flex-direction: column;
-  background: var(--agw-dock);
+  background: var(--agw-dock-paint);
 }
 
 .agw-canvas-toolbar {
@@ -4928,7 +5800,7 @@
 
 .agw-canvas-refresh:hover,
 .agw-canvas-retry:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 
@@ -5093,7 +5965,7 @@
 }
 
 .agw-diagram-controls button:hover:not(:disabled) {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 
@@ -5248,7 +6120,7 @@
   outline: none;
 }
 .agw-addmenu-item:hover:not(:disabled) {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-addmenu-item:focus-visible {
   box-shadow: inset 0 0 0 2px var(--agw-ring);
@@ -5287,7 +6159,7 @@
   flex-shrink: 0;
   padding: 0 6px 0 8px;
   border-bottom: 1px solid var(--agw-border);
-  background: var(--agw-dock);
+  background: var(--agw-dock-paint);
 }
 .agw-term-sessions {
   display: flex;
@@ -5314,7 +6186,7 @@
   transition: background 0.12s ease, color 0.12s ease;
 }
 .agw-term-pill:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-term-pill[data-active] {
   background: var(--agw-state-selected);
@@ -5372,7 +6244,7 @@
   opacity: 1;
 }
 .agw-term-pill-close:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 
@@ -5411,7 +6283,7 @@
   flex-shrink: 0;
   padding: 0 8px;
   border-bottom: 1px solid var(--agw-border);
-  background: var(--agw-dock);
+  background: var(--agw-dock-paint);
 }
 .agw-br-nav {
   display: inline-flex;
@@ -5429,7 +6301,7 @@
   outline: none;
 }
 .agw-br-nav:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-br-nav:focus-visible {
@@ -5443,7 +6315,7 @@
   gap: 7px;
   height: 28px;
   padding: 0 10px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   /* Derived quiet fill — also used by the settings search box. */
   background: var(--agw-state-quiet);
   border: 1px solid var(--agw-border);
@@ -5495,7 +6367,7 @@
   outline: none;
 }
 .agw-br-inspect:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
   border-color: var(--agw-border-strong);
 }
@@ -5508,20 +6380,16 @@
   border-color: var(--agw-accent);
 }
 
-/* ── Composer: inspector "Selected" chips ─────────────────────────────── */
-.agw-sel-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 0 12px 4px;
-}
+/* ── Inspector picks in the TRANSCRIPT bubble ──────────────────────────────
+ * The composer stages picks as inline `.agw-pill-sel` pills; this rounded chip
+ * form is the sent-message rendering in the user bubble. */
 .agw-sel-chip {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   height: 22px;
   padding: 0 4px 0 8px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
   color: var(--agw-text);
   font-size: var(--agw-fs-label);
@@ -5538,25 +6406,6 @@
   white-space: nowrap;
   color: var(--agw-text-muted);
 }
-.agw-sel-x {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--agw-text-subtle);
-  cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
-}
-.agw-sel-x:hover {
-  background: color-mix(in srgb, var(--agw-removed) 22%, transparent);
-  color: var(--agw-removed);
-}
-
 /* ── `/`-directive chips (skills · rules · MCP) staged on the composer ──── */
 .agw-cmd-row {
   display: flex;
@@ -5657,7 +6506,7 @@
   outline: none;
 }
 .agw-br-sugg:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-br-sugg-url {
   flex: 1;
@@ -5686,12 +6535,19 @@
   min-width: 0;
   background: var(--agw-canvas);
 
-  /* Premium, heavyweight design language — bigger radii, real depth, generous
-     padding. Deliberately NOT the IDE's tight hairline look. Scoped here so the
-     whole settings surface is consistent and independently tunable. */
-  --agw-set-r-card: 16px;
-  --agw-set-r-inner: 12px;
-  --agw-set-r-pill: 999px;
+  /* Premium, heavyweight design language — real depth, generous padding.
+     Deliberately NOT the IDE's tight hairline look. Scoped here so the whole
+     settings surface stays consistent and independently tunable.
+
+     The RADII no longer fork. These were free numbers (16 / 12) against the
+     window's 12 / 8 / 6, so a settings card and a chat card rounded differently
+     with nothing to explain the difference — the "almost aligned" noise the
+     type scale exists to prevent. They are now aliases onto the one scale, so
+     there is a single source of truth AND this block is still the one place to
+     re-tune settings if it should read heavier again. The heavier feel comes
+     from padding and surface contrast, which is where it belongs. */
+  --agw-set-r-card: var(--agw-radius-lg);
+  --agw-set-r-inner: var(--agw-radius-sm);
   /* Cards sit FLAT — defined by border + surface contrast, not a drop shadow
      (a heavy shadow made them look like they float above the page). */
   --agw-set-shadow: none;
@@ -5705,13 +6561,13 @@
   width: 232px;
   flex-shrink: 0;
   border-right: 1px solid var(--agw-border);
-  background: var(--agw-rail);
+  background: var(--agw-rail-paint);
 
   /* Dedicated, independently-themeable knobs for the settings nav selection.
      They default to the neutral look of the chat rail's selected row, but are
      SEPARATE variables on purpose — a future theme can recolor the settings nav
      without touching the chat rail (and vice-versa). Never an accent/blue fill. */
-  --agw-set-nav-hover-bg: var(--agw-hover);
+  --agw-set-nav-hover-bg: var(--agw-hover-paint);
   --agw-set-nav-active-bg: var(--agw-state-selected);
   --agw-set-nav-active-fg: var(--agw-text);
 }
@@ -5821,7 +6677,7 @@
   height: 34px;
   padding: 0 15px 0 12px;
   border: 1px solid var(--agw-border);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-surface);
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-ui);
@@ -5832,7 +6688,7 @@
 }
 .agw-settings-back:hover {
   color: var(--agw-text);
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   border-color: var(--agw-border-strong);
 }
 .agw-settings-head-titles {
@@ -5981,7 +6837,7 @@
   flex-shrink: 0;
   padding: 0;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-control-muted);
   cursor: pointer;
   transition: background 0.18s ease;
@@ -5994,7 +6850,7 @@
   left: 3px;
   width: 18px;
   height: 18px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-text);
   box-shadow: 0 1px 2px color-mix(in srgb, #000 35%, transparent);
   transition:
@@ -6039,7 +6895,7 @@
   padding: 3px;
   gap: 2px;
   border: 1px solid var(--agw-border);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-canvas);
   /* Overflow-proof by construction: hug the buttons (an explicit width
      beats a flex/grid parent's stretch, which used to spread the pills
@@ -6052,7 +6908,7 @@
   height: 24px;
   padding: 0 14px;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: transparent;
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
@@ -6071,11 +6927,11 @@
 }
 .agw-seg-btn:hover {
   color: var(--agw-text);
-  background: color-mix(in srgb, var(--agw-hover) 55%, transparent);
+  background: color-mix(in srgb, var(--agw-hover-paint) 55%, transparent);
 }
 .agw-seg-btn:active {
   color: var(--agw-text);
-  background: color-mix(in srgb, var(--agw-hover) 88%, var(--agw-text) 8%);
+  background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 8%);
 }
 .agw-seg-btn:focus-visible {
   box-shadow: 0 0 0 2px var(--agw-ring);
@@ -6154,7 +7010,7 @@
   height: 30px;
   padding: 0 16px;
   border: 1px solid var(--agw-border);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-surface);
   color: var(--agw-text);
   font-size: var(--agw-fs-ui);
@@ -6168,14 +7024,14 @@
   white-space: nowrap;
 }
 .agw-set-btn:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   border-color: var(--agw-border-strong);
 }
 /* Pressed: a real physical step past hover, per variant. Without these,
    clicking gave zero feedback until the state change landed — the single
    biggest "decoration, not a control" tell. */
 .agw-set-btn:active:not(:disabled) {
-  background: color-mix(in srgb, var(--agw-hover) 88%, var(--agw-text) 12%);
+  background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 12%);
   border-color: var(--agw-border-strong);
 }
 .agw-set-btn[data-variant="primary"] {
@@ -6223,6 +7079,20 @@
 }
 
 /* ── Text input ───────────────────────────────────────────────────────── */
+/* Settings rows whose control is a horizontal cluster (input + browse button,
+ * pill + action). Plain CSS rather than Tailwind utilities — this module is
+ * `--agw-*` / plain-CSS only (see agent-window/README.md). */
+.agw-set-field-row {
+  display: flex;
+  gap: 6px;
+  width: 320px;
+}
+.agw-set-inline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .agw-set-input {
   height: 30px;
   width: 100%;
@@ -6281,6 +7151,218 @@
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
+}
+
+/* ── Shell registry (Settings → Tools › Shells) ─────────────────────────── */
+/* Lives inside a `.agw-set-group`, the same collapsible shell as the per-tool
+   approval groups. Rows are separated by dividers rather than nested cards: a
+   shell is a list entry, not a contained object. */
+.agw-shell-panel {
+  border-top: 1px solid var(--agw-border);
+}
+.agw-shell-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--agw-border);
+  background: color-mix(in srgb, var(--agw-canvas) 50%, transparent);
+}
+.agw-shell-toolbar-hint {
+  flex: 1 1 220px;
+  min-width: 0;
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text-subtle);
+}
+
+.agw-shell-add {
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-shell-add-label {
+  display: block;
+  font-size: var(--agw-fs-md);
+  font-weight: 500;
+  color: var(--agw-text);
+}
+.agw-shell-add-hint {
+  margin-top: 3px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text-subtle);
+}
+.agw-shell-add-hint code {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+}
+.agw-shell-add-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.agw-shell-add-row .agw-set-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.agw-shell-add-error {
+  margin: 10px 18px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-removed);
+}
+.agw-shell-add .agw-shell-add-error {
+  margin: 10px 0 0;
+}
+
+.agw-shell-warn {
+  margin: 0;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--agw-border);
+  background: color-mix(in srgb, var(--agw-warning) 11%, transparent);
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text);
+}
+.agw-shell-empty {
+  padding: 22px 18px;
+  font-size: var(--agw-fs-ui);
+  line-height: 1.5;
+  color: var(--agw-text-muted);
+}
+.agw-shell-empty-hint {
+  margin-top: 5px;
+  max-width: 56ch;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+
+/* The rows are the only variable-length part of the group, so they carry the
+   cap — matching how an expanded tool card bounds its result body. Roughly
+   four rows; `overflow: auto` means no scrollbar appears until it is needed,
+   so the common short list still reads as one continuous panel. */
+.agw-shell-list {
+  max-height: 360px;
+  overflow-y: auto;
+}
+.agw-shell-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--agw-border);
+  transition: opacity 0.12s ease;
+}
+.agw-shell-list > .agw-shell-row:last-child {
+  border-bottom: none;
+}
+.agw-shell-row[data-busy] {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.agw-shell-row-main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.agw-shell-row-control {
+  flex-shrink: 0;
+  /* Optically centre the switch against the first text line. */
+  padding-top: 2px;
+}
+.agw-shell-row-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.agw-shell-name {
+  font-size: var(--agw-fs-md);
+  font-weight: 500;
+  color: var(--agw-text);
+}
+.agw-shell-tag {
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+.agw-shell-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-shell-path {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--agw-font-code);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-shell-detail {
+  margin-top: 6px;
+  max-width: 62ch;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-muted);
+}
+.agw-shell-detail[data-state="failed"] {
+  color: var(--agw-removed);
+}
+
+/* Row actions stay visible but quiet, then come forward on hover or keyboard
+   focus — hover alone would hide them from touch and keyboard users. */
+.agw-shell-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+  opacity: 0.55;
+  transition: opacity 0.12s ease;
+}
+.agw-shell-row:hover .agw-shell-actions,
+.agw-shell-row:focus-within .agw-shell-actions {
+  opacity: 1;
+}
+.agw-shell-actions:empty {
+  display: none;
+}
+.agw-shell-action {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.agw-shell-action:hover {
+  color: var(--agw-text);
+}
+.agw-shell-action:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: 2px;
+  border-radius: var(--agw-radius-sm);
+}
+.agw-shell-action[data-tone="danger"] {
+  color: var(--agw-removed);
+}
+
+.agw-shell-foot {
+  padding: 12px 18px;
+  border-top: 1px solid var(--agw-border);
+  background: color-mix(in srgb, var(--agw-canvas) 50%, transparent);
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+}
+.agw-shell-foot strong {
+  font-weight: 600;
+  color: var(--agw-text);
 }
 
 /* ── Tools layout: wide container + tile grid + category card grid ──────── */
@@ -6408,7 +7490,7 @@
   height: 28px;
   padding: 0 14px;
   border: 1px solid var(--agw-border);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-surface);
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
@@ -6418,7 +7500,7 @@
   outline: none;
 }
 .agw-set-foot-btn:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
   border-color: var(--agw-border-strong);
 }
@@ -6455,7 +7537,7 @@
   outline: none;
 }
 .agw-set-group-head:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-set-group-chev {
   display: inline-flex;
@@ -6587,7 +7669,7 @@
   outline: none;
 }
 .agw-prov-icon-btn:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-prov-models-head {
@@ -6635,6 +7717,18 @@
 }
 .agw-prov-model[data-active] {
   background: color-mix(in srgb, var(--agw-added) 8%, transparent);
+}
+/* The list container has `overflow: visible` on the provider page, so a row's
+   background isn't clipped by the container's rounded corners. Round the first
+   and last rows to match (inner radius minus the container's 1px border) so the
+   active fill follows the corner instead of poking a square edge past it. */
+.agw-prov-model:first-child {
+  border-top-left-radius: calc(var(--agw-set-r-inner) - 1px);
+  border-top-right-radius: calc(var(--agw-set-r-inner) - 1px);
+}
+.agw-prov-model:last-child {
+  border-bottom-left-radius: calc(var(--agw-set-r-inner) - 1px);
+  border-bottom-right-radius: calc(var(--agw-set-r-inner) - 1px);
 }
 .agw-prov-model-top {
   display: flex;
@@ -6706,7 +7800,7 @@
 .agw-prov-chip {
   padding: 1px 7px;
   border: 1px solid var(--agw-border);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   font-size: var(--agw-fs-micro);
   font-weight: 600;
   color: var(--agw-text-muted);
@@ -6731,7 +7825,7 @@
   height: 28px;
   padding: 0 13px;
   border: 1px solid var(--agw-border);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: transparent;
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
@@ -6825,7 +7919,7 @@
   outline: none;
 }
 .agw-prov-add-item:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-prov-add-name {
   font-size: var(--agw-fs-ui);
@@ -7036,7 +8130,7 @@
 }
 .agw-profile-row:hover,
 .agw-profile-row[data-hover] {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-profile-row-label {
   font-size: var(--agw-fs-ui);
@@ -7048,14 +8142,14 @@
 }
 .agw-profile-row-track {
   height: 10px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: color-mix(in srgb, var(--agw-text) 6%, transparent);
   overflow: hidden;
 }
 .agw-profile-row-fill {
   display: block;
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: linear-gradient(
     90deg,
     color-mix(in srgb, var(--agw-accent) 45%, transparent),
@@ -7202,14 +8296,14 @@
 .agw-profile-tool-track {
   flex: 1;
   height: 8px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: color-mix(in srgb, var(--agw-text) 8%, transparent);
   overflow: hidden;
 }
 .agw-profile-tool-fill {
   display: block;
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: color-mix(in srgb, var(--agw-accent) 72%, transparent);
 }
 .agw-profile-tool-count {
@@ -7239,7 +8333,7 @@
   width: 248px;
   flex-shrink: 0;
   border-right: 1px solid var(--agw-border);
-  background: var(--agw-rail);
+  background: var(--agw-rail-paint);
 }
 .agw-prov-side-head {
   display: flex;
@@ -7319,7 +8413,7 @@
   margin-top: 2px;
 }
 .agw-prov-item:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-prov-item[data-active] {
   background: var(--agw-state-selected);
@@ -7327,7 +8421,7 @@
 /* Pressed (after [data-active] so selecting an already-active row still
    acknowledges the click with a deeper shade). */
 .agw-prov-item:active {
-  background: color-mix(in srgb, var(--agw-hover) 88%, var(--agw-text) 12%);
+  background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 12%);
 }
 .agw-prov-item:focus-visible {
   box-shadow: 0 0 0 2px var(--agw-ring);
@@ -7373,6 +8467,39 @@
 .agw-prov-list-foot {
   padding: 10px;
   border-top: 1px solid var(--agw-border);
+}
+
+/* Remove-provider control (detail footer). */
+.agw-prov-detail-danger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-prov-remove-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--agw-text-muted);
+  background: transparent;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-sm);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.agw-prov-remove-btn:hover {
+  color: var(--agw-danger, #e5484d);
+  border-color: var(--agw-danger, #e5484d);
+}
+.agw-prov-remove-btn[data-confirm] {
+  color: #fff;
+  background: var(--agw-danger, #e5484d);
+  border-color: var(--agw-danger, #e5484d);
 }
 .agw-prov-list-foot .agw-set-btn {
   width: 100%;
@@ -7527,11 +8654,11 @@
   outline: none;
 }
 .agw-csel-item:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-csel-item:active {
-  background: color-mix(in srgb, var(--agw-hover) 88%, var(--agw-text) 12%);
+  background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 12%);
   color: var(--agw-text);
 }
 .agw-csel-item:focus-visible {
@@ -7567,7 +8694,7 @@
   height: 28px;
   padding: 0 10px;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: transparent;
   color: var(--agw-text);
   font-size: var(--agw-fs-ui);
@@ -7579,7 +8706,7 @@
   outline: none;
 }
 .agw-composer-pill:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-composer-pill:focus-visible {
@@ -7598,17 +8725,29 @@
  * — one cohesive, "premium" input cluster instead of a two-tone split.
  * Translucent (glass) like every popover; blur comes from .agw-menu /
  * .agw-mention, so this rule only re-tints the family. */
+/* NB: `.agw-rail-menu` is deliberately NOT in this list. It is the left-rail
+ * right-click menu — it has nothing to do with the composer, and including it
+ * meant editing "Composer → Input fill" recoloured a rail context menu while
+ * "Shared surfaces → Elevated surface" (which the Appearance hint promises
+ * covers popover menus) did nothing to it. It now follows the popover family
+ * like every other non-composer menu. */
 .agw-model-menu,
 .agw-reason-menu,
+.agw-bud-pop,
 .agw-mention,
-.agw-rail-menu {
-  background: color-mix(in srgb, var(--agw-composer-surface) 76%, transparent);
+.agw-dock-card {
+  /* Matches the popover family's 95% tint — see the note on `.agw-menu`.
+     The docked cards belong here too: they are attached to the composer and
+     read as part of it, so they take the composer's surface rather than the
+     transcript's. */
+  background: color-mix(in srgb, var(--agw-composer-surface) 95%, transparent);
 }
 @supports not (backdrop-filter: blur(1px)) {
   .agw-model-menu,
   .agw-reason-menu,
+  .agw-bud-pop,
   .agw-mention,
-  .agw-rail-menu {
+  .agw-dock-card {
     background: var(--agw-composer-surface);
   }
 }
@@ -7655,7 +8794,7 @@
   outline: none;
 }
 .agw-reason-item:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-reason-item[data-active] {
@@ -7687,7 +8826,7 @@
   font-size: var(--agw-fs-label);
   font-weight: 600;
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-control-muted);
   color: var(--agw-text-muted);
 }
@@ -7867,7 +9006,7 @@
 .agw-prov-icon-btn[data-on] {
   color: var(--agw-text);
   border-color: var(--agw-border-strong);
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-mcp-chev {
   display: inline-flex;
@@ -7884,7 +9023,7 @@
   outline: none;
 }
 .agw-mcp-chev:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-mcp-chev[data-open] {
@@ -8023,7 +9162,7 @@
 .agw-mcp-tool {
   padding: 2px 9px;
   border: 1px solid var(--agw-border);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-canvas);
   color: var(--agw-text-muted);
   font-family: var(--agw-font-code);
@@ -8071,7 +9210,7 @@
   outline: none;
 }
 .agw-mcp-path:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text-muted);
   border-color: var(--agw-border-strong);
 }
@@ -8116,7 +9255,7 @@
   transition: border-color 0.12s ease, background 0.12s ease;
 }
 .agw-appr-card:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   border-color: var(--agw-border-strong);
 }
 .agw-appr-card[data-active] {
@@ -8238,7 +9377,7 @@
   appearance: none;
   width: 200px;
   height: 4px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-control-muted);
   cursor: pointer;
 }
@@ -8269,11 +9408,18 @@
 }
 
 /* ── Translucent rail & dock (opt-in) ────────────────────────────────────── */
+/* Derive the frosted paint FROM the user's own rail/dock colours (not from
+ * --agw-surface) so enabling this keeps whatever they picked in Appearance and
+ * only adds transparency. Writing to the *-paint aliases — never the tokens —
+ * is what makes that possible without a var() self-reference cycle. */
 .agw-root[data-translucent] {
-  --agw-rail: color-mix(in srgb, var(--agw-surface) 55%, transparent);
-  --agw-dock: color-mix(in srgb, var(--agw-surface) 55%, transparent);
+  --agw-rail-paint: color-mix(in srgb, var(--agw-rail) 55%, transparent);
+  --agw-dock-paint: color-mix(in srgb, var(--agw-dock) 55%, transparent);
 }
-.agw-root[data-translucent] .agw-settings-nav {
+.agw-root[data-translucent] .agw-settings-nav,
+.agw-root[data-translucent] .agw-titlebar,
+.agw-root[data-translucent] .agw-canvas,
+.agw-root[data-translucent] .agw-prov-side {
   backdrop-filter: blur(16px) saturate(1.3);
   -webkit-backdrop-filter: blur(16px) saturate(1.3);
 }
@@ -8356,14 +9502,14 @@
   margin-top: 12px;
   width: min(280px, 52vw);
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: color-mix(in srgb, var(--agw-text) 9%, transparent);
   overflow: hidden;
 }
 .agw-skill-meter > span {
   display: block;
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-added);
   transition: width 0.28s cubic-bezier(0.2, 0.7, 0.2, 1);
 }
@@ -8416,7 +9562,7 @@
   gap: 6px;
   height: 28px;
   padding: 0 9px 0 10px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   border: 1px solid color-mix(in srgb, var(--agw-added) 38%, transparent);
   background: color-mix(in srgb, var(--agw-added) 12%, transparent);
   color: var(--agw-text);
@@ -8472,7 +9618,7 @@
 }
 .agw-skill-count {
   flex-shrink: 0;
-  font-family: var(--agw-font-mono, ui-monospace, monospace);
+  font-family: var(--agw-font-code);
   font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
   font-variant-numeric: tabular-nums;
@@ -8501,13 +9647,13 @@
   border-radius: var(--agw-radius-md);
   background: var(--agw-surface);
   cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease,
-    transform 0.12s ease;
+  transition: border-color 0.12s ease, background 0.12s ease;
 }
+/* Hover reads through colour only — no translateY lift. A card that jumps on
+ * hover makes a dense grid feel unstable as the pointer crosses it. */
 .agw-skill-card:hover:not([data-disabled]) {
   border-color: color-mix(in srgb, var(--agw-text) 20%, transparent);
-  background: var(--agw-hover);
-  transform: translateY(-1px);
+  background: var(--agw-hover-paint);
 }
 .agw-skill-card[data-on] {
   border-color: color-mix(in srgb, var(--agw-added) 48%, transparent);
@@ -8530,7 +9676,7 @@
   justify-content: center;
   width: 18px;
   height: 18px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   border: 1px solid var(--agw-border);
   color: transparent;
   background: color-mix(in srgb, var(--agw-text) 5%, transparent);
@@ -8579,7 +9725,7 @@
   align-items: center;
   max-width: 100%;
   padding: 1px 6px;
-  font-family: var(--agw-font-mono, ui-monospace, monospace);
+  font-family: var(--agw-font-code);
   font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
   background: color-mix(in srgb, var(--agw-text) 5%, transparent);
@@ -8624,7 +9770,7 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  font-family: var(--agw-font-mono, ui-monospace, monospace);
+  font-family: var(--agw-font-code);
   font-size: var(--agw-fs-label);
   line-height: 1.5;
   color: var(--agw-text-subtle);
@@ -8672,7 +9818,7 @@
 }
 .agw-agent-gcount {
   flex-shrink: 0;
-  font-family: var(--agw-font-mono, ui-monospace, monospace);
+  font-family: var(--agw-font-code);
   font-variant-numeric: tabular-nums;
 }
 .agw-agent-gcount[data-low] {
@@ -8686,7 +9832,7 @@
   gap: 2px;
   padding: 2px;
   border: 1px solid var(--agw-border);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-surface);
 }
 .agw-agent-stepper[data-disabled] {
@@ -8699,7 +9845,7 @@
   width: 26px;
   height: 26px;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: transparent;
   color: var(--agw-text);
   font-size: var(--agw-fs-title);
@@ -8707,7 +9853,7 @@
   cursor: pointer;
 }
 .agw-agent-stepper-btn:hover:not(:disabled) {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-agent-stepper-btn:disabled {
   color: var(--agw-text-subtle);
@@ -8757,6 +9903,9 @@
   content: "";
   position: absolute;
   inset: 0;
+  /* DERIVED, not a one-off: the composer surface is `rounded-[16px]` and this
+     ring sits ~6px outside it, so 16 + 6 keeps the two curves concentric.
+     Retune this only alongside the composer's own radius. */
   border-radius: 22px;
   pointer-events: none;
   border: 1.5px dashed var(--agw-accent);
@@ -8909,7 +10058,7 @@
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 .agw-confirm-btn:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-confirm-btn:focus-visible {
   box-shadow: 0 0 0 2px var(--agw-ring);
@@ -9031,7 +10180,7 @@
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease, filter 0.12s ease;
 }
 .agw-mic-perm-btn:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 .agw-mic-perm-btn:focus-visible {
   outline: none;
@@ -9096,7 +10245,7 @@
   cursor: pointer;
 }
 .agw-img-tool:hover:not(:disabled) {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
 .agw-img-tool[data-active] {
@@ -9151,7 +10300,7 @@
   cursor: pointer;
 }
 .agw-img-close:hover {
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
 }
 
 /* Inspector element chips persisted on a user turn — rendered INSIDE the
@@ -9162,6 +10311,59 @@
   flex-wrap: wrap;
   gap: 6px;
   justify-content: flex-start;
+}
+
+/* ── Long user message — clamped to its opening lines, chevron reveals the rest ──
+ * A pasted spec shouldn't hand the reader a wall to scroll past before they can
+ * see what the agent did with it. Deliberately NOT the injection's inline
+ * scroller: this bubble is the thing the reader most often wants in FULL, and a
+ * nested scroll area inside a right-aligned bubble competes with the
+ * transcript's own scrolling. Clamp + expand keeps one scroll surface. */
+.agw-bubble-body {
+  min-width: 0;
+}
+.agw-bubble-body[data-collapsed] {
+  max-height: calc(1.55em * 6);
+  overflow: hidden;
+  /* Fades the cut line so the clamp reads as "continues" rather than "ends". */
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+}
+.agw-bubble-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  /* 24px tall including the negative-space padding — a comfortable pointer and
+     touch target across the full bubble width, not just the glyph. */
+  margin-top: 2px;
+  padding: 4px 0 2px;
+  border: none;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.agw-bubble-more:hover {
+  color: var(--agw-text);
+  background: color-mix(in srgb, var(--agw-hover-paint) 55%, transparent);
+}
+.agw-bubble-more:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-bubble-more svg {
+  transition: transform 0.16s ease;
+}
+.agw-bubble-more[data-expanded] svg {
+  transform: rotate(180deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-bubble-more,
+  .agw-bubble-more svg {
+    transition: none;
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -9280,14 +10482,14 @@
 /* Meter */
 .agw-atlas-meter {
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: color-mix(in srgb, var(--agw-text) 10%, transparent);
   overflow: hidden;
 }
 .agw-atlas-meter-fill {
   display: block;
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-accent);
   transition: width 0.3s ease;
 }
@@ -9384,7 +10586,7 @@
 }
 .agw-atlas-nav:hover {
   color: var(--agw-text);
-  background: var(--agw-hover);
+  background: var(--agw-hover-paint);
   border-color: var(--agw-border-strong);
 }
 .agw-atlas-nav-next svg {
@@ -9407,7 +10609,7 @@
   font-weight: 600;
   white-space: nowrap;
   border: 1px solid var(--agw-border);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-canvas);
   color: var(--agw-text-muted);
   cursor: pointer;
@@ -9768,7 +10970,7 @@
 
 .agw-command-item[data-selected] {
   border-color: color-mix(in srgb, var(--agw-accent) 24%, transparent);
-  background: color-mix(in srgb, var(--agw-accent) 11%, var(--agw-hover));
+  background: color-mix(in srgb, var(--agw-accent) 11%, var(--agw-hover-paint));
 }
 
 .agw-command-icon {

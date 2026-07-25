@@ -83,6 +83,14 @@ impl ToolExecutor for PermissionGuardedExecutor {
         false
     }
 
+    fn concurrency_safe(&self) -> bool {
+        // A permission prompt has to be answered one at a time, so a gated
+        // tool is never batchable no matter what it wraps. Stated
+        // explicitly rather than relying on the trait default, because the
+        // default is what a future refactor would flip.
+        false
+    }
+
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         // Cheap pre-check: don't wake the permitter if cancel already
         // fired. Mirrors the `FrontendBridgeExecutor` short-circuit.

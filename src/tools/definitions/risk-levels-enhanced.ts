@@ -55,6 +55,7 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   move_path: 'medium',       // move/rename file or folder — can reorganize
   delete_path: 'high',       // KEEP HIGH - deletion is destructive
   grep: 'low',               // Search tool - read only operation
+  glob: 'low',               // Find files by name - read only operation
   // Legacy file tools (historic threads / decoration only)
   file_create: 'low',
   file_read_lines: 'low',

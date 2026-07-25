@@ -208,15 +208,28 @@ export const executeCommandStream = async (
     cwd,
     shell,
     timeoutMs,
+    // Only agent-spawned background processes mirror their output to a file
+    // (so the model can read it back). A UI-driven command has no such need.
+    logPath: undefined,
   });
 };
 
-export const cancelCommandStream = async (requestId: string): Promise<void> => {
+/**
+ * Stop a running command stream.
+ *
+ * `reason` is written into the process's log file as its closing line, so an
+ * agent reading that file afterwards learns the run was ended on purpose
+ * rather than inferring a crash from output that simply stops.
+ */
+export const cancelCommandStream = async (
+  requestId: string,
+  reason: 'user' | 'agent' = 'user',
+): Promise<void> => {
   if (!isAuroraRuntimeAvailable()) {
     console.warn('cancelCommandStream: Aurora runtime unavailable');
     return;
   }
-  await invoke<void>('cancel_command_stream', { requestId });
+  await invoke<void>('cancel_command_stream', { requestId, reason });
 };
 
 // System Operations

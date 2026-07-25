@@ -197,6 +197,41 @@ pub struct OpenAiUsageData {
     pub prompt_cache_hit_tokens: Option<u32>,
     #[serde(default)]
     pub prompt_cache_miss_tokens: Option<u32>,
+    /// Standard OpenAI cache telemetry (`usage.prompt_tokens_details`).
+    /// OpenAI, and OpenAI-compatible routers (AgentRouter, OpenRouter, …),
+    /// report cache reads here as `cached_tokens` — a *subset* of
+    /// `prompt_tokens`, exactly like DeepSeek's `prompt_cache_hit_tokens`.
+    /// Nullable: streaming responses often send `prompt_tokens_details: null`.
+    #[serde(default)]
+    pub prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
+}
+
+/// The `usage.prompt_tokens_details` sub-object in the OpenAI wire shape.
+/// Only the cache field is read; other members (`audio_tokens`, …) are
+/// ignored.
+#[derive(Debug, Deserialize, Default)]
+pub struct OpenAiPromptTokensDetails {
+    #[serde(default)]
+    pub cached_tokens: Option<u32>,
+}
+
+impl OpenAiUsageData {
+    /// Cache-read token count from whichever field the provider populated:
+    /// DeepSeek's top-level `prompt_cache_hit_tokens` takes precedence, then
+    /// the standard OpenAI `prompt_tokens_details.cached_tokens`. In both
+    /// wire shapes the value is a subset of `prompt_tokens`, so callers must
+    /// subtract it from `input_tokens` to keep Aurora's additive context math
+    /// correct. Returns `None` (not `Some(0)`) when there is no cache hit.
+    #[must_use]
+    pub fn cache_read_tokens(&self) -> Option<u32> {
+        self.prompt_cache_hit_tokens
+            .or_else(|| {
+                self.prompt_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.cached_tokens)
+            })
+            .filter(|&n| n > 0)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +265,17 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
         .or(config.default_temperature)
         .unwrap_or(1.0);
 
+    let caching = supports_prompt_caching(config);
+    let mut messages = messages;
+    if caching {
+        // Rolling breakpoint on the tail of history. Each iteration appends
+        // an assistant message plus its tool results, so marking the end of
+        // the current history means the NEXT iteration reads all of it from
+        // cache and only writes the delta. Without this, a 25-iteration turn
+        // re-pays full price for the whole conversation 25 times.
+        mark_last_content_block(&mut messages);
+    }
+
     let mut body = Map::new();
     body.insert("model".to_string(), Value::String(model.to_string()));
     body.insert("messages".to_string(), Value::Array(messages));
@@ -239,40 +285,134 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
 
     if let Some(system_prompt) = system {
         if !system_prompt.is_empty() {
-            body.insert("system".to_string(), Value::String(system_prompt));
+            // Caching needs the block form; the plain-string form has
+            // nowhere to hang `cache_control`.
+            body.insert(
+                "system".to_string(),
+                if caching {
+                    json!([{
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": { "type": "ephemeral" },
+                    }])
+                } else {
+                    Value::String(system_prompt)
+                },
+            );
         }
     }
 
     if !request.tools.is_empty() {
-        body.insert(
-            "tools".to_string(),
-            Value::Array(
-                request
-                    .tools
-                    .iter()
-                    .map(anthropic_tool_schema)
-                    .collect::<Vec<_>>(),
-            ),
-        );
+        let mut tools: Vec<Value> = request.tools.iter().map(anthropic_tool_schema).collect();
+        if caching {
+            // Anthropic caches the prefix UP TO each breakpoint, and the
+            // request prefix is ordered tools → system → messages. Marking
+            // the last tool caches the whole schema list, which is the
+            // largest fixed payload Aurora sends and is re-sent on every
+            // one of a turn's iterations.
+            if let Some(last) = tools.last_mut() {
+                set_cache_control(last);
+            }
+        }
+        body.insert("tools".to_string(), Value::Array(tools));
     }
 
-    if request.thinking_enabled && config.supports_thinking {
-        body.insert(
-            "thinking".to_string(),
-            json!({
-                "type": "enabled",
-                "budget_tokens": 1024,
-            }),
-        );
+    // Reasoning. Two frontend paths land here and BOTH must produce a `thinking`
+    // block, because Anthropic's `/v1/messages` has no `reasoning_effort` field:
+    //
+    //  * toggle/budget models  → `request.thinking_enabled`
+    //  * effort models         → the frontend sets `thinking_enabled = false` and
+    //    injects an OpenAI-shaped `reasoning_effort` into `custom_params` instead
+    //    (see `useAgentWindowSend`). Forwarding that key verbatim to Anthropic is
+    //    a silent no-op — the request succeeds and simply returns no reasoning.
+    //    Translate it into a real thinking budget and drop the foreign key.
+    let effort = config
+        .custom_params
+        .as_ref()
+        .and_then(|p| p.get("reasoning_effort"))
+        .and_then(|v| v.as_str())
+        .map(str::to_ascii_lowercase);
+
+    let wants_thinking = (request.thinking_enabled && config.supports_thinking) || effort.is_some();
+
+    let thinking_on = if wants_thinking {
+        match anthropic_thinking_budget(
+            request.thinking_budget_tokens,
+            effort.as_deref(),
+            max_tokens,
+        ) {
+            Some(budget) => {
+                body.insert(
+                    "thinking".to_string(),
+                    json!({ "type": "enabled", "budget_tokens": budget }),
+                );
+                true
+            }
+            // `max_tokens` too small to carry a valid budget — omit `thinking`
+            // rather than send a request Anthropic would reject outright.
+            None => false,
+        }
+    } else {
+        false
+    };
+
+    // Extended thinking requires `temperature = 1`; any other value is a 400 on
+    // Anthropic proper. Drop it rather than fight the user's provider default.
+    if thinking_on {
+        body.remove("temperature");
     }
 
     if let Some(custom) = &config.custom_params {
         for (key, value) in custom {
+            // Never forward `reasoning_effort` — it is not an Anthropic field and
+            // was already translated into `thinking` above.
+            if key.eq_ignore_ascii_case("reasoning_effort") {
+                continue;
+            }
             body.insert(key.clone(), value.clone());
         }
     }
 
     Value::Object(body)
+}
+
+/// Pick an Anthropic `thinking.budget_tokens`.
+///
+/// Anthropic constrains the budget to `1024 <= budget < max_tokens`. An
+/// `explicit` budget (the user's own choice, for models whose reasoning
+/// control is a budget slider rather than an effort tier) wins and is only
+/// clamped into that range; otherwise the effort tier is applied as a
+/// fraction of the caller's output cap and then clamped the same way.
+///
+/// Returns `None` when `max_tokens` is too small to satisfy the floor — the
+/// caller then omits `thinking` entirely instead of emitting an invalid body.
+///
+/// `None` effort means a plain thinking toggle (no tier picked); it gets the
+/// same middle share as `medium`.
+fn anthropic_thinking_budget(
+    explicit: Option<u32>,
+    effort: Option<&str>,
+    max_tokens: u32,
+) -> Option<u32> {
+    const MIN_BUDGET: u32 = 1024;
+    if max_tokens <= MIN_BUDGET {
+        return None;
+    }
+    // The user picked a number — respect it, but never emit a body Anthropic
+    // would reject. Clamping (rather than failing) keeps a budget the user set
+    // against a larger output cap working after they lower `Max output`.
+    if let Some(budget) = explicit.filter(|b| *b > 0) {
+        return Some(budget.clamp(MIN_BUDGET, max_tokens - 1));
+    }
+    let percent: u32 = match effort {
+        Some("low") => 25,
+        Some("high") => 75,
+        Some("xhigh") | Some("max") => 90,
+        // "medium", an unrecognized tier, or a plain toggle.
+        _ => 50,
+    };
+    let want = (u64::from(max_tokens) * u64::from(percent) / 100) as u32;
+    Some(want.clamp(MIN_BUDGET, max_tokens - 1))
 }
 
 fn anthropic_tool_schema(schema: &ToolSchema) -> Value {
@@ -281,6 +421,62 @@ fn anthropic_tool_schema(schema: &ToolSchema) -> Value {
         "description": schema.description,
         "input_schema": schema.input_schema,
     })
+}
+
+/// Whether this provider understands Anthropic's `cache_control` markers.
+///
+/// Deliberately narrow. `cache_control` is an unknown field to everything
+/// that merely speaks an Anthropic-shaped wire format, and an unknown field
+/// is how Aurora has been bitten before (the `oneOf` 400s on xAI, the
+/// `budget_tokens` handling on compat proxies). MiniMax rides the same
+/// adapter and is NOT on this list.
+///
+/// The cost of a false negative is the status quo — full price, no cache.
+/// The cost of a false positive is every request failing with HTTP 400, so
+/// this errs hard toward off.
+fn supports_prompt_caching(config: &ProviderConfigSnapshot) -> bool {
+    config.provider_id.eq_ignore_ascii_case("anthropic")
+}
+
+/// Attach an ephemeral `cache_control` marker to a JSON object in place.
+/// Non-objects are left alone rather than silently coerced.
+fn set_cache_control(block: &mut Value) {
+    if let Some(obj) = block.as_object_mut() {
+        obj.insert("cache_control".to_string(), json!({ "type": "ephemeral" }));
+    }
+}
+
+/// Put a cache breakpoint on the final content block of the final message.
+///
+/// Handles both content shapes Anthropic accepts: a bare string (promoted
+/// to a one-element text block, since a string has nowhere to hang the
+/// marker) and an array of blocks (marks the last one).
+///
+/// Anthropic allows at most 4 breakpoints per request; this is the third
+/// and last one Aurora sets, after tools and system.
+fn mark_last_content_block(messages: &mut [Value]) {
+    let Some(last_message) = messages.last_mut() else {
+        return;
+    };
+    let Some(content) = last_message.get_mut("content") else {
+        return;
+    };
+
+    match content {
+        Value::String(text) => {
+            *content = json!([{
+                "type": "text",
+                "text": std::mem::take(text),
+                "cache_control": { "type": "ephemeral" },
+            }]);
+        }
+        Value::Array(blocks) => {
+            if let Some(last) = blocks.last_mut() {
+                set_cache_control(last);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn anthropic_split_system_and_messages(
@@ -386,7 +582,7 @@ fn message_blocks_to_anthropic_content(blocks: &[ContentBlock], supports_vision:
                 "type": "tool_use",
                 "id": id,
                 "name": name,
-                "input": input,
+                "input": tool_input_for_wire(input),
             })),
             ContentBlock::ToolResult {
                 tool_use_id,
@@ -654,7 +850,20 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
     }
 
     if request.thinking_enabled && config.supports_thinking {
-        body.insert("thinking".to_string(), json!({ "type": "enabled" }));
+        // `budget_tokens` rides along ONLY when the user explicitly picked one.
+        // Anthropic-behind-an-OpenAI-compat-proxy honours it; most other compat
+        // backends have never seen the key and some reject unknown fields with
+        // HTTP 400, so the default stays the bare enable flag we've always sent.
+        match request.thinking_budget_tokens.filter(|b| *b > 0) {
+            Some(budget) => body.insert(
+                "thinking".to_string(),
+                json!({
+                    "type": "enabled",
+                    "budget_tokens": budget.min(max_tokens.saturating_sub(1).max(1)),
+                }),
+            ),
+            None => body.insert("thinking".to_string(), json!({ "type": "enabled" })),
+        };
     }
 
     // Ask the provider to emit `usage` on the final stream chunk.
@@ -895,12 +1104,32 @@ fn openai_tool_calls(blocks: &[ContentBlock]) -> Vec<Value> {
                 "type": "function",
                 "function": {
                     "name": name,
-                    "arguments": input.to_string(),
+                    "arguments": tool_input_for_wire(input).to_string(),
                 }
             })),
             _ => None,
         })
         .collect()
+}
+
+/// Coerce a tool call's input to something a provider will accept in
+/// history.
+///
+/// A call whose arguments never parsed carries its raw text as a
+/// [`Value::String`] (see [`parse_tool_input`]) so the dispatcher can
+/// report precisely what arrived. That representation must not reach the
+/// wire: every provider requires `tool_use.input` to be an object and
+/// rejects the whole request otherwise — which would turn one malformed
+/// block into a hard failure of every subsequent turn. The call has
+/// already been answered with a `MalformedInput` tool result by the time
+/// this runs, so the model has the detail it needs; history only has to
+/// stay well-formed.
+fn tool_input_for_wire(input: &Value) -> Value {
+    if input.is_object() {
+        input.clone()
+    } else {
+        json!({})
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,16 +1307,56 @@ impl BlockState {
     }
 }
 
-/// Parse an accumulated tool-call argument string. Empty / whitespace
-/// → `{}`. Invalid JSON → `{}` (matches provider_kernel's
-/// `normalize_openai_tool_arguments` policy: never emit a malformed
-/// input that downstream tool dispatchers will choke on).
+/// Parse an accumulated tool-call argument string.
+///
+/// - Empty / whitespace → `{}`. A zero-argument tool call is legitimate,
+///   and every provider represents it this way.
+/// - Valid JSON object → itself, after Windows-path repair.
+/// - **Anything else → the raw text as a [`Value::String`].**
+///
+/// That last case used to return `{}` as well, and it was the single most
+/// expensive line in the runtime. When a tool call is truncated by an
+/// output cap or mangled by a bad escape, substituting an empty object
+/// makes the executor report `path is required` — to a model that *did*
+/// send `path`. The model cannot reconcile that, so it retries, rephrases,
+/// and starts reaching for other tools. What looks like a model calling
+/// the wrong tool is the harness having silently eaten its arguments.
+///
+/// Returning the raw text keeps the failure legible and recoverable: no
+/// schema is anything but `type: object`, so a non-object input is
+/// unambiguously broken, and the dispatcher ([`crate::agent_runtime::conversation`])
+/// turns it into a `MalformedInput` error that quotes back what actually
+/// arrived. Request builders sanitize it to `{}` on the way out, since
+/// providers only accept objects in history.
 pub fn parse_tool_input(raw: &str) -> Value {
     if raw.trim().is_empty() {
         return json!({});
     }
     let normalized = normalize_absolute_windows_paths(raw);
-    serde_json::from_str(&normalized).unwrap_or_else(|_| json!({}))
+    match serde_json::from_str::<Value>(&normalized) {
+        Ok(value) if value.is_object() => value,
+        // A parsed-but-not-object payload (a bare array, a quoted string)
+        // is just as unusable as a parse failure — carry the raw text
+        // through the same path rather than handing an executor a shape
+        // it will misreport.
+        _ => Value::String(raw.to_string()),
+    }
+}
+
+/// The raw argument text of a tool call whose arguments never parsed as a
+/// JSON object, or `None` when `input` is a usable object.
+///
+/// Paired with [`parse_tool_input`]: that function encodes the failure as
+/// a [`Value::String`], this one decodes it at the dispatch site.
+#[must_use]
+pub fn malformed_tool_input(input: &Value) -> Option<&str> {
+    match input {
+        Value::Object(_) => None,
+        Value::String(raw) => Some(raw.as_str()),
+        // Shouldn't occur (parse_tool_input only ever emits object|string),
+        // but a non-object from any other source is equally unusable.
+        _ => Some(""),
+    }
 }
 
 /// Models occasionally emit Windows paths with literal backslashes inside
@@ -1259,11 +1528,309 @@ mod tests {
     }
 
     #[test]
+    fn thinking_budget_scales_with_effort_tier() {
+        // Tiers take an increasing share of the output cap.
+        assert_eq!(
+            anthropic_thinking_budget(None, Some("low"), 64_000),
+            Some(16_000)
+        );
+        assert_eq!(
+            anthropic_thinking_budget(None, Some("medium"), 64_000),
+            Some(32_000)
+        );
+        assert_eq!(
+            anthropic_thinking_budget(None, Some("high"), 64_000),
+            Some(48_000)
+        );
+        assert_eq!(
+            anthropic_thinking_budget(None, Some("xhigh"), 64_000),
+            Some(57_600)
+        );
+        assert_eq!(
+            anthropic_thinking_budget(None, Some("max"), 64_000),
+            Some(57_600)
+        );
+        // A plain toggle (no tier) and an unknown tier both fall back to medium.
+        assert_eq!(anthropic_thinking_budget(None, None, 64_000), Some(32_000));
+        assert_eq!(
+            anthropic_thinking_budget(None, Some("bogus"), 64_000),
+            Some(32_000)
+        );
+    }
+
+    #[test]
+    fn thinking_budget_respects_anthropic_bounds() {
+        // Never below the 1024 floor, even when the tier share would be tiny.
+        assert_eq!(
+            anthropic_thinking_budget(None, Some("low"), 2_000),
+            Some(1_024)
+        );
+        // Always strictly less than max_tokens.
+        let budget = anthropic_thinking_budget(None, Some("max"), 1_100).unwrap();
+        assert!(budget < 1_100, "budget {budget} must be < max_tokens");
+        assert!(budget >= 1_024, "budget {budget} must be >= 1024");
+        // Too small to satisfy the floor at all → omit `thinking` entirely.
+        assert_eq!(anthropic_thinking_budget(None, Some("high"), 1_024), None);
+        assert_eq!(anthropic_thinking_budget(None, None, 500), None);
+    }
+
+    #[test]
+    fn explicit_thinking_budget_overrides_the_effort_tier() {
+        // The user's own number wins over the tier share...
+        assert_eq!(
+            anthropic_thinking_budget(Some(6_000), Some("max"), 64_000),
+            Some(6_000)
+        );
+        // ...and over the plain-toggle fallback.
+        assert_eq!(
+            anthropic_thinking_budget(Some(24_000), None, 64_000),
+            Some(24_000)
+        );
+        // Still clamped into Anthropic's accepted range rather than rejected:
+        // a budget set against a bigger cap survives lowering `Max output`.
+        assert_eq!(
+            anthropic_thinking_budget(Some(60_000), None, 8_000),
+            Some(7_999)
+        );
+        assert_eq!(
+            anthropic_thinking_budget(Some(200), None, 64_000),
+            Some(1_024)
+        );
+        // Zero is the "no explicit budget" encoding — fall back to the tier.
+        assert_eq!(
+            anthropic_thinking_budget(Some(0), Some("low"), 64_000),
+            Some(16_000)
+        );
+    }
+
+    fn thinking_config() -> ProviderConfigSnapshot {
+        ProviderConfigSnapshot {
+            provider_id: "custom".into(),
+            base_url: "https://example.invalid/v1".into(),
+            api_key: String::new(),
+            api_keys: None,
+            model: "some-reasoner".into(),
+            custom_headers: None,
+            custom_params: None,
+            default_temperature: None,
+            default_max_tokens: None,
+            supports_thinking: true,
+            supports_vision: false,
+        }
+    }
+
+    fn caching_request<'a>(
+        messages: &'a [ConversationMessage],
+        tools: &'a [ToolSchema],
+    ) -> ApiRequest<'a> {
+        ApiRequest {
+            model: "claude-opus-4",
+            system_prompt: Some("You are Aurora Agent."),
+            messages,
+            tools,
+            temperature: None,
+            max_output_tokens: 8_000,
+            thinking_enabled: false,
+            thinking_budget_tokens: None,
+        }
+    }
+
+    fn tool_schema(name: &str) -> ToolSchema {
+        ToolSchema {
+            name: name.into(),
+            description: "t".into(),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+
+    #[test]
+    fn anthropic_body_sets_all_three_cache_breakpoints() {
+        let mut config = thinking_config();
+        config.provider_id = "anthropic".into();
+        let messages = [ConversationMessage::user_text("hi", 0)];
+        let tools = [tool_schema("file_read"), tool_schema("grep")];
+
+        let body = build_anthropic_body(&caching_request(&messages, &tools), &config);
+
+        // Prefix order is tools → system → messages, so a breakpoint on the
+        // last tool caches the schema list, one on system caches both, and
+        // one on the message tail caches the conversation so far.
+        assert_eq!(
+            body["tools"][1]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        assert!(
+            body["tools"][0].get("cache_control").is_none(),
+            "only the LAST tool carries the breakpoint"
+        );
+        assert_eq!(
+            body["system"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        assert_eq!(body["system"][0]["text"], "You are Aurora Agent.");
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        // Anthropic permits at most 4 breakpoints; we must stay under it.
+        let count = serde_json::to_string(&body)
+            .expect("serialize")
+            .matches("cache_control")
+            .count();
+        assert!(count <= 4, "too many cache breakpoints: {count}");
+    }
+
+    #[test]
+    fn non_anthropic_providers_get_no_cache_control_at_all() {
+        // MiniMax rides the same adapter but has never seen `cache_control`.
+        // An unknown field is how Aurora has been 400'd before.
+        for provider in ["minimax", "custom", "glm"] {
+            let mut config = thinking_config();
+            config.provider_id = provider.into();
+            let messages = [ConversationMessage::user_text("hi", 0)];
+            let tools = [tool_schema("file_read")];
+
+            let body = build_anthropic_body(&caching_request(&messages, &tools), &config);
+            let serialized = serde_json::to_string(&body).expect("serialize");
+            assert!(
+                !serialized.contains("cache_control"),
+                "{provider} must not receive cache_control"
+            );
+            // …and the system prompt keeps its plain-string shape.
+            assert_eq!(body["system"], json!("You are Aurora Agent."));
+        }
+    }
+
+    #[test]
+    fn cache_breakpoint_lands_on_the_last_block_of_a_multi_block_tail() {
+        let mut config = thinking_config();
+        config.provider_id = "Anthropic".into(); // case-insensitive match
+        let messages = [
+            ConversationMessage::user_text("first", 0),
+            ConversationMessage::assistant(
+                vec![ContentBlock::ToolUse {
+                    id: "call-1".into(),
+                    name: "grep".into(),
+                    input: json!({"query": "x"}),
+                }],
+                1,
+            ),
+            ConversationMessage {
+                role: MessageRole::Tool,
+                blocks: vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call-1".into(),
+                        content: "hit".into(),
+                        is_error: None,
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call-2".into(),
+                        content: "hit2".into(),
+                        is_error: None,
+                    },
+                ],
+                usage: None,
+                timestamp: 2,
+                attached_selected_elements: None,
+                attached_prompt_chips: None,
+            },
+        ];
+
+        let body = build_anthropic_body(&caching_request(&messages, &[]), &config);
+        let tail = body["messages"]
+            .as_array()
+            .expect("messages")
+            .last()
+            .cloned()
+            .expect("tail");
+        let blocks = tail["content"].as_array().expect("blocks");
+        assert!(blocks[0].get("cache_control").is_none());
+        assert_eq!(
+            blocks[blocks.len() - 1]["cache_control"],
+            json!({"type": "ephemeral"}),
+            "the breakpoint must sit on the LAST block so the whole tail is cached"
+        );
+    }
+
+    #[test]
+    fn openai_body_carries_budget_only_when_explicitly_set() {
+        let config = thinking_config();
+        let messages = [ConversationMessage::user_text("hi", 0)];
+
+        let mut request = ApiRequest {
+            model: "custom:some-reasoner",
+            system_prompt: None,
+            messages: &messages,
+            tools: &[],
+            temperature: None,
+            max_output_tokens: 32_000,
+            thinking_enabled: true,
+            thinking_budget_tokens: None,
+        };
+        let body = build_openai_body(&request, &config);
+        assert_eq!(body["thinking"], json!({ "type": "enabled" }));
+
+        request.thinking_budget_tokens = Some(12_000);
+        let body = build_openai_body(&request, &config);
+        assert_eq!(
+            body["thinking"],
+            json!({ "type": "enabled", "budget_tokens": 12_000 })
+        );
+
+        // Thinking off ⇒ no `thinking` key at all, budget or not.
+        request.thinking_enabled = false;
+        let body = build_openai_body(&request, &config);
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
     fn parse_tool_input_handles_empty_and_invalid() {
+        // A zero-argument call is legitimate and stays an empty object.
         assert_eq!(parse_tool_input(""), json!({}));
         assert_eq!(parse_tool_input("   "), json!({}));
-        assert_eq!(parse_tool_input("not json"), json!({}));
         assert_eq!(parse_tool_input(r#"{"a":1}"#), json!({"a": 1}));
+    }
+
+    #[test]
+    fn parse_tool_input_preserves_raw_text_when_arguments_do_not_parse() {
+        // This used to yield `{}`, which made the executor report a missing
+        // field to a model that had sent it. The raw text must survive so
+        // the dispatcher can say what actually arrived.
+        assert_eq!(parse_tool_input("not json"), json!("not json"));
+
+        // The realistic case: an output cap cutting a call mid-value.
+        let cut = r#"{"path":"src/main.rs","content":"fn main() {"#;
+        assert_eq!(parse_tool_input(cut), json!(cut));
+    }
+
+    #[test]
+    fn parse_tool_input_rejects_valid_json_that_is_not_an_object() {
+        // Parses fine, but no tool schema accepts it — route it through the
+        // same malformed path rather than letting an executor misreport it.
+        assert_eq!(parse_tool_input("[1,2]"), json!("[1,2]"));
+        assert_eq!(parse_tool_input("\"bare\""), json!("\"bare\""));
+    }
+
+    #[test]
+    fn malformed_tool_input_decodes_what_parse_tool_input_encoded() {
+        assert_eq!(malformed_tool_input(&json!({"path": "a.rs"})), None);
+        assert_eq!(malformed_tool_input(&json!({})), None);
+        assert_eq!(
+            malformed_tool_input(&parse_tool_input("not json")),
+            Some("not json")
+        );
+    }
+
+    #[test]
+    fn tool_input_for_wire_sanitizes_malformed_input() {
+        // History must stay well-formed: providers reject a non-object
+        // `tool_use.input` and would fail every subsequent turn, not just
+        // the one that was malformed.
+        assert_eq!(tool_input_for_wire(&json!("truncated…")), json!({}));
+        assert_eq!(
+            tool_input_for_wire(&json!({"path": "a.rs"})),
+            json!({"path": "a.rs"})
+        );
     }
 
     #[test]

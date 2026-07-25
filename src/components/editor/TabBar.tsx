@@ -21,7 +21,7 @@
  */
 
 import React, { useState } from 'react';
-import { X, Globe, Plus, Undo2, Redo2, AlertTriangle } from 'lucide-react';
+import { X, Undo2, Redo2, AlertTriangle } from 'lucide-react';
 import { useEditorStore } from '../../store/useEditorStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { triggerMonacoUndo, triggerMonacoRedo } from '../../lib/monaco-editor-ref';
@@ -35,7 +35,7 @@ import { FileIcon } from '../explorer/FileIcons';
 const TAB_DRAG_MIME = "application/x-aurora-tab-id";
 
 export const TabBar: React.FC = () => {
-  const { tabs, activeTabId, setActiveTab, closeTab, openBrowserTab, saveTabToDisk, reorderTab } = useEditorStore();
+  const { tabs, activeTabId, setActiveTab, closeTab, saveTabToDisk, reorderTab } = useEditorStore();
   const autoSave = useSettingsStore((state) => state.autoSave);
   const [pendingUnsavedTabId, setPendingUnsavedTabId] = useState<string | null>(null);
   const [isSavingPendingClose, setIsSavingPendingClose] = useState(false);
@@ -56,7 +56,6 @@ export const TabBar: React.FC = () => {
 
     const shouldWarnUnsaved =
       autoSave === 'off' &&
-      tab.type !== 'browser' &&
       tab.isDirty &&
       !tab.isDeleted;
 
@@ -259,11 +258,7 @@ export const TabBar: React.FC = () => {
                 style={{ background: 'var(--aurora-common-primary)' }}
               />
             )}
-            {tab.type === 'browser' ? (
-              <Globe className="w-3 h-3 text-info" />
-            ) : (
-              <FileIcon name={tab.filename} className={clsx("w-3 h-3", tab.isDeleted && "opacity-50")} />
-            )}
+            <FileIcon name={tab.filename} className={clsx("w-3 h-3", tab.isDeleted && "opacity-50")} />
             <span className={clsx(
               "text-[12px] truncate max-w-[120px]",
               tab.isDeleted && "text-error line-through opacity-75"
@@ -288,15 +283,6 @@ export const TabBar: React.FC = () => {
             </button>
           </div>
         ))}
-        
-        {/* New Browser Tab Button */}
-        <button
-          onClick={() => openBrowserTab()}
-          className="flex h-full w-9 shrink-0 items-center justify-center transition-colors hover:bg-tabs-active"
-          title="Open Browser Tab (Preview localhost)"
-        >
-          <Plus className="w-3.5 h-3.5 text-text-secondary hover:text-text-primary" />
-        </button>
       </div>
       </div>
 

@@ -4,14 +4,8 @@
 //! Per the contract, `requires_permission()` returns **false**:
 //! killing your own spawned process is safe and shouldn't prompt.
 //!
-//! The TS executor accepted both `processId` and `name`, with name
-//! lookup walking a frontend-side `backgroundProcesses` Map. The Rust
-//! side doesn't keep a process map of its own — the actual streams
-//! live in `commands::ACTIVE_COMMAND_STREAMS` keyed by `request_id`.
-//! We accept either `requestId` (preferred), `processId` (treated as
-//! request_id for backwards compatibility), or `pid` (numeric, also
-//! treated as a string). `name` is rejected with `InvalidInput`
-//! because the Rust side has no name lookup.
+//! The authoritative Rust ledger resolves the stable process ID, stream
+//! request ID, friendly name, or OS pid to the same running process.
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -39,7 +33,8 @@ impl ToolExecutor for ShellKillTool {
                 "properties": {
                     "processId": {"type": "string", "description": "The process ID returned by shell_spawn"},
                     "requestId": {"type": "string", "description": "The underlying stream request id"},
-                    "pid": {"type": ["string", "number"], "description": "The OS process id"}
+                    "pid": {"type": ["string", "number"], "description": "The OS process id"},
+                    "name": {"type": "string", "description": "The friendly name passed to shell_spawn"}
                 },
                 "required": []
             }),
@@ -52,14 +47,6 @@ impl ToolExecutor for ShellKillTool {
 
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-
-        if input.get("name").is_some() {
-            return Err(ToolError::InvalidInput(
-                "`name` lookup is not supported by the Rust shell_kill — pass `requestId`, \
-                 `processId`, or `pid` instead"
-                    .into(),
-            ));
-        }
 
         let identifier = input
             .get("requestId")
@@ -77,17 +64,25 @@ impl ToolExecutor for ShellKillTool {
                         .map(str::to_string)
                         .or_else(|| v.as_u64().map(|n| n.to_string()))
                 })
+            })
+            .or_else(|| {
+                input
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
             });
 
         let identifier = identifier.ok_or_else(|| {
-            ToolError::InvalidInput("shell_kill requires `requestId`, `processId`, or `pid`".into())
+            ToolError::InvalidInput(
+                "shell_kill requires `processId`, `requestId`, `pid`, or `name`".into(),
+            )
         })?;
 
         match cancel_stream(identifier.clone()) {
             Ok(()) => Ok(json!({
                 "success": true,
                 "processId": identifier,
-                "message": format!("Process {identifier} marked as terminated"),
+                "message": format!("Stopped background process {identifier}."),
             })
             .to_string()),
             Err(err) => Ok(json!({
@@ -102,7 +97,10 @@ impl ToolExecutor for ShellKillTool {
 
 #[cfg(not(feature = "verify_only"))]
 fn cancel_stream(request_id: String) -> Result<(), String> {
-    crate::commands::cancel_command_stream(request_id)
+    // Recorded as an agent stop, which is what the process's log file will say.
+    // A later reader must be able to tell this apart from the user hitting stop.
+    crate::commands::cancel_tracked_command_stream(&request_id, crate::commands::StopReason::Agent)
+        .map(|_| ())
 }
 
 // In the verify crate the global ACTIVE_COMMAND_STREAMS map is
@@ -145,16 +143,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_name_lookup() {
-        let err = ShellKillTool
-            .execute(json!({"name": "watcher"}), &ctx())
-            .await
-            .expect_err("must fail");
-        assert!(matches!(err, ToolError::InvalidInput(_)));
-    }
-
-    #[tokio::test]
     async fn happy_path_returns_success_payload() {
+        #[cfg(not(feature = "verify_only"))]
+        crate::commands::register_command_stream(
+            "req-123".into(),
+            "req-123".into(),
+            Some("test-watcher".into()),
+            "watch".into(),
+            None,
+            None,
+        );
         let out = ShellKillTool
             .execute(json!({"requestId": "req-123"}), &ctx())
             .await
@@ -172,5 +170,7 @@ mod tests {
             .expect("ok");
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["processId"], json!("4242"));
+        #[cfg(not(feature = "verify_only"))]
+        assert_eq!(parsed["success"], json!(false));
     }
 }

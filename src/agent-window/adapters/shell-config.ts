@@ -1,13 +1,41 @@
 /**
  * Agent Window — shell spawn configuration (adapter).
  *
- * Picks the executable, args and environment for a PTY session per platform and
- * profile, with the same polished prompt the IDE terminal uses (short path ·
- * shell version · OK/ERR status). Kept standalone in the agent window so we
- * don't import the IDE's terminal component (and its side effects).
+ * Builds the executable, args and environment for a PTY session, with the same
+ * polished prompt the IDE terminal uses (short path · shell version · OK/ERR
+ * status). Kept standalone in the agent window so we don't import the IDE's
+ * terminal component (and its side effects).
+ *
+ * ## Where the executable comes from
+ *
+ * From Rust's shell registry (`shell_interactive_config`), never from a literal
+ * in this file. It used to hardcode `C:\Program Files\Git\bin\bash.exe` and a
+ * bare `pwsh.exe`, so a user whose Git lived anywhere else got a terminal that
+ * refused to start — while Settings → Shells sat next to it listing the
+ * verified path it should have used. The registry also supplies the MSYS `PATH`
+ * overlay that makes `ls`/`sed`/`uname` resolve inside Git Bash, which this file
+ * never did.
+ *
+ * What stays here is presentation: the prompt initialisation. Rust returns the
+ * interactive flags only and expects the caller to append its own — a
+ * `-Command` string for PowerShell kinds, `PROMPT_COMMAND` in the environment
+ * for POSIX ones.
  */
 
+import { auroraInvoke } from "../../lib/runtime";
+
 export type ShellProfile = "powershell" | "bash";
+
+/** Shape returned by the Rust `shell_interactive_config` command. */
+interface InteractiveShell {
+  id: string;
+  kind: string;
+  label: string;
+  exe: string;
+  args: string[];
+  env: Array<[string, string]>;
+  isPosix: boolean;
+}
 
 export interface ShellSpawnConfig {
   exe: string;
@@ -73,35 +101,41 @@ function buildBashEnv(): Record<string, string | undefined> {
   };
 }
 
-export function getShellSpawnConfig(
+/**
+ * Ask the registry for a verified shell, then attach Aurora's prompt.
+ *
+ * Returns `undefined` when nothing usable is registered — the caller reports
+ * that rather than spawning a guess, because a guess is what produced the
+ * "Couldn't start C:\Program Files\Git\bin\bash.exe" dead end.
+ */
+export async function getShellSpawnConfig(
   profile: ShellProfile,
-  platform: string,
-): ShellSpawnConfig {
-  if (profile === "bash") {
-    if (platform === "windows") {
-      return {
-        exe: "C:\\Program Files\\Git\\bin\\bash.exe",
-        args: ["--noprofile", "--norc", "-i"],
-        env: buildBashEnv(),
-      };
-    }
-    return { exe: "/bin/bash", args: ["--noprofile", "--norc", "-i"], env: buildBashEnv() };
+): Promise<ShellSpawnConfig | undefined> {
+  let resolved: InteractiveShell | null;
+  try {
+    resolved = await auroraInvoke<InteractiveShell | null>("shell_interactive_config", {
+      requested: profile,
+    });
+  } catch {
+    // A backend that cannot answer is the same situation as an empty registry:
+    // we have no verified path, so we do not invent one.
+    return undefined;
+  }
+  if (!resolved) return undefined;
+
+  // The registry's own overlay first (the MSYS PATH that makes Git Bash's
+  // userland reachable), then our prompt on top.
+  const env: Record<string, string | undefined> = Object.fromEntries(resolved.env);
+
+  if (resolved.isPosix) {
+    return { exe: resolved.exe, args: resolved.args, env: { ...env, ...buildBashEnv() } };
   }
 
-  if (platform === "windows") {
-    return {
-      exe: "pwsh.exe",
-      args: ["-NoLogo", "-NoExit", "-Command", buildPowerShellInitCommand()],
-    };
-  }
-
-  return { exe: "/bin/bash", args: ["--noprofile", "--norc", "-i"], env: buildBashEnv() };
-}
-
-/** Windows PowerShell 5 fallback when `pwsh.exe` (PS7) isn't installed. */
-export function powershellFallbackConfig(): ShellSpawnConfig {
+  // PowerShell kinds: `interactive_args` ends before `-Command` precisely so
+  // the caller can append its initialisation here.
   return {
-    exe: "powershell.exe",
-    args: ["-NoLogo", "-NoExit", "-Command", buildPowerShellInitCommand()],
+    exe: resolved.exe,
+    args: [...resolved.args, "-Command", buildPowerShellInitCommand()],
+    env: Object.keys(env).length > 0 ? env : undefined,
   };
 }

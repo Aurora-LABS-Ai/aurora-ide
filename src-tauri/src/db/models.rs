@@ -235,6 +235,13 @@ pub struct LLMProvider {
     pub is_custom: bool,
     pub custom_headers: Option<serde_json::Value>,
     pub custom_params: Option<serde_json::Value>,
+    /// API-key POOL as a JSON array of strings. When it holds more than
+    /// one key the runtime rotates them round-robin per turn and fails
+    /// over to the next on an auth / rate-limit / server error. `None` /
+    /// `[]` → the single `api_key` is used. Generic across providers
+    /// (AgentRouter is the first consumer).
+    #[serde(default)]
+    pub api_keys: Option<serde_json::Value>,
     pub provider_type: Option<String>,
     pub default_temperature: Option<f64>,
     pub default_max_tokens: Option<i64>,
@@ -457,6 +464,13 @@ pub struct AppSettings {
     pub skill_toggles: HashMap<String, HashMap<String, bool>>,
     pub fireworks_tab_enabled: bool,
     pub fireworks_account_id: String,
+    /// Provider ids the user has REMOVED from the Providers page. Built-in
+    /// presets (Fireworks, GLM, MiniMax, LM Studio, Ollama, Atlas Cloud, …)
+    /// are otherwise re-injected on every launch, so a plain delete wouldn't
+    /// stick; instead the frontend records the id here and filters it out of
+    /// the seeded list. Reversible — clearing an id "restores" that provider.
+    #[serde(default)]
+    pub removed_provider_ids: Vec<String>,
 
     // Speech input settings
     pub speech_enabled: bool,
@@ -511,6 +525,7 @@ impl Default for AppSettings {
             skill_toggles: HashMap::new(),
             fireworks_tab_enabled: false,
             fireworks_account_id: String::new(),
+            removed_provider_ids: Vec::new(),
             speech_enabled: false,
             speech_engine: "qwen3-rust".to_string(),
             speech_runtime_path: String::new(),

@@ -953,6 +953,7 @@ mod tests {
             provider_id: "openai-responses".into(),
             base_url: "https://api.openai.com/v1".into(),
             api_key: "sk-test".into(),
+            api_keys: None,
             model: "gpt-5".into(),
             custom_headers: None,
             custom_params: None,
@@ -972,6 +973,7 @@ mod tests {
             temperature: None,
             max_output_tokens: 4096,
             thinking_enabled: true,
+            thinking_budget_tokens: None,
         }
     }
 

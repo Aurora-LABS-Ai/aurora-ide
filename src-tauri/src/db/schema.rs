@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 19;
+pub const SCHEMA_VERSION: i32 = 20;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -170,6 +170,7 @@ fn create_llm_providers_table(conn: &Connection) -> DbResult<()> {
             is_custom INTEGER NOT NULL DEFAULT 0,
             custom_headers TEXT,          -- JSON object
             custom_params TEXT,           -- JSON object
+            api_keys TEXT,                -- JSON array of strings: the API-key POOL (round-robin + failover). NULL/[] = single api_key only.
             provider_type TEXT,           -- 'openai' | 'deepseek' | 'glm' | 'anthropic' | 'custom'
             default_temperature REAL,
             default_max_tokens INTEGER,

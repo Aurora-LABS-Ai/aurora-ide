@@ -85,6 +85,12 @@ export interface ProviderConfigSnapshot {
   providerId: string;
   baseUrl: string;
   apiKey: string;
+  /**
+   * API-key POOL. Present only when there are 2+ non-blank keys. The Rust
+   * runtime (`api::pool::PooledStreamingClient`) rotates them round-robin per
+   * turn and fails over to the next on a 401/429/5xx before content streams.
+   */
+  apiKeys?: string[];
   model: string;
   customHeaders?: Record<string, string>;
   customParams?: Record<string, unknown>;
@@ -122,6 +128,13 @@ export interface AgentChatRequest {
   temperature: number | null;
   maxOutputTokens: number | null;
   thinkingEnabled: boolean | null;
+  /**
+   * Extended-thinking token budget the user picked for this model, for models
+   * whose reasoning control is a budget rather than an effort tier. Read by the
+   * runtime only when `thinkingEnabled` is true; `null` lets the provider
+   * adapter derive a budget from the effort tier instead.
+   */
+  thinkingBudgetTokens: number | null;
   /**
    * Provider's advertised total context window (input + output tokens) for
    * the chosen model. When set, the Rust runtime applies a budget-aware
@@ -406,6 +419,12 @@ export class AgentRuntimeClient {
       providerId: config.id,
       baseUrl: config.baseUrl,
       apiKey: config.apiKey,
+      // Only forward a real pool (>1 non-blank key). A single/empty pool is
+      // omitted so Rust takes the plain single-key path.
+      apiKeys:
+        config.apiKeys && config.apiKeys.filter((k) => k.trim().length > 0).length > 1
+          ? config.apiKeys.filter((k) => k.trim().length > 0)
+          : undefined,
       model: config.model,
       customHeaders: config.customHeaders,
       customParams: config.customParams,
@@ -468,6 +487,10 @@ export class AgentRuntimeClient {
       thinkingEnabled: typeof config.thinkingEnabled === "boolean"
         ? config.thinkingEnabled
         : null,
+      thinkingBudgetTokens:
+        typeof config.thinkingBudgetTokens === "number" && config.thinkingBudgetTokens > 0
+          ? Math.round(config.thinkingBudgetTokens)
+          : null,
       // Pass the active provider's advertised window so the Rust runtime
       // can budget-trim older messages before each API call. Falls back
       // to null when the provider config doesn't carry a window value

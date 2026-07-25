@@ -1,16 +1,5 @@
-//! `shell_list_processes` — diagnostic listing of agent-spawned
-//! shell streams.
-//!
-//! The Rust backend does not maintain the rich `BackgroundProcess`
-//! ledger the TS executor used (status, output buffer, friendly
-//! name) — that lived in the frontend. The Rust side only knows
-//! about the pending streams in
-//! `commands::ACTIVE_COMMAND_STREAMS` (request_id → pid +
-//! cancelled flag). We surface that information so the agent has a
-//! useful answer; the contract permits a "no implementation" sentinel
-//! if a Rust command doesn't exist, but the underlying `streams`
-//! map is exposed enough that we can produce real data without
-//! adding a new Tauri command.
+//! `shell_list_processes` — list the authoritative Rust ledger of
+//! agent-spawned background processes.
 //!
 //! `requires_permission()` returns **false** — listing is read-only.
 
@@ -28,11 +17,18 @@ impl ToolExecutor for ShellListProcessesTool {
         "shell_list_processes"
     }
 
+    /// Reads the process table; starts and stops nothing.
+    fn concurrency_safe(&self) -> bool {
+        true
+    }
+
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "shell_list_processes".into(),
-            description: "List all background shell streams currently tracked by the Rust \
-                          runtime. Returns request_id, pid, and cancelled flag for each."
+            description: "List background processes started by shell_spawn. Returns the same \
+                          process ID accepted by shell_kill, plus name, command, working \
+                          directory, OS pid, start time, and outputFile — read that file with \
+                          file_read to see what a running process has printed."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -45,12 +41,16 @@ impl ToolExecutor for ShellListProcessesTool {
     async fn execute(&self, _input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
         let processes = list_active_streams();
+        let count = processes.len();
         Ok(json!({
             "success": true,
-            "count": processes.len(),
+            "count": count,
             "processes": processes,
-            "note": "Rust shell_list_processes returns runtime-tracked streams only; the \
-                    legacy TS BackgroundProcess ledger is frontend-only and not surfaced here.",
+            "message": if count == 0 {
+                "No background processes are running."
+            } else {
+                "Background processes are ready to inspect or stop with shell_kill."
+            },
         })
         .to_string())
     }
@@ -59,20 +59,36 @@ impl ToolExecutor for ShellListProcessesTool {
 #[derive(serde::Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ProcessRow {
+    pub process_id: String,
     pub request_id: String,
+    pub name: Option<String>,
+    pub command: String,
+    pub cwd: Option<String>,
     pub pid: Option<u32>,
     pub cancelled: bool,
+    pub started_at_ms: u64,
+    /// File the process's output is mirrored into. Read it with `file_read`
+    /// to see what a still-running process has printed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_file: Option<String>,
 }
 
 #[cfg(not(feature = "verify_only"))]
 fn list_active_streams() -> Vec<ProcessRow> {
-    // The streams map is private to `commands`; we re-walk it through
-    // the public probe helpers exposed for diagnostics. There is no
-    // public iterator yet, so we ship a placeholder sentinel until
-    // the parent agent's final 10% lands a `commands::list_streams()`
-    // helper. The schema and contract still hold — agents can tell
-    // they got an empty list.
-    Vec::new()
+    crate::commands::list_command_streams()
+        .into_iter()
+        .map(|stream| ProcessRow {
+            process_id: stream.process_id,
+            request_id: stream.request_id,
+            name: stream.name,
+            command: stream.command,
+            cwd: stream.cwd,
+            pid: stream.pid,
+            cancelled: stream.cancelled,
+            started_at_ms: stream.started_at_ms,
+            output_file: stream.log_path,
+        })
+        .collect()
 }
 
 #[cfg(feature = "verify_only")]
@@ -97,19 +113,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn returns_success_with_zero_processes() {
+    async fn returns_a_consistent_process_snapshot() {
         let out = ShellListProcessesTool
             .execute(json!({}), &ctx())
             .await
             .expect("ok");
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["success"], json!(true));
-        assert_eq!(parsed["count"], json!(0));
-        assert!(parsed["processes"].is_array());
-        assert!(parsed["note"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("ledger"));
+        let processes = parsed["processes"].as_array().expect("process array");
+        assert_eq!(parsed["count"], json!(processes.len()));
+        assert!(!parsed["message"].as_str().unwrap_or_default().is_empty());
     }
 
     #[tokio::test]

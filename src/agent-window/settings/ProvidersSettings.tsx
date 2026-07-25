@@ -25,10 +25,36 @@ import { AtlasCloudUsageCard } from "./AtlasCloudUsageCard";
 import { CodexUsageCard } from "./CodexUsageCard";
 import { AgwButton, AgwPill, AgwSegmented, AgwSwitch, AgwTextInput } from "./primitives";
 
+function hasAnyKey(p: LLMProvider): boolean {
+  if (p.apiKey.trim().length > 0) return true;
+  return !!p.apiKeys && p.apiKeys.some((k) => k.trim().length > 0);
+}
+
 function providerReady(p: LLMProvider): boolean {
   if (!p.enabled) return false;
   const local = /localhost|127\.0\.0\.1/.test(p.baseUrl.toLowerCase());
-  return local || p.requiresApiKey === false || p.apiKey.trim().length > 0;
+  return local || p.requiresApiKey === false || hasAnyKey(p);
+}
+
+/**
+ * Compact a context-window token count for the model chip: millions collapse to
+ * `M` (1_000_000 → "1M", 1_500_000 → "1.5M"), everything else to `K`. Avoids
+ * the "1000K" that reads worse than "1M".
+ */
+function formatContextWindow(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    const m = tokens / 1_000_000;
+    return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+  }
+  return `${Math.round(tokens / 1000)}K`;
+}
+
+/** Count of distinct non-blank keys across the single field + pool. */
+function keyPoolSize(p: LLMProvider): number {
+  const set = new Set<string>();
+  if (p.apiKey.trim()) set.add(p.apiKey.trim());
+  for (const k of p.apiKeys ?? []) if (k.trim()) set.add(k.trim());
+  return set.size;
 }
 
 /**
@@ -269,6 +295,111 @@ const CustomHeadersEditor: React.FC<{
   );
 };
 
+// ── API-key pool editor (round-robin + failover) ─────────────────────────────
+
+/**
+ * Per-provider "extra API keys" editor — a list of ADDITIONAL keys layered on
+ * top of the single API-key field above. When two or more distinct keys exist
+ * across both, the Rust runtime treats them as a POOL: it rotates them
+ * round-robin per turn and, if one returns 401 / 429 / 5xx before any content
+ * streams, retries the identical request with the next key. Generic across
+ * providers — the first consumer is AgentRouter (users run several accounts).
+ * Blank rows are ignored.
+ */
+const ApiKeyPoolEditor: React.FC<{
+  provider: LLMProvider;
+  updateProvider: (id: string, updates: Partial<LLMProvider>) => void;
+}> = ({ provider, updateProvider }) => {
+  const [rows, setRows] = useState<string[]>(() => provider.apiKeys ?? []);
+  const [reveal, setReveal] = useState(false);
+
+  const persist = (next: string[]) => {
+    const cleaned = next.filter((k) => k.trim().length > 0);
+    updateProvider(provider.id, {
+      apiKeys: cleaned.length > 0 ? cleaned : undefined,
+    });
+  };
+  const setRow = (i: number, v: string) => {
+    const next = rows.map((r, idx) => (idx === i ? v : r));
+    setRows(next);
+    persist(next);
+  };
+  const addRow = () => setRows((r) => [...r, ""]);
+  const removeRow = (i: number) => {
+    const next = rows.filter((_, idx) => idx !== i);
+    setRows(next);
+    persist(next);
+  };
+
+  const poolSize = keyPoolSize(provider);
+
+  return (
+    <div className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+        Backup keys
+        {poolSize > 1 && <AgwPill tone="success">{poolSize} keys</AgwPill>}
+      </span>
+      {rows.map((r, i) => (
+        <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <AgwTextInput
+            type={reveal ? "text" : "password"}
+            value={r}
+            placeholder="sk-…"
+            spellCheck={false}
+            onChange={(e) => setRow(i, e.target.value)}
+            style={{ flex: 1, minWidth: 0 }}
+          />
+          <button
+            type="button"
+            className="agw-prov-icon-btn"
+            title="Remove key"
+            aria-label="Remove key"
+            onClick={() => removeRow(i)}
+          >
+            <AgentIcon name="close" size={13} />
+          </button>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <button
+          type="button"
+          onClick={addRow}
+          style={{
+            alignSelf: "flex-start",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "5px 10px",
+            fontSize: 12,
+            fontWeight: 600,
+            color: "var(--agw-text-muted)",
+            background: "var(--agw-surface)",
+            border: "1px dashed var(--agw-border-strong)",
+            borderRadius: "var(--agw-radius-sm)",
+            cursor: "pointer",
+          }}
+        >
+          <AgentIcon name="plus" size={13} />
+          Add key
+        </button>
+        {rows.length > 0 && (
+          <button
+            type="button"
+            className="agw-prov-icon-btn"
+            title={reveal ? "Hide keys" : "Show keys"}
+            onClick={() => setReveal((v) => !v)}
+          >
+            <AgentIcon name={reveal ? "inspect" : "browser"} size={14} />
+          </button>
+        )}
+      </div>
+      <span style={{ fontSize: 11, color: "var(--agw-text-subtle)" }}>
+        Optional. If one key is busy or fails, the next one is used.
+      </span>
+    </div>
+  );
+};
+
 // ── Add-model row: type a model id → it auto-fills from models.dev ────────────
 
 const AddModelRow: React.FC<{ providerId: string; providerType?: string }> = ({
@@ -348,7 +479,7 @@ const ModelRow: React.FC<{ model: LLMModel; active: boolean; onActivate: () => v
   const deleteModel = useSettingsStore((s) => s.deleteModel);
   const [editing, setEditing] = useState(false);
   const reasoning = model.reasoning;
-  const ctx = model.contextWindow ? `${Math.round(model.contextWindow / 1000)}K` : null;
+  const ctx = model.contextWindow ? formatContextWindow(model.contextWindow) : null;
   const price =
     model.priceOutputPerMtok != null
       ? `$${model.priceCacheMissPerMtok ?? "?"} / $${model.priceOutputPerMtok}`
@@ -400,7 +531,11 @@ const ModelRow: React.FC<{ model: LLMModel; active: boolean; onActivate: () => v
         {model.supportsToolStream && <span className="agw-prov-chip">Tools</span>}
         {reasoning && (
           <span className="agw-prov-chip">
-            {reasoning.type === "effort" ? `Reasoning · ${reasoning.default}` : "Reasoning"}
+            {reasoning.type === "effort"
+              ? `Reasoning · ${reasoning.default}`
+              : reasoning.type === "budget" && typeof reasoning.default === "number"
+                ? `Reasoning · ${Math.round(reasoning.default / 100) / 10}k`.replace(".0k", "k")
+                : "Reasoning"}
           </span>
         )}
       </div>
@@ -502,17 +637,33 @@ const ModelRow: React.FC<{ model: LLMModel; active: boolean; onActivate: () => v
                   if (t === "none") return updateModel(model.id, { reasoning: undefined, supportsThinking: false });
                   if (t === "toggle")
                     return updateModel(model.id, { reasoning: { type: "toggle", default: true }, supportsThinking: true });
-                  if (t === "effort")
+                  // `default` carries a TIER for effort models and a TOKEN COUNT
+                  // for budget models. Switching type must not drag the old
+                  // shape across, or an effort model ends up sending
+                  // `reasoning_effort: "8000"` (and a budget model a budget of
+                  // "medium", which reads as no budget at all).
+                  if (t === "effort") {
+                    const levels = reasoning?.levels?.length
+                      ? reasoning.levels
+                      : ["low", "medium", "high"];
+                    const carried =
+                      typeof reasoning?.default === "string" && levels.includes(reasoning.default)
+                        ? reasoning.default
+                        : levels.includes("medium")
+                          ? "medium"
+                          : levels[levels.length - 1];
                     return updateModel(model.id, {
-                      reasoning: {
-                        type: "effort",
-                        levels: reasoning?.levels?.length ? reasoning.levels : ["low", "medium", "high"],
-                        default: reasoning?.default ?? "medium",
-                      },
+                      reasoning: { type: "effort", levels, default: carried },
                       supportsThinking: true,
                     });
+                  }
                   return updateModel(model.id, {
-                    reasoning: { type: "budget", min: reasoning?.min ?? 1024, max: reasoning?.max ?? 32000, default: reasoning?.default ?? 8000 },
+                    reasoning: {
+                      type: "budget",
+                      min: reasoning?.min ?? 1024,
+                      max: reasoning?.max ?? 32000,
+                      default: typeof reasoning?.default === "number" ? reasoning.default : 8000,
+                    },
                     supportsThinking: true,
                   });
                 }}
@@ -551,6 +702,50 @@ const ModelRow: React.FC<{ model: LLMModel; active: boolean; onActivate: () => v
                 >
                   {reasoning.toggleable !== false ? "Has on/off switch" : "Always on (native)"}
                 </button>
+              </label>
+            )}
+
+            {reasoning?.type === "budget" && (
+              <label className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+                <span>Default budget</span>
+                <span className="agw-agent-range">
+                  <input
+                    className="agw-set-range"
+                    type="range"
+                    min={Math.max(1024, reasoning.min ?? 1024)}
+                    max={Math.max(
+                      (reasoning.min ?? 1024) + 1000,
+                      reasoning.max ?? model.maxOutputTokens ?? 32000,
+                    )}
+                    step={500}
+                    value={Math.min(
+                      Math.max(
+                        (reasoning.min ?? 1024) + 1000,
+                        reasoning.max ?? model.maxOutputTokens ?? 32000,
+                      ),
+                      Math.max(
+                        Math.max(1024, reasoning.min ?? 1024),
+                        typeof reasoning.default === "number" ? reasoning.default : 8000,
+                      ),
+                    )}
+                    aria-label="Default thinking budget"
+                    onChange={(e) =>
+                      updateModel(model.id, {
+                        reasoning: { ...reasoning, default: Number(e.target.value) },
+                      })
+                    }
+                  />
+                  <AgwPill tone="neutral">
+                    {(typeof reasoning.default === "number"
+                      ? reasoning.default
+                      : 8000
+                    ).toLocaleString()}
+                  </AgwPill>
+                </span>
+                <span className="agw-set-row-hint">
+                  Tokens this model may spend thinking before it answers. New chats start here;
+                  change it per chat from the model picker.
+                </span>
               </label>
             )}
 
@@ -596,11 +791,25 @@ const ProviderDetail: React.FC<{
   onDeleted: () => void;
 }> = ({ provider, models, selectedModel, onDeleted }) => {
   const updateProvider = useSettingsStore((s) => s.updateProvider);
-  const deleteProvider = useSettingsStore((s) => s.deleteProvider);
+  const removeProvider = useSettingsStore((s) => s.removeProvider);
   const setSelectedModel = useSettingsStore((s) => s.setSelectedModel);
   const [showKey, setShowKey] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const atlas = isAtlasCloudProvider(provider);
   const codex = isCodexProvider(provider);
+
+  // Remove = delete for custom providers, hide-and-persist for built-in
+  // presets (which would otherwise re-seed on every launch). Two-click
+  // confirm so it isn't a one-tap destructive action.
+  const doRemove = () => {
+    if (!confirmRemove) {
+      setConfirmRemove(true);
+      return;
+    }
+    removeProvider(provider.id);
+    onDeleted();
+  };
+  const removeLabel = provider.isCustom ? "Delete provider" : "Remove from list";
 
   return (
     <div className="agw-prov-detail" data-atlas={atlas || undefined}>
@@ -632,19 +841,6 @@ const ProviderDetail: React.FC<{
             onChange={(v) => updateProvider(provider.id, { enabled: v })}
             ariaLabel={`Enable ${provider.name}`}
           />
-          {provider.isCustom && (
-            <button
-              type="button"
-              className="agw-prov-icon-btn"
-              title="Delete provider"
-              onClick={() => {
-                deleteProvider(provider.id);
-                onDeleted();
-              }}
-            >
-              <AgentIcon name="close" size={15} />
-            </button>
-          )}
         </div>
       )}
 
@@ -706,6 +902,9 @@ const ProviderDetail: React.FC<{
             </div>
           </label>
         )}
+        {provider.requiresApiKey !== false && (
+          <ApiKeyPoolEditor provider={provider} updateProvider={updateProvider} />
+        )}
         <CustomHeadersEditor provider={provider} updateProvider={updateProvider} />
       </div>
       )}
@@ -733,6 +932,22 @@ const ProviderDetail: React.FC<{
         )}
       </div>
       <AddModelRow providerId={provider.id} providerType={provider.providerType} />
+
+      {/* Remove — deletes a custom provider, or drops a built-in preset so it
+          stops re-seeding. Two-click confirm; the second click commits. */}
+      <div className="agw-prov-detail-danger">
+        <button
+          type="button"
+          className="agw-prov-remove-btn"
+          data-confirm={confirmRemove || undefined}
+          onClick={doRemove}
+          onMouseLeave={() => setConfirmRemove(false)}
+          title={removeLabel}
+        >
+          <AgentIcon name="close" size={13} />
+          {confirmRemove ? "Click again" : removeLabel}
+        </button>
+      </div>
     </div>
   );
 };

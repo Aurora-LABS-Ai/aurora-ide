@@ -58,6 +58,11 @@ import { useAgentSuggestStore } from "../store/useAgentSuggestStore";
 import { useAgentChatStore } from "../store/useAgentChatStore";
 import { useAgentContextStore } from "../store/useAgentContextStore";
 import { useAgentTaskStore, type Task } from "../store/useAgentTaskStore";
+import {
+  parseKillResult,
+  parseSpawnResult,
+  useAgentBackgroundStore,
+} from "../store/useAgentBackgroundStore";
 import { useAgentAttachmentStore } from "../store/useAgentAttachmentStore";
 import {
   buildCommandSelection,
@@ -882,6 +887,25 @@ export function useAgentWindowSend(): AgentWindowSend {
         };
       });
     };
+    // `shell_spawn` starts something that outlives the tool call, so the user
+    // needs a way to see and stop it. Mirror the spawn into the per-thread
+    // background store, which drives the cards docked above the composer; a
+    // `shell_kill` settles the matching card so it stops claiming to run.
+    const captureBackgroundProcess = (tc: ToolCallRequest, result: string) => {
+      if (tc.function.name === "shell_spawn") {
+        const spawned = parseSpawnResult(result);
+        if (spawned) useAgentBackgroundStore.getState().track(threadId, spawned);
+        return;
+      }
+      if (tc.function.name === "shell_kill") {
+        const killed = parseKillResult(result);
+        // "stopped", not "exited": the agent ended it deliberately, which is
+        // also what the log's closing line says. A row reporting a natural
+        // finish for a kill would contradict the file.
+        if (killed) useAgentBackgroundStore.getState().settle(killed, "stopped");
+      }
+    };
+
     // `todo_write` is a checklist signal, not a normal tool — mirror its todos
     // into the PER-THREAD task store so the docked panel reflects live progress.
     // Args stream incrementally, so we only act once they parse to valid JSON.
@@ -1044,12 +1068,21 @@ export function useAgentWindowSend(): AgentWindowSend {
 
     // Per-model reasoning: the active model may carry a reasoning level (set in
     // Provider settings / the composer picker). Effort tiers are forwarded as
-    // `reasoning_effort`; a toggle model drives whether thinking is on at all.
+    // `reasoning_effort`; a toggle model drives whether thinking is on at all;
+    // a budget model additionally carries the token budget the user chose.
     const activeModel = useSettingsStore.getState().getActiveModel();
     const reasoning = activeModel?.reasoning;
     let thinkingEnabled = settings.thinkingEnabled && (llmConfig.supportsThinking ?? false);
+    // Budget models carry a token number instead of a tier. It rides its own
+    // field to the runtime (NOT customParams) because the wire shape differs
+    // per provider: Anthropic wants `thinking.budget_tokens`, OpenAI-compat
+    // backends mostly want nothing at all.
+    let thinkingBudgetTokens: number | undefined;
     if (reasoning) {
       const on = reasoningIsOn(reasoning);
+      if (reasoning.type === "budget" && on && typeof reasoning.default === "number") {
+        thinkingBudgetTokens = reasoning.default;
+      }
       if (reasoning.type === "effort") {
         // Effort models control reasoning with `reasoning_effort` — NOT the
         // `thinking` field. Sending BOTH is rejected by some providers
@@ -1102,6 +1135,7 @@ export function useAgentWindowSend(): AgentWindowSend {
     agent.setThreadId(threadId);
     agent.updateConfig({
       thinkingEnabled,
+      thinkingBudgetTokens,
       executionMode,
       autoApproveTools: settings.autoApproveTools,
       // Pin tools to THIS turn's project (not the global store) so a turn keeps
@@ -1132,6 +1166,14 @@ export function useAgentWindowSend(): AgentWindowSend {
           },
           onThinking: (text) => {
             setActivity({ label: "Thinking…" });
+            // A zero-length thinking event carries no renderable text — the
+            // Anthropic adapter emits one at `content_block_stop` purely to
+            // hand over the block signature, which the UI has no use for.
+            // Appending it would open an empty reasoning segment that renders
+            // as a bare "…" (AgentThinkingBlock's `content || "…"` fallback),
+            // and after a tool row it can't merge into a prior segment so it
+            // becomes its own stray row.
+            if (!text) return;
             queueStreamText("thinking", text);
           },
           onUsage: (usage) => {
@@ -1199,8 +1241,10 @@ export function useAgentWindowSend(): AgentWindowSend {
             upsertToolCall(tc);
             captureTodos(tc);
           },
-          onToolExecutionComplete: (tc, result) =>
-            setToolResult(tc, result, settleToolDuration(tc.id)),
+          onToolExecutionComplete: (tc, result) => {
+            captureBackgroundProcess(tc, result);
+            setToolResult(tc, result, settleToolDuration(tc.id));
+          },
           onToolExecutionError: (tc, error) =>
             setToolResult(tc, `[error] ${error}`, settleToolDuration(tc.id)),
           onToolRejected: (tc, reason) => {

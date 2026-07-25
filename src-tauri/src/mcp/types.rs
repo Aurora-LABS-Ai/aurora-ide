@@ -6,13 +6,25 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// MCP Server transport type
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum McpTransportType {
     /// Standard I/O (spawn process)
     Stdio,
-    /// Server-Sent Events (HTTP)
+    /// Legacy HTTP+SSE, MCP spec 2024-11-05: `GET` the URL, wait for an
+    /// `endpoint` event, then POST JSON-RPC to the endpoint it names.
     Sse,
+    /// Streamable HTTP, MCP spec 2025-03-26 and later: POST JSON-RPC
+    /// straight at the single URL. This is what Cursor/Claude configs call
+    /// `httpUrl` (or `"type": "http"`), and it is what most hosted servers
+    /// speak today. Such a server answers a bare `GET` with **405 Method
+    /// Not Allowed**, which is why it cannot be connected as `Sse`.
+    #[serde(
+        alias = "streamable-http",
+        alias = "streamablehttp",
+        alias = "streamable_http"
+    )]
+    Http,
 }
 
 impl Default for McpTransportType {
@@ -29,7 +41,7 @@ pub struct McpServerConfig {
     pub id: String,
     /// Display name
     pub name: String,
-    /// Transport type (stdio or sse)
+    /// Transport type (stdio, sse, or http)
     #[serde(default)]
     pub transport: McpTransportType,
     /// Command to run (for stdio transport)
@@ -40,9 +52,9 @@ pub struct McpServerConfig {
     /// Environment variables
     #[serde(default)]
     pub env: HashMap<String, String>,
-    /// URL for SSE transport
+    /// URL for the HTTP transports (`Sse` and `Http`)
     pub url: Option<String>,
-    /// Custom headers for SSE transport
+    /// Custom headers for the HTTP transports (`Sse` and `Http`)
     #[serde(default)]
     pub headers: HashMap<String, String>,
     /// Whether this server is enabled
@@ -98,6 +110,19 @@ impl McpServerConfig {
             enabled: true,
             auto_start: false,
             auto_approve: false,
+        }
+    }
+
+    /// Create a new Streamable-HTTP MCP server config
+    #[allow(dead_code)]
+    pub fn new_http(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        url: impl Into<String>,
+    ) -> Self {
+        Self {
+            transport: McpTransportType::Http,
+            ..Self::new_sse(id, name, url)
         }
     }
 

@@ -75,9 +75,14 @@ export interface AgentThemeTokens {
   // ── Typography & shape (non-color) ───────────────────────────────────
   fontUi: string;
   fontCode: string;
+  /** Nested inside a container (inner panels, inline code, list rows). */
   radiusSm: string;
+  /** Controls: buttons, inputs, chips with square-ish ends. */
   radiusMd: string;
+  /** Containers: cards, popovers, panels, dialogs. */
   radiusLg: string;
+  /** Fully-round ends: pills, avatars, progress tracks. */
+  radiusPill: string;
 }
 
 export interface AgentTheme {

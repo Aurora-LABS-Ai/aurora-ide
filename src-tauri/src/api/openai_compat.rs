@@ -81,6 +81,21 @@ impl StreamingApiClient for OpenAICompatAdapter {
         let headers = build_openai_headers(&self.config)?;
         let body = build_openai_body(&request, &self.config);
 
+        // Opt-in request tracing. Set AURORA_DEBUG_API=1 before launching
+        // (`$env:AURORA_DEBUG_API="1"; pnpm tauri:dev`) to print the exact
+        // outgoing body and any non-2xx response body to the dev console.
+        let debug_api = std::env::var("AURORA_DEBUG_API")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if debug_api {
+            eprintln!(
+                "[api][openai_compat] POST {url}\nprovider_id={} model={}\nbody={}",
+                self.config.provider_id,
+                self.config.model,
+                serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
+            );
+        }
+
         let response = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => return Err(ApiError::Cancelled),
@@ -93,6 +108,13 @@ impl StreamingApiClient for OpenAICompatAdapter {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            if debug_api {
+                eprintln!(
+                    "[api][openai_compat] upstream {} rejected request: {}",
+                    status.as_u16(),
+                    body
+                );
+            }
             return Err(map_status_error(status.as_u16(), body));
         }
 
@@ -164,21 +186,20 @@ where
                 if let Some(u) = parsed.usage {
                     usage.input_tokens = u.prompt_tokens;
                     usage.output_tokens = u.completion_tokens;
-                    // DeepSeek context caching: `prompt_cache_hit_tokens`
-                    // is a SUBSET of `prompt_tokens` (the cached
-                    // portion served from disk). Aurora's UI math
-                    // (`useContextStore.updateUsage`) follows Anthropic
-                    // semantics where the cache-read field is ADDITIVE
-                    // to `input_tokens`, so we subtract the hit count
-                    // from `input_tokens` here to keep the addition
-                    // correct on both providers. The original
+                    // Context caching: the cached-read count is a SUBSET of
+                    // `prompt_tokens` — DeepSeek reports it as
+                    // `prompt_cache_hit_tokens`, standard OpenAI (and routers
+                    // like AgentRouter) as `prompt_tokens_details.cached_tokens`.
+                    // `cache_read_tokens()` picks whichever is present. Aurora's
+                    // UI math (`useContextStore.updateUsage`) follows Anthropic
+                    // semantics where the cache-read field is ADDITIVE to
+                    // `input_tokens`, so we subtract the hit count here to keep
+                    // the addition correct across providers. The original
                     // prompt_tokens stays implicitly available as
                     // `input_tokens + cache_read_input_tokens`.
-                    if let Some(hit) = u.prompt_cache_hit_tokens {
-                        if hit > 0 {
-                            usage.cache_read_input_tokens = Some(hit);
-                            usage.input_tokens = usage.input_tokens.saturating_sub(hit);
-                        }
+                    if let Some(hit) = u.cache_read_tokens() {
+                        usage.cache_read_input_tokens = Some(hit);
+                        usage.input_tokens = usage.input_tokens.saturating_sub(hit);
                     }
                     let _ = event_sink.send(AssistantEvent::Usage(usage.clone())).await;
                 }

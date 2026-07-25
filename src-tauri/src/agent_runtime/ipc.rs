@@ -135,6 +135,18 @@ pub struct AgentChatRequest {
     #[serde(default)]
     pub thinking_enabled: Option<bool>,
 
+    /// Explicit thinking token budget, in tokens, for models whose reasoning
+    /// control is a budget rather than an effort tier (the composer's model
+    /// picker writes it per model). Read only when [`Self::thinking_enabled`]
+    /// is true — a budget never turns thinking on by itself.
+    ///
+    /// `None`/`0` means "no explicit budget": the Anthropic adapter then falls
+    /// back to scaling the effort tier against `max_output_tokens`, and the
+    /// OpenAI-compatible adapter omits the field entirely (many compat
+    /// backends reject unknown keys with HTTP 400).
+    #[serde(default)]
+    pub thinking_budget_tokens: Option<u32>,
+
     /// Provider's advertised total context window (input + output) for
     /// the chosen model, in tokens. When set, the runtime applies a
     /// budget-aware trim before each API call: older turns get dropped
@@ -225,6 +237,7 @@ mod tests {
             provider_id: "anthropic".into(),
             base_url: "https://api.anthropic.com/v1".into(),
             api_key: "sk-ant-test".into(),
+            api_keys: None,
             model: "claude-3-7-sonnet".into(),
             custom_headers: None,
             custom_params: None,
@@ -259,6 +272,7 @@ mod tests {
             temperature: Some(0.7),
             max_output_tokens: Some(4096),
             thinking_enabled: Some(true),
+            thinking_budget_tokens: Some(16_000),
             context_window: Some(200_000),
             attached_selected_elements: None,
             attached_prompt_chips: None,
@@ -416,6 +430,7 @@ mod tests {
             temperature: None,
             max_output_tokens: None,
             thinking_enabled: None,
+            thinking_budget_tokens: None,
             context_window: None,
             attached_selected_elements: None,
             attached_prompt_chips: None,

@@ -192,13 +192,16 @@ export const installAgentIdeListeners = async (): Promise<() => void> => {
         void handleOpenInIde(payload);
       }),
     );
-  }
 
-  cleanups.push(
-    await auroraListen<EditorOpenPayload>("agent_editor_open", ({ payload }) => {
-      void handleEditorOpen(payload);
-    }),
-  );
+    // Monaco only exists in the IDE window. The Agent Window handles the same
+    // channel in `useAgentEditorOpen`, opening the file in its right rail —
+    // running this handler there would drive an editor that isn't on screen.
+    cleanups.push(
+      await auroraListen<EditorOpenPayload>("agent_editor_open", ({ payload }) => {
+        void handleEditorOpen(payload);
+      }),
+    );
+  }
 
   cleanups.push(
     await auroraListen<ReadLintsPayload>("agent_read_lints", ({ payload }) => {

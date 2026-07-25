@@ -54,7 +54,7 @@ export const shellKillTool: ToolDefinition = {
   function: {
     name: "shell_kill",
     description:
-      'Kill a running background process by its process ID (e.g., "bg-1-1234567890") or name.',
+      "Stop a running background process by the process ID returned from shell_spawn or shell_list_processes, its friendly name, or its OS pid.",
     parameters: {
       type: "object",
       properties: {
@@ -67,6 +67,14 @@ export const shellKillTool: ToolDefinition = {
           type: "string",
           description:
             "The friendly name of the process to kill (if processId not provided)",
+        },
+        requestId: {
+          type: "string",
+          description: "The stream request ID returned by shell_list_processes",
+        },
+        pid: {
+          type: "number",
+          description: "The OS process ID returned by shell_list_processes",
         },
       },
       required: [],

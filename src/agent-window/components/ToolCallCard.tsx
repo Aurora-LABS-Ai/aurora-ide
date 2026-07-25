@@ -33,7 +33,9 @@ import {
   type ToolStatus,
 } from "./tool-call";
 import { parseToolResult } from "./tool-views/tool-result";
+import { ShellStreamView } from "./tool-views/ShellStreamView";
 import { ToolResultView } from "./tool-views/ToolResultView";
+import { useShellStream } from "../hooks/useShellStream";
 
 /** A header chip: an activity target plus optional per-file diff counts. */
 type ChipTarget = AgentActivityTarget & { added?: number; removed?: number };
@@ -161,6 +163,9 @@ function toolIcon(name: string): AgentIconName {
     return "file-delete";
   if (lower === "editor_open_file") return "files";
   if (lower === "grep") return "search";
+  // `glob` finds files, so it takes the file icon rather than grep's
+  // magnifier — the icon is the fastest way to tell the two searches apart.
+  if (lower === "glob") return "files";
   if (lower === "workspace_tree") return "workspace-tree";
   if (lower === "folder_create") return "files";
   if (lower === "shell_execute" || lower === "shell_spawn") return "terminal";
@@ -528,6 +533,25 @@ const StandardToolCallCard: React.FC<{
         .filter(({ index }) => !visibleChips.some((chip) => chip.index === index))
     : [];
 
+  /**
+   * Vertical wheel scrolls the chip strip sideways — bound natively because
+   * React delegates `wheel` at the root with `{ passive: true }`, which
+   * discards `preventDefault()` (and warns). Without it the transcript scrolls
+   * at the same time as the strip, so the card walks away mid-gesture.
+   */
+  useEffect(() => {
+    const strip = targetStripRef.current;
+    if (!strip) return;
+    const onWheel = (event: WheelEvent) => {
+      if (strip.scrollWidth <= strip.clientWidth) return;
+      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      event.preventDefault();
+      strip.scrollLeft += event.deltaY;
+    };
+    strip.addEventListener("wheel", onWheel, { passive: false });
+    return () => strip.removeEventListener("wheel", onWheel);
+  }, [chipTargets.length]);
+
   // Live content preview: the file being written, pulled from the partial args.
   const streamingPreview = useMemo(() => {
     if (status !== "running") return null;
@@ -543,6 +567,15 @@ const StandardToolCallCard: React.FC<{
     if (previewRef.current) previewRef.current.scrollTop = previewRef.current.scrollHeight;
   }, [streamingPreview]);
 
+  // Live terminal output, streamed from Rust on the tool call's own channel.
+  // Subscribing from the card (which mounts when the call appears, before
+  // execution begins) means the listener is in place before the first byte.
+  const liveShellOutput = useShellStream(call.id, isShellTool(call.name) && status === "running");
+  const liveShellCommand =
+    typeof parsedArgs.command === "string" ? parsedArgs.command : undefined;
+  const liveShellCwd = typeof parsedArgs.cwd === "string" ? parsedArgs.cwd : undefined;
+  const showLiveShell = isShellTool(call.name) && status === "running";
+
   const argChips = useMemo(
     () =>
       Object.entries(parsedArgs).filter(
@@ -552,20 +585,17 @@ const StandardToolCallCard: React.FC<{
   );
 
   const summary = useMemo(() => {
-    if (status === "running") return ""; // shown as a shimmer label instead
-    if (status === "failed") {
-      const r = call.result || "";
-      const m = r.match(/^\s*\[(?:error|rejected)\]\s*(.*)/i);
-      const message = m?.[1]?.trim() || "Didn't complete";
-      return (path ? message.replaceAll(path, basename(path)) : message).slice(0, 160);
-    }
+    if (status !== "done") return ""; // running and failure detail live in the dropdown
     return parsed.summary || "";
-  }, [status, call.result, parsed.summary, path]);
+  }, [status, parsed.summary]);
 
   const hasResult = Boolean(
     parsed.tree ||
       parsed.multiFile?.length ||
       parsed.grep?.matches.length ||
+      // Not `.files.length`: a glob that matched nothing still has a result
+      // worth expanding — it says so, and says how to widen the pattern.
+      parsed.glob ||
       (parsed.shell && parsed.shell.output) ||
       parsed.fileList?.length ||
       parsed.diff ||
@@ -576,13 +606,16 @@ const StandardToolCallCard: React.FC<{
       parsed.screenshot?.path ||
       parsed.screenshot?.base64,
   );
-  const hasDetail = hasResult || argChips.length > 0 || !!streamingPreview;
+  const hasDetail = hasResult || argChips.length > 0 || !!streamingPreview || showLiveShell;
   // Collapsed by DEFAULT — including while a tool is running. A running/settled
   // card is a quiet one-line row; the user clicks it open to inspect args, the
   // live write stream, or the result. A failure that happens LIVE (this turn is
   // still streaming) defaults open so its error is visible without a click —
   // but a failed card loaded from history (or once the turn ends) collapses back
   // like everything else, so old failures don't stay stuck open. `override` wins.
+  // A running shell command does NOT auto-open: live output is there for
+  // whoever opens the card, but a command starting must never expand the
+  // transcript on its own. Only a live failure does, as before.
   const defaultOpen = status === "failed" && isActivelyStreaming;
   const open = (override ?? defaultOpen) && hasDetail;
   const toggle = () => setOverride(!(override ?? defaultOpen));
@@ -690,14 +723,6 @@ const StandardToolCallCard: React.FC<{
               event.stopPropagation();
               targetDragRef.current.moved = false;
             }}
-            onWheel={(event) => {
-              const strip = targetStripRef.current;
-              if (!strip || strip.scrollWidth <= strip.clientWidth) return;
-              if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
-                event.preventDefault();
-                strip.scrollLeft += event.deltaY;
-              }
-            }}
           >
             {visibleChips.map(({ target, index }) => {
               const chipContent = (
@@ -791,7 +816,8 @@ const StandardToolCallCard: React.FC<{
           <span className="agw-tool-summary agw-shimmer">
             {activity.name ? "Running…" : activity.label}
           </span>
-        ) : parsed.stat && (parsed.stat.added > 0 || parsed.stat.removed > 0) ? (
+        ) : status === "failed" ? null : parsed.stat &&
+          (parsed.stat.added > 0 || parsed.stat.removed > 0) ? (
           <span className="agw-tool-summary" style={{ display: "inline-flex", gap: 8 }}>
             {parsed.stat.removed > 0 && (
               <span style={{ color: "var(--agw-removed)" }}>−{parsed.stat.removed}</span>
@@ -804,9 +830,7 @@ const StandardToolCallCard: React.FC<{
           summary && (
             <span
               className="agw-tool-summary"
-              style={{
-                color: status === "failed" ? "var(--agw-removed)" : "var(--agw-text-subtle)",
-              }}
+              style={{ color: "var(--agw-text-subtle)" }}
             >
               {summary}
             </span>
@@ -864,7 +888,13 @@ const StandardToolCallCard: React.FC<{
                 </div>
               )}
 
-              {streamingPreview ? (
+              {showLiveShell ? (
+                <ShellStreamView
+                  command={liveShellCommand}
+                  cwd={liveShellCwd}
+                  output={liveShellOutput}
+                />
+              ) : streamingPreview ? (
                 <pre
                   ref={previewRef}
                   className="agw-code agw-scroll agw-diff agw-diff-added agw-tool-stream"
@@ -872,7 +902,7 @@ const StandardToolCallCard: React.FC<{
                   {streamingPreview}
                 </pre>
               ) : (
-              <ToolResultView parsed={parsed} activeMultiFileIndex={selectedFileIndex} />
+                <ToolResultView parsed={parsed} activeMultiFileIndex={selectedFileIndex} />
               )}
             </div>
           </motion.div>

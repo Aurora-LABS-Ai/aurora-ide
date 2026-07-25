@@ -50,6 +50,14 @@ pub struct ProviderConfigSnapshot {
     pub base_url: String,
     #[serde(default)]
     pub api_key: String,
+    /// Optional API-key POOL. When it holds more than one non-empty key,
+    /// [`build_api_client`] wraps the adapter in a [`super::pool::PooledStreamingClient`]
+    /// that rotates keys round-robin per turn and fails over to the next
+    /// key on an auth / rate-limit / server error — same request, different
+    /// key. Generic across every provider; AgentRouter (5+ accounts) is the
+    /// first consumer. Empty / single-entry → the plain single-key path.
+    #[serde(default)]
+    pub api_keys: Option<Vec<String>>,
     #[serde(default)]
     pub model: String,
     #[serde(default)]
@@ -70,6 +78,31 @@ pub struct ProviderConfigSnapshot {
     /// model isn't poisoned with unusable base64.
     #[serde(default)]
     pub supports_vision: bool,
+}
+
+impl ProviderConfigSnapshot {
+    /// The ordered list of API keys to try for this provider. Dedupes the
+    /// pool while preserving order, drops blanks, and always falls back to
+    /// the single `api_key` when the pool is empty. Guaranteed non-empty
+    /// only if at least one of `api_key` / `api_keys` is non-blank —
+    /// callers that need auth should check `.is_empty()`.
+    #[must_use]
+    pub fn effective_keys(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut push = |k: &str| {
+            let k = k.trim();
+            if !k.is_empty() && !out.iter().any(|e| e == k) {
+                out.push(k.to_string());
+            }
+        };
+        if let Some(pool) = &self.api_keys {
+            for k in pool {
+                push(k);
+            }
+        }
+        push(&self.api_key);
+        out
+    }
 }
 
 /// Wire-shape kind chosen by the factory. Distinct from `provider_id`
@@ -120,6 +153,27 @@ impl ProviderKind {
 /// internal connection pool benefits from being shared.
 #[must_use]
 pub fn build_api_client(config: &ProviderConfigSnapshot) -> Arc<dyn StreamingApiClient> {
+    // A multi-key pool wraps the concrete adapter with round-robin +
+    // failover. A single key (the overwhelming common case) takes the
+    // plain path — zero wrapper overhead. The pool builds its own inner
+    // adapter per key via `build_single_api_client`, so this dispatch
+    // stays the one place that knows the wire shapes.
+    let keys = config.effective_keys();
+    if keys.len() > 1 {
+        return Arc::new(super::pool::PooledStreamingClient::new(
+            config.clone(),
+            keys,
+        ));
+    }
+    build_single_api_client(config)
+}
+
+/// Build the concrete streaming adapter for exactly one key (the config's
+/// `api_key`). This is the single-key path and the per-key builder the
+/// [`super::pool::PooledStreamingClient`] calls for each failover attempt.
+/// It never wraps in a pool — that would recurse.
+#[must_use]
+pub fn build_single_api_client(config: &ProviderConfigSnapshot) -> Arc<dyn StreamingApiClient> {
     match ProviderKind::detect(&config.provider_id) {
         ProviderKind::Anthropic => Arc::new(AnthropicAdapter::new(config.clone())),
         ProviderKind::DeepSeek => Arc::new(DeepSeekAdapter::new(config.clone())),
@@ -138,6 +192,7 @@ mod tests {
             provider_id: provider_id.to_string(),
             base_url: "https://example.test".into(),
             api_key: "key".into(),
+            api_keys: None,
             model: "any".into(),
             custom_headers: None,
             custom_params: None,
@@ -220,6 +275,43 @@ mod tests {
         let _: Arc<dyn StreamingApiClient> = build_api_client(&config("openai"));
         let _: Arc<dyn StreamingApiClient> = build_api_client(&config("custom"));
         let _: Arc<dyn StreamingApiClient> = build_api_client(&config(""));
+    }
+
+    #[test]
+    fn effective_keys_prefers_pool_dedups_and_falls_back() {
+        // Pool + a distinct single key: order preserved, single key appended.
+        let mut c = config("custom");
+        c.api_key = "solo".into();
+        c.api_keys = Some(vec!["a".into(), "b".into()]);
+        assert_eq!(c.effective_keys(), vec!["a", "b", "solo"]);
+
+        // Blanks dropped, duplicates removed (incl. the single key already
+        // present in the pool).
+        let mut c = config("custom");
+        c.api_key = "a".into();
+        c.api_keys = Some(vec!["a".into(), "  ".into(), "b".into(), "a".into()]);
+        assert_eq!(c.effective_keys(), vec!["a", "b"]);
+
+        // No pool → just the single key.
+        let mut c = config("custom");
+        c.api_key = "only".into();
+        c.api_keys = None;
+        assert_eq!(c.effective_keys(), vec!["only"]);
+    }
+
+    #[test]
+    fn build_api_client_wraps_pool_for_multiple_keys() {
+        // Two distinct keys must not panic and must build the pooled path.
+        let mut c = config("custom");
+        c.api_key = String::new();
+        c.api_keys = Some(vec!["k1".into(), "k2".into()]);
+        let _: Arc<dyn StreamingApiClient> = build_api_client(&c);
+
+        // A single effective key must take the plain path (also no panic).
+        let mut c = config("openai");
+        c.api_key = "k1".into();
+        c.api_keys = Some(vec!["k1".into()]);
+        let _: Arc<dyn StreamingApiClient> = build_api_client(&c);
     }
 
     #[test]

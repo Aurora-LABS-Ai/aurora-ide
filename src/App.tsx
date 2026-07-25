@@ -166,6 +166,14 @@ function App() {
         return;
       }
 
+      // ...and in rich editors. The agent-window composer is a contenteditable
+      // div, not a textarea, so the tagName check above missed it and right
+      // click → Select all / Copy / Paste was dead in the one field users type
+      // their prompt into.
+      if (target.isContentEditable) {
+        return;
+      }
+
       // Allow context menu in elements with select-text class or markdown-content
       // This enables right-click copy on chat messages and code blocks
       if (target.closest('.select-text') || target.closest('.markdown-content')) {

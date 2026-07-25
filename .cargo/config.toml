@@ -2,5 +2,13 @@
 # Keep build artifacts inside the repository root.
 target-dir = "build"
 
-[env]
-CARGO_INCREMENTAL = "0"
+# `CARGO_INCREMENTAL = "0"` used to live here. It is the right setting for CI —
+# nothing is reused between runs, so incremental state is pure overhead — and
+# exactly wrong locally, where it is the entire mechanism that makes an edit →
+# rebuild loop fast. With it off, every Rust edit under `pnpm tauri dev`
+# recompiled the whole `aurora` crate from scratch.
+#
+# It is deliberately NOT replaced with `CARGO_INCREMENTAL = "1"`: an env var
+# applies to every profile, which would turn incremental on for RELEASE builds
+# too and fight `codegen-units = 1` + `lto = true`. Incremental belongs to the
+# dev profile alone, so it is set there — see `src-tauri/Cargo.toml`.

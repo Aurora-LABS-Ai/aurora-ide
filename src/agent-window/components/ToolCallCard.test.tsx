@@ -549,4 +549,26 @@ describe("ToolCallCard streamed file targets", () => {
     expect(html).toContain("temp_file.ts");
     expect(html).not.toContain("E:\\work\\secret");
   });
+
+  it("keeps failure detail in the expanded dropdown, not the tool header", () => {
+    const error = "execution failed: no element matches #does-not-exist";
+    const html = renderToStaticMarkup(
+      <ToolCallCard
+        isActivelyStreaming
+        call={{
+          id: "click-failed",
+          name: "browser_click",
+          arguments: '{"selector":"#does-not-exist"}',
+          result: `[error] ${error}`,
+          durationMs: 4_100,
+        }}
+      />,
+    );
+    const header = html.match(/<button[^>]*class="agw-tool-head"[\s\S]*?<\/button>/)?.[0];
+
+    expect(header).toBeDefined();
+    expect(header).not.toContain(error);
+    expect(header).toContain("4.1s");
+    expect(html).toContain(error);
+  });
 });

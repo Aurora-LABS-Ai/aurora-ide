@@ -258,7 +258,7 @@ export const PreferencesSettings: React.FC = () => {
               hint="The folder containing llama-completion.exe and its DLLs (e.g. a llama-bXXXX-bin-win-cuda build)."
               alignTop
             >
-              <div className="flex w-[320px] gap-1.5">
+              <div className="agw-set-field-row">
                 <AgwTextInput
                   value={llamaDir}
                   placeholder="E:\\llama-bin\\llama-bXXXX-bin-win-cuda-x64"
@@ -275,7 +275,7 @@ export const PreferencesSettings: React.FC = () => {
               hint="A small instruct model works best — e.g. Qwen2.5-0.5B-Instruct. The GGUF's own tokenizer is used; no extra files needed."
               alignTop
             >
-              <div className="flex w-[320px] gap-1.5">
+              <div className="agw-set-field-row">
                 <AgwTextInput
                   value={modelPath}
                   placeholder="…\\qwen2.5-0.5b-instruct.gguf"
@@ -307,7 +307,7 @@ export const PreferencesSettings: React.FC = () => {
               label="Check setup"
               hint="Confirm the binary and model are found and ready."
             >
-              <div className="flex items-center gap-2">
+              <div className="agw-set-inline-row">
                 {refineCheck && (
                   <AgwPill tone={refineCheck.ready ? "success" : "warning"}>
                     {refineCheck.ready ? "Ready" : "Not ready"}

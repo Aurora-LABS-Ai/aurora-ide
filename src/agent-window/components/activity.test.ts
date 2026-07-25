@@ -169,6 +169,11 @@ const cases: Array<{
     args: '{"level":"error","sinceMs":',
     activity: { label: "Reading console logs (error)" },
   },
+  {
+    tool: "browser_inspect_element",
+    args: '{"selector":"#status","include":',
+    activity: { label: 'Inspecting element "#status"' },
+  },
 ];
 
 describe("live tool activity", () => {

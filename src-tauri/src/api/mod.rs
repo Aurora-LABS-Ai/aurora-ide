@@ -51,6 +51,7 @@ pub mod client;
 pub mod codex;
 pub mod deepseek;
 pub mod openai_compat;
+pub mod pool;
 pub mod provider_kernel_adapter;
 pub mod responses;
 pub mod sse;

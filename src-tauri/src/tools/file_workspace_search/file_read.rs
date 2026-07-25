@@ -33,6 +33,11 @@ impl ToolExecutor for FileReadTool {
         "file_read"
     }
 
+    /// Pure disk read — safe alongside other reads in the same batch.
+    fn concurrency_safe(&self) -> bool {
+        true
+    }
+
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "file_read".into(),
@@ -61,10 +66,13 @@ impl ToolExecutor for FileReadTool {
                     "end_line": { "type": "number", "description": "Single-file form: 1-based inclusive last line to return." },
                     "max_lines": { "type": "number", "description": "Single-file form: maximum lines to return from start_line." }
                 },
-                "oneOf": [
-                    { "required": ["path"] },
-                    { "required": ["paths"] }
-                ],
+                // NOTE: the "exactly one of `path` / `paths`" contract is
+                // carried by the descriptions above and ENFORCED at runtime in
+                // `execute` (both-present and empty-array cases are rejected).
+                // We deliberately do NOT express it with a top-level `oneOf`:
+                // strict tool-schema validators (xAI/grok in particular) reject
+                // `oneOf`/`anyOf`/`allOf` in function parameters with HTTP 400,
+                // which would break every agent turn on those providers.
                 "additionalProperties": false,
             }),
         }
@@ -386,7 +394,9 @@ mod tests {
     #[test]
     fn schema_requires_one_non_empty_read_form() {
         let schema = FileReadTool.schema();
-        assert_eq!(schema.input_schema["oneOf"].as_array().unwrap().len(), 2);
+        // The single-vs-batch contract is enforced in `execute`, not with a
+        // top-level `oneOf` — strict providers (xAI/grok) 400 on `oneOf`.
+        assert!(schema.input_schema.get("oneOf").is_none());
         assert_eq!(schema.input_schema["properties"]["paths"]["minItems"], 1);
         assert_eq!(schema.input_schema["properties"]["path"]["minLength"], 1);
     }

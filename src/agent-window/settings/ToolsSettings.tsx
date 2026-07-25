@@ -16,6 +16,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { getProfessionalToolName } from "../../services/tool-display";
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
+import { ShellSettings } from "./ShellSettings";
 import { AgwPill, AgwSegmented, AgwSwitch, type SegmentOption } from "./primitives";
 
 type ApprovalMode = "auto" | "always_ask" | "deny";
@@ -249,6 +250,9 @@ export const ToolsSettings: React.FC = () => {
           </span>
         </div>
       )}
+
+      {/* Where shell commands run — decided before deciding who may run them. */}
+      <ShellSettings />
 
       {/* Per-tool approval — collapsible groups */}
       <section className="agw-set-section">

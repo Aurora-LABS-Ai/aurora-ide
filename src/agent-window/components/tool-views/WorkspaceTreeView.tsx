@@ -49,9 +49,28 @@ const TreeRow: React.FC<{ node: WorkspaceTreeNode; depth: number }> = ({
         <span className={isDir ? "agw-tree-name agw-tree-name-dir" : "agw-tree-name"}>
           {node.name}
         </span>
+        {/* One chip per row, in order of what most explains an empty folder.
+         *  A directory that wasn't fully listed must say so here — otherwise
+         *  "no children" reads as "nothing there", which is the exact
+         *  ambiguity this tool was rebuilt to remove. */}
         {node.artifact ? (
           <span className="agw-tree-meta" title="Build/dependency folder — contents not scanned">
             artifacts
+          </span>
+        ) : node.hidden ? (
+          <span className="agw-tree-meta" title="Hidden folder — not expanded. Re-run with include_hidden to look inside.">
+            not expanded
+          </span>
+        ) : node.depthLimited ? (
+          <span className="agw-tree-meta" title="The walk stopped here at the depth limit — this folder is not empty.">
+            deeper…
+          </span>
+        ) : node.elided ? (
+          <span
+            className="agw-tree-meta agw-rv-warn"
+            title={`${node.elided} more ${node.elided === 1 ? "entry" : "entries"} in this folder were left out of the map. Re-run workspace_tree on this path to list them.`}
+          >
+            +{node.elided.toLocaleString()} more
           </span>
         ) : !isDir && typeof node.lineCount === "number" ? (
           <span className="agw-tree-meta">
@@ -90,8 +109,18 @@ export const WorkspaceTreeView: React.FC<{ data: WorkspaceTreeData }> = ({ data 
           <span className="agw-rv-path">{data.rootPath.split(/[/\\]/).slice(-3).join("/")}</span>
         )}
         <span className="agw-rv-stats">
-          <span>{totalNodes} nodes</span>
-          {data.stats?.filesSkipped ? <span className="agw-rv-warn">{data.stats.filesSkipped} skipped</span> : null}
+          {/* "1200 of 3066" is the honest headline when the map is partial —
+           *  a bare node count would read as the whole project. */}
+          <span>
+            {data.truncated && data.stats?.nodesDiscovered
+              ? `${totalNodes.toLocaleString()} of ${data.stats.nodesDiscovered.toLocaleString()} nodes`
+              : `${totalNodes.toLocaleString()} nodes`}
+          </span>
+          {data.stats?.filesSkipped ? (
+            <span className="agw-rv-warn" title="Too large to count lines for — size only.">
+              {data.stats.filesSkipped} skipped
+            </span>
+          ) : null}
         </span>
       </div>
       <div className="agw-rv-body agw-scroll">
@@ -99,6 +128,9 @@ export const WorkspaceTreeView: React.FC<{ data: WorkspaceTreeData }> = ({ data 
           <TreeRow key={`${node.path ?? node.name}-${idx}`} node={node} depth={0} />
         ))}
       </div>
+      {/* The same sentence the model receives. If the map is partial, the
+       *  person reading over its shoulder should know too. */}
+      {data.note && <p className="agw-tree-note">{data.note}</p>}
     </div>
   );
 };

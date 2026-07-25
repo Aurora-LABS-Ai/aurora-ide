@@ -51,6 +51,9 @@
       "runtime/onnxruntime/*.dll": "",
       "resources/typing-assist/*.txt": "typing-assist/"
     },
+    "externalBin": [
+      "binaries/rg"
+    ],
     "windows": {
       "webviewInstallMode": {
         "type": "embedBootstrapper"

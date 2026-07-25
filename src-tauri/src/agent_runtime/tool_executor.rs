@@ -98,6 +98,22 @@ pub enum ToolError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
 
+    /// The model's tool-call arguments never parsed as a JSON object, so
+    /// no executor ever saw them.
+    ///
+    /// Distinct from [`InvalidInput`] on purpose: `InvalidInput` means the
+    /// arguments arrived intact and failed the tool's own contract
+    /// ("`path` is required"), whereas this means the arguments were
+    /// destroyed in transit — truncated by an output cap, mangled by a bad
+    /// escape, or emitted as something other than an object. Telling a
+    /// model "`path` is required" when it *did* send `path` is what turns
+    /// one bad block into five wasted iterations, so the two must never
+    /// collapse into the same message.
+    ///
+    /// [`InvalidInput`]: Self::InvalidInput
+    #[error("malformed tool arguments: {0}")]
+    MalformedInput(String),
+
     #[error("execution failed: {0}")]
     Execution(String),
 
@@ -159,6 +175,26 @@ pub trait ToolExecutor: Send + Sync {
     /// `ConversationRuntime` ignores this flag entirely (it's the
     /// gate-free fast path that Phase 2.3 tests cover).
     fn requires_permission(&self) -> bool {
+        false
+    }
+
+    /// Whether this tool may run **concurrently** with its neighbours in
+    /// the same batch of tool calls.
+    ///
+    /// Models routinely emit several independent reads in one message;
+    /// running them one at a time turns a single round-trip into six.
+    /// [`crate::agent_runtime::conversation`] runs maximal runs of
+    /// concurrency-safe calls together and keeps everything else strictly
+    /// sequential.
+    ///
+    /// Defaults to `false` — the safe answer. Override to `true` only when
+    /// the tool: observes workspace state without mutating it, needs no
+    /// permission prompt (prompts must be answered one at a time), and
+    /// contends for no single shared resource. That last clause is why the
+    /// read-only browser tools stay `false`: there is exactly one browser
+    /// panel, and two "read-only" calls against it can still interleave a
+    /// navigation.
+    fn concurrency_safe(&self) -> bool {
         false
     }
 
@@ -234,9 +270,25 @@ pub trait Permitter: Send + Sync + 'static {
 /// `get(name).execute(...)` path used by `ConversationRuntime` is
 /// untouched — production runtime keeps the gate-free path until the
 /// parent agent flips the switch.
+/// Maximum number of tool names listed in an unknown-tool error before
+/// the roster is summarized instead. Aurora ships 23 builtins; a workspace
+/// with several MCP servers connected can push the total past 100, and a
+/// 100-name list costs more context than it recovers.
+const MAX_LISTED_TOOLS: usize = 60;
+
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
-    tools: Arc<DashMap<String, Arc<dyn ToolExecutor>>>,
+    /// Name → (registration index, executor).
+    ///
+    /// The index exists because `DashMap` iteration order is arbitrary and
+    /// re-randomizes per process. The schema list built from it is part of
+    /// every request's cacheable prefix, so an unstable order defeats
+    /// provider prompt caching outright — and tool ordering measurably
+    /// shifts which tool a model reaches for. Registration order is stable,
+    /// meaningful (bucket by bucket), and survives re-registration.
+    tools: Arc<DashMap<String, (usize, Arc<dyn ToolExecutor>)>>,
+    /// Monotonic source for the registration index above.
+    next_order: Arc<std::sync::atomic::AtomicUsize>,
     /// Phase 4 permission gate. `None` (the default) means
     /// `execute_with_permission` runs every tool unconditionally —
     /// that's the behavior the Phase 2.3 tests assume.
@@ -259,23 +311,48 @@ impl ToolRegistry {
     }
 
     /// Register a tool. Re-registering the same name overwrites the
-    /// previous entry — useful for hot-reload but should be rare.
+    /// executor but **keeps its original position** in the roster, so
+    /// decorating a tool in place (as `install_permission_gate` does)
+    /// cannot reshuffle the schema list and invalidate a cached prefix.
     pub fn register(&self, executor: Arc<dyn ToolExecutor>) {
+        use std::sync::atomic::Ordering;
+
         let name = executor.name().to_string();
-        self.tools.insert(name, executor);
+        let order = self
+            .tools
+            .get(&name)
+            .map_or_else(|| self.next_order.fetch_add(1, Ordering::Relaxed), |e| e.0);
+        self.tools.insert(name, (order, executor));
     }
 
     /// Look up a tool by name. Returns `None` if not registered.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<Arc<dyn ToolExecutor>> {
-        self.tools.get(name).map(|e| e.value().clone())
+        self.tools.get(name).map(|e| e.value().1.clone())
     }
 
-    /// Snapshot every registered tool's schema. The returned `Vec` is
-    /// what the runtime hands to [`super::api_client::ApiRequest::tools`].
+    /// Every registered executor in stable registration order.
+    fn ordered(&self) -> Vec<(usize, Arc<dyn ToolExecutor>)> {
+        let mut entries: Vec<(usize, Arc<dyn ToolExecutor>)> = self
+            .tools
+            .iter()
+            .map(|e| (e.value().0, e.value().1.clone()))
+            .collect();
+        entries.sort_by_key(|(order, _)| *order);
+        entries
+    }
+
+    /// Snapshot every registered tool's schema, in stable registration
+    /// order. The returned `Vec` is what the runtime hands to
+    /// [`super::api_client::ApiRequest::tools`] on every iteration — it
+    /// must be byte-identical between requests or provider prompt caching
+    /// never hits.
     #[must_use]
     pub fn schemas(&self) -> Vec<ToolSchema> {
-        self.tools.iter().map(|e| e.value().schema()).collect()
+        self.ordered()
+            .into_iter()
+            .map(|(_, executor)| executor.schema())
+            .collect()
     }
 
     #[must_use]
@@ -288,11 +365,65 @@ impl ToolRegistry {
         self.tools.is_empty()
     }
 
-    /// Names of every registered tool, in non-deterministic order.
-    /// Useful for diagnostics and the audit log.
+    /// Names of every registered tool, in stable registration order.
+    /// Used for diagnostics, the audit log, and the roster an unknown-tool
+    /// error hands back to the model.
     #[must_use]
     pub fn names(&self) -> Vec<String> {
-        self.tools.iter().map(|e| e.key().clone()).collect()
+        self.ordered()
+            .into_iter()
+            .map(|(_, executor)| executor.name().to_string())
+            .collect()
+    }
+
+    /// Build the error for a tool name that isn't registered.
+    ///
+    /// A bare `tool not found: browser_eval` is a dead end — the model's
+    /// only move is to guess again, and repeated guessing is how a turn
+    /// burns its iteration budget on a name. This attaches the two things
+    /// that make the miss recoverable in a single step: the nearest
+    /// registered name (when one is genuinely close) and the real roster.
+    ///
+    /// It also removes the need to enumerate withdrawn tools in the system
+    /// prompt and ask the model not to call them. A prompt cannot enforce
+    /// a roster; the error can, and it arrives exactly when it's relevant.
+    #[must_use]
+    pub fn unknown_tool_error(&self, name: &str) -> ToolError {
+        let available = self.names();
+        let suggestion = super::tool_suggest::suggest(name, available.iter().map(String::as_str));
+
+        let mut message = name.to_string();
+        if let Some(best) = suggestion {
+            message.push_str(&format!(". Did you mean `{best}`?"));
+        }
+
+        if available.is_empty() {
+            message.push_str(" No tools are registered for this session.");
+        } else if available.len() <= MAX_LISTED_TOOLS {
+            message.push_str(&format!(" Available tools: {}.", available.join(", ")));
+        } else {
+            // Too many to spell out (MCP servers inflate the roster). Give
+            // the shape and the same-prefix neighbours, which is what a
+            // near-miss on an MCP tool actually needs.
+            let prefix = name.split('_').next().unwrap_or(name);
+            let related: Vec<&str> = available
+                .iter()
+                .map(String::as_str)
+                .filter(|candidate| candidate.starts_with(prefix))
+                .take(20)
+                .collect();
+            message.push_str(&format!(" {} tools are registered", available.len()));
+            if related.is_empty() {
+                message.push('.');
+            } else {
+                message.push_str(&format!(
+                    "; those starting `{prefix}`: {}.",
+                    related.join(", ")
+                ));
+            }
+        }
+
+        ToolError::NotFound(message)
     }
 
     // -----------------------------------------------------------------
@@ -352,7 +483,7 @@ impl ToolRegistry {
     ) -> Result<String, ToolError> {
         let executor = self
             .get(name)
-            .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
+            .ok_or_else(|| self.unknown_tool_error(name))?;
 
         // Cheap pre-check: don't wake the permitter if cancel already
         // fired — same shape as FrontendBridgeExecutor.
@@ -494,6 +625,124 @@ mod tests {
         reg.register(Arc::new(EchoTool));
         reg.register(Arc::new(EchoTool));
         assert_eq!(reg.len(), 1, "duplicate names must coalesce");
+    }
+
+    /// Minimal named executor for ordering assertions.
+    struct NamedTool(&'static str);
+
+    #[async_trait]
+    impl ToolExecutor for NamedTool {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn schema(&self) -> ToolSchema {
+            ToolSchema {
+                name: self.0.into(),
+                description: "test".into(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<String, ToolError> {
+            Ok(String::new())
+        }
+    }
+
+    fn registry_of(names: &[&'static str]) -> ToolRegistry {
+        let reg = ToolRegistry::new();
+        for name in names {
+            reg.register(Arc::new(NamedTool(name)));
+        }
+        reg
+    }
+
+    #[test]
+    fn schemas_follow_registration_order_not_map_order() {
+        // The schema list rides in every request's cacheable prefix. A
+        // DashMap-iteration order re-randomizes per process, which defeats
+        // prompt caching outright and shifts tool selection.
+        let names = ["file_read", "grep", "shell_execute", "todo_write"];
+        let reg = registry_of(&names);
+
+        let ordered: Vec<String> = reg.schemas().into_iter().map(|s| s.name).collect();
+        assert_eq!(ordered, names);
+        assert_eq!(reg.names(), names);
+
+        // Same insertions, same order — every time, in the same process.
+        for _ in 0..8 {
+            let again = registry_of(&names);
+            assert_eq!(again.names(), names);
+        }
+    }
+
+    #[test]
+    fn re_registering_keeps_a_tools_position() {
+        // `install_permission_gate` re-registers wrapped executors in place.
+        // If that moved them to the end, every launch with the gate enabled
+        // would ship a differently-ordered tool list.
+        let reg = registry_of(&["file_read", "grep", "shell_execute"]);
+        reg.register(Arc::new(NamedTool("grep")));
+        assert_eq!(reg.names(), ["file_read", "grep", "shell_execute"]);
+    }
+
+    #[test]
+    fn unknown_tool_error_offers_the_nearest_name_and_the_roster() {
+        let reg = registry_of(&["file_read", "grep", "shell_execute"]);
+        let message = reg.unknown_tool_error("file_reed").to_string();
+
+        assert!(message.starts_with("tool not found: file_reed"));
+        assert!(
+            message.contains("Did you mean `file_read`?"),
+            "near-miss must be named: {message}"
+        );
+        assert!(
+            message.contains("file_read, grep, shell_execute"),
+            "roster must be listed: {message}"
+        );
+    }
+
+    #[test]
+    fn unknown_tool_error_lists_the_roster_even_without_a_suggestion() {
+        // A tool from another harness has no Aurora analogue — the roster is
+        // the whole recovery path, so it must still be there.
+        let reg = registry_of(&["file_read", "grep"]);
+        let message = reg.unknown_tool_error("str_replace_editor").to_string();
+
+        assert!(!message.contains("Did you mean"));
+        assert!(message.contains("Available tools: file_read, grep."));
+    }
+
+    #[test]
+    fn unknown_tool_error_summarizes_an_oversized_roster() {
+        let reg = ToolRegistry::new();
+        for i in 0..(MAX_LISTED_TOOLS + 5) {
+            // Leaked names keep the executor's `&'static str` contract; this
+            // is a test-only roster and the process exits with it.
+            let name: &'static str = Box::leak(format!("mcp_server_tool_{i}").into_boxed_str());
+            reg.register(Arc::new(NamedTool(name)));
+        }
+        let message = reg.unknown_tool_error("mcp_server_tool_999999").to_string();
+
+        assert!(message.contains(&format!("{} tools are registered", MAX_LISTED_TOOLS + 5)));
+        assert!(message.contains("those starting `mcp`"));
+    }
+
+    #[test]
+    fn execute_with_permission_reports_unknown_tools_helpfully() {
+        let reg = registry_of(&["file_read"]);
+        let result = tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(reg.execute_with_permission("file_reed", serde_json::json!({}), &ctx()));
+
+        match result {
+            Err(ToolError::NotFound(message)) => {
+                assert!(message.contains("Did you mean `file_read`?"), "{message}");
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
     }
 
     #[test]

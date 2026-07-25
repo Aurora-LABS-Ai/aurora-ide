@@ -19,6 +19,12 @@ impl ToolExecutor for AuroroWebSearchTool {
         "auroro_websearch"
     }
 
+    /// Outbound HTTP only; touches no workspace state. Parallelism here is
+    /// the difference between one network round-trip and several.
+    fn concurrency_safe(&self) -> bool {
+        true
+    }
+
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "auroro_websearch".into(),

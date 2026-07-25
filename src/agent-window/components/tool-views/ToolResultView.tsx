@@ -14,6 +14,7 @@ import { isTauri } from "../../../lib/tauri";
 import { FileIcon } from "../../../components/explorer/FileIcons";
 import { AgentImageModal } from "../AgentImageModal";
 import { DiffView } from "./DiffView";
+import { GlobResultsView } from "./GlobResultsView";
 import { GrepResultsView } from "./GrepResultsView";
 import { MultiFileResultsView } from "./MultiFileResultsView";
 import { ShellOutputView } from "./ShellOutputView";
@@ -81,6 +82,10 @@ export const ToolResultView: React.FC<{
     return <MultiFileResultsView files={parsed.multiFile} activeIndex={activeMultiFileIndex} />;
   if (parsed.grep && parsed.grep.matches.length > 0)
     return <GrepResultsView data={parsed.grep} />;
+  // Not gated on a non-empty list: "nothing matched" is a real answer for a
+  // name search, and its own view says so plus how to widen the pattern. The
+  // fallback would otherwise dump the raw JSON.
+  if (parsed.glob) return <GlobResultsView data={parsed.glob} />;
   if (parsed.shell && parsed.shell.output) return <ShellOutputView data={parsed.shell} />;
   if (parsed.fileList && parsed.fileList.length > 0)
     return <FileListView files={parsed.fileList} />;

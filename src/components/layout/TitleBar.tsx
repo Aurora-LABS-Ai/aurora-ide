@@ -50,7 +50,6 @@ import { databaseService } from "../../services/database";
 import { isTauri } from "../../lib/tauri";
 import { AppIcon } from "../ui/AppIcon";
 import { MenuBarMenu, type MenuBarItem } from "./MenuBarMenu";
-import { TitleBarBrowserButton } from "./TitleBarBrowserButton";
 import { openAgentWindow } from "../../agent-window";
 
 const MAX_RECENT_WORKSPACES = 6;
@@ -403,8 +402,6 @@ export const TitleBar: React.FC = () => {
             <span>Agents Window</span>
             <AppIcon icon={ArrowUpRight} size={13} />
           </button>
-
-          <TitleBarBrowserButton chromeButtonStyle={chromeButtonStyle} />
 
           <button
             onClick={() => setAuditOpen(true)}

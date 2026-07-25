@@ -13,16 +13,34 @@
 import type { AgentTheme } from "../types";
 
 const SHARED_TYPE = {
-  // Inter is bundled (@fontsource/inter, imported by AgentThemeProvider) so the
-  // agent window renders a dedicated face rather than falling back to system UI.
-  fontUi: '"Inter", "Segoe UI", system-ui, -apple-system, sans-serif',
-  // JetBrains Mono if present, else Cascadia Code / Consolas (ship with Windows)
-  // so code still uses a dedicated mono without an extra package.
+  // "Inter Variable" is the family name @fontsource-variable registers — it is
+  // NOT interchangeable with "Inter", so it must come first or the variable
+  // axis is never used and weights snap to the nearest static again. Plain
+  // "Inter" follows for anyone who has the static face installed system-wide.
+  // Bundled by AgentThemeProvider.
+  fontUi:
+    '"Inter Variable", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif',
+  // JetBrains Mono is now BUNDLED (400 + 600) rather than hoped for, so code
+  // renders identically on every machine. The rest of the stack stays as a
+  // defensive fallback only.
   fontCode:
     '"JetBrains Mono", "Cascadia Code", "Cascadia Mono", Consolas, "Fira Code", ui-monospace, monospace',
+  // ── Radius: ONE scale for the whole window ────────────────────────────────
+  // Roles, not sizes: `lg` is a container, `md` is a control, `sm` is anything
+  // nested inside a container. Settings used to run a second scale
+  // (--agw-set-r-card 16 / --agw-set-r-inner 12), so a settings card and a
+  // chat card rounded differently for no reason a user could name — the same
+  // "almost aligned" noise the type scale exists to prevent. That fork is gone;
+  // both now resolve here.
+  //
+  // 14 → 12 and 10 → 8 so nesting is concentric: a `sm` (6) child inside an
+  // `lg` (12) container with 6px padding keeps its corner parallel to the
+  // parent's, which is the detail that separates "made" from "assembled".
   radiusSm: "6px",
-  radiusMd: "10px",
-  radiusLg: "14px",
+  radiusMd: "8px",
+  radiusLg: "12px",
+  // Fully-round ends. 55 rules hardcoded `999px` before this existed.
+  radiusPill: "999px",
 } as const;
 
 /** Default dark theme — two-layer shell: a lighter FRAME (canvas/rail/dock +

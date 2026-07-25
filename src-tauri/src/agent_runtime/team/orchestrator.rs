@@ -236,6 +236,9 @@ impl TeamSession {
         let mut team = self
             .read_team()
             .unwrap_or_else(|_| TeamManifest::empty(self.ws.project_id(), now_rfc3339()));
+        // Seeding the roster is still Forming — the standup and scope
+        // negotiation that define `Planning` happen in the planning round,
+        // which sets the phase when it completes.
         team.phase = TeamPhase::Forming;
         team.agents = agents;
         self.save_team(&mut team)?;

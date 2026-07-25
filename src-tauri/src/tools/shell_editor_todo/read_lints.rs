@@ -1,4 +1,5 @@
-//! `read_lints` — run the workspace's native TypeScript, Python, and Rust checkers.
+//! `read_lints` — run native project checkers plus dependency-free JavaScript
+//! syntax checks for vanilla web projects.
 //!
 //! The previous implementation emitted a frontend event and immediately
 //! returned success. The frontend listener only logged that event, so agents
@@ -24,8 +25,29 @@ const MAX_OUTPUT_CHARS: usize = 32 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CheckSpec {
     name: &'static str,
-    command: String,
+    command: CheckCommand,
     cwd: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CheckCommand {
+    Shell(String),
+    Program {
+        executable: &'static str,
+        args: Vec<String>,
+    },
+}
+
+impl CheckCommand {
+    fn display(&self) -> String {
+        match self {
+            Self::Shell(command) => command.clone(),
+            Self::Program { executable, args } => std::iter::once((*executable).to_string())
+                .chain(args.iter().map(|arg| format!("{arg:?}")))
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+    }
 }
 
 pub struct ReadLintsTool {
@@ -45,13 +67,19 @@ impl ToolExecutor for ReadLintsTool {
         "read_lints"
     }
 
+    /// Read-only diagnostics pass — mutates nothing.
+    fn concurrency_safe(&self) -> bool {
+        true
+    }
+
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "read_lints".into(),
             description:
-                "Run the workspace's native TypeScript, Python, and Rust checkers and return \
-                          their real diagnostics, exit codes, and success state. When paths are \
-                          provided, only relevant language checkers run."
+                "Run the workspace's configured TypeScript, Python, and Rust checkers plus \
+                          dependency-free Node syntax checks for vanilla JavaScript. Returns \
+                          real output, exit codes, and guidance for HTML/CSS paths that need a \
+                          project lint or test command."
                     .into(),
             input_schema: json!({
                 "type": "object",
@@ -91,7 +119,7 @@ impl ToolExecutor for ReadLintsTool {
                 "success": false,
                 "paths": paths,
                 "checks": [],
-                "message": "No supported TypeScript, Python, or Rust project checker was found for the requested paths.",
+                "message": validation_guidance(workspace_root, &paths),
             })
             .to_string());
         }
@@ -102,10 +130,11 @@ impl ToolExecutor for ReadLintsTool {
         for spec in specs {
             ctx.bail_if_cancelled()?;
             let cwd = spec.cwd.to_string_lossy().to_string();
+            let command = spec.command.display();
             let result = tokio::select! {
                 biased;
                 () = ctx.cancel_token.cancelled() => return Err(ToolError::Cancelled),
-                result = run_checker(spec.command.clone(), cwd.clone()) => result,
+                result = run_checker(spec.command, cwd.clone()) => result,
             };
 
             match result {
@@ -113,7 +142,7 @@ impl ToolExecutor for ReadLintsTool {
                     all_succeeded &= output.success;
                     checks.push(json!({
                         "name": spec.name,
-                        "command": spec.command,
+                        "command": command,
                         "cwd": cwd,
                         "success": output.success,
                         "exitCode": output.exit_code,
@@ -125,7 +154,7 @@ impl ToolExecutor for ReadLintsTool {
                     all_succeeded = false;
                     checks.push(json!({
                         "name": spec.name,
-                        "command": spec.command,
+                        "command": command,
                         "cwd": cwd,
                         "success": false,
                         "error": error,
@@ -134,15 +163,22 @@ impl ToolExecutor for ReadLintsTool {
             }
         }
 
+        let guidance = uncovered_validation_guidance(workspace_root, &paths);
+        let message = if all_succeeded {
+            if guidance.is_some() {
+                "Available checks passed. Review the validation guidance for uncovered file types."
+            } else {
+                "All requested project checks passed."
+            }
+        } else {
+            "One or more project checks failed. Review the returned diagnostics."
+        };
         Ok(json!({
             "success": all_succeeded,
             "paths": paths,
             "checks": checks,
-            "message": if all_succeeded {
-                "All requested project checks passed."
-            } else {
-                "One or more project checks failed. Review the returned diagnostics."
-            },
+            "guidance": guidance,
+            "message": message,
         })
         .to_string())
     }
@@ -190,9 +226,11 @@ fn select_checks(workspace_root: &Path, paths: &[String]) -> Vec<CheckSpec> {
     if wants_typescript && workspace_root.join("tsconfig.json").is_file() {
         specs.push(CheckSpec {
             name: "typescript",
-            command: typescript_command(workspace_root),
+            command: CheckCommand::Shell(typescript_command(workspace_root)),
             cwd: workspace_root.to_path_buf(),
         });
+    } else if wants_typescript {
+        specs.extend(vanilla_javascript_checks(workspace_root, paths));
     }
 
     if wants_rust {
@@ -209,7 +247,7 @@ fn select_checks(workspace_root: &Path, paths: &[String]) -> Vec<CheckSpec> {
         if let Some(cwd) = cargo_root {
             specs.push(CheckSpec {
                 name: "rust",
-                command: "cargo check --message-format=short".into(),
+                command: CheckCommand::Shell("cargo check --message-format=short".into()),
                 cwd,
             });
         }
@@ -218,12 +256,170 @@ fn select_checks(workspace_root: &Path, paths: &[String]) -> Vec<CheckSpec> {
     if wants_python {
         specs.push(CheckSpec {
             name: "python",
-            command: python_command(workspace_root),
+            command: CheckCommand::Shell(python_command(workspace_root)),
             cwd: workspace_root.to_path_buf(),
         });
     }
 
     specs
+}
+
+fn vanilla_javascript_checks(workspace_root: &Path, paths: &[String]) -> Vec<CheckSpec> {
+    let files = if paths.is_empty() {
+        discover_workspace_files(workspace_root, &["js", "mjs", "cjs"], 100)
+    } else {
+        paths
+            .iter()
+            .filter(|path| matches!(extension(path).as_deref(), Some("js" | "mjs" | "cjs")))
+            .filter_map(|path| workspace_file(workspace_root, path))
+            .collect()
+    };
+    files
+        .into_iter()
+        .map(|path| CheckSpec {
+            name: "javascript-syntax",
+            command: CheckCommand::Program {
+                executable: "node",
+                args: vec!["--check".into(), checker_path_arg(workspace_root, &path)],
+            },
+            cwd: workspace_root.to_path_buf(),
+        })
+        .collect()
+}
+
+fn checker_path_arg(workspace_root: &Path, path: &Path) -> String {
+    let canonical_root = workspace_root.canonicalize().ok();
+    canonical_root
+        .as_deref()
+        .and_then(|root| path.strip_prefix(root).ok())
+        .or_else(|| path.strip_prefix(workspace_root).ok())
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string()
+}
+
+fn discover_workspace_files(
+    workspace_root: &Path,
+    extensions: &[&str],
+    limit: usize,
+) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut pending = vec![workspace_root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        let mut paths: Vec<_> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect();
+        paths.sort();
+        for path in paths.into_iter().rev() {
+            if path.is_dir() {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("");
+                if !matches!(
+                    name,
+                    ".git" | "node_modules" | "dist" | "build" | "target" | "coverage"
+                ) {
+                    pending.push(path);
+                }
+                continue;
+            }
+            if path.is_file()
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .is_some_and(|extension| extensions.contains(&extension.as_str()))
+            {
+                files.push(path);
+                if files.len() >= limit {
+                    return files;
+                }
+            }
+        }
+    }
+    files
+}
+
+fn workspace_file(workspace_root: &Path, requested: &str) -> Option<PathBuf> {
+    let root = workspace_root.canonicalize().ok()?;
+    let requested = Path::new(requested);
+    let candidate = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        root.join(requested)
+    };
+    let candidate = candidate.canonicalize().ok()?;
+    (candidate.is_file() && candidate.starts_with(&root)).then_some(candidate)
+}
+
+fn validation_guidance(workspace_root: &Path, paths: &[String]) -> String {
+    uncovered_validation_guidance(workspace_root, paths).unwrap_or_else(|| {
+        let suggested_command = configured_validation_command(workspace_root);
+        format!(
+            "No checker matched the requested paths. Run the project's validation command with shell_execute (suggested: `{suggested_command}`)."
+        )
+    })
+}
+
+fn uncovered_validation_guidance(workspace_root: &Path, paths: &[String]) -> Option<String> {
+    let extensions: std::collections::BTreeSet<_> =
+        paths.iter().filter_map(|path| extension(path)).collect();
+    let has_html_or_css = extensions
+        .iter()
+        .any(|extension| matches!(extension.as_str(), "html" | "htm" | "css"))
+        || (paths.is_empty()
+            && !workspace_root.join("tsconfig.json").is_file()
+            && !discover_workspace_files(workspace_root, &["html", "htm", "css"], 1).is_empty());
+    let has_jsx_or_typescript = extensions
+        .iter()
+        .any(|extension| matches!(extension.as_str(), "jsx" | "ts" | "tsx" | "mts" | "cts"));
+    let suggested_command = configured_validation_command(workspace_root);
+
+    if has_html_or_css {
+        return Some(format!(
+            "No HTML or CSS parser is configured for this workspace. Run the project's validation command with shell_execute (suggested: `{suggested_command}`), or add an HTML/CSS linter for structured diagnostics."
+        ));
+    }
+    if has_jsx_or_typescript && !workspace_root.join("tsconfig.json").is_file() {
+        return Some(format!(
+            "These JSX or TypeScript paths need a project checker. Add a tsconfig.json or configured lint script, then run `{suggested_command}` with shell_execute."
+        ));
+    }
+    None
+}
+
+fn configured_validation_command(workspace_root: &Path) -> String {
+    let package_json = fs::read_to_string(workspace_root.join("package.json"))
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok());
+    let script = package_json
+        .as_ref()
+        .and_then(|package| package.get("scripts"))
+        .and_then(Value::as_object)
+        .and_then(|scripts| {
+            ["lint", "check", "validate", "test"]
+                .into_iter()
+                .find(|name| scripts.get(*name).and_then(Value::as_str).is_some())
+        });
+    let manager = if workspace_root.join("pnpm-lock.yaml").is_file() {
+        "pnpm"
+    } else if workspace_root.join("yarn.lock").is_file() {
+        "yarn"
+    } else {
+        "npm"
+    };
+    match (manager, script) {
+        ("npm", Some("test")) => "npm test".into(),
+        ("npm", Some(script)) => format!("npm run {script}"),
+        (_, Some(script)) => format!("{manager} {script}"),
+        ("npm", None) => "npm test".into(),
+        (_, None) => format!("{manager} test"),
+    }
 }
 
 fn extension(path: &str) -> Option<String> {
@@ -282,15 +478,36 @@ fn truncate_output(output: &str) -> String {
 
 #[cfg(not(feature = "verify_only"))]
 async fn run_checker(
-    command: String,
+    command: CheckCommand,
     cwd: String,
 ) -> Result<crate::commands::CommandOutput, String> {
-    crate::commands::execute_command(command, Some(cwd), None, Some(CHECK_TIMEOUT_MS)).await
+    match command {
+        CheckCommand::Shell(command) => {
+            crate::commands::execute_command(command, Some(cwd), None, Some(CHECK_TIMEOUT_MS)).await
+        }
+        CheckCommand::Program { executable, args } => {
+            let mut command = tokio::process::Command::new(executable);
+            command.args(args).current_dir(cwd).kill_on_drop(true);
+            let output = tokio::time::timeout(
+                std::time::Duration::from_millis(CHECK_TIMEOUT_MS),
+                command.output(),
+            )
+            .await
+            .map_err(|_| format!("{executable} syntax check timed out after {CHECK_TIMEOUT_MS}ms"))?
+            .map_err(|error| format!("failed to start {executable}: {error}"))?;
+            Ok(crate::commands::CommandOutput {
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                exit_code: output.status.code(),
+                success: output.status.success(),
+            })
+        }
+    }
 }
 
 #[cfg(feature = "verify_only")]
 async fn run_checker(
-    _command: String,
+    _command: CheckCommand,
     _cwd: String,
 ) -> Result<crate::commands::CommandOutput, String> {
     Err("project checker execution disabled in verify_only".into())
@@ -362,7 +579,7 @@ mod tests {
         let ts = select_checks(&root, &["src/App.tsx".into()]);
         assert_eq!(ts.len(), 1);
         assert_eq!(ts[0].name, "typescript");
-        assert!(ts[0].command.starts_with("pnpm exec tsc"));
+        assert!(ts[0].command.display().starts_with("pnpm exec tsc"));
 
         let rust = select_checks(&root, &["src-tauri/src/lib.rs".into()]);
         assert_eq!(rust.len(), 1);
@@ -389,7 +606,10 @@ mod tests {
         let fallback = select_checks(&root, &requested);
         assert_eq!(fallback.len(), 1);
         assert_eq!(fallback[0].name, "python");
-        assert_eq!(fallback[0].command, "python -m compileall -q .");
+        assert_eq!(
+            fallback[0].command,
+            CheckCommand::Shell("python -m compileall -q .".into())
+        );
 
         fs::write(
             root.join("pyproject.toml"),
@@ -397,7 +617,79 @@ mod tests {
         )
         .expect("pyproject");
         let configured = select_checks(&root, &requested);
-        assert_eq!(configured[0].command, "python -m ruff check .");
+        assert_eq!(
+            configured[0].command,
+            CheckCommand::Shell("python -m ruff check .".into())
+        );
+
+        fs::remove_dir_all(root).expect("remove temp workspace");
+    }
+
+    #[test]
+    fn vanilla_javascript_uses_node_without_shell_interpolation() {
+        let root = temp_workspace();
+        fs::create_dir_all(root.join("src")).expect("src");
+        fs::write(root.join("src/app.js"), "const ready = true;").expect("js");
+
+        let checks = select_checks(&root, &["src/app.js".into()]);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "javascript-syntax");
+        match &checks[0].command {
+            CheckCommand::Program { executable, args } => {
+                assert_eq!(*executable, "node");
+                assert_eq!(args[0], "--check");
+                assert_eq!(Path::new(&args[1]), Path::new("src/app.js"));
+                assert!(!args[1].starts_with("\\\\?\\"));
+            }
+            other => panic!("expected direct program check, got {other:?}"),
+        }
+
+        fs::remove_dir_all(root).expect("remove temp workspace");
+    }
+
+    #[test]
+    fn empty_paths_discovers_vanilla_javascript_without_scanning_dependencies() {
+        let root = temp_workspace();
+        fs::create_dir_all(root.join("src")).expect("src");
+        fs::create_dir_all(root.join("node_modules/pkg")).expect("dependency");
+        fs::write(root.join("src/app.js"), "const ready = true;").expect("app");
+        fs::write(root.join("node_modules/pkg/index.js"), "broken(").expect("dependency js");
+
+        let checks = select_checks(&root, &[]);
+        assert_eq!(checks.len(), 1);
+        match &checks[0].command {
+            CheckCommand::Program { executable, args } => {
+                assert_eq!(*executable, "node");
+                assert_eq!(args[0], "--check");
+                // Compare as paths, not substrings: `display()` renders each
+                // arg with `{:?}`, which escapes the separators in a Windows
+                // path (`src\\app.js`), so a literal `contains` can never
+                // match there. `Path` equality is separator-agnostic.
+                assert_eq!(Path::new(&args[1]), Path::new("src/app.js"));
+                assert!(
+                    !args[1].contains("node_modules"),
+                    "dependencies must not be scanned: {}",
+                    args[1]
+                );
+            }
+            other => panic!("expected direct program check, got {other:?}"),
+        }
+
+        fs::remove_dir_all(root).expect("remove temp workspace");
+    }
+
+    #[test]
+    fn html_css_guidance_points_to_configured_test_script() {
+        let root = temp_workspace();
+        fs::write(
+            root.join("package.json"),
+            r#"{"scripts":{"test":"node tests/harness.test.mjs"}}"#,
+        )
+        .expect("package");
+
+        let message = validation_guidance(&root, &["index.html".into(), "src/app.css".into()]);
+        assert!(message.contains("No HTML or CSS parser"));
+        assert!(message.contains("`npm test`"));
 
         fs::remove_dir_all(root).expect("remove temp workspace");
     }

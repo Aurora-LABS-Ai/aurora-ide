@@ -241,6 +241,21 @@ impl SessionStore {
         self.dir.join(format!("{thread_id}.rich.jsonl"))
     }
 
+    /// Directory holding spilled tool output for `thread_id`.
+    ///
+    /// A command that prints thousands of lines cannot fit in the model's
+    /// context, but truncating it destroys information the model may need —
+    /// and for a failing build the useful part is the tail, which a head-only
+    /// clamp always drops. The full text is written here instead, and the
+    /// tool result carries a preview plus this path, so the model can reach
+    /// any part of it with the `file_read` and `grep` tools it already has.
+    ///
+    /// Thread-scoped, so `delete` clears it with the rest of the thread.
+    #[must_use]
+    pub fn tool_results_dir(&self, thread_id: &str) -> PathBuf {
+        tool_results_dir_in(&self.dir, thread_id)
+    }
+
     /// Path to the optional Artifact Canvas sidecar for `thread_id`.
     #[must_use]
     pub fn artifacts_path(&self, thread_id: &str) -> PathBuf {
@@ -777,8 +792,24 @@ impl SessionStore {
                 Err(e) => return Err(RuntimeError::from(e)),
             }
         }
+        // Spilled tool output is a directory, and it goes with the thread.
+        match fs::remove_dir_all(self.tool_results_dir(thread_id)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(RuntimeError::from(e)),
+        }
         Ok(())
     }
+}
+
+/// Where spilled tool output for `thread_id` lives under a store root.
+///
+/// Free-standing because the conversation runtime writes into it while
+/// holding only the store's directory, not the store itself — and both must
+/// agree on the layout or `delete` would leave the files behind.
+#[must_use]
+pub fn tool_results_dir_in(root: &Path, thread_id: &str) -> PathBuf {
+    root.join(format!("{thread_id}.tool-results"))
 }
 
 /// Bundle returned by [`SessionStore::load`].

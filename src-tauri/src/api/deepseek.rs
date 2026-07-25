@@ -354,6 +354,7 @@ mod tests {
             provider_id: "deepseek".into(),
             base_url: "https://api.deepseek.com/v1".into(),
             api_key: "test-key".into(),
+            api_keys: None,
             model: "deepseek-v4-pro".into(),
             custom_headers: None,
             custom_params: None,
@@ -373,6 +374,7 @@ mod tests {
             temperature: Some(0.7),
             max_output_tokens: 1024,
             thinking_enabled: true,
+            thinking_budget_tokens: None,
         }
     }
 
@@ -530,6 +532,7 @@ mod tests {
             temperature: Some(0.7),
             max_output_tokens: 1024,
             thinking_enabled: false,
+            thinking_budget_tokens: None,
         };
 
         let body = adapter.build_body(&request);

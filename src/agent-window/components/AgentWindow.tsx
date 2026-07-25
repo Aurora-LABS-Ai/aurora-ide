@@ -15,6 +15,7 @@ import { AgentShell } from "./AgentShell";
 import { SettingsPage } from "../settings/SettingsPage";
 import { registerQuestionHandler } from "../../services/question-bridge";
 import { registerTeamViewOpener } from "../../services/team-view-bridge";
+import { useAgentEditorOpen } from "../hooks/useAgentEditorOpen";
 import { useAgentWindowBounds } from "../hooks/useAgentWindowBounds";
 import { restoreThreadAfterReload, useReloadRestore } from "../hooks/useReloadRestore";
 import { useTeamStore } from "../../store/useTeamStore";
@@ -43,6 +44,9 @@ export const AgentWindow: React.FC = () => {
 
   // Track the open chat so an in-window reload can land back in it.
   useReloadRestore();
+
+  // Files open in this window's right rail, never in the IDE's editor.
+  useAgentEditorOpen();
 
   // Bind the window to its project + load that project's chats once. If this
   // mount is a RELOAD of the same window (Ctrl+R, or the native crash-recovery

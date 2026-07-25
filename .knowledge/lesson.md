@@ -2,6 +2,107 @@
 
 Append 2-4 lines per mistake / broken assumption / project-specific warning.
 
+## The Rust test suite never ran on Windows — FIXED (2026-07-25)
+- `cargo test` died with exit `0xc0000139` STATUS_ENTRYPOINT_NOT_FOUND before `main`. This was written off in
+  these notes as an environment limitation for months. It was not. **Root cause:** `tauri_build::build()`
+  embeds an app manifest into BINARY targets only; a test executable is a separate target and got none, so the
+  loader bound System32's `comctl32.dll` **v5.82** instead of the side-by-side **v6** assembly — and v5.82 does
+  not export `TaskDialogIndirect`, which the dialog stack (rfd / tauri-plugin-dialog) statically imports.
+- Fix is a `#[cfg(all(windows, test))]` `.drectve` linker directive in `lib.rs` emitting
+  `/MANIFESTDEPENDENCY:"…Microsoft.Windows.Common-Controls version='6.0.0.0'…"`. `build.rs` CANNOT do this:
+  `cargo:rustc-link-arg-tests` applies only to `tests/` integration targets and errors with "does not have a
+  test target" — unit tests compile into the lib target. Do NOT add `/MANIFEST:EMBED` to the directive:
+  `rust-lld` rejects `/MANIFEST:` inside `.drectve`. The linker writes a side-by-side `.manifest` instead,
+  which the loader honours identically.
+- Diagnosis method worth reusing: `dumpbin /imports` the failing exe, then check every imported symbol against
+  the resolving DLL's `dumpbin /exports`. Beware false positives on forwarded exports. PATH shadowing was the
+  obvious suspect (an old `VCRUNTIME140.dll` from `C:\SDKs\emulator` does sit ahead of System32) and was NOT
+  the cause — verify before acting on it.
+- **Consequence:** 703 unit tests had never executed once. 15 were already failing. A green `cargo check` says
+  nothing about a suite that cannot launch — and `BUILTIN_TOOL_COUNT` had silently drifted 21→22 behind exactly
+  this blind spot. Run the suite, don't just build it.
+
+## A test that cannot RUN is worse than a test that does not exist (2026-07-25)
+- 703 Rust unit tests had never executed once on this machine. 15 were failing and **5 of those were real
+  product bugs** that had been shipping for months: context trimming that never fired at 3 user turns, a JSON
+  compactor that produced invalid JSON for `workspace_tree`, a clamp that exceeded its own cap, a `TeamPhase`
+  variant assigned nowhere, and a role classifier that relabelled real builders. `cargo check` was green the
+  whole time. **Green compile ≠ green suite.** If the suite cannot launch, treat that as a P0 — not an
+  environment quirk to note and route around.
+- When a test and the implementation disagree, decide which is stale by finding the *sibling* test. The 4
+  scope_guard failures encoded a superseded rule; the one test written FOR the new rule
+  (`unassigned_path_is_allowed_as_open_ground`) passed and settled it. Likewise
+  `register_builtin_tools_is_idempotent` asserted 16 where its own sibling asserted 15.
+- Do not assert on a `display()`/`Debug` rendering when you mean to assert on a value. `{:?}` on a Windows
+  path escapes the separators, so `contains("src\\app.js")` can never match. Compare `Path`s — that is
+  separator-agnostic — or assert on the structured field directly.
+
+## Portaling escapes the clipping container AND the ancestor's containment check (2026-07-25)
+- The budget popover was portaled to `.agw-root` to escape `.agw-model-menu`'s `overflow: hidden`. That fixed
+  clipping and immediately broke dismissal: the menu's outside-click test is `rootRef.contains(target)`, and
+  the portaled panel is not a DOM descendant, so pressing the slider closed the whole picker. **Fixing the
+  visual containment created a logical containment bug.**
+- Convention now in place: a portaled popover owned by a menu sets `data-agw-portal-child`, and every
+  outside-click handler skips `target.closest("[data-agw-portal-child]")`. Apply this to any future portaled
+  popover rather than adding a one-off class check.
+- `useSettingsStore.updateModel` writes to SQLite on EVERY call. Never wire it directly to a continuous
+  control (range/drag): keep a local draft and commit on `pointerup`/`keyup`/`blur`. Same rule for any store
+  action with a persistence side effect.
+
+## Never substitute a default for a value that failed to arrive (2026-07-25)
+- `parse_tool_input` turned unparseable tool arguments into `{}`, so an executor reported "`path` is required"
+  to a model that had sent `path`. The model then looks incompetent — retrying, rephrasing, switching tools —
+  while the harness is the thing at fault. This single line was the main cause of "even Opus calls the wrong
+  tools in Aurora". A fallback that is indistinguishable from real data destroys the error message that would
+  have explained the failure.
+- Keep the failure representable end to end: encoding it as `Value::String(raw)` needed no new type, no serde
+  migration, and no magic key, because every tool schema is `type:object` so a non-object is unambiguously
+  broken. But sanitize at the WIRE boundary (`tool_input_for_wire`) — providers reject a non-object
+  `tool_use.input` and would fail every subsequent turn, not just the malformed one.
+- Distinguish "arguments never arrived" from "arguments failed validation" in the message. They demand
+  different corrections from the model, and an EOF parse error additionally means "you were truncated — send
+  less", which the model cannot infer any other way.
+- A `DashMap`-backed tool registry ships schemas in random order every request. Tool order is part of the
+  cacheable prefix (and nudges tool selection), so registration order must be stable and re-registration must
+  preserve position. Aurora sends ZERO `cache_control` today — that is still open.
+
+## A settings field nothing consumes is worse than a missing one (2026-07-25)
+- Providers → "Min budget / Max budget" had shipped for budget-type reasoning models, but no surface let the
+  user pick a VALUE inside that range and no adapter could receive one. The page looked complete and configured
+  nothing. Before adding a control, trace the field to the outgoing request body — `ModelReasoning.type`
+  ("effort" | "toggle" | "budget") is a union whose branches must ALL be handled at every layer, and the send
+  path's `// toggle / budget` else-branch silently collapsed budget into a boolean for months.
+- `reasoning.default` is polymorphic: a TIER STRING for effort models, a TOKEN NUMBER for budget models. The
+  Reasoning type switcher carried it across unchanged, so effort→budget produced `default:"medium"` and
+  budget→effort sent `reasoning_effort:"8000"`. Coerce by type at every write site.
+- Anthropic's `1024 ≤ budget < max_tokens` is a CLAMP, not a validation error to surface: a user who set 32k
+  against a 64k cap and later lowers Max output must keep working, not start getting 400s.
+- Popovers spawned from inside `.agw-model-menu` MUST be portaled to `.agw-root` — that menu is
+  `overflow: hidden`, so an absolutely-positioned child panel is clipped. Same rule as `RailMenu`.
+- Log-scale any token slider. Linear travel over 1k–64k spends the first 10% of the track on the range where
+  every meaningful choice lives and the other 90% on values nobody can tell apart.
+
+## Tool `parameters` schemas must stay in the strict-provider-safe subset (2026-07-24)
+- xAI/grok (and OpenAI strict mode) REJECT `oneOf`/`anyOf`/`allOf` in a function's `parameters` with HTTP 400.
+  Aurora's `file_read` used a top-level `oneOf` and it's sent every turn, so every grok request 400'd
+  ("Upstream error: 400") while a plain curl worked. `additionalProperties:false` and union `"type":[...]` are FINE.
+- When encoding "exactly one of A/B" in a tool schema, carry it in descriptions + runtime `execute()` validation,
+  NOT `oneOf`. Bisect provider 400s by replaying the exact outgoing body field-by-field against the endpoint;
+  enable the outgoing-body trace with env `AURORA_DEBUG_API=1` (api/openai_compat.rs).
+
+## MCP "405 Method Not Allowed" means the wrong TRANSPORT, not a bad URL (2026-07-23)
+- MCP has two HTTP transports and they are not interchangeable. Legacy HTTP+SSE (2024-11-05) opens with a
+  GET and waits for an `endpoint` event; Streamable HTTP (2025-03-26+) POSTs JSON-RPC at the single URL.
+  A Streamable HTTP server is REQUIRED by spec to answer a bare GET with 405, so "405 on connect" is a
+  transport mismatch — do not go hunting through URLs, headers, or auth.
+- Config keys encode the transport: `url` ⇒ legacy SSE, `httpUrl` (or `"type": "http"`) ⇒ Streamable HTTP.
+  Inferring transport from "is a URL present" silently mislabels every hosted server.
+- Silently ignoring an unknown config key is worse than rejecting it: a `httpUrl`-only paste used to become
+  a stdio server with no command — enabled, listed, and permanently dead with no error anywhere.
+- When adding a transport, remember each MCP settings surface has TWO forms (add + edit) with duplicated
+  gating, and `mcp.json` round-trips through `from_config`/`to_server_configs` — write transport explicitly
+  or a save silently downgrades it back to the inferred value.
+
 ## Agent Window feature ideation must create desire, not process (2026-07-20)
 - The Why Graph recommendation over-indexed on provenance, verification, and engineering trust; the user did not
   love it. For “next big thing” ideation, prioritize a visibly transformative interaction or capability first.
@@ -211,3 +312,75 @@ clean 199ms runtime verification of the typing-assist engine.
 
 ## 2026-07-21 — One visual concept spread across several tokens needs linked controls
 - The two-layer frame is painted by three tokens (canvas/rail/dock). The Appearance "Background" quick control set only canvas, so one click fractured the frame into two tones (user-visible seam band). When a design tier spans multiple tokens, the primary control must move them together; per-token pickers are for deliberate divergence only.
+
+## 2026-07-21 — Ghost/watermark text: shadows bleed through transparent gradient fills
+- A `drop-shadow` behind text painted at 5-16% alpha shows THROUGH the glyphs and turns them into dark
+  silhouettes (measured lum 24 where 50 was expected). Ground "standing" letters with a floor shadow
+  pseudo-element UNDER the baseline instead of a filter behind the fill.
+- Size watermarks in `cqi` (container query units), never `vw`: the conversation pane is narrower than
+  the window (rails/dock), so vw sizing overflows and clips the last glyph when the pane shrinks.
+- Harness trap that cost two iterations: moving gradient styles to a `> span` selector without adding
+  the span to the test page — the text fell back to default black and every subsequent "fix" chased a
+  phantom. Verify selectors match the DOM before judging renders; sample real pixel luminance, don't
+  eyeball.
+
+## 2026-07-22 — Probe-first for UI/design changes (user workflow)
+- The user expects a VISUAL DESIGN PROBE before implementing any non-trivial UI/design change: a self-contained HTML file with several live-rendered variants (numbered cards, real tokens, real sizes, live hover, a recommendation), saved to `C:\Users\Alvan\Documents\` for them to open and pick from. Example they pointed to: `aurora-tool-icon-designs-v2.html`. I skipped this on the composer send-button work and iterated live instead, which burned many rounds and frustrated them.
+- Format that works: `:root` with approximated `--agw-*` dark tokens; a `.grid` of `.card`s each with `.num` + `h3` (+ `Recommended`/`Current` pill) + `.desc` + a `.stage` rendering the actual control at real size across its states; footer with my pick + one-line rationale per variant. Inline SVG glyphs directly (NOT `<use href>` — external class CSS incl. `filter` glows can't pierce a `<use>` shadow tree).
+- Apply relevant lessons BEFORE related work: check `.knowledge` at task start. New send-button probe: `C:\Users\Alvan\Documents\aurora-send-button-designs.html`.
+
+## 2026-07-22 — Resolve skill roots from the advertised catalog
+- I incorrectly looked for the required `surface` skills under the repository `.codex` folder even though the active catalog mapped them to `C:\Users\Alvan\.agents\skills`; both reads failed.
+- Expand the listed skill root exactly before reading, and do not infer that a global skill is repository-local. Also reject project-overview metadata when its named product does not match the active repository.
+
+## 2026-07-22 — Split multi-file patches around exact fixtures
+- A combined process-tracking patch failed atomically because one `ShellStreamRequest` test fixture did not match the abbreviated source slice used to build the patch.
+- Inspect exact constructor locations and patch owning files in small groups; verify each group before building the next dependent edit.
+
+## 2026-07-22 — Keep PowerShell search patterns literal-safe
+- A combined consistency command failed at parse time because one double-quoted `rg` regex contained an unescaped quote and closing group.
+- Prefer single-quoted PowerShell patterns or split complex searches into separate commands so validation actually runs.
+
+## 2026-07-22 — Scope whitespace checks in the CRLF-heavy worktree
+- A repository-wide `git diff --check` emitted millions of line-ending-only warnings because much of this dirty worktree is already converted from LF to CRLF.
+- Use task-path filters with `--ignore-space-at-eol`; never normalize or rewrite unrelated user-owned files to make the global check quiet.
+
+## 2026-07-22 — Re-read nested JSX ternaries immediately after patching
+- While adding the failed-header null branch, I left an extra closing parenthesis in the nested JSX conditional; a direct source read caught it before tests.
+- After editing multi-branch JSX expressions, inspect the exact rendered conditional before moving on, then add a behavior-level regression test.
+
+## 2026-07-22 — Correlate background servers by PID ancestry, not HTTP reachability
+- I initially accepted the harness conclusion that a `200` after failed list/kill proved the latest `shell_spawn` process was alive. The persisted transcript showed stale-port contamination, and a clean process-tree probe exposed the deeper cause: Git's `bin\\bash.exe` launcher exits after handing work to `usr\\bin\\bash.exe`.
+- On Windows, prefer Git's real `usr\\bin\\bash.exe`; verify wrapper PID → listener ancestry and begin lifecycle tests with a confirmed free port. A reachable port alone does not identify which spawn owns it.
+- One ancestry probe also failed at PowerShell parse time because a `for` loop was piped directly. Collect loop output into an array before piping so setup and cleanup commands actually execute.
+
+## 2026-07-22 — Do not use pnpm exec in an npm-only fixture without guarding installs
+- Running pnpm-based syntax validation in the npm harness created `node_modules` and `pnpm-lock.yaml`. Keep permitted pnpm validation inside Aurora, or use an already-installed binary without allowing a package-manager install in external fixtures.
+- Recursive deletion was policy-blocked, so the two generated artifacts were moved recoverably to `C:\msys64\tmp\aurora-harness-validation-cleanup-20260722`; the harness workspace was restored without touching its report changes.
+
+## 2026-07-23 — A log that just stops is an invitation to hallucinate
+- Aurora mirrored background output to a file but wrote nothing when the run ended. Truncated output is indistinguishable from a crash, so any reader has to guess — and a guess presented as fact is a hallucination the architecture caused, not the model.
+- Every path out of a streaming loop is a termination and must write a terminator naming itself, including the ones that feel like non-events (spawn failure, stdout capture failure). Same for the `done` event: a cancel is as much an ending as an exit, and skipping it leaves the UI spinning.
+
+## 2026-07-23 — Do not enqueue to a thread with no live turn
+- The stop button enqueued "the user stopped this process" unconditionally. `enqueueMessage` drains at a tool-result boundary, so with no turn running the note sat in the pill and was injected into a later, unrelated turn — the agent then acted on it with no context. `useAgentTeamNotifier.ts:225` already documented the correct rule (`chat.liveTurns[threadId]`) and it was ignored.
+- Prefer recording the fact where it will be read on purpose (the log file) over pushing it into the conversation. Interrupt only when someone is actually listening.
+- I also described this injection path in prose as if I had traced it. Do not narrate a mechanism's behaviour from its name; open the caller and read where the value lands.
+
+## 2026-07-25 — A React event prop is not always a real listener
+- `onWheel` + `preventDefault()` looked correct and type-checked, but React attaches `wheel` at the root as passive, so the call was a no-op that only surfaced as a console warning. The same latent bug existed in two other components nobody had reported, because the symptom (the page also scrolls) reads as sloppiness rather than a defect.
+- When a handler must cancel a default, check how the framework registered the listener — for `wheel`, `touchstart`, `touchmove` and `scroll` in React, bind natively with `{ passive: false }`. A silent no-op is worse than an error: it fails in the direction of "feels janky".
+
+## 2026-07-25 — A byte cap tuned for status blobs silently destroyed the tool it was applied to
+- `MAX_TOOL_RESULT_LENGTH` (8 KiB) was a sane default for grep/websearch and catastrophic for `workspace_tree`: every call fell into `compact_json_arrays`, which halves the largest array repeatedly and left 47 of 3,066 nodes — with `src/` and `src-tauri/` deleted and only a top-level `historyTruncated: true` to show for it.
+- Two lessons. (1) A shared clamp needs a per-tool answer whenever the tools deliver different KINDS of thing; `file_read` already had one and nothing generalised the idea. (2) A node budget is not a byte budget — the first rebuild fit 1,200 nodes and still produced 221 KB, so it would have been shredded identically. Measure the serialized payload, not the item count.
+- Corollary that keeps paying off: truncation must name itself AND the recovery step. Claude Code's own Glob says "Showing 100 of 172 … Narrow the pattern" — that one sentence is the difference between the next call being a narrowing and it being a guess.
+
+## 2026-07-25 — `#[warn(dead_code)]` on a pub fn can mean "unfinished", not "unused"
+- `ShellKind::interactive_args` was flagged dead. It was not redundant — it was the contract for wiring the PTY terminal to the shell registry, and that wiring had never been done, so the terminal still hardcoded `C:\Program Files\Git\bin\bash.exe` while the module docs claimed it no longer did. Deleting it would have cemented the bug.
+- Check what a "dead" symbol was FOR before removing it. Three of six warnings here were genuine deletions, one was an unfinished feature, and one (`env::overlay_map`) was a test helper that cargo check cannot see — I deleted it, broke `cargo test`, and restored it as `#[cfg(test)]`. Run the TEST build before concluding anything is unused.
+
+## 2026-07-25 — A frontend cache of state the backend owns will drift, and the drift is invisible
+- The background-process dock kept its own copy of what was running, keyed by thread, built from tool results. Rust already had the authoritative ledger. The copy could not be right: switching project hid a live dev server and took its stop button with it, and a window reload erased the copy while the processes ran on.
+- The tell was in the store's own doc comment — "kept per thread so a background turn's dev server never appears in another chat's dock". That was a deliberate scoping decision applied to the wrong kind of fact. A *conversation artifact* (a finished run's log) is per-thread; a *running process* is per-machine. Scope by what the thing IS, not by where it was created.
+- Whenever the UI mirrors backend state, add a reconcile path before shipping. Events alone are not enough: `shell-process-ended` is fire-and-forget, so anything that misses it (a reload mid-flight) leaves a permanently wrong row with no way to correct itself.

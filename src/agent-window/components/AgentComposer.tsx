@@ -15,6 +15,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AnimatePresence, motion } from "framer-motion";
 
 import { AgentIcon } from "../shared/AgentIcon";
+import { StreamingDotMatrix } from "./StreamingDotMatrix";
 import { openFileDialog } from "../../lib/tauri";
 import { FileIcon } from "../../components/explorer/FileIcons";
 import { resolveExplorerIcon } from "../../lib/icon-registry";
@@ -35,7 +36,10 @@ import {
 } from "../adapters/prompt-commands";
 import { useAgentCommandStore } from "../store/useAgentCommandStore";
 import { useAgentChatStore } from "../store/useAgentChatStore";
-import { useAgentSelectionStore } from "../store/useAgentSelectionStore";
+import {
+  useAgentSelectionStore,
+  type SelectedEntry,
+} from "../store/useAgentSelectionStore";
 import { useAgentThemeStore } from "../store/useAgentThemeStore";
 import { useAgentSpeech } from "../hooks/useAgentSpeech";
 import { useAgentExternalDrop } from "../hooks/useAgentExternalDrop";
@@ -98,6 +102,55 @@ function commandIconSvg(kind: PromptCommandKind): string {
   return `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${COMMAND_ICON_PATHS[kind]}</svg>`;
 }
 
+/** The `inspect` glyph, for the imperatively-built inline selection pill. */
+const INSPECT_ICON_SVG =
+  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.4 6.1l3.5 3.5"/><path d="M16.1 4.4a1.9 1.9 0 0 1 2.7 0l0.8 0.8a1.9 1.9 0 0 1 0 2.7L8.2 18.9l-4.2 1 1-4.2z"/></svg>';
+
+/**
+ * Build the inline pill for one inspector pick.
+ *
+ * Browser selections used to sit in their own row ABOVE the input while `@`
+ * files and `/` directives lived inline — so the one attachment kind the user
+ * did NOT type appeared furthest from where they were typing, detached from the
+ * sentence it belonged to. This makes it the same object as the other two:
+ * inline at the caret, deleted by Backspace, reconciled against the store.
+ */
+function buildSelectionPill(entry: SelectedEntry): HTMLSpanElement {
+  const el = entry.element;
+  const text = (el.text ?? "").trim();
+  const pill = document.createElement("span");
+  pill.className = "agw-pill-inline agw-pill-sel";
+  pill.contentEditable = "false";
+  pill.dataset.sel = entry.id;
+  pill.title = [
+    `selector: ${el.selector}`,
+    `tag: <${el.tagName}>`,
+    el.id ? `id: #${el.id}` : null,
+    el.className ? `class: ${el.className}` : null,
+    el.url ? `url: ${el.url}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const ico = document.createElement("span");
+  ico.className = "agw-pill-cmd-ico";
+  ico.innerHTML = INSPECT_ICON_SVG;
+  pill.appendChild(ico);
+
+  const tag = document.createElement("span");
+  tag.className = "agw-sel-tag";
+  tag.textContent = `<${el.tagName}>`;
+  pill.appendChild(tag);
+
+  if (text) {
+    const label = document.createElement("span");
+    label.className = "agw-sel-text";
+    label.textContent = text.slice(0, 24);
+    pill.appendChild(label);
+  }
+  return pill;
+}
+
 /** Serialize the contenteditable to plain text: pills → `@rel`, <br>/blocks → \n. */
 function serializeEditor(root: HTMLElement): string {
   let out = "";
@@ -110,6 +163,7 @@ function serializeEditor(root: HTMLElement): string {
     const el = node as HTMLElement;
     if (el.dataset.ghost) return; // inline typing-assist ghost text — never sent
     if (el.dataset.cmd) return; // inline `/` command pill — threaded via the store, not the text
+    if (el.dataset.sel) return; // inline inspector pick — threaded via the selection store
     if (el.dataset.rel) {
       out += `@${el.dataset.rel}`;
       return;
@@ -125,6 +179,50 @@ function serializeEditor(root: HTMLElement): string {
   };
   root.childNodes.forEach(walk);
   return out;
+}
+
+/** True for the three inline pill kinds: `@` file, `/` directive, inspector pick. */
+function isPill(node: ChildNode | null): node is HTMLElement {
+  if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+  const el = node as HTMLElement;
+  return !!(el.dataset.rel || el.dataset.cmd || el.dataset.sel);
+}
+
+/**
+ * Delete the pill immediately before a collapsed caret. Returns whether one was
+ * removed, so the caller can decide to preventDefault.
+ *
+ * Pills carry `user-select: none`, which makes Chromium refuse to extend a
+ * selection over them — so the native "Backspace removes the whole widget"
+ * behavior silently no-ops and the caret parks against the pill forever. That
+ * is the "I had to Ctrl+A" symptom: every keystroke did nothing, with no
+ * feedback explaining why. Deleting it ourselves restores the contract the
+ * pills were designed around.
+ */
+function deletePillBeforeCaret(root: HTMLElement): boolean {
+  const s = window.getSelection();
+  if (!s || !s.isCollapsed || s.rangeCount === 0) return false;
+  const { startContainer, startOffset } = s.getRangeAt(0);
+  if (!root.contains(startContainer)) return false;
+
+  let target: ChildNode | null = null;
+  if (startContainer.nodeType === Node.ELEMENT_NODE) {
+    // Caret sits between children — the pill would be the one just before it.
+    target = startOffset > 0 ? startContainer.childNodes[startOffset - 1] : null;
+  } else if (startContainer.nodeType === Node.TEXT_NODE && startOffset === 0) {
+    // Caret at the very start of a text node (typically the emptied space that
+    // followed the pill) — the pill is its previous sibling.
+    target = startContainer.previousSibling;
+  }
+  if (!isPill(target)) return false;
+
+  const range = document.createRange();
+  range.setStartBefore(target);
+  range.collapse(true);
+  target.remove();
+  s.removeAllRanges();
+  s.addRange(range);
+  return true;
 }
 
 function placeCaretAtEnd(el: HTMLElement): void {
@@ -206,9 +304,54 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     window.setTimeout(() => setVisionWarn(null), 4000);
   };
 
-  // Elements picked with the Browser inspector — shown as chips, attached on send.
+  // Elements picked with the Browser inspector — inline pills, attached on send.
   const selected = useAgentSelectionStore((s) => s.selected);
   const removeSelected = useAgentSelectionStore((s) => s.remove);
+
+  // Picks arrive asynchronously from the inspector, so the store leads and the
+  // editor mirrors it: add a pill for any entry that lacks one, drop any pill
+  // whose entry is gone (cleared on send). The opposite direction — the user
+  // backspacing a pill — is reconciled in `handleInput`, so this only ever
+  // materializes what the store already holds and the two can't fight.
+  useEffect(() => {
+    const el = editorRef.current;
+    if (!el) return;
+
+    const live = new Set(selected.map((entry) => entry.id));
+    const staged = new Set<string>();
+
+    for (const pill of Array.from(el.querySelectorAll<HTMLElement>("[data-sel]"))) {
+      const id = pill.dataset.sel ?? "";
+      if (live.has(id)) staged.add(id);
+      else pill.remove();
+    }
+
+    for (const entry of selected) {
+      if (staged.has(entry.id)) continue;
+      const pill = buildSelectionPill(entry);
+      const space = document.createTextNode(" ");
+      const s = window.getSelection();
+      const range =
+        s && s.rangeCount > 0 && s.anchorNode && el.contains(s.anchorNode)
+          ? s.getRangeAt(0)
+          : null;
+      if (range) {
+        range.insertNode(space);
+        range.insertNode(pill);
+        const after = document.createRange();
+        after.setStartAfter(space);
+        after.collapse(true);
+        s?.removeAllRanges();
+        s?.addRange(after);
+      } else {
+        // No caret in the composer — the user is still in the Browser panel.
+        // Append rather than focusing, so picking a second element doesn't
+        // yank focus out of the page they're picking from.
+        el.appendChild(pill);
+        el.appendChild(space);
+      }
+    }
+  }, [selected]);
 
   // Composer layout prefs (Preferences settings).
   const modelSelectorPosition = useAgentThemeStore((s) => s.modelSelectorPosition);
@@ -243,6 +386,8 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     if (!el) return;
     // A file `@`-pill counts as content; a `/` command pill does NOT (it
     // serializes to nothing — it needs an accompanying message to send).
+    // Inspector picks behave like `/` pills, and are checked at the render
+    // site straight off the store (see the placeholder).
     const hasFilePill = !!el.querySelector("[data-rel]");
     const hasCmdPill = !!el.querySelector("[data-cmd]");
     const text = serializeEditor(el).trim();
@@ -250,26 +395,56 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     setBlank(!hasFilePill && !hasCmdPill && text === "");
   };
 
+  // The pickers re-run on every keyup and click — including the keyup of the
+  // arrow key that just moved the highlight. Resetting the highlight there is
+  // what made the selection snap straight back to the first row, so a refresh
+  // that finds the SAME query must change nothing at all: same state object
+  // (no re-ranking) and, above all, the same highlighted row.
+  //
+  // Only a query that actually changed produces a different result list, and
+  // only then does starting from the top make sense.
+  const mentionQueryRef = useRef<string | null>(null);
+  const slashQueryRef = useRef<string | null>(null);
+
+  // Both menus cap at 8 rows and scroll past ~280px, so the row the keyboard
+  // just moved to can sit below the fold. Keyboard navigation has to be able
+  // to see where it is without the mouse.
+  const activeMentionRef = useRef<HTMLButtonElement>(null);
+  const activeCommandRef = useRef<HTMLButtonElement>(null);
+
+  const applyMentionQuery = (query: string | null) => {
+    if (mentionQueryRef.current === query) return;
+    mentionQueryRef.current = query;
+    setMention(query === null ? null : { query });
+    setSel(0);
+  };
+
+  const applySlashQuery = (query: string | null) => {
+    if (slashQueryRef.current === query) return;
+    slashQueryRef.current = query;
+    setSlash(query === null ? null : { query });
+    setCmdSel(0);
+  };
+
   const refreshMention = () => {
     const el = editorRef.current;
     const s = window.getSelection();
     if (!el || !s || !s.isCollapsed || s.rangeCount === 0) {
-      setMention(null);
+      applyMentionQuery(null);
       return;
     }
     const node = s.anchorNode;
     if (!node || !el.contains(node) || node.nodeType !== Node.TEXT_NODE) {
-      setMention(null);
+      applyMentionQuery(null);
       return;
     }
     const before = (node.textContent ?? "").slice(0, s.anchorOffset);
     const m = before.match(MENTION_RE);
     if (!m) {
-      setMention(null);
+      applyMentionQuery(null);
       return;
     }
-    setMention({ query: m[2] });
-    setSel(0);
+    applyMentionQuery(m[2]);
     if (fileIndex.length === 0) {
       void loadFileIndex(useAgentChatStore.getState().projectRoot).then(setFileIndex);
     }
@@ -279,28 +454,36 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     const el = editorRef.current;
     const s = window.getSelection();
     if (!el || !s || !s.isCollapsed || s.rangeCount === 0) {
-      setSlash(null);
+      applySlashQuery(null);
       return;
     }
     const node = s.anchorNode;
     if (!node || !el.contains(node) || node.nodeType !== Node.TEXT_NODE) {
-      setSlash(null);
+      applySlashQuery(null);
       return;
     }
     const before = (node.textContent ?? "").slice(0, s.anchorOffset);
     const m = before.match(SLASH_RE);
     if (!m) {
-      setSlash(null);
+      applySlashQuery(null);
       return;
     }
-    setSlash({ query: m[2] });
-    setCmdSel(0);
+    applySlashQuery(m[2]);
     if (commandIndex.length === 0) {
       void loadPromptCommands(useAgentChatStore.getState().projectRoot).then(
         setCommandIndex,
       );
     }
   };
+
+  // `block: "nearest"` scrolls only when the row is actually out of view, so a
+  // highlight that is already visible never jolts the list.
+  useEffect(() => {
+    activeMentionRef.current?.scrollIntoView({ block: "nearest" });
+  }, [sel]);
+  useEffect(() => {
+    activeCommandRef.current?.scrollIntoView({ block: "nearest" });
+  }, [cmdSel]);
 
   // The `@` and `/` triggers are mutually exclusive at the caret (only one regex
   // can match the text immediately before it); calling both just nulls the other.
@@ -326,6 +509,15 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       );
       for (const c of useAgentCommandStore.getState().commands) {
         if (!domKeys.has(c.key)) removeCommand(c.key);
+      }
+      // Same contract for inspector picks: the pill IS the attachment, so
+      // backspacing it must detach the element rather than leave it riding
+      // along invisibly.
+      const domSel = new Set(
+        Array.from(el.querySelectorAll<HTMLElement>("[data-sel]")).map((n) => n.dataset.sel),
+      );
+      for (const entry of useAgentSelectionStore.getState().selected) {
+        if (!domSel.has(entry.id)) removeSelected(entry.id);
       }
     }
     refreshPickers();
@@ -653,6 +845,24 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     // Typing-assist first: → accepts ghost text, Backspace undoes a correction.
     // Only claims the key when it actually acts; otherwise falls through.
     if (typing.onKeyDown(e)) return;
+
+    // Backspace against a pill. Runs after typing-assist (which owns Backspace
+    // for undoing a correction) and only for a bare Backspace on a collapsed
+    // caret, so Ctrl/Alt shortcuts and range deletions keep native behavior.
+    if (
+      e.key === "Backspace" &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      editorRef.current &&
+      deletePillBeforeCaret(editorRef.current)
+    ) {
+      e.preventDefault();
+      // Reconciles the `/` command and inspector-pick stores against the pills
+      // that are actually left, so the deleted one detaches from the turn.
+      handleInput();
+      return;
+    }
     if (slash && commandResults.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -666,11 +876,17 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       }
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
-        pickCommand(commandResults[cmdSel]);
+        // The list can shrink under a highlight that was valid a moment ago
+        // (the command index loads asynchronously); fall back rather than
+        // handing `undefined` to the picker.
+        pickCommand(commandResults[cmdSel] ?? commandResults[0]);
         return;
       }
       if (e.key === "Escape") {
         e.preventDefault();
+        // Closes without touching `slashQueryRef`, so the keyup that follows
+        // sees an unchanged query and leaves it closed. Dismissal holds until
+        // the text actually changes.
         setSlash(null);
         return;
       }
@@ -688,11 +904,13 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       }
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
-        insertPill(results[sel]);
+        insertPill(results[sel] ?? results[0]);
         return;
       }
       if (e.key === "Escape") {
         e.preventDefault();
+        // See the `/` picker above: the ref is left alone so the dismissal
+        // survives the keyup and holds until the query changes.
         setMention(null);
         return;
       }
@@ -756,10 +974,14 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
             {results.map((f, i) => (
               <button
                 key={f.path}
+                ref={i === sel ? activeMentionRef : undefined}
                 type="button"
                 className="agw-mention-item"
                 data-active={i === sel || undefined}
-                onMouseEnter={() => setSel(i)}
+                // `onMouseMove`, not `onMouseEnter`: scrolling the list under a
+                // stationary cursor fires enter and would drag the highlight
+                // back to whatever row slid beneath the pointer.
+                onMouseMove={() => setSel(i)}
                 onMouseDown={(e) => {
                   e.preventDefault();
                   insertPill(f);
@@ -787,10 +1009,14 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
             {commandResults.map((c, i) => (
               <button
                 key={c.key}
+                ref={i === cmdSel ? activeCommandRef : undefined}
                 type="button"
                 className="agw-mention-item"
                 data-active={i === cmdSel || undefined}
-                onMouseEnter={() => setCmdSel(i)}
+                // See the mention list: movement, not mere entry, changes the
+                // highlight, so keyboard navigation is never undone by a
+                // cursor that simply happens to be resting over the menu.
+                onMouseMove={() => setCmdSel(i)}
                 onMouseDown={(e) => {
                   e.preventDefault();
                   pickCommand(c);
@@ -828,51 +1054,14 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
             band renders and the editor gets comfortable top padding instead —
             so the placeholder sits near the top like Codex, no empty strip. */}
         {modelSelectorPosition === "top" && (
-          <div className="agw-composer-band flex items-center gap-2 px-2.5 pt-2 pb-1.5">
+          <div className="agw-composer-band">
             <ModelSelector align="left" streaming={sending} />
           </div>
         )}
 
-        {/* Inspector picks — "Selected" chips, attached to the next turn. */}
-        {selected.length > 0 && (
-          <div className="agw-sel-row" onClick={(e) => e.stopPropagation()}>
-            {selected.map((entry) => {
-              const el = entry.element;
-              const text = (el.text ?? "").trim();
-              const tip = [
-                `selector: ${el.selector}`,
-                `tag: <${el.tagName}>`,
-                el.id ? `id: #${el.id}` : null,
-                el.className ? `class: ${el.className}` : null,
-                el.url ? `url: ${el.url}` : null,
-              ]
-                .filter(Boolean)
-                .join("\n");
-              return (
-                <span key={entry.id} className="agw-sel-chip" title={tip}>
-                  <AgentIcon name="inspect" size={11} />
-                  <span className="agw-sel-tag">{`<${el.tagName}>`}</span>
-                  {text && <span className="agw-sel-text">{text.slice(0, 24)}</span>}
-                  <button
-                    type="button"
-                    className="agw-sel-x"
-                    title="Remove selection"
-                    aria-label="Remove selection"
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      removeSelected(entry.id);
-                    }}
-                  >
-                    <AgentIcon name="close" size={9} />
-                  </button>
-                </span>
-              );
-            })}
-          </div>
-        )}
-
-        {/* `/` directives now live INLINE in the input as pills (see
-            `pickCommand`), exactly like `@`-mentions — no separate chip row. */}
+        {/* `/` directives and Browser inspector picks both live INLINE in the
+            input as pills (see `pickCommand` and the selection-sync effect),
+            exactly like `@`-mentions — no separate chip rows. */}
 
         {/* Staged image attachments + the vision-gate warning. */}
         {(images.length > 0 || visionWarn) && (
@@ -913,10 +1102,16 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
             padding); without it the editor takes comfortable top padding so the
             placeholder sits near the box top, Codex-style. */}
         <div
-          className="agw-ce-wrap px-3 pb-2 relative"
+          className="agw-ce-wrap"
           data-top-selector={modelSelectorPosition === "top" || undefined}
         >
-          {blank && <div className="agw-ce-placeholder">{placeholder}</div>}
+          {/* `blank` is measured from the editor DOM, which the async pill sync
+              writes to outside React — so a pick that lands while the composer
+              is untouched is checked against the store directly rather than
+              waiting for an input event that never comes. */}
+          {blank && selected.length === 0 && (
+            <div className="agw-ce-placeholder">{placeholder}</div>
+          )}
           <div
             ref={editorRef}
             className="agw-ce agw-scroll"
@@ -933,6 +1128,10 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
             onBlur={() => {
               typing.clearGhost();
               window.setTimeout(() => {
+                // Clear the remembered queries too: coming back to the same
+                // caret should reopen the picker, unlike an Escape dismissal.
+                mentionQueryRef.current = null;
+                slashQueryRef.current = null;
                 setMention(null);
                 setSlash(null);
               }, 120);
@@ -941,7 +1140,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
         </div>
 
         {/* Bottom action row — attach (left) · reasoning + speech + send (right). */}
-        <div className="agw-composer-actions-row px-2 pb-1.5 flex items-center justify-between gap-1.5">
+        <div className="agw-composer-actions-row">
           <button
             type="button"
             className="agw-icon-btn"
@@ -954,7 +1153,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
           >
             <AgentIcon name="plus" size={17} />
           </button>
-          <div className="agw-composer-actions flex items-center gap-1.5">
+          <div className="agw-composer-actions">
           {modelSelectorPosition === "bottom" && (
             <ModelSelector align="right" streaming={sending} />
           )}
@@ -995,7 +1194,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
             </button>
           )}
           {speechEnabled && (
-            <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+            <div className="agw-composer-speech" onClick={(e) => e.stopPropagation()}>
               {micRecording && (
                 <div ref={micWaveRef} className="agw-mic-wave" aria-hidden />
               )}
@@ -1029,18 +1228,30 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
             </div>
           )}
           {sending && isEmpty ? (
-            // Streaming with an empty composer → the button stops the turn.
+            // Streaming with an empty composer → the button stops the turn. At
+            // rest it shows the same pulsing dot-matrix the titlebar uses ("the
+            // model is working"); on hover it flips to the white stop disc so
+            // the click target reads clearly as Stop. The whole button is the
+            // stop target in both states.
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
                 onStop?.();
               }}
-              className="agw-send"
-              style={{ background: "var(--agw-accent)", color: "var(--agw-on-accent)" }}
+              className="agw-send agw-send-stream"
               title="Stop generating"
+              aria-label="Stop generating"
             >
-              <AgentIcon name="stop" size={16} />
+              <span className="agw-send-stream-matrix" aria-hidden="true">
+                <StreamingDotMatrix size={22} />
+              </span>
+              {/* The `stop` glyph is a rect filling only ~42% of its 24-unit box,
+                  so the visible square ≈ size × 0.42. size 24 → ~10px square in
+                  the 34px disc (~30%), the standard stop-button proportion. */}
+              <span className="agw-send-stream-stop" aria-hidden="true">
+                <AgentIcon name="stop" size={24} />
+              </span>
             </button>
           ) : (
             // Otherwise it's the send disc. Mid-stream, typing flips Stop back to
@@ -1054,14 +1265,12 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
                 submit();
               }}
               className="agw-send"
-              style={{
-                background: isEmpty ? "var(--agw-control-muted)" : "var(--agw-accent)",
-                color: isEmpty ? "var(--agw-text-subtle)" : "var(--agw-on-accent)",
-                cursor: isEmpty ? "not-allowed" : "pointer",
-              }}
               title={sending ? "Queue message" : "Send message"}
             >
-              <AgentIcon name="send" size={15} strokeWidth={isEmpty ? 2 : 2.3} />
+              {/* A dark glyph on a light disc reads optically THINNER than the
+                  reverse, so this carries a touch more weight than the 2.3 the
+                  icon row uses. */}
+              <AgentIcon name="send" size={17} strokeWidth={2.6} />
             </button>
           )}
           </div>

@@ -163,6 +163,7 @@ mod tests {
             provider_id: "codex".into(),
             base_url: "https://chatgpt.com/backend-api/codex".into(),
             api_key: String::new(),
+            api_keys: None,
             model: "gpt-5.5".into(),
             custom_headers: None,
             custom_params: None,
@@ -182,6 +183,7 @@ mod tests {
             temperature: Some(0.7),
             max_output_tokens: 8192,
             thinking_enabled: true,
+            thinking_budget_tokens: None,
         }
     }
 

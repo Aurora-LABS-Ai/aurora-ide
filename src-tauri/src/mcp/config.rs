@@ -2,7 +2,7 @@
 //!
 //! Handles loading/saving MCP server configurations to mcp.json
 
-use super::types::McpServerConfig;
+use super::types::{McpServerConfig, McpTransportType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -31,9 +31,20 @@ pub struct McpServerEntry {
     /// Environment variables
     #[serde(default)]
     pub env: HashMap<String, String>,
-    /// URL (for SSE)
+    /// Explicit transport. Optional so hand-written Claude/Cursor configs
+    /// keep working — when absent it is inferred in [`resolve_transport`].
+    /// `"type"` is accepted as an alias because that is the key Claude Code
+    /// and Cursor use (`"type": "http"`).
+    #[serde(default, alias = "type", skip_serializing_if = "Option::is_none")]
+    pub transport: Option<McpTransportType>,
+    /// URL for the legacy HTTP+SSE transport
     pub url: Option<String>,
-    /// Custom headers (for SSE)
+    /// URL for the Streamable HTTP transport. Cursor/Claude configs spell
+    /// this `httpUrl`; treating it as an unknown key (the old behaviour)
+    /// silently produced a stdio server with no command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_url: Option<String>,
+    /// Custom headers (for the HTTP transports)
     #[serde(default)]
     pub headers: HashMap<String, String>,
     /// Whether enabled
@@ -49,6 +60,60 @@ pub struct McpServerEntry {
 
 fn default_true() -> bool {
     true
+}
+
+impl McpServerEntry {
+    /// Decide which transport this entry describes.
+    ///
+    /// An explicit `transport`/`type` always wins. Otherwise we infer, and
+    /// `httpUrl` must map to [`McpTransportType::Http`] rather than `Sse`:
+    /// a Streamable HTTP server answers the SSE handshake's opening `GET`
+    /// with 405 Method Not Allowed, so guessing wrong is not a soft failure.
+    fn resolve_transport(&self) -> McpTransportType {
+        if let Some(t) = self.transport {
+            return t;
+        }
+        if self.http_url.is_some() {
+            McpTransportType::Http
+        } else if self.url.is_some() {
+            McpTransportType::Sse
+        } else {
+            McpTransportType::Stdio
+        }
+    }
+
+    /// The endpoint for whichever HTTP transport this entry uses. `url` and
+    /// `httpUrl` are the same field to us once the transport is known.
+    fn resolve_url(&self) -> Option<String> {
+        self.url.clone().or_else(|| self.http_url.clone())
+    }
+
+    /// Serialise a runtime config back to the on-disk Claude/Cursor shape.
+    ///
+    /// The transport is written explicitly (instead of left to inference) so
+    /// a round-trip can never downgrade an `http` server to `sse`, and the
+    /// endpoint lands under the key each transport conventionally uses.
+    fn from_config(config: &McpServerConfig) -> Self {
+        let (url, http_url) = match config.transport {
+            McpTransportType::Http => (None, config.url.clone()),
+            _ => (config.url.clone(), None),
+        };
+        Self {
+            // The map KEY is the name (Cursor/Claude format), so the
+            // redundant `name` field is dropped.
+            name: None,
+            transport: Some(config.transport),
+            command: config.command.clone(),
+            args: config.args.clone(),
+            env: config.env.clone(),
+            url,
+            http_url,
+            headers: config.headers.clone(),
+            enabled: config.enabled,
+            auto_start: config.auto_start,
+            auto_approve: config.auto_approve,
+        }
+    }
 }
 
 impl McpConfig {
@@ -121,21 +186,15 @@ impl McpConfig {
         self.mcp_servers
             .iter()
             .map(|(id, entry)| {
-                let transport = if entry.url.is_some() {
-                    super::types::McpTransportType::Sse
-                } else {
-                    super::types::McpTransportType::Stdio
-                };
-
                 McpServerConfig {
                     id: id.clone(),
                     // Use stored name, or fall back to ID (which is the key in Claude/Cursor format)
                     name: entry.name.clone().unwrap_or_else(|| id.clone()),
-                    transport,
+                    transport: entry.resolve_transport(),
                     command: entry.command.clone(),
                     args: entry.args.clone(),
                     env: entry.env.clone(),
-                    url: entry.url.clone(),
+                    url: entry.resolve_url(),
                     headers: entry.headers.clone(),
                     enabled: entry.enabled,
                     auto_start: entry.auto_start,
@@ -150,22 +209,7 @@ impl McpConfig {
     pub fn from_server_configs(configs: &[McpServerConfig]) -> Self {
         let mcp_servers = configs
             .iter()
-            .map(|config| {
-                let entry = McpServerEntry {
-                    // The map KEY is the name (Cursor/Claude format), so the
-                    // redundant `name` field is dropped.
-                    name: None,
-                    command: config.command.clone(),
-                    args: config.args.clone(),
-                    env: config.env.clone(),
-                    url: config.url.clone(),
-                    headers: config.headers.clone(),
-                    enabled: config.enabled,
-                    auto_start: config.auto_start,
-                    auto_approve: config.auto_approve,
-                };
-                (config.name.clone(), entry)
-            })
+            .map(|config| (config.name.clone(), McpServerEntry::from_config(config)))
             .collect();
 
         Self { mcp_servers }
@@ -175,18 +219,8 @@ impl McpConfig {
     /// format) — the runtime id is normalized to the name by the manager, so
     /// the file never stores an internal `mcp-<id>`.
     pub fn upsert_server(&mut self, config: &McpServerConfig) {
-        let entry = McpServerEntry {
-            name: None,
-            command: config.command.clone(),
-            args: config.args.clone(),
-            env: config.env.clone(),
-            url: config.url.clone(),
-            headers: config.headers.clone(),
-            enabled: config.enabled,
-            auto_start: config.auto_start,
-            auto_approve: config.auto_approve,
-        };
-        self.mcp_servers.insert(config.name.clone(), entry);
+        self.mcp_servers
+            .insert(config.name.clone(), McpServerEntry::from_config(config));
     }
 
     /// Remove a server
@@ -222,7 +256,9 @@ mod tests {
                     "@modelcontextprotocol/server-git".to_string(),
                 ],
                 env: HashMap::new(),
+                transport: None,
                 url: None,
+                http_url: None,
                 headers: HashMap::new(),
                 enabled: true,
                 auto_start: false,
@@ -235,5 +271,72 @@ mod tests {
 
         assert_eq!(parsed.mcp_servers.len(), 1);
         assert!(parsed.mcp_servers.contains_key("test-server"));
+    }
+
+    /// A bare `httpUrl` entry — the exact Cursor/Claude shape hosted servers
+    /// document — used to deserialize into a stdio server with no command,
+    /// which failed silently. It must resolve to Streamable HTTP.
+    #[test]
+    fn test_http_url_entry_resolves_to_http_transport() {
+        let raw = r#"{
+            "mcpServers": {
+                "untitledui": { "httpUrl": "https://www.untitledui.com/react/api/mcp" }
+            }
+        }"#;
+        let config: McpConfig = serde_json::from_str(raw).unwrap();
+        let servers = config.to_server_configs();
+
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].transport, McpTransportType::Http);
+        assert_eq!(
+            servers[0].url.as_deref(),
+            Some("https://www.untitledui.com/react/api/mcp")
+        );
+    }
+
+    /// `"type": "http"` (Claude Code's spelling) must win over inference,
+    /// even when the endpoint is given as plain `url`.
+    #[test]
+    fn test_explicit_type_overrides_url_inference() {
+        let raw = r#"{
+            "mcpServers": {
+                "hosted": { "type": "http", "url": "https://example.com/mcp" }
+            }
+        }"#;
+        let config: McpConfig = serde_json::from_str(raw).unwrap();
+        let servers = config.to_server_configs();
+
+        assert_eq!(servers[0].transport, McpTransportType::Http);
+        assert_eq!(servers[0].url.as_deref(), Some("https://example.com/mcp"));
+    }
+
+    /// A legacy `url`-only entry keeps its historical meaning (HTTP+SSE) so
+    /// existing mcp.json files don't change transport under the user.
+    #[test]
+    fn test_url_only_entry_stays_sse() {
+        let raw = r#"{ "mcpServers": { "legacy": { "url": "https://example.com/sse" } } }"#;
+        let config: McpConfig = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            config.to_server_configs()[0].transport,
+            McpTransportType::Sse
+        );
+    }
+
+    /// Saving then reloading an http server must not downgrade it to sse.
+    #[test]
+    fn test_http_config_survives_round_trip() {
+        let original = McpServerConfig::new_http("untitledui", "untitledui", "https://x.test/mcp");
+        let saved = McpConfig::from_server_configs(std::slice::from_ref(&original));
+
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(
+            json.contains("httpUrl"),
+            "endpoint should persist as httpUrl"
+        );
+
+        let reloaded: McpConfig = serde_json::from_str(&json).unwrap();
+        let servers = reloaded.to_server_configs();
+        assert_eq!(servers[0].transport, McpTransportType::Http);
+        assert_eq!(servers[0].url.as_deref(), Some("https://x.test/mcp"));
     }
 }

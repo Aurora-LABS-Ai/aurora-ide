@@ -206,11 +206,35 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [19])?;
             Ok(())
         }
+        20 => {
+            // Migration from v19 to v20: add the `api_keys` JSON-array column
+            // to `llm_providers` for the multi-key pool (round-robin + failover).
+            migration_v20(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [20])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
         ))),
     }
+}
+
+/// Migration v20: Add the nullable `api_keys` JSON column to `llm_providers`
+/// — a JSON array of strings holding the provider's API-key pool. Idempotent:
+/// guarded with a PRAGMA table_info sniff so re-running on a hand-patched DB
+/// (or one where a fresh install already created the column) is safe.
+fn migration_v20(conn: &Connection) -> DbResult<()> {
+    let existing: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(llm_providers)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        rows.flatten().collect()
+    };
+    if !existing.iter().any(|c| c == "api_keys") {
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN api_keys TEXT", [])?;
+    }
+    Ok(())
 }
 
 /// Migration v19: flip checkpoints to opt-in. Disable for all existing

@@ -14,8 +14,12 @@
 //! is already on every `ToolContext`, so a process-global map keyed by
 //! it gives the same per-session scoping with zero plumbing.
 //!
-//! Tool calls dispatch sequentially (`conversation.rs`), so contention
-//! is nil — the `Mutex` is here purely for correctness, not throughput.
+//! `file_read` is `concurrency_safe`, so several reads in one batch DO
+//! record here at the same time — the `Mutex` is load-bearing, not
+//! decorative. Contention is still negligible (a `HashSet` insert per
+//! read). The ordering the guard depends on is preserved regardless:
+//! `file_edit` is not concurrency-safe, so a batch containing both splits
+//! and the read always completes before the edit checks [`was_seen`].
 //! Entries are keyed by the resolved (canonical) path string so the
 //! reader and the editor agree regardless of how the model spelled the
 //! path. The map grows with distinct files per session; [`clear_session`]

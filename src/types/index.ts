@@ -93,17 +93,7 @@ export interface Tab {
   mtime?: number;
   path: string;
 
-  // Browser tab support
-  type?: 'file' | 'browser';
-  url?: string;
-  /**
-   * For browser tabs: when set, this tab is *adopting* an existing
-   * native WebView window the agent (or a previous IDE session)
-   * already opened, rather than creating a new one. The label points
-   * into `BrowserManager`'s registry on the Rust side. Closing the
-   * tab will detach instead of destroying the window.
-   */
-  adoptedBrowserLabel?: string;
+  type?: 'file';
 }
 
 

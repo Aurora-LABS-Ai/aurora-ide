@@ -11,6 +11,10 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   delete_path: "Delete",
   folder_create: "Create Folder",
   grep: "Search Codebase",
+  // Deliberately contrasted with grep's "Search Codebase": one finds files by
+  // NAME, the other by CONTENT, and a user scanning a transcript needs to tell
+  // the two apart at a glance.
+  glob: "Find Files",
   read_lints: "Read Diagnostics",
   // Legacy file/folder names — kept so historic threads render cleanly.
   file_create: "Create New File",
@@ -43,13 +47,14 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   browser_scroll: "Scroll Page",
   browser_screenshot: "Screenshot Page",
   browser_get_console_logs: "Read Console Logs",
+  browser_page_outline: "Map Page Elements",
   // Legacy tool names that are no longer registered with the agent —
   // kept here so historic chat threads with these in their JSONL log
   // still get a clean display label instead of a raw tool id.
   browser_eval: "Run JavaScript (legacy)",
   browser_get_dom: "Read Page HTML (legacy)",
   browser_get_url: "Read Page URL (legacy)",
-  browser_inspect_element: "Inspect Element (legacy)",
+  browser_inspect_element: "Inspect Element State",
   browser_list_windows: "List Browser Windows (legacy)",
   browser_wait_for: "Wait for Element (legacy)",
 };

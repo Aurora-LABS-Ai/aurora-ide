@@ -5,6 +5,8 @@
 
 import React, { useState, useEffect } from 'react';
 import {
+  resolveServerUrl,
+  resolveTransport,
   useMcpStore,
   type McpServerConfig,
   type McpServerState,
@@ -93,6 +95,9 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-git"],
       "env": {}
+    },
+    "hosted-server": {
+      "httpUrl": "https://example.com/api/mcp"
     }
   }
 }`;
@@ -100,7 +105,7 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
   const handleFormSubmit = () => {
     if (!name.trim()) return;
     if (transport === 'stdio' && !command.trim()) return;
-    if (transport === 'sse' && !url.trim()) return;
+    if (transport !== 'stdio' && !url.trim()) return;
 
     // Parse args (space-separated)
     const argsArray = args.trim() ? args.trim().split(/\s+/) : [];
@@ -133,7 +138,7 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
       command: transport === 'stdio' ? command.trim() : undefined,
       args: argsArray,
       env: envObj,
-      url: transport === 'sse' ? url.trim() : undefined,
+      url: transport !== 'stdio' ? url.trim() : undefined,
       headers: headerObj,
       enabled: true,
       autoStart,
@@ -159,15 +164,14 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
         // Process each server entry
         for (const [serverName, serverConfig] of serverEntries) {
           const cfg = serverConfig as Record<string, unknown>;
-          const transportType: McpTransportType = cfg.url ? 'sse' : 'stdio';
-          
+
           const config: Omit<McpServerConfig, 'id'> = {
             name: serverName,
-            transport: transportType,
+            transport: resolveTransport(cfg),
             command: cfg.command as string | undefined,
             args: Array.isArray(cfg.args) ? cfg.args : [],
             env: typeof cfg.env === 'object' && cfg.env !== null ? cfg.env as Record<string, string> : {},
-            url: cfg.url as string | undefined,
+            url: resolveServerUrl(cfg),
             headers: typeof cfg.headers === 'object' && cfg.headers !== null ? cfg.headers as Record<string, string> : {},
             enabled: cfg.enabled !== false,
             autoStart: cfg.autoStart === true,
@@ -181,22 +185,19 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
       
       // Single server format (simple JSON)
       // Validate required fields
-      if (!parsed.name && !parsed.command && !parsed.url) {
-        setJsonError('JSON must have "mcpServers" object OR at least "name" and either "command" or "url"');
+      if (!parsed.name && !parsed.command && !parsed.url && !parsed.httpUrl) {
+        setJsonError('JSON must have "mcpServers" object OR at least "name" and either "command", "url", or "httpUrl"');
         return;
       }
-
-      // Determine transport type
-      const transportType: McpTransportType = parsed.url ? 'sse' : 'stdio';
 
       // Build config
       const config: Omit<McpServerConfig, 'id'> = {
         name: parsed.name || 'Unnamed Server',
-        transport: transportType,
+        transport: resolveTransport(parsed),
         command: parsed.command,
         args: Array.isArray(parsed.args) ? parsed.args : [],
         env: typeof parsed.env === 'object' ? parsed.env : {},
-        url: parsed.url,
+        url: resolveServerUrl(parsed),
         headers: typeof parsed.headers === 'object' ? parsed.headers : {},
         enabled: parsed.enabled !== false,
         autoStart: parsed.autoStart === true,
@@ -260,7 +261,8 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
                 ariaLabel="Select MCP transport"
                 options={[
                   { label: 'Stdio (Local Process)', value: 'stdio' },
-                  { label: 'SSE (HTTP Server)', value: 'sse' },
+                  { label: 'HTTP (Remote Server)', value: 'http' },
+                  { label: 'SSE (Legacy Stream)', value: 'sse' },
                 ]}
                 onChange={(nextValue) => setTransport(String(nextValue) as McpTransportType)}
                 value={transport}
@@ -298,7 +300,11 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
                 type="text"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="http://localhost:3000/sse"
+                placeholder={
+                  transport === 'http'
+                    ? 'https://example.com/api/mcp'
+                    : 'http://localhost:3000/sse'
+                }
                 className="w-full bg-input border border-input-border rounded px-2 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-primary font-mono"
               />
             </div>
@@ -317,7 +323,7 @@ const AddServerForm: React.FC<AddServerFormProps> = ({ onSave, onCancel }) => {
             />
           </div>
 
-          {transport === 'sse' && (
+          {transport !== 'stdio' && (
             <div>
               <label className="text-[10px] text-text-secondary block mb-0.5">
                 Headers (KEY=VALUE, one per line)
@@ -511,7 +517,7 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
       transport: editTransport,
       command: editTransport === 'stdio' ? editCommand.trim() : undefined,
       args: editArgs.trim() ? editArgs.trim().split(/\s+/) : [],
-      url: editTransport === 'sse' ? editUrl.trim() : undefined,
+      url: editTransport !== 'stdio' ? editUrl.trim() : undefined,
       env: envObj,
       autoStart: editAutoStart,
       autoApprove: editAutoApprove,
@@ -730,8 +736,9 @@ const ServerCard: React.FC<ServerCardProps> = ({ server, isExpanded, onToggleExp
                 <IdeSelect
                   ariaLabel="Select MCP edit transport"
                   options={[
-                    { label: 'Stdio', value: 'stdio' },
-                    { label: 'SSE (HTTP Server)', value: 'sse' },
+                    { label: 'Stdio (Local Process)', value: 'stdio' },
+                    { label: 'HTTP (Remote Server)', value: 'http' },
+                    { label: 'SSE (Legacy Stream)', value: 'sse' },
                   ]}
                   onChange={(nextValue) => setEditTransport(String(nextValue) as McpTransportType)}
                   value={editTransport}

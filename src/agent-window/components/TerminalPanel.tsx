@@ -16,16 +16,14 @@ import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { spawn, type IPty } from "tauri-pty";
-import { platform } from "@tauri-apps/plugin-os";
 import "@xterm/xterm/css/xterm.css";
 
 import { AgentIcon } from "../shared/AgentIcon";
 import { isAuroraRuntimeAvailable } from "../../lib/runtime";
-import {
-  getShellSpawnConfig,
-  powershellFallbackConfig,
-  type ShellProfile,
-} from "../adapters/shell-config";
+// No `platform()` import: which executable to run is the registry's answer, and
+// it already accounts for the platform. Branching on it here is what led to a
+// hardcoded Windows Git path in the first place.
+import { getShellSpawnConfig, type ShellProfile } from "../adapters/shell-config";
 import { useAgentChatStore } from "../store/useAgentChatStore";
 import { useAgentTerminalStore, type TermSession } from "../store/useAgentTerminalStore";
 import { selectActiveAgentTheme, useAgentThemeStore } from "../store/useAgentThemeStore";
@@ -102,25 +100,35 @@ async function attachSession(session: TermSession, container: HTMLDivElement, on
   term.open(container);
   try { fit.fit(); } catch { /* ignore */ }
 
-  const plat = platform();
-  const cfg = getShellSpawnConfig(session.profile, plat);
   const cols = term.cols || 80;
   const rows = term.rows || 24;
   const cwd = useAgentChatStore.getState().projectRoot ?? undefined;
+
+  // Resolved by Rust from the verified shell registry — not a path guessed
+  // here. A machine with no registered shell says so and points at the place
+  // that fixes it, instead of failing on a hardcoded path the user never chose.
+  const cfg = await getShellSpawnConfig(session.profile);
+  if (!cfg) {
+    term.writeln(
+      `\r\n\x1b[31mNo ${session.profile} shell is set up.\x1b[0m\r\n` +
+        `Open Settings → Tools → Shells to scan for one, or add it by path.`,
+    );
+    runtime.set(session.id, { pty: undefined as unknown as IPty, term, fit });
+    onExit();
+    return;
+  }
 
   let pty: IPty;
   try {
     pty = spawn(cfg.exe, cfg.args, { cols, rows, cwd, env: cfg.env });
   } catch (err) {
-    if (plat === "windows" && session.profile === "powershell") {
-      const fb = powershellFallbackConfig();
-      pty = spawn(fb.exe, fb.args, { cols, rows, cwd, env: fb.env });
-    } else {
-      term.writeln(`\r\n\x1b[31mCouldn't start ${cfg.exe}: ${String(err)}\x1b[0m`);
-      runtime.set(session.id, { pty: undefined as unknown as IPty, term, fit });
-      onExit();
-      return;
-    }
+    // No second guess: the registry verified this executable by running it, so
+    // a failure here is worth reporting rather than papering over with another
+    // hardcoded candidate.
+    term.writeln(`\r\n\x1b[31mCouldn't start ${cfg.exe}: ${String(err)}\x1b[0m`);
+    runtime.set(session.id, { pty: undefined as unknown as IPty, term, fit });
+    onExit();
+    return;
   }
 
   pty.onData((d) => term.write(d));

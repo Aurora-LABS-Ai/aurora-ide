@@ -1500,6 +1500,7 @@ async fn complete_turn(
         temperature: None,
         max_output_tokens,
         thinking_enabled: false,
+        thinking_budget_tokens: None,
     };
     let (tx, mut rx) = mpsc::channel::<AssistantEvent>(64);
     let stream_fut = client.stream(request, tx, cancel.clone());

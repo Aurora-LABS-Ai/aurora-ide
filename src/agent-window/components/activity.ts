@@ -57,6 +57,7 @@ const TOOL_GERUND: Record<string, string> = {
   folder_move: "Moving",
   folder_delete: "Deleting",
   grep: "Searching",
+  glob: "Finding",
   read_lints: "Checking diagnostics",
   shell_execute: "Running",
   shell_spawn: "Starting",
@@ -72,6 +73,8 @@ const TOOL_GERUND: Record<string, string> = {
   browser_scroll: "Scrolling",
   browser_screenshot: "Capturing",
   browser_get_console_logs: "Reading console logs",
+  browser_page_outline: "Mapping page",
+  browser_inspect_element: "Inspecting",
 };
 
 /** Tools whose path arg names a FILE → file-extension icon. */
@@ -188,7 +191,9 @@ function targetsOf(
 
 /** The display arg for tools WITHOUT a named file/folder target (already clipped). */
 function labelArg(name: string, args: Record<string, unknown>): string | null {
-  if (name === "grep") {
+  // `glob` shares grep's shape here — the pattern IS the subject, so it reads
+  // "Finding "**/*.tsx"" while the args are still streaming.
+  if (name === "grep" || name === "glob") {
     const p = asStr(args.pattern);
     return p ? `"${clip(p, 32)}"` : null;
   }
@@ -209,7 +214,7 @@ function labelArg(name: string, args: Record<string, unknown>): string | null {
     const url = asStr(args.url);
     return url ? clip(url, 44) : null;
   }
-  if (name === "browser_click") {
+  if (name === "browser_click" || name === "browser_inspect_element") {
     const selector = asStr(args.selector);
     return selector ? `element "${clip(selector, 40)}"` : null;
   }

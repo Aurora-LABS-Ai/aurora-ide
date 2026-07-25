@@ -67,7 +67,7 @@ export const AgentTaskPanel: React.FC = () => {
   if (!tasks || tasks.length === 0) return null;
 
   return (
-    <div className="agw-tasks">
+    <div className="agw-dock-card agw-tasks">
       <div className="agw-tasks-head">
         <button
           type="button"

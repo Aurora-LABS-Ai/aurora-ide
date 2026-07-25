@@ -241,6 +241,10 @@ impl<'a> SettingsRepository<'a> {
                     settings.fireworks_account_id = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.fireworks_account_id.clone())
                 }
+                "removedProviderIds" => {
+                    settings.removed_provider_ids = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.removed_provider_ids.clone())
+                }
                 "speechEnabled" => {
                     settings.speech_enabled =
                         serde_json::from_str(&setting.value).unwrap_or(settings.speech_enabled)
@@ -439,6 +443,10 @@ impl<'a> SettingsRepository<'a> {
             &serde_json::to_string(&settings.fireworks_account_id).unwrap_or_default(),
         )?;
         self.set_setting(
+            "removedProviderIds",
+            &serde_json::to_string(&settings.removed_provider_ids).unwrap_or_default(),
+        )?;
+        self.set_setting(
             "speechEnabled",
             &serde_json::to_string(&settings.speech_enabled).unwrap_or_default(),
         )?;
@@ -483,7 +491,7 @@ impl<'a> SettingsRepository<'a> {
             "SELECT id, name, nickname, base_url, api_key, model, context_window, max_output_tokens,
                     supports_tool_stream, enabled, is_custom,
                     custom_headers, custom_params, provider_type, default_temperature,
-                    default_max_tokens, requires_api_key, sort_order, created_at, updated_at
+                    default_max_tokens, requires_api_key, sort_order, created_at, updated_at, api_keys
              FROM llm_providers
              ORDER BY sort_order ASC",
         )?;
@@ -491,6 +499,7 @@ impl<'a> SettingsRepository<'a> {
         let providers = stmt.query_map([], |row| {
             let custom_headers: Option<String> = row.get(11)?;
             let custom_params: Option<String> = row.get(12)?;
+            let api_keys: Option<String> = row.get(20)?;
 
             Ok(LLMProvider {
                 id: row.get(0)?,
@@ -506,6 +515,7 @@ impl<'a> SettingsRepository<'a> {
                 is_custom: row.get::<_, i32>(10)? != 0,
                 custom_headers: custom_headers.and_then(|s| serde_json::from_str(&s).ok()),
                 custom_params: custom_params.and_then(|s| serde_json::from_str(&s).ok()),
+                api_keys: api_keys.and_then(|s| serde_json::from_str(&s).ok()),
                 provider_type: row.get(13)?,
                 default_temperature: row.get(14)?,
                 default_max_tokens: row.get(15)?,
@@ -533,7 +543,7 @@ impl<'a> SettingsRepository<'a> {
             "SELECT id, name, nickname, base_url, api_key, model, context_window, max_output_tokens,
                     supports_tool_stream, enabled, is_custom,
                     custom_headers, custom_params, provider_type, default_temperature,
-                    default_max_tokens, requires_api_key, sort_order, created_at, updated_at
+                    default_max_tokens, requires_api_key, sort_order, created_at, updated_at, api_keys
              FROM llm_providers
              WHERE id = ?1",
         )?;
@@ -541,6 +551,7 @@ impl<'a> SettingsRepository<'a> {
         let result = stmt.query_row(params![id], |row| {
             let custom_headers: Option<String> = row.get(11)?;
             let custom_params: Option<String> = row.get(12)?;
+            let api_keys: Option<String> = row.get(20)?;
 
             Ok(LLMProvider {
                 id: row.get(0)?,
@@ -556,6 +567,7 @@ impl<'a> SettingsRepository<'a> {
                 is_custom: row.get::<_, i32>(10)? != 0,
                 custom_headers: custom_headers.and_then(|s| serde_json::from_str(&s).ok()),
                 custom_params: custom_params.and_then(|s| serde_json::from_str(&s).ok()),
+                api_keys: api_keys.and_then(|s| serde_json::from_str(&s).ok()),
                 provider_type: row.get(13)?,
                 default_temperature: row.get(14)?,
                 default_max_tokens: row.get(15)?,
@@ -588,20 +600,28 @@ impl<'a> SettingsRepository<'a> {
             .custom_params
             .as_ref()
             .map(|p| serde_json::to_string(p).unwrap_or_default());
+        // Persist the key pool as a JSON array string. `None` (and an empty
+        // array) round-trips to SQL NULL so the single-key path is unchanged
+        // for every provider that doesn't use pooling.
+        let api_keys = provider
+            .api_keys
+            .as_ref()
+            .filter(|v| v.as_array().map(|a| !a.is_empty()).unwrap_or(false))
+            .map(|v| serde_json::to_string(v).unwrap_or_default());
 
         self.conn.execute(
             "INSERT INTO llm_providers (
                 id, name, nickname, base_url, api_key, model, context_window, max_output_tokens,
                 supports_tool_stream, enabled, is_custom, custom_headers, custom_params,
                 provider_type, default_temperature, default_max_tokens, requires_api_key,
-                sort_order, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+                sort_order, created_at, updated_at, api_keys
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
             ON CONFLICT(id) DO UPDATE SET
                 name = ?2, nickname = ?3, base_url = ?4, api_key = ?5, model = ?6, context_window = ?7,
                 max_output_tokens = ?8, supports_tool_stream = ?9, enabled = ?10, is_custom = ?11,
                 custom_headers = ?12, custom_params = ?13, provider_type = ?14,
                 default_temperature = ?15, default_max_tokens = ?16, requires_api_key = ?17,
-                sort_order = ?18, updated_at = ?20",
+                sort_order = ?18, updated_at = ?20, api_keys = ?21",
             params![
                 provider.id,
                 provider.name,
@@ -623,6 +643,7 @@ impl<'a> SettingsRepository<'a> {
                 provider.sort_order,
                 if provider.created_at.is_empty() { &now } else { &provider.created_at },
                 now,
+                api_keys,
             ],
         )?;
 

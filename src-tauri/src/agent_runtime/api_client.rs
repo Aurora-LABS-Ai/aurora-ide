@@ -68,6 +68,15 @@ pub struct ApiRequest<'a> {
     /// it (Anthropic, MiniMax, GLM, DeepSeek). Impls without thinking
     /// support must ignore this flag silently.
     pub thinking_enabled: bool,
+    /// Explicit extended-thinking token budget the user picked for this
+    /// model (models whose reasoning control is a budget rather than an
+    /// effort tier — see `ModelReasoning` on the frontend).
+    ///
+    /// `None` means "no budget was chosen"; impls that need one derive it
+    /// from the effort tier instead. Only meaningful together with
+    /// [`Self::thinking_enabled`] — a budget never turns thinking on by
+    /// itself. Impls must clamp to whatever range their provider accepts.
+    pub thinking_budget_tokens: Option<u32>,
 }
 
 /// Schema entry for one tool the model may call.
@@ -214,6 +223,7 @@ mod tests {
             temperature: None,
             max_output_tokens: 16,
             thinking_enabled: false,
+            thinking_budget_tokens: None,
         };
         let result = client.stream(request, tx, cancel).await.expect("ok");
         let event = rx.recv().await.expect("event");

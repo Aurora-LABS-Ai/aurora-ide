@@ -121,6 +121,12 @@ export interface Message {
 // ============================================================
 export interface ProviderConfig {
   apiKey: string;
+  /**
+   * API-key POOL. When it holds more than one key the Rust runtime rotates
+   * round-robin per turn and fails over to the next on a 401/429/5xx.
+   * Empty/undefined → only `apiKey` is used.
+   */
+  apiKeys?: string[];
   baseUrl: string;
 
   // Context management (read from DB)

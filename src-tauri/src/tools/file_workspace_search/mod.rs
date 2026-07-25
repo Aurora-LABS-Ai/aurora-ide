@@ -10,7 +10,7 @@
 //! submodule so a future-Sub can swap an implementation without
 //! pulling in the rest of the bucket.
 //!
-//! ## Tool roster (9 registered)
+//! ## Tool roster (10 registered)
 //!
 //! Refined from the original 16: read/edit families collapsed to one
 //! tool each, delete + folder-delete merged, folder_move generalised.
@@ -23,9 +23,16 @@
 //! | `move_path`        | move/rename a file OR folder (`std::fs::rename`)                              |
 //! | `delete_path`      | delete a file, or a folder with `recursive:true`                             |
 //! | `folder_create`    | `commands::create_folder`                                                    |
-//! | `grep`             | `commands::ripgrep_search`                                                   |
-//! | `workspace_tree`   | `commands::read_directory` (recursed via manual stack)                       |
+//! | `glob`             | find files by NAME/path shape (`rg --files --glob`)                          |
+//! | `grep`             | find files by CONTENT (`commands::ripgrep_search`)                           |
+//! | `workspace_tree`   | budget-bounded structure map (`commands::read_directory`)                    |
 //! | `auroro_websearch` | `commands::aurora_websearch`                                                 |
+//!
+//! The three discovery tools answer three different questions and are
+//! deliberately not interchangeable: `glob` for "what is this file called",
+//! `grep` for "where does this text appear", `workspace_tree` for "how is this
+//! project laid out". Before `glob` existed a model that knew a filename had to
+//! reach for one of the other two, which is why the tree was over-used.
 //!
 //! Internal (unregistered) helpers: `multi_file_read` (batch reader for
 //! `file_read`), `search_replace` (diff/result helpers for `file_edit` /
@@ -56,6 +63,7 @@ pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
 pub mod folder_create;
+pub mod glob;
 pub mod grep;
 pub mod move_path;
 /// Internal: the parallel batch reader, reused by `file_read`'s `paths`
@@ -96,6 +104,7 @@ pub fn register(
     reg.register(Arc::new(file_edit::FileEditTool::new(sink.clone())));
     reg.register(Arc::new(move_path::MovePathTool::new(sink.clone())));
     reg.register(Arc::new(delete_path::DeletePathTool::new(sink.clone())));
+    reg.register(Arc::new(glob::GlobTool));
     reg.register(Arc::new(grep::GrepTool));
     reg.register(Arc::new(workspace_tree::WorkspaceTreeTool));
     reg.register(Arc::new(file_write::FileWriteTool::new(sink.clone())));
@@ -115,6 +124,7 @@ pub const TOOL_NAMES: &[&str] = &[
     "file_edit",
     "move_path",
     "delete_path",
+    "glob",
     "grep",
     "workspace_tree",
     "file_write",
@@ -490,8 +500,8 @@ mod tests {
     fn register_mounts_all_bucket_tools() {
         let mut reg = ToolRegistry::new();
         register(&mut reg, test_sink());
-        assert_eq!(reg.len(), TOOL_NAMES.len(), "expected 9 tools in bucket");
-        assert_eq!(TOOL_NAMES.len(), 9);
+        assert_eq!(reg.len(), TOOL_NAMES.len(), "expected 10 tools in bucket");
+        assert_eq!(TOOL_NAMES.len(), 10);
 
         let registered: HashSet<String> = reg.names().into_iter().collect();
         for &name in TOOL_NAMES {

@@ -30,7 +30,6 @@ import { themeService, getMonacoThemeId } from '../../services/theme-service';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { isTauri } from '../../lib/tauri';
 import { Search, Settings, Eye, FileCode, Columns, AlertTriangle, FileWarning } from 'lucide-react';
-import { BrowserTab } from './BrowserTab';
 import { MarkdownPreview } from './MarkdownPreview';
 import {
   registerMonacoEditorForPath,
@@ -354,17 +353,6 @@ export const CodeEditor: React.FC = () => {
           </p>
         </div>
       </div>
-    );
-  }
-
-  // Browser tab
-  if (activeTab.type === 'browser') {
-    return (
-      <BrowserTab
-        tabId={activeTab.id}
-        url={activeTab.url || 'about:blank'}
-        adoptedLabel={activeTab.adoptedBrowserLabel}
-      />
     );
   }
 

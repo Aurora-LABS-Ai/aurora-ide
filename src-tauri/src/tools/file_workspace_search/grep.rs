@@ -24,6 +24,11 @@ impl ToolExecutor for GrepTool {
         "grep"
     }
 
+    /// Read-only search — safe alongside other reads in the same batch.
+    fn concurrency_safe(&self) -> bool {
+        true
+    }
+
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "grep".into(),

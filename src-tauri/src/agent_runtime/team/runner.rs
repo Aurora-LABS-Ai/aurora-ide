@@ -61,7 +61,9 @@ use super::bus::{TeamBus, TeamStreamer};
 use super::orchestrator::{
     AgentSpec, ConveneRequest, TeamSession, LEAD_AGENT_ID, TEAM_SIZE_HARD_CEILING,
 };
-use super::types::{AgentRecord, AgentStatus, ChannelEvent, ChannelEventKind, TeamProjectState};
+use super::types::{
+    AgentRecord, AgentStatus, ChannelEvent, ChannelEventKind, TeamPhase, TeamProjectState,
+};
 use super::workspace::{now_rfc3339, DEFAULT_CHANNEL_TAIL};
 
 /// Fallback output-token budget used ONLY when the provider config doesn't
@@ -410,7 +412,28 @@ async fn run_planning_inner(
         },
     )?;
 
+    mark_team_planning(session);
+
     Ok(())
+}
+
+/// Record that the planning round finished: standup posted, scopes locked.
+///
+/// The comment above ("phase stays Planning") described an intent the code
+/// never carried out — `TeamPhase::Planning` was declared in the enum and
+/// assigned nowhere, so a fully convened team with locked assignments kept
+/// reporting `Forming` ("Roster not yet assembled") until the build began.
+/// Both planning entry points end here.
+///
+/// Best-effort: a manifest that cannot be read or written must not fail a
+/// planning round that otherwise succeeded — the phase is display and
+/// gating state, not the work product.
+fn mark_team_planning(session: &TeamSession) {
+    if let Ok(Some(mut team)) = session.workspace().read_team() {
+        team.phase = TeamPhase::Planning;
+        team.updated_at = now_rfc3339();
+        let _ = session.workspace().write_team(&team);
+    }
 }
 
 // ─── dispatch with an agent-defined roster ────────────────────────────────
@@ -537,6 +560,8 @@ pub async fn run_assigned_planning(
         },
     )?;
 
+    mark_team_planning(&session);
+
     session.workspace().load_state(Some(DEFAULT_CHANNEL_TAIL))
 }
 
@@ -570,6 +595,7 @@ pub(crate) async fn complete_text(
         temperature: None,
         max_output_tokens,
         thinking_enabled: false,
+        thinking_budget_tokens: None,
     };
 
     let (tx, mut rx) = mpsc::channel::<AssistantEvent>(64);
@@ -704,9 +730,29 @@ pub(crate) fn is_meta_role(role: &str) -> bool {
         "gatekeeper",
         "overseer",
     ];
-    role.split(|c: char| !c.is_ascii_alphanumeric())
+    let tokens: Vec<String> = role
+        .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|t| !t.is_empty())
-        .any(|t| META.contains(&t.to_ascii_lowercase().as_str()))
+        .map(str::to_ascii_lowercase)
+        .collect();
+
+    // `<thing>-owner` is the shape `builder_role_from_scope` emits, so inside
+    // that suffix a meta word is only meta when it IS the thing owned, not
+    // when it merely qualifies one:
+    //
+    //   integration-owner   → owns "integration"        → meta
+    //   review-owner        → owns "review"             → meta
+    //   review-page-owner   → owns the review PAGE      → builder
+    //   preview-owner       → "preview" isn't meta      → builder
+    //
+    // Plain token matching got the third case wrong and relabelled a real
+    // builder out from under the Lead.
+    if tokens.last().is_some_and(|t| t == "owner") {
+        let owned = &tokens[..tokens.len() - 1];
+        return owned.len() == 1 && META.contains(&owned[0].as_str());
+    }
+
+    tokens.iter().any(|t| META.contains(&t.as_str()))
 }
 
 /// Derive a concrete builder role from an agent's first real scope path, so a

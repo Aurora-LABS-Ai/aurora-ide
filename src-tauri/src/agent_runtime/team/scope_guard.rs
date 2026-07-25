@@ -255,9 +255,22 @@ mod tests {
 
     #[test]
     fn prefix_match_respects_path_boundaries() {
-        // "src/app" must NOT match "src/application/..." — only true descendants.
-        let s = scope(vec![("ic-a", vec!["src/app"])]);
-        assert!(!evaluate_write(&s, "ic-a", "src/application/main.rs").allowed);
+        // "src/app" must NOT cover "src/application/..." — only true
+        // descendants. Asserted on the matcher, because under the current
+        // rule an unowned path is allowed regardless (see
+        // `unassigned_path_is_allowed_as_open_ground`), so a bare
+        // `evaluate_write` cannot distinguish "covered" from "open ground".
+        assert!(!path_covers("src/app", "src/application/main.rs"));
+        assert!(path_covers("src/app", "src/app/main.rs"));
+
+        // Policy view: the boundary only bites when a PEER owns the far side.
+        let s = scope(vec![
+            ("ic-a", vec!["src/app"]),
+            ("ic-b", vec!["src/application"]),
+        ]);
+        let d = evaluate_write(&s, "ic-a", "src/application/main.rs");
+        assert!(!d.allowed);
+        assert_eq!(d.blocking_owner.as_deref(), Some("ic-b"));
         assert!(evaluate_write(&s, "ic-a", "src/app/main.rs").allowed);
     }
 
@@ -301,7 +314,14 @@ mod tests {
     fn glob_suffix_on_owned_path_is_treated_as_dir() {
         let s = scope(vec![("ic-a", vec!["packages/core/**"])]);
         assert!(evaluate_write(&s, "ic-a", "packages/core/src/index.ts").allowed);
-        assert!(!evaluate_write(&s, "ic-a", "packages/other/index.ts").allowed);
+
+        // `packages/core/**` must not reach a sibling package.
+        assert!(!path_covers("packages/core/**", "packages/other/index.ts"));
+        let s2 = scope(vec![
+            ("ic-a", vec!["packages/core/**"]),
+            ("ic-b", vec!["packages/other/**"]),
+        ]);
+        assert!(!evaluate_write(&s2, "ic-a", "packages/other/index.ts").allowed);
     }
 
     #[test]
@@ -315,8 +335,12 @@ mod tests {
         assert!(evaluate_write(&s, "ic-a", "src/components/Stats.css").allowed);
         assert!(evaluate_write(&s, "ic-a", "src/components/Stats.tsx").allowed);
         assert!(evaluate_write(&s, "ic-a", "src/components/Tech.css").allowed);
-        // Other components stay out of scope.
-        assert!(!evaluate_write(&s, "ic-a", "src/components/Hero.css").allowed);
+        // Other components are not COVERED by the glob (they are merely
+        // open ground until a peer claims them — see the s2 case below).
+        assert!(!path_covers(
+            "src/components/Stats.*",
+            "src/components/Hero.css"
+        ));
         // A peer owning the glob blocks others with the owner named.
         let s2 = scope(vec![
             ("ic-a", vec!["src/components/Stats.*"]),
@@ -331,9 +355,17 @@ mod tests {
     fn mid_path_globs_and_double_star_work() {
         let s = scope(vec![("ic-a", vec!["src/*/styles", "lib/**/test.ts"])]);
         assert!(evaluate_write(&s, "ic-a", "src/app/styles/main.css").allowed);
-        assert!(!evaluate_write(&s, "ic-a", "src/app/other/main.css").allowed);
         assert!(evaluate_write(&s, "ic-a", "lib/a/b/test.ts").allowed);
         assert!(evaluate_write(&s, "ic-a", "lib/test.ts").allowed);
+
+        // `src/*/styles` matches one segment, then requires `styles` —
+        // `src/app/other/...` is outside the glob (open ground, not owned).
+        assert!(!path_covers("src/*/styles", "src/app/other/main.css"));
+        let s2 = scope(vec![
+            ("ic-a", vec!["src/*/styles"]),
+            ("ic-b", vec!["src/app/other"]),
+        ]);
+        assert!(!evaluate_write(&s2, "ic-a", "src/app/other/main.css").allowed);
     }
 
     #[test]

@@ -43,10 +43,6 @@ export interface PickedElement {
   note: string | null;
 }
 
-export interface BrowserWindowClosedEvent {
-  label: string;
-}
-
 /**
  * Mirror of `BrowserWindowSummary` on the Rust side. Used by the
  * live-windows store, the TitleBar adopt-popover, and the in-tab
@@ -59,20 +55,8 @@ export interface BrowserWindowSummary {
   stagewiseActive: boolean;
 }
 
-export interface BrowserWindowOpenedEvent extends BrowserWindowSummary {}
-
 export async function listBrowserWindows(): Promise<BrowserWindowSummary[]> {
   return auroraInvoke<BrowserWindowSummary[]>('list_browser_windows');
-}
-
-export async function onBrowserWindowOpened(
-  callback: (event: BrowserWindowOpenedEvent) => void,
-): Promise<() => void> {
-  const unlisten = await listen<BrowserWindowOpenedEvent>(
-    'aurora:browser-window-opened',
-    (event) => callback(event.payload),
-  );
-  return unlisten;
 }
 
 /** Bounds + host for an embedded (in-tab) browser webview. */
@@ -95,16 +79,6 @@ export interface CreateBrowserWindowOptions {
   alwaysOnTop?: boolean;
   /** When set, render as a child webview embedded in `hostLabel` (in-tab). */
   embed?: BrowserEmbedConfig;
-}
-
-/**
- * Build the conventional native-window label for a browser tab.
- * Must start with `browser-` to match the capability allowlist in
- * `src-tauri/capabilities/browser.json`.
- */
-export function browserWindowLabelFor(tabId: string): string {
-  const safe = tabId.replace(/[^A-Za-z0-9_-]/g, '');
-  return `browser-${safe || 'default'}`;
 }
 
 export async function createBrowserWindow(opts: CreateBrowserWindowOptions): Promise<void> {
@@ -164,21 +138,6 @@ export async function deactivateInspector(label: string): Promise<void> {
   await auroraInvoke('browser_deactivate_inspector', { label });
 }
 
-export async function clearInspectorSelection(label: string): Promise<void> {
-  await auroraInvoke('browser_clear_selection', { label });
-}
-
-export async function activateStagewise(
-  label: string,
-  theme: BrowserThemeTokens,
-): Promise<void> {
-  await auroraInvoke('browser_activate_stagewise', { label, theme });
-}
-
-export async function deactivateStagewise(label: string): Promise<void> {
-  await auroraInvoke('browser_deactivate_stagewise', { label });
-}
-
 /**
  * Subscribe to picked-element events. The returned unsubscribe
  * function removes the listener; call it from the consumer's cleanup
@@ -190,20 +149,6 @@ export async function onPickedElement(
   const unlisten = await listen<PickedElement>('aurora:element-picked', (event) => {
     callback(event.payload);
   });
-  return unlisten;
-}
-
-/**
- * Subscribe to the close-event a native browser window emits when the
- * user closes it via the OS chrome.
- */
-export async function onBrowserWindowClosed(
-  callback: (event: BrowserWindowClosedEvent) => void,
-): Promise<() => void> {
-  const unlisten = await listen<BrowserWindowClosedEvent>(
-    'aurora:browser-window-closed',
-    (event) => callback(event.payload),
-  );
   return unlisten;
 }
 
@@ -280,25 +225,3 @@ export interface BrowserThemeTokens {
   shadow: string;
 }
 
-/**
- * Read the live theme tokens off Aurora's `<html>` element so we can
- * forward them into the previewed page (which is on a different
- * origin and therefore cannot see Aurora's CSS variables).
- */
-export function readBrowserThemeTokens(): BrowserThemeTokens {
-  const root = document.documentElement;
-  const cs = window.getComputedStyle(root);
-  const get = (name: string, fallback: string) => {
-    const value = cs.getPropertyValue(name).trim();
-    return value || fallback;
-  };
-  return {
-    background: get('--aurora-sidebar-background', '#0f1115'),
-    foreground: get('--aurora-editor-foreground', '#e4e4e7'),
-    border: get('--aurora-common-border', '#27272a'),
-    primary: get('--aurora-common-primary', '#6366f1'),
-    primaryForeground: get('--aurora-common-primary-foreground', '#ffffff'),
-    muted: get('--aurora-sidebar-foreground', '#a1a1aa'),
-    shadow: get('--aurora-common-shadow', 'rgba(0,0,0,0.45)'),
-  };
-}

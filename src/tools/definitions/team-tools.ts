@@ -18,7 +18,7 @@ export const teamShowTool: ToolDefinition = {
   type: "function",
   function: {
     name: "team_show",
-    description: `Reveal the live Agent Window Team screen for the current workspace. The embedded Team screen streams the team channel, roster/status, ownership map, board, and worker reports in real time. Use this so the user can watch the team work. Safe to call anytime; idempotent.`,
+    description: `Reveal the live Team panel (right side, beside the chat) for the current workspace. It streams the team group chat and each member's live work in real time. Use this so the user can watch the team work. Safe to call anytime; idempotent.`,
     parameters: { type: "object", properties: {}, required: [] },
   },
 };
@@ -27,7 +27,7 @@ export const teamStatusTool: ToolDefinition = {
   type: "function",
   function: {
     name: "team_status",
-    description: `Read the current team state without changing anything. Returns the background-run status (idle/running+phase/done/failed), roster (id/role/model/status), task totals, and published contracts. Use this to check where the team stands before deciding the next step.`,
+    description: `Read the current team state without changing anything. Returns the background-run status (idle/running/done/failed), live per-member states (working / waiting_input when a member waits on you / done / blocked, plus how many files each changed), and — once the run is finished — every member's own report. Use this to check where the team stands before deciding the next step.`,
     parameters: { type: "object", properties: {}, required: [] },
   },
 };
@@ -55,7 +55,7 @@ export const teamMessageTool: ToolDefinition = {
   type: "function",
   function: {
     name: "team_message",
-    description: `Say something in the team's group chat as the Lead. The ICs see your message in their team context while they work, and it shows live in the embedded Team screen. Use it to brief the team, answer a question you saw in team_chat, share a decision, or steer direction mid-run — all without stopping the background work.`,
+    description: `Say something to the team as the Lead. The message is posted in the group chat AND delivered directly into the working members' live conversations — they read it mid-work and act on it. Use it to share a decision, correct course, or steer direction mid-run without stopping anyone. Address one member with 'to'; omit it to reach everyone.`,
     parameters: {
       type: "object",
       properties: {
@@ -63,8 +63,58 @@ export const teamMessageTool: ToolDefinition = {
           type: "string",
           description: "Your message to the team (plain language).",
         },
+        to: {
+          type: "string",
+          description:
+            "Optional: one member's id (from team_status) to deliver to just them.",
+        },
       },
       required: ["text"],
+    },
+  },
+};
+
+export const teamReplyTool: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "team_reply",
+    description: `Answer a team member's question. When a member calls ask_lead it pauses (waiting_input) until you reply — a question arriving in this conversation carries a questionId; answer it with this tool and the member resumes immediately with your answer. Combine with team_grant_scope when the member asked for write access.`,
+    parameters: {
+      type: "object",
+      properties: {
+        questionId: {
+          type: "string",
+          description: "The questionId from the member's question.",
+        },
+        text: {
+          type: "string",
+          description: "Your answer, concrete and decisive (1-4 sentences).",
+        },
+      },
+      required: ["questionId", "text"],
+    },
+  },
+};
+
+export const teamGrantScopeTool: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "team_grant_scope",
+    description: `Grant a member write access to additional repo paths. Use when a member asks for access it genuinely needs (usually via ask_lead). Granted paths are transferred from any previous owner so ownership never overlaps, and the grant is announced in the team chat. Only grant paths whose transfer won't break another member's in-flight work.`,
+    parameters: {
+      type: "object",
+      properties: {
+        agentId: {
+          type: "string",
+          description: "The member's id (from team_status or its question).",
+        },
+        paths: {
+          type: "array",
+          items: { type: "string" },
+          description: "Repo-relative paths to add to the member's scope.",
+        },
+      },
+      required: ["agentId", "paths"],
     },
   },
 };
@@ -145,6 +195,8 @@ export const teamTools: ToolDefinition[] = [
   teamStatusTool,
   teamChatTool,
   teamMessageTool,
+  teamReplyTool,
+  teamGrantScopeTool,
   teamDispatchTool,
   teamRemoveAgentTool,
   teamDisbandTool,

@@ -30,6 +30,7 @@ import { useEffect } from "react";
 import {
   ackRunStatus,
   getRunStatus,
+  leadInbox,
   resolveProjectId,
   subscribeTeamEvents,
 } from "../../services/team-client";
@@ -51,12 +52,24 @@ type Notice = {
   originSurface?: string;
   /** Dispatcher run id — used to ack the run durably at delivery time. */
   runId?: string;
+  /**
+   * What this notice is. Completion reports ack the run at delivery;
+   * member questions must NOT (the run is still going).
+   */
+  kind?: "completion" | "question";
 };
 
 const AGENT_WINDOW_SURFACE = "agent-window";
 
 /** How often the safety poll reads `team_run_status` for the active project. */
 const RUN_STATUS_POLL_MS = 7000;
+
+/**
+ * How often the lead-inbox poll checks for member questions. Faster than the
+ * status poll: a member asking the Lead is paused (`waiting_input`) until the
+ * answer arrives, so latency here is a member's idle time.
+ */
+const LEAD_INBOX_POLL_MS = 2500;
 
 // Module scope: one subscription + one active sender + pending reports.
 let activeSender: SendFn | null = null;
@@ -71,6 +84,10 @@ const handledEventIds = new Set<string>();
 // Dedupe DELIVERY across the live stream and the safety poll: keyed by run so a
 // completion is reported once even when both paths observe it.
 const handledRuns = new Set<string>();
+// Member questions already injected into the Lead's conversation (by ticket id).
+const handledQuestions = new Set<string>();
+let inboxPollStarted = false;
+let inboxPollInFlight = false;
 
 /**
  * Stable per-run key shared by both delivery paths. Prefers the dispatcher's
@@ -210,8 +227,9 @@ function sendNow(notice: Notice): void {
   // Durable exactly-once: flip the dispatcher's `acknowledged` flag the moment
   // the report is actually handed to the Lead. A window reload after this point
   // can never re-deliver the completion (and so never re-trigger the work).
+  // Member QUESTIONS never ack — the run is still going.
   const root = chat.projectRoot;
-  if (root) {
+  if (root && notice.kind !== "question") {
     void ackRunStatus(root, notice.runId).catch(() => {
       /* best-effort; the in-memory handledRuns set still dedupes this session */
     });
@@ -329,6 +347,55 @@ async function pollRunStatusOnce(): Promise<void> {
   }
 }
 
+const questionPrompt = (q: {
+  id: string;
+  role: string;
+  from: string;
+  question: string;
+}): string =>
+  `[Team question — ${q.role} is paused, waiting on your answer]
+${q.question}
+
+` +
+  `Answer NOW with team_reply(questionId: "${q.id}", text: "<your answer>"). ` +
+  "If they asked for write access to specific paths and you agree, also call " +
+  `team_grant_scope(agentId: "${q.from}", paths: [...]). ` +
+  "Be concrete and decisive — the member resumes the moment your reply lands, and it gives up waiting after a few minutes.";
+
+/**
+ * Lead-inbox poll: pick up questions members routed to the real Lead
+ * (ask_lead → `waiting_input`) and inject each into the Lead's conversation
+ * exactly once. The member is paused until the Lead's team_reply lands, so
+ * this runs at a tighter interval than the completion safety poll.
+ */
+async function pollLeadInboxOnce(): Promise<void> {
+  if (inboxPollInFlight) return;
+  if (!isAuroraRuntimeAvailable()) return;
+  if (!useSettingsStore.getState().teamEnabled) return;
+  const root = useAgentChatStore.getState().projectRoot;
+  if (!root) return;
+  inboxPollInFlight = true;
+  try {
+    const questions = await leadInbox(root);
+    if (questions.length === 0) return;
+    const projectId = await resolveProjectId(root);
+    for (const q of questions) {
+      if (handledQuestions.has(q.id)) continue;
+      handledQuestions.add(q.id);
+      await deliverOrBuffer({
+        text: questionPrompt(q),
+        projectId,
+        runId: q.runId,
+        kind: "question",
+      });
+    }
+  } catch {
+    // Transient — try next tick.
+  } finally {
+    inboxPollInFlight = false;
+  }
+}
+
 /**
  * Register `handleSend` as the completion-report sender (flushing any report
  * that landed while no sender was mounted) and, once per window, start the
@@ -376,6 +443,14 @@ export function useAgentTeamNotifier(handleSend: SendFn): void {
       window.setInterval(() => {
         void pollRunStatusOnce();
       }, RUN_STATUS_POLL_MS);
+    }
+    // App-lifetime lead-inbox poll: member questions reach the real Lead
+    // while it (and the user) sit in the conversation.
+    if (!inboxPollStarted) {
+      inboxPollStarted = true;
+      window.setInterval(() => {
+        void pollLeadInboxOnce();
+      }, LEAD_INBOX_POLL_MS);
     }
   }, []);
 }

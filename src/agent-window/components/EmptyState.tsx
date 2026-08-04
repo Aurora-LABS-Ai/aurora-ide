@@ -6,46 +6,46 @@
  * floats above the centered composer (not docked at the bottom), with a row of
  * suggestion starters underneath.
  *
+ * The starters are PROJECT-AWARE — the same four opening moves the IDE chat
+ * panel offers, built by the shared `buildStarterPrompts` and named after the
+ * workspace this window is scoped to. They were previously four fixed generic
+ * lines ("Find a bug", "Write tests"), which asked the user to supply the
+ * context the product already had.
+ *
  * Isolated by design — all colour comes from `--agw-*` tokens; the composer is
  * reused (controlled here so a suggestion can prefill the draft).
  */
 
-import React from "react";
+import React, { useMemo } from "react";
 
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
 import { useAgentChatStore } from "../store/useAgentChatStore";
 import { newChatDraftKey, useAgentDraftStore } from "../store/useAgentDraftStore";
 import { AgentComposer } from "./AgentComposer";
+import { ProjectSwitcher } from "./ProjectSwitcher";
+import { useWorkspaceSummary } from "../../hooks/useWorkspaceSummary";
+import {
+  buildStarterPrompts,
+  type StarterPromptKind,
+} from "../../services/workspace-starter-prompts";
 import type { AttachedPromptChip } from "../../services/thread-service";
 
-interface Suggestion {
-  icon: AgentIconName;
-  label: string;
-  prompt: string;
-}
-
-const SUGGESTIONS: Suggestion[] = [
-  {
-    icon: "files",
-    label: "Explain this project",
-    prompt: "Give me a high-level tour of this project's architecture.",
-  },
-  {
-    icon: "search",
-    label: "Find a bug",
-    prompt: "Help me find and fix a bug. Here's what's happening: ",
-  },
-  {
-    icon: "plus",
-    label: "Build a feature",
-    prompt: "I want to add a new feature. Here's the idea: ",
-  },
-  {
-    icon: "review",
-    label: "Write tests",
-    prompt: "Write tests for ",
-  },
-];
+/**
+ * Semantic starter kind -> `AgentIcon` glyph.
+ *
+ * The IDE maps the same kinds onto lucide; only the glyph family differs, so a
+ * copy change lands on both surfaces at once. `review` and `debug` share
+ * `shield` deliberately — both are "what is wrong here" jobs.
+ */
+const KIND_ICONS: Record<StarterPromptKind, AgentIconName> = {
+  "getting-started": "book",
+  architecture: "workspace-tree",
+  review: "shield",
+  debug: "shield",
+  plan: "file-edit",
+  tests: "checklist",
+  "read-first": "book-open",
+};
 
 interface EmptyStateProps {
   /** Send the first message (materialises the thread). */
@@ -54,28 +54,6 @@ interface EmptyStateProps {
   sending?: boolean;
   /** Cancel the in-flight turn. */
   onStop?: () => void;
-}
-
-/** Last segment of a path — the folder you actually think of the project as. */
-function folderName(path: string): string {
-  const parts = path.split(/[\\/]+/).filter(Boolean);
-  return parts[parts.length - 1] ?? path;
-}
-
-/**
- * Everything above the folder, kept as context but visually subordinate.
- *
- * Long paths are elided from the LEFT (`…\Users\Alvan\projects`) because the
- * segments nearest the project are the ones that disambiguate it — truncating
- * the tail would strip exactly the part that tells two same-named folders
- * apart.
- */
-function parentPath(path: string): string {
-  const parts = path.split(/[\\/]+/).filter(Boolean);
-  if (parts.length <= 1) return "";
-  const parent = parts.slice(0, -1);
-  const shown = parent.length > 3 ? ["…", ...parent.slice(-3)] : parent;
-  return shown.join(" / ");
 }
 
 export const EmptyState: React.FC<EmptyStateProps> = ({
@@ -91,6 +69,17 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   const draft = useAgentDraftStore((s) => s.drafts[draftKey] ?? "");
   const setDraftText = useAgentDraftStore((s) => s.setDraft);
   const setDraft = (text: string) => setDraftText(draftKey, text);
+
+  // Scans the workspace root (one level deep) for framework, git and dominant
+  // languages. Returns null until it resolves, so the builder's unnamed branch
+  // renders first — same four rows in the same order, so the summary landing
+  // refines the wording in place rather than reflowing the list.
+  const rootPath = projectRoot ?? "";
+  const summary = useWorkspaceSummary(rootPath);
+  const starters = useMemo(
+    () => buildStarterPrompts(rootPath, summary),
+    [rootPath, summary],
+  );
 
   return (
     <div
@@ -142,16 +131,12 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
          *  this, WHERE am I about to act, then the input. An empty state's job
          *  is to orient before it invites action, and "which folder is this
          *  agent pointed at" is the one fact you cannot recover from an empty
-         *  transcript. Hidden entirely when no workspace is open rather than
-         *  showing a placeholder — an empty path row would raise the question
-         *  it exists to answer. */}
-        {projectRoot && (
-          <div className="agw-home-root" title={projectRoot}>
-            <AgentIcon name="files" size={13} />
-            <span className="agw-home-root-name">{folderName(projectRoot)}</span>
-            <span className="agw-home-root-path">{parentPath(projectRoot)}</span>
-          </div>
-        )}
+         *  transcript.
+         *
+         *  It is also the CONTROL for changing project — see ProjectSwitcher,
+         *  which hides itself when no workspace is open rather than showing a
+         *  placeholder that raises the question it exists to answer. */}
+        <ProjectSwitcher />
 
         {/* Composer (centered) */}
         <AgentComposer
@@ -164,21 +149,22 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
           placeholder="Describe a task — type @ for files, / for skills and rules"
         />
 
-        {/* Suggestion starters — plain rows with dividers (no boxes). */}
+        {/* Starters — plain rows with dividers (no boxes). Keyed by `kind`, not
+         *  by label: the label is rewritten in place when the workspace scan
+         *  resolves, and a title key would remount every row (dropping hover and
+         *  keyboard focus) for what is only a wording refinement. */}
         <div className="mt-4">
-          {SUGGESTIONS.map((s) => (
+          {starters.map((starter) => (
             <button
-              key={s.label}
+              key={starter.kind}
               type="button"
               className="agw-suggestion"
-              onClick={() => setDraft(s.prompt)}
+              onClick={() => setDraft(starter.prompt)}
             >
-              <span
-                style={{ color: "var(--agw-text-subtle)", display: "inline-flex" }}
-              >
-                <AgentIcon name={s.icon} size={16} />
+              <span className="agw-suggestion-icon">
+                <AgentIcon name={KIND_ICONS[starter.kind]} size={16} />
               </span>
-              <span>{s.label}</span>
+              <span className="agw-suggestion-label">{starter.title}</span>
             </button>
           ))}
         </div>

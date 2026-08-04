@@ -1,5 +1,90 @@
 # Aurora IDE — Working Memory
 
+## RUNTIME DATA LOCATIONS (Windows) — stop hunting for these
+Root is `%LOCALAPPDATA%\AuroraIDE\` (`dirs::data_local_dir()` + `ROOT_NAME = "AuroraIDE"` in
+`src-tauri/src/paths.rs:22,34`). It is **NOT** `%APPDATA%\com.aurora.agent\` — that path in CLAUDE.md
+is WRONG, and the `identifier`/`productName` in tauri.conf.json (`com.aurora.agent` / `Aurora`) are
+not used for data paths at all. `%APPDATA%\Roaming\Aurora-Agent-IDE\Agent\Threads\` is a DEAD legacy
+store (last written May 2026) — ignore it.
+
+    C:\Users\<user>\AppData\Local\AuroraIDE\
+      sessions\        <thread_id>.jsonl          — the conversation log (one ConversationMessage/line)
+                       <thread_id>.meta.json      — title, workspaceRoot, model, tokenUsage, contextUsage
+                       <thread_id>.rich.jsonl     — full-fidelity tool results (history copy is clamped)
+                       <thread_id>.todos.json / .artifacts.json / .tool-results\
+      data\aurora.db   — SQLite (llm_providers, threads, workspace_state, …) + -wal / -shm
+      checkpoints\ config\ typing-assist\
+
+`paths::sessions_dir()` returns `<root>/sessions` — the doc comment in `lib.rs` claiming
+`<app_data>/agent_v2/` is STALE, there is no `agent_v2` folder on disk. To find the thread behind a
+report, grep the sessions dir for a distinctive string from the transcript
+(`grep -l "<symbol>" *.jsonl`) then read its `.meta.json` for model + workspaceRoot.
+
+## 2026-07-30 — MCP naming, shell_read_output, honest timeouts, prompt (DONE, uncommitted, needs tauri:dev)
+Driven by an agent self-report from inside Aurora (7 asks). 5 were real; 2 declined with reasons. Order was the
+user's. **Items 1-5 done; item 6 (plan/todo) deliberately NOT started — see the next block.**
+
+1. **MCP callable naming was Aurora's bug, not the model's.** `getMcpToolsSummary()` (`src/services/mcp-tools.ts`)
+   injected a SECOND tool inventory into the system prompt listing only display names via
+   `formatMcpToolLabel` — which title-cases and splits on `_`, so `events_get-response-body` rendered as
+   "Events Get-response-body" and **cannot be inverted**. It then said "internally, MCP tools are callable by a
+   prefixed name" without ever printing one. The real callable was in the tool schema all along, so the model had
+   both and reached for the prettier, useless one. Fix: summary now prints `` `callable` — "display" `` and drops
+   per-tool descriptions (already in the schemas — pure token duplication). Extracted `mcpCallableName()` /
+   `mcpServerPrefix()`; the `mcp_{sanitizedServerId}_{tool}` rule had been inlined at 3 sites that could drift
+   apart. `agent-prompt.ts` now separates MENTION (display name) from CALL (schema name).
+   NB the agent window runs through `AgentService`, so it DOES get this summary — not just the legacy IDE path.
+   `tool_suggest.rs` already recovers an underscore/hyphen slip within tolerance; left alone.
+2. **`shell_read_output` (new, `shell_editor_todo/shell_read_output.rs`).** `shell_list_processes`'s own
+   description told the model to "read that file with file_read", so its 15-call polling loop was COMPLIANCE.
+   New tool reads by `start_line` (same contract as file_read), returns `nextStartLine`, and `wait_ms` blocks
+   until output arrives or the run ends. Knows `running`/`ending` from the `[aurora]` footer, so it stops polling
+   a dead process. Log path now resolves via a new `IdeEventSink::background_log_path` default-`None` trait
+   method (deterministic from session+process id, so it works AFTER `cleanup_command_stream` drops the row).
+   `PROCESS_LOG_FOOTER_PREFIX` exported from `commands/mod.rs` so reader and writer cannot disagree.
+   `BUILTIN_TOOL_COUNT` 30 -> 31.
+3. **Timeouts were lying.** `execute_command_stream` returned a timeout as `exit_code: Some(1), success: false`
+   — indistinguishable from a real exit-1 failure, so the model "fixed" commands that were merely slow. Added
+   `timed_out` to `CommandOutput` + `ShellRunOutput`; the killed path now returns `exit_code: None` (it never
+   reported one) and `shell_execute` surfaces `timedOut` / `timeoutMs` / a `note` saying the output is PARTIAL.
+   Default timeout 30s -> 120s (30s is under a cold `tsc -b`/`cargo check` here), ceiling 5min -> 30min.
+   `shell_spawn` gained a `timeout` (lifetime cap, clamped, default 7d) — it previously had none at all.
+   Non-streaming `execute_command` still discards output on timeout (the future is dropped); only its message
+   improved. That path is read_lints + tests, not the agent's shell path.
+4/5. **Prompt.** Added a `## Shell Commands` section (there was none — one line about grep timeouts). Shell
+   choice, no mixed syntax, pass `timeout`, `timedOut` != failure, spawn+read_output instead of polling, kill
+   what you start. `model_facing_summary()` (Rust) now names the user's default and warns off `cmd` ONLY when
+   another shell exists. Also: corrected the now-wrong `file_read` bullet (a 1-element `paths` + range is
+   coerced now), documented `force_full_content`, noted `read_lints` runs whole-project checkers so it should be
+   batched, and replaced vague behavioural lines with a two-strikes loop breaker, unknown-tool recovery, batched
+   reads, and report-outcomes-honestly.
+
+DECLINED, with reasons: **MCP live state** ("192 events captured") — MCP has no generic runtime-state surface;
+would mean hardcoding per-server knowledge. **`auto_lint: true` on every edit** — `read_lints` runs
+`pnpm exec tsc -b`, `cargo check`, `python -m compileall .` on the WHOLE project, so a 5-file refactor would be
+5 full builds. The real want is a fast single-file syntax check; different feature.
+PARTIALLY REAL: edit staleness. `read_tracker::was_seen` already refuses editing an unread file, but tracks
+*whether*, not *which version* — a content hash would catch external (Monaco/formatter) changes. Not built.
+
+Verified: 899 Rust (was 891), 249 frontend (was 245), tsc clean, eslint clean on touched files, clippy clean on
+every touched Rust file. NOT runtime-verified — no `pnpm tauri:dev` run.
+
+## NEXT UP (not started): rebuild plan/todo as Claude-Code-style task tracking
+User's words: "for plan and todo we need entire refctor" and "our aurora agentwindow agent runtime todo read
+write will be same as your claude code tracking progress". So the target is **parity with Claude Code's task
+tools**, not a patch on the existing ones. Required shape:
+- Create and update as SEPARATE ops; update addresses one task by id and sets one field (status, subject,
+  description, activeForm, owner, metadata).
+- Statuses `pending -> in_progress -> completed`, plus `deleted` as a real terminal state that removes the task.
+- `activeForm`: present-continuous label shown while a task is in_progress (spinner text), distinct from the
+  imperative `subject`.
+- Dependencies first-class: `addBlocks` / `addBlockedBy`, so ordering lives in the graph, not in list position.
+- List + get, and a staleness rule (re-read before updating).
+- Exactly one in_progress; never mark completed on partial work or failing tests — create a follow-up instead.
+Existing problems to fold in: `todo_read` hands over plan steps with NO created/updated timestamps, a stale plan
+takes over authoritatively, and there is no `plan_close`/`plan_archive` — only `plan_write` and
+`plan_step_update` exist, so the sole escape is marking every step done by hand.
+
 ## Task (2026-07-25): agent harness reliability trio — DONE (uncommitted, NEEDS RUST REBUILD)
 User: "frontier models like Opus call the wrong tools — our implementation has an issue; it isn't mature enough
 for a large project." Audited the loop (not the tools — the tool layer is fine: read-before-edit guard, spill,
@@ -2598,3 +2683,865 @@ User: "agent window works (runs commands, edits files) but does not FEEL mature 
 **Deliberately NOT fixed — the "TOOL NAME" card.** `getProfessionalToolName` title-cases any unmapped name, so a model hallucinating `TOOL_NAME` renders as "TOOL NAME" mid-stream. Distinguishing unknown from known requires the tool roster, which lives in the Rust registry as the single source of truth; duplicating it in the frontend would recreate the exact drift class of bug as the dock regression above. The card already settles to a red error when the result lands.
 
 **Reported, not fixed (pre-existing):** `toolStatus()` decides failure from an `[error]`/`[rejected]` string PREFIX rather than the structured `is_error` flag that already exists on both paths. Works today because both paths add the prefix — a convention standing in for a field.
+
+## Task (2026-07-25): Agent Team redesigned into a real multi-agent engine — DONE (uncommitted)
+User: "redesign the entire team implementation into something really matured". Brief = the "senior boss
+with 5 juniors" model: members verify with real commands, ask the REAL boss and wait, investigate-only
+tasks are legal, members are reachable multi-turn agents, boss steers mid-run.
+- **Members are real agents**: new `team/member_actor.rs` runs each member on `ConversationRuntime`
+  (compaction/trim/spill/streaming) with real registry tools (file bucket + shell_execute via agent_safety).
+  Deleted `build_runner.rs` (2,334-line bespoke loop, 16-iter cap, idle nudges, alias table).
+- **Real messaging**: new `team/mailbox.rs` (`TeamComms`) — mailboxes injected via the session queued-message
+  slot at tool-result boundaries; `ask_member` waits on the addressed member's actual `reply` (ticketed
+  oneshot, honest timeout); `ask_lead` parks on a lead inbox polled by `useAgentTeamNotifier` (2.5s) and
+  injected into the REAL chat Lead; Lead answers via `team_reply` / grants via `team_grant_scope`
+  (structured — `GRANT:` text parsing and all impersonation model calls deleted).
+- **Done = the member's `report` tool** (done|blocked + summary); zero changed files is legal. Changed files
+  tracked by the `ScopeGatedTool` decorator (runtime `Hook` can't veto → enforcement is a wrapper).
+  `AgentStatus` = idle|working|waiting_input|blocked|failed|done (serde aliases load old brains);
+  `TeamPhase` = forming|working|done|disbanded.
+- **Dispatch rewritten**: one tokio task per member; `TeamRunStatus` carries live `members[]` + terminal
+  `reports[]`; graceful cancel (token, 20s grace, then abort); 45-min watchdog; `run.json` snapshot.
+  Blocked members don't fail the run — the Lead decides. Brain writes serialized via `TeamComms::lock_brain`
+  (members are multi-task now; the old single-task interleave atomicity argument is gone).
+- **Deleted dead regime**: `integration_runner.rs`, `run_planning` auto-planner, gate plumbing end-to-end
+  (Rust AppSettings + settings repo + useSettingsStore + types), desiredIcs, 14 dead Tauri commands.
+  `team_message` now actually DELIVERS into member conversations (was channel-tail-maybe).
+- Verified: cargo test --lib 740/740 green (67 team tests), tsc -b clean, eslint clean. NOT runtime-tested
+  yet — needs `pnpm tauri:dev` rebuild + live run (ask_lead round-trip, member shell, streaming under
+  phase "working").
+- **Team screen redesign probe** (user asked for complete frontend redesign): 5 live variants at
+  `C:\Users\Alvan\Documents\aurora-team-screen-redesign.html` — recommended "Mission strip" (member status
+  cards on top, chat below) + "Debrief" terminal state (per-member report cards). Awaiting user's pick
+  before implementing.
+
+## Team UI — FINAL VERDICT (2026-07-25, user-approved, build in progress)
+Probe iterations landed on this exact design (probe: C:\Users\Alvan\Documents\aurora-team-redesign-v2.html, ★ card):
+- **Team page is REMOVED.** The team lives ONLY in the agent-window right rail (like Canvas); rail is the one
+  team surface; `team_show` opens the rail. Rail should be resizable later.
+- **Rail = group chat, messenger style**: member bubbles stack LEFT (per-member tint + name label), Lead
+  bubbles stack RIGHT (accent tint). System/lifecycle lines centered. **NO composer** — the user never texts
+  the team; footer note "view only — talk to the team through the Lead".
+- **Members dropdown, rail top-right**: "Members ▾" → "Team chat" entry + one row per member (state dot,
+  name SHIMMERS while that member streams, file count / done / waiting). Picking a member lays their
+  individual streaming view ON TOP of the group chat IN THE SAME AREA (exactly like today's chat↔transcript
+  swap, but driven from the dropdown, no sidebar). "‹ Team chat" back link returns.
+- **Main chat carries only TRACES, never team content** (no duplication):
+  - INBOUND (member→Lead via ask_lead): the notifier-injected question turn renders as a compact PILL on the
+    user side — member-colored name + "messaged you" — NOT as a full user bubble. Model still receives the
+    full text; only the UI collapses it. Clicking the pill opens the Team rail.
+  - OUTBOUND (Lead→team): team_message / team_reply / team_grant_scope render as their normal tool cards in
+    the main chat ("sent — in Team chat"); the CONTENT renders as the Lead's right-stacked bubble in the
+    group chat.
+- Rationale: one conversation, two rooms, zero duplicated content; the rail sits beside the main chat which
+  the ask_lead loop needs (member question pill + Lead answer + member resuming all visible at once).
+
+## Task (2026-07-25): Team UI final build — Team panel in right dock — DONE (uncommitted)
+Implemented the FINAL VERDICT design (see entry above). Frontend only; needs runtime verify.
+- NEW `src/agent-window/components/team/TeamPanel.tsx` — the one team surface, a right-dock tab
+  ("team" added to DockTabKind/labels/RightDock + menu, icon `users`). Group chat messenger-style:
+  members left (`.agw-tp-member`, per-member tint via existing bubble pipeline), Lead RIGHT
+  (`.agw-tp-lead`, accent-tinted, self-end). Members dropdown top-right uses the SHARED popover system
+  (`.agw-menu` + `.agw-menu-item`, same as model selector / context tooltip — user requirement);
+  names shimmer (`agw-shimmer`) while that member streams; rows show status word (waiting_input amber).
+  Picking a member swaps in `MemberTranscript` (ported verbatim from TeamScreen incl. draft hand-off
+  baseline logic) in the same area; `‹ Team chat` returns. NO composer — footer "view only — talk to
+  the team through the Lead".
+- DELETED `TeamScreen.tsx` + centerView "team" takeover: useAgentUiStore lost CenterView/openTeam/closeTeam;
+  AgentShell always renders ConversationPane; LeftRail Team entry + CommandCenter "Open agent team" +
+  `requestOpenTeamView` (team_show/team_dispatch) all `openTab("team")` on useAgentWorkspaceStore.
+  ~20 dead `.agw-team-*` CSS rules replaced by `.agw-tp-*` (validated with postcss).
+- MAIN-CHAT TRACES (MessageBubble): user-role turns matching the notifier's stable markers render as a
+  compact right-side pill, NOT a bubble — `[Team question — <role> is paused` → "<role> messaged you"
+  (amber pulsing dot) and `[Automatic team notification` → "Team run finished — report requested"
+  (green dot). Click opens the Team tab (lazy store import to avoid an import cycle). Model still
+  receives full text; only the UI collapses it. Lead's team_reply/team_message/team_grant_scope show
+  as their normal tool cards; content renders in the group chat (Rust posts it as a lead channel event).
+- Verified: tsc -b clean, eslint clean (touched files), agent-window vitest 17 files / 79 tests green,
+  postcss parse clean. NOT runtime-verified — needs `pnpm tauri:dev`: dropdown open/swap, lead-right
+  stacking, pill rendering on a real injected question, trace click opening the dock.
+
+## Team panel polish (2026-07-25, follow-up user feedback) — DONE
+- Per-member COLORED bubbles removed ("outside of professionalism"): both sides of the team group chat
+  now use the ONE neutral bubble material (`--agw-bubble-user`), members left / Lead right, identity via
+  name label + alignment only (Slack/Teams convention). `authorColor`/`bubbleTint` gone from TeamPanel;
+  dropdown names + member-view header neutral too (status dots stay — semantic state, not identity).
+- Long-message COMPACT VIEW on every settled team bubble incl. the Lead's: exported
+  `CollapsibleBubbleBody` from MessageBubble (the user-bubble 6-line clamp + fade + chevron) and wrapped
+  every settled group-chat message in it. Live drafts stay unclamped while streaming.
+- Verified: tsc, eslint, postcss, MessageBubble vitest — all clean. Runtime verify still pending.
+
+## Team panel bubble polish round 2 (2026-07-25) — DONE
+User corrections applied, all verified (tsc/eslint/postcss/vitest 79 green):
+- Long-message behavior is the TOOL-CARD contract, not clamp+expand: bubble body = `.agw-tp-clip`
+  (max-height 300px, inline scroll, no chevron, no fade, no grow). CollapsibleBubbleBody stayed
+  private to MessageBubble (user bubbles only).
+- Bubbles are ONE neutral material both sides (`--agw-bubble-user`), members left / Lead right.
+- Identity = the author NAME CHIP: `.agw-turn-label` (new stable class on MessageBubble's label span)
+  gets a chip treatment inside team bubbles — `color-mix(currentColor 13%)` wash so the chip always
+  matches the label color passed in (member color / muted for Lead).
+- @mentions INSIDE message text render as chips (Slack convention, one uniform accent style):
+  `prettifyMentions` markdown mode now emits `[@Name](#mention-<id>)`; AgentMarkdown's `a` component
+  intercepts `#mention-` hrefs and renders `.agw-mention-chip` spans (never an anchor). Works in group
+  chat AND member transcripts; plain mode (system banners) stays bare text.
+
+## 2026-07-25 — Team member views became dock TABS + bubble scroll-trap fix
+- User verdict: the in-place member swap ("‹ Team chat" overlay) was wrong for a tabbed dock — picking
+  a member in the Members dropdown now opens `member:<agentId>` as its OWN right-dock tab (like file
+  tabs: session-only, never persisted; re-dispatch mints new ids so a stale tab shows an honest "run
+  has ended" state). New `MemberPanel.tsx` owns the member transcript (poll + draft hand-off + its own
+  auto-scroll); `TeamPanel.tsx` is now group-chat-only. Shared bits split: pure helpers (displayName,
+  statusWord/Tone, draftEvents, hasDraftContent) → `team-ui.ts`; view atoms (LiveDraftTurn,
+  TeamChatSkeleton) → `team-atoms.tsx` (components-only, fast-refresh rule). Member tab pill shows the
+  member's identity-color dot (`.agw-tabpill-dot`, `authorColor`).
+- Scroll-trap root cause: `overscroll-behavior: contain` on `.agw-tp-clip` — Chromium treats every
+  `overflow:auto` box as a scroll container, so `contain` swallowed the wheel even on SHORT bubbles,
+  freezing the team feed whenever the cursor rested on a bubble. Removed `contain` there (default
+  chaining: long bubble scrolls in place, then hands off to the feed). Keep this in mind for any
+  future inner scroller inside a feed.
+- Store: `openMemberTab(agentId, title)` in useAgentWorkspaceStore; `DockTabKind` + "member",
+  `DockTabInstance.memberId`. tsc/eslint clean, 80/80 agent-window tests green. Runtime still unverified.
+
+## 2026-07-25 — Typography audit: Aurora agent window vs T3 Code (Alpha)
+- Measured both live windows with qg-probe + screen captures at the SAME 1.5x DPI (144), then read the
+  shipped CSS of each. T3 Code = Electron; its renderer CSS/fonts are on disk at
+  `%LOCALAPPDATA%\Programs\t3-code-desktop\resources\app.asar.unpacked\apps\server\dist\client\assets\`
+  (index-BsZYMPVf.css + index-C0HqD506.js) — no asar unpacking needed for future reference probes.
+- Finding (user's instinct was right, and it is NOT the typeface): T3 = DM Sans Variable, default UI
+  weight **500** (160 `font-medium` vs 55 `font-semibold`, 1 bold), tracking **0** almost everywhere,
+  chrome centred on 12/14px, hierarchy built with COLOR (muted #818181 on #161616). Aurora = Inter
+  Variable, **81% of weight declarations are >=600** (95x600 + 15x650 + 12x700, only one 400; all 20
+  inline `fontWeight` in .tsx are 600), global negative tracking (-0.006em, headings -0.014/-0.017em),
+  chrome centred on 10/11px (266 of ~310 size decls <=12px), hierarchy built with WEIGHT.
+  => semibold + negative tracking + 11px is what reads "dense/AI-app"; light + neutral tracking + 12px
+  reads "matured". Aurora's PROSE tier (15px/1.75, whole-px heading scale, no -webkit-font-smoothing)
+  is already good — the problem is the CHROME.
+- Also worth stealing: T3 paints a 3.5%-opacity fractal-noise grain over `body::after`. Both apps use
+  the exact same #161616 canvas; theirs reads as material, ours as a void.
+- ACTED ON IT the same session (all frontend, HMR-visible, no Rust rebuild):
+  * `.agw-root` gained a **weight scale** (`--agw-fw-body/medium/strong/display` = 400/500/600/700) and
+    ALL 151 `font-weight` literals in agent-window.css now resolve through it (118 medium, 27 strong,
+    5 display, 1 body), plus the 17 inline `fontWeight: 600` in .tsx → `var(--agw-fw-medium)`.
+    Promoted back to `strong`: pane title, active tab pill, settings nav title + active row,
+    `.agw-md` h1-h4 and `<strong>`. Demoted from display to strong: model effort, browser-suggest
+    head, ghost-accept, skill eyebrow/badge, image-done. Loudness of the whole window is now FOUR
+    numbers — retune there, never per-rule.
+  * Root `letter-spacing: -0.006em` → `normal`. Tracking is applied where the SIZE earns it; the prose
+    tier (`.agw-md` -0.009em) and headings (-0.014/-0.017em) keep theirs.
+  * Chrome type scale moved up one step: micro 10→11, label 11→12, ui 12→13, md 13→14 (md now equals
+    body deliberately; the scale is 11/12/13/14/15, five real steps).
+  * `AgentIcon` "chat" (conversation header + rail thread rows) redrawn: was an outlined bubble with
+    two interior text lines at the same 1.8 stroke — at 14-16px the interior collapsed into a smudge.
+    Now TWO staggered pill bars (long left / short right, 2.9 stroke) = this app's own transcript shape.
+    An intermediate "refined bubble" pass was rejected by the user as too similar; don't go back to it.
+- Verified: tsc clean, eslint clean (4 pre-existing exhaustive-deps warnings), 17/17 agent-window test
+  files green, and confirmed live in `pnpm tauri:dev` via screen capture. Comparison crops in scratchpad:
+  `cmp1.png` / `cmp2.png` (before, vs T3), `icon2.png` (new glyph at 6x).
+
+## 2026-07-25 — Composer rail: the dead footer became the ambient-state slot
+- The strip under the composer only ever held "AI can make mistakes…" (or a transient mic/refine
+  notice) while SIX cards stacked ABOVE the composer, each shoving the transcript down when it woke
+  up. New `components/composer-rail/`: `ComposerRail.tsx` (fixed-height strip — notice slot centred,
+  chip cluster absolutely positioned right so chips can never shift the text) + `RailChip.tsx`
+  (glyph + tabular readout + pulsing attention dot; opens its panel UPWARD in a shared `.agw-menu`
+  popover, pointerdown-capture + Esc to close, body mounted only while open so panel polling stays
+  off until then).
+- **The rule for adding a tenant: ambient → chip, turn-BLOCKING → card.** `ApprovalBar` and
+  `QuestionPrompt` (ask_question) deliberately KEEP their docked cards — a stalled agent hidden behind
+  a 12px chip is a hang the user cannot see. User picked this explicitly during the probe.
+- Moved into chips: `BackgroundTaskDock` + `AgentTaskPanel`, both now taking `variant="dock"|"popover"`
+  (popover = no card surface, no collapse toggle, `.agw-crail-panel` + scrolling body). Removed from
+  `ConversationPane`'s composer dock. Union rule for "which processes are visible" extracted to
+  `visibleProcesses(byThread, threadId)` in useAgentBackgroundStore so the chip count and the list it
+  opens cannot disagree.
+- Verified: tsc clean, eslint clean (4 pre-existing warnings), 18/18 test files incl. new
+  `ComposerRail.test.tsx` (6 tests: disclaimer vs notice, running/total count + attention only while
+  running, cancelled todo counts as closed, panel mounts only on click, one chip per system in stable
+  order). Rail confirmed rendering live in tauri:dev; the CHIP + POPOVER path is not yet runtime-
+  verified because nothing was spawned — first live run should start a background process and a
+  todo list.
+
+## 2026-07-28 — T3 Code (pingdotgg/t3code) capability audit vs Aurora agent window
+- Cloned to scratchpad (`.../scratchpad/t3code`, shallow). Shape is NOT ours: Node WS server wrapping
+  external CLI agents (codex/claude/cursor/opencode app-server over JSON-RPC) + React web app + Electron
+  shell. Provider adapters, remote access, and the WS transport do NOT transfer. What transfers is the
+  UI/capability model and the orchestration vocabulary (`docs/reference/encyclopedia.md` is the best file
+  in the repo: command → decider → domain event → projector → read model, plus reactors and receipts).
+- Confirmed gaps on our side (git grep): no git-worktree environments, no per-turn diff, no
+  pending-context model in the composer, no user keybindings file, no port discovery, no plan artifact,
+  no prompt stash. We DO already have: checkpoints (git CLI shadow repo), ReviewPanel, BrowserPanel +
+  browser tools, terminal, command center, attachments store, team runtime.
+- Ranked steal-list written for the user (worktree environments > turn diff > pending contexts > plan
+  artifact > port-discovery preview > keybindings file > prompt stash > agent browser cursor >
+  runtime receipts). Nothing implemented yet — awaiting direction.
+
+## 2026-07-28 — Plan Canvas + todo rebuild (end to end, NOT runtime-verified)
+- Plan mode now produces a real document: `<workspace>/.aurora/plans/<nnn>-<slug>.aurora.md`, YAML
+  frontmatter + markdown body, rendered live in the Canvas. Its steps ARE the task list. Full design +
+  file map in `DOCS/agent-plan-canvas.md`.
+- THE load-bearing decision: **prose is a document, step status is structured state.** A plan is NOT a
+  Canvas artifact — artifacts are append-only immutable versions, so a status flip would churn v2..v20
+  and fight the version picker. Status flips rewrite frontmatter ONLY; `document.rs` guarantees the body
+  round-trips byte-for-byte (incl. CRLF — do not normalise, it churns the user's diff every flip).
+- THE other rule: **a spinner must never lie.** An `in_progress` step carries `runId` (= the claiming
+  thread). The Canvas spins only when that thread is in `useAgentChatStore.liveTurns`; otherwise the
+  step renders "Paused" with inline help. Covers user-stops, window-close, and returning hours later.
+  A user-set in_progress (from the UI command) deliberately carries NO run claim, so it cannot spin.
+- Mode split is deliberate and enforced in `agent-execution-mode.ts`: `plan_write` = **Plan mode only**
+  (the one permitted write there; Agent mode must not rewrite what the user approved), `plan_step_update`
+  = **Agent/Team only** (authoring != marking progress). `plan_read`/`todo_read` everywhere.
+- TODOS WERE STRUCTURALLY UNFOLLOWABLE and are rebuilt: old `todo_write` emitted a Tauri event and
+  forgot — no read-back tool, no persistence (store was "memory-only"), full-replace every call, no ids.
+  After a compaction the agent re-invented the list from a summary. Now: durable
+  `<sessions_dir>/<thread>.todos.json`, stable ids carried forward by content, new `todo_read` (list +
+  cursor) and `todo_update` (one id), and EVERY result echoes the materialized list.
+- UNIFICATION: a plan always wins. `todo_store::resolve()` returns Plan-or-Todos; `todo_read` projects
+  plan steps transparently; `todo_write`/`todo_update` refuse to build a rival list and redirect to
+  `plan_step_update`. Plan step ids ARE the todo ids. `publish_plan_as_tasks()` fires the todo event on
+  every plan change so the Task panel/chip can never disagree with the Canvas.
+- BUILTIN_TOOL_COUNT 24 -> 29 (+3 plan, +2 todo). Non-browser registry count 16 -> 21; both pinned in
+  `tools/mod.rs` tests.
+- Verified: 841 Rust tests, 182 frontend tests, tsc, eslint all green. NOT runtime-verified — needs a
+  live Plan-mode conversation to confirm authoring, the spinner, and the paused state.
+
+## 2026-07-28 — Turn durations + Project details panel (NOT runtime-verified)
+- "Worked 4m" now renders greyed in every assistant turn footer beside Copy/Retry, and ticks live
+  ("Working 2m") while the turn streams. NO new persistence was needed: `ConversationMessage.timestamp`
+  is already on every message, so `buildTurns` just records `startedAt` (the prompting USER message —
+  queueing + model latency belong to the wait) and `endedAt` (the LAST assistant message merged into
+  the turn). `turnWorkedMs`/`formatWorkedDuration` in `components/timeline.ts` are pure + tested
+  (5 cases incl. clock skew -> null, per-turn scoping so idle hours never land on the next turn).
+  Live counter derives from a `now` clock advanced by the interval — do NOT setState inside the effect,
+  eslint `react-hooks/set-state-in-effect` blocks it.
+- PROJECT DETAILS opens as a right-dock TAB (`kind: "project"`, `projectRoot`), not a modal — user's
+  call, and it matches the member-tab precedent. Right-click a project in the rail -> "Project details".
+  New `openProjectTab(root, title)` on useAgentWorkspaceStore; `ProjectPanel.tsx` renders it.
+- Backend `commands/project_stats.rs` -> `project_stats_get(workspaceRoot)`. Reuses usage_stats' scan
+  shape and re-exports its DayUsage/ToolUsage/ModelUsage. KEY DIFFERENCE from usage_stats: it sums
+  PER-TURN durations for "time worked" instead of last-minus-first, which counts lunch. Both are
+  reported (`activeMs` vs `spanMs`). Also returns per-conversation rows, top models, top tools,
+  and the 5 longest turns WITH their prompt preview (a duration alone is trivia; the prompt is
+  actionable). `same_workspace()` normalises separators/case — raw string compare silently produced
+  empty projects.
+- Verified: 847 Rust tests, 187 frontend tests, tsc + eslint clean. NOT runtime-verified.
+
+## 2026-07-28 — One built-in doctrine (`design_guidelines`), built-in SKILLS removed
+- Aurora now ships EXACTLY ONE piece of built-in guidance: an adapted surface-philosophy doctrine.
+  It is deliberately **not** a skill — skills are a user-owned catalogue (listable, searchable,
+  toggleable, deletable) and this is a standing instruction. So it can never be listed or switched off.
+- TWO-PART DELIVERY (user's choice): (1) `SURFACE_DOCTRINE_CORE` in `src/services/surface-doctrine.ts`
+  rides in EVERY system prompt via `agent-prompt.ts` — ~10 lines of non-negotiables (no eyebrows /
+  no cardify-everything / no OK-Submit / no colour-only state / a spinner must never lie / reuse
+  --agw-* tokens / copy speaks to the user). (2) Full doctrine in Rust
+  `src-tauri/src/tools/design/doctrine.rs`, served by the `design_guidelines` tool with
+  `topic: visual|writing|both` so a copy task doesn't pay for the layout half.
+- CORE lives in TS and the depth lives in Rust ON PURPOSE — each has exactly one home, so there is no
+  second copy to drift. Do not duplicate CORE into Rust.
+- Content is ADAPTED not ported: marketing/pricing/conversion material dropped (irrelevant to in-app
+  surfaces); anti-slop gate, state coverage, a11y (WCAG 2.2 AA), and copy/psychology rules kept whole.
+- BUILT-IN SKILLS DELETED (all 6). They described Aurora's own stack (typescript, react-frontend,
+  tauri-rust, mcp-integration…) so they were noise in the catalogue whenever the user's workspace was
+  Python/Go/anything else. `BUILTIN_SKILLS` is now `[]`; the Skills page hides the "Built-in" filter
+  when its count is 0. Skills are now purely project + global.
+- `skills.test.ts` used the built-ins as fixtures; rewritten against stubbed WORKSPACE skills
+  (`stubWorkspaceSkills` helper) so the real behaviour (toggle gating, explicit-attachment bypass,
+  MAX_ENABLED_SKILLS cap, lookup, search) is still covered. GOTCHA: a discovered skill's storageKey is
+  derived from its SOURCE PATH lower-cased (`workspace:e:/repo/.aurora/skills/<id>/skill.md`), NOT its
+  id — toggles and explicit keys must use that shape.
+- BUILTIN_TOOL_COUNT 29 -> 30; non-browser registry 21 -> 22.
+- Verified: 853 Rust tests, 193 frontend tests, tsc + eslint clean. NOT runtime-verified.
+
+## 2026-07-29 — Agent turns ending mid-thought: output cap, not a network drop (IN PROGRESS, PAUSED)
+- SYMPTOM the user hit: model on `xhigh` reasoning thought for ~1 min, then the stream "ended out of
+  nowhere" with no answer and no error. Their pasted reasoning transcript (`.aurora/transcript.md`,
+  29,048 chars ≈ 7.2–7.8k tokens) stops mid-identifier (`usePrefersReduced`) with zero visible reply.
+- ROOT CAUSE (arithmetic, confirmed by reading the code — not runtime-observed): the output cap was
+  8192 (`conversation.rs` RuntimeConfig default + 4 frontend fallbacks). `anthropic_thinking_budget`
+  gave `xhigh` 90% OF that cap = 7,372 thinking tokens, leaving ~820 to answer in. On OpenAI-compat
+  and Responses, reasoning bills against the same `max_tokens`. Either way reasoning ate the whole
+  budget and the turn ended at the cap. The transcript size lands right on 7,372.
+- SECOND BUG, why it was silent: Rust DID detect it (`conversation.rs` `is_length_stop` emits an
+  `AssistantEvent::Error{recoverable:true}` saying the reply is cut off) but
+  `agent-runtime-client.ts` had `case "error": break;` — the ONLY event in that switch with no
+  callback. The warning was dropped on the floor, so the turn just stopped.
+- THIRD BUG (latent, not what bit here): all three SSE drivers treated stream EOF as a successful
+  turn (`None => break`, then `finish_reason.unwrap_or("stop")`). A dropped connection was
+  indistinguishable from a real completion.
+- FIXES APPLIED (uncommitted): (1) thinking budget is now ADDITIVE — tier multiples of the answer
+  budget (low ½×, medium 1×, high 2×, xhigh 3×) and `max_tokens` raised to answer+budget via new
+  `anthropic_max_tokens_with_thinking`, clamped to `ANTHROPIC_MAX_TOKENS_CEILING` 64k;
+  `customParams.max_tokens` still overrides (it merges last). (2) default cap 8192 → 16_384 in Rust
+  and a new `DEFAULT_MAX_OUTPUT_TOKENS` const replacing 4 scattered frontend fallbacks. (3) all three
+  drivers now track a terminator (`[DONE]` via new `frame_has_done_marker`, OpenAI `finish_reason`,
+  Anthropic `message_stop`, Responses `stop_reason`) and return `ApiError::Network` on EOF without
+  one. (4) keepalives (tcp 30s + h2 20s, `http2_keep_alive_while_idle`) on the 3 streaming clients —
+  deliberately still NO request timeout, a long think is legitimate. (5) runtime notices now surface:
+  new `onRuntimeNotice` on `AgentCallbacks`, new `notice` timeline kind + `appendNotice`, new
+  `NoticeCard.tsx` + `.agw-notice` CSS (mirrors `.agw-injection`, warning role, icon carries state so
+  it isn't colour-only). Rendered as its OWN marker, never appended to message content — a runtime
+  limit is not something the model said. `noticedMessages` set dedupes it against the `onError`
+  prose path.
+- VERIFIED SO FAR: `cargo check --lib` clean (before the new tests were added). NOT YET RUN:
+  `cargo test --lib api::` — new tests were appended to `api/openai_compat.rs` and `api/anthropic.rs`
+  (truncated-stream → error, `[DONE]`/`finish_reason`/`message_stop` → ok, length/max_tokens → ok)
+  plus rewritten budget tests in `provider_kernel_adapter.rs`. Frontend `tsc`/`vitest`/`eslint` NOT
+  run. Nothing runtime-verified.
+- RESUME: run `cd src-tauri && cargo test --lib api::`, then `pnpm test` + `pnpm lint` + tsc, then
+  verify in `pnpm tauri:dev` that an xhigh turn completes and that a capped turn shows the inline
+  amber notice instead of silence.
+- FOLLOW-UP (same day, work now COMPLETE and verified): the first cut of the cap fix was wrong.
+  `anthropic_max_tokens_with_thinking` clamped the total to the 64k ceiling and then applied a
+  `.max(budget + 1)` floor, so a 32k answer budget on `xhigh` (96k desired thinking) produced
+  `max_tokens: 96_001` — straight back over the ceiling, a flat 400. Two invariants
+  (`budget < max_tokens` AND `max_tokens <= ceiling`) cannot be clamped independently. Replaced with
+  ONE function, `anthropic_thinking_plan(explicit, effort, answer) -> Option<(budget, max_tokens)>`,
+  which resolves both together: over-ceiling requests shrink THINKING and keep the answer share whole
+  (32k answer + 96k want → 64k total / 32k budget / 32k answer intact); only when the answer budget
+  alone fills the ceiling does it split the cap 50/50. `anthropic_thinking_budget` stays as the pure
+  "what does this tier want" helper.
+- KNOWN LIMITATION (deliberate, not a bug): the notice marker is LIVE-ONLY. `DbMessage.timeline` is a
+  UI-side field Rust never persists (same as `tool_calls[].durationMs`), so reopening a thread rebuilds
+  events via `eventsOf`'s synthesised path (thinking → content → tools) and the notice is gone. The
+  truncated reply itself persists; the explanation of WHY does not. Making it durable needs a Rust
+  session/JSONL marker like compaction has — not done, out of scope for this fix.
+- VERIFIED: 863 Rust tests pass (`cargo test --lib`), 239 frontend tests pass (`pnpm test`, up from
+  234 — 5 new), `npx tsc --noEmit` clean, eslint clean on all 8 touched files (repo-wide `pnpm lint`
+  reports 555 pre-existing problems, none in the files touched here). NOT runtime-verified: no
+  `tauri:dev` run, so the amber notice has not been seen rendering and no live xhigh turn was made.
+
+- CORRECTION (found by reading the actual thread, `6daeb9de-…` in the sessions dir): the mechanism I
+  first blamed was WRONG. The provider was `d840dd0a` "GREY" (`base_url https://api.443.hk/v1`) with
+  **`provider_type: "openai"`** — so `build_anthropic_body` / `anthropic_thinking_budget` NEVER RAN and
+  the "xhigh = 90% of the cap" carve-out is irrelevant to this turn. The model row
+  `d840dd0a::claude-opus-5` declares `max_output_tokens: 128000`, yet the request was capped at 8192.
+  WHY: `toLlmConfig` set `defaultMaxTokens: provider.defaultMaxTokens ?? provider.maxOutputTokens`, and
+  every consumer reads `defaultMaxTokens ?? maxOutputTokens`. `provider.defaultMaxTokens` was null so it
+  fell back to the GREY row's legacy `max_output_tokens: 8192`, which then OUTRANKED the correctly
+  resolved per-model 128000. A 128k model was silently running with an 8k output cap. Fixed: the three
+  `defaultMaxTokens` sites in `useSettingsStore.ts` now use `provider.defaultMaxTokens ?? undefined`
+  (explicit override only) so the per-model cap wins.
+- So the real chain for the reported bug was: legacy provider row capped output at 8192 → on an
+  OpenAI-compat gateway reasoning bills against that same cap → xhigh burned all 8192 on thinking →
+  `finish_reason: "length"` → Rust emitted its "reply is cut off" warning → the frontend's
+  `case "error": break;` swallowed it → silence. The Anthropic additive-budget change and the
+  truncated-stream guard are real fixes for real latent bugs, but neither was THIS bug.
+- Notice persistence now DONE (the earlier "known limitation" is resolved): new
+  `ContentBlock::Notice { message, created_at }` on a `MessageRole::System` message appended right
+  after the assistant message, stripped from every provider view (openai/anthropic/responses/team) and
+  costed at 0 tokens; `threads.rs` maps it to `role: "notice"`, and `buildTurns` folds it into the
+  preceding assistant turn (orphans are dropped, never rendered as an assistant bubble).
+- VERIFIED after all of the above: 864 Rust tests, 241 frontend tests, tsc clean, eslint clean on the
+  9 touched files. Still NOT runtime-verified.
+
+## 2026-07-29 — file_read contract rewrite: exact ranges, honest caps, no double-bounding (DONE, uncommitted)
+- WHY: reading the real session showed a 739-line / 30 KB component (`ProfileForm.tsx`) came back with
+  its middle 22 KB replaced by a spill pointer, and the model then spent FIVE more calls paging the
+  spill file back in — one of which spilled AGAIN. Cause: `tool_spill.rs` `SPILL_THRESHOLD = 12 KB`
+  runs at `conversation.rs:1014` BEFORE `truncate_tool_content`, so `MAX_READ_RESULT_LENGTH` (512 KB,
+  written specifically to let a normal read through whole) never applied. The real ceiling for a source
+  file was 12 KB ≈ 300 lines of TSX, not the 1500 lines / 500 KB the read policy advertised.
+- NEW CONTRACT (`file_read.rs`): an explicit `start_line`/`end_line` is returned EXACTLY, capped at
+  `MAX_SINGLE_READ_LINES` = 1000; a wider ask returns the first 1000 with `cappedAtMaxLines: true` and a
+  warning naming the resume point (`start_line: 1001`) and the `force_full_content` escape hatch. New
+  `force_full_content: true` bypasses every bound. Files ≤1000 lines come back whole with no window
+  bookkeeping. `DEFAULT_LINE_WINDOW`/250 and `LARGE_FILE_LINE_THRESHOLD`/1500 are GONE — the old
+  1500→250 cliff is replaced by one number.
+- Every read payload now carries `"exactRead":true` (`EXACT_READ_MARKER`, re-exported from
+  `file_workspace_search`). `tool_spill::spill_oversized` and `conversation::truncate_tool_content` both
+  return early on it. Spill still applies to shell/build output, where head+tail is correct because the
+  summary is at the tail and the bytes die with the process.
+- NOT changed: `multi_file_read` — its nested `files[].content` was never reachable by
+  `spill_json_fields` (only top-level fields spill), so the batch form was already immune by accident.
+- UI: `activity.ts` now labels any read whose path is inside `<thread_id>.tool-results/` as
+  "Reading tool output" with no file chip, instead of leaking `out-b6179211-content.txt` into the
+  transcript as if it were a project file.
+- KNOWN GAP, NOT FIXED: `file_read` on an image is broken. `read_with_policy` uses
+  `fs::read_to_string`, so a PNG returns `{"success":false,"exists":false,"error":"...did not contain
+  valid UTF-8"}` — verified empirically. `exists:false` is a LIE for a file that is on disk, and the doc
+  comment invites callers to use that flag as a presence probe. Vision plumbing already exists
+  (`<aurora_image>` + `split_aurora_images`, used by `browser_screenshot`); `file_workspace_search` has
+  zero image handling.
+- VERIFIED: 875 Rust tests, 245 frontend tests, tsc clean, eslint clean on touched files. NOT
+  runtime-verified.
+
+## 2026-07-31 — Plan and todo are TWO systems, not one (DONE, uncommitted, build-verified only)
+- USER'S MODEL (authoritative, this is the design): **plan** = the coarse per-project artifact a
+  Plan-mode conversation produces — phases the user reads and approves, rendered in the Canvas.
+  **todo** = the agent's fine-grained working checklist while executing, normally the concrete steps
+  of the ONE phase it is on. Rhythm: plan phase `in_progress` → `todo_write` that phase's steps →
+  work them with `todo_update` → phase `done` → next phase. Exactly Claude Code's plan-mode →
+  agent-mode → TodoWrite flow. Without a plan, only the checklist exists.
+- WHAT WAS WRONG (the user's report: panel stuck at 0/4 while the agent marked t2/t3 completed):
+  1. The agent window built its checklist by parsing `todo_write` TOOL-CALL ARGUMENTS
+     (`useAgentWindowSend.captureTodos`). It watched 1 of the 4 tools that change the list, so
+     `todo_update` — which the prompt explicitly told the model to prefer — moved nothing.
+  2. Rust DID emit `agent_todo_write` from all four tools, but the payload was `{todos}` with **no
+     thread id** (the sink is app-global), and the only listener was `agent-ide-events.ts` → the
+     IDE's global `useTaskStore`, which no agent-window component renders. A dead write.
+  3. `todo_store::resolve` made an active plan HIJACK the todo tools: `todo_write`/`todo_update`
+     returned `success:false, usePlanInstead` and pointed at `plan_step_update`. So in a planned
+     project the checklist could never move at all.
+  4. Turn start `clear`ed the list; turn end `finalize(threadId,"completed")` flipped whatever was
+     left open to a tick — inventing completions the agent never reported.
+  5. `tool-result.ts` printed `todo_update`'s model-facing `message` verbatim ("Marked t2 as
+     completed. Nothing in progress; next up is t3."), so the transcript showed internal ids.
+- FIXES: (a) hijack DELETED — `TaskSource`/`resolve`/`TodoList::from_plan`/`TodoStatus::from_step`/
+  `publish_plan_as_tasks` are gone; plans emit only `plan_changed` (Canvas), todos only
+  `agent_todo_write` (checklist). (b) `emit_todo_write(thread_id, todos)` — thread id is now
+  REQUIRED and lands in the payload as `threadId`. (c) `useAgentTaskStore` rewritten: subscribes to
+  `agent_todo_write` (window-lifetime, mirroring `subscribeToPlanChanges`), keeps Rust's stable ids
+  as row keys, and hydrates from the new `todo_list_for_thread` command on thread open — so
+  reopening a chat restores the checklist from `<thread>.todos.json`. (d) turn-start clear and
+  turn-end finalize both removed. (e) new `TodoBeatCard` for `todo_update` (verb + task TITLE +
+  closed/total), mirroring `PlanStepCard`; static, not a button (the checklist is already on screen).
+- TOOL EXPOSURE is now gated per turn in `agent_v2::is_tool_available_this_turn(name, mode, has_plan)`:
+  `plan_write` = Plan mode ONLY (it was callable in Agent mode while the prompt said it wasn't);
+  `plan_read`/`plan_step_update` = Plan mode, or Agent/Team **only when the project has a plan on
+  disk** (`workspace_has_plan` → `plans::store::active`). No plan ⇒ no plan tools and no plan text in
+  the prompt at all. `getAgentModePromptSection(mode, {hasActivePlan})` mirrors it, resolved in
+  `composeAgentSystemPrompt` via `plan_get_active` — read from DISK, same source Rust's gate reads,
+  so the two can't disagree.
+- COUNT SEMANTICS unified on **closed = completed + cancelled** over total, in all four places
+  (panel, composer-rail chip, beat card, Rust `progress_line`). The panel previously counted
+  `completed` only while its own `allDone` treated cancelled as terminal — a list ending in a
+  cancelled task rendered "Tasks complete  2/3". Rust's line now reads "2/2 closed (1 cancelled)" so
+  the model never reads it as "2 done".
+- NEW UI STATE — **paused**: a task left `in_progress` by a turn that ended. Own shape (pending ring
+  + held centre), imperative label ("Add the route", not "Adding the route"), header reads
+  "Paused — …". Liveness = `useAgentChatStore.liveTurns[threadId]`, the same rule the Canvas already
+  applies to plan steps. Replaces the old lie in both directions (fake tick / eternal spinner).
+- VERIFIED: 906 Rust tests, 257 frontend tests, `npx tsc --noEmit` clean, eslint clean on all 11
+  touched frontend files. NOT runtime-verified — no `tauri:dev` run, so the paused glyph, the beat
+  card, and the live event path have not been seen on screen.
+
+## 2026-08-01 — Agent window "Worked Nm" footer never showed on a just-finished turn
+
+- SYMPTOM (owner): the greyed duration at the end of an assistant reply "is not showing and
+  sometimes shows". It in fact NEVER showed on a turn you just watched finish — it only appeared
+  after reopening the thread, which is what made it look intermittent.
+- ROOT CAUSE: `useAgentWindowSend.ts` seeds the optimistic assistant message with
+  `timestamp: nowIso()` at SEND time (line ~774) and never re-stamps it. `buildTurns`
+  (`components/timeline.ts`) reads the last assistant message's timestamp as the turn's `endedAt`,
+  so `endedAt ≈ startedAt` → `turnWorkedMs` computed a ~0ms span → returns `null` (it guards
+  `span > 0`) → `WorkedDuration` renders nothing. On reload the number was correct because the Rust
+  runtime stamps the PERSISTED assistant message at end-of-stream
+  (`api/provider_kernel_adapter.rs:1528`, `assistant_with_usage(.., now_unix_ms())`).
+- FIX: re-stamp the optimistic assistant message in `sendTurn`'s `finally` block (same place that
+  clears `isThinking`), so the live view and the reloaded view agree. Nothing new is recorded.
+- STILL DEAD: `WorkedDuration`'s `streaming` branch ("Working 4m", ticking) can never render —
+  `ConversationPane` sets `showActions = !streaming` for assistant turns, and the whole actions row
+  is what hosts the readout. Its docstring claims live ticking. Left as-is (behaviour change, owner's
+  call) but flagged.
+- VERIFIED: `npx tsc --noEmit` clean, `timeline.test.ts` 12/12. NOT runtime-verified (no tauri:dev).
+
+## 2026-08-01 — Verified two browser-tool complaints from a long agent session
+
+- `browser_click` takes a RAW CSS selector handed to `querySelector` (`tools/browser/mod.rs:602-629`).
+  `:has-text()` is a Playwright extension, not CSS, so it can never match. The intended discovery path
+  is `browser_page_outline`, which already returns `{selector, text}` per element — the module
+  docstring says it exists precisely to stop selector guessing. Complaint is factually correct; the
+  open question is whether to add `:has-text()` sugar or make the outline path more discoverable.
+- `browser_get_console_logs` already keeps a rolling 500-entry buffer WITH `window.onerror` +
+  `unhandledrejection` capture (`services/browser_runtime.rs:1421-1472`). The buffer is NOT
+  "consumed" by a crash — it lives in the PAGE's `window.__aurora.__logs`, so a Vite HMR full-reload
+  after the error wipes it, and `sinceMs` filters against the page's own `Date.now()`. Fixing this
+  means mirroring entries into Rust, not enlarging the buffer.
+
+## 2026-08-01 — Checklist moved to the header; three todo tools became one (uncommitted, build-verified only)
+
+- USER'S CALL (all three, authoritative): (1) todos render NOTHING in the transcript; (2) ONE `todo`
+  tool with a typed `op`; (3) header indicator that hover-peeks and click-pins.
+- WHY IT MOVED, third home now: as a transcript card it pushed the reading area down on every touch
+  and left a trail of stale copies of one list threaded through the reply. As a composer-rail chip it
+  stopped moving the transcript but sat in the WRITING zone — a readout you consult while the agent
+  works, parked where you go to type. The header already holds this window's ambient truth about the
+  running turn (title, activity line, context ring), so the checklist now sits beside `ContextRing`:
+  the two "how is this turn going" readouts together.
+
+### Rust
+- `todo_write` / `todo_update` / `todo_read` DELETED, replaced by `tools/shell_editor_todo/todo.rs` —
+  one `TodoTool`, `op: "set" | "update" | "read"`. `todo_store` is untouched. Rationale: all three
+  spoke the same vocabulary (ids, statuses, cursor) and differed only in required fields, so the
+  split cost the roster three slots and cost the model a choice before every call. `op` keeps it a
+  discriminated union rather than a bag of optional fields whose combination decides the action —
+  a missing `op` is REJECTED, never guessed.
+- BUILTIN_TOOL_COUNT 31 -> 29. `shell_editor_todo::TOOL_NAMES` 9 -> 7.
+- PLAN-MODE GATE CHANGED: `todo` is withheld from Plan mode ENTIRELY (both `PLAN_MUTATING_TOOLS` in
+  `agent_v2.rs` and `WRITE_TOOL_NAMES` in `agent-execution-mode.ts`). `todo_read` used to be allowed
+  there; with one tool, read cannot be split from set/update by name — and Plan mode authors the
+  plan, it does not work a checklist. The retired names stay in the TS write-set so a stale roster
+  cannot smuggle a write past the gate under an old name.
+- NEW in `tool_suggest.rs`: a `RETIRED_NAMES` table (`todo_write`/`todowrite`/`todo_update`/
+  `todo_read` -> `todo`) consulted BEFORE fuzzy matching. Edit distance can never bridge a rename
+  (`todo_write` is 6 edits from `todo`, past any sane tolerance), and `TodoWrite` is in essentially
+  every agent model's training data — without this the first turn of every conversation is a
+  guaranteed unknown-tool dead end. A row only fires when its target is in the LIVE roster.
+
+### Frontend
+- NEW `components/TaskIndicator.tsx` — header trigger (glyph + `closed/total`) + portaled checklist
+  card. Hover peeks, click pins; Escape and outside-pointerdown close a pin. A 140ms grace timer on
+  peek-close is load-bearing: the card is portaled 8px below the trigger, so travelling to it crosses
+  a gap belonging to neither element and a raw mouse-leave tore the card away mid-reach.
+- SPINNER HONESTY unchanged and re-applied: the glyph becomes the shared `agw-rail-spin` ONLY when a
+  task is `in_progress` AND `liveTurns[threadId]` exists. A task left open by a finished turn renders
+  `data-state="paused"`, named in the imperative in the aria-label. Same rule as `AgentTaskPanel` and
+  the Plan Canvas.
+- NEW `checklist` icon in `AgentIcon` (ticked first row, shortened last) — deliberately NOT
+  `task-list` (three empty boxes), which says "a list exists" rather than "progress through a list".
+- `buildRows` (timeline.ts) now drops tool events whose name is in `SILENT_TOOLS` (= `["todo"]`).
+  Dropped WITHOUT flushing the run, so a status flip between two file edits does not split them into
+  two tool groups. Bar for adding a name: the tool's ENTIRE output must already be visible somewhere
+  permanent, or silence is indistinguishable from a tool that failed.
+- REMOVED: `TodoBeatCard` + its `.agw-task-beat*` CSS (orphaned), the composer-rail todo chip, and
+  `AgentTaskPanel`'s `dock` variant (its host is gone). The panel now reuses `.agw-crail-panel` —
+  the same popover body shape the background-process panel uses.
+- `todo-tools.ts` still declares `todo_write` but is `nativeRustOwned: true`, so
+  `AgentService.buildAvailableTools` strips it before the request — VERIFIED it can never reach a
+  model as a rival tool. It survives only for the legacy IDE chat path.
+- VERIFIED: 904 Rust tests, 269 frontend tests, `tsc --noEmit` clean, eslint clean on all touched
+  files, `pnpm build` green with the new CSS emitted. NOT runtime-verified — no `tauri:dev` run, so
+  the hover→pin interaction, the spinner, and the 13px glyph have not been seen on screen.
+
+## 2026-08-01 (later) — WHY the header stayed empty: `ToolContext.session_id` was never the thread
+
+- USER'S REPORT: the agent created todos and the header indicator showed nothing.
+- ROOT CAUSE, pre-existing and NOT from the header move: `ToolContext.session_id` was filled from
+  `Session::session_id` (`conversation.rs`), which is a **fresh UUIDv4 on every load** and whose own
+  doc comment says "Distinct from `thread_id` … the `session_id` changes each time". The todo tools
+  used it as the conversation identity for BOTH the sidecar path and the event payload, so:
+  * the list was written to `<sessions_dir>/<uuid>.todos.json`, while `todo_list_for_thread` reads
+    `<thread_id>.todos.json` — hydrate ALWAYS found nothing and the list died on every restart;
+  * `agent_todo_write` announced `threadId: <uuid>`, so `useAgentTaskStore.applyTodos` filed it under
+    a key no component reads. `currentThreadId` never matched ⇒ nothing rendered.
+  The composer-rail chip had exactly the same defect — it was never going to work either. This dates
+  to the 2026-07-31 rewrite, whose own note says the live event path was never runtime-verified.
+- SAME BUG, TWO MORE PLACES: `plan_step_update` stamped a step's `run_id` with the session uuid and
+  `plan_write` filtered plans by `frontmatter.thread_id == ctx.session_id`, so a plan's run claim
+  could never match after a reload. And `lib.rs::resolve_background_log_path` filed background-process
+  logs under `tool_results_dir_in(dir, <uuid>)` while thread deletion removes
+  `tool_results_dir(thread_id)` — the logs were never cleaned up.
+- FIX: `ToolContext.session_id` **renamed** to `thread_id` (compiler-checked across ~30 files) and
+  filled from `session.thread_id`. Renamed rather than reassigned so it cannot be misread the same
+  way twice; the field doc now spells out why. `ShellStreamRequest.session_id` renamed to match, since
+  it is populated from the same value. `read_tracker` keeps its local param name — it is an in-memory
+  per-conversation map and thread scope is at least as correct.
+- REGRESSION TEST: `conversation::tests::tools_receive_the_thread_id_never_the_ephemeral_session_id`
+  runs a real turn with a spy tool and asserts the id it sees equals the thread AND differs from
+  `session.session_id`.
+
+## 2026-08-01 (later) — Todo beat is BACK in the transcript (user's call, reversing the earlier choice)
+
+- The earlier "render nothing" decision was wrong in practice: a checklist that moves with no trace
+  reads as if nothing happened, AND it made a FAILED todo call invisible — which is part of why the
+  broken event path above went unnoticed for a whole session.
+- NOW: `op: "set"` → `● Planned  5 tasks  0/5`; `op: "update"` → `● Finished  Add the route  2/5`.
+  `op: "read"` still renders nothing — a lookup changes nothing a reader could care about.
+- The filter is a PREDICATE on the call (`isSilentToolCall`, parses `op` from the arguments), not a
+  name set, and it still skips WITHOUT flushing the tool run so a read between two edits does not
+  split them into two cards. A todo call whose arguments fail to parse is deliberately SHOWN.
+- VERIFIED: 905 Rust tests, 270 frontend tests, `tsc -b` clean, eslint clean, `pnpm build` green.
+  STILL NOT runtime-verified — the header indicator has not been seen on screen.
+
+## 2026-08-02 — Agent Window empty state now uses the IDE's project-aware starters (uncommitted, build-verified only)
+
+- GAP: the Agent Window home offered FOUR HARDCODED starters ("Explain this project", "Find a bug",
+  "Build a feature", "Write tests") whose prompts were generic and half of them trailing fragments the
+  user had to finish ("Write tests for "). The IDE chat panel had shipped project-aware starters the
+  whole time (`components/chat/WorkspaceAwareEmptyState.tsx`) — named after the workspace and tuned to
+  what a scan found. The agent window simply never adopted it.
+- WHAT CHANGED: the branching + copy moved OUT of the IDE component into a new shared service
+  `src/services/workspace-starter-prompts.ts` (`buildStarterPrompts(rootPath, summary)`), consumed by
+  BOTH empty states. Copy and branch logic are byte-identical to what the IDE shipped — this was an
+  extraction, not a rewrite, so the IDE's rendered strings are unchanged.
+- ICONS ARE NOT SHARED, deliberately. The IDE uses lucide; the agent window uses the bespoke
+  `AgentIcon` set. A prompt now declares a semantic `kind`
+  (`getting-started`/`architecture`/`review`/`debug`/`plan`/`tests`/`read-first`) and each surface owns
+  a `KIND_ICONS` map. Agent window mapping: architecture→`workspace-tree`, review+debug→`shield`,
+  plan→`file-edit`, tests→`checklist`, getting-started→`book`, read-first→`book-open`.
+- The three branches (no workspace / workspace but scan pending / scan resolved) all return exactly
+  FOUR prompts with the same `kind` in each slot, so the async `scanWorkspace` landing rewrites the
+  wording IN PLACE — no reflow, no row count change. Rows are keyed by `kind`, not by title: a title
+  key remounts every row on refinement and drops hover/keyboard focus for what is only a wording change.
+- CSS: `.agw-suggestion` labels went from two-word chips to full sentences carrying the project name, so
+  they wrap in a narrow pane. New `.agw-suggestion-icon` (`flex: none`, replaces an inline style) stops
+  the glyph collapsing to a sliver on the first wrap; new `.agw-suggestion-label` (`min-width: 0`,
+  `overflow-wrap: anywhere`) handles long unbroken folder names.
+- SCAN COST unchanged but now paid on a second surface: `scanWorkspace` walks the root plus one level of
+  subdirectories with SEQUENTIAL awaits and has no cache, so it re-runs on every EmptyState mount
+  (i.e. every "New chat"). ~15 IPC round trips on this repo. Not blocking (the generic branch renders
+  first) and identical to the IDE's long-standing behaviour, so left alone — but a memo/TTL cache in
+  `workspace-summary.ts` would serve both surfaces if it ever shows.
+- NOTE for whoever tunes the copy: with the project name in the `.agw-home-root` row AND in all four
+  starter titles, the workspace name appears five times in one viewport. That is exactly what the IDE
+  does (its heading repeats it too), so it was kept for parity rather than unilaterally diverged.
+- VERIFIED: 277 frontend tests pass (up from 270 — 7 new in `workspace-starter-prompts.test.ts`, incl. a
+  branch sweep asserting 4 prompts with unique kinds everywhere), `npx tsc -b` clean, eslint clean on all
+  4 touched files, `pnpm build` green with `.agw-suggestion-label` present in the emitted CSS, postcss
+  parses the agent-window stylesheet. NOT runtime-verified — no `tauri:dev` run, so the wrapped rows,
+  the glyphs, and the scan-refinement have not been seen on screen.
+
+## 2026-08-02 — Startup surface preference: app icon can open the Agent window (uncommitted, build-verified only)
+
+- FEATURE (user's ask): a preference deciding whether launching Aurora from its app icon opens the
+  IDE (default) or the Agent window. Owner's two calls, both taken: scope = **app icon only**, and the
+  IDE window is **hidden, not closed**, so the choice is never a one-way door.
+- THE MECHANISM ALREADY EXISTED. `agw` / `aurora --agent` sets `agent_mode`, and `setup()` already
+  hid `main` → read the saved size → built the agent window → closed `main` → re-showed `main` on
+  failure. `main.rs:88` already had the bare-launch branch ("launched from Start menu"). The work was
+  storage, precedence, scoping, and reversibility — not new window machinery.
+- **STORAGE IS A FILE, NOT `app_settings`, AND THE REASON IS ORDERING.** Window size lives in SQLite
+  (`app_settings.agent_window_bounds`), so "put it next to the size" was the obvious move and is
+  WRONG: `agent_mode` is consumed in `run_with_args` before `tauri::Builder` is even constructed,
+  because `setup()`'s FIRST statement hides the auto-created IDE window to avoid a flash.
+  `db::Database::init` runs later in `setup()` (needs the `AppHandle`, runs migrations), so a SQLite
+  value arrives after the moment it is needed and every agent launch would flash the IDE. New
+  `src-tauri/src/launch_prefs.rs` → `<AuroraIDE>/launch.json`, `{"surface":"ide"|"agent"}`. This is a
+  real category — **boot config** (readable before the state layer exists) vs **runtime state**.
+- FAILS CLOSED TO THE IDE, always: missing / unreadable / corrupt / unknown variant / wrong case all
+  resolve to `Ide`. A launch preference that could resolve to "no window" is unrecoverable without
+  hand-editing a file. `parse`/`serialize` are pure fns so the 5 tests never touch the real app dir.
+- PRECEDENCE: `bare_launch = path.is_none() && !agent && command.is_none() && diff.is_none()`. Only
+  that shape consults the file. `aurora <path>`, the Explorer context menu, and file associations
+  carry an explicit "open this here" intent the VIEW-ONLY agent window cannot serve, so they always
+  get the IDE. `--agent` still always wins.
+- **SCOPING TRAP (would have shipped broken)**: `agw` fills `?ws=` from the CWD. An icon launch's CWD
+  is meaningless (Explorer hands the process System32). A null root produces a chat that persists
+  correctly but renders NOWHERE — the left rail is a per-project tree keyed on it (`agent_workspace_
+  root`'s own doc says this). Fixed by resolving the icon-launch root from `workspace().get_most_
+  recent()` AFTER db init, inside the window-build block. The early/late split is the nice part:
+  `agent_mode` is needed early (file), `?ws=` late (DB), and each is available exactly when needed.
+- REVERSIBILITY: `agent_open_in_ide` already did `unminimize + show + set_focus`, so a HIDDEN `main`
+  was always recoverable — but only via "Open in IDE", which REQUIRES A FILE. A fresh agent-first
+  launch has none, so there was no path-free way back. Added `open_ide_window` (async — a sync
+  command building a window deadlocks the Windows UI thread) + an "Open the editor" command-center
+  entry. Extracted `reveal_main_window` / `build_main_window` in `editor_ops.rs` so the recreated
+  window can't drift from tauri.conf.json in only some paths.
+- UI: new "Startup" section at the TOP of agent Settings → Preferences (`external` icon), segmented
+  Editor / Agent window. Not a store — loaded on mount, written straight through, optimistic with a
+  REVERT on failure (a startup preference that shows the new value while the next launch does the old
+  thing is worse than one that visibly refuses). The precedence rule is stated as inline hint text,
+  not a tooltip: without it, a user who picked "Agent window" reads the Explorer menu still opening
+  the editor as the setting being broken.
+- VERIFIED: 910 Rust tests (up from 905 — 5 new in `launch_prefs`), 277 frontend tests, `cargo check
+  --lib` clean, `npx tsc -b` clean, eslint clean on all 4 touched frontend files, `pnpm build` green.
+  NOT runtime-verified — no `tauri:dev` run and, critically, **no real icon launch has been performed**,
+  so the flash-free agent boot, the most-recent-workspace scoping, and the hidden-IDE handoff have not
+  been observed. That verification needs an installed build, not a dev server.
+
+## 2026-08-02 — Jump-to-latest pill: the hook had computed it all along, nothing rendered it
+
+- USER ASK: a jump-to-bottom control in the agent window transcript.
+- ROOT FINDING: `useAgentAutoScroll` has ALWAYS returned `showJump` and `jumpToBottom`, and its
+  docstring promises it "surfaces a 'jump to latest' affordance (`showJump`)". **No consumer ever
+  destructured either one.** All three call sites (`ConversationPane`, `TeamPanel`, `MemberPanel`)
+  take only `containerRef` / `contentRef` / `bottomRef`. A comment inside the hook even documents
+  gating that lives in a component that never existed: "The pill's mid-stream gating lives in the
+  component (`showJump && sending`)". Dead API described as shipped behaviour — same class as the
+  `read_lints` stub whose own description lies about returning real errors.
+- DELIBERATELY DID NOT ADOPT that `showJump && sending` gate. Being lost in a FINISHED conversation is
+  the more common case, and a control that only exists during streaming would vanish from under the
+  cursor at the exact moment a turn ends. The pill shows whenever the reader is away from the bottom.
+- STREAMING IS A MODIFIER, NOT THE TRIGGER: while a turn streams, the distance means something extra
+  (content is arriving unseen), so the pill grows a pulsing live dot — AND the aria-label changes to
+  "Jump to latest — the agent is still writing", so the state is never carried by the dot alone.
+  Regression-tested.
+- NEW `components/JumpToLatest.tsx` + `.agw-jumplatest` CSS. Placed absolutely inside the existing
+  relative wrapper that already hosts the scroll container and `JumpRail`, CENTRED so it can never
+  collide with the jump rail on the right edge. The composer sits outside that wrapper, so `bottom:
+  14px` lands just above it.
+- Styled as a POPOVER, not a card: it floats above the transcript, so it takes a real shadow and a
+  SOLID `--agw-surface-elevated` fill — transcript text scrolling under a translucent control the
+  reader is trying to read is the failure mode.
+- CSS trap avoided: the pill is centred with `translateX(-50%)`, so `:active { transform: scale() }`
+  would have DROPPED the centring and thrown it to the right on every press. Both the active state
+  and the entry keyframes re-state `translateX(-50%)`.
+- TOKEN CHECK PAID OFF: `--agw-elevated` and `--agw-fs-small` do not exist (correct names are
+  `--agw-surface-elevated` and `--agw-fs-label`). Note the agent-window colour tokens are NOT defined
+  in `agent-window.css` — they are injected at runtime from `theme/themes.ts` (camelCase key →
+  `--agw-kebab-case`), so grepping the stylesheet for a `--agw-*:` definition finds nothing and proves
+  nothing. Verify against `themes.ts`, or by counting existing `var(--agw-x)` usages. Fallbacks were
+  then REMOVED — a fallback on a token that exists only hides the next typo.
+- No self-dismiss code needed: `jumpToBottom` scrolls, the scroll listener calls `refreshNearBottom`,
+  and `showJump` clears itself.
+- TEST HARNESS NOTE: this repo has NO `@testing-library/react` and no `jest-dom` matchers. Component
+  tests use raw `react-dom/client` + `act` (see `TaskIndicator.test.tsx`); `toBeEmptyDOMElement` and
+  friends are unavailable — assert on `container.innerHTML` / `querySelector`.
+- VERIFIED: 281 frontend tests (up from 277 — 4 new), `npx tsc -b` clean, eslint clean on 3 touched
+  files, postcss parses the stylesheet, `pnpm build` green with `.agw-jumplatest` in the emitted CSS.
+  NOT runtime-verified — the pill has not been seen on screen, and the 140px `bottomThreshold` that
+  decides when it appears has not been felt with a real scroll wheel.
+
+## 2026-08-02 — grep rewritten: real total cap, honest counts, streamed and bounded (uncommitted)
+
+Three stacked defects in the `grep` / `ripgrep_search` path, found from one owner-reported empty
+result. All fixed together; the first two are written up in `lesson.md`.
+
+1. **Comma split destroyed brace globs.** `parse_glob_patterns` was `split(',')`, so `**/*.{ts,tsx}`
+   became `**/*.{ts` + `tsx}`. Now depth-aware (skips `{…}`, `[…]`, `\` escapes); malformed input is
+   forwarded verbatim so ripgrep names the real problem.
+2. **Path-qualified globs matched nothing.** ripgrep anchors a slash-bearing glob to the WORKING
+   DIRECTORY, not the path operand, so `apps/x/src/**/*.ts` against an absolute root silently found
+   zero while bare `**/*.rs` worked. Now runs with `current_dir(search_dir)` + `.` operand (a single
+   FILE keeps the operand form); `absolutize_rg_path` rejoins ripgrep's now-relative output so the
+   absolute-path contract used by file chips / open-in-IDE / Review is unchanged. `glob.rs` had
+   already solved this and its comment names it exactly — `grep` never got the same treatment.
+3. **`max_results` was a lie in three directions.** It was forwarded to `--max-count`, which is
+   ripgrep's PER-FILE limit — measured on this repo, `max_results: 5` collected **224** matches
+   (true total 240). `files_with_matches` and `count` were never capped at all. And the reply
+   reported `total_matches.min(max_results)`, i.e. the cap dressed as a measurement, erasing the one
+   number that would have told the caller to narrow.
+
+### The cap now
+- `max_results` = results returned in TOTAL, measured in the unit the active `output_mode` returns
+  (matches for `content`, files for `files_with_matches` / `count`).
+- ripgrep's stdout is STREAMED (`BufReader::lines`) instead of buffered whole, and the read stops one
+  unit past the cap, then kills the child. Reading one past is what makes `truncated` an observation
+  rather than a guess — stopping exactly at the cap cannot distinguish "exactly N" from "N and more".
+  This also removes a latent unbounded-memory path: the entire `--json` stream used to be buffered.
+- `count` mode caps on ripgrep's `end` events, so a capped search never reports a half-counted file.
+- stderr is drained on its own task — reading stdout to completion while stderr fills its pipe would
+  deadlock (`wait_with_output` used to handle that for us).
+- A killed process has no meaningful exit code, so the status is only trusted when the search ran to
+  completion (`exit_code = if truncated { Some(0) } else { status.code() }`).
+- NEW response fields: `returned` (how many items are actually in the array) and `message` (names the
+  cap and the way out — "Showing the first N matches; more exist. Raise `max_results`, narrow
+  `pattern`, or scope with `path` / `glob`."). An EMPTY result also gets a `message` now.
+  `total_matches` / `total_files` are exact for a complete search and an explicit lower bound for a
+  truncated one — never clamped. Both existing frontend consumers read `totalMatches`/`truncated`
+  only, so the shape is additive.
+- grep's schema now documents `glob` (braces, comma lists, `!` negation) and `max_results` (total, not
+  per file). Both previously had NO description at all — an undocumented parameter invites exactly the
+  input the parser mishandles.
+
+VERIFIED: 931 Rust tests (26 in `commands::tests`, incl. 8 END-TO-END cap tests that run the real
+ripgrep against temp fixtures), `cargo check --lib` clean, `tsc -b` clean, rustfmt clean on both
+touched files via `--config skip_children=true` (plain rustfmt recurses into sibling modules and
+would reformat unrelated pre-existing files). Reproduced the owner's original query end to end: it
+returns **35 files** where Aurora returned none. NOT runtime-verified inside the app.
+
+## 2026-08-02 — Home screen workspace row is now a project switcher (uncommitted, build-verified only)
+
+- OWNER PICKED variant 7 from the design probe `C:\Users\Alvan\Documents\aurora-home-root-designs.html`
+  (7 treatments, real tokens, rendered above a stand-in composer). Probe-first is the standing workflow
+  for any non-trivial UI change here — see the 2026-07-22 lesson.
+- WHY IT CHANGED: the old `.agw-home-root` was a static label whose spaced-slash path
+  (`… / Users / Alvan / Documents`) read as a clickable breadcrumb and did nothing. The fix makes the
+  promise TRUE rather than removing the signifier — the row is now the control for changing project,
+  which is what someone looking at it wants to do. Switching previously lived only in the left rail
+  and the command centre.
+- NEW `lib/project-order.ts` is the SINGLE SOURCE for project identity + ordering: `orderProjects`,
+  `projectActivity`, `folderName`, `compactParentPath`, `loadPinnedProjects`, `loadProjectSort`, and
+  the two localStorage keys. `LeftRail` now imports all of it and its ~25-line inline sort is gone.
+  Ordering is NOT simple (pins float above everything, three sort modes, two of them derived from
+  per-project thread activity), so a second implementation would have drifted and shown the user two
+  different orders for the same list.
+- NEW `components/ProjectSwitcher.tsx`. Ghost at rest (no fill/border) so it never competes with the
+  composer; chip surface + chevron on hover/focus. Portaled to `.agw-root` — required twice over: the
+  `--agw-*` tokens are set there (a menu outside that subtree renders with no surface colour), and it
+  must escape the home column's `overflow-y: auto`. Same rule as `TaskIndicator`.
+- Menu snapshots its project list AT OPEN. Rail prefs (sort mode, pins) are localStorage the rail can
+  change at any time, so reading them per-open is current by construction; it also stops the list
+  reordering under the cursor if a background turn touches a thread mid-choice.
+- Keyboard complete: ArrowDown/Up from the trigger opens, arrows/Home/End move, Enter/Space selects,
+  Escape closes and returns focus to the trigger. Opens ON the current project so the first arrow moves
+  from where you are. "Add project…" is the last ROW (not a mouse-only corner button) so it is
+  keyboard-reachable, and is divider-separated because it creates rather than selects.
+- LINT TRAP worth remembering: `react-hooks/set-state-in-effect` rejected both the popover positioning
+  and the initial highlight when they lived in effects. Both were already known at click time, so they
+  moved into one `openMenu()` event handler — `open` is now derived (`menu !== null`) rather than a
+  second state. A popover whose position is state should place itself in the handler that opens it.
+- Also: exporting a helper from a component file trips `react-refresh/only-export-components` — that is
+  why `compactParentPath` lives in `lib/project-order.ts` rather than beside the component.
+- VERIFIED: 299 frontend tests (up from 286 — 13 new covering all three sort modes, pin floating,
+  activity-less tie-breaking, dedupe, and left-elision), `tsc -b` clean, eslint clean on all 5 touched
+  files, postcss parses, `pnpm build` green with `.agw-projsw` / `.agw-projmenu` emitted. NOT
+  runtime-verified — the hover reveal, the portal placement and the keyboard path have not been seen
+  on screen.
+
+## Per-conversation model (agent window)
+
+The model is a property of the CONVERSATION, not of the app. `useSettingsStore.selectedModel` is now
+only the DEFAULT a new chat inherits; the authority is `SessionMetadata.model` on the thread's own
+sidecar (`"providerId:modelKey"`), surfaced through `ThreadSummary.model` and resolved by
+`agent-window/lib/thread-model.ts` — the one place the picker and the send path both read, so they can
+never disagree about what a turn will run on.
+
+- Two writers: `thread_set_model` (the user's pick, before any turn) and the runtime's per-turn
+  `set_workspace_and_model`. The latter used to be write-once, which branded a thread forever by
+  whatever ran its first turn; the model is deliberately NOT sticky, unlike `workspace_root` (which
+  still is — see `workspace_scope_is_sticky_and_never_moves_on_a_later_turn`).
+- Everything reading the model had to follow, or it would describe a different chat: the send path
+  (`getLLMConfigFor` / `getModelFor` — resolved AFTER `threadId` is known, which is why it no longer
+  sits with the other settings reads), compaction, `ContextRing`'s window size, and `AgentComposer`'s
+  vision gate. `ModelSelector` and `AgentComposer` take an optional `threadId` (omitted = the open
+  chat) so a composer that isn't the main one can address its own thread.
+- VERIFIED: 305 frontend tests, 934 Rust tests, `tsc -b` + eslint clean, `pnpm build` green. NOT
+  runtime-verified.
+
+## Chat docked in the side panel (agent window)
+
+Right-click a chat in the rail → "Open in side panel" docks it as a `chat:<threadId>` tab
+(`ChatPanel`), a FULLY live second conversation — streams, takes tool approvals, can be stopped, has a
+real composer. Built for comparing two models on one prompt, which is impossible by switching chats
+because you never see both answers form.
+
+- Nothing in the pipeline was window-scoped to begin with, so concurrency was free: the Rust runtime
+  locks per thread, `liveTurns`/`queuedByThread`/`activityByThread` are keyed by thread id, and
+  `runningAgents` is one `AgentService` per thread. Only the VIEW was single (`currentThreadId`).
+- `useAgentWindowSend(bound?)` takes a `BoundConversation { threadId, projectRoot, getSeed }`; omitted =
+  the open chat. `getSeed` is a FUNCTION because the seed is read at send time — a transcript that
+  finished loading after mount must still be the one the live turn opens on, or the history vanishes
+  until the turn ends. `BackgroundSendTarget.interactive` now separates "a person pressed send"
+  (consume staged trays, allow mid-turn queueing) from the pipeline's own post-turn resubmit.
+- The staging stores had to be split per composer (`composerKey(threadId)`, `"draft"` when there is no
+  thread): with two composers on screen, one global tray meant staging an image in the main pane and
+  sending from the dock attached it to the wrong conversation. `useAgentSelectionStore` stays global on
+  purpose — there is one inspector, so its picks belong to whichever composer sends next.
+- Deliberately NOT in the docked panel: per-message action rows, the suggestion drum, and
+  `onActionCommand` (that one prop gates both `/compact` and `/suggest`, and suggest chips aren't
+  rendered at this width — offering it would be a dead control). Opening the chat from the left rail
+  puts it in the main pane, where they all work. The panel header carries the TITLE ONLY: a promote
+  button there was drawn with a panel glyph and read as the main header's dock toggle — a different
+  control, whose meaning is nonsense inside the panel it opens.
+- VERIFIED: 316 frontend tests, `tsc -b` + eslint clean, `pnpm build` green. NOT runtime-verified.
+
+### Cross-conversation leaks the docked chat exposed
+
+The window used to render exactly ONE conversation, so anything deep in the tree could read
+`currentThreadId` / `projectRoot` off the store and be right. With a second chat on screen that
+assumption silently describes — or acts on — the wrong chat. Fixed by prop where the chain is short
+(`AgentComposer.projectRoot` → the `@` file index, `/` rules+skills and their post-turn cache
+invalidation; `ComposerRail`/`BackgroundTaskDock.threadId` → the background-process chip and its kill
+control; `AgentQueuedDock.threadId`), and by `lib/conversation-scope.ts` where it isn't — a tool card's
+"open in Canvas" sits four levels under anything that knows which chat it is, and artifacts are stored
+per thread. Absent provider = the open chat, so nothing else had to change.
+
+The panels that still follow the WINDOW's scope do so correctly: Canvas, Files, Terminal, Team and the
+command centre are window surfaces, not per-conversation ones.
+
+## Dragging a file from the Files panel into a composer (agent window)
+
+The Files panel is now a drag SOURCE and every composer a drop ZONE, so a file can be carried into a
+prompt instead of being typed as an `@` mention. Nothing was broken before this — the wiring never
+existed: the panel rows were plain click-to-open buttons and the composer only listened to Tauri's
+OS-level `onDragDropEvent`.
+
+- Pointer-driven, not HTML5 DnD, matching the IDE explorer's proven approach in this Tauri webview
+  (`src/hooks/useInternalDrag.ts`). Deliberately a SEPARATE system from the IDE's `useDragStore`: that
+  coordinator moves files between folders / into the IDE editor (neither exists here) and its drop
+  signal is app-global, which cannot address one of several composers.
+- Routing is a DOM CustomEvent dispatched ON the zone element (`lib/path-drag.ts`), because the window
+  can show a main composer AND a docked chat's composer at once. `useAgentPathDrop` stamps the zone
+  attribute itself so the hit-test target and the listener can never drift apart.
+- Both transports converge on `AgentComposer.handlePaths`: images → attachment (vision-gated), anything
+  else → the same `@` pill the picker builds. A press only becomes a drag past 5px, and a real drag
+  suppresses the trailing `click` for 250ms so releasing over the source row doesn't also open the file.
+- `insertPathPill` now writes a project-RELATIVE `data-rel` (abs stays in `data-path`), so a dragged
+  mention serializes exactly like a picked one. What reaches the model is only that `@path` text — file
+  chips are display/replay metadata; the agent still reads the file with its own tools.
+- The OS transport (Windows Explorer → composer) was separately broken and is fixed in
+  `useAgentExternalDrop`: it now subscribes via `listen(name, h, { target: label })` instead of
+  `getCurrentWindow().onDragDropEvent`, because Tauri filters delivery on the listener's target KIND as
+  well as its label. See the 2026-08-04 entry in `lesson.md` before touching that subscription.
+- VERIFIED: 330 frontend tests (11 new), `tsc -b` + eslint + `pnpm build` clean. The in-window drag is
+  RUNTIME-verified (Files-panel folder → composer produced the pill end to end); the OS drop fix is not.

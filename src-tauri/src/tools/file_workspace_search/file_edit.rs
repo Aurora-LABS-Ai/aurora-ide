@@ -144,7 +144,7 @@ impl ToolExecutor for FileEditTool {
         // exists (it canonicalizes), so the only question is whether the
         // agent has seen it this session. If not, refuse gracefully with a
         // corrective hint instead of patching against content it guessed.
-        if !super::read_tracker::was_seen(&ctx.session_id, &resolved_str) {
+        if !super::read_tracker::was_seen(&ctx.thread_id, &resolved_str) {
             return Ok(needs_read_json(&raw_path, &resolved_str));
         }
 
@@ -185,7 +185,7 @@ impl ToolExecutor for FileEditTool {
 
         if matches!(response, SearchReplaceResponse::Ok { .. }) {
             emit_post_write(&*self.sink, &resolved_str, "file_edit", &ctx.tool_call_id).await;
-            super::read_tracker::record(&ctx.session_id, &resolved_str);
+            super::read_tracker::record(&ctx.thread_id, &resolved_str);
         }
 
         let _ = Path::new("");
@@ -272,7 +272,7 @@ impl FileEditTool {
         // Read-before-edit guard, per file. Abort the whole batch (write
         // nothing) if any target hasn't been read this session.
         for g in &groups {
-            if !super::read_tracker::was_seen(&ctx.session_id, &g.resolved) {
+            if !super::read_tracker::was_seen(&ctx.thread_id, &g.resolved) {
                 return Ok(if multi {
                     render_multi_needs_read(&g.raw, &g.resolved)
                 } else {
@@ -315,7 +315,7 @@ impl FileEditTool {
 
         for (_, resolved, _) in &committed {
             emit_post_write(&*self.sink, resolved, "file_edit", &ctx.tool_call_id).await;
-            super::read_tracker::record(&ctx.session_id, resolved);
+            super::read_tracker::record(&ctx.thread_id, resolved);
         }
 
         if committed.len() == 1 {
@@ -608,7 +608,7 @@ mod tests {
         ToolContext {
             turn_id: "t".into(),
             tool_call_id: "c".into(),
-            session_id: "s".into(),
+            thread_id: "s".into(),
             workspace_root: workspace,
             allow_outside_workspace: false,
             cancel_token: CancellationToken::new(),
@@ -619,7 +619,7 @@ mod tests {
     /// guard lets the edit through. Mirrors what file_read does in prod.
     fn mark_read(ctx: &ToolContext, abs: &std::path::Path) {
         let canonical = dunce::canonicalize(abs).unwrap();
-        super::super::read_tracker::record(&ctx.session_id, &canonical.to_string_lossy());
+        super::super::read_tracker::record(&ctx.thread_id, &canonical.to_string_lossy());
     }
 
     #[test]

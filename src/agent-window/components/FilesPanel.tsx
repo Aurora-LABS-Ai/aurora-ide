@@ -23,10 +23,50 @@ import {
   rankFiles,
   type MentionFile,
 } from "../adapters/file-index";
+import { openInIde } from "../adapters/open-in-ide";
+import { writeClipboardText } from "../../lib/clipboard";
 import { useAgentChatStore } from "../store/useAgentChatStore";
+import { dragJustEnded, useAgentDragStore } from "../store/useAgentDragStore";
 import { useAgentFilesStore } from "../store/useAgentFilesStore";
 import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
-import type { FileEntry } from "../../lib/tauri";
+import { openInTerminal, revealInExplorer, type FileEntry } from "../../lib/tauri";
+import { RailMenu, type RailMenuItem, type RailMenuState } from "./RailMenu";
+
+/** A right-clicked row, before it is turned into menu items. */
+type RowMenuHandler = (event: React.MouseEvent, path: string, isDir: boolean) => void;
+
+/** The directory a file lives in — where "Open terminal here" should land. */
+function parentDirOf(path: string): string {
+  const cut = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
+  return cut > 0 ? path.slice(0, cut) : path;
+}
+
+/**
+ * Make a row draggable into a composer. Files and folders both drag; what
+ * differs is what the drop means (a file to read vs. a directory to look
+ * inside), which travels with the drag as `isDir`.
+ *
+ * Press only STAGES the path — the coordinator promotes it to a real drag once
+ * the pointer travels, so a press that doesn't move is still an ordinary click
+ * that opens the file or toggles the folder. Callers must route their click
+ * through `actOnClick`, which drops the click that trails a drag released over
+ * its own row.
+ */
+function useRowDrag(path: string, name: string, isDir: boolean, act: () => void) {
+  const isDragging = useAgentDragStore((s) => s.isDragging && s.path === path);
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    useAgentDragStore.getState().prepare(path, name, e.clientX, e.clientY, isDir);
+  };
+
+  const actOnClick = () => {
+    if (dragJustEnded()) return;
+    act();
+  };
+
+  return { isDragging, onMouseDown, actOnClick };
+}
 
 /** The path of the file shown in the currently-active dock tab (for highlight). */
 function useActiveFilePath(): string | undefined {
@@ -37,17 +77,23 @@ function useActiveFilePath(): string | undefined {
 }
 
 /** One tree row — a folder (toggles) or a file (opens a tab). Recurses for kids. */
-const TreeNode: React.FC<{ entry: FileEntry; depth: number; activeFile?: string }> = ({
-  entry,
-  depth,
-  activeFile,
-}) => {
+const TreeNode: React.FC<{
+  entry: FileEntry;
+  depth: number;
+  activeFile?: string;
+  onMenu: RowMenuHandler;
+}> = ({ entry, depth, activeFile, onMenu }) => {
   const expanded = useAgentFilesStore((s) => !!s.expanded[entry.path]);
   const kids = useAgentFilesStore((s) => s.childrenByDir[entry.path]);
   const loading = useAgentFilesStore((s) => !!s.loading[entry.path]);
   const failed = useAgentFilesStore((s) => !!s.failed[entry.path]);
   const toggleDir = useAgentFilesStore((s) => s.toggleDir);
   const openFileTab = useAgentWorkspaceStore((s) => s.openFileTab);
+  // One hook for both row kinds: a folder drags as a directory mention, and its
+  // click still toggles the branch.
+  const drag = useRowDrag(entry.path, entry.name, entry.is_dir, () =>
+    entry.is_dir ? toggleDir(entry.path) : openFileTab(entry.path),
+  );
 
   const pad = 8 + depth * 13;
 
@@ -57,8 +103,11 @@ const TreeNode: React.FC<{ entry: FileEntry; depth: number; activeFile?: string 
         <button
           type="button"
           className="agw-tree-row"
+          data-dragging={drag.isDragging || undefined}
           style={{ paddingLeft: pad }}
-          onClick={() => toggleDir(entry.path)}
+          onMouseDown={drag.onMouseDown}
+          onClick={drag.actOnClick}
+          onContextMenu={(e) => onMenu(e, entry.path, true)}
           aria-expanded={expanded}
           title={entry.name}
         >
@@ -89,7 +138,13 @@ const TreeNode: React.FC<{ entry: FileEntry; depth: number; activeFile?: string 
               </div>
             )}
             {kids?.map((child) => (
-              <TreeNode key={child.path} entry={child} depth={depth + 1} activeFile={activeFile} />
+              <TreeNode
+                key={child.path}
+                entry={child}
+                depth={depth + 1}
+                activeFile={activeFile}
+                onMenu={onMenu}
+              />
             ))}
           </>
         )}
@@ -102,12 +157,50 @@ const TreeNode: React.FC<{ entry: FileEntry; depth: number; activeFile?: string 
       type="button"
       className="agw-tree-row"
       data-selected={entry.path === activeFile || undefined}
+      data-dragging={drag.isDragging || undefined}
       style={{ paddingLeft: pad + 16 }}
-      onClick={() => openFileTab(entry.path)}
+      onMouseDown={drag.onMouseDown}
+      onClick={drag.actOnClick}
+      onContextMenu={(e) => onMenu(e, entry.path, false)}
       title={entry.name}
     >
       <FileIcon name={entry.name} path={entry.path} className="agw-file-ico" />
       <span className="agw-tree-name">{entry.name}</span>
+    </button>
+  );
+};
+
+/** One fuzzy-filter result. Same open + drag contract as a tree leaf. */
+const FilterRow: React.FC<{
+  file: MentionFile;
+  activeFile?: string;
+  onMenu: RowMenuHandler;
+}> = ({ file, activeFile, onMenu }) => {
+  const openFileTab = useAgentWorkspaceStore((s) => s.openFileTab);
+  // The fuzzy index lists files only, never directories.
+  const drag = useRowDrag(file.path, file.name, false, () => openFileTab(file.path));
+
+  return (
+    <button
+      type="button"
+      className="agw-tree-row"
+      data-selected={file.path === activeFile || undefined}
+      data-dragging={drag.isDragging || undefined}
+      style={{ paddingLeft: 10 }}
+      onMouseDown={drag.onMouseDown}
+      onClick={drag.actOnClick}
+      onContextMenu={(e) => onMenu(e, file.path, false)}
+      title={file.rel}
+    >
+      <FileIcon name={file.name} path={file.path} className="agw-file-ico" />
+      <span className="agw-files-result">
+        <span className="agw-files-result-name">{file.name}</span>
+        {file.rel !== file.name && (
+          <span className="agw-files-result-dir">
+            {file.rel.slice(0, file.rel.length - file.name.length)}
+          </span>
+        )}
+      </span>
     </button>
   );
 };
@@ -119,12 +212,59 @@ export const FilesPanel: React.FC = () => {
   const setRoot = useAgentFilesStore((s) => s.setRoot);
   const collapseAll = useAgentFilesStore((s) => s.collapseAll);
   const refresh = useAgentFilesStore((s) => s.refresh);
-  const openFileTab = useAgentWorkspaceStore((s) => s.openFileTab);
   const activeFile = useActiveFilePath();
 
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState<MentionFile[] | null>(null);
   const indexLoading = useRef(false);
+  const [menu, setMenu] = useState<RailMenuState | null>(null);
+
+  // Right-click on any row — the same menu surface as the left rail
+  // (`RailMenu`), with the hand-off actions this view-only window supports:
+  // the IDE for editing (files), the OS for everything else.
+  const openRowMenu: RowMenuHandler = (event, path, isDir) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const items: RailMenuItem[] = [
+      ...(!isDir
+        ? [
+            {
+              icon: "external",
+              label: "Open in IDE",
+              onSelect: () => void openInIde(path),
+            } as RailMenuItem,
+          ]
+        : []),
+      {
+        icon: "files",
+        label: "Open in File Explorer",
+        separatorBefore: !isDir,
+        onSelect: () => {
+          // A file path REVEALS the file (Explorer opens on its folder with
+          // the file selected); a folder opens as the folder itself.
+          revealInExplorer(path).catch((err) =>
+            console.error("[files-panel] reveal in explorer failed:", err),
+          );
+        },
+      },
+      {
+        icon: "terminal",
+        label: "Open terminal here",
+        onSelect: () => {
+          openInTerminal(isDir ? path : parentDirOf(path)).catch((err) =>
+            console.error("[files-panel] open terminal failed:", err),
+          );
+        },
+      },
+      {
+        icon: "copy",
+        label: isDir ? "Copy folder path" : "Copy path",
+        separatorBefore: true,
+        onSelect: () => void writeClipboardText(path),
+      },
+    ];
+    setMenu({ x: event.clientX, y: event.clientY, items });
+  };
 
   // Bind the tree to the window's project.
   useEffect(() => {
@@ -150,7 +290,7 @@ export const FilesPanel: React.FC = () => {
     return (
       <div className="agw-files-empty">
         <AgentIcon name="files" size={22} style={{ color: "var(--agw-text-subtle)" }} />
-        <div style={{ fontSize: 13, color: "var(--agw-text-muted)", fontWeight: 600 }}>No project open</div>
+        <div style={{ fontSize: 13, color: "var(--agw-text-muted)", fontWeight: "var(--agw-fw-medium)" }}>No project open</div>
         <div style={{ fontSize: 12, color: "var(--agw-text-subtle)", maxWidth: 240 }}>
           Pick a project for this chat to browse its files here.
         </div>
@@ -212,23 +352,7 @@ export const FilesPanel: React.FC = () => {
             </div>
           ) : (
             matches.map((m) => (
-              <button
-                key={m.path}
-                type="button"
-                className="agw-tree-row"
-                data-selected={m.path === activeFile || undefined}
-                style={{ paddingLeft: 10 }}
-                onClick={() => openFileTab(m.path)}
-                title={m.rel}
-              >
-                <FileIcon name={m.name} path={m.path} className="agw-file-ico" />
-                <span className="agw-files-result">
-                  <span className="agw-files-result-name">{m.name}</span>
-                  {m.rel !== m.name && (
-                    <span className="agw-files-result-dir">{m.rel.slice(0, m.rel.length - m.name.length)}</span>
-                  )}
-                </span>
-              </button>
+              <FilterRow key={m.path} file={m} activeFile={activeFile} onMenu={openRowMenu} />
             ))
           )
         ) : rootKids === undefined ? (
@@ -245,10 +369,19 @@ export const FilesPanel: React.FC = () => {
           <div className="agw-tree-hint" style={{ padding: "14px 12px" }}>This folder is empty</div>
         ) : (
           rootKids.map((entry) => (
-            <TreeNode key={entry.path} entry={entry} depth={0} activeFile={activeFile} />
+            <TreeNode
+              key={entry.path}
+              entry={entry}
+              depth={0}
+              activeFile={activeFile}
+              onMenu={openRowMenu}
+            />
           ))
         )}
       </div>
+
+      {/* Row context menu (file / folder). */}
+      {menu && <RailMenu menu={menu} onClose={() => setMenu(null)} />}
     </div>
   );
 };

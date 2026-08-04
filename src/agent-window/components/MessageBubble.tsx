@@ -11,6 +11,7 @@
 
 import React, {
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -24,10 +25,11 @@ import { AgentThinkingBlock } from "./AgentThinkingBlock";
 import { AgentImageModal } from "./AgentImageModal";
 import { ToolGroup } from "./ToolGroup";
 import { CompactionCard } from "./CompactionCard";
-import { buildRows, type TimelineEvent } from "./timeline";
+import { NoticeCard } from "./NoticeCard";
+import { buildRows, formatWorkedDuration, type TimelineEvent } from "./timeline";
 import { parseUserContent } from "../lib/image-markers";
 import { attachmentDataUrl } from "../store/useAgentAttachmentStore";
-import { FileIcon } from "../../components/explorer/FileIcons";
+import { FileIcon, FolderIcon } from "../../components/explorer/FileIcons";
 import type {
   AttachedCommandChip,
   AttachedPromptChip,
@@ -56,11 +58,21 @@ function mentionBasename(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
+/** Path chips (`file`, `folder`) render inline in the text; everything else in
+ *  the command row. Kept as one predicate so the two sites can't disagree. */
+function isPathChip(chip: AttachedPromptChip): boolean {
+  return chip.kind === "file" || chip.kind === "folder";
+}
+
 function filePill(chip: AttachedPromptChip, key: React.Key): React.ReactNode {
   const path = chip.path || chip.value || chip.title;
   return (
     <span key={key} className="agw-pill-inline" title={path}>
-      <FileIcon name={chip.title} path={path} className="agw-file-ico" />
+      {chip.kind === "folder" ? (
+        <FolderIcon name={chip.title} path={path} open={false} className="agw-file-ico" />
+      ) : (
+        <FileIcon name={chip.title} path={path} className="agw-file-ico" />
+      )}
       <span>{chip.title}</span>
     </span>
   );
@@ -70,9 +82,7 @@ function renderUserText(
   text: string,
   promptChips: AttachedPromptChip[],
 ): React.ReactNode {
-  const files = promptChips.filter(
-    (chip) => chip.kind === "file" && chip.value,
-  );
+  const files = promptChips.filter((chip) => isPathChip(chip) && chip.value);
   if (files.length > 0) {
     const out: React.ReactNode[] = [];
     let cursor = 0;
@@ -242,7 +252,7 @@ const UserBubble: React.FC<{
   const exactChips = promptChips ?? [];
   const exactCommands = exactChips.filter(
     (chip): chip is AttachedPromptChip & { kind: AttachedCommandChip["kind"] } =>
-      chip.kind !== "file",
+      !isPathChip(chip),
   );
   const exactKeys = new Set(exactCommands.map((chip) => `${chip.kind}:${chip.title}`));
   const cmdChips = [
@@ -362,6 +372,53 @@ const UserBubble: React.FC<{
   );
 };
 
+/**
+ * Quiet "Worked 4m" readout in the turn footer.
+ *
+ * While the turn is live it ticks from the moment the user sent, so a long
+ * turn is legible as it happens rather than only in hindsight — a stalled run
+ * is the case where this number matters most. Once settled it shows the
+ * derived total and stops.
+ *
+ * Deliberately the lowest-contrast thing in the row: it is information you
+ * glance at, never an action competing with Copy or Retry.
+ */
+const WorkedDuration: React.FC<{
+  workedMs: number | null;
+  startedAt?: string;
+  streaming: boolean;
+}> = ({ workedMs, startedAt, streaming }) => {
+  const startMs = useMemo(() => {
+    if (!startedAt) return null;
+    const parsed = Date.parse(startedAt);
+    return Number.isFinite(parsed) ? parsed : null;
+  }, [startedAt]);
+  // A clock, not derived state: the effect only advances `now`, and the
+  // duration is computed during render. Seeding it at mount keeps the first
+  // paint correct instead of blank for a second.
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!streaming) return;
+    // One second is the smallest unit the label shows, so a faster tick would
+    // re-render for nothing.
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [streaming]);
+
+  const shown = streaming && startMs !== null ? now - startMs : workedMs;
+  if (shown === null || shown === undefined || shown <= 0) return null;
+
+  return (
+    <span
+      className="agw-msg-worked"
+      title={streaming ? "Time on this turn so far" : "Time the agent spent on this turn"}
+    >
+      {streaming ? "Working" : "Worked"} {formatWorkedDuration(shown)}
+    </span>
+  );
+};
+
 /** Assistant turn — ordered timeline + label + actions. */
 const AssistantTurn: React.FC<{
   copyText: string;
@@ -373,6 +430,10 @@ const AssistantTurn: React.FC<{
   onRetry?: () => void;
   label?: string;
   labelColor?: string;
+  /** Wall-clock this turn took, or null when it cannot be derived. */
+  workedMs?: number | null;
+  /** When the live turn began, for the ticking counter. */
+  startedAt?: string;
 }> = ({
   copyText,
   events,
@@ -383,6 +444,8 @@ const AssistantTurn: React.FC<{
   onRetry,
   label,
   labelColor,
+  workedMs,
+  startedAt,
 }) => {
   const rows = useMemo(() => buildRows(events), [events]);
   const lastContentId = useMemo(() => {
@@ -410,7 +473,7 @@ const AssistantTurn: React.FC<{
           // While the turn streams, the label breathes with the SAME shimmer as
           // the "Thinking…" reasoning label (`agw-shimmer` clips a moving
           // gradient onto the text, so no inline color while it's live).
-          className={streaming ? "agw-shimmer" : undefined}
+          className={streaming ? "agw-turn-label agw-shimmer" : "agw-turn-label"}
           style={{
             // Shrink to the text width. As a direct flex-column child it would
             // otherwise stretch to the full message width, so the 200% shimmer
@@ -419,7 +482,7 @@ const AssistantTurn: React.FC<{
             // instead of sweeping across the letters.
             alignSelf: "flex-start",
             fontSize: 11,
-            fontWeight: 600,
+            fontWeight: "var(--agw-fw-medium)",
             letterSpacing: 0.4,
             textTransform: "uppercase",
             ...(streaming
@@ -461,6 +524,11 @@ const AssistantTurn: React.FC<{
             </div>
           );
         }
+        if (row.type === "notice") {
+          // A runtime message (output limit hit, stream dropped), rendered where
+          // it happened and visibly NOT part of what the model wrote.
+          return <NoticeCard key={row.id} text={row.text} />;
+        }
         if (row.type === "compaction") {
           // Compaction fired here mid-turn — render inline so everything the
           // agent streamed AFTER it lands below the marker (and everything
@@ -491,8 +559,13 @@ const AssistantTurn: React.FC<{
         </div>
       )}
 
-      {showActions && (copyText || onRetry) && (
+      {showActions && (copyText || onRetry || workedMs !== null) && (
         <div className="agw-msg-actions">
+          <WorkedDuration
+            workedMs={workedMs ?? null}
+            startedAt={startedAt}
+            streaming={streaming}
+          />
           {copyText && <CopyAction text={copyText} />}
           {onRetry && (
             <button type="button" className="agw-msg-action" onClick={onRetry} title="Retry">
@@ -524,7 +597,57 @@ type MessageBubbleProps = {
   label?: string;
   /** Idle color for a custom label (streaming keeps the shimmer). */
   labelColor?: string;
+  /**
+   * Wall-clock this assistant turn took. Derived by `turnWorkedMs` from
+   * timestamps the runtime already persists — nothing extra is recorded.
+   */
+  workedMs?: number | null;
+  /** When the turn began, so a live turn can tick rather than sit blank. */
+  startedAt?: string;
 };
+
+/**
+ * Team traces in the main chat. The notifier injects team traffic into the
+ * Lead's conversation as user-role turns (so the model has the full text),
+ * but the WORDS belong to the Team chat — the main chat shows only a compact
+ * trace pill. Clicking it opens the Team panel where the content lives.
+ * Detection is by the notifier's own stable markers, nothing heuristic.
+ */
+const TEAM_QUESTION_RE = /^\[Team question — (.+?) is paused/;
+const TEAM_NOTIFICATION_PREFIX = "[Automatic team notification";
+
+const teamTrace = (content: string): { title: string; tone: "ask" | "done" } | null => {
+  const q = TEAM_QUESTION_RE.exec(content);
+  if (q) return { title: `${q[1]} messaged you`, tone: "ask" };
+  if (content.startsWith(TEAM_NOTIFICATION_PREFIX))
+    return { title: "Team run finished — report requested", tone: "done" };
+  return null;
+};
+
+const TeamTracePill: React.FC<{ title: string; tone: "ask" | "done" }> = ({ title, tone }) => (
+  <div
+    className="agw-msg"
+    style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}
+  >
+    <button
+      type="button"
+      className="agw-team-trace"
+      data-tone={tone}
+      title="Open the Team panel"
+      onClick={() => {
+        // Lazy import avoids a cycle: the workspace store imports dock types
+        // that components also use.
+        void import("../store/useAgentWorkspaceStore").then((m) =>
+          m.useAgentWorkspaceStore.getState().openTab("team"),
+        );
+      }}
+    >
+      <span className="agw-team-trace-dot" />
+      <span>{title}</span>
+      <AgentIcon name="users" size={12} />
+    </button>
+  </div>
+);
 
 const MessageBubbleImpl: React.FC<MessageBubbleProps> = ({
   message,
@@ -535,8 +658,12 @@ const MessageBubbleImpl: React.FC<MessageBubbleProps> = ({
   onRetry,
   label,
   labelColor,
+  workedMs,
+  startedAt,
 }) => {
   if (message.role === "user") {
+    const trace = teamTrace(message.content);
+    if (trace) return <TeamTracePill title={trace.title} tone={trace.tone} />;
     return (
       <UserBubble
         content={message.content}
@@ -558,6 +685,8 @@ const MessageBubbleImpl: React.FC<MessageBubbleProps> = ({
       onRetry={onRetry}
       label={label}
       labelColor={labelColor}
+      workedMs={workedMs ?? null}
+      startedAt={startedAt}
     />
   );
 };

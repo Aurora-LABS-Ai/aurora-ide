@@ -178,7 +178,7 @@ impl ToolExecutor for FileWriteTool {
                 // The agent now knows this file's exact content (it just
                 // wrote it), so a follow-up file_edit should pass the
                 // read-before-edit guard without a redundant read.
-                super::read_tracker::record(&ctx.session_id, &resolved.to_string_lossy());
+                super::read_tracker::record(&ctx.thread_id, &resolved.to_string_lossy());
 
                 Ok(serde_json::to_string(&json!({
                     "success": true,
@@ -221,7 +221,7 @@ mod tests {
             allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
-            session_id: "s".into(),
+            thread_id: "s".into(),
             workspace_root: workspace,
             cancel_token: CancellationToken::new(),
         }

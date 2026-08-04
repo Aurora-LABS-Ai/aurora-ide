@@ -11,8 +11,12 @@
 //!    [`crate::agent_safety::bash_validation::validate_command`].
 //! 2. **Editor** (`editor_open_file`, `read_lints`) — opens files through
 //!    Tauri events and runs native project checkers for diagnostics.
-//! 3. **Todo** (`todo_write`) — fire-and-forget Tauri event for the
-//!    task panel.
+//! 3. **Todo** (`todo`) — ONE tool with a typed `op` (set / update /
+//!    read) over the durable per-thread checklist in
+//!    [`todo_store`]. It was three tools (`todo_write`, `todo_update`,
+//!    `todo_read`); they shared all their vocabulary and differed only
+//!    in which fields were required, so the split cost the roster three
+//!    slots and cost the model a choice on every call.
 //!
 //! ## `IdeEventSink`
 //!
@@ -47,7 +51,7 @@
 //!
 //! - `shell_execute`, `shell_spawn` → `requires_permission() == true`
 //! - `shell_kill`, `shell_list_processes`, `editor_open_file`,
-//!   `read_lints`, `todo_write` → default `false` (read/UI/own-process
+//!   `read_lints`, `todo` → default `false` (read/UI/own-process
 //!   ops are safe).
 
 #![allow(dead_code)]
@@ -62,12 +66,14 @@ pub mod read_lints;
 pub mod shell_execute;
 pub mod shell_kill;
 pub mod shell_list_processes;
+pub mod shell_read_output;
 pub mod shell_spawn;
-pub mod todo_write;
+pub mod todo;
+pub mod todo_store;
 
 pub use ide_event_sink::{
-    FileChangeKind, FileChangedPayload, IdeEventSink, NoopIdeEventSink, RecordedEvent,
-    RecordingIdeEventSink, FILE_CHANGED_EVENT,
+    FileChangeKind, FileChangedPayload, IdeEventSink, NoopIdeEventSink, PlanChangeReason, PlanChangedPayload,
+    RecordedEvent, RecordingIdeEventSink, FILE_CHANGED_EVENT, PLAN_CHANGED_EVENT,
 };
 
 /// Names of every tool this bucket registers, in roster order.
@@ -85,8 +91,9 @@ pub const TOOL_NAMES: &[&str] = &[
     "shell_spawn",
     "shell_kill",
     "shell_list_processes",
+    "shell_read_output",
     "read_lints",
-    "todo_write",
+    "todo",
 ];
 
 /// Tools that opt into the Phase 4 permission gate
@@ -105,12 +112,16 @@ pub fn register(reg: &mut ToolRegistry, sink: Arc<dyn IdeEventSink>) {
     reg.register(Arc::new(shell_spawn::ShellSpawnTool::new(sink.clone())));
     reg.register(Arc::new(shell_kill::ShellKillTool));
     reg.register(Arc::new(shell_list_processes::ShellListProcessesTool));
+    reg.register(Arc::new(shell_read_output::ShellReadOutputTool::new(
+        sink.clone(),
+    )));
     // `editor_open_file` is intentionally NOT registered — see TOOL_NAMES.
     // The executor and its `agent_editor_open` event remain compiled because
     // the Agent Window still listens on that channel to open files in its
     // right rail.
     reg.register(Arc::new(read_lints::ReadLintsTool::new(sink.clone())));
-    reg.register(Arc::new(todo_write::TodoWriteTool::new(sink)));
+    // ONE todo tool with a typed `op`, not three names for one piece of state.
+    reg.register(Arc::new(todo::TodoTool::new(sink)));
 }
 
 #[cfg(test)]
@@ -122,7 +133,7 @@ mod tests {
     fn register_mounts_every_bucket_tool() {
         let mut reg = ToolRegistry::new();
         register(&mut reg, Arc::new(NoopIdeEventSink));
-        assert_eq!(reg.len(), TOOL_NAMES.len(), "expected 6 tools in bucket");
+        assert_eq!(reg.len(), TOOL_NAMES.len(), "every bucket tool must mount");
         assert!(
             !reg.names().contains(&"editor_open_file".to_string()),
             "editor_open_file must not be offered to the model — opens route to the right rail"

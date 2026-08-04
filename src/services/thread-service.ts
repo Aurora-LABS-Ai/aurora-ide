@@ -31,6 +31,12 @@ export interface ThreadSummary {
   preview: string;
   /** Project the thread is scoped to. Absent for legacy unscoped threads. */
   workspaceRoot?: string | null;
+  /**
+   * The model this conversation is on, as `"providerId:modelKey"`. Absent for
+   * chats that predate per-conversation models or have never run a turn — the
+   * composer falls back to the user's default model for those.
+   */
+  model?: string | null;
   /** Whether the chat is pinned to the top of the rail. */
   pinned?: boolean;
   /**
@@ -92,7 +98,8 @@ export interface AttachedCommandChip {
 
 /** Exact inline composer pills persisted with a user turn for transcript replay. */
 export interface AttachedPromptChip {
-  kind: "file" | "skill" | "rule" | "mcp";
+  /** `folder` is a path chip like `file`, not a directive — see MessageBubble. */
+  kind: "file" | "folder" | "skill" | "rule" | "mcp";
   title: string;
   /** Serialized file reference (`rel` for @ picker, absolute for OS picks). */
   value?: string | null;
@@ -309,6 +316,19 @@ class ThreadServiceClass {
    */
   async setArchived(threadId: string, archived: boolean): Promise<void> {
     await invoke('thread_set_archived', { threadId, archived });
+  }
+
+  /**
+   * Pin a conversation to a model (`"providerId:modelKey"`), or pass `null` to
+   * clear it back to the user's default.
+   *
+   * The runtime writes this field itself on every turn, so this call is for the
+   * choice made BEFORE a turn runs — open an old chat, switch its model, then
+   * send. Without it, the pick would live only in memory and be lost the moment
+   * you navigated away.
+   */
+  async setModel(threadId: string, model: string | null): Promise<void> {
+    await invoke('thread_set_model', { threadId, model });
   }
 
   /**

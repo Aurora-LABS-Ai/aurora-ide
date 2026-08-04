@@ -49,6 +49,7 @@ import {
   type ChatMessageForCount,
 } from "../../services/token-service";
 import { runLocalTitle, runReplySuggestions } from "../adapters/prompt-refine";
+import { resolveThreadModel } from "../lib/thread-model";
 import {
   refinePathsConfigured,
   replySuggestionsReady,
@@ -57,15 +58,19 @@ import {
 import { useAgentSuggestStore } from "../store/useAgentSuggestStore";
 import { useAgentChatStore } from "../store/useAgentChatStore";
 import { useAgentContextStore } from "../store/useAgentContextStore";
-import { useAgentTaskStore, type Task } from "../store/useAgentTaskStore";
 import {
   parseKillResult,
   parseSpawnResult,
   useAgentBackgroundStore,
 } from "../store/useAgentBackgroundStore";
-import { useAgentAttachmentStore } from "../store/useAgentAttachmentStore";
+import {
+  composerImages,
+  composerKey,
+  useAgentAttachmentStore,
+} from "../store/useAgentAttachmentStore";
 import {
   buildCommandSelection,
+  composerCommands,
   useAgentCommandStore,
 } from "../store/useAgentCommandStore";
 import { loadProjectRules } from "../../services/context-builder";
@@ -78,6 +83,7 @@ import {
 import {
   appendCompaction,
   appendContent,
+  appendNotice,
   appendThinking,
   appendUserInjection,
   nextEventId,
@@ -101,6 +107,14 @@ function timelineOf(m: DbMessage): TimelineEvent[] {
 // grep / multi_file_read / shell result by up to ~64x and the context ring
 // balloons far past what the model actually receives.
 const MODEL_TOOL_RESULT_CLAMP = 8_192;
+
+// Output cap used when neither the model nor the provider declares one.
+// On every provider except Anthropic, reasoning tokens bill against this same
+// cap, so a high reasoning effort can burn the whole allowance before the model
+// writes a visible word — the turn then ends at the cap with only thinking to
+// show for it. Keep this comfortably above a long reasoning pass; users can
+// still set an exact `Max output` per model in provider settings.
+const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 
 /**
  * Estimate token usage for a turn the provider never reported. Many OpenAI-
@@ -263,7 +277,7 @@ function withProviderDefaults(config: ProviderConfig): ProviderConfig {
     ...config,
     providerType: config.providerType || "custom",
     contextWindow: config.contextWindow || 128_000,
-    maxOutputTokens: config.maxOutputTokens || 8_192,
+    maxOutputTokens: config.maxOutputTokens || DEFAULT_MAX_OUTPUT_TOKENS,
     supportsThinking: config.supportsThinking ?? false,
     supportsToolStream: config.supportsToolStream ?? false,
     supportsVision: config.supportsVision ?? false,
@@ -484,20 +498,58 @@ interface BackgroundSendTarget {
   threadId: string;
   projectRoot: string | null;
   seed: import("../../services/thread-service").DbThread;
+  /**
+   * True when a PERSON pressed send on this thread's own composer, as opposed
+   * to the pipeline resubmitting on their behalf (the post-turn queue flush).
+   *
+   * It decides whether the turn consumes what a composer staged — images, `/`
+   * directives, inspector picks — and whether sending mid-turn queues instead
+   * of being dropped. A resubmit must do neither: the staged items belong to
+   * the next thing the user types, not to a message they already sent.
+   */
+  interactive?: boolean;
 }
 
-export function useAgentWindowSend(): AgentWindowSend {
-  // "Sending" here means the OPEN thread is streaming — a turn running in a
-  // backgrounded thread must NOT lock the composer of the chat you're viewing.
-  const sending = useAgentChatStore(
-    (s) => !!s.currentThreadId && !!s.liveTurns[s.currentThreadId],
-  );
+/**
+ * Which conversation a send pipeline drives.
+ *
+ * Omitted, the pipeline follows the OPEN chat — the main pane's behaviour. A
+ * chat docked in the side panel passes its own binding, so its composer, stop
+ * button and approval prompt act on ITS thread while the main pane keeps
+ * driving another one. Both can stream at the same time; the runtime already
+ * locks per thread and the store already keys live turns by thread id.
+ */
+export interface BoundConversation {
+  threadId: string;
+  projectRoot: string | null;
+  /**
+   * This panel's loaded transcript, used to seed a live turn.
+   *
+   * A function, not a value: the seed is read at send time, so a transcript
+   * that finished loading (or grew) after mount is still the one used. Without
+   * it a docked send would open its live turn on an empty stub and the history
+   * above the new message would vanish until the turn ended.
+   */
+  getSeed: () => import("../../services/thread-service").DbThread | null;
+}
+
+export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
+  // The conversation this pipeline drives: an explicit binding, else the open
+  // chat. Everything below reads THIS rather than `currentThreadId`, which is
+  // what lets a docked chat run its own turn without touching the main pane.
   const openThreadId = useAgentChatStore((s) => s.currentThreadId);
+  const targetThreadId = bound?.threadId ?? openThreadId;
+
+  // "Sending" means THIS conversation is streaming — a turn running in any
+  // other chat must not lock the composer you're looking at.
+  const sending = useAgentChatStore(
+    (s) => !!targetThreadId && !!s.liveTurns[targetThreadId],
+  );
   const [pendingApprovals, setPendingApprovals] = useState<
     Record<string, PendingApproval>
   >({});
-  const pendingApproval = openThreadId
-    ? pendingApprovals[openThreadId] ?? null
+  const pendingApproval = targetThreadId
+    ? pendingApprovals[targetThreadId] ?? null
     : null;
   // One unresolved `always_ask` promise per running thread. Parallel turns must
   // never overwrite each other's approval resolver.
@@ -511,7 +563,7 @@ export function useAgentWindowSend(): AgentWindowSend {
   >(null);
 
   const resolveApproval = useCallback((ok: boolean) => {
-    const threadId = useAgentChatStore.getState().currentThreadId;
+    const threadId = targetThreadId;
     if (!threadId) return;
     const resolver = approvalResolversRef.current.get(threadId);
     approvalResolversRef.current.delete(threadId);
@@ -522,7 +574,7 @@ export function useAgentWindowSend(): AgentWindowSend {
       return next;
     });
     resolver?.(ok);
-  }, []);
+  }, [targetThreadId]);
 
   const approve = useCallback(() => resolveApproval(true), [resolveApproval]);
   const reject = useCallback(() => resolveApproval(false), [resolveApproval]);
@@ -533,25 +585,29 @@ export function useAgentWindowSend(): AgentWindowSend {
   }, [pendingApproval, resolveApproval]);
 
   const stop = useCallback(() => {
-    // Cancel the turn of the chat currently open (leave background turns alone).
-    const openId = useAgentChatStore.getState().currentThreadId;
-    if (openId) {
+    // Cancel THIS conversation's turn only — every other running chat, docked
+    // or backgrounded, keeps going.
+    if (targetThreadId) {
       resolveApproval(false);
-      runningAgents.get(openId)?.stop();
+      runningAgents.get(targetThreadId)?.stop();
     }
-  }, [resolveApproval]);
+  }, [resolveApproval, targetThreadId]);
 
   const compact = useCallback(async () => {
     const store = useAgentChatStore.getState();
-    const threadId = store.currentThreadId;
-    const seed = store.currentThread;
+    const threadId = targetThreadId;
+    const seed = bound ? bound.getSeed() : store.currentThread;
     if (!threadId || !seed || store.liveTurns[threadId]) return;
 
     const settings = useSettingsStore.getState();
-    const llmConfig = settings.getLLMConfig();
+    // Compaction is a real model call on this conversation's history, so it
+    // rides the conversation's own model — not whichever one is selected now.
+    const llmConfig = settings.getLLMConfigFor(resolveThreadModel(threadId));
     if (!llmConfig) return;
 
-    const projectRoot = store.projectRoot;
+    // A docked chat compacts against ITS project, not the window's current
+    // scope — the window may have been re-scoped since the tab was opened.
+    const projectRoot = bound ? bound.projectRoot : store.projectRoot;
     const executionMode =
       settings.teamEnabled && settings.agentExecutionMode !== "plan"
         ? "team"
@@ -569,7 +625,8 @@ export function useAgentWindowSend(): AgentWindowSend {
     agent.updateConfig({
       executionMode,
       workspacePath: projectRoot,
-      maxTokens: llmConfig.defaultMaxTokens ?? llmConfig.maxOutputTokens ?? 8_192,
+      maxTokens:
+        llmConfig.defaultMaxTokens ?? llmConfig.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
       compactionThresholdPct: settings.compactionThresholdPct,
       compactionSummaryBudget: settings.compactionSummaryBudget,
       allowOutsideWorkspace: settings.allowOutsideWorkspace,
@@ -626,7 +683,7 @@ export function useAgentWindowSend(): AgentWindowSend {
       await store.refreshThreads();
       store.endTurn(threadId);
     }
-  }, []);
+  }, [bound, targetThreadId]);
 
   const sendTurn = useCallback(async (
     raw: string,
@@ -636,17 +693,29 @@ export function useAgentWindowSend(): AgentWindowSend {
     const content = raw.trim();
     if (!content) return;
 
-    // Mid-turn injection: if the OPEN thread already has a streaming turn, queue
-    // this text instead of starting a new turn. The Rust runtime drains the slot
-    // at the next tool-result boundary and staples it onto the tool message, so
-    // the model sees it inline (parity with the IDE). We deliberately do NOT
-    // consume staged attachments / selection / `/` commands here — those belong
-    // to a fresh turn, not a quick mid-flight note.
-    if (!target) {
+    // Did a person press send, or is the pipeline resubmitting on their behalf?
+    // Only a human send consumes what a composer staged and may queue mid-turn.
+    const fromComposer = !target || target.interactive === true;
+
+    // Which composer's staging tray this turn drains. Composers file under their
+    // own thread (`"draft"` before one exists), so a docked chat's send can
+    // never pick up what was staged in the main pane — they are different trays
+    // that happen to look identical.
+    const stageKey = composerKey(
+      target ? target.threadId : useAgentChatStore.getState().currentThreadId,
+    );
+
+    // Mid-turn injection: if this conversation already has a streaming turn,
+    // queue the text instead of starting a second one. The Rust runtime drains
+    // the slot at the next tool-result boundary and staples it onto the tool
+    // message, so the model sees it inline (parity with the IDE). We deliberately
+    // do NOT consume staged attachments / selection / `/` commands here — those
+    // belong to a fresh turn, not a quick mid-flight note.
+    if (fromComposer) {
       const chat = useAgentChatStore.getState();
-      const openThreadId = chat.currentThreadId;
-      if (openThreadId && chat.liveTurns[openThreadId]) {
-        void chat.enqueueMessage(openThreadId, content);
+      const liveThreadId = target?.threadId ?? chat.currentThreadId;
+      if (liveThreadId && chat.liveTurns[liveThreadId]) {
+        void chat.enqueueMessage(liveThreadId, content);
         return;
       }
     }
@@ -656,24 +725,32 @@ export function useAgentWindowSend(): AgentWindowSend {
     // (and what the user bubble renders images from); `content` stays clean for
     // the thread title/preview seed. Attachments are vision-gated at the
     // composer, so they're only present for a vision-capable model.
-    const attachments = target ? [] : useAgentAttachmentStore.getState().images;
+    const attachments = fromComposer
+      ? composerImages(useAgentAttachmentStore.getState(), stageKey)
+      : [];
     const contentForModel = appendImageMarkers(content, attachments);
-    if (!target) useAgentAttachmentStore.getState().clear();
+    if (attachments.length > 0) useAgentAttachmentStore.getState().clear(stageKey);
 
     // Snapshot the inspector picks ONCE, up front: the compact `pills` ride on
     // the user bubble (display), the full `<selected_elements>` block rides to
     // the model via ideContext (below). Clear the composer chips now so the
     // selection isn't reused on the next turn.
-    const picks = target ? [] : useAgentSelectionStore.getState().selected;
+    //
+    // Still window-global, unlike the trays above: there is ONE inspector (the
+    // browser panel), so its picks belong to whichever composer sends next
+    // rather than to a particular conversation.
+    const picks = fromComposer ? useAgentSelectionStore.getState().selected : [];
     const selectionPills = buildSelectionPills(picks);
     if (picks.length > 0) useAgentSelectionStore.getState().clear();
 
     // Snapshot the staged `/` directives (skills / rules / MCP) for THIS turn,
     // then clear the chips so they don't ride along on the next message. Skills
     // thread through `explicitSkillKeys`; rules + MCP become context blocks below.
-    const stagedCommands = target
-      ? []
-      : useAgentCommandStore.getState().commands.filter(isDirectiveCommand);
+    const stagedCommands = fromComposer
+      ? composerCommands(useAgentCommandStore.getState(), stageKey).filter(
+          isDirectiveCommand,
+        )
+      : [];
     const commandSelection = buildCommandSelection(stagedCommands);
     // Compact chips snapshotted for the user bubble (display only — the
     // directive's effect rides to the model via ideContext / explicitSkillKeys).
@@ -683,13 +760,12 @@ export function useAgentWindowSend(): AgentWindowSend {
     } satisfies AttachedPromptChip));
     const promptChips = [...fileChips, ...commandChips];
     if (stagedCommands.length > 0) {
-      useAgentCommandStore.getState().clear();
+      useAgentCommandStore.getState().clear(stageKey);
     }
 
     const store = useAgentChatStore.getState();
 
     const settings = useSettingsStore.getState();
-    const llmConfig = settings.getLLMConfig();
 
     // Execution mode for this turn. The agent window has NO separate "Lead" and
     // no mode toggle — the chat model in the selector IS the Lead. So enabling
@@ -702,13 +778,23 @@ export function useAgentWindowSend(): AgentWindowSend {
         : settings.agentExecutionMode;
 
     // Bootstrap the thread (create-on-first-send) BEFORE touching the UI so a
-    // failed creation doesn't leave a half-rendered turn.
+    // failed creation doesn't leave a half-rendered turn. Only the main pane can
+    // be a draft — a docked chat always addresses a thread that already exists.
     const wasDraft = !target && !store.currentThreadId;
     const threadId = target?.threadId ?? await store.ensureThreadForSend(content);
 
     // Per-THREAD guard: block a second turn on the SAME thread, but allow other
     // threads to run concurrently (that's the whole point of parallel turns).
     if (useAgentChatStore.getState().liveTurns[threadId]) return;
+
+    // The model belongs to the CONVERSATION, so it can only be resolved once we
+    // know which thread this turn is for — which is why it's read here and not
+    // with the rest of the settings above. Two chats streaming side by side each
+    // run on their own model; a chat you haven't given one falls back to the
+    // user's default. Resolved at SEND time so a pick made while the composer
+    // was focused counts toward this turn.
+    const modelSelection = resolveThreadModel(threadId);
+    const llmConfig = settings.getLLMConfigFor(modelSelection);
 
     // Capture the project for THIS turn now — the user may navigate to another
     // project while it runs, and tools must stay rooted at the originating one.
@@ -719,10 +805,10 @@ export function useAgentWindowSend(): AgentWindowSend {
     // running and re-attaches when the user opens this chat again.
     store.beginTurn(threadId, target?.seed, projectRoot);
 
-    // Drop any checklist left from THIS thread's previous turn so the docked
-    // task panel starts clean (it repopulates the moment the model calls
-    // `todo_write` again).
-    useAgentTaskStore.getState().clear(threadId);
+    // The checklist is NOT cleared here. Rust owns it and it is durable per
+    // thread, so a multi-turn task list must survive into the next turn — the
+    // agent is still working through it, and `todo_write` replaces it when a
+    // genuinely new list starts.
 
     // Optimistic user bubble — the runtime re-persists this verbatim, so the
     // reload at the end reconciles it to the authoritative id.
@@ -906,46 +992,11 @@ export function useAgentWindowSend(): AgentWindowSend {
       }
     };
 
-    // `todo_write` is a checklist signal, not a normal tool — mirror its todos
-    // into the PER-THREAD task store so the docked panel reflects live progress.
-    // Args stream incrementally, so we only act once they parse to valid JSON.
-    const captureTodos = (tc: ToolCallRequest) => {
-      if (tc.function.name !== "todo_write") return;
-      let parsed: {
-        todos?: Array<{ content: string; activeForm?: string; status: Task["status"] }>;
-      };
-      try {
-        parsed = JSON.parse(tc.function.arguments || "{}");
-      } catch {
-        return; // partial JSON mid-stream — wait for a complete payload
-      }
-      const todos = parsed.todos;
-      if (!Array.isArray(todos)) return;
-      const taskStore = useAgentTaskStore.getState();
-      const existing = taskStore.byThread[threadId] ?? [];
-      const mapped: Task[] = todos.map((todo, i) => {
-        // Reuse a prior id when the content matches so a pending→in_progress→
-        // completed transition keeps a stable row (no flicker / re-mount).
-        const prev = existing.find(
-          (t) =>
-            t.originalContent === todo.content ||
-            t.content === todo.activeForm ||
-            t.content === todo.content,
-        );
-        const display =
-          todo.status === "in_progress" && todo.activeForm
-            ? todo.activeForm
-            : todo.content;
-        return {
-          id: prev?.id ?? `task_${Date.now()}_${i}`,
-          activeForm: todo.activeForm,
-          content: display,
-          originalContent: todo.content,
-          status: todo.status,
-        };
-      });
-      taskStore.setTasks(threadId, mapped);
-    };
+    // The checklist is NOT mirrored from tool-call arguments any more. Rust
+    // emits `agent_todo_write` after every todo tool call and
+    // `useAgentTaskStore` subscribes to it, so `todo_update` and `todo_write`
+    // both move the panel. Parsing args here only ever saw `todo_write`, which
+    // is why the panel froze at 0/N while the agent worked the list.
 
     const setToolResult = (tc: ToolCallRequest, result: string, durationMs?: number) => {
       flushStreamText();
@@ -1070,7 +1121,10 @@ export function useAgentWindowSend(): AgentWindowSend {
     // Provider settings / the composer picker). Effort tiers are forwarded as
     // `reasoning_effort`; a toggle model drives whether thinking is on at all;
     // a budget model additionally carries the token budget the user chose.
-    const activeModel = useSettingsStore.getState().getActiveModel();
+    // THIS turn's model row, not the globally-active one: reasoning config
+    // (effort tier / thinking budget) hangs off the model, so reading the
+    // active row would apply another conversation's reasoning settings here.
+    const activeModel = useSettingsStore.getState().getModelFor(modelSelection);
     const reasoning = activeModel?.reasoning;
     let thinkingEnabled = settings.thinkingEnabled && (llmConfig.supportsThinking ?? false);
     // Budget models carry a token number instead of a tier. It rides its own
@@ -1125,6 +1179,12 @@ export function useAgentWindowSend(): AgentWindowSend {
     // so content streamed after compaction renders below the marker.
     let compactionEventId: string | null = null;
 
+    // Runtime notices already shown inline this turn. A failure the runtime
+    // announces first and then fails on (a dropped stream) arrives twice —
+    // once as the notice event, once as the rejection — and must only be said
+    // once. Scoped per turn so a later turn can legitimately repeat it.
+    const noticedMessages = new Set<string>();
+
     // A DEDICATED service instance for this turn so concurrent turns on other
     // threads keep their own client/config. Registered so `stop()` can target it.
     const agent = new AgentService();
@@ -1142,7 +1202,8 @@ export function useAgentWindowSend(): AgentWindowSend {
       // operating on its own directory even after the user switches projects.
       workspacePath: projectRoot,
       temperature: llmConfig.defaultTemperature ?? 1.0,
-      maxTokens: llmConfig.defaultMaxTokens ?? llmConfig.maxOutputTokens ?? 8192,
+      maxTokens:
+        llmConfig.defaultMaxTokens ?? llmConfig.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
       // Agentic by design: no artificial tool-call cap — the runtime stops when
       // the model stops requesting tools.
       maxToolIterations: undefined,
@@ -1233,13 +1294,11 @@ export function useAgentWindowSend(): AgentWindowSend {
           onToolCall: (tc) => {
             setActivity(describeToolActivity(tc.function.name, tc.function.arguments || ""));
             upsertToolCall(tc);
-            captureTodos(tc);
           },
           onToolExecutionStart: (tc) => {
             markToolStart(tc.id);
             setActivity(describeToolActivity(tc.function.name, tc.function.arguments || ""));
             upsertToolCall(tc);
-            captureTodos(tc);
           },
           onToolExecutionComplete: (tc, result) => {
             captureBackgroundProcess(tc, result);
@@ -1278,10 +1337,25 @@ export function useAgentWindowSend(): AgentWindowSend {
                 ?.approval.push({ from: approvalBegan, to: performance.now() });
             }
           },
+          // Something the runtime needs to say that the model did NOT say —
+          // most importantly "this reply is cut off at the output limit".
+          // Its own marker, never folded into the assistant's text.
+          onRuntimeNotice: ({ message }) => {
+            noticedMessages.add(message);
+            flushStreamText();
+            patchMessage(assistantId, (m) => ({
+              ...m,
+              timeline: appendNotice(timelineOf(m), message),
+            }));
+          },
           onError: (error) => {
             const message =
               error instanceof Error ? error.message : String(error);
             if (/cancel|abort/i.test(message)) return; // user stop → not an error
+            // Already shown as an inline notice (the runtime emits the event
+            // first, then fails the turn with the same message). Re-appending
+            // it as message prose would say it twice, in two different voices.
+            if (noticedMessages.has(message)) return;
             const classified = classifyError(
               error instanceof Error ? error : new Error(message),
             );
@@ -1324,7 +1398,7 @@ export function useAgentWindowSend(): AgentWindowSend {
           useAgentChatStore.getState().liveTurns[threadId]?.messages ?? [];
         const contextWindow = llmConfig.contextWindow || 128_000;
         const estMaxOutput =
-          llmConfig.defaultMaxTokens ?? llmConfig.maxOutputTokens ?? 8192;
+          llmConfig.defaultMaxTokens ?? llmConfig.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
         const est = await estimateTurnUsage(
           liveMsgs,
           llmConfig.model,
@@ -1366,7 +1440,16 @@ export function useAgentWindowSend(): AgentWindowSend {
       });
       // Land any tail of buffered stream text, then close the reasoning phase.
       flushStreamText();
-      patchMessage(assistantId, (m) => (m.isThinking ? { ...m, isThinking: false } : m));
+      // Re-stamp the assistant message to the moment the turn SETTLED. It was
+      // seeded at send time because there was nothing to stamp yet, and
+      // `buildTurns` reads the last assistant message's timestamp as the turn's
+      // `endedAt` — so leaving the seed value makes every just-finished turn
+      // measure ~0ms and the "Worked 4m" footer silently disappears. It only
+      // came back after reopening the thread, because the runtime stamps the
+      // PERSISTED message at end-of-stream. This mirrors that on the optimistic
+      // message so the live view and the reloaded view agree.
+      const settledAt = nowIso();
+      patchMessage(assistantId, (m) => ({ ...m, isThinking: false, timestamp: settledAt }));
       const s = useAgentChatStore.getState();
       const settledThread = s.liveTurns[threadId];
       runningAgents.delete(threadId);
@@ -1392,9 +1475,12 @@ export function useAgentWindowSend(): AgentWindowSend {
       // turn finished in the background (another chat is open) — drop a "done"
       // dot on its rail row / project until the user opens it.
       s.noteTurnComplete(threadId);
-      // Any task the model left pending/in-progress is settled as completed so
-      // the checklist doesn't sit forever showing a spinner after the turn ends.
-      useAgentTaskStore.getState().finalize(threadId, "completed");
+      // The checklist is NOT settled here. Marking whatever the model left open
+      // as "completed" invented completions the agent never reported — a task
+      // it abandoned would show a tick. An item left in_progress by a finished
+      // turn is *paused*, and the panel renders it that way (see
+      // `AgentTaskPanel`), which is the truth and is recoverable: the next turn
+      // picks the same list back up from disk.
 
       // Auto-flush a still-pending injection: if the turn ended before the
       // runtime hit a tool-result boundary to drain the queue, the message
@@ -1423,9 +1509,26 @@ export function useAgentWindowSend(): AgentWindowSend {
   sendRef.current = sendTurn;
 
   const send = useCallback(
-    (text: string, fileChips?: AttachedPromptChip[]) =>
-      sendTurn(text, undefined, fileChips),
-    [sendTurn],
+    (text: string, fileChips?: AttachedPromptChip[]) => {
+      if (!bound) return sendTurn(text, undefined, fileChips);
+      // A docked chat addresses its own thread explicitly. The seed is read
+      // NOW (not at mount) so the live turn opens on the transcript actually on
+      // screen; a live turn already in flight is the newer one, so it wins.
+      const live = useAgentChatStore.getState().liveTurns[bound.threadId];
+      const seed = live ?? bound.getSeed();
+      if (!seed) return Promise.resolve();
+      return sendTurn(
+        text,
+        {
+          threadId: bound.threadId,
+          projectRoot: bound.projectRoot,
+          seed,
+          interactive: true,
+        },
+        fileChips,
+      );
+    },
+    [sendTurn, bound],
   );
 
   return {

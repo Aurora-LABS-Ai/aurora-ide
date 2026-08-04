@@ -384,3 +384,358 @@ clean 199ms runtime verification of the typing-assist engine.
 - The background-process dock kept its own copy of what was running, keyed by thread, built from tool results. Rust already had the authoritative ledger. The copy could not be right: switching project hid a live dev server and took its stop button with it, and a window reload erased the copy while the processes ran on.
 - The tell was in the store's own doc comment — "kept per thread so a background turn's dev server never appears in another chat's dock". That was a deliberate scoping decision applied to the wrong kind of fact. A *conversation artifact* (a finished run's log) is per-thread; a *running process* is per-machine. Scope by what the thing IS, not by where it was created.
 - Whenever the UI mirrors backend state, add a reconcile path before shipping. Events alone are not enough: `shell-process-ended` is fire-and-forget, so anything that misses it (a reload mid-flight) leaves a permanently wrong row with no way to correct itself.
+
+## 2026-07-29 — "The stream ended" was a token budget, and I confidently blamed the network first
+- The user reported an xhigh-reasoning turn dying after ~1 min. I read the SSE drivers, found that all
+  three treat EOF as a successful turn (`None => break` then `finish_reason.unwrap_or("stop")`), and
+  presented that as the answer. It is a real bug — but it was NOT this bug. The actual cause only
+  became visible when the user pasted the reasoning transcript: 29,048 chars ≈ 7.2k tokens against an
+  8192 output cap where `xhigh` claimed 90% of it. The arithmetic was decisive and I had never done it.
+- The lesson is about ordering, not about being wrong. I had the cap (`default_max_output_tokens: 8192`)
+  and the tier share (`Some("xhigh") => 90`) open in front of me BEFORE I answered, and I read them as
+  configuration rather than as a budget to add up. When a symptom is "it stopped early", price the
+  budget first — it is cheap, arithmetic, and falsifiable — before reaching for the more interesting
+  distributed-systems explanation. A plausible mechanism found by reading code is a hypothesis; a
+  number that matches the observed output to within 2% is evidence.
+- Corollary that actually mattered more: ASK FOR THE ARTIFACT. One paste of the truncated transcript
+  settled in seconds what code-reading had been circling. It also showed the cut landed mid-identifier
+  (`usePrefersReduced`), which is what ruled out a clean provider stop.
+
+## 2026-07-29 — An event switch with one silent `break` hid a warning the backend was already sending
+- Rust correctly detected the truncation and emitted `AssistantEvent::Error{recoverable:true}` telling
+  the user the reply was cut off and to raise Max output. `agent-runtime-client.ts` had
+  `case "error": break;` — the ONLY arm in a switch of ~15 with no callback, sitting directly above a
+  `default:` that logs unknown events with `console.warn`. So an event the team explicitly modelled was
+  treated worse than one nobody anticipated.
+- Two things to carry forward. (1) In an exhaustive event dispatcher, a bare `break` is a claim that
+  the event is intentionally ignorable; if that is true it deserves a comment saying why, and if it is
+  not true it is a dropped feature. Grep for arms with no callback whenever a backend signal
+  "doesn't show up". (2) The fix is not just to forward it — `onError` appended the text into
+  `m.content`, which makes the AGENT appear to announce its own truncation. Runtime speech and model
+  speech need different renderers, or the product loses the ability to say anything in its own voice.
+
+## 2026-07-29 — Clamping two invariants independently satisfies one and breaks the other
+- Fixing the budget, I wrote `answer.saturating_add(budget).min(CEILING).max(budget + 1)`: the `.min`
+  enforced "max_tokens <= 64k", the `.max` enforced "budget < max_tokens". With a 32k answer budget on
+  `xhigh` the desired budget was 96k, so the floor re-raised the total to 96,001 — back over the
+  ceiling the previous call had just enforced. The test I wrote for the ceiling caught it immediately.
+- When two constraints reference each other, resolve them in ONE function that returns the whole
+  consistent answer (`-> Option<(budget, max_tokens)>`), not as a chain of independent clamps. And
+  decide explicitly which side absorbs the loss — here reasoning shrinks and the answer allowance
+  stays whole, because starving the reply was the original bug.
+- Worth noting the loop test (`for answer in [...] { for effort in [...] }`) asserting both invariants
+  at every size found nothing further, but it is the test that makes this class of bug non-recurring.
+  Point assertions would have kept passing at the sizes I happened to pick.
+
+## 2026-07-29 — I diagnosed the right symptom through the wrong code path, twice, before reading the data
+- Sequence: (1) blamed EOF-as-success in the SSE drivers; (2) the user pasted the transcript, I did the
+  token arithmetic and blamed the Anthropic `xhigh` 90% thinking carve-out; (3) the user pushed back
+  — "that model has no budget slider, only effort tiers, so where are those tokens coming from?" — and
+  reading the actual session + provider row showed the provider was `provider_type: "openai"`, so the
+  Anthropic code I had been reasoning about was never executed at all.
+- The real cause was one line of precedence in `toLlmConfig`:
+  `defaultMaxTokens: provider.defaultMaxTokens ?? provider.maxOutputTokens` combined with consumers
+  reading `defaultMaxTokens ?? maxOutputTokens`. A stale provider-level 8192 therefore beat the
+  per-model 128000 that the resolver had just computed correctly. Nothing about reasoning, streaming,
+  or Anthropic was involved in the cap itself.
+- Lesson: when a bug report names a MODEL, resolve the whole config chain from the stored row before
+  reasoning about any adapter. `provider_type` decides which thousand lines of code even run, and I
+  read `claude-opus-5` and assumed "Anthropic adapter" — through a third-party OpenAI-compatible
+  gateway it is not. One `.meta.json` + one DB query would have told me at the start.
+- Second lesson: a defaulting chain where two fields can both supply the same value needs an explicit
+  precedence comment, because `a ?? b` at the producer and `a ?? c` at the consumer silently makes `b`
+  outrank `c`. The bug is invisible at both sites and only exists in their combination.
+- Third: the user's domain instinct beat my code reading. "No slider, only effort tiers" was a precise
+  observation about the model's `reasoning` config that directly contradicted my theory. Treat that
+  kind of pushback as evidence to chase, not as something to explain away.
+
+## 2026-07-29 — A tool schema that can't express its own contract will be "violated" by correct models
+- User: "Opus 5 / Kimi K3 are very intelligent, they can't make this mistake" about `file_read` failing
+  ~1% of calls with `paths: [1 item]` + `start_line`/`end_line` → "only work with single-file `path`".
+  They were right, and the framing was the useful part: a frontier model producing the same malformed
+  call repeatedly is evidence about the INTERFACE, not the model.
+- Two compounding causes. (1) `file_read` declares `path`, `paths`, `start_line`, `end_line`,
+  `max_lines` as independent optional siblings, because the real `path` xor `paths` rule needs a
+  top-level `oneOf` and strict validators (xAI/grok) HTTP-400 on `oneOf`/`anyOf`/`allOf` in function
+  params. So `{paths:["x"], start_line:1}` is **schema-valid** and the runtime rejected it anyway. The
+  model obeyed the contract it was given; the prose description carried a rule the schema denied.
+  (2) The rule was over-broad: a ONE-element `paths` names exactly one file, so a line window has
+  precisely one referent — there was nothing ambiguous to reject.
+- Fix: coerce a single-element `paths` + line window into the single-file form and serve the read; keep
+  the error only for 2+ files, and reword it to name the recovery that PRESERVES intent ("re-issue with
+  `path`…") instead of "omit them", which told the model to throw away what it wanted.
+- Generalisable rule: when a schema cannot encode a constraint, the runtime must be as permissive as
+  the schema is, and resolve every unambiguous input instead of failing it. Prose in a description is a
+  hint, not a validator. Audit any tool whose docs say "exactly one of" — that phrase marks a contract
+  the schema probably isn't enforcing.
+
+## 2026-07-30 — When the model "misbehaves", read the text we hand it before touching the tools
+An agent inside Aurora filed 7 complaints about its own environment. **Three were caused by Aurora's own
+prompt and tool-description text instructing the behaviour being complained about**, not by missing features:
+- `shell_list_processes` literally said "read that file with file_read to see what a running process has
+  printed". Its 15-call polling loop was obedience, not incompetence.
+- `getMcpToolsSummary()` injected a whole second tool inventory in display-name form and then told the model a
+  prefixed callable name existed without printing one. It reached for the useless inventory because we made it
+  the prominent one.
+- `agent-prompt.ts` said to prefer friendly MCP names — meant for prose, read as naming policy for calls.
+Rule: before adding a tool or a flag to fix agent behaviour, `grep` the prompt and every tool `description`
+for what we already told it. A tool description is executable policy; the model follows it exactly.
+
+## Same session — an agent's self-report is a hypothesis, not a bug report
+5 of 7 asks were real, but 2 diagnoses were wrong in ways that would have driven the wrong fix:
+- "There is no formula I can derive [for MCP callables]" — the exact callable was in the tool schema the whole
+  time. The symptom was real; the stated cause was not.
+- It asked for `auto_lint: true` on every edit, not knowing `read_lints` runs `tsc -b` / `cargo check` /
+  `compileall` over the WHOLE project. Building it as asked would make a 5-file refactor 5 full builds.
+Verify every claim against the code, including the ones that sound authoritative — and re-check the harness
+layer it names. I also asserted `getMcpToolsSummary` was legacy-IDE-only; the agent window reaches it through
+`AgentService` too, so the report was right and I was wrong.
+
+## Same session — derive counts in tests, never hardcode them
+`tools/mod.rs` had `assert_eq!(reg.len(), 22)` in two tests plus a module doc claiming "10 + 6 = 16 … total
+24" against a real 30. The prose had drifted three separate times because `builtin_tool_count_is_correct`
+guards the constant and never the comment. Adding one tool broke both literals. Now derived from the bucket
+`TOOL_NAMES` arrays, with the single intentional-change tripwire left in `BUILTIN_TOOL_COUNT`. If a test
+asserts a total that a sibling array already knows, compute it.
+
+## 2026-07-31 — "One system" was the bug, not the fix
+- A plan and a todo list were unified so there would be "exactly one answer to where am I". The
+  unification was the defect: a plan is COARSE and per-project (phases the user approved), a todo
+  list is FINE and per-thread (the steps of the phase being executed). They are different
+  granularities of different things, so suppressing one to serve the other produced a checklist that
+  could never move in a planned project, and a `todo_update` tool the prompt told the model to prefer
+  while the runtime refused to run it.
+- The tell was in the user's own words — "plan could be three phase; in phase one he will create a
+  todo for five steps". When a user describes a workflow that the architecture forbids, the
+  architecture is wrong. Do not defend a unification because it sounds principled; check whether the
+  two things being unified are the same KIND of thing.
+- Second lesson, and the reason this shipped broken for so long: the panel was a frontend
+  reconstruction of state Rust already owned, built by parsing tool-call ARGUMENTS of one tool. Every
+  other tool that changed the list was invisible to it. This is the same class as the background
+  process dock (2026-07-25) and it recurred within a week. **A frontend copy of backend state will
+  drift, and parsing arguments is strictly worse than reading results** — arguments only tell you
+  what was asked for, never what happened, and they only cover the one tool you happened to watch.
+- Third: an event nobody can route is an event nobody can use. `emit_todo_write` carried `{todos}`
+  with no thread id because the sink is app-global, so a window running several conversations could
+  not apply it and simply ignored it. When adding an event, ask "what does the receiver need to know
+  WHERE this belongs" before "what data does it carry".
+- Fourth: the transcript printed the tool's model-facing `message` verbatim ("Marked t2 as completed.
+  Nothing in progress; next up is t3."). A result string is read by BOTH the model and the user, so
+  it must name things the way a person needs (task titles) and the renderer must not fall back to
+  dumping it. Grep for other tools whose `message` reaches `tool-result.ts`'s 60-char passthrough.
+- Fifth, caught by a test I nearly overrode: the composer-rail chip counted `completed + cancelled`
+  and the panel counted `completed`. I "unified" them onto the panel's number and broke the rail's
+  test, whose NAME stated the intent ("counts a cancelled todo as closed, not outstanding"). The rail
+  was right — the panel's own `allDone` already treated cancelled as terminal, so it rendered
+  "Tasks complete 2/3". When a test disagrees, read its name for the intent before changing it.
+
+## 2026-08-01 — "Sometimes shows" was one deterministic bug, not flakiness
+
+- An owner-reported intermittent UI symptom ("not showing and sometimes show") turned out to be two
+  DIFFERENT code paths producing the same widget: the optimistic live message (always wrong, ~0ms
+  span) and the reloaded-from-disk message (always right). Nothing was flaky. When a symptom reads as
+  intermittent, first ask whether two sources feed the same render — the "sometimes" is usually which
+  source you happened to be looking at.
+- A derived-value guard can hide its own input bug: `turnWorkedMs` returns `null` for `span <= 0`,
+  which is correct defensively but meant a broken timestamp failed SILENTLY as an absent element
+  rather than as a visible "0s". Guards that map bad input to "render nothing" make upstream bugs
+  invisible.
+- Do not take an agent's self-diagnosis at face value. Of its two tool complaints, one was exactly
+  right (`browser_click` / `:has-text()`) and one had the right symptom with the wrong mechanism
+  (the console buffer is already 500 entries with uncaught-error capture; the page reload wipes it,
+  it is not "consumed"). Verify against the source before acting on either.
+
+## 2026-08-01 — Consolidating tools: the rename is the risk, not the schema
+
+- Folding three tools into one was mechanical. The real hazard was that every model has `TodoWrite`
+  baked into its training data, and edit-distance suggestion CANNOT bridge a rename — `todo_write` is
+  six edits from `todo`. Without an explicit retirement table the first turn of every conversation
+  would have burned an iteration on an unknown-tool dead end. When you rename a tool, ask what the
+  model will call INSTEAD and make that name resolve.
+- A `nativeRustOwned` TS tool definition is filtered before the request, but `build_per_turn_tool_
+  registry` DOES register a bridge executor for every `AllowedTool` the frontend sends. So a stale TS
+  name is only harmless while that flag is set — check the flag, do not assume the frontend defs are
+  inert.
+- Consolidating by name silently changes name-based gates. `todo_read` was allowed in Plan mode and
+  `todo_write`/`todo_update` were not; one tool makes that distinction inexpressible. Decide the new
+  answer deliberately (here: withhold entirely) rather than discovering it from whichever list the
+  merged name happens to land in.
+- A portaled hover popover needs a close GRACE PERIOD, not just enter/leave handlers on both
+  elements. The gap between trigger and card belongs to neither, so mouse-leave fires before
+  mouse-enter and the card dies mid-reach. Same trap as any hover menu with an offset.
+- React derives `onMouseEnter`/`onMouseLeave` from DELEGATED `mouseover`/`mouseout`. A raw-DOM test
+  dispatching `mouseenter` never reaches the handler and looks like a component bug. Dispatch
+  bubbling `mouseover`/`mouseout` with a `relatedTarget`.
+- Do not assert DOM removal on anything inside `AnimatePresence` — the element stays mounted for its
+  exit tween, so the assertion tests framer-motion's clock. Assert the state the component controls
+  (`aria-expanded`), which is also what a screen reader observes.
+
+## 2026-08-01 (later) — A field named `session_id` that is not the session's conversation
+
+- `Session` has BOTH `session_id` (fresh UUID per load) and `thread_id` (the conversation). Every
+  tool-layer consumer of `ctx.session_id` actually wanted the thread; the name made the wrong one
+  look right, and three separate features (todo sidecar + event, plan run claims, background log
+  cleanup) silently keyed off an id that changed on every restart. When two ids of the same shape
+  coexist, the field name is the whole defence — rename rather than reassign, so the next reader
+  cannot repeat it.
+- Making a tool render NOTHING removed the only evidence that it ran. The broken event path above
+  had been live for a session and was invisible precisely because I had just silenced the tool's
+  transcript row. Silence and failure look identical; if a tool is silent, its effect must be
+  verifiable somewhere the user can actually see.
+- `tsc --noEmit -p tsconfig.json` and `tsc -b` are NOT the same check here — the project-references
+  build caught a bad field in a test file the flat run passed. Run `pnpm build` before claiming
+  typecheck is clean.
+
+## 2026-08-02 — A `scroll` event is not user intent, and a self-scrolling hook will cancel itself
+- Two owner-reported agent-window bugs had ONE cause. `useAgentAutoScroll`'s scroll listener treated
+  every `scroll` event as "the reader deliberately left the bottom" — cancelling the follow loop and
+  dropping the entry anchor. But the hook is the most prolific scroller in the window: the follow lerp
+  assigns `scrollTop` once per frame and the entry anchor assigns it on every re-pin. **It was
+  reacting to itself.**
+  * "Jump to latest" moved ~25% per click: frame 1 of the lerp scrolled → that fired `scroll` → still
+    >140px from the bottom → `cancelFollow()` killed the rAF loop one frame in. The animation
+    strangled itself, so the button looked like it advanced "lil by lil".
+  * Opening a thread landed above the newest message: the anchor's own re-pin scroll set
+    `initialAnchorRef = false`, and the 800ms fixed window expired while messages were still loading
+    async and markdown/Shiki/images were still growing the transcript. After that, growth only
+    followed `if (isStreaming)` — false for a restored thread — so the reader was stranded.
+- RULE: if a component both scrolls programmatically and listens for scrolling, `scroll` can only be
+  used to OBSERVE position. Reader intent must come from INPUT events — `wheel`, `touchstart`, a
+  `pointerdown` whose `offsetX > clientWidth` (scrollbar gutter only, so clicking a tool card doesn't
+  stop a stream from following), and navigation keys. Same family as the passive-`wheel` lesson from
+  2026-07-25: the framework/browser event you reach for first often isn't reporting what you assume.
+- RULE: an "entry window" for async-growing content must be a QUIET PERIOD (restarted on every
+  growth), never a fixed delay from mount. A fixed 800ms expires mid-layout on exactly the long
+  conversations that need it most. Keep a hard cap too, or a view that never stops growing pins the
+  reader forever.
+- Also: an explicit "go to the bottom" should SNAP past a few screens rather than glide. A lerp across
+  50 screens is not continuity, it is a wait — and the reader asked to BE at the bottom, not to travel
+  there. Extracted as a pure `shouldSnapToBottom(distance, viewportHeight)` so the threshold is
+  testable without a layout engine (jsdom models none of scrollHeight/ResizeObserver/rAF).
+- Trap while fixing: adding `setShowJump(false)` inside `jumpToBottom` tripped
+  `react-hooks/set-state-in-effect`, because that function is called from an effect as well as from
+  the button. A helper invoked from both effects and handlers must stay setState-free — the scroll
+  event already reconciles it.
+
+## 2026-08-02 — The harness corrupted a valid glob, then the model looked wrong for sending it
+- SYMPTOM (owner pasted a live tool result): `grep` failed with
+  `rg: error parsing glob '**/*.{ts': unclosed alternate group; missing '}'`. Note the glob in the
+  message is TRUNCATED — the model had sent `**/*.{ts,tsx}`, which is correct.
+- CAUSE: `commands/mod.rs::parse_glob_patterns` was `value.split(',')`. The comma is BOTH Aurora's
+  list separator and glob alternation syntax, so `**/*.{ts,tsx}` was cut into `**/*.{ts` and `tsx}`
+  before ripgrep ever saw it. Reproduced exactly against the bundled `rg`: the fragment emits the
+  owner's error verbatim, the whole glob returns files.
+- This is the same family as the 2026-07-30 finding ("read the text we hand it before touching the
+  tools") but the mirror image of it: there the prompt TOLD the model to misbehave; here the harness
+  silently MUTATED correct input. Both end with a competent model looking incompetent. **When a tool
+  rejects a value, check whether the value in the error is the value the model actually sent** — a
+  truncated echo in an error message is the tell.
+- RULE: never `split(sep)` a value when `sep` is also syntax inside that value. Splitting must be
+  depth-aware — top-level commas only, skipping `{…}` alternation, `[…]` classes, and `\` escapes.
+  Malformed input is forwarded verbatim rather than repaired: ripgrep names the real problem better
+  than a guess at intent.
+- Contributing gap: the `glob` property in grep's schema had NO `description` at all, so nothing told
+  the model that comma-separated multiples were even supported — or that braces were expected to work.
+  An undocumented parameter invites exactly the input the parser mishandles. Now documents braces,
+  comma lists, and `!` negation.
+- The sibling `glob` TOOL was never affected — it passes its pattern straight to `--glob` with no
+  splitting. Only the ripgrep-backed `grep` had the bug.
+
+## 2026-08-02 (same session) — The glob fix alone would have made the bug WORSE, not better
+- Owner ran `grep` with `glob: apps/quantumhub-client/src/**/*.{ts,tsx}` and `path:
+  E:\QuantumHUB-Infrustructure` and got ZERO results. Reproduced against the real repo: the correct
+  search returns **35 files**. Two independent bugs were stacked.
+- BUG 1 was the comma split (fixed earlier this session). BUG 2: `grep` passed the search root as
+  ripgrep's PATH OPERAND. **ripgrep anchors a slash-bearing glob to the WORKING DIRECTORY, not to the
+  path operand**, so any path-qualified glob (`apps/x/src/**/*.ts`) matched nothing against an
+  absolute root, while bare `**/*.rs` kept working.
+- THE POINT WORTH REMEMBERING: had I shipped only the comma fix, the loud
+  `unclosed alternate group` error would have become a SILENT EMPTY RESULT — the same wrong answer
+  with the evidence removed. When fixing a tool that errored, re-run the ORIGINAL failing call end to
+  end afterwards; a fix that merely stops the error can be a regression.
+- `glob.rs` had ALREADY solved bug 2 and its comment names it exactly — "passing an absolute root made
+  every such pattern silently match nothing while bare patterns like `**/*.rs` kept working — the
+  worst shape of bug, since the tool looks functional" — and applies `cmd.current_dir(&search_root)`.
+  `grep` never got the same treatment. **When one tool's comment documents a ripgrep footgun, grep the
+  other ripgrep call sites for it the same day**; sibling tools sharing a binary share its traps.
+- Fix mirrors glob.rs: run with `current_dir(search_dir)` and `.` as the operand when `path` is a
+  directory (a single FILE keeps the operand form — there is no directory to run in and a glob over
+  one explicit file is meaningless). Because that makes ripgrep emit `.\src\x.ts`, results are
+  rejoined onto the search dir by `absolutize_rg_path` so the absolute-path output contract that file
+  chips / open-in-IDE / the review panel depend on is unchanged.
+
+## 2026-08-02 — A dropdown sized from its trigger lets one arbitrary item size the whole list
+- The new project switcher set its menu width to `Math.max(triggerRect.width, 260)`. The trigger is as
+  wide as the CURRENT project's name + path, so the menu's width was decided by whichever project you
+  happened to be in: a long name gave a sprawling menu, a short one gave a cramped menu that scrolled
+  SIDEWAYS and cut every other name mid-word (`AURORA-MELODY-INFRUSTRUCT`). Owner caught it in two
+  screenshots.
+- RULE: a menu is its own object and sizes to its own content budget. Derive a popover's width from
+  its trigger only when it is a true dropdown of that field (a select), never when it lists peers the
+  trigger is only one of.
+- A horizontal scrollbar inside a dropdown always means the row layout failed — nobody scrolls a menu
+  sideways, so the end of every label is simply hidden. `overflow-x: hidden` on the list, and make the
+  rows truncate.
+- Useful flex idiom for "name + secondary detail" rows: give the SECONDARY element `flex: 1 1 0`. A
+  zero flex-basis means it claims only leftover space, so it can never push the primary element out of
+  the row — it shrinks to nothing before the name loses a character. The primary gets
+  `flex: 0 1 auto; min-width: 0` so it still truncates in the extreme case rather than overflowing.
+- Check before adding defensive CSS: `AgentIcon` already sets `flexShrink: 0` inline, so the
+  `flex: none` rules I added for its glyphs were dead, and one of them
+  (`span:first-of-type:not([class])`) was guesswork about markup I had not read.
+
+## 2026-08-02 — `will-change: transform` + `transform: scale()` rasterizes vector content once
+
+Mermaid diagrams in the Canvas were unreadable when zoomed: a diagram that auto-fit at ~10% stayed
+legible-ish, but zooming to 180% produced a blurry smear where no amount of further zoom helped.
+
+Cause: `.agw-diagram-artwork` had `will-change: transform` (wanted, for smooth panning) and applied
+zoom via `transform: translate3d(...) scale(...)`. `will-change` promotes the element to its own
+compositor layer; Chromium then rasterizes that layer ONCE and lets the GPU stretch the bitmap for
+later transforms — precisely what `will-change` is telling it to do. So the SVG was rasterized at fit
+scale and every zoom step enlarged that bitmap instead of re-rendering the vector. Zooming was the
+thing destroying the image.
+
+RULE: never express zoom of vector/text content as `transform: scale()` on a promoted layer. Apply
+zoom to the element's LAYOUT SIZE (width/height) and keep the transform for translation only — the
+layer's size change forces a re-raster, so the SVG re-renders sharp at every level. The substitution
+is exact when `transform-origin: 0 0`, because a scaled layer and a grown box occupy the same
+rectangle; that is what let the fit/pin-point-zoom maths stay untouched (`diagramArtworkBox`, tested).
+
+Wider tell: "content is blurry only after zooming / only on one surface" is almost never a rendering
+bug in the content — look for a composited ancestor being scaled.
+
+## 2026-08-04 — A Tauri event listener can be silently filtered out by its target KIND
+- `getCurrentWindow().onDragDropEvent(...)` never fired in the agent window, so dragging a file from
+  Windows Explorer into the composer did nothing — with no error anywhere. The events were arriving in
+  that very webview the whole time. `Window.listen` subscribes with `{kind:'Window', label}`, and
+  `manager/mod.rs::filter_target` only feeds a Window-kind listener from `Window`/`AnyLabel` emits — a
+  `Webview`/`WebviewWindow`-kind emit is dropped by `event/listener.rs::emit_js_filter`. Label matching
+  is NOT sufficient; the kind must match too.
+- FIX: subscribe with `listen(name, handler, { target: label })`. A STRING target maps to
+  `{kind:'AnyLabel'}` (event.js:72), the only kind `filter_target` matches for every emit variant
+  carrying that label — and unlike `{kind:'Any'}` it stays scoped to this window, so a drop on the IDE
+  window can't insert files into the agent composer.
+- METHOD worth reusing: when a Tauri event "never arrives", register a second `{kind:'Any'}` listener
+  for the same event name. It short-circuits the target check (listener.rs:310), so if the probe fires
+  and the real listener doesn't, the problem is target filtering — not the OS, the config, or the
+  runtime. That one probe replaced a long chain of plausible theories (elevation/UIPI, dragDropEnabled,
+  capabilities, DPI) that were all wrong.
+- Do not diagnose a UI symptom against the wrong binary: three `aurora.exe` were running (two installed
+  from LocalAppData, one dev). Check `Get-CimInstance Win32_Process` command lines FIRST, and confirm
+  the dev server is serving the edited module (`curl http://localhost:5173/src/...`) before trusting
+  "still broken". Reading the app's own DevTools console via UIA (qg-probe `dump_tree` + the console
+  filter box) beats asking for a paste.
+
+## Tauri drag-drop events only reach Webview/WebviewWindow-kind listeners (2026-08-04)
+- OS file drops onto the agent window produced no events for `getCurrentWindow().onDragDropEvent`
+  (`{kind:'Window'}`) NOR for a string listen target (`{kind:'AnyLabel'}`) — yet a `{kind:'Any'}` probe saw
+  everything. Root cause: on Windows the drag lands on the WEBVIEW, so tauri 2.9.5 emits from
+  `manager/webview.rs::on_webview_event` → `emit_to_webview`, whose filter is
+  `Webview{label} | WebviewWindow{label} => label == window_label, _ => false`. Window/AnyLabel are in the
+  `_ => false` arm; `Any` bypasses via `match_any_or_filter`.
+- Do NOT reason from `manager/window.rs`'s drag emit (AnyLabel, broad matrix) — that path is not the one used
+  for a webview window. When source and runtime disagree, register every target kind at once in the live
+  window and see which fires; that 5-minute experiment settled what two sessions of source-reading got wrong.
+- Fix: `listen(ev, h, { target: { kind: 'WebviewWindow', label } })` in `useAgentExternalDrop.ts` (or
+  `getCurrentWebview().onDragDropEvent`). One line; everything else in the drop chain was already correct.

@@ -308,7 +308,7 @@ export const TerminalPanel: React.FC = () => {
       ) : (
         <div className="agw-files-empty">
           <AgentIcon name="terminal" size={22} style={{ color: "var(--agw-text-subtle)" }} />
-          <div style={{ fontSize: 13, color: "var(--agw-text-muted)", fontWeight: 600 }}>No terminal open</div>
+          <div style={{ fontSize: 13, color: "var(--agw-text-muted)", fontWeight: "var(--agw-fw-medium)" }}>No terminal open</div>
         </div>
       )}
     </div>

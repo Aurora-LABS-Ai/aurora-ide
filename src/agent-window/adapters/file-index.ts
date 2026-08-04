@@ -24,7 +24,12 @@ const MAX_DEPTH = 10;
 const cache = new Map<string, MentionFile[]>();
 const inflight = new Map<string, Promise<MentionFile[]>>();
 
-function relativize(root: string, path: string): string {
+/**
+ * Path as written relative to the project root, or the absolute path unchanged
+ * when it falls outside that root. Shared with the composer so a file mention
+ * reads the same whether it was picked from `@` or dragged in.
+ */
+export function relativize(root: string, path: string): string {
   const r = root.replace(/[/\\]+$/, "");
   if (path.startsWith(r)) return path.slice(r.length).replace(/^[/\\]+/, "");
   return path;

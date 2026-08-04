@@ -71,6 +71,15 @@ impl OpenAIResponsesAdapter {
             .no_gzip()
             .no_brotli()
             .no_deflate()
+            // Keepalives, not timeouts. A high reasoning effort can leave the
+            // socket near-silent for minutes while the model thinks, which is
+            // exactly when an idle-connection reaper (NAT, proxy, LB) kills it.
+            // These keep the connection demonstrably alive; there is
+            // deliberately no request timeout, since a long think is legitimate.
+            .tcp_keepalive(std::time::Duration::from_secs(30))
+            .http2_keep_alive_interval(std::time::Duration::from_secs(20))
+            .http2_keep_alive_timeout(std::time::Duration::from_secs(20))
+            .http2_keep_alive_while_idle(true)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self { config, http }
@@ -306,7 +315,9 @@ fn responses_instructions_and_input(
                                 "arguments": input.to_string(),
                             }));
                         }
-                        ContentBlock::ToolResult { .. } | ContentBlock::Compaction { .. } => {}
+                        ContentBlock::ToolResult { .. }
+                        | ContentBlock::Compaction { .. }
+                        | ContentBlock::Notice { .. } => {}
                     }
                 }
             }
@@ -821,6 +832,17 @@ where
                 })
                 .await;
         }
+    }
+
+    // `stop_reason` is only ever set by `response.completed` / `response.incomplete`
+    // (and `response.failed` / `error` return early), so an empty one at EOF means
+    // no terminal event ever arrived — the connection dropped mid-reply. Surface it
+    // instead of inventing `end_turn` and presenting a truncated answer as complete.
+    if stop_reason.is_none() {
+        return Err(ApiError::Network(
+            "the response stream ended before the model finished — the connection dropped              mid-reply. Retry to run the turn again."
+                .to_string(),
+        ));
     }
 
     let final_stop = stop_reason.unwrap_or_else(|| {

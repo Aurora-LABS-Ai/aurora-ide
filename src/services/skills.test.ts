@@ -43,6 +43,74 @@ beforeEach(() => {
   readFileContentMock.mockImplementation(async () => "");
 });
 
+/**
+ * Stub a workspace skills directory.
+ *
+ * These tests used to lean on the six built-in skills as fixtures. Aurora now
+ * ships none — its only built-in guidance is the surface doctrine, which is an
+ * instruction rather than a catalogue entry — so the behaviour under test
+ * (toggle gating, explicit attachment bypass, the enabled cap, lookup, search)
+ * is exercised against real project skills instead. The behaviour is what
+ * matters here; the built-ins were only ever convenient data.
+ */
+function stubWorkspaceSkills(
+  skills: Array<{ id: string; name: string; description: string; triggers?: string[] }>,
+) {
+  const root = "E:/repo/.aurora/skills";
+  readDirectoryMock.mockImplementation(async (path: string) => {
+    if (path === root) {
+      return skills.map((skill) => ({
+        name: skill.id,
+        path: `${root}/${skill.id}`,
+        is_dir: true,
+        is_file: false,
+        extension: null,
+      }));
+    }
+    const match = skills.find((skill) => path === `${root}/${skill.id}`);
+    if (match) {
+      return [
+        {
+          name: "SKILL.md",
+          path: `${root}/${match.id}/SKILL.md`,
+          is_dir: false,
+          is_file: true,
+          extension: "md",
+        },
+      ];
+    }
+    return [];
+  });
+
+  readFileContentMock.mockImplementation(async (path: string) => {
+    const match = skills.find((skill) => path === `${root}/${skill.id}/SKILL.md`);
+    if (!match) return "";
+    const triggers = match.triggers?.length
+      ? `triggers: [${match.triggers.join(", ")}]
+`
+      : "";
+    return `---
+name: ${match.name}
+description: ${match.description}
+${triggers}---
+Body for ${match.name}.`;
+  });
+}
+
+/**
+ * A discovered skill's storage key is derived from its SOURCE PATH, not its id
+ * (`createStorageKey`), and is lower-cased. Toggles and explicit attachments
+ * are keyed on it, so fixtures have to use the real shape.
+ */
+const wsKey = (id: string) => `workspace:e:/repo/.aurora/skills/${id}/skill.md`;
+
+const TS_SKILL = {
+  id: "typescript",
+  name: "TypeScript",
+  description: "Apply type-safe, idiomatic TypeScript patterns.",
+  triggers: ["typescript", "typing"],
+};
+
 describe("skills", () => {
   it("parses markdown skill frontmatter and captures preview lines", () => {
     const skill = parseSkillDocument(
@@ -87,9 +155,11 @@ Add tests for any regression you fix.`,
     ]);
   });
 
-  it("default-off: built-in skills are NOT auto-injected without an explicit toggle", async () => {
+  it("default-off: a discovered skill is NOT auto-injected without an explicit toggle", async () => {
+    stubWorkspaceSkills([TS_SKILL]);
     const resolved = await resolveSkillsForPrompt({
       userMessage: "Use the typescript skill to fix typing issues in this TSX component.",
+      workspacePath: "E:/repo",
     });
 
     expect(resolved.allSkills.some((skill) => skill.id === "typescript")).toBe(true);
@@ -99,10 +169,12 @@ Add tests for any regression you fix.`,
   });
 
   it("respects a user-enabled toggle", async () => {
+    stubWorkspaceSkills([TS_SKILL]);
     const resolved = await resolveSkillsForPrompt({
       userMessage: "Use the typescript skill to fix typing issues in this TSX component.",
+      workspacePath: "E:/repo",
       enabledSkillToggles: {
-        "builtin:typescript": true,
+        [wsKey("typescript")]: true,
       },
     });
 
@@ -190,44 +262,46 @@ Use 2-space indentation.`;
   });
 
   it("explicit attachments bypass the toggle gate", async () => {
+    stubWorkspaceSkills([
+      { id: "mcp-integration", name: "MCP", description: "Register MCP servers." },
+    ]);
     const resolved = await resolveSkillsForPrompt({
-      explicitSkillKeys: ["builtin:mcp-integration"],
+      explicitSkillKeys: [wsKey("mcp-integration")],
       userMessage: "Use MCP",
+      workspacePath: "E:/repo",
     });
 
     expect(resolved.explicitSkills.map((skill) => skill.id)).toEqual(["mcp-integration"]);
     expect(resolved.activeSkills.map((skill) => skill.id)).toEqual(["mcp-integration"]);
-    // mcp-integration is NOT in enabledSkills because the toggle is off.
+    // Still absent from enabledSkills because the toggle is off.
     expect(resolved.enabledSkills).toHaveLength(0);
   });
 
   it("hard-caps enabledSkills at MAX_ENABLED_SKILLS", async () => {
-    const builtinIds = [
-      "project-overview",
-      "typescript",
-      "react-frontend",
-      "tauri-rust",
-      "mcp-integration",
-      "testing-debugging",
-    ];
-    expect(builtinIds.length).toBeLessThanOrEqual(MAX_ENABLED_SKILLS);
+    const ids = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+    expect(ids.length).toBeLessThanOrEqual(MAX_ENABLED_SKILLS);
+    stubWorkspaceSkills(
+      ids.map((id) => ({ id, name: id, description: `The ${id} skill.` })),
+    );
 
     const toggles: Record<string, boolean> = {};
-    for (const id of builtinIds) {
-      toggles[`builtin:${id}`] = true;
+    for (const id of ids) {
+      toggles[wsKey(id)] = true;
     }
 
     const resolved = await resolveSkillsForPrompt({
       userMessage: "anything",
+      workspacePath: "E:/repo",
       enabledSkillToggles: toggles,
     });
 
-    // All 6 fit under the cap of 10.
-    expect(resolved.enabledSkills).toHaveLength(builtinIds.length);
+    // All six fit under the cap of ten.
+    expect(resolved.enabledSkills).toHaveLength(ids.length);
 
     // Now force the cap by passing maxActiveSkills=2.
     const capped = await resolveSkillsForPrompt({
       userMessage: "anything",
+      workspacePath: "E:/repo",
       enabledSkillToggles: toggles,
       maxActiveSkills: 2,
     });
@@ -235,18 +309,23 @@ Use 2-space indentation.`;
   });
 
   it("loadAllSkillCandidates exposes every skill regardless of toggle", async () => {
-    const all = await loadAllSkillCandidates();
+    stubWorkspaceSkills([TS_SKILL]);
+    const all = await loadAllSkillCandidates({ workspacePath: "E:/repo" });
     expect(all.length).toBeGreaterThan(0);
     expect(all.some((s) => s.id === "typescript")).toBe(true);
   });
 
   it("findSkillById resolves a skill by id even when toggled off", async () => {
-    const skill = await findSkillById("typescript");
+    stubWorkspaceSkills([TS_SKILL]);
+    const skill = await findSkillById("typescript", { workspacePath: "E:/repo" });
     expect(skill?.id).toBe("typescript");
   });
 
   it("searchSkillCandidates returns ranked results for a query", async () => {
-    const results = await searchSkillCandidates("typescript");
+    stubWorkspaceSkills([TS_SKILL]);
+    const results = await searchSkillCandidates("typescript", 30, {
+      workspacePath: "E:/repo",
+    });
     expect(results[0]?.id).toBe("typescript");
   });
 

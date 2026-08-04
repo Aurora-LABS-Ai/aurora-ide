@@ -28,6 +28,21 @@ export interface AgentCallbacks extends ProviderStreamCallbacks {
    * `before → after` label. The summary text is intentionally never surfaced.
    */
   onCompactionCompleted?: (beforeTokens: number, afterTokens: number) => void;
+  /**
+   * The runtime reported something the user needs to know that did NOT abort
+   * the turn — most importantly, that the reply was cut off at the
+   * output-token cap.
+   *
+   * These were previously dropped by the event dispatcher, which is how a turn
+   * that ended at `max_tokens` mid-sentence reached the user as a stream that
+   * simply stopped with no explanation. Panels should surface it as its own
+   * inline marker rather than appending it to the message body, or it reads as
+   * if the model wrote it.
+   *
+   * Non-recoverable runtime errors ALSO reach `onError`, so nothing the runtime
+   * reports can go unseen.
+   */
+  onRuntimeNotice?: (notice: { message: string; recoverable: boolean }) => void;
 }
 
 export interface AgentConfig {

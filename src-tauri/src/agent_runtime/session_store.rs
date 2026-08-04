@@ -9,7 +9,8 @@
 //! ## On-disk layout
 //!
 //! Inside [`SessionStore::dir`] (set up by `lib.rs::setup` to point at
-//! `<app_data>/agent_v2/`) each thread owns two files:
+//! `paths::sessions_dir()` = `<paths::root()>/sessions/`) each thread owns
+//! two files:
 //!
 //! ```text
 //! <thread_id>.jsonl       — one ConversationMessage per line
@@ -164,6 +165,11 @@ pub struct SessionSummary {
     /// "ungrouped" and excluded from any project-filtered listing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_root: Option<String>,
+    /// The model this conversation is on, as `"providerId:modelKey"`.
+    /// `None` for threads that have never run a turn and were never
+    /// explicitly pinned — those fall back to the user's default model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Pinned chats sort above the rest of the list in the rail.
     #[serde(default)]
     pub pinned: bool,
@@ -412,6 +418,7 @@ impl SessionStore {
             message_count,
             preview,
             workspace_root: meta.workspace_root,
+            model: meta.model,
             pinned: meta.pinned,
             archived_at: meta.archived_at,
             created_at: meta.created_at,
@@ -617,8 +624,12 @@ impl SessionStore {
                 dirty = true;
             }
         }
+        // The model is NOT sticky, unlike the scope above: it records the model
+        // this conversation is currently on, so switching models mid-thread has
+        // to move it. Write-once meant a thread was branded forever by whatever
+        // model happened to run its first turn.
         if let Some(m) = model {
-            if meta.model.is_none() {
+            if !m.is_empty() && meta.model.as_deref() != Some(m.as_str()) {
                 meta.model = Some(m);
                 dirty = true;
             }
@@ -627,6 +638,32 @@ impl SessionStore {
             meta.updated_at = chrono::Utc::now().to_rfc3339();
             self.save_metadata(&meta)?;
         }
+        Ok(meta)
+    }
+
+    /// Pin this conversation to a model (`"providerId:modelKey"`).
+    ///
+    /// The counterpart to the per-turn write in [`Self::set_workspace_and_model`]:
+    /// that one records what a turn actually ran on, this one records what the
+    /// user chose BEFORE any turn — reopening an old chat, switching its model,
+    /// and only then sending. Without it the choice would live nowhere until the
+    /// turn completed, so navigating away and back would lose it.
+    ///
+    /// Does not bump `updated_at` — choosing a model isn't conversation
+    /// activity and must not reorder the rail by recency (same rule as
+    /// [`Self::set_pinned`]).
+    pub fn set_model(
+        &self,
+        thread_id: &str,
+        model: Option<String>,
+    ) -> Result<SessionMetadata, RuntimeError> {
+        let mut meta = self.load_metadata(thread_id)?;
+        let next = model.filter(|m| !m.is_empty());
+        if meta.model == next {
+            return Ok(meta);
+        }
+        meta.model = next;
+        self.save_metadata(&meta)?;
         Ok(meta)
     }
 
@@ -1135,6 +1172,62 @@ mod tests {
             store.load_metadata("w").unwrap().workspace_root.as_deref(),
             Some("C:/proj/A"),
         );
+    }
+
+    /// The counterpart to the scope rule above: the model is deliberately NOT
+    /// sticky. A thread must follow the model it is currently being run on,
+    /// otherwise it stays branded by whatever ran its very first turn.
+    #[test]
+    fn model_follows_the_latest_turn_rather_than_sticking_to_the_first() {
+        let (_g, store) = tmp_store();
+        store.ensure_thread("w", None, None).unwrap();
+        store
+            .set_workspace_and_model("w", None, Some("prov:alpha".into()))
+            .unwrap();
+        assert_eq!(
+            store.load_metadata("w").unwrap().model.as_deref(),
+            Some("prov:alpha"),
+        );
+        store
+            .set_workspace_and_model("w", None, Some("other:beta".into()))
+            .unwrap();
+        assert_eq!(
+            store.load_metadata("w").unwrap().model.as_deref(),
+            Some("other:beta"),
+        );
+        // A turn that reports no model leaves the choice alone.
+        store.set_workspace_and_model("w", None, None).unwrap();
+        assert_eq!(
+            store.load_metadata("w").unwrap().model.as_deref(),
+            Some("other:beta"),
+        );
+    }
+
+    #[test]
+    fn set_model_pins_a_choice_before_any_turn_and_can_clear_it() {
+        let (_g, store) = tmp_store();
+        store.ensure_thread("w", None, None).unwrap();
+        let before = store.load_metadata("w").unwrap().updated_at;
+        assert_eq!(store.load_metadata("w").unwrap().model, None);
+
+        store.set_model("w", Some("prov:alpha".into())).unwrap();
+        assert_eq!(
+            store.load_metadata("w").unwrap().model.as_deref(),
+            Some("prov:alpha"),
+        );
+        // Choosing a model is not conversation activity — the rail must not
+        // reorder by recency because someone opened the picker.
+        assert_eq!(store.load_metadata("w").unwrap().updated_at, before);
+
+        // It also reaches the chat list, which is what lets a reopened chat
+        // show its own model instead of the last globally-picked one.
+        let summaries = store.list_summaries().unwrap();
+        let row = summaries.iter().find(|s| s.id == "w").unwrap();
+        assert_eq!(row.model.as_deref(), Some("prov:alpha"));
+
+        // An empty string is a cleared choice, not a model named "".
+        store.set_model("w", Some(String::new())).unwrap();
+        assert_eq!(store.load_metadata("w").unwrap().model, None);
     }
 
     #[test]

@@ -435,9 +435,25 @@ pub fn model_facing_summary() -> Option<String> {
         .collect::<Vec<_>>()
         .join("; ");
 
+    // `available_kinds` puts the user's default profile first. Saying which one
+    // that is turns an unordered menu into a recommendation.
+    let default_hint = kinds
+        .first()
+        .map(|kind| format!(" The user's default here is `{}`.", kind.id()))
+        .unwrap_or_default();
+
+    // Only worth spending tokens on when there is a choice to get wrong. On a
+    // cmd-only machine this advice would be actively unhelpful.
+    let cmd_hint = if kinds.len() > 1 && kinds.contains(&ShellKind::Cmd) {
+        " Prefer any of the others over `cmd`: it has no `head`, `tail`, `grep`, `awk`, `sed`, or \
+         `which`, so a pipeline using them fails on the missing utility rather than on your logic."
+    } else {
+        ""
+    };
+
     Some(format!(
-        "This machine has: {listed}. `shell` is REQUIRED — name the shell you wrote the command \
-         for, and write the command in that shell's syntax.",
+        "This machine has: {listed}.{default_hint} `shell` is REQUIRED — name the shell you wrote \
+         the command for, and write the command in that shell's syntax.{cmd_hint}",
     ))
 }
 

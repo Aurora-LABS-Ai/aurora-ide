@@ -961,14 +961,12 @@ pub async fn agent_open_in_ide(
     path: String,
     line: Option<u64>,
 ) -> Result<(), String> {
-    use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+    // Window lookup and creation live in `reveal_main_window` / `build_main_window`.
+    use tauri::Emitter;
 
     // Already open → bring it forward and deliver the open request to its
     // existing `agent_open_in_ide` listener (only the main window listens).
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.unminimize();
-        let _ = win.show();
-        let _ = win.set_focus();
+    if reveal_main_window(&app) {
         app.emit(
             "agent_open_in_ide",
             serde_json::json!({ "path": path, "line": line }),
@@ -984,27 +982,73 @@ pub async fn agent_open_in_ide(
         .map_err(|_| "pending-open lock poisoned".to_string())? =
         Some(PendingIdeOpen { path, line });
 
-    // Mirror the main window from tauri.conf.json (custom title bar →
-    // decorations off). `WebviewUrl::App("index.html")` loads the SPA root, which
-    // renders the IDE (only `/agent-window` & friends are treated as secondary).
-    let built = WebviewWindowBuilder::new(&app, "main", WebviewUrl::App("index.html".into()))
+    if let Err(error) = build_main_window(&app) {
+        // Don't leave a stale entry if the window failed to build.
+        if let Ok(mut guard) = PENDING_IDE_OPEN.lock() {
+            *guard = None;
+        }
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+/// Bring an existing IDE window forward. `false` when there is no such window.
+///
+/// `show()` matters as much as `set_focus()`: a launch that opened the agent
+/// window from the saved startup preference leaves `main` HIDDEN rather than
+/// closed (see `lib.rs`), and focusing a hidden window does nothing visible.
+fn reveal_main_window(app: &tauri::AppHandle) -> bool {
+    use tauri::Manager;
+
+    match app.get_webview_window("main") {
+        Some(win) => {
+            let _ = win.unminimize();
+            let _ = win.show();
+            let _ = win.set_focus();
+            true
+        }
+        None => false,
+    }
+}
+
+/// Re-create the IDE window after it has been closed.
+///
+/// Mirrors the main window from tauri.conf.json (custom title bar → decorations
+/// off). `WebviewUrl::App("index.html")` loads the SPA root, which renders the
+/// IDE (only `/agent-window` & friends are treated as secondary). Every caller
+/// that can find `main` missing goes through here, so the recreated window
+/// cannot drift from the configured one in only some of the paths.
+fn build_main_window(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("Aurora")
         .inner_size(1600.0, 1000.0)
         .min_inner_size(900.0, 600.0)
         .center()
         .decorations(false)
         .resizable(true)
-        .build();
+        .build()
+        .map(|_| ())
+        .map_err(|error| format!("Couldn't open the IDE window: {error}"))
+}
 
-    if let Err(error) = built {
-        // Don't leave a stale entry if the window failed to build.
-        if let Ok(mut guard) = PENDING_IDE_OPEN.lock() {
-            *guard = None;
-        }
-        return Err(format!("Couldn't open the IDE window: {error}"));
+/// Show the IDE window, creating it if it no longer exists.
+///
+/// The agent window can be the ONLY surface a launch opens — via `agw` or the
+/// saved startup preference — so it needs a path-free way back to the editor.
+/// `agent_open_in_ide` cannot serve that: it requires a file, and a fresh agent
+/// window may not have one.
+///
+/// `async` on purpose. A sync `#[tauri::command]` runs on the main thread, and
+/// `WebviewWindowBuilder::build()` there deadlocks the Windows UI thread.
+#[tauri::command]
+pub async fn open_ide_window(app: tauri::AppHandle) -> Result<(), String> {
+    if reveal_main_window(&app) {
+        return Ok(());
     }
-
-    Ok(())
+    build_main_window(&app)
 }
 
 /// Drained by the main window on startup: returns and clears any file the agent

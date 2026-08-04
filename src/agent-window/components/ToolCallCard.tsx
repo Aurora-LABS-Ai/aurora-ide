@@ -36,6 +36,7 @@ import { parseToolResult } from "./tool-views/tool-result";
 import { ShellStreamView } from "./tool-views/ShellStreamView";
 import { ToolResultView } from "./tool-views/ToolResultView";
 import { useShellStream } from "../hooks/useShellStream";
+import { useConversationScope } from "../lib/conversation-scope";
 
 /** A header chip: an activity target plus optional per-file diff counts. */
 type ChipTarget = AgentActivityTarget & { added?: number; removed?: number };
@@ -172,7 +173,7 @@ function toolIcon(name: string): AgentIconName {
   if (lower === "shell_kill") return "process-stop";
   if (lower === "shell_list_processes") return "process-list";
   if (lower === "read_lints") return "diagnostics";
-  if (lower === "todo_write") return "task-list";
+  if (lower === "todo") return "checklist";
   if (lower === "auroro_websearch" || lower === "auroro_web_search") return "search";
   if (lower === "ask_question") return "help";
   if (FILE_MODIFY_TOOLS.has(lower)) return "file-edit";
@@ -223,10 +224,15 @@ const CanvasLaunchCard: React.FC<{
     "Canvas artifact";
   const versionTag = typeof result.versionTag === "string" ? result.versionTag : "";
   const canOpen = status === "done" && artifactId.length > 0;
+  // Artifacts are stored per conversation, so this has to open the artifact of
+  // the chat the card is IN — which is not the open chat when the card is being
+  // rendered by a conversation docked in the side panel.
+  const scope = useConversationScope();
 
   const openCanvas = () => {
     if (!canOpen) return;
-    const threadId = useAgentChatStore.getState().currentThreadId;
+    const threadId =
+      scope?.threadId ?? useAgentChatStore.getState().currentThreadId;
     if (!threadId) return;
     useAgentWorkspaceStore.getState().openTab("canvas");
     if (versionTag) {
@@ -699,7 +705,7 @@ const StandardToolCallCard: React.FC<{
         <span
           style={{
             color: status === "failed" ? "var(--agw-text-muted)" : "var(--agw-text)",
-            fontWeight: 600,
+            fontWeight: "var(--agw-fw-medium)",
             whiteSpace: "nowrap",
           }}
         >
@@ -912,12 +918,260 @@ const StandardToolCallCard: React.FC<{
   );
 };
 
+/**
+ * `plan_write` — the plan is the deliverable of a planning conversation, so its
+ * card is a way into the Canvas, not a JSON dump. Mirrors `CanvasLaunchCard`.
+ */
+const PlanLaunchCard: React.FC<{
+  call: ToolCall;
+  isActivelyStreaming: boolean;
+}> = ({ call, isActivelyStreaming }) => {
+  const status = toolStatus(call, isActivelyStreaming);
+  let args: Record<string, unknown> = {};
+  let result: Record<string, unknown> = {};
+  try {
+    args = JSON.parse(call.arguments || "{}") as Record<string, unknown>;
+  } catch {
+    args = {};
+  }
+  try {
+    result = JSON.parse(call.result || "{}") as Record<string, unknown>;
+  } catch {
+    result = {};
+  }
+
+  const title =
+    (typeof args.title === "string" && args.title) ||
+    partialString(call.arguments, "title") ||
+    "Plan";
+  const steps = Array.isArray(result.steps)
+    ? result.steps.length
+    : Array.isArray(args.steps)
+      ? args.steps.length
+      : 0;
+  const revised = result.revised === true;
+  const canOpen = status === "done";
+
+  const openCanvas = () => {
+    if (!canOpen) return;
+    useAgentWorkspaceStore.getState().openTab("canvas");
+  };
+
+  return (
+    <button
+      type="button"
+      className="agw-canvas-launch"
+      data-status={status}
+      disabled={!canOpen}
+      aria-label={canOpen ? `Open plan ${title} in Canvas` : undefined}
+      onClick={openCanvas}
+    >
+      <span className="agw-canvas-launch-status">
+        {status === "running" ? (
+          <span className="agw-spinner" aria-hidden />
+        ) : (
+          <AgentIcon
+            name={status === "done" ? "check" : "close"}
+            size={13}
+            strokeWidth={2.6}
+          />
+        )}
+      </span>
+      <span className="agw-canvas-launch-glyph">
+        <AgentIcon name="task-list" size={16} />
+      </span>
+      <span className="agw-canvas-launch-copy">
+        <span className="agw-canvas-launch-kicker">
+          {status === "running"
+            ? "Writing plan"
+            : status === "failed"
+              ? "Plan could not be written"
+              : revised
+                ? "Plan updated — open in Canvas"
+                : "Plan ready — open in Canvas"}
+        </span>
+        <span className="agw-canvas-launch-title">{title}</span>
+      </span>
+      {steps > 0 && (
+        <span className="agw-canvas-launch-version">
+          {steps} step{steps === 1 ? "" : "s"}
+        </span>
+      )}
+      {canOpen && <AgentIcon name="external" size={14} className="agw-canvas-launch-open" />}
+    </button>
+  );
+};
+
+const PLAN_STEP_WORD: Record<string, string> = {
+  in_progress: "Started",
+  done: "Finished",
+  failed: "Failed",
+  skipped: "Skipped",
+  pending: "Reset",
+};
+
+/**
+ * `plan_step_update` — a progress beat, not a tool result worth unfolding. One
+ * line naming the step and where the plan now stands; the Canvas has the rest.
+ */
+const PlanStepCard: React.FC<{
+  call: ToolCall;
+  isActivelyStreaming: boolean;
+}> = ({ call, isActivelyStreaming }) => {
+  const status = toolStatus(call, isActivelyStreaming);
+  let args: Record<string, unknown> = {};
+  let result: Record<string, unknown> = {};
+  try {
+    args = JSON.parse(call.arguments || "{}") as Record<string, unknown>;
+  } catch {
+    args = {};
+  }
+  try {
+    result = JSON.parse(call.result || "{}") as Record<string, unknown>;
+  } catch {
+    result = {};
+  }
+
+  const stepId = typeof args.stepId === "string" ? args.stepId : "";
+  const newStatus = typeof args.status === "string" ? args.status : "";
+  const steps = Array.isArray(result.steps)
+    ? (result.steps as Array<Record<string, unknown>>)
+    : [];
+  const stepTitle =
+    (steps.find((s) => s.id === stepId)?.title as string | undefined) ?? stepId;
+  const cursor = (result.cursor ?? {}) as Record<string, unknown>;
+  const done = typeof cursor.done === "number" ? cursor.done : undefined;
+  const total = typeof cursor.total === "number" ? cursor.total : undefined;
+
+  return (
+    <button
+      type="button"
+      className="agw-plan-beat"
+      data-status={status}
+      data-step-status={newStatus || undefined}
+      onClick={() => useAgentWorkspaceStore.getState().openTab("canvas")}
+      aria-label={`${PLAN_STEP_WORD[newStatus] ?? "Updated"} ${stepTitle}. Open plan in Canvas.`}
+    >
+      <span className="agw-plan-beat-dot" aria-hidden />
+      <span className="agw-plan-beat-verb">
+        {PLAN_STEP_WORD[newStatus] ?? "Updated"}
+      </span>
+      <span className="agw-plan-beat-title">{stepTitle}</span>
+      {done !== undefined && total !== undefined && (
+        <span className="agw-plan-beat-count">
+          {done}/{total}
+        </span>
+      )}
+    </button>
+  );
+};
+
+const TODO_STATUS_WORD: Record<string, string> = {
+  in_progress: "Started",
+  completed: "Finished",
+  cancelled: "Dropped",
+  pending: "Reset",
+};
+
+/**
+ * `todo` — a progress beat, like `plan_step_update`, and for the same reason:
+ * laying out a checklist or flipping one item is not a tool result worth
+ * unfolding, but it IS an event, and a checklist that moves with no trace in
+ * the reply reads as if nothing happened.
+ *
+ * One line, in the transcript's own past-tense rhythm: what happened, to what,
+ * and how far along the list now is. It replaces what the transcript used to
+ * show, which was the tool's raw result message verbatim — "Marked t2 as
+ * completed. Nothing in progress; next up is t3." That string is written for
+ * the model. A reader got internal ids instead of the task, and "nothing in
+ * progress" read as if the agent had lost its place when it was simply between
+ * two items.
+ *
+ * Static, not a button: the full checklist is one hover away in the header, so
+ * a second click target here would lead somewhere the user can already reach.
+ */
+const TodoBeatCard: React.FC<{
+  call: ToolCall;
+  isActivelyStreaming: boolean;
+}> = ({ call, isActivelyStreaming }) => {
+  const status = toolStatus(call, isActivelyStreaming);
+  let args: Record<string, unknown> = {};
+  let result: Record<string, unknown> = {};
+  try {
+    args = JSON.parse(call.arguments || "{}") as Record<string, unknown>;
+  } catch {
+    args = {};
+  }
+  try {
+    result = JSON.parse(call.result || "{}") as Record<string, unknown>;
+  } catch {
+    result = {};
+  }
+
+  const op =
+    (typeof result.op === "string" ? result.op : undefined) ??
+    (typeof args.op === "string" ? args.op : "");
+  const cursor = (result.cursor ?? {}) as Record<string, unknown>;
+  const total =
+    typeof cursor.total === "number"
+      ? cursor.total
+      : Array.isArray(args.todos)
+        ? args.todos.length
+        : undefined;
+  // Closed, matching the header indicator and the checklist panel exactly.
+  const done =
+    typeof cursor.completed === "number"
+      ? cursor.completed + (typeof cursor.cancelled === "number" ? cursor.cancelled : 0)
+      : undefined;
+
+  let verb: string;
+  let title: string;
+  if (op === "set") {
+    // Laying out the list. The count IS the news here, so it leads.
+    verb = "Planned";
+    title = total === 1 ? "1 task" : `${total ?? 0} tasks`;
+  } else {
+    const newStatus =
+      (typeof result.status === "string" ? result.status : undefined) ??
+      (typeof args.status === "string" ? args.status : "");
+    verb = TODO_STATUS_WORD[newStatus] ?? "Updated";
+    // The id is the fallback, never the headline: it means nothing to a reader.
+    title =
+      (typeof result.title === "string" && result.title) ||
+      (typeof args.id === "string" ? args.id : "task");
+  }
+
+  return (
+    <div className="agw-task-beat" data-status={status} data-task-op={op || undefined}>
+      <span className="agw-task-beat-dot" aria-hidden />
+      <span className="agw-task-beat-verb">{verb}</span>
+      <span className="agw-task-beat-title">{title}</span>
+      {done !== undefined && total !== undefined && (
+        <span className="agw-task-beat-count">
+          {done}/{total}
+        </span>
+      )}
+    </div>
+  );
+};
+
 export const ToolCallCard: React.FC<{
   call: ToolCall;
   isActivelyStreaming?: boolean;
-}> = ({ call, isActivelyStreaming = false }) =>
-  call.name === "present_artifact" ? (
-    <CanvasLaunchCard call={call} isActivelyStreaming={isActivelyStreaming} />
-  ) : (
-    <StandardToolCallCard call={call} isActivelyStreaming={isActivelyStreaming} />
-  );
+}> = ({ call, isActivelyStreaming = false }) => {
+  if (call.name === "present_artifact") {
+    return <CanvasLaunchCard call={call} isActivelyStreaming={isActivelyStreaming} />;
+  }
+  if (call.name === "plan_write") {
+    return <PlanLaunchCard call={call} isActivelyStreaming={isActivelyStreaming} />;
+  }
+  if (call.name === "plan_step_update") {
+    return <PlanStepCard call={call} isActivelyStreaming={isActivelyStreaming} />;
+  }
+  // `op: "read"` never reaches here — `buildRows` drops it (see
+  // `isSilentToolCall`), because a lookup that changes nothing is not an event.
+  if (call.name === "todo") {
+    return <TodoBeatCard call={call} isActivelyStreaming={isActivelyStreaming} />;
+  }
+  return <StandardToolCallCard call={call} isActivelyStreaming={isActivelyStreaming} />;
+};

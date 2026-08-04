@@ -556,6 +556,7 @@ impl<E: EventEmitter> TurnDriver<E> {
                 cancel_token.clone(),
                 request.provider_config.supports_vision,
                 request.execution_mode,
+                request.workspace_path.as_deref(),
             )),
             build_runtime_config(&request),
         )
@@ -656,6 +657,7 @@ impl<E: EventEmitter> TurnDriver<E> {
             cancel_token.clone(),
             request.provider_config.supports_vision,
             request.execution_mode,
+            request.workspace_path.as_deref(),
         );
 
         // 4. Construct the runtime with a fresh RuntimeConfig overlaying
@@ -956,17 +958,20 @@ fn build_per_turn_tool_registry(
     cancel_token: CancellationToken,
     supports_vision: bool,
     execution_mode: AgentExecutionMode,
+    workspace_path: Option<&str>,
 ) -> ToolRegistry {
     let registry = ToolRegistry::new();
     let vision_blocked = |name: &str| {
         !supports_vision && crate::tools::browser::VISION_REQUIRED_TOOLS.contains(&name)
     };
+    // Resolved once per turn: `plan_store::active` walks the plans directory,
+    // and the answer cannot change mid-registry-build.
+    let has_plan = workspace_has_plan(workspace_path);
+    let mode_blocked =
+        |name: &str| !is_tool_available_this_turn(name, execution_mode, has_plan);
     // 1. Bridge fallback for every AllowedTool the model can see.
     for tool in tools {
-        if vision_blocked(&tool.name)
-            || is_withdrawn_tool(&tool.name)
-            || (execution_mode == AgentExecutionMode::Plan && is_plan_mutating_tool(&tool.name))
-        {
+        if vision_blocked(&tool.name) || is_withdrawn_tool(&tool.name) || mode_blocked(&tool.name) {
             continue;
         }
         let executor: Arc<dyn ToolExecutor> = Arc::new(FrontendBridgeExecutor::new(
@@ -981,10 +986,7 @@ fn build_per_turn_tool_registry(
     // 2. Native Rust executors from the base registry overwrite any
     //    bridge entry registered above with the same name.
     for name in base.names() {
-        if vision_blocked(&name)
-            || is_withdrawn_tool(&name)
-            || (execution_mode == AgentExecutionMode::Plan && is_plan_mutating_tool(&name))
-        {
+        if vision_blocked(&name) || is_withdrawn_tool(&name) || mode_blocked(&name) {
             continue;
         }
         if let Some(existing) = base.get(&name) {
@@ -1012,6 +1014,15 @@ fn is_withdrawn_tool(name: &str) -> bool {
     WITHDRAWN_TOOLS.contains(&name)
 }
 
+/// Tools withheld from the model in Plan mode.
+///
+/// This is the authoritative gate — the registry the model actually sees is
+/// built here, so the TypeScript filter in `agent-execution-mode.ts` governs
+/// only the frontend's own view and cannot substitute for this list.
+///
+/// `plan_write` is deliberately absent: authoring the plan document is the one
+/// permitted write in Plan mode. `plan_step_update` IS listed, because marking
+/// real progress belongs to execution, not planning.
 const PLAN_MUTATING_TOOLS: &[&str] = &[
     "file_write",
     "file_edit",
@@ -1020,11 +1031,56 @@ const PLAN_MUTATING_TOOLS: &[&str] = &[
     "folder_create",
     "shell_spawn",
     "shell_kill",
-    "todo_write",
+    // The checklist is an execution artifact. `todo` is one tool with a typed
+    // `op`, so read cannot be separated from set/update by name — and Plan mode
+    // has nothing to read: it authors the plan, it does not work a checklist.
+    "todo",
+    "plan_step_update",
 ];
 
 fn is_plan_mutating_tool(name: &str) -> bool {
     PLAN_MUTATING_TOOLS.contains(&name)
+}
+
+/// Is this tool available for the turn about to run?
+///
+/// Mode gating and plan-presence gating in one place, because splitting them is
+/// what let `plan_write` stay callable in Agent mode while the prompt told the
+/// model it could not author plans there.
+///
+/// A plan is a Plan-mode artifact for a specific project, so the plan toolset is
+/// withheld unless a plan is actually in play. Advertising `plan_read` /
+/// `plan_step_update` in every Agent-mode turn of every project tells the model
+/// a plan system exists when there is nothing to read and nothing to mark.
+fn is_tool_available_this_turn(
+    name: &str,
+    execution_mode: AgentExecutionMode,
+    has_plan: bool,
+) -> bool {
+    let planning = execution_mode == AgentExecutionMode::Plan;
+    if planning && is_plan_mutating_tool(name) {
+        return false;
+    }
+    match name {
+        // Authoring the plan is Plan mode's one write, and ONLY Plan mode's.
+        // Executing a plan must not silently rewrite what the user approved.
+        "plan_write" => planning,
+        // Nothing to read or mark until a plan exists. In Plan mode the tool
+        // stays available so the agent can re-read a plan it is revising.
+        "plan_read" | "plan_step_update" => planning || has_plan,
+        _ => true,
+    }
+}
+
+/// Does this workspace have a plan to work against?
+///
+/// Errors (unreadable dir, malformed document) resolve to "no plan": losing a
+/// tool is recoverable, and failing the whole turn over plan bookkeeping is not.
+fn workspace_has_plan(workspace: Option<&str>) -> bool {
+    workspace
+        .map(std::path::Path::new)
+        .and_then(|root| crate::plans::store::active(root).ok().flatten())
+        .is_some()
 }
 
 struct PlanShellExecutor {
@@ -1667,6 +1723,7 @@ mod tests {
             CancellationToken::new(),
             false,
             AgentExecutionMode::Plan,
+            None,
         );
 
         for name in PLAN_MUTATING_TOOLS {
@@ -1675,6 +1732,87 @@ mod tests {
         for name in ["file_read", "grep", "workspace_tree", "shell_execute"] {
             assert!(registry.get(name).is_some(), "Plan mode hid {name}");
         }
+    }
+
+    /// A workspace with a plan on disk, for the plan-presence gate.
+    fn workspace_with_a_plan() -> std::path::PathBuf {
+        let ws = std::env::temp_dir().join(format!("aurora-gate-plan-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&ws).expect("ws");
+        let mut frontmatter = crate::plans::store::empty_frontmatter("P", None);
+        frontmatter
+            .steps
+            .push(crate::plans::model::PlanStep::new("s1", "Phase 1"));
+        crate::plans::store::create(&ws, frontmatter, String::new()).expect("plan");
+        ws
+    }
+
+    #[test]
+    fn plan_tools_are_absent_until_the_project_actually_has_a_plan() {
+        // Advertising plan_read / plan_step_update in every Agent turn told the
+        // model a plan existed when none did.
+        for name in ["plan_read", "plan_step_update"] {
+            assert!(
+                !is_tool_available_this_turn(name, AgentExecutionMode::Agent, false),
+                "{name} was offered with no plan in the project"
+            );
+            assert!(
+                is_tool_available_this_turn(name, AgentExecutionMode::Agent, true),
+                "{name} was withheld from a project that has a plan"
+            );
+        }
+    }
+
+    #[test]
+    fn only_plan_mode_may_author_a_plan() {
+        assert!(is_tool_available_this_turn(
+            "plan_write",
+            AgentExecutionMode::Plan,
+            false
+        ));
+        for mode in [AgentExecutionMode::Agent, AgentExecutionMode::Team] {
+            assert!(
+                !is_tool_available_this_turn("plan_write", mode, true),
+                "execution mode could rewrite the plan the user approved"
+            );
+        }
+    }
+
+    #[test]
+    fn the_working_checklist_is_available_whenever_a_plan_is() {
+        // The user's model: the plan holds phases, todos hold the steps inside
+        // the phase being executed. Neither suppresses the other.
+        for has_plan in [false, true] {
+            assert!(
+                is_tool_available_this_turn("todo", AgentExecutionMode::Agent, has_plan),
+                "todo withheld (has_plan={has_plan})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_project_with_a_plan_gets_the_plan_execution_tools() {
+        let ws = workspace_with_a_plan();
+        assert!(workspace_has_plan(Some(&ws.to_string_lossy())));
+        assert!(!workspace_has_plan(None), "no workspace means no plan");
+
+        let registry = build_per_turn_tool_registry(
+            native_test_registry(),
+            &[AllowedTool {
+                name: "plan_step_update".into(),
+                description: "d".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+            "turn-agent".into(),
+            Arc::new(BridgeRouter::new()),
+            Arc::new(MockEmitter::default()),
+            CancellationToken::new(),
+            false,
+            AgentExecutionMode::Agent,
+            Some(&ws.to_string_lossy()),
+        );
+        assert!(registry.get("plan_step_update").is_some());
+
+        std::fs::remove_dir_all(&ws).ok();
     }
 
     #[test]
@@ -1718,6 +1856,7 @@ mod tests {
             CancellationToken::new(),
             false,
             AgentExecutionMode::Plan,
+            None,
         );
         let tool = registry
             .get("shell_execute")
@@ -1728,7 +1867,7 @@ mod tests {
                 &ToolContext {
                     turn_id: "turn-plan".into(),
                     tool_call_id: "call-plan".into(),
-                    session_id: "session-plan".into(),
+                    thread_id: "session-plan".into(),
                     workspace_root: None,
                     allow_outside_workspace: false,
                     cancel_token: CancellationToken::new(),

@@ -16,11 +16,28 @@
  *   - growth is followed with a `requestAnimationFrame` lerp so the viewport
  *     glides to the bottom instead of snapping;
  *   - following is gated on "near bottom": once the user scrolls up to read,
- *     we stop chasing and surface a "jump to latest" affordance (`showJump`);
+ *     we stop chasing and surface a "jump to latest" affordance (`showJump`,
+ *     rendered by `components/JumpToLatest`);
  *   - we only chase while `isStreaming` — when idle, expanding a tool/thinking
  *     card must never yank the viewport;
  *   - thread switch (`resetKey`) snaps instantly; a new message (`growthKey`)
  *     glides down only if the user was already at the bottom.
+ *
+ * THE CENTRAL RULE, learned the hard way: **a `scroll` event is not reader
+ * intent.** This hook scrolls constantly — the follow lerp emits an event every
+ * frame, the entry anchor emits one per re-pin — so a listener that stops
+ * chasing whenever `scroll` fires is really stopping because of itself. That
+ * produced two visible bugs: "jump to latest" advanced only ~25% per click
+ * (the loop cancelled itself one frame in), and a freshly-opened thread was
+ * left stranded above the newest message. Reader intent is therefore read from
+ * INPUT events — wheel, touch, a press on the scrollbar gutter, navigation
+ * keys — while `scroll` is used only to observe position.
+ *
+ * The entry anchor is a QUIET PERIOD, not a fixed delay: opening a thread
+ * re-pins to the bottom until the transcript has held still for
+ * `ANCHOR_QUIET_MS`. Messages arrive async and markdown, syntax highlighting
+ * and images each grow the view again well after mount, so a fixed window
+ * expires mid-layout on exactly the long conversations that need it most.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -51,6 +68,49 @@ interface AgentAutoScrollResult {
 const DEFAULT_BOTTOM_THRESHOLD = 140;
 const DEFAULT_FOLLOW_LERP = 0.25;
 
+/**
+ * How long the transcript height must hold STILL before the entry anchor is
+ * released. Restarted on every anchored growth, so opening a thread stays
+ * pinned to the bottom for as long as content is actually still arriving —
+ * messages load async, then markdown, syntax highlighting and images each grow
+ * the transcript again well after mount.
+ */
+const ANCHOR_QUIET_MS = 400;
+
+/**
+ * Hard ceiling on the entry anchor regardless of quiet time, so a view that
+ * never stops growing (a stream that begins the moment a thread opens) cannot
+ * hold the reader at the bottom forever.
+ */
+const ANCHOR_MAX_MS = 10_000;
+
+/** Keys that scroll a focused container — pressing one is reader intent. */
+const SCROLL_KEYS = new Set([
+  "ArrowUp",
+  "ArrowDown",
+  "PageUp",
+  "PageDown",
+  "Home",
+  "End",
+  " ",
+]);
+
+/**
+ * Should an explicit "go to the bottom" snap instead of gliding?
+ *
+ * Past a few screens a glide is not continuity — it is a long wait through
+ * content nobody is reading, and the reader asked to *be* at the bottom rather
+ * than to travel there. Exported so the threshold is testable without a layout
+ * engine.
+ */
+export function shouldSnapToBottom(
+  distance: number,
+  viewportHeight: number,
+): boolean {
+  if (viewportHeight <= 0) return true;
+  return distance > viewportHeight * 3;
+}
+
 export function useAgentAutoScroll(
   options: AgentAutoScrollOptions,
 ): AgentAutoScrollResult {
@@ -74,6 +134,8 @@ export function useAgentAutoScroll(
   // idle, so async markdown / syntax-highlight / image layout that grows the
   // transcript right after mount can't strand the reader above the last message.
   const initialAnchorRef = useRef(false);
+  const anchorQuietTimerRef = useRef<number | null>(null);
+  const anchorMaxTimerRef = useRef<number | null>(null);
   const [showJump, setShowJump] = useState(false);
 
   const cancelFollow = useCallback(() => {
@@ -82,6 +144,35 @@ export function useAgentAutoScroll(
       rafRef.current = null;
     }
   }, []);
+
+  /** End the entry anchor and drop both of its timers. */
+  const releaseAnchor = useCallback(() => {
+    initialAnchorRef.current = false;
+    if (anchorQuietTimerRef.current !== null) {
+      window.clearTimeout(anchorQuietTimerRef.current);
+      anchorQuietTimerRef.current = null;
+    }
+    if (anchorMaxTimerRef.current !== null) {
+      window.clearTimeout(anchorMaxTimerRef.current);
+      anchorMaxTimerRef.current = null;
+    }
+  }, []);
+
+  /**
+   * (Re)start the quiet countdown. Called after every anchored re-pin, so the
+   * window measures "the transcript has stopped growing" rather than "some
+   * fixed time has passed since the thread opened" — the latter gave up while
+   * a long conversation was still laying itself out.
+   */
+  const armAnchorQuiet = useCallback(() => {
+    if (anchorQuietTimerRef.current !== null) {
+      window.clearTimeout(anchorQuietTimerRef.current);
+    }
+    anchorQuietTimerRef.current = window.setTimeout(() => {
+      anchorQuietTimerRef.current = null;
+      releaseAnchor();
+    }, ANCHOR_QUIET_MS);
+  }, [releaseAnchor]);
 
   const distanceFromBottom = (el: HTMLDivElement): number =>
     el.scrollHeight - (el.scrollTop + el.clientHeight);
@@ -129,7 +220,12 @@ export function useAgentAutoScroll(
       cancelFollow();
       nearBottomRef.current = true;
       if (!el) return;
-      if (behavior === "auto") {
+
+      const distance = distanceFromBottom(el);
+      if (behavior === "auto" || shouldSnapToBottom(distance, el.clientHeight)) {
+        // No setState here on purpose: `jumpToBottom` is called from effects as
+        // well as from the pill, and the resulting scroll event already
+        // reconciles `showJump` through `refreshNearBottom`.
         el.scrollTop = el.scrollHeight;
         return;
       }
@@ -149,18 +245,47 @@ export function useAgentAutoScroll(
     if (!el) return;
     prevHeightRef.current = el.scrollHeight;
 
-    const onScroll = () => {
+    // OBSERVATIONAL ONLY. A `scroll` event does not say who scrolled, and this
+    // hook is itself a prolific scroller — the follow lerp emits one per frame
+    // and the entry anchor emits one per re-pin. Cancelling on `scroll` (as
+    // this listener used to) meant the follow loop killed itself one frame in,
+    // so "jump to latest" advanced ~25% per click, and the entry anchor was
+    // dropped by its own anchoring scroll. Reader intent is detected from the
+    // INPUT events below instead.
+    const onScroll = () => refreshNearBottom();
+
+    // The reader took over: stop chasing, and stop re-pinning to the bottom.
+    const onUserIntent = () => {
+      cancelFollow();
+      releaseAnchor();
       refreshNearBottom();
-      if (!nearBottomRef.current) {
-        cancelFollow();
-        // The reader deliberately left the bottom — abandon the entry anchor so
-        // late layout growth doesn't yank them back down.
-        initialAnchorRef.current = false;
-      }
     };
+
+    // A press only counts when it lands on the scrollbar gutter. Clicking
+    // inside the transcript — expanding a tool card, selecting text — is not
+    // scroll intent and must never stop a streaming turn from following.
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.offsetX <= el.clientWidth) return;
+      onUserIntent();
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (SCROLL_KEYS.has(event.key)) onUserIntent();
+    };
+
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, [cancelFollow, refreshNearBottom, resetKey]);
+    el.addEventListener("wheel", onUserIntent, { passive: true });
+    el.addEventListener("touchstart", onUserIntent, { passive: true });
+    el.addEventListener("pointerdown", onPointerDown, { passive: true });
+    el.addEventListener("keydown", onKeyDown);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onUserIntent);
+      el.removeEventListener("touchstart", onUserIntent);
+      el.removeEventListener("pointerdown", onPointerDown);
+      el.removeEventListener("keydown", onKeyDown);
+    };
+  }, [cancelFollow, refreshNearBottom, releaseAnchor, resetKey]);
 
   // The real growth detector: any content height change at the bottom follows
   // the new content. `resetKey` is a dep so the observer re-binds to a scroller
@@ -175,18 +300,27 @@ export function useAgentAutoScroll(
       const height = el.scrollHeight;
       const grew = height > prevHeightRef.current;
       prevHeightRef.current = height;
-      if (!grew || !nearBottomRef.current) return;
+      if (!grew) return;
+
+      // Entry window: pin instantly to the freshly-laid-out bottom (works even
+      // when idle — a thread being restored from disk isn't "streaming"), and
+      // restart the quiet countdown because content is evidently still
+      // arriving. Deliberately NOT gated on `nearBottomRef`: this growth is
+      // exactly what pushes the bottom away, and reading a stale "not near
+      // bottom" here is what left a freshly-opened thread stranded mid-way.
+      // Reader input releases the anchor, so this cannot fight a real scroll.
       if (initialAnchorRef.current) {
-        // Entry window: pin instantly to the freshly-laid-out bottom (works
-        // even when idle — an already-finished team run isn't "streaming").
         el.scrollTop = el.scrollHeight;
-      } else if (isStreaming) {
-        follow();
+        armAnchorQuiet();
+        return;
       }
+
+      if (!nearBottomRef.current) return;
+      if (isStreaming) follow();
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [follow, isStreaming, resetKey]);
+  }, [armAnchorQuiet, follow, isStreaming, resetKey]);
 
   // Streaming start (already at bottom) → begin following; stop → cancel and
   // settle exactly at the bottom (so a glide cut short at stream-end doesn't
@@ -217,14 +351,24 @@ export function useAgentAutoScroll(
     // Hide the "jump to latest" pill on the next frame (we just anchored to the
     // bottom) — deferred so it isn't a synchronous setState inside the effect.
     const raf = requestAnimationFrame(() => setShowJump(false));
-    const timer = window.setTimeout(() => {
-      initialAnchorRef.current = false;
-    }, 800);
+
+    // Two timers, different jobs: the quiet one (restarted on every anchored
+    // re-pin) ends the anchor once the transcript stops growing, and this hard
+    // cap guarantees it ends regardless.
+    armAnchorQuiet();
+    if (anchorMaxTimerRef.current !== null) {
+      window.clearTimeout(anchorMaxTimerRef.current);
+    }
+    anchorMaxTimerRef.current = window.setTimeout(() => {
+      anchorMaxTimerRef.current = null;
+      releaseAnchor();
+    }, ANCHOR_MAX_MS);
+
     return () => {
       cancelAnimationFrame(raf);
-      window.clearTimeout(timer);
+      releaseAnchor();
     };
-  }, [resetKey]);
+  }, [armAnchorQuiet, releaseAnchor, resetKey]);
 
   // New message boundary → glide down, but only if the reader was at the bottom
   // (respects a scrolled-up reader; the pill stays available for them).
@@ -232,7 +376,13 @@ export function useAgentAutoScroll(
     if (nearBottomRef.current) jumpToBottom("auto");
   }, [growthKey, jumpToBottom]);
 
-  useEffect(() => cancelFollow, [cancelFollow]);
+  useEffect(
+    () => () => {
+      cancelFollow();
+      releaseAnchor();
+    },
+    [cancelFollow, releaseAnchor],
+  );
 
   return { containerRef, contentRef, bottomRef, showJump, jumpToBottom };
 }

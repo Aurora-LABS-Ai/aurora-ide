@@ -55,6 +55,18 @@ pub fn spill_oversized(dir: &Path, tool_call_id: &str, raw: String) -> String {
         return raw;
     }
 
+    // A tool that already bounded its own output to exactly what was asked for
+    // opts out. Spilling is right for command output — a build log's summary is
+    // at the end, so head+tail beats a head-only clamp and the bytes are gone
+    // once the process exits. It is WRONG for a file read: the middle of a file
+    // is the part an exact-match edit needs, the bytes are still on disk, and
+    // replacing them with a pointer only buys round trips. A 739-line component
+    // came back with 22 KB of its middle removed and cost five extra calls to
+    // page back in — one of which spilled again.
+    if raw.contains(crate::tools::file_workspace_search::EXACT_READ_MARKER) {
+        return raw;
+    }
+
     match serde_json::from_str::<Value>(&raw) {
         Ok(Value::Object(map)) => spill_json_fields(dir, tool_call_id, map)
             .and_then(|map| serde_json::to_string(&Value::Object(map)).ok())
@@ -183,6 +195,43 @@ fn ceil_boundary(text: &str, mut index: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A read that already bounded itself must reach the model byte for byte.
+    /// Spilling it replaced the middle of a 739-line component with a pointer
+    /// and cost five extra calls to page back in.
+    #[test]
+    fn an_exact_read_is_never_spilled() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "z".repeat(60 * 1024);
+        let raw = serde_json::json!({
+            "success": true,
+            "exactRead": true,
+            "path": "components/ProfileForm.tsx",
+            "content": content,
+        })
+        .to_string();
+
+        let out = spill_oversized(dir.path(), "call-1", raw.clone());
+        assert_eq!(out, raw, "an exactRead payload must pass through untouched");
+        assert!(!out.contains("bytes hidden"), "no elision note");
+        assert!(!out.contains("contentFile"), "nothing written to disk");
+    }
+
+    /// The exemption is narrow: shell/build output still spills, because its
+    /// summary lives at the tail and the bytes are gone once the process exits.
+    #[test]
+    fn ordinary_oversized_output_still_spills() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = serde_json::json!({
+            "success": false,
+            "stdout": "q".repeat(60 * 1024),
+        })
+        .to_string();
+
+        let out = spill_oversized(dir.path(), "call-2", raw);
+        assert!(out.contains("stdoutFile"), "spill path recorded: {out:.200}");
+        assert!(out.contains("bytes hidden"), "elision note present");
+    }
 
     fn big(marker_start: &str, marker_end: &str) -> String {
         let filler = "y".repeat(40);

@@ -3,6 +3,37 @@ interface MermaidSvgSize {
   height: number;
 }
 
+export interface DiagramViewport {
+  x: number;
+  y: number;
+  scale: number;
+}
+
+/**
+ * Where the artwork sits on the stage, in CSS pixels.
+ *
+ * Zoom is applied as SIZE rather than as `transform: scale()`. The artwork is a
+ * composited layer, and Chromium scales such a layer's cached bitmap instead of
+ * re-rendering it — which turned a diagram that auto-fit small into an
+ * unreadable smear the moment you zoomed in. Growing the box re-renders the SVG
+ * as vector at every zoom level.
+ *
+ * The substitution is only safe because the two produce the SAME rectangle:
+ * with `transform-origin: 0 0`, scaling grows a box right-and-down from its
+ * top-left corner, exactly as increasing width/height does. That equivalence is
+ * what lets `fit` and the pin-point zoom maths stay untouched, so it is worth
+ * stating in one place and testing.
+ */
+export const diagramArtworkBox = (
+  size: MermaidSvgSize,
+  viewport: DiagramViewport,
+) => ({
+  left: viewport.x,
+  top: viewport.y,
+  width: size.width * viewport.scale,
+  height: size.height * viewport.scale,
+});
+
 const capDimension = (value: number): number => Math.min(50_000, Math.max(1, value));
 
 export const readMermaidSvgSize = (svg: string): MermaidSvgSize => {

@@ -5,7 +5,26 @@
  * calls, no mock data. Shared by the Team screen and the left-rail Team entry.
  */
 
-import type { AgentStatus, TeamProjectState } from "../../../types/team";
+import type { AgentRecord, AgentStatus, TeamProjectState } from "../../../types/team";
+import type { TeamLiveDraft } from "../../../store/useTeamStore";
+import type { TimelineEvent } from "../timeline";
+
+/** Whether a live draft has anything worth painting yet. */
+export function hasDraftContent(draft: TeamLiveDraft): boolean {
+  return draft.text.trim() !== "" || draft.thinking.trim() !== "";
+}
+
+/** Ordered timeline events for a live draft (thinking above visible text). */
+export function draftEvents(d: TeamLiveDraft): TimelineEvent[] {
+  const events: TimelineEvent[] = [];
+  if (d.thinking.trim() !== "") {
+    events.push({ kind: "thinking", id: `${d.agentId}-live-th`, text: d.thinking });
+  }
+  if (d.text.trim() !== "") {
+    events.push({ kind: "content", id: `${d.agentId}-live-c`, text: d.text });
+  }
+  return events;
+}
 
 /**
  * Clean title from a role slug: `widgets-theme-owner` → "Widgets Theme",
@@ -61,9 +80,13 @@ export function authorColor(id: string): string {
 
 /**
  * Replace raw `@agent-id` mentions (e.g. `@widget-builder-edc6e7`) with the
- * member's clean display name as bold markdown (`**@Widget Builder**`). Raw
- * ids are wire identity for the agents; the user should only ever see names.
- * Longer ids are replaced first so one id can never partially eat another.
+ * member's clean display name. Raw ids are wire identity for the agents; the
+ * user should only ever see names. Longer ids are replaced first so one id
+ * can never partially eat another.
+ *
+ * Markdown mode emits a mention LINK — `[@Widget Builder](#mention-<id>)` —
+ * which `AgentMarkdown` renders as an identity CHIP (`.agw-mention-chip`),
+ * never as a real anchor. Plain mode (system banners) stays bare text.
  */
 export function prettifyMentions(
   body: string,
@@ -73,34 +96,93 @@ export function prettifyMentions(
   if (body.indexOf("@") === -1) return body;
   const markdown = opts?.markdown ?? true;
   let out = body;
-  for (const [id, display] of [...names].sort((a, b) => b[0].length - a[0].length)) {
+  const all = [...names, ["lead", "Lead"] as const];
+  for (const [id, display] of all.sort((a, b) => b[0].length - a[0].length)) {
     if (!id) continue;
     const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const shown = markdown ? `**@${display}**` : `@${display}`;
+    const shown = markdown
+      ? `[@${display}](#mention-${encodeURIComponent(id)})`
+      : `@${display}`;
     out = out.replace(new RegExp(`@${escaped}`, "gi"), shown);
   }
   return out;
 }
 
+/** Human display name for an agent (Lead / clean role title). */
+export function displayName(agent: AgentRecord): string {
+  return agent.id === "lead" ? "Lead" : prettifyRole(agent.role);
+}
+
+/** Human word for a member's status (dropdown rows, member tab header). */
+export function statusWord(status: AgentStatus): string {
+  switch (status) {
+    case "waiting_input":
+      return "waiting on you";
+    case "done":
+      return "done";
+    case "blocked":
+      return "blocked";
+    case "failed":
+      return "failed";
+    case "idle":
+      return "idle";
+    default:
+      return "working";
+  }
+}
+
+/** Status dot color for a member (dropdown rows, member tab header). */
+export function statusTone(status: AgentStatus): string {
+  switch (status) {
+    case "waiting_input":
+      return "var(--agw-warning)";
+    case "done":
+      return "var(--agw-added)";
+    case "blocked":
+    case "failed":
+      return "var(--agw-removed)";
+    case "idle":
+      return "var(--agw-text-subtle)";
+    default:
+      return "var(--agw-accent)";
+  }
+}
+
 /** Whether a status should pulse (agent is actively working). */
 export function isWorking(status: AgentStatus): boolean {
-  return status === "building" || status === "planning" || status === "reviewing";
+  return (
+    status === "working" ||
+    status === "waiting_input" ||
+    // Legacy values from brains written before the actor engine.
+    status === "building" ||
+    status === "planning" ||
+    status === "reviewing"
+  );
+}
+
+/** Whether the member is paused on a question to the Lead (input-required). */
+export function isWaitingOnLead(status: AgentStatus): boolean {
+  return status === "waiting_input";
 }
 
 /** Short human phase label for the header / rail tag. */
 export const PHASE_LABEL: Record<string, string> = {
   forming: "Starting",
-  planning: "Starting",
-  building: "Working",
-  integrating: "Checking",
+  working: "Working",
   done: "Done",
   disbanded: "Disbanded",
+  // Legacy phases from old brains.
+  planning: "Starting",
+  building: "Working",
+  integrating: "Working",
 };
 
 /** Phases where the team is actively running (drives the rail's live tag). */
 export function isActivePhase(phase: string): boolean {
   return (
     phase === "forming" ||
+    phase === "working" ||
+    // Legacy phases from old brains.
     phase === "planning" ||
     phase === "building" ||
     phase === "integrating"

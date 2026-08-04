@@ -42,8 +42,10 @@ mod db;
 mod explorer;
 mod file_cache;
 pub mod icon_pack;
+mod launch_prefs;
 mod mcp;
 mod paths;
+mod plans;
 mod services;
 mod shell;
 /// Helper executables Aurora ships next to its own binary (currently ripgrep,
@@ -105,14 +107,18 @@ impl ProductionIdeEventSink {
     /// registry is not yet managed or the directory cannot be created — the
     /// process still runs and still streams to the UI, the agent just cannot
     /// read it back.
-    fn background_log_path(&self, session_id: &str, process_id: &str) -> Option<String> {
+    fn resolve_background_log_path(
+        &self,
+        thread_id: &str,
+        process_id: &str,
+    ) -> Option<String> {
         use tauri::Manager;
 
         let registry = self
             .app
             .try_state::<std::sync::Arc<commands::agent_v2::AgentRegistry>>()?;
         let dir =
-            agent_runtime::session_store::tool_results_dir_in(registry.store().dir(), session_id);
+            agent_runtime::session_store::tool_results_dir_in(registry.store().dir(), thread_id);
         std::fs::create_dir_all(&dir).ok()?;
 
         // Process ids are Aurora-generated (`bg-<hex>-<epoch>`), but keep the
@@ -166,12 +172,24 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
         self.emit_payload("agent_read_lints", Payload { paths })
     }
 
-    fn emit_todo_write(&self, todos: &serde_json::Value) -> Result<(), String> {
+    fn emit_todo_write(&self, thread_id: &str, todos: &serde_json::Value) -> Result<(), String> {
         #[derive(Clone, serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
         struct Payload<'a> {
+            thread_id: &'a str,
             todos: &'a serde_json::Value,
         }
-        self.emit_payload("agent_todo_write", Payload { todos })
+        self.emit_payload("agent_todo_write", Payload { thread_id, todos })
+    }
+
+    fn emit_plan_changed(
+        &self,
+        payload: &tools::shell_editor_todo::ide_event_sink::PlanChangedPayload,
+    ) -> Result<(), String> {
+        self.emit_payload(
+            tools::shell_editor_todo::ide_event_sink::PLAN_CHANGED_EVENT,
+            payload.clone(),
+        )
     }
 
     async fn spawn_shell_stream(
@@ -184,7 +202,7 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
         // Mirror it into a file beside the thread so the agent can read what
         // its dev server actually printed — the same shape as spilled tool
         // output, and cleaned up with the thread.
-        let log_path = self.background_log_path(&req.session_id, &req.process_id);
+        let log_path = self.resolve_background_log_path(&req.thread_id, &req.process_id);
 
         // Register synchronously before yielding to the spawned task. This
         // makes an immediate shell_list_processes call see the new process.
@@ -234,6 +252,7 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
                 stderr: output.stderr,
                 exit_code: output.exit_code,
                 success: output.success,
+                timed_out: output.timed_out,
             })),
             Ok(Ok(Err(error))) => Err(error),
             Ok(Err(_)) => Err(format!(
@@ -267,6 +286,7 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
             stderr: output.stderr,
             exit_code: output.exit_code,
             success: output.success,
+            timed_out: output.timed_out,
         })
     }
 
@@ -282,6 +302,13 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
             tools::shell_editor_todo::FILE_CHANGED_EVENT,
             payload.clone(),
         )
+    }
+
+    /// Same path `spawn_shell_stream` mirrors output into, recomputed on
+    /// demand — that is what lets `shell_read_output` find a log after the
+    /// process is gone from the ledger.
+    fn background_log_path(&self, thread_id: &str, process_id: &str) -> Option<String> {
+        self.resolve_background_log_path(thread_id, process_id)
     }
 }
 
@@ -365,14 +392,32 @@ pub fn run_with_args(cli_args: CliArgs) {
     // Convert CLI args to open request
     let open_request: CliOpenRequest = (&cli_args).into();
 
-    // `agw` / `aurora --agent`: open ONLY the agent window (no IDE). Captured
-    // here so the `move` setup closure can act on it.
-    let agent_mode = cli_args.agent;
+    // A launch with NO arguments at all — the Start-menu / desktop icon, or
+    // `run()`. Only this shape consults the saved launch preference: `aurora
+    // <path>`, the Explorer context menu, and file associations all carry an
+    // explicit "open this here" intent that the view-only agent window cannot
+    // serve, so they always get the IDE.
+    let bare_launch = cli_args.path.is_none()
+        && !cli_args.agent
+        && cli_args.command.is_none()
+        && cli_args.diff.is_none();
+    // The user chose the agent window as their startup surface.
+    let prefers_agent =
+        bare_launch && launch_prefs::read() == launch_prefs::LaunchSurface::Agent;
+
+    // `agw` / `aurora --agent`, or the saved preference: open ONLY the agent
+    // window (no IDE). Captured here so the `move` setup closure can act on it.
+    let agent_mode = cli_args.agent || prefers_agent;
     // The directory `agw` was run from. Passed to the window as `?ws=` so its
     // chats are scoped to that project — without it every chat started from the
     // CLI is created with a null workspace root and never appears in the left
     // rail, which groups chats into a per-project tree.
-    let agent_workspace = if agent_mode {
+    //
+    // Only the CLI path resolves it here. An icon launch has no meaningful
+    // working directory (Explorer hands the process System32), so its root is
+    // resolved from the most recently opened workspace once the DB is up —
+    // see the agent-window build block in `setup`.
+    let agent_workspace = if cli_args.agent {
         cli_args.agent_workspace_root()
     } else {
         None
@@ -483,7 +528,16 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::title_maker::generate_thread_title,
             commands::threads::thread_set_pinned,
             commands::threads::thread_set_archived,
+            commands::threads::thread_set_model,
             commands::threads::thread_cancel_current_turn,
+            commands::project_stats::project_stats_get,
+            commands::plans::plan_get_active,
+            commands::plans::plan_get,
+            commands::plans::plan_list,
+            commands::plans::plan_set_step_status,
+            commands::plans::plan_save_body,
+            commands::plans::plan_set_status,
+            commands::todos::todo_list_for_thread,
             commands::artifacts::thread_artifact_list,
             commands::artifacts::thread_artifact_preview_patch,
             commands::artifacts::thread_artifact_upsert,
@@ -665,25 +719,13 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::team::team_channel_tail,
             commands::team::team_origin_threads,
             commands::team::team_post_channel_event,
-            commands::team::team_convene,
-            commands::team::team_add_agent,
             commands::team::team_remove_agent,
             commands::team::team_disband,
-            commands::team::team_set_agent_status,
-            commands::team::team_assign_scope,
-            commands::team::team_assign_task,
-            commands::team::team_set_task_status,
-            commands::team::team_run_planning,
-            commands::team::team_begin_build,
-            commands::team::team_run_build,
             commands::team::team_check_scope,
-            commands::team::team_ask_boundary,
-            commands::team::team_publish_contract,
-            commands::team::team_mark_agent_done,
-            commands::team::team_record_review,
-            commands::team::team_set_gate_status,
-            commands::team::team_finish_integration,
-            commands::team::team_run_integration,
+            commands::team::team_grant_scope,
+            commands::team::team_lead_message,
+            commands::team::team_lead_inbox,
+            commands::team::team_lead_reply,
             commands::team::team_dispatch,
             commands::team::team_run_status,
             commands::team::team_run_ack,
@@ -699,10 +741,37 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::prompt_refine::prompt_refine_validate,
             commands::prompt_refine::prompt_refine_run,
             commands::prompt_refine::prompt_refine_title,
+            commands::settings::get_launch_surface,
+            commands::settings::set_launch_surface,
+            commands::editor_ops::open_ide_window,
             commands::prompt_refine::prompt_refine_dictation,
             commands::prompt_refine::prompt_refine_suggest,
             commands::prompt_refine::prompt_refine_cancel,
         ])
+        // The IDE window is created INVISIBLE (`"visible": false` in
+        // tauri.conf.json) and revealed here, once its page has actually
+        // loaded — and only when this launch wants the IDE at all. This is
+        // what makes an agent-surface launch open ONLY the agent window:
+        // before, the auto-created IDE window painted first and was hidden
+        // mid-setup, so every agent launch flashed the IDE. It also upgrades
+        // normal IDE launches: the window appears with content, not as a
+        // blank shell that fills in later.
+        .on_page_load(move |webview, payload| {
+            if agent_mode {
+                return;
+            }
+            if webview.label() != "main" {
+                return;
+            }
+            if payload.event() != tauri::webview::PageLoadEvent::Finished {
+                return;
+            }
+            let window = webview.window();
+            // Re-fires on every reload (Ctrl+R) — showing a visible window is
+            // a no-op, so no guard is needed.
+            let _ = window.show();
+            let _ = window.set_focus();
+        })
         .setup(move |app| {
             // Devtools stay available in every build (the `devtools`
             // Cargo feature is on for the `tauri` crate), but we no
@@ -712,13 +781,23 @@ pub fn run_with_args(cli_args: CliArgs) {
             //   macOS:   Cmd+Option+I
             //   Linux:   Ctrl+Shift+I
 
-            // Agent-only launch (`agw` / `aurora --agent`): we'll show ONLY the
-            // agent window, so hide the auto-created IDE window immediately to
-            // avoid a flash before we close it below.
-            if agent_mode {
-                if let Some(main_win) = app.get_webview_window("main") {
-                    let _ = main_win.hide();
-                }
+            // IDE launch: the main window stays invisible until its page
+            // loads (see `on_page_load` above). If that moment never comes —
+            // dev server down, frontend crash during boot — the user must not
+            // be left with a running process and no window, so a fallback
+            // reveals the (possibly blank) window after a grace period. The
+            // blank window is recoverable (F12, reload); an invisible one is
+            // not.
+            if !agent_mode {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                    if let Some(main_win) = handle.get_webview_window("main") {
+                        if !main_win.is_visible().unwrap_or(true) {
+                            let _ = main_win.show();
+                        }
+                    }
+                });
             }
 
             // Initialize database.
@@ -746,8 +825,11 @@ pub fn run_with_args(cli_args: CliArgs) {
                         err,
                     );
                     eprintln!("[aurora] {message}");
-                    // Try to surface this in the main window before exit.
+                    // Try to surface this in the main window before exit. The
+                    // window boots invisible now, so it must be shown first or
+                    // the message would go to a window nobody can see.
                     if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
                         let _ = window.emit("aurora_fatal_init_error", &message);
                     }
                     return Err(Box::<dyn std::error::Error>::from(message));
@@ -787,7 +869,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             // Rust agent runtime registry — the single owner of all
             // chat-history persistence.
             //
-            // Sessions live in `<app_data>/agent_v2/{thread_id}.jsonl`
+            // Sessions live in `<paths::root()>/sessions/{thread_id}.jsonl`
+            // (`%LOCALAPPDATA%\AuroraIDE\sessions\` on Windows)
             // with a metadata sidecar at `<thread_id>.meta.json`. The
             // `SessionStore` (held inside the `AgentRegistry`) is the
             // sole source of truth for everything the chat list and
@@ -979,11 +1062,32 @@ pub fn run_with_args(cli_args: CliArgs) {
             if agent_mode {
                 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
+                // An icon launch has no usable working directory, so its project
+                // comes from the most recently opened workspace instead. This
+                // matters more than it looks: the window creates every chat with
+                // its `projectRoot` as the chat's `workspaceRoot`, and the left
+                // rail is a per-project tree keyed on that value — a null root
+                // produces a chat that persists correctly but renders nowhere.
+                // Nothing recorded yet (fresh install) → open unscoped, which
+                // the home screen handles as its no-workspace state.
+                let resolved_workspace = agent_workspace.clone().or_else(|| {
+                    if !prefers_agent {
+                        return None;
+                    }
+                    app.state::<Mutex<db::Database>>()
+                        .lock()
+                        .ok()
+                        .and_then(|db| db.workspace().get_most_recent().ok())
+                        .flatten()
+                        .and_then(|state| state.workspace_path)
+                        .map(std::path::PathBuf::from)
+                });
+
                 // Same shape the JS launcher produces (`agentWindowUrl` in
                 // agent-window/adapters/window.ts) so both paths bind the window
                 // identically. No root resolvable (e.g. the CWD was deleted out
                 // from under the process) → open unscoped rather than fail.
-                let agent_route = match agent_workspace.as_ref() {
+                let agent_route = match resolved_workspace.as_ref() {
                     Some(root) => format!(
                         "agent-window?ws={}",
                         cli::encode_query_component(&root.to_string_lossy())
@@ -1052,7 +1156,19 @@ pub fn run_with_args(cli_args: CliArgs) {
                             );
                         }
                         if let Some(main_win) = app.get_webview_window("main") {
-                            let _ = main_win.close();
+                            // `agw` asked for the agent window and nothing else,
+                            // so the IDE is torn down. A PREFERENCE launch is
+                            // different: it is the user's only entry point, and
+                            // closing `main` would strip the way back — the
+                            // `agent_open_in_ide` command only works while the
+                            // main window exists (it is the sole listener). Keep
+                            // it hidden and ready to show instead, so choosing
+                            // the agent surface is never a one-way door.
+                            if prefers_agent {
+                                let _ = main_win.hide();
+                            } else {
+                                let _ = main_win.close();
+                            }
                         }
                     }
                     Err(err) => {

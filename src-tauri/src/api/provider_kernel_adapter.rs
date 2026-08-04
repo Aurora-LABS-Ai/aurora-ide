@@ -39,7 +39,7 @@ use super::client::ProviderConfigSnapshot;
 // every adapter call site keeps compiling unchanged.
 // ---------------------------------------------------------------------------
 
-pub use super::sse_shared::{frame_payloads, SseFrameBuffer};
+pub use super::sse_shared::{frame_has_done_marker, frame_payloads, SseFrameBuffer};
 
 // ---------------------------------------------------------------------------
 // Error mapping
@@ -336,20 +336,26 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
     let wants_thinking = (request.thinking_enabled && config.supports_thinking) || effort.is_some();
 
     let thinking_on = if wants_thinking {
-        match anthropic_thinking_budget(
+        match anthropic_thinking_plan(
             request.thinking_budget_tokens,
             effort.as_deref(),
             max_tokens,
         ) {
-            Some(budget) => {
+            Some((budget, total_max_tokens)) => {
                 body.insert(
                     "thinking".to_string(),
                     json!({ "type": "enabled", "budget_tokens": budget }),
                 );
+                // Reasoning tokens bill against `max_tokens` too, so the cap
+                // has to cover the budget ON TOP of the answer the user asked
+                // for. Without this the model can spend the whole allowance
+                // thinking and get cut off at `max_tokens` mid-thought, having
+                // emitted no reply at all.
+                body.insert("max_tokens".to_string(), Value::from(total_max_tokens));
                 true
             }
-            // `max_tokens` too small to carry a valid budget — omit `thinking`
-            // rather than send a request Anthropic would reject outright.
+            // Answer budget too small to pair with a valid reasoning budget —
+            // omit `thinking` rather than send a body Anthropic would reject.
             None => false,
         }
     } else {
@@ -378,41 +384,107 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
 
 /// Pick an Anthropic `thinking.budget_tokens`.
 ///
-/// Anthropic constrains the budget to `1024 <= budget < max_tokens`. An
-/// `explicit` budget (the user's own choice, for models whose reasoning
-/// control is a budget slider rather than an effort tier) wins and is only
-/// clamped into that range; otherwise the effort tier is applied as a
-/// fraction of the caller's output cap and then clamped the same way.
+/// Anthropic constrains the budget to `1024 <= budget < max_tokens`, and
+/// counts reasoning tokens against `max_tokens` alongside the visible reply.
 ///
-/// Returns `None` when `max_tokens` is too small to satisfy the floor — the
-/// caller then omits `thinking` entirely instead of emitting an invalid body.
+/// The budget is therefore **additive, not a share**: it is sized from the
+/// caller's *answer* budget and the total cap is raised to cover both (see
+/// [`anthropic_max_tokens_with_thinking`]). Carving the budget out of
+/// `max_tokens` instead — the previous behaviour — meant picking `xhigh`
+/// left the model ~10% of the cap to answer in, so a long reasoning pass
+/// consumed the entire allowance and the turn ended at `max_tokens` with
+/// nothing but thinking to show for it.
+///
+/// An `explicit` budget (the user's own choice, for models whose reasoning
+/// control is a budget slider rather than an effort tier) wins and is only
+/// clamped to the floor.
+///
+/// Returns `None` when the answer budget is too small to be worth pairing
+/// with reasoning — the caller then omits `thinking` entirely instead of
+/// emitting an invalid body.
 ///
 /// `None` effort means a plain thinking toggle (no tier picked); it gets the
-/// same middle share as `medium`.
+/// same middle multiple as `medium`.
 fn anthropic_thinking_budget(
     explicit: Option<u32>,
     effort: Option<&str>,
-    max_tokens: u32,
+    answer_tokens: u32,
 ) -> Option<u32> {
     const MIN_BUDGET: u32 = 1024;
-    if max_tokens <= MIN_BUDGET {
+    if answer_tokens <= MIN_BUDGET {
         return None;
     }
-    // The user picked a number — respect it, but never emit a body Anthropic
-    // would reject. Clamping (rather than failing) keeps a budget the user set
-    // against a larger output cap working after they lower `Max output`.
+    // The user picked a number — respect it. It no longer competes with the
+    // answer budget, so the only bound left is Anthropic's 1024 floor.
     if let Some(budget) = explicit.filter(|b| *b > 0) {
-        return Some(budget.clamp(MIN_BUDGET, max_tokens - 1));
+        return Some(budget.max(MIN_BUDGET));
     }
-    let percent: u32 = match effort {
-        Some("low") => 25,
-        Some("high") => 75,
-        Some("xhigh") | Some("max") => 90,
+    // Multiples of the answer budget. A higher tier buys MORE thinking on top
+    // of the same reply allowance rather than trading one for the other.
+    let (num, den): (u64, u64) = match effort {
+        Some("low") => (1, 2),
+        Some("high") => (2, 1),
+        Some("xhigh") | Some("max") => (3, 1),
         // "medium", an unrecognized tier, or a plain toggle.
-        _ => 50,
+        _ => (1, 1),
     };
-    let want = (u64::from(max_tokens) * u64::from(percent) / 100) as u32;
-    Some(want.clamp(MIN_BUDGET, max_tokens - 1))
+    let want = (u64::from(answer_tokens) * num / den).min(u64::from(u32::MAX)) as u32;
+    Some(want.max(MIN_BUDGET))
+}
+
+/// Anthropic's hard ceiling for `max_tokens` across current models. The
+/// additive budget can outgrow what any model will accept (a 32k answer
+/// budget on `xhigh` asks for 128k), and an over-cap request is a flat 400,
+/// so the combined total is clamped here. Users on a model that accepts more
+/// can still override `max_tokens` through `customParams` — those merge last.
+const ANTHROPIC_MAX_TOKENS_CEILING: u32 = 64_000;
+
+/// Anthropic's floor for `thinking.budget_tokens`.
+const ANTHROPIC_MIN_THINKING_BUDGET: u32 = 1024;
+
+/// Resolve the reasoning budget and the combined output cap **together**, so
+/// they cannot contradict each other.
+///
+/// Two invariants have to hold at once, and clamping them independently gets
+/// one of them wrong:
+///
+/// 1. `budget_tokens < max_tokens` — Anthropic rejects the request otherwise.
+/// 2. `max_tokens <= ANTHROPIC_MAX_TOKENS_CEILING` — models 400 above their cap.
+///
+/// When the requested total exceeds the ceiling we shrink the *reasoning*
+/// budget and leave the answer allowance whole, because starving the reply is
+/// the exact failure this whole path exists to prevent. Only when the answer
+/// budget alone fills the ceiling — leaving no room to think — do we split the
+/// cap and accept a shorter reply.
+///
+/// Returns `None` when no split can satisfy both invariants; the caller then
+/// omits `thinking` rather than sending a body Anthropic would reject.
+fn anthropic_thinking_plan(
+    explicit: Option<u32>,
+    effort: Option<&str>,
+    answer_tokens: u32,
+) -> Option<(u32, u32)> {
+    let desired = anthropic_thinking_budget(explicit, effort, answer_tokens)?;
+    let total = answer_tokens
+        .saturating_add(desired)
+        .min(ANTHROPIC_MAX_TOKENS_CEILING);
+
+    // Room the ceiling leaves for reasoning once the answer keeps its share.
+    let room = total.saturating_sub(answer_tokens);
+    let budget = if room >= ANTHROPIC_MIN_THINKING_BUDGET {
+        desired.min(room)
+    } else {
+        // The answer budget alone is at/over the ceiling. Concede half the cap
+        // so reasoning still happens; the reply gets the other half.
+        (total / 2).max(ANTHROPIC_MIN_THINKING_BUDGET)
+    };
+
+    // Invariant 1. If even the floor can't fit under the cap, there is no valid
+    // thinking config at this size.
+    if budget >= total {
+        return None;
+    }
+    Some((budget, total))
 }
 
 fn anthropic_tool_schema(schema: &ToolSchema) -> Value {
@@ -615,6 +687,10 @@ fn message_blocks_to_anthropic_content(blocks: &[ContentBlock], supports_vision:
             // summary text block before the request is built, so reaching here
             // would be a bug; skip it defensively rather than emit junk.
             ContentBlock::Compaction { .. } => {}
+            // A runtime notice is product copy for the USER ("this reply is cut
+            // off"). Sending it would both waste tokens and teach the model to
+            // imitate Aurora's own voice back at us.
+            ContentBlock::Notice { .. } => {}
         }
     }
     Value::Array(arr)
@@ -1529,54 +1605,119 @@ mod tests {
 
     #[test]
     fn thinking_budget_scales_with_effort_tier() {
-        // Tiers take an increasing share of the output cap.
+        // Tiers buy an increasing MULTIPLE of the answer budget — additive, so
+        // a higher tier never shrinks the room left to reply in.
         assert_eq!(
-            anthropic_thinking_budget(None, Some("low"), 64_000),
-            Some(16_000)
+            anthropic_thinking_budget(None, Some("low"), 8_192),
+            Some(4_096)
         );
         assert_eq!(
-            anthropic_thinking_budget(None, Some("medium"), 64_000),
-            Some(32_000)
+            anthropic_thinking_budget(None, Some("medium"), 8_192),
+            Some(8_192)
         );
         assert_eq!(
-            anthropic_thinking_budget(None, Some("high"), 64_000),
-            Some(48_000)
+            anthropic_thinking_budget(None, Some("high"), 8_192),
+            Some(16_384)
         );
         assert_eq!(
-            anthropic_thinking_budget(None, Some("xhigh"), 64_000),
-            Some(57_600)
+            anthropic_thinking_budget(None, Some("xhigh"), 8_192),
+            Some(24_576)
         );
         assert_eq!(
-            anthropic_thinking_budget(None, Some("max"), 64_000),
-            Some(57_600)
+            anthropic_thinking_budget(None, Some("max"), 8_192),
+            Some(24_576)
         );
         // A plain toggle (no tier) and an unknown tier both fall back to medium.
-        assert_eq!(anthropic_thinking_budget(None, None, 64_000), Some(32_000));
+        assert_eq!(anthropic_thinking_budget(None, None, 8_192), Some(8_192));
         assert_eq!(
-            anthropic_thinking_budget(None, Some("bogus"), 64_000),
-            Some(32_000)
+            anthropic_thinking_budget(None, Some("bogus"), 8_192),
+            Some(8_192)
         );
+    }
+
+    /// The regression this whole change exists for: on the old share-based
+    /// math, `xhigh` handed reasoning 90% of the cap and left the model ~10%
+    /// to answer in, so a long reasoning pass hit `max_tokens` mid-thought and
+    /// the turn ended with no reply at all.
+    #[test]
+    fn xhigh_thinking_never_eats_the_answer_budget() {
+        let answer = 8_192;
+        let (budget, total) = anthropic_thinking_plan(None, Some("xhigh"), answer).unwrap();
+        assert!(
+            total - budget >= answer,
+            "answer budget shrank: {total} - {budget} < {answer}"
+        );
+        assert!(budget < total, "Anthropic requires budget < max_tokens");
+    }
+
+    /// Both invariants have to hold at once at every size — `budget < max` AND
+    /// `max <= ceiling`. Clamping them independently satisfied one and broke the
+    /// other (a 32k answer budget produced max_tokens 96,001, a flat 400).
+    #[test]
+    fn thinking_plan_holds_both_invariants_at_every_size() {
+        for answer in [
+            1_025_u32, 2_000, 8_192, 16_384, 32_000, 40_000, 64_000, 100_000,
+        ] {
+            for effort in [None, Some("low"), Some("medium"), Some("high"), Some("xhigh")] {
+                let Some((budget, total)) = anthropic_thinking_plan(None, effort, answer) else {
+                    continue; // no valid config at this size — caller omits `thinking`
+                };
+                assert!(
+                    budget >= ANTHROPIC_MIN_THINKING_BUDGET,
+                    "answer={answer} effort={effort:?}: budget {budget} under floor"
+                );
+                assert!(
+                    budget < total,
+                    "answer={answer} effort={effort:?}: budget {budget} >= max_tokens {total}"
+                );
+                assert!(
+                    total <= ANTHROPIC_MAX_TOKENS_CEILING,
+                    "answer={answer} effort={effort:?}: max_tokens {total} over ceiling"
+                );
+            }
+        }
     }
 
     #[test]
     fn thinking_budget_respects_anthropic_bounds() {
-        // Never below the 1024 floor, even when the tier share would be tiny.
+        // Never below the 1024 floor, even when the tier multiple would be tiny.
         assert_eq!(
             anthropic_thinking_budget(None, Some("low"), 2_000),
             Some(1_024)
         );
-        // Always strictly less than max_tokens.
-        let budget = anthropic_thinking_budget(None, Some("max"), 1_100).unwrap();
-        assert!(budget < 1_100, "budget {budget} must be < max_tokens");
+        // The combined cap always leaves `budget < max_tokens`.
+        let (budget, total) = anthropic_thinking_plan(None, Some("max"), 1_100).unwrap();
+        assert!(budget < total, "budget {budget} must be < max_tokens {total}");
         assert!(budget >= 1_024, "budget {budget} must be >= 1024");
-        // Too small to satisfy the floor at all → omit `thinking` entirely.
+        // Too small to pair with a valid budget → omit `thinking` entirely.
         assert_eq!(anthropic_thinking_budget(None, Some("high"), 1_024), None);
         assert_eq!(anthropic_thinking_budget(None, None, 500), None);
     }
 
     #[test]
+    fn combined_cap_stays_under_the_anthropic_ceiling() {
+        // A 32k answer budget on the top tier wants 96k of thinking = 128k total.
+        // Clamp to the ceiling by shrinking THINKING, never the answer share.
+        let (budget, total) = anthropic_thinking_plan(None, Some("xhigh"), 32_000).unwrap();
+        assert_eq!(total, ANTHROPIC_MAX_TOKENS_CEILING);
+        assert_eq!(budget, 32_000, "reasoning absorbs the clamp");
+        assert_eq!(total - budget, 32_000, "the answer budget survives intact");
+    }
+
+    /// Degenerate case: the answer budget alone fills the ceiling, so there is
+    /// no room left to add thinking on top. Split the cap rather than emitting
+    /// an invalid body or silently dropping reasoning.
+    #[test]
+    fn answer_budget_at_the_ceiling_splits_the_cap() {
+        let (budget, total) = anthropic_thinking_plan(None, Some("high"), 64_000).unwrap();
+        assert_eq!(total, ANTHROPIC_MAX_TOKENS_CEILING);
+        assert_eq!(budget, 32_000);
+        assert!(budget < total);
+    }
+
+    #[test]
     fn explicit_thinking_budget_overrides_the_effort_tier() {
-        // The user's own number wins over the tier share...
+        // The user's own number wins over the tier multiple...
         assert_eq!(
             anthropic_thinking_budget(Some(6_000), Some("max"), 64_000),
             Some(6_000)
@@ -1586,20 +1727,21 @@ mod tests {
             anthropic_thinking_budget(Some(24_000), None, 64_000),
             Some(24_000)
         );
-        // Still clamped into Anthropic's accepted range rather than rejected:
-        // a budget set against a bigger cap survives lowering `Max output`.
+        // An explicit budget no longer competes with the answer budget, so
+        // lowering `Max output` leaves it intact instead of clamping it down.
         assert_eq!(
             anthropic_thinking_budget(Some(60_000), None, 8_000),
-            Some(7_999)
+            Some(60_000)
         );
         assert_eq!(
             anthropic_thinking_budget(Some(200), None, 64_000),
             Some(1_024)
         );
-        // Zero is the "no explicit budget" encoding — fall back to the tier.
+        // Zero is the "no explicit budget" encoding — fall back to the tier
+        // (`low` is now half the answer budget, not a quarter of the cap).
         assert_eq!(
             anthropic_thinking_budget(Some(0), Some("low"), 64_000),
-            Some(16_000)
+            Some(32_000)
         );
     }
 

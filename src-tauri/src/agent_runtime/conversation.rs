@@ -147,7 +147,13 @@ impl Default for RuntimeConfig {
         Self {
             max_iterations: None,
             system_prompt: None,
-            default_max_output_tokens: 8192,
+            // Reasoning tokens bill against the output cap on every provider
+            // except Anthropic (whose budget is added on top — see
+            // `anthropic_max_tokens_with_thinking`). At 8k a high reasoning
+            // effort could consume the entire allowance before the model wrote
+            // a word, ending the turn at the cap with nothing to show. The
+            // extra headroom costs ~9k of trim reserve on a 200k window.
+            default_max_output_tokens: 16_384,
             thinking_enabled: false,
             thinking_budget_tokens: None,
             default_temperature: None,
@@ -481,20 +487,40 @@ impl ConversationRuntime {
                 // answer looked like a complete one — the user's only clue
                 // was prose that stopped mid-word. Say it out loud.
                 if is_length_stop(&stop_reason) {
+                    // Plain text: this renders in an inline notice marker, not
+                    // through the markdown pipeline, so backticks would show up
+                    // literally.
+                    const TRUNCATED_NOTICE: &str =
+                        "This reply is cut off — the model reached its output limit. Raise Max \
+                         output for this model in provider settings, or ask it to continue.";
                     seq += 1;
                     let _ = event_sink
                         .send(AgentEventEnvelope {
                             turn_id: turn_id.clone(),
                             seq,
                             event: AssistantEvent::Error {
-                                message: "The model hit its output-token limit and this reply is \
-                                          cut off. Raise `Max output` for this model, or ask it \
-                                          to continue."
-                                    .to_string(),
+                                message: TRUNCATED_NOTICE.to_string(),
                                 recoverable: true,
                             },
                         })
                         .await;
+                    // Persist it too. The event alone only reaches the window
+                    // that is open now; without a session record, reopening the
+                    // thread shows the truncated reply with no explanation for
+                    // why it stops mid-sentence. Appended AFTER the assistant
+                    // message so it reloads directly beneath it.
+                    let now = chrono::Utc::now().timestamp_millis();
+                    session.append_message(ConversationMessage {
+                        role: MessageRole::System,
+                        blocks: vec![ContentBlock::Notice {
+                            message: TRUNCATED_NOTICE.to_string(),
+                            created_at: now,
+                        }],
+                        usage: None,
+                        timestamp: now,
+                        attached_selected_elements: None,
+                        attached_prompt_chips: None,
+                    });
                 }
 
                 let envelope = AgentEventEnvelope {
@@ -891,7 +917,14 @@ impl ConversationRuntime {
                 let context = ToolContext {
                     turn_id: turn_id.to_string(),
                     tool_call_id: call.id.clone(),
-                    session_id: session.session_id.clone(),
+                    // The THREAD, never `session.session_id` — that is a fresh
+                    // UUID per load. Tools key durable, per-conversation state
+                    // off this (the todo list's sidecar, a plan step's run
+                    // claim, background-process logs), so a session id meant the
+                    // checklist was written to `<uuid>.todos.json`, announced to
+                    // the UI under a thread id that did not exist, and lost on
+                    // every restart.
+                    thread_id: session.thread_id.clone(),
                     workspace_root: session
                         .workspace_root
                         .as_ref()
@@ -1282,6 +1315,14 @@ fn truncate_tool_content(tool: &str, s: String) -> String {
     // closing tag → adapter can't split the image → model "sees" nothing.
     if s.contains("<aurora_image ") {
         return leanify_aurora_images(&s);
+    }
+    // Reads that bounded themselves are handed to the model verbatim. They are
+    // already exactly the window that was requested (or an explicitly forced
+    // whole file), and a byte clamp here would cut the tail off that window —
+    // which is precisely the content a following exact-match `file_edit` has to
+    // reproduce character for character.
+    if s.contains(crate::tools::file_workspace_search::EXACT_READ_MARKER) {
+        return s;
     }
     let cap = result_cap_for(tool);
     if s.len() <= cap {
@@ -2008,6 +2049,11 @@ fn estimate_message_tokens(message: &ConversationMessage) -> u32 {
                 // summary's. `apply_compaction` normally strips markers before
                 // this runs; counting the summary keeps any stray call honest.
                 total = total.saturating_add(estimate_text_tokens(summary));
+            }
+            ContentBlock::Notice { .. } => {
+                // Costs nothing: notices are stripped from every provider view,
+                // so counting them would inflate the context ring against
+                // tokens that are never sent.
             }
         }
     }
@@ -3057,6 +3103,93 @@ mod tests {
         assert!(err.is_cancellation());
     }
 
+    /// The id a tool receives must be the THREAD, not `Session::session_id`.
+    ///
+    /// This was wrong in production and nothing caught it: `session_id` is a
+    /// fresh UUIDv4 on every load, so the todo tool wrote its sidecar to
+    /// `<uuid>.todos.json`, announced the list to the UI under a thread id that
+    /// did not exist (the header indicator stayed empty), and lost everything on
+    /// restart. Every tool-visible id is asserted here so the two can never be
+    /// confused again.
+    #[tokio::test]
+    async fn tools_receive_the_thread_id_never_the_ephemeral_session_id() {
+        struct IdSpy {
+            seen: Arc<Mutex<Vec<String>>>,
+        }
+        #[async_trait]
+        impl super::super::tool_executor::ToolExecutor for IdSpy {
+            fn name(&self) -> &str {
+                "echo"
+            }
+            fn schema(&self) -> super::super::api_client::ToolSchema {
+                super::super::api_client::ToolSchema {
+                    name: "echo".into(),
+                    description: "id spy".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                }
+            }
+            async fn execute(
+                &self,
+                _input: serde_json::Value,
+                ctx: &ToolContext,
+            ) -> Result<String, ToolError> {
+                self.seen
+                    .lock()
+                    .expect("seen mutex")
+                    .push(ctx.thread_id.clone());
+                Ok("ok".into())
+            }
+        }
+
+        let api = Arc::new(MockApi::new(vec![
+            TurnScript {
+                events: vec![],
+                result: Ok(TurnUsage {
+                    usage: TokenUsage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                    },
+                    stop_reason: "tool_use".into(),
+                    assistant_message: assistant_tool_use("c1", "echo", serde_json::json!({})),
+                }),
+            },
+            TurnScript {
+                events: vec![],
+                result: Ok(TurnUsage {
+                    usage: TokenUsage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                    },
+                    stop_reason: "end_turn".into(),
+                    assistant_message: assistant_text("done"),
+                }),
+            },
+        ]));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let tools = Arc::new(ToolRegistry::new());
+        tools.register(Arc::new(IdSpy { seen: seen.clone() }));
+        let runtime = ConversationRuntime::new(api, tools, RuntimeConfig::default());
+
+        let mut session = Session::new("thread-abc");
+        let ephemeral = session.session_id.clone();
+        let (tx, _rx) = mpsc::channel(32);
+        runtime
+            .run_turn(&mut session, user_msg("go"), tx, CancellationToken::new())
+            .await
+            .expect("turn");
+
+        let ids = seen.lock().expect("seen mutex").clone();
+        assert_eq!(ids, vec!["thread-abc".to_string()]);
+        assert_ne!(
+            ids[0], ephemeral,
+            "a per-load UUID must never reach a tool as its conversation id"
+        );
+    }
+
     #[tokio::test]
     async fn run_turn_aggregates_usage_across_iterations() {
         let api = Arc::new(MockApi::new(vec![
@@ -3369,7 +3502,10 @@ mod tests {
         let captured = captured.as_ref().expect("api was called");
         assert_eq!(captured.temperature, None);
         assert!(!captured.thinking_enabled);
-        assert_eq!(captured.max_output_tokens, 8192);
+        // Reasoning bills against this cap on most providers, so the default
+        // has to leave room for a long think AND a full reply (was 8192, which
+        // a high reasoning effort could consume entirely).
+        assert_eq!(captured.max_output_tokens, 16_384);
         assert!(captured.system_prompt.is_none());
     }
 

@@ -21,6 +21,27 @@
 import { auroraInvoke } from "../../lib/runtime";
 import { isTauri } from "../../lib/tauri";
 
+/**
+ * Show the IDE window without opening any particular file.
+ *
+ * `openInIde` needs a path, so it cannot serve as the way back to the editor
+ * when the agent window is the only surface a launch opened (`agw`, or the
+ * Startup preference) and no file has been touched yet. The backend shows the
+ * window when it exists — including when it is merely hidden — and rebuilds it
+ * when it does not.
+ */
+export async function openIdeWindow(): Promise<void> {
+  if (!isTauri()) {
+    console.warn("[agent-window] openIdeWindow requires the Aurora runtime");
+    return;
+  }
+  try {
+    await auroraInvoke("open_ide_window");
+  } catch (err) {
+    console.error("[agent-window] openIdeWindow failed:", err);
+  }
+}
+
 export async function openInIde(path: string, line?: number): Promise<void> {
   if (!path) return;
   if (!isTauri()) {

@@ -25,9 +25,8 @@ use crate::agent_runtime::error::RuntimeError;
 use super::bus::TeamBus;
 use super::scope_guard::{evaluate_write, ScopeDecision};
 use super::types::{
-    AgentRecord, AgentStatus, BoardTasks, ChannelEvent, ChannelEventKind, GateStatus,
-    IntegrationStatus, ReviewVerdict, ScopeAssignment, ScopeMap, TaskRecord, TaskStatus,
-    TeamManifest, TeamPhase,
+    AgentRecord, AgentStatus, BoardTasks, ChannelEvent, ChannelEventKind, IntegrationStatus,
+    ScopeAssignment, ScopeMap, TaskRecord, TaskStatus, TeamManifest, TeamPhase,
 };
 use super::workspace::{now_rfc3339, ProjectWorkspace};
 
@@ -527,56 +526,7 @@ impl TeamSession {
         self.ws.write_tasks(&board)
     }
 
-    // ── build phase (Phase 3) ─────────────────────────────────────────
-
-    /// Move the team into [`TeamPhase::Building`] to start the parallel
-    /// worker run. Every IC that owns a non-empty scope flips to
-    /// [`AgentStatus::Building`]; ICs with nothing to own stay idle.
-    /// Rejected on a disbanded team — convene first.
-    pub fn begin_build(&self, bus: &TeamBus) -> Result<TeamManifest, RuntimeError> {
-        let mut team = self.read_team()?;
-        if matches!(team.phase, TeamPhase::Disbanded) {
-            return Err(RuntimeError::InvalidState(
-                "cannot start a build on a disbanded team; convene first".into(),
-            ));
-        }
-
-        let scope = self
-            .ws
-            .read_scope_map()?
-            .unwrap_or_else(|| ScopeMap::empty(now_rfc3339()));
-        let owns = |id: &str| {
-            scope
-                .assignments
-                .iter()
-                .any(|a| a.agent_id == id && !a.owned_paths.is_empty())
-        };
-
-        let mut building = 0usize;
-        for a in &mut team.agents {
-            if a.id == LEAD_AGENT_ID {
-                continue;
-            }
-            if owns(&a.id) {
-                a.status = AgentStatus::Building;
-                building += 1;
-            } else {
-                a.status = AgentStatus::Idle;
-            }
-        }
-        team.phase = TeamPhase::Building;
-        self.save_team(&mut team)?;
-
-        self.lead_say(
-            bus,
-            format!(
-                "Agents started — {building} worker{} running in parallel within their owned scopes.",
-                if building == 1 { "" } else { "s" }
-            ),
-            Some(json!({ "phase": "building", "building": building })),
-        )?;
-        Ok(team)
-    }
+    // ── work phase ────────────────────────────────────────────────────
 
     /// Ask the scope write-guard whether `agent_id` may write `path`,
     /// against the current ownership partition (§8). Read-only — this is
@@ -668,186 +618,6 @@ impl TeamSession {
             format!("Published contract '{name}': {body}"),
             Some(json!({ "contract": name })),
         )
-    }
-
-    /// Mark an IC finished and set it [`AgentStatus::Done`]. When every IC is
-    /// done, the team closes and the Lead gets the reports. The Lead itself is
-    /// never marked done mid-run.
-    pub fn mark_agent_done(
-        &self,
-        bus: &TeamBus,
-        agent_id: &str,
-    ) -> Result<TeamManifest, RuntimeError> {
-        if agent_id == LEAD_AGENT_ID {
-            return Err(RuntimeError::InvalidState(
-                "the lead is not marked done while the team runs".into(),
-            ));
-        }
-        let mut team = self.read_team()?;
-        match team.agents.iter_mut().find(|a| a.id == agent_id) {
-            Some(a) => a.status = AgentStatus::Done,
-            None => {
-                return Err(RuntimeError::InvalidState(format!(
-                    "no agent with id {agent_id}"
-                )))
-            }
-        }
-
-        let all_ics_done = team
-            .agents
-            .iter()
-            .filter(|a| a.id != LEAD_AGENT_ID)
-            .all(|a| matches!(a.status, AgentStatus::Done));
-        let has_ics = team.agents.iter().any(|a| a.id != LEAD_AGENT_ID);
-        let completed = all_ics_done && has_ics && matches!(team.phase, TeamPhase::Building);
-        if completed {
-            team.phase = TeamPhase::Done;
-        }
-        self.save_team(&mut team)?;
-
-        if completed {
-            self.lead_say(
-                bus,
-                "All agents reported back to the Lead.",
-                Some(json!({ "phase": "done" })),
-            )?;
-        }
-        Ok(team)
-    }
-
-    // ── integration & peer review (Phase 4) ────────────────────────────
-
-    /// Record one agent's peer-review verdict on another's work (§7 "review a
-    /// peer", §9 step 5). Persists a note to the `integration/reviews/` thread
-    /// **and** posts a [`ChannelEventKind::ReviewVerdict`] to the channel.
-    /// Both ids must be on the roster.
-    pub fn record_review(
-        &self,
-        bus: &TeamBus,
-        reviewer: &str,
-        target: &str,
-        verdict: ReviewVerdict,
-        comments: &str,
-    ) -> Result<ChannelEvent, RuntimeError> {
-        let team = self.read_team()?;
-        for id in [reviewer, target] {
-            if id != LEAD_AGENT_ID && !team.agents.iter().any(|a| a.id == id) {
-                return Err(RuntimeError::InvalidState(format!("no agent with id {id}")));
-            }
-        }
-        let label = review_label(verdict);
-        self.ws.append_review(
-            reviewer,
-            target,
-            &format!(
-                "## {reviewer} → {target} [{label}] {}\n{comments}\n",
-                now_rfc3339()
-            ),
-        )?;
-        let body = match verdict {
-            ReviewVerdict::Approve => format!("Reviewed {target}: approved. {comments}"),
-            ReviewVerdict::ChangesRequested => {
-                format!("Reviewed {target}: changes requested. {comments}")
-            }
-        };
-        self.agent_say(
-            bus,
-            reviewer,
-            ChannelEventKind::ReviewVerdict,
-            body,
-            Some(json!({ "target": target, "verdict": label })),
-        )
-    }
-
-    /// Record the integration gate result (`integration/status.json`) and post
-    /// a Lead summary (§9 step 5, §14). The final correctness check before the
-    /// team can be "done".
-    pub fn set_gate_status(
-        &self,
-        bus: &TeamBus,
-        build: GateStatus,
-        lint: GateStatus,
-        test: GateStatus,
-    ) -> Result<IntegrationStatus, RuntimeError> {
-        let status = IntegrationStatus {
-            build,
-            lint,
-            test,
-            updated_at: now_rfc3339(),
-        };
-        self.ws.write_status(&status)?;
-        self.lead_say(
-            bus,
-            format!(
-                "Integration gate — build: {}, lint: {}, test: {}.",
-                gate_label(build),
-                gate_label(lint),
-                gate_label(test)
-            ),
-            Some(json!({ "build": build, "lint": lint, "test": test })),
-        )?;
-        Ok(status)
-    }
-
-    /// Close the integration phase. If no gate is `Failed`, the team moves to
-    /// [`TeamPhase::Done`] and every IC is marked `done`; otherwise it stays in
-    /// [`TeamPhase::Integrating`] until fixes land. Rejected on a disbanded
-    /// team. Returns the resulting roster.
-    pub fn finish_integration(&self, bus: &TeamBus) -> Result<TeamManifest, RuntimeError> {
-        let mut team = self.read_team()?;
-        if matches!(team.phase, TeamPhase::Disbanded) {
-            return Err(RuntimeError::InvalidState(
-                "cannot finish integration on a disbanded team".into(),
-            ));
-        }
-        let status = self
-            .ws
-            .read_status()?
-            .unwrap_or_else(|| IntegrationStatus::empty(now_rfc3339()));
-        let failed = matches!(status.build, GateStatus::Failed)
-            || matches!(status.lint, GateStatus::Failed)
-            || matches!(status.test, GateStatus::Failed);
-
-        if failed {
-            self.lead_say(
-                bus,
-                "Integration gate failed — staying in integration until fixes land.",
-                Some(json!({ "phase": "integrating" })),
-            )?;
-            return Ok(team);
-        }
-
-        team.phase = TeamPhase::Done;
-        for a in &mut team.agents {
-            if a.id != LEAD_AGENT_ID {
-                a.status = AgentStatus::Done;
-            }
-        }
-        self.save_team(&mut team)?;
-        self.lead_say(
-            bus,
-            "Integration gate passed — team done.",
-            Some(json!({ "phase": "done" })),
-        )?;
-        Ok(team)
-    }
-}
-
-/// Channel-friendly label for a gate result.
-fn gate_label(status: GateStatus) -> &'static str {
-    match status {
-        GateStatus::Unknown => "unknown",
-        GateStatus::Pending => "pending",
-        GateStatus::Passed => "passed",
-        GateStatus::Failed => "failed",
-    }
-}
-
-/// Channel-friendly label for a review verdict.
-fn review_label(verdict: ReviewVerdict) -> &'static str {
-    match verdict {
-        ReviewVerdict::Approve => "approve",
-        ReviewVerdict::ChangesRequested => "changes_requested",
     }
 }
 
@@ -1019,41 +789,14 @@ mod tests {
         let team = s.convene(&bus, req(&["a"]), 5).unwrap();
         let ic = ic_ids(&team)[0].clone();
         let before = s.workspace().read_channel(None).unwrap().len();
-        s.set_agent_status(&ic, AgentStatus::Building).unwrap();
+        s.set_agent_status(&ic, AgentStatus::Working).unwrap();
         let after = s.workspace().read_channel(None).unwrap().len();
         assert_eq!(before, after, "status ticks must not flood the channel");
         let team = s.workspace().read_team().unwrap().unwrap();
         assert!(team
             .agents
             .iter()
-            .any(|a| a.id == ic && matches!(a.status, AgentStatus::Building)));
-    }
-
-    // ── Phase 3 ───────────────────────────────────────────────────────
-
-    #[test]
-    fn begin_build_only_flips_scoped_ics_to_building() {
-        let (_d, s, bus) = session();
-        let team = s.convene(&bus, req(&["app", "lib"]), 5).unwrap();
-        let ids = ic_ids(&team);
-        // Only the first IC gets a scope.
-        s.assign_scope(&bus, &ids[0], vec!["app/".into()], vec![])
-            .unwrap();
-
-        let team = s.begin_build(&bus).unwrap();
-        assert!(matches!(team.phase, TeamPhase::Building));
-        let scoped = team.agents.iter().find(|a| a.id == ids[0]).unwrap();
-        let unscoped = team.agents.iter().find(|a| a.id == ids[1]).unwrap();
-        assert!(matches!(scoped.status, AgentStatus::Building));
-        assert!(matches!(unscoped.status, AgentStatus::Idle));
-    }
-
-    #[test]
-    fn begin_build_rejected_after_disband() {
-        let (_d, s, bus) = session();
-        s.convene(&bus, req(&["a"]), 5).unwrap();
-        s.disband(&bus).unwrap();
-        assert!(s.begin_build(&bus).is_err());
+            .any(|a| a.id == ic && matches!(a.status, AgentStatus::Working)));
     }
 
     #[test]
@@ -1109,96 +852,5 @@ mod tests {
         let scope = s.workspace().read_scope_map().unwrap().unwrap();
         let mine = scope.assignments.iter().find(|a| a.agent_id == ic).unwrap();
         assert!(mine.owned_contracts.iter().any(|c| c == "UserDTO"));
-    }
-
-    #[test]
-    fn mark_agent_done_closes_team_when_all_done() {
-        let (_d, s, bus) = session();
-        let team = s.convene(&bus, req(&["a", "b"]), 5).unwrap();
-        let ids = ic_ids(&team);
-        s.assign_scope(&bus, &ids[0], vec!["a/".into()], vec![])
-            .unwrap();
-        s.assign_scope(&bus, &ids[1], vec!["b/".into()], vec![])
-            .unwrap();
-        s.begin_build(&bus).unwrap();
-
-        let mid = s.mark_agent_done(&bus, &ids[0]).unwrap();
-        assert!(
-            matches!(mid.phase, TeamPhase::Building),
-            "still building until all done"
-        );
-
-        let end = s.mark_agent_done(&bus, &ids[1]).unwrap();
-        assert!(matches!(end.phase, TeamPhase::Done));
-    }
-
-    #[test]
-    fn cannot_mark_lead_done() {
-        let (_d, s, bus) = session();
-        s.convene(&bus, req(&["a"]), 5).unwrap();
-        assert!(s.mark_agent_done(&bus, LEAD_AGENT_ID).is_err());
-    }
-
-    // ── Phase 4 ───────────────────────────────────────────────────────
-
-    #[test]
-    fn record_review_posts_verdict_and_writes_thread() {
-        let (_d, s, bus) = session();
-        let team = s.convene(&bus, req(&["api", "ui"]), 5).unwrap();
-        let ids = ic_ids(&team);
-        let ev = s
-            .record_review(
-                &bus,
-                &ids[0],
-                &ids[1],
-                ReviewVerdict::ChangesRequested,
-                "missing error handling",
-            )
-            .unwrap();
-        assert!(matches!(ev.kind, ChannelEventKind::ReviewVerdict));
-        assert_eq!(ev.author, ids[0]);
-        // The review thread file exists under integration/reviews/.
-        let reviews = s.workspace().root().join("integration").join("reviews");
-        let entries: Vec<_> = std::fs::read_dir(&reviews).unwrap().flatten().collect();
-        assert_eq!(entries.len(), 1, "one review thread written");
-    }
-
-    #[test]
-    fn gate_pass_then_finish_marks_team_done() {
-        let (_d, s, bus) = session();
-        s.convene(&bus, req(&["api"]), 5).unwrap();
-        s.set_gate_status(
-            &bus,
-            GateStatus::Passed,
-            GateStatus::Passed,
-            GateStatus::Unknown,
-        )
-        .unwrap();
-        let team = s.finish_integration(&bus).unwrap();
-        assert!(matches!(team.phase, TeamPhase::Done));
-        assert!(team
-            .agents
-            .iter()
-            .filter(|a| a.id != LEAD_AGENT_ID)
-            .all(|a| matches!(a.status, AgentStatus::Done)));
-    }
-
-    #[test]
-    fn gate_failure_keeps_team_integrating() {
-        let (_d, s, bus) = session();
-        s.convene(&bus, req(&["api"]), 5).unwrap();
-        s.begin_build(&bus).ok();
-        s.set_gate_status(
-            &bus,
-            GateStatus::Passed,
-            GateStatus::Failed,
-            GateStatus::Passed,
-        )
-        .unwrap();
-        let team = s.finish_integration(&bus).unwrap();
-        assert!(
-            !matches!(team.phase, TeamPhase::Done),
-            "must not finish on a failed gate"
-        );
     }
 }

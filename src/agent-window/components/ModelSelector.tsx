@@ -25,6 +25,8 @@ import { AnimatePresence, motion } from "framer-motion";
 
 import { reasoningIsOn, useSettingsStore, type LLMModel } from "../../store/useSettingsStore";
 import { AgentIcon } from "../shared/AgentIcon";
+import { useAgentChatStore } from "../store/useAgentChatStore";
+import { pinnedThreadModel } from "../lib/thread-model";
 
 interface RichOption {
   providerId: string;
@@ -384,8 +386,26 @@ export const ModelSelector: React.FC<{
   /** True while the open chat's turn is streaming — drives the chip's live
    *  shimmer (name dims + light sweep) and the ring spinning the mode glyph. */
   streaming?: boolean;
-}> = ({ align = "right", streaming = false }) => {
-  const selectedModel = useSettingsStore((s) => s.selectedModel);
+  /**
+   * The conversation this picker belongs to. Omit for the open chat; pass it
+   * explicitly for a composer that isn't the main one (a chat docked in the
+   * side panel), which must show and set ITS thread's model, not the open
+   * chat's. `null` is a draft — no thread yet, so the default applies.
+   */
+  threadId?: string | null;
+}> = ({ align = "right", streaming = false, threadId }) => {
+  const openThreadId = useAgentChatStore((s) => s.currentThreadId);
+  const forThread = threadId === undefined ? openThreadId : threadId;
+  const setThreadModel = useAgentChatStore((s) => s.setThreadModel);
+
+  // The model is a property of the CONVERSATION. The store's `selectedModel` is
+  // only the default a chat falls back to when it has none of its own — reading
+  // it directly is what made every chat display whichever model was picked last
+  // anywhere. See `lib/thread-model`.
+  const defaultModel = useSettingsStore((s) => s.selectedModel);
+  const pinned = useAgentChatStore((s) => pinnedThreadModel(s, forThread));
+  const selectedModel = pinned ?? defaultModel;
+
   const setSelectedModel = useSettingsStore((s) => s.setSelectedModel);
   const providers = useSettingsStore((s) => s.providers);
   const models = useSettingsStore((s) => s.models);
@@ -483,7 +503,11 @@ export const ModelSelector: React.FC<{
     for (const p of providers) emit(p.id);
     for (const id of [...byProvider.keys()]) emit(id); // providers not in the list (defensive)
     return ordered;
-  }, [filtered, providers]);
+    // `selectedModel` is read above (the selected row is lifted into its own
+    // section) and now changes when you switch CHATS, not just when you pick —
+    // omitting it left the previous chat's model lifted out of its provider
+    // group while the new one rendered twice.
+  }, [filtered, providers, selectedModel]);
 
   // "Recent" strip — the last few models actually used, newest first. Hidden
   // while searching (the query owns the list) and never shows a lone duplicate
@@ -570,8 +594,15 @@ export const ModelSelector: React.FC<{
   }, [open]);
 
   const pick = (opt: RichOption) => {
-    setSelectedModel(`${opt.providerId}:${opt.model}`);
-    const next = { ...recent, [`${opt.providerId}:${opt.model}`]: Date.now() };
+    const selection = `${opt.providerId}:${opt.model}`;
+    // Two writes, two different meanings. The conversation is pinned to the
+    // pick (persisted on its own sidecar, so reopening it a week later still
+    // shows this model); the app-wide selection becomes the default the NEXT
+    // new chat inherits, which is what makes "keep using what I just chose"
+    // work without leaking the choice back into existing conversations.
+    if (forThread) void setThreadModel(forThread, selection);
+    setSelectedModel(selection);
+    const next = { ...recent, [selection]: Date.now() };
     setRecent(next);
     try {
       localStorage.setItem(RECENT_KEY, JSON.stringify(next));

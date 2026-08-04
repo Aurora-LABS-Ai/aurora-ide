@@ -132,9 +132,40 @@ pub fn frame_payloads(frame: &str) -> Vec<String> {
     payloads
 }
 
+/// Whether this frame carries the `[DONE]` closing sentinel.
+///
+/// [`frame_payloads`] deliberately swallows `[DONE]` so decoders never try to
+/// parse it as JSON, which also means they cannot tell a stream that ended
+/// properly from one whose connection simply dropped. Stream drivers use this
+/// to record that the provider really did say goodbye — a truncated stream
+/// must surface as an error, not as a completed turn.
+#[must_use]
+pub fn frame_has_done_marker(frame: &str) -> bool {
+    frame.split('\n').any(|line| {
+        let trimmed = line.trim_end_matches('\r');
+        let payload = if let Some(rest) = trimmed.strip_prefix("data: ") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("data:") {
+            rest.trim_start()
+        } else {
+            return false;
+        };
+        payload == "[DONE]"
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn done_marker_is_detected_but_never_yielded_as_a_payload() {
+        assert!(frame_has_done_marker("data: [DONE]"));
+        assert!(frame_has_done_marker("data:[DONE]\r"));
+        assert!(!frame_has_done_marker("data: {\"a\":1}"));
+        // Still filtered out of the decodable payloads.
+        assert!(frame_payloads("data: [DONE]").is_empty());
+    }
 
     #[test]
     fn frame_buffer_splits_on_double_lf() {

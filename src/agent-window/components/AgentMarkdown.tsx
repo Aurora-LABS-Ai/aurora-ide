@@ -125,11 +125,19 @@ const components = {
   pre: PreBlock,
   code: CodeEl,
 
-  a: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
-    <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
-      {children}
-    </a>
-  ),
+  a: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => {
+    // Team-chat @mentions arrive as `[@Name](#mention-<id>)` links (see
+    // `team-ui.prettifyMentions`). They are identity chips, not navigation —
+    // render a chip span, never an anchor.
+    if (href?.startsWith("#mention-")) {
+      return <span className="agw-mention-chip">{children}</span>;
+    }
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+        {children}
+      </a>
+    );
+  },
 };
 
 const AgentMarkdownImpl: React.FC<{

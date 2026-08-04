@@ -323,7 +323,14 @@ export const SkillsSettings: React.FC = () => {
                 { value: "all", label: `All ${counts.all}` },
                 { value: "project", label: `Project ${counts.project}` },
                 { value: "global", label: `Global ${counts.global}` },
-                { value: "builtin", label: `Built-in ${counts.builtin}` },
+                // Aurora ships no built-in skills; its one piece of built-in
+                // guidance is the surface doctrine, which is an instruction
+                // rather than a catalogue entry. The filter appears only if a
+                // build ever reintroduces built-ins, instead of sitting there
+                // permanently reading "Built-in 0".
+                ...(counts.builtin > 0
+                  ? [{ value: "builtin" as const, label: `Built-in ${counts.builtin}` }]
+                  : []),
               ]}
             />
             <AgwButton

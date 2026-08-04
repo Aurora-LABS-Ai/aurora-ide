@@ -65,17 +65,69 @@ pub struct DispatchMember {
     pub scope: Vec<String>,
 }
 
+// ─── member reports (the real "done" signal) ──────────────────────────
+
+/// How a member said its assignment ended. This is the member's own
+/// statement via its `report` tool — not an inference from file counts.
+/// An investigate-only member that changed zero files and reported findings
+/// is `done`; a member that couldn't proceed says `blocked` and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportStatus {
+    Done,
+    Blocked,
+    /// Engine-assigned when the member never filed a report (crashed,
+    /// cancelled, or went silent) — never chosen by the member itself.
+    Failed,
+}
+
+/// One member's final report back to the Lead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberReport {
+    pub agent_id: String,
+    pub role: String,
+    pub status: ReportStatus,
+    /// The member's own words: what it did, what it found, what's left.
+    pub summary: String,
+    /// Repo-relative paths the engine actually saw this member change
+    /// (recorded by the scope gate — authoritative, not self-reported).
+    #[serde(default)]
+    pub changed_files: Vec<String>,
+}
+
+/// Live per-member entry inside the run status — who is working, who is
+/// waiting on the Lead, who finished. Gives `team_status` a real picture.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberRunState {
+    pub id: String,
+    pub role: String,
+    pub status: AgentStatus,
+    pub changed_count: usize,
+}
+
 // ─── team.json ────────────────────────────────────────────────────────
 
 /// Live status of one agent, surfaced in the visible team view (§13).
+///
+/// Mirrors a real teammate's day: `working` at their desk, `waiting_input`
+/// when they asked the boss and are blocked on the answer, `done`/`blocked`
+/// as *their own* report, `failed` when their engine died. Old brains wrote
+/// `planning`/`building`/`reviewing` — those deserialize as [`Self::Working`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
     Idle,
-    Planning,
-    Building,
-    Reviewing,
+    /// Actively executing (was `planning`/`building`/`reviewing`).
+    #[serde(alias = "planning", alias = "building", alias = "reviewing")]
+    Working,
+    /// Paused on a question routed to the real Lead (A2A `input-required`).
+    WaitingInput,
+    /// Reported blocked: it could not complete its assignment and said why.
     Blocked,
+    /// Its engine errored — distinct from an honest `blocked` self-report.
+    Failed,
     Done,
 }
 
@@ -108,13 +160,12 @@ pub struct AgentRecord {
 pub enum TeamPhase {
     /// Roster not yet assembled.
     Forming,
-    /// Convened; standup + scope negotiation in progress.
-    Planning,
-    /// Parallel build under way.
-    Building,
-    /// Peer review + build/lint/test gate.
-    Integrating,
-    /// Work finished and the gate passed.
+    /// Members are executing their assignments (the old three-phase
+    /// `planning`/`building`/`integrating` march collapsed into the one
+    /// phase that actually happens; old brains still deserialize).
+    #[serde(alias = "planning", alias = "building", alias = "integrating")]
+    Working,
+    /// Every member reached a terminal state and reported.
     Done,
     /// Stopped by the Lead (or the user) before completion.
     Disbanded,
@@ -429,8 +480,15 @@ mod tests {
 
     #[test]
     fn agent_status_serializes_snake_case() {
-        let s = serde_json::to_string(&AgentStatus::Building).unwrap();
-        assert_eq!(s, "\"building\"");
+        let s = serde_json::to_string(&AgentStatus::Working).unwrap();
+        assert_eq!(s, "\"working\"");
+        // Old brains wrote the three-phase names — they must still load.
+        for legacy in ["\"planning\"", "\"building\"", "\"reviewing\""] {
+            let back: AgentStatus = serde_json::from_str(legacy).unwrap();
+            assert!(matches!(back, AgentStatus::Working), "{legacy}");
+        }
+        let phase: TeamPhase = serde_json::from_str("\"integrating\"").unwrap();
+        assert!(matches!(phase, TeamPhase::Working));
     }
 
     #[test]

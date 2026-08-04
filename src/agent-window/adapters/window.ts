@@ -127,6 +127,12 @@ export async function openAgentWindow(workspaceRoot?: string | null): Promise<vo
         center: true,
         resizable: true,
         focus: true,
+        // Explicit, not inherited: this is what registers the OS drop target on
+        // the webview, and it is the difference between a file dragged from
+        // Windows Explorer reaching the composer and vanishing. The main window
+        // states it in tauri.conf.json; a window created from JS must say it too
+        // rather than rely on the serde default surviving the config round-trip.
+        dragDropEnabled: true,
         // Frameless — the window renders its own themed titlebar
         // (AgentTitlebar); keep in sync with the Rust agent-mode launch path.
         decorations: false,

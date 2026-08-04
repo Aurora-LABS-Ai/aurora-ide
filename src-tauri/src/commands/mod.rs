@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
@@ -32,6 +32,8 @@ pub mod codex;
 pub mod editor_ops;
 pub mod git;
 pub mod local_providers;
+pub mod plans;
+pub mod project_stats;
 pub mod prompt_refine;
 pub mod provider_catalog;
 pub mod provider_kernel;
@@ -43,6 +45,7 @@ pub mod team;
 pub mod themes;
 pub mod threads;
 pub mod title_maker;
+pub mod todos;
 pub mod tokens;
 pub mod typing_assist;
 pub mod undo_redo;
@@ -63,6 +66,15 @@ pub struct CommandOutput {
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub success: bool,
+    /// The process was killed for exceeding its timeout rather than finishing
+    /// on its own.
+    ///
+    /// `execute_command_stream` keeps whatever the process printed before the
+    /// kill and used to return it as `exit_code: 1, success: false`, which is
+    /// indistinguishable from a real exit-1 failure. Defaulted for
+    /// `Deserialize` so payloads written before this field existed still load.
+    #[serde(default)]
+    pub timed_out: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,10 +115,20 @@ pub struct RipgrepSearchResponse {
     pub error: Option<String>,
     pub files: Option<Vec<String>>,
     pub matches: Option<Vec<RipgrepMatch>>,
+    /// Plain-language note about the result set — what was capped, and the way
+    /// out. Present on truncation and on an empty result; absent otherwise.
+    pub message: Option<String>,
     pub pattern: String,
+    /// How many items the response actually carries, in the unit `max_results`
+    /// capped (matches for `content`, files for the other two modes).
+    pub returned: Option<usize>,
     pub success: bool,
     pub tool: String,
+    /// Total files with matches. Present only when the search ran to completion
+    /// — a truncated search stops just past the cap and never counted them.
     pub total_files: Option<usize>,
+    /// Total matches found. Present only when the search ran to completion; see
+    /// `total_files`. Use `returned` for how much this response carries.
     pub total_matches: Option<usize>,
     pub truncated: Option<bool>,
 }
@@ -591,6 +613,28 @@ fn decode_rg_text(raw: &Value) -> String {
         .to_string()
 }
 
+/// Put a ripgrep-reported path back into the absolute form callers expect.
+///
+/// Searching runs with the search directory as the working directory (so that
+/// slash-bearing globs anchor correctly), which makes ripgrep emit paths like
+/// `.\src\main.rs`. Every consumer of this command — the transcript file chips,
+/// "open in IDE", the review panel — needs a real path, so the relative form is
+/// rejoined to the directory it was relative to. `None` (a single-file search)
+/// leaves the path exactly as ripgrep reported it.
+fn absolutize_rg_path(search_dir: Option<&PathBuf>, reported: String) -> String {
+    let Some(dir) = search_dir else {
+        return reported;
+    };
+    let trimmed = reported
+        .strip_prefix("./")
+        .or_else(|| reported.strip_prefix(".\\"))
+        .unwrap_or(&reported);
+    if trimmed.is_empty() {
+        return dir.to_string_lossy().to_string();
+    }
+    dir.join(trimmed).to_string_lossy().to_string()
+}
+
 fn decode_rg_path(data: &Value) -> Option<String> {
     data.get("path").map(decode_rg_text)
 }
@@ -602,17 +646,80 @@ fn trim_line_endings(value: String) -> String {
         .to_string()
 }
 
+/// Split a comma-separated list of globs into individual `--glob` arguments.
+///
+/// The comma is BOTH our list separator and glob syntax, so this cannot be a
+/// plain `split(',')`. It used to be, and it silently destroyed the single most
+/// natural way to write a multi-extension filter: `**/*.{ts,tsx}` was cut into
+/// `**/*.{ts` and `tsx}`, and ripgrep rejected the first fragment with
+/// "unclosed alternate group; missing '}'". The model had written a correct
+/// glob and the harness broke it before ripgrep ever saw it — so the error read
+/// as the model's fault and no rephrasing could fix it.
+///
+/// Commas are therefore separators only at the top level: inside `{…}`
+/// alternation, inside a `[…]` character class, or after a backslash escape,
+/// they belong to the pattern.
+///
+/// Unbalanced input is passed through rather than repaired. A stray `{` means
+/// the caller's glob is genuinely malformed, and ripgrep's own message names
+/// the problem far better than a guess at what was meant.
 fn parse_glob_patterns(glob: &Option<String>) -> Vec<String> {
-    glob.as_ref()
-        .map(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .filter(|item| !item.is_empty())
-                .map(ToString::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+    let Some(value) = glob.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut patterns: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut brace_depth: usize = 0;
+    let mut in_class = false;
+    let mut escaped = false;
+
+    // Takes both buffers as arguments rather than capturing them, so it needs no
+    // `mut` of its own and never fights the borrow checker mid-loop.
+    let flush = |current: &mut String, patterns: &mut Vec<String>| {
+        let trimmed = current.trim();
+        if !trimmed.is_empty() {
+            patterns.push(trimmed.to_string());
+        }
+        current.clear();
+    };
+
+    for character in value.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => {
+                current.push(character);
+                escaped = true;
+            }
+            '[' if !in_class => {
+                in_class = true;
+                current.push(character);
+            }
+            ']' if in_class => {
+                in_class = false;
+                current.push(character);
+            }
+            '{' if !in_class => {
+                brace_depth += 1;
+                current.push(character);
+            }
+            '}' if !in_class => {
+                brace_depth = brace_depth.saturating_sub(1);
+                current.push(character);
+            }
+            ',' if brace_depth == 0 && !in_class => {
+                flush(&mut current, &mut patterns);
+            }
+            _ => current.push(character),
+        }
+    }
+    flush(&mut current, &mut patterns);
+
+    patterns
 }
 
 fn offset_to_line_column(content: &str, offset: usize) -> (usize, usize) {
@@ -735,7 +842,9 @@ pub async fn ripgrep_search(
             error: Some(crate::sidecar::ripgrep_missing_message()),
             files: None,
             matches: None,
+            message: None,
             pattern,
+            returned: None,
             success: false,
             tool: "grep".to_string(),
             total_files: None,
@@ -749,9 +858,12 @@ pub async fn ripgrep_search(
         .arg("--line-number")
         .arg("--with-filename")
         .arg("--hidden")
-        .arg("--no-messages")
-        .arg("--max-count")
-        .arg(resolved_max_results.to_string());
+        .arg("--no-messages");
+    // NB: deliberately NO `--max-count`. That is ripgrep's PER-FILE limit, and
+    // passing `max_results` to it meant a "200 result" search could collect 200
+    // matches *from every file* — thousands of rows — while `files_with_matches`
+    // and `count` were never bounded at all. The cap is enforced below, on the
+    // unit the caller actually asked to limit, by stopping the read early.
 
     if !is_regex.unwrap_or(true) {
         cmd.arg("--fixed-strings");
@@ -769,8 +881,27 @@ pub async fn ripgrep_search(
         cmd.arg("--glob").arg(pattern);
     }
 
+    // Run IN the search directory with `.` as the operand, rather than passing
+    // the directory as the operand.
+    //
+    // ripgrep anchors a slash-bearing glob (`apps/x/src/**/*.ts`) to the WORKING
+    // DIRECTORY, not to the path operand. Passing an absolute root therefore made
+    // every path-qualified glob match nothing at all, while bare patterns like
+    // `**/*.rs` kept working — a silent empty result set from a tool that looks
+    // perfectly functional. `glob.rs` already ran in the root for exactly this
+    // reason; `grep` never got the same treatment.
+    //
+    // A `path` naming a single FILE keeps the operand form: there is no directory
+    // to run in, and a glob filter over one explicit file is meaningless anyway.
+    let search_dir = Path::new(&path).is_dir().then(|| PathBuf::from(&path));
+    if let Some(dir) = &search_dir {
+        cmd.current_dir(dir);
+    }
     cmd.arg(&pattern)
-        .arg(&path)
+        .arg(match &search_dir {
+            Some(_) => ".",
+            None => path.as_str(),
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -785,127 +916,209 @@ pub async fn ripgrep_search(
             error
         )
     })?;
+    let mut child = child;
     let pid = child.id();
 
-    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(result) => result.map_err(|error| format!("Failed to execute rg: {}", error))?,
-        Err(_) => {
-            if let Some(pid) = pid {
-                let _ = try_kill_pid(pid);
-            }
-
-            return Ok(RipgrepSearchResponse {
-                counts: None,
-                error: Some(format!(
-                    "ripgrep search timed out after {}ms",
-                    timeout.as_millis()
-                )),
-                files: None,
-                matches: None,
-                pattern,
-                success: false,
-                tool: "grep".to_string(),
-                total_files: None,
-                total_matches: None,
-                truncated: None,
-            });
-        }
+    let Some(stdout_pipe) = child.stdout.take() else {
+        return Err("ripgrep produced no stdout pipe".to_string());
     };
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Drain stderr on its own task. Reading stdout to completion while stderr
+    // fills its pipe buffer would deadlock; `wait_with_output` used to handle
+    // that, and streaming stdout means we now own it.
+    let stderr_pipe = child.stderr.take();
+    let stderr_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut collected = Vec::new();
+        if let Some(mut pipe) = stderr_pipe {
+            let _ = pipe.read_to_end(&mut collected).await;
+        }
+        String::from_utf8_lossy(&collected).trim().to_string()
+    });
 
     let mut matches: Vec<RipgrepMatch> = Vec::new();
     let mut files_with_matches: Vec<String> = Vec::new();
     let mut counts_by_file: BTreeMap<String, usize> = BTreeMap::new();
     let mut pending_context_by_file: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut last_match_index_by_file: BTreeMap<String, usize> = BTreeMap::new();
+    // Files ripgrep has finished with — the only point at which that file's
+    // match count is final, since it streams every match before the `end` event.
+    let mut files_completed: usize = 0;
+    let mut truncated = false;
 
-    for line in stdout.lines() {
-        if line.trim().is_empty() {
-            continue;
+    // Have we now collected MORE than the caller asked for? Measured on the unit
+    // the active output mode actually returns, so `max_results` means the same
+    // thing whichever mode is in play. Reading one unit past the cap is what
+    // makes `truncated` an observation rather than a guess: stopping exactly at
+    // the cap could never distinguish "exactly N results" from "N and counting".
+    let over_cap = |matches: &Vec<RipgrepMatch>, files: &Vec<String>, completed: usize| -> bool {
+        match resolved_output_mode.as_str() {
+            "files_with_matches" => files.len() > resolved_max_results,
+            "count" => completed > resolved_max_results,
+            _ => matches.len() > resolved_max_results,
         }
+    };
 
-        let event: Value = serde_json::from_str(line)
-            .map_err(|error| format!("Failed to parse rg output: {}", error))?;
+    let scan = async {
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = tokio::io::BufReader::new(stdout_pipe).lines();
 
-        let event_type = event
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-
-        if event_type == "match" {
-            let Some(data) = event.get("data") else {
+        while let Some(line) = lines
+            .next_line()
+            .await
+            .map_err(|error| format!("Failed to read rg output: {error}"))?
+        {
+            let line = line.as_str();
+            if line.trim().is_empty() {
                 continue;
-            };
+            }
 
-            let Some(file_path) = decode_rg_path(data) else {
-                continue;
-            };
+            let event: Value = serde_json::from_str(line)
+                .map_err(|error| format!("Failed to parse rg output: {}", error))?;
 
-            let line_number = data.get("line_number").and_then(Value::as_u64).unwrap_or(0) as usize;
-
-            let content =
-                trim_line_endings(decode_rg_text(data.get("lines").unwrap_or(&Value::Null)));
-            let pending_context = pending_context_by_file
-                .remove(&file_path)
+            let event_type = event
+                .get("type")
+                .and_then(Value::as_str)
                 .unwrap_or_default();
 
-            if !pending_context.is_empty() {
-                if let Some(previous_match_index) = last_match_index_by_file.get(&file_path) {
-                    if let Some(previous_match) = matches.get_mut(*previous_match_index) {
-                        let updated_after_context = previous_match
-                            .after_context
-                            .clone()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .chain(pending_context.clone().into_iter())
-                            .collect::<Vec<_>>();
-                        previous_match.after_context = Some(updated_after_context);
+            if event_type == "end" {
+                files_completed += 1;
+            }
+
+            if event_type == "match" {
+                let Some(data) = event.get("data") else {
+                    continue;
+                };
+
+                let Some(file_path) = decode_rg_path(data) else {
+                    continue;
+                };
+                let file_path = absolutize_rg_path(search_dir.as_ref(), file_path);
+
+                let line_number =
+                    data.get("line_number").and_then(Value::as_u64).unwrap_or(0) as usize;
+
+                let content =
+                    trim_line_endings(decode_rg_text(data.get("lines").unwrap_or(&Value::Null)));
+                let pending_context = pending_context_by_file
+                    .remove(&file_path)
+                    .unwrap_or_default();
+
+                if !pending_context.is_empty() {
+                    if let Some(previous_match_index) = last_match_index_by_file.get(&file_path) {
+                        if let Some(previous_match) = matches.get_mut(*previous_match_index) {
+                            let updated_after_context = previous_match
+                                .after_context
+                                .clone()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .chain(pending_context.clone().into_iter())
+                                .collect::<Vec<_>>();
+                            previous_match.after_context = Some(updated_after_context);
+                        }
                     }
                 }
+
+                counts_by_file
+                    .entry(file_path.clone())
+                    .and_modify(|count| *count += 1)
+                    .or_insert(1);
+
+                if !files_with_matches.iter().any(|file| file == &file_path) {
+                    files_with_matches.push(file_path.clone());
+                }
+
+                let match_index = matches.len();
+                matches.push(RipgrepMatch {
+                    after_context: None,
+                    before_context: if pending_context.is_empty() {
+                        None
+                    } else {
+                        Some(pending_context)
+                    },
+                    content,
+                    file: file_path.clone(),
+                    line_number,
+                });
+                last_match_index_by_file.insert(file_path, match_index);
             }
 
-            counts_by_file
-                .entry(file_path.clone())
-                .and_modify(|count| *count += 1)
-                .or_insert(1);
+            if event_type == "context" {
+                let Some(data) = event.get("data") else {
+                    continue;
+                };
 
-            if !files_with_matches.iter().any(|file| file == &file_path) {
-                files_with_matches.push(file_path.clone());
+                let Some(file_path) = decode_rg_path(data) else {
+                    continue;
+                };
+                let file_path = absolutize_rg_path(search_dir.as_ref(), file_path);
+
+                let context_content =
+                    trim_line_endings(decode_rg_text(data.get("lines").unwrap_or(&Value::Null)));
+
+                pending_context_by_file
+                    .entry(file_path)
+                    .or_default()
+                    .push(context_content);
             }
 
-            let match_index = matches.len();
-            matches.push(RipgrepMatch {
-                after_context: None,
-                before_context: if pending_context.is_empty() {
-                    None
-                } else {
-                    Some(pending_context)
-                },
-                content,
-                file: file_path.clone(),
-                line_number,
-            });
-            last_match_index_by_file.insert(file_path, match_index);
+            if over_cap(&matches, &files_with_matches, files_completed) {
+                truncated = true;
+                break;
+            }
         }
+        Ok::<(), String>(())
+    };
 
-        if event_type == "context" {
-            let Some(data) = event.get("data") else {
-                continue;
-            };
+    let timed_out = match tokio::time::timeout(timeout, scan).await {
+        Ok(result) => {
+            result?;
+            false
+        }
+        Err(_) => true,
+    };
 
-            let Some(file_path) = decode_rg_path(data) else {
-                continue;
-            };
+    // Stop ripgrep whether we timed out or simply have enough. Without this a
+    // capped search would leave it walking the rest of the tree for nothing.
+    let _ = child.start_kill();
+    if let Some(pid) = pid {
+        let _ = try_kill_pid(pid);
+    }
+    let status = child.wait().await.ok();
+    let stderr = stderr_task.await.unwrap_or_default();
 
-            let context_content =
-                trim_line_endings(decode_rg_text(data.get("lines").unwrap_or(&Value::Null)));
+    if timed_out {
+        return Ok(RipgrepSearchResponse {
+            counts: None,
+            error: Some(format!(
+                "ripgrep search timed out after {}ms — narrow `pattern`, or scope the search with `path` / `glob`",
+                timeout.as_millis()
+            )),
+            files: None,
+            matches: None,
+            message: None,
+            pattern,
+            returned: None,
+            success: false,
+            tool: "grep".to_string(),
+            total_files: None,
+            total_matches: None,
+            truncated: None,
+        });
+    }
 
-            pending_context_by_file
-                .entry(file_path)
-                .or_default()
-                .push(context_content);
+    // Trim the one extra unit that proved there was more to find.
+    if truncated {
+        match resolved_output_mode.as_str() {
+            "files_with_matches" => files_with_matches.truncate(resolved_max_results),
+            "count" => {
+                let keep: Vec<String> = files_with_matches
+                    .iter()
+                    .take(resolved_max_results)
+                    .cloned()
+                    .collect();
+                counts_by_file.retain(|file, _| keep.contains(file));
+            }
+            _ => matches.truncate(resolved_max_results),
         }
     }
 
@@ -929,10 +1142,17 @@ pub async fn ripgrep_search(
     }
 
     let total_matches = counts_by_file.values().sum::<usize>();
-    let truncated = total_matches >= resolved_max_results;
 
-    if !output.status.success() && total_matches == 0 {
-        if output.status.code() == Some(1) {
+    // A killed process has no meaningful exit code, so only trust the status
+    // when we let ripgrep run to completion.
+    let exit_code = if truncated {
+        Some(0)
+    } else {
+        status.and_then(|status| status.code())
+    };
+
+    if exit_code != Some(0) && total_matches == 0 {
+        if exit_code == Some(1) {
             return Ok(RipgrepSearchResponse {
                 counts: if resolved_output_mode == "count" {
                     Some(Vec::new())
@@ -950,7 +1170,13 @@ pub async fn ripgrep_search(
                 } else {
                     None
                 },
+                message: Some(
+                    "No matches. Check the pattern, and widen `glob` / `path` if the files you \
+                     expected were filtered out."
+                        .to_string(),
+                ),
                 pattern,
+                returned: Some(0),
                 success: true,
                 tool: "grep".to_string(),
                 total_files: Some(0),
@@ -970,7 +1196,9 @@ pub async fn ripgrep_search(
             error: Some(error_message),
             files: None,
             matches: None,
+            message: None,
             pattern,
+            returned: None,
             success: false,
             tool: "grep".to_string(),
             total_files: None,
@@ -989,7 +1217,7 @@ pub async fn ripgrep_search(
                     file: file.clone(),
                     count: *count,
                 })
-                .collect(),
+                .collect::<Vec<_>>(),
         )
     } else {
         None
@@ -1002,21 +1230,53 @@ pub async fn ripgrep_search(
     };
 
     let content_matches = if resolved_output_mode == "content" {
-        Some(matches.into_iter().take(resolved_max_results).collect())
+        Some(matches)
     } else {
         None
     };
+
+    // What the caller is actually holding, in the unit they capped.
+    let returned = match resolved_output_mode.as_str() {
+        "files_with_matches" => files.as_ref().map(Vec::len).unwrap_or(0),
+        "count" => counts.as_ref().map(Vec::len).unwrap_or(0),
+        _ => content_matches.as_ref().map(Vec::len).unwrap_or(0),
+    };
+
+    // Truncation has to name itself AND the way out, or the next call is a
+    // guess. Note the totals below are honest about being floors: the search was
+    // stopped early, so nothing here claims to know what the full count was.
+    let message = truncated.then(|| {
+        let unit = match resolved_output_mode.as_str() {
+            "files_with_matches" => "files",
+            "count" => "files",
+            _ => "matches",
+        };
+        format!(
+            "Showing the first {returned} {unit}; more exist. Raise `max_results`, narrow \
+             `pattern`, or scope the search with `path` / `glob`."
+        )
+    });
 
     Ok(RipgrepSearchResponse {
         counts,
         error: None,
         files,
         matches: content_matches,
+        message,
         pattern,
+        returned: Some(returned),
         success: true,
         tool: "grep".to_string(),
-        total_files: Some(total_files),
-        total_matches: Some(total_matches.min(resolved_max_results)),
+        // Totals are reported ONLY for a search that ran to completion.
+        //
+        // A truncated search stops one unit past the cap, so it has no idea what
+        // the real total is — it would say "7" where 240 exist. Reporting that
+        // as a total is the same failure as the old `min(total, cap)` clamp:
+        // a number that looks measured and isn't. `returned` says exactly how
+        // much is in hand and `truncated` says there is more; anything wanting a
+        // true count must raise `max_results` or narrow the search.
+        total_files: (!truncated).then_some(total_files),
+        total_matches: (!truncated).then_some(total_matches),
         truncated: Some(truncated),
     })
 }
@@ -1373,7 +1633,11 @@ pub async fn execute_command(
             if let Some(pid) = pid {
                 let _ = try_kill_pid(pid);
             }
-            return Err(format!("Command timed out after {}ms", timeout.as_millis()));
+            return Err(format!(
+                "Command timed out after {}ms and was killed. Re-run with a larger `timeout` if it \
+                 just needs longer, or start it with shell_spawn if it has no natural end.",
+                timeout.as_millis()
+            ));
         }
     };
 
@@ -1385,6 +1649,7 @@ pub async fn execute_command(
         stderr: crate::shell::text::decode(&output.stderr),
         exit_code: output.status.code(),
         success: output.status.success(),
+        timed_out: false,
     })
 }
 
@@ -1430,6 +1695,12 @@ const SHELL_STREAM_READ_BUF: usize = 16 * 1024;
 /// indistinguishable from a crash, a clean exit, a kill, and a stalled writer,
 /// which leaves a reader to invent whichever one fits its expectations. The
 /// footer removes the guess: the file states how it ended.
+/// Marks the one line in a process log that Aurora wrote rather than the
+/// process. `shell_read_output` keys "has this run ended, and how" off it, so
+/// the prefix lives here next to the code that emits it instead of being
+/// re-spelled at the reader.
+pub const PROCESS_LOG_FOOTER_PREFIX: &str = "[aurora]";
+
 struct ProcessLog {
     file: Option<std::fs::File>,
     /// Whether the next byte starts a line, so the footer never lands glued to
@@ -1473,7 +1744,7 @@ impl ProcessLog {
         let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         let ran = human_duration(started.elapsed());
         self.write(&format!(
-            "{lead}[aurora] {summary} — {stamp}, ran {ran}. No further output.\n"
+            "{lead}{PROCESS_LOG_FOOTER_PREFIX} {summary} — {stamp}, ran {ran}. No further output.\n"
         ));
     }
 }
@@ -1672,6 +1943,10 @@ pub async fn execute_command_stream(
     // fallback meant carrying an unreachable branch that claimed the logs could
     // be incomplete when they cannot.
     let ending: String;
+    // Distinguishes "we killed it for running too long" from "the user or the
+    // agent stopped it" — the two reach the same exit below but mean opposite
+    // things to whoever reads the result.
+    let mut timed_out = false;
 
     loop {
         if let Some(reason) = command_stream_stop(&request_id) {
@@ -1693,6 +1968,7 @@ pub async fn execute_command_stream(
                     format!("Command timed out after {}ms", timeout.as_millis()),
                 );
                 ending = format!("Timed out after {}ms", timeout.as_millis());
+                timed_out = true;
                 break;
             }
             _ = &mut flush_fut => {
@@ -1813,6 +2089,7 @@ pub async fn execute_command_stream(
                     stderr: stderr_buf,
                     exit_code,
                     success: success.unwrap_or(false),
+                    timed_out: false,
                 });
             }
         }
@@ -1849,8 +2126,12 @@ pub async fn execute_command_stream(
     Ok(CommandOutput {
         stdout: stdout_buf,
         stderr: stderr_buf,
-        exit_code: Some(1),
+        // No exit code on a killed process: it never reported one. This used to
+        // claim `Some(1)`, which reads as "the command failed with code 1" and
+        // sent the model off fixing a command that had merely run long.
+        exit_code: None,
         success: false,
+        timed_out,
     })
 }
 
@@ -2538,6 +2819,291 @@ pub fn cli_take_pending_open_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn globs(value: &str) -> Vec<String> {
+        parse_glob_patterns(&Some(value.to_string()))
+    }
+
+    /// The regression this whole function exists for: a comma inside `{…}` is
+    /// glob syntax, not a list separator. Splitting on it handed ripgrep
+    /// `**/*.{ts` and it failed with "unclosed alternate group".
+    #[test]
+    fn brace_alternation_survives_as_one_glob() {
+        assert_eq!(globs("**/*.{ts,tsx}"), vec!["**/*.{ts,tsx}"]);
+        assert_eq!(globs("**/*.{ts,tsx,js,jsx}"), vec!["**/*.{ts,tsx,js,jsx}"]);
+    }
+
+    #[test]
+    fn top_level_commas_still_separate_globs() {
+        assert_eq!(
+            globs("src/**/*.ts, tests/**/*.ts"),
+            vec!["src/**/*.ts", "tests/**/*.ts"],
+        );
+    }
+
+    #[test]
+    fn separates_at_the_top_level_while_preserving_inner_commas() {
+        assert_eq!(
+            globs("src/**/*.{ts,tsx}, docs/**/*.{md,mdx}"),
+            vec!["src/**/*.{ts,tsx}", "docs/**/*.{md,mdx}"],
+        );
+    }
+
+    #[test]
+    fn handles_nested_braces() {
+        assert_eq!(globs("src/{a,b/{c,d}}/*.rs"), vec!["src/{a,b/{c,d}}/*.rs"],);
+    }
+
+    /// A comma inside a character class is a literal comma, not a separator.
+    #[test]
+    fn character_classes_keep_their_commas_and_braces() {
+        assert_eq!(globs("file[a,b].rs"), vec!["file[a,b].rs"]);
+        assert_eq!(globs("weird[{].rs"), vec!["weird[{].rs"]);
+    }
+
+    #[test]
+    fn escaped_characters_are_not_treated_as_syntax() {
+        assert_eq!(globs(r"a\,b.rs"), vec![r"a\,b.rs"]);
+        assert_eq!(globs(r"a\{b,c.rs"), vec![r"a\{b", "c.rs"]);
+    }
+
+    /// Malformed input is forwarded verbatim so ripgrep can name the real
+    /// problem — repairing it here would only guess at the intent.
+    #[test]
+    fn unbalanced_braces_pass_through_untouched() {
+        assert_eq!(globs("**/*.{ts"), vec!["**/*.{ts"]);
+    }
+
+    #[test]
+    fn blank_and_missing_values_yield_no_globs() {
+        assert!(parse_glob_patterns(&None).is_empty());
+        assert!(globs("").is_empty());
+        assert!(globs("   ").is_empty());
+        assert!(globs(" , , ").is_empty());
+    }
+
+    #[test]
+    fn trims_whitespace_around_each_glob() {
+        assert_eq!(
+            globs("  **/*.rs  ,  **/*.toml "),
+            vec!["**/*.rs", "**/*.toml"]
+        );
+    }
+
+    #[test]
+    fn keeps_negated_globs_intact() {
+        assert_eq!(
+            globs("**/*.{ts,tsx}, !**/node_modules/**"),
+            vec!["**/*.{ts,tsx}", "!**/node_modules/**"],
+        );
+    }
+
+    /// Searching runs inside the directory so slash-bearing globs anchor, which
+    /// makes ripgrep report relative paths. Callers still need real ones.
+    #[test]
+    fn rejoins_relative_rg_paths_onto_the_search_directory() {
+        let dir = PathBuf::from("E:/repo");
+        for reported in ["./src/main.rs", ".\\src/main.rs", "src/main.rs"] {
+            let out = absolutize_rg_path(Some(&dir), reported.to_string());
+            assert!(
+                out.starts_with("E:/repo") && out.ends_with("main.rs"),
+                "unexpected {out} for {reported}",
+            );
+        }
+    }
+
+    /// A single-file search keeps the operand form, so its paths are already
+    /// whatever the caller passed in and must not be rewritten.
+    #[test]
+    fn single_file_searches_keep_their_reported_path() {
+        assert_eq!(
+            absolutize_rg_path(None, "E:/repo/src/main.rs".to_string()),
+            "E:/repo/src/main.rs",
+        );
+    }
+
+    #[test]
+    fn a_bare_dot_resolves_to_the_search_directory_itself() {
+        let dir = PathBuf::from("E:/repo");
+        assert_eq!(absolutize_rg_path(Some(&dir), "./".to_string()), "E:/repo");
+    }
+
+    // ---- `max_results` semantics -------------------------------------------
+    //
+    // These run the REAL ripgrep. `max_results` used to be forwarded to
+    // `--max-count`, which is ripgrep's per-FILE limit: asking for 5 results
+    // could collect hundreds, and the reported total was then clamped to the
+    // cap, so the response claimed "5 matches" when thousands existed. Nothing
+    // capped `files_with_matches` or `count` at all.
+
+    fn cap_fixture(name: &str, files: usize, hits_per_file: usize) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("aurora-grep-cap-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        for file in 0..files {
+            let body = (0..hits_per_file)
+                .map(|hit| format!("let needle_{file}_{hit} = 1;"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::write(dir.join(format!("f{file}.rs")), body).expect("fixture file");
+        }
+        dir
+    }
+
+    fn search(dir: &PathBuf, mode: &str, max_results: u32) -> RipgrepSearchResponse {
+        let request = RipgrepSearchRequest {
+            case_insensitive: None,
+            context_lines: None,
+            glob: None,
+            is_regex: Some(false),
+            max_results: Some(max_results),
+            output_mode: Some(mode.to_string()),
+            path: dir.to_string_lossy().to_string(),
+            pattern: "needle_".to_string(),
+            timeout_ms: Some(30_000),
+        };
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(ripgrep_search(request))
+            .expect("search ran")
+    }
+
+    #[test]
+    fn content_mode_caps_total_matches_not_matches_per_file() {
+        // 4 files x 10 hits = 40 matches available; ask for 6.
+        let dir = cap_fixture("content", 4, 10);
+        let response = search(&dir, "content", 6);
+        let matches = response.matches.expect("content mode returns matches");
+
+        assert_eq!(matches.len(), 6, "the cap is a TOTAL, not a per-file limit");
+        assert_eq!(response.returned, Some(6));
+        assert_eq!(response.truncated, Some(true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_truncated_search_names_the_cap_and_the_way_out() {
+        let dir = cap_fixture("message", 4, 10);
+        let response = search(&dir, "content", 6);
+        let message = response.message.expect("truncation explains itself");
+
+        assert!(message.contains("first 6"), "{message}");
+        assert!(message.contains("max_results"), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The old code reported `total_matches.min(max_results)` — the cap itself,
+    /// dressed as a measurement. A truncated search stops one unit past the cap,
+    /// so it genuinely does not know the total; reporting the handful it happened
+    /// to see would repeat the same lie in a new shape. It reports nothing, and
+    /// `returned` + `truncated` carry the truth instead.
+    #[test]
+    fn a_truncated_search_reports_no_total_rather_than_a_fabricated_one() {
+        let dir = cap_fixture("totals", 4, 10);
+        let response = search(&dir, "content", 6);
+
+        assert_eq!(response.truncated, Some(true));
+        assert_eq!(response.returned, Some(6));
+        assert_eq!(
+            response.total_matches, None,
+            "a stopped search must not publish a total it never counted",
+        );
+        assert_eq!(response.total_files, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The complement: a search that finished DOES know, and must say so.
+    #[test]
+    fn a_complete_search_reports_exact_totals() {
+        let dir = cap_fixture("exact-totals", 4, 10);
+        let response = search(&dir, "content", 500);
+
+        assert_eq!(response.truncated, Some(false));
+        assert_eq!(response.total_matches, Some(40));
+        assert_eq!(response.total_files, Some(4));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn files_with_matches_is_capped_too() {
+        let dir = cap_fixture("files", 6, 2);
+        let response = search(&dir, "files_with_matches", 3);
+        let files = response.files.expect("files mode returns files");
+
+        assert_eq!(files.len(), 3);
+        assert_eq!(response.returned, Some(3));
+        assert_eq!(response.truncated, Some(true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn count_mode_is_capped_and_its_counts_stay_whole() {
+        let dir = cap_fixture("counts", 6, 4);
+        let response = search(&dir, "count", 3);
+        let counts = response.counts.expect("count mode returns counts");
+
+        assert_eq!(counts.len(), 3);
+        // A file only appears once ripgrep has finished it, so a capped search
+        // never reports a half-counted file.
+        for entry in &counts {
+            assert_eq!(entry.count, 4, "{} was counted mid-file", entry.file);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_search_that_fits_is_not_marked_truncated() {
+        let dir = cap_fixture("fits", 2, 3);
+        let response = search(&dir, "content", 50);
+
+        assert_eq!(response.returned, Some(6));
+        assert_eq!(response.total_matches, Some(6));
+        assert_eq!(response.truncated, Some(false));
+        assert!(response.message.is_none(), "nothing to explain");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Exactly `max_results` results is a COMPLETE search, not a truncated one.
+    /// Reading one unit past the cap is what makes that distinguishable.
+    #[test]
+    fn landing_exactly_on_the_cap_is_not_truncation() {
+        let dir = cap_fixture("exact", 2, 3);
+        let response = search(&dir, "content", 6);
+
+        assert_eq!(response.returned, Some(6));
+        assert_eq!(response.truncated, Some(false));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_empty_result_explains_itself_rather_than_going_silent() {
+        let dir = cap_fixture("empty", 1, 1);
+        let request = RipgrepSearchRequest {
+            case_insensitive: None,
+            context_lines: None,
+            glob: None,
+            is_regex: Some(false),
+            max_results: Some(10),
+            output_mode: Some("content".to_string()),
+            path: dir.to_string_lossy().to_string(),
+            pattern: "no_such_text_anywhere".to_string(),
+            timeout_ms: Some(30_000),
+        };
+        let response = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(ripgrep_search(request))
+            .expect("search ran");
+
+        assert_eq!(response.success, true);
+        assert_eq!(response.total_matches, Some(0));
+        assert_eq!(response.truncated, Some(false));
+        assert!(response.message.is_some(), "an empty result must say why");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn read_back(log: ProcessLog, path: &std::path::Path) -> String {
         drop(log);

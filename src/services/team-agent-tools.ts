@@ -41,6 +41,8 @@ const TEAM_LEAD_TOOLS = new Set<string>([
   "team_status",
   "team_chat",
   "team_message",
+  "team_reply",
+  "team_grant_scope",
   "team_dispatch",
   "team_remove_agent",
   "team_disband",
@@ -171,7 +173,7 @@ async function runShow(ctx?: TeamToolContext): Promise<string> {
   requestOpenTeamView();
   return JSON.stringify({
     ok: true,
-    message: "Opened the Team screen. The user can watch the team live there.",
+    message: "Opened the Team panel beside the chat. The user can watch the team live there.",
   });
 }
 
@@ -188,6 +190,19 @@ async function runStatus(ctx?: TeamToolContext): Promise<string> {
       goal: run.goal ?? null,
       error: run.error ?? null,
     },
+    // Live per-member states while running; each member's own report once done.
+    members: (run.members ?? []).map((m) => ({
+      id: m.id,
+      role: m.role,
+      status: m.status,
+      changedFiles: m.changedCount,
+    })),
+    reports: (run.reports ?? []).map((r) => ({
+      role: r.role,
+      status: r.status,
+      summary: r.summary,
+      changedFiles: r.changedFiles,
+    })),
     ...summarize(state),
   });
 }
@@ -326,13 +341,11 @@ async function runDispatch(
   const state = await team.dispatchTeam(
     repoPath,
     goal,
+    staffed,
     lead,
     member,
-    workerCap + 1, // total roster incl. the Lead → runtime allows `workerCap` ICs
-    staffed.length,
-    undefined,
+    workerCap + 1, // total roster incl. the Lead → runtime allows `workerCap` members
     origin,
-    staffed,
   );
   const sizeNote =
     staffed.length < members.length
@@ -350,10 +363,9 @@ async function runDispatch(
 }
 
 /**
- * Post a Lead message into the team group chat. The TeamBus persists it to
- * `events.jsonl` and broadcasts it live, and building ICs see the recent chat
- * tail in their team context — so the Lead can steer the team mid-run from
- * the main IDE conversation.
+ * Say something to the team as the Lead: posted in the group chat AND
+ * delivered directly into the working members' live conversations, so they
+ * read it mid-work — real steering, not a note they might never see.
  */
 async function runMessage(
   args: Record<string, unknown>,
@@ -362,16 +374,66 @@ async function runMessage(
   requireTeamEnabled();
   const repoPath = requireRepoPath(ctx);
   const text = requireString(args, "text");
-  await team.postChannelEvent({
-    repoPath,
-    author: "lead",
-    kind: "message",
-    body: text,
-  });
+  const to =
+    typeof args.to === "string" && args.to.trim() !== ""
+      ? args.to.trim()
+      : undefined;
+  const { delivered } = await team.leadMessage(repoPath, text, to);
   return JSON.stringify({
     ok: true,
+    delivered,
     message:
-      "Posted to the team chat. ICs see it in their team context as they work; it's live in the Team screen.",
+      delivered.length > 0
+        ? `Delivered into ${delivered.length} member conversation(s); also posted in the team chat.`
+        : "Posted in the team chat. No member is live right now (the run may have finished), so nobody received it directly.",
+  });
+}
+
+/**
+ * Answer a member's ask_lead question. The member is paused (waiting_input)
+ * until this lands; it resumes immediately with the answer.
+ */
+async function runReply(
+  args: Record<string, unknown>,
+  ctx?: TeamToolContext,
+): Promise<string> {
+  requireTeamEnabled();
+  const repoPath = requireRepoPath(ctx);
+  const questionId = requireString(args, "questionId");
+  const text = requireString(args, "text");
+  const resumed = await team.leadReply(repoPath, questionId, text);
+  return JSON.stringify({
+    ok: true,
+    resumed,
+    message: resumed
+      ? "Answer delivered — the member resumed with it."
+      : "The member had already stopped waiting (timeout); your answer is posted in the team chat where they'll see it.",
+  });
+}
+
+/**
+ * Grant a member write access to additional paths. Structured — the grant
+ * transfers ownership (never overlaps) and is announced in the team chat.
+ */
+async function runGrantScope(
+  args: Record<string, unknown>,
+  ctx?: TeamToolContext,
+): Promise<string> {
+  requireTeamEnabled();
+  const repoPath = requireRepoPath(ctx);
+  const agentId = requireString(args, "agentId");
+  const raw = args.paths;
+  const paths = Array.isArray(raw)
+    ? raw.filter((p): p is string => typeof p === "string" && p.trim() !== "")
+    : [];
+  if (paths.length === 0) {
+    throw new Error("'paths' must name at least one repo-relative path");
+  }
+  const state = await team.grantScope(repoPath, agentId, paths);
+  return JSON.stringify({
+    ok: true,
+    message: `Granted ${paths.join(", ")} to ${agentId}. The team was told in the chat.`,
+    ...summarize(state),
   });
 }
 
@@ -421,6 +483,10 @@ export async function executeTeamLeadTool(
       return runChat(args, ctx);
     case "team_message":
       return runMessage(args, ctx);
+    case "team_reply":
+      return runReply(args, ctx);
+    case "team_grant_scope":
+      return runGrantScope(args, ctx);
     case "team_dispatch":
       return runDispatch(args, ctx);
     case "team_remove_agent":

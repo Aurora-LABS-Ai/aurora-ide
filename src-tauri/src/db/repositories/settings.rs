@@ -110,18 +110,6 @@ impl<'a> SettingsRepository<'a> {
                     settings.team_member_model = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.team_member_model.clone())
                 }
-                "teamGateBuild" => {
-                    settings.team_gate_build = serde_json::from_str(&setting.value)
-                        .unwrap_or(settings.team_gate_build.clone())
-                }
-                "teamGateLint" => {
-                    settings.team_gate_lint = serde_json::from_str(&setting.value)
-                        .unwrap_or(settings.team_gate_lint.clone())
-                }
-                "teamGateTest" => {
-                    settings.team_gate_test = serde_json::from_str(&setting.value)
-                        .unwrap_or(settings.team_gate_test.clone())
-                }
                 "globalInstructions" => {
                     settings.global_instructions = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.global_instructions.clone())
@@ -309,18 +297,6 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting(
             "teamMemberModel",
             &serde_json::to_string(&settings.team_member_model).unwrap_or_default(),
-        )?;
-        self.set_setting(
-            "teamGateBuild",
-            &serde_json::to_string(&settings.team_gate_build).unwrap_or_default(),
-        )?;
-        self.set_setting(
-            "teamGateLint",
-            &serde_json::to_string(&settings.team_gate_lint).unwrap_or_default(),
-        )?;
-        self.set_setting(
-            "teamGateTest",
-            &serde_json::to_string(&settings.team_gate_test).unwrap_or_default(),
         )?;
         self.set_setting(
             "globalInstructions",

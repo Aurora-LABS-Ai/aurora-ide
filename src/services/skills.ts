@@ -84,153 +84,21 @@ export const SKILL_PREVIEW_LINE_COUNT = 5;
 const SKILL_FILE_NAME = "skill.md";
 let cachedGlobalSkillsPath: string | null | undefined;
 
-const BUILTIN_SKILL_BASE: Array<Omit<SkillDefinition, "previewLines" | "storageKey">> = [
-  {
-    id: "project-overview",
-    name: "Project Overview",
-    description: "Map project architecture, entry points, data flow, and where core behavior lives before changing code.",
-    triggers: [
-      "architecture",
-      "codebase",
-      "project overview",
-      "how does this work",
-      "where is",
-      "understand project",
-      "flow",
-    ],
-    source: "builtin",
-    content: `Use this skill when the task is primarily about understanding an unfamiliar codebase.
-
-Focus on:
-- Entry points and runtime flow
-- Store/service/component boundaries
-- Provider and tool integration points
-- Where to make the smallest correct change
-
-Prefer reading a few high-signal files over scanning everything. Summaries should explain where behavior is implemented, not just list files.`,
-  },
-  {
-    id: "typescript",
-    name: "TypeScript",
-    description: "Apply type-safe, idiomatic TypeScript patterns and keep interfaces precise.",
-    triggers: [
-      "typescript",
-      "type-safe",
-      "type safety",
-      "typing",
-      "tsconfig",
-      "zustand",
-      "tsx",
-    ],
-    source: "builtin",
-    content: `Use this skill for TypeScript and TSX work.
-
-Guidelines:
-- Prefer strict types over any-shaped payloads
-- Let inference work when obvious, but model public interfaces explicitly
-- Use async/await and Promise.all where concurrency is safe
-- Keep function contracts narrow and descriptive
-- Avoid adding redundant abstractions for small tasks`,
-  },
-  {
-    id: "react-frontend",
-    name: "React Frontend",
-    description: "Work on React UI, component structure, state flow, and responsive editor/chat surfaces.",
-    triggers: [
-      "react",
-      "frontend",
-      "component",
-      "hook",
-      "ui",
-      "layout",
-      "tailwind",
-      "monaco",
-    ],
-    source: "builtin",
-    content: `Use this skill for React UI changes.
-
-Guidelines:
-- Preserve established component patterns in the repo
-- Keep state colocated unless it is clearly shared app state
-- Respect the centralized theme/token system
-- Prefer small, composable changes over broad rewrites
-- Make mobile and narrow-panel behavior explicit when touching layout`,
-  },
-  {
-    id: "tauri-rust",
-    name: "Tauri Rust Bridge",
-    description: "Handle Tauri IPC, Rust command boundaries, and frontend/backend integration.",
-    triggers: [
-      "tauri",
-      "rust",
-      "src-tauri",
-      "ipc",
-      "invoke",
-      "command",
-      "plugin",
-    ],
-    source: "builtin",
-    content: `Use this skill for Tauri and Rust-backed features.
-
-Guidelines:
-- Trace the full path: frontend service -> invoke() -> Rust command -> backend service
-- Keep TypeScript and Rust payload shapes aligned
-- Prefer additive command changes over breaking existing IPC contracts
-- Be explicit about desktop-only behavior and Tauri runtime assumptions`,
-  },
-  {
-    id: "mcp-integration",
-    name: "MCP Integration",
-    description: "Extend agent capabilities through MCP server registration, naming, approval, and execution flow.",
-    triggers: [
-      "mcp",
-      "model context protocol",
-      "server tools",
-      "tool registry",
-      "marketplace",
-      "external tools",
-    ],
-    source: "builtin",
-    content: `Use this skill when the task involves external tool ecosystems or capability expansion through MCP.
-
-Focus on:
-- Tool discovery and registration
-- Naming and capability summaries
-- Approval and safety behavior
-- Execution flow and result formatting
-
-When comparing MCP and skills, keep clear separation between instruction overlays and executable external tools.`,
-  },
-  {
-    id: "testing-debugging",
-    name: "Testing And Debugging",
-    description: "Drive changes with targeted validation, diagnostics, and bug-oriented reasoning.",
-    triggers: [
-      "test",
-      "tests",
-      "debug",
-      "bug",
-      "failing",
-      "error",
-      "regression",
-      "verify",
-    ],
-    source: "builtin",
-    content: `Use this skill when investigating failures or validating edits.
-
-Guidelines:
-- Reproduce the issue with the narrowest possible signal
-- Prefer existing diagnostics, lints, and tests before adding more instrumentation
-- State what was verified and what remains unverified
-- If behavior is prompt-driven, distinguish prompt guidance from hard enforcement`,
-  },
-];
-
-const BUILTIN_SKILLS: SkillDefinition[] = BUILTIN_SKILL_BASE.map((skill) => ({
-  ...skill,
-  previewLines: extractPreviewLines(skill.content),
-  storageKey: `builtin:${skill.id}`,
-}));
+/**
+ * Aurora ships no built-in *skills*.
+ *
+ * There used to be six here (typescript, react-frontend, tauri-rust,
+ * mcp-integration, …), and they described Aurora's own stack rather than the
+ * projects users open in it — noise in the catalogue the agent searches
+ * whenever the workspace was Python, Go, or anything else.
+ *
+ * The one piece of built-in guidance Aurora does ship is the surface doctrine,
+ * and it is deliberately NOT modelled as a skill: it is a standing instruction,
+ * so it lives in the system prompt (`services/surface-doctrine.ts`) plus the
+ * `design_guidelines` tool, where it cannot be listed, searched, toggled, or
+ * deleted. Skills remain entirely user-owned: project and global.
+ */
+const BUILTIN_SKILLS: SkillDefinition[] = [];
 
 const normalize = (value: string): string => value.trim().toLowerCase();
 

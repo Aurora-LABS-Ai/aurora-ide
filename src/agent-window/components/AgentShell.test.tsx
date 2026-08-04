@@ -3,7 +3,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAgentThemeStore } from "../store/useAgentThemeStore";
-import { useAgentUiStore } from "../store/useAgentUiStore";
 import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
 import { AgentShell } from "./AgentShell";
 
@@ -12,7 +11,6 @@ vi.mock("../hooks/useAgentBrowserOpen", () => ({ useAgentBrowserOpen: vi.fn() })
 vi.mock("./LeftRail", () => ({ LeftRail: () => <div>Rail</div> }));
 vi.mock("./ConversationPane", () => ({ ConversationPane: () => <div>Conversation</div> }));
 vi.mock("./RightDock", () => ({ RightDock: () => <div>Dock</div> }));
-vi.mock("./team/TeamScreen", () => ({ TeamScreen: () => <div>Team</div> }));
 
 class ResizeObserverStub implements ResizeObserver {
   observe() {}
@@ -60,7 +58,6 @@ describe("AgentShell divider drag", () => {
         },
       },
     });
-    useAgentUiStore.setState({ centerView: "chat" });
     useAgentThemeStore.setState({ railGlide: false });
     useAgentWorkspaceStore.setState({
       railOpen: false,

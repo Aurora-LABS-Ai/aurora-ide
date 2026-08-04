@@ -31,12 +31,16 @@ import React, {
 import { LeftRail } from "./LeftRail";
 import { ConversationPane } from "./ConversationPane";
 import { RightDock } from "./RightDock";
-import { TeamScreen } from "./team/TeamScreen";
-import { useAgentUiStore } from "../store/useAgentUiStore";
 import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
 import { useAgentThemeStore } from "../store/useAgentThemeStore";
 import { useAgentFsWatch } from "../hooks/useAgentFsWatch";
 import { useAgentBrowserOpen } from "../hooks/useAgentBrowserOpen";
+import { subscribeToPlanChanges } from "../store/useAgentPlanStore";
+import {
+  subscribeToTodoChanges,
+  useAgentTaskStore,
+} from "../store/useAgentTaskStore";
+import { useAgentChatStore } from "../store/useAgentChatStore";
 
 // Percent-of-shell clamps (mirror the old Panel min/max sizes).
 const RAIL_MIN = 14;
@@ -63,7 +67,6 @@ export const AgentShell: React.FC = () => {
   // Reveal the right-rail Browser panel when a browser_* tool asks for it.
   useAgentBrowserOpen();
 
-  const centerView = useAgentUiStore((s) => s.centerView);
 
   const railOpen = useAgentWorkspaceStore((s) => s.railOpen);
   const railWidth = useAgentWorkspaceStore((s) => s.railWidth);
@@ -94,6 +97,8 @@ export const AgentShell: React.FC = () => {
     return () => ro.disconnect();
   }, []);
 
+  const currentThreadId = useAgentChatStore((s) => s.currentThreadId);
+
   const centerMinPct = shellW > 0 ? Math.min(100, (CENTER_MIN_PX / shellW) * 100) : 0;
   const railMaxForLayout =
     dockOpen && shellW > 0
@@ -123,6 +128,24 @@ export const AgentShell: React.FC = () => {
   // drop it (so a closed dock doesn't retain a code view / native webview).
   const [railMounted, setRailMounted] = useState(railOpen);
   const [dockMounted, setDockMounted] = useState(dockOpen);
+
+  // Plan events are subscribed at the SHELL, not in CanvasPanel. The Canvas is
+  // a dock tab that only mounts once opened, so subscribing there could never
+  // hear the event that is supposed to open it — a plan written while the tab
+  // was closed simply never appeared.
+  useEffect(() => {
+    void subscribeToPlanChanges();
+  }, []);
+  // Same reasoning for the checklist: the task panel is a dock/popover surface,
+  // and a turn running in another chat still has to move its own list.
+  useEffect(() => {
+    void subscribeToTodoChanges();
+  }, []);
+  // Cold start — the list lives on disk, so reopening a conversation shows the
+  // progress the agent actually made rather than an empty panel.
+  useEffect(() => {
+    if (currentThreadId) void useAgentTaskStore.getState().hydrate(currentThreadId);
+  }, [currentThreadId]);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- mount content when the panel opens
     if (railOpen) setRailMounted(true);
@@ -263,7 +286,7 @@ export const AgentShell: React.FC = () => {
           holds the recessed content SHEET (rounded, hairline border). */}
       <div className="agw-center-frame">
         <div className="agw-center-sheet">
-          {centerView === "team" ? <TeamScreen /> : <ConversationPane />}
+          <ConversationPane />
         </div>
       </div>
 

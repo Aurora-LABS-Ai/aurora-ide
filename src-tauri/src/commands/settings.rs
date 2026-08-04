@@ -2,6 +2,7 @@ use std::sync::Mutex;
 use tauri::State;
 
 use crate::db::{AppSettings, Database, LLMProvider, ProviderModel, ToolSetting};
+use crate::launch_prefs::{self, LaunchSurface};
 
 // ============================================================
 // APP SETTINGS COMMANDS
@@ -240,4 +241,25 @@ pub fn save_all_tool_settings(
     db.settings()
         .save_all_tool_settings(&settings)
         .map_err(|e| format!("Failed to save tool settings: {:?}", e))
+}
+
+// ============================================================
+// LAUNCH SURFACE (boot config — NOT the database)
+// ============================================================
+//
+// Which window a bare app-icon launch opens. Unlike every other setting on this
+// page, this one is a JSON file rather than an `app_settings` row, because
+// `run_with_args` must read it before `tauri::Builder` exists — long before the
+// database is initialised. See `launch_prefs` for the full reasoning.
+
+/// Read the surface a bare launch opens. Never fails; defaults to the IDE.
+#[tauri::command]
+pub fn get_launch_surface() -> LaunchSurface {
+    launch_prefs::read()
+}
+
+/// Persist the surface a bare launch opens. Takes effect on the next launch.
+#[tauri::command]
+pub fn set_launch_surface(surface: LaunchSurface) -> Result<(), String> {
+    launch_prefs::write(surface)
 }

@@ -1,6 +1,13 @@
 /**
  * Todo Tool Definitions
  * Tools for managing task lists during AI conversations
+ *
+ * NOT what the agent sees. The Agent Window's model is advertised the Rust
+ * registry's `todo` tool (one tool, `op: set | update | read`); this definition
+ * is `nativeRustOwned`, so `AgentService.buildAvailableTools` strips it before
+ * the request is built and it can never reach a model as a rival `todo_write`.
+ * It survives only for the legacy IDE chat path, which still renders a proposed
+ * list from a `todo_write` call inline (`ToolItem` / `useChatStore`).
  */
 import type { ToolDefinition } from "../types";
 

@@ -47,9 +47,22 @@ impl ToolExecutor for GrepTool {
                     },
                     "is_regex": { "type": "boolean", "default": true },
                     "case_insensitive": { "type": "boolean", "default": false },
-                    "glob": { "type": "string" },
+                    "glob": {
+                        "type": "string",
+                        "description": "Limit the search to matching files, e.g. `**/*.rs`. \
+                                        Brace alternation works (`**/*.{ts,tsx}`), and several \
+                                        globs can be comma-separated (`src/**/*.ts, tests/**/*.ts`). \
+                                        Prefix a glob with `!` to exclude.",
+                    },
                     "context_lines": { "type": "number", "default": 0 },
-                    "max_results": { "type": "number", "default": 50 },
+                    "max_results": {
+                        "type": "number",
+                        "default": 50,
+                        "description": "Maximum results returned in TOTAL — matches for \
+                                        `content`, files for the other modes. When more exist the \
+                                        reply sets `truncated: true` and `message` names the way \
+                                        to narrow or widen the search.",
+                    },
                     "timeout": { "type": "number", "default": 30000 }
                 },
                 "required": ["pattern"],
@@ -232,7 +245,7 @@ mod tests {
                     allow_outside_workspace: false,
                     turn_id: "t".into(),
                     tool_call_id: "c".into(),
-                    session_id: "s".into(),
+                    thread_id: "s".into(),
                     workspace_root: Some(tmp.path().to_path_buf()),
                     cancel_token: CancellationToken::new(),
                 },

@@ -99,8 +99,10 @@ export const agentDark: AgentTheme = {
     scrollThumb: "#80808033",
     scrollThumbHover: "#80808066",
 
-    // elevation
-    shadowPop: "0 8px 24px rgba(0, 0, 0, 0.4)",
+    // elevation — a crisp CONTACT shadow plus a short ambient, not one big
+    // blur: the old 8/24 @ 40% smudge is what made popovers look like they
+    // hovered far above the app instead of sitting on it.
+    shadowPop: "0 1px 2px rgba(0, 0, 0, 0.45), 0 6px 16px rgba(0, 0, 0, 0.32)",
 
     ...SHARED_TYPE,
   },
@@ -153,7 +155,7 @@ export const agentLight: AgentTheme = {
     scrollThumb: "rgba(16, 22, 33, 0.18)",
     scrollThumbHover: "rgba(16, 22, 33, 0.3)",
 
-    shadowPop: "0 8px 24px rgba(16, 22, 33, 0.14)",
+    shadowPop: "0 1px 2px rgba(16, 22, 33, 0.08), 0 6px 16px rgba(16, 22, 33, 0.10)",
 
     ...SHARED_TYPE,
   },

@@ -29,7 +29,14 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   shell_kill: "Stop Background Process",
   shell_list_processes: "List Running Processes",
   shell_spawn: "Start Background Process",
-  todo_write: "Update Task List",
+  // Two separate systems, and the labels must not blur them: "Task List" is the
+  // agent's working checklist, "Plan" is the Plan-mode document in the Canvas.
+  // Without these entries the fallback title-cased them into "Todo" and
+  // "Plan Step Update", which read as internal names.
+  todo: "Task List",
+  plan_write: "Write Plan",
+  plan_read: "Read Plan",
+  plan_step_update: "Plan Progress",
   workspace_tree: "Inspect Workspace",
   ask_question: "Ask the User",
   present_artifact: "Present on Canvas",

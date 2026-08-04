@@ -64,7 +64,12 @@ const TOOL_GERUND: Record<string, string> = {
   shell_kill: "Stopping a process",
   shell_list_processes: "Listing processes",
   auroro_websearch: "Searching the web for",
-  todo_write: "Updating the plan",
+  // "the plan" is a different thing in this product (a Plan-mode document in
+  // the Canvas). This is the working checklist in the window header.
+  todo: "Updating the checklist",
+  plan_write: "Writing the plan",
+  plan_read: "Reading the plan",
+  plan_step_update: "Updating the plan",
   ask_question: "Waiting for your answer",
   present_artifact: "Presenting",
   browser_navigate: "Browsing to",
@@ -88,6 +93,32 @@ const FILE_ICON_TOOLS = new Set([
   "multi_search_replace",
   "editor_open_file",
 ]);
+/** Tools that open a path for reading (so a spilled-output path can appear). */
+const READ_TOOLS = new Set(["file_read", "multi_file_read", "editor_open_file"]);
+
+/**
+ * Does this call target a file the runtime spilled oversized tool output into?
+ *
+ * The runtime writes those to `<thread_id>.tool-results/out-<hash>[-field].txt`
+ * (`session_store::tool_results_dir_in`) and hands the model the path so it can
+ * page through the overflow with `file_read`. That path is Aurora's own
+ * bookkeeping, not the user's project, so it must never surface as a filename.
+ * Matched on the directory segment, which is the stable part of the contract.
+ */
+function spilledOutputPath(
+  args: Record<string, unknown>,
+  streamedPaths: string[],
+): boolean {
+  const candidates = [
+    asStr(args.path),
+    ...(Array.isArray(args.paths) ? args.paths.map((p) => asStr(p)) : []),
+    ...streamedPaths,
+  ];
+  return candidates.some(
+    (p) => !!p && p.replace(/\\/g, "/").includes(".tool-results/"),
+  );
+}
+
 /** Tools whose path arg names a FOLDER → folder icon. */
 const FOLDER_ICON_TOOLS = new Set([
   "folder_create",
@@ -354,6 +385,16 @@ export function describeToolActivity(name: string, argsJson: string): AgentActiv
   }
 
   const verb = TOOL_GERUND[name];
+
+  // Reading back oversized tool output that the runtime spilled to disk
+  // (`<thread_id>.tool-results/out-<hash>.txt`). Showing that filename would
+  // put an internal temp path in the transcript and read as if the agent were
+  // opening a project file called `out-b6179211-content.txt` — it is neither a
+  // real file the user has nor a name that means anything to them. Say what is
+  // actually happening instead, with no file chip to click.
+  if (READ_TOOLS.has(name) && spilledOutputPath(args, streamedPaths)) {
+    return { label: "Reading tool output", verb: verb ?? "Reading" };
+  }
 
   // Named file/folder target → the header shows its icon inline.
   const targets = targetsOf(name, args, streamedPaths);

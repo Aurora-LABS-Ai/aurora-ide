@@ -27,8 +27,8 @@ import { auroraInvoke, auroraListen } from "../../lib/runtime";
 import { cancelCommandStream } from "../../lib/tauri";
 import { useAgentChatStore } from "../store/useAgentChatStore";
 import {
-  runningEverywhere,
   useAgentBackgroundStore,
+  visibleProcesses,
   type BackgroundProcess,
   type BackgroundSettle,
 } from "../store/useAgentBackgroundStore";
@@ -425,8 +425,19 @@ const ProcessRow: React.FC<{
   );
 };
 
-export const BackgroundTaskDock: React.FC = () => {
-  const threadId = useAgentChatStore((s) => s.currentThreadId);
+export const BackgroundTaskDock: React.FC<{
+  /**
+   * `dock` — the collapsible card above the composer. `popover` — body only,
+   * always expanded: the composer rail's chip owns open/closed and paints the
+   * surface, so the collapse control would be a lid on a closed box.
+   */
+  variant?: "dock" | "popover";
+  /** The conversation whose processes this lists. Omit for the open chat. */
+  threadId?: string | null;
+}> = ({ variant = "dock", threadId: boundThreadId }) => {
+  const inPopover = variant === "popover";
+  const openThreadId = useAgentChatStore((s) => s.currentThreadId);
+  const threadId = boundThreadId === undefined ? openThreadId : boundThreadId;
   const byThread = useAgentBackgroundStore((s) => s.byThread);
   const dismiss = useAgentBackgroundStore((s) => s.dismiss);
   const settle = useAgentBackgroundStore((s) => s.settle);
@@ -436,21 +447,14 @@ export const BackgroundTaskDock: React.FC = () => {
   useLedgerReconcile(threadId);
 
   /**
-   * This thread's own rows, plus every running process from any thread.
-   *
-   * The union is the fix for the orphaning bug: scoping the dock to
-   * `byThread[currentThreadId]` meant switching project hid a live dev server
-   * and took its stop button with it. Something still running is always
-   * reachable; finished rows stay where they happened.
+   * This thread's own rows, plus every running process from any thread — see
+   * `visibleProcesses`, which the composer rail's chip count shares so the
+   * badge can never disagree with the list it opens.
    */
-  const processes = useMemo(() => {
-    const mine = threadId ? (byThread[threadId] ?? []) : [];
-    const seen = new Set(mine.map((entry) => entry.processId));
-    const elsewhere = runningEverywhere(byThread).filter(
-      (entry) => !seen.has(entry.processId),
-    );
-    return [...mine, ...elsewhere];
-  }, [byThread, threadId]);
+  const processes = useMemo(
+    () => visibleProcesses(byThread, threadId),
+    [byThread, threadId],
+  );
 
   const { running, active } = useMemo(
     () => ({
@@ -462,32 +466,53 @@ export const BackgroundTaskDock: React.FC = () => {
 
   if (!threadId || processes.length === 0) return null;
 
+  const rows = (
+    <ul className="agw-tasks-list">
+      {processes.map((process) => (
+        <ProcessRow
+          key={process.processId}
+          process={process}
+          threadId={threadId}
+        />
+      ))}
+    </ul>
+  );
+
   return (
-    <div className="agw-dock-card agw-tasks">
+    <div className={inPopover ? "agw-crail-panel" : "agw-dock-card agw-tasks"}>
       <div className="agw-tasks-head">
-        <button
-          type="button"
-          className="agw-tasks-toggle"
-          aria-expanded={!collapsed}
-          onClick={() => setCollapsed((value) => !value)}
-        >
-          {/* The running process's name earns the header only while the rows
-              are hidden. With the list open it would just repeat the row
-              directly beneath it. */}
-          <span className="agw-tasks-title">
-            {collapsed && active ? active.title : "Background processes"}
+        {inPopover ? (
+          <span className="agw-tasks-toggle" data-static>
+            <span className="agw-tasks-title">Background processes</span>
+            <span className="agw-tasks-count">
+              {running}/{processes.length}
+            </span>
           </span>
-          <span className="agw-tasks-count">
-            {running}/{processes.length}
-          </span>
-          <span
-            className="agw-tasks-chev"
-            data-collapsed={collapsed || undefined}
-            aria-hidden
+        ) : (
+          <button
+            type="button"
+            className="agw-tasks-toggle"
+            aria-expanded={!collapsed}
+            onClick={() => setCollapsed((value) => !value)}
           >
-            <AgentIcon name="chevron-down" size={14} />
-          </span>
-        </button>
+            {/* The running process's name earns the header only while the rows
+                are hidden. With the list open it would just repeat the row
+                directly beneath it. */}
+            <span className="agw-tasks-title">
+              {collapsed && active ? active.title : "Background processes"}
+            </span>
+            <span className="agw-tasks-count">
+              {running}/{processes.length}
+            </span>
+            <span
+              className="agw-tasks-chev"
+              data-collapsed={collapsed || undefined}
+              aria-hidden
+            >
+              <AgentIcon name="chevron-down" size={14} />
+            </span>
+          </button>
+        )}
         {/* Clears the finished rows and leaves anything still running — a
             dismiss that silently orphaned a live process would be a way to
             lose one. */}
@@ -506,28 +531,24 @@ export const BackgroundTaskDock: React.FC = () => {
         </button>
       </div>
 
-      <AnimatePresence initial={false}>
-        {!collapsed && (
-          <motion.div
-            key="body"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.18, ease: "easeOut" }}
-            style={{ overflow: "hidden" }}
-          >
-            <ul className="agw-tasks-list">
-              {processes.map((process) => (
-                <ProcessRow
-                  key={process.processId}
-                  process={process}
-                  threadId={threadId}
-                />
-              ))}
-            </ul>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {inPopover ? (
+        <div className="agw-crail-panel-body agw-scroll">{rows}</div>
+      ) : (
+        <AnimatePresence initial={false}>
+          {!collapsed && (
+            <motion.div
+              key="body"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+              style={{ overflow: "hidden" }}
+            >
+              {rows}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      )}
     </div>
   );
 };

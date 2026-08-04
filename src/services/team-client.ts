@@ -15,18 +15,12 @@
 import { auroraInvoke, auroraListen, isAuroraRuntimeAvailable } from "../lib/runtime";
 import type { ProviderConfigSnapshot } from "./agent-runtime-client";
 import type {
-  AgentSpec,
-  AgentStatus,
   AgentTurn,
   ChannelEvent,
   ChannelEventKind,
-  ConveneRequest,
   DispatchMember,
-  GateCommands,
-  GateStatus,
-  ReviewVerdict,
+  LeadQuestion,
   ScopeDecision,
-  TaskStatus,
   TeamDispatchOrigin,
   TeamEventPayload,
   TeamProjectState,
@@ -130,45 +124,9 @@ export async function postChannelEvent(
   });
 }
 
-// ─── Lead team-control surface (Phase 2a) ─────────────────────────────
-//
-// These wrap the Rust `TeamSession` commands. Each returns a fresh
-// `TeamProjectState` snapshot so a store can replace its state in one
-// shot; lifecycle changes also arrive live via {@link subscribeTeamEvents}.
+// ─── Lead control surface ─────────────────────────────────────────────
 
-/**
- * Convene the team: seed the roster (Lead + clamped ICs) and enter the
- * Planning phase. `maxSize` is the user's configured ceiling (from
- * settings); the runtime clamps it again to the hard ceiling of 16.
- */
-export async function convene(
-  repoPath: string,
-  request: ConveneRequest,
-  maxSize: number,
-): Promise<TeamProjectState> {
-  requireRuntime("convene");
-  return auroraInvoke<TeamProjectState>("team_convene", {
-    repoPath,
-    request,
-    maxSize,
-  });
-}
-
-/** Add one IC to the running team (rejected if it would exceed `maxSize`). */
-export async function addAgent(
-  repoPath: string,
-  agent: AgentSpec,
-  maxSize: number,
-): Promise<TeamProjectState> {
-  requireRuntime("addAgent");
-  return auroraInvoke<TeamProjectState>("team_add_agent", {
-    repoPath,
-    agent,
-    maxSize,
-  });
-}
-
-/** Remove/dismiss an IC; its scope is released and its tasks unassigned. */
+/** Remove/dismiss a member; its scope is released and its tasks unassigned. */
 export async function removeAgent(
   repoPath: string,
   agentId: string,
@@ -180,159 +138,15 @@ export async function removeAgent(
   });
 }
 
-/** Stop the whole team run (soft stop → Disbanded; brain stays on disk). */
+/** Stop the whole team run (graceful cancel → Disbanded; brain stays on disk). */
 export async function disbandTeam(repoPath: string): Promise<TeamProjectState> {
   requireRuntime("disbandTeam");
   return auroraInvoke<TeamProjectState>("team_disband", { repoPath });
 }
 
-/** Update one agent's live status (reflected on the next state read). */
-export async function setAgentStatus(
-  repoPath: string,
-  agentId: string,
-  status: AgentStatus,
-): Promise<TeamProjectState> {
-  requireRuntime("setAgentStatus");
-  return auroraInvoke<TeamProjectState>("team_set_agent_status", {
-    repoPath,
-    agentId,
-    status,
-  });
-}
-
 /**
- * Authoritatively (re)assign folder ownership to an agent, keeping the
- * partition non-overlapping (§8).
- */
-export async function assignScope(
-  repoPath: string,
-  agentId: string,
-  ownedPaths: string[],
-  ownedContracts?: string[],
-): Promise<TeamProjectState> {
-  requireRuntime("assignScope");
-  return auroraInvoke<TeamProjectState>("team_assign_scope", {
-    repoPath,
-    agentId,
-    ownedPaths,
-    ownedContracts,
-  });
-}
-
-/** Push a ticket onto the board for an owner (or unassigned). */
-export async function assignTask(
-  repoPath: string,
-  title: string,
-  owner?: string,
-  dependsOn?: string[],
-): Promise<TeamProjectState> {
-  requireRuntime("assignTask");
-  return auroraInvoke<TeamProjectState>("team_assign_task", {
-    repoPath,
-    title,
-    owner,
-    dependsOn,
-  });
-}
-
-/** Update a task's status. */
-export async function setTaskStatus(
-  repoPath: string,
-  taskId: string,
-  status: TaskStatus,
-): Promise<TeamProjectState> {
-  requireRuntime("setTaskStatus");
-  return auroraInvoke<TeamProjectState>("team_set_task_status", {
-    repoPath,
-    taskId,
-    status,
-  });
-}
-
-// ─── Live planning round (Phase 2b) ───────────────────────────────────
-
-/**
- * Run the live planning round: the Lead proposes a team + non-overlapping
- * scope partition + seeded board via real model calls, then each IC runs a
- * one-shot standup turn. Lifecycle events stream live via
- * {@link subscribeTeamEvents} as the round progresses; the resolved
- * `TeamProjectState` is the settled brain once planning completes.
- *
- * The Lead and the IC team can ride **different** configured providers:
- *
- *   - `leadProviderConfig` drives the Lead's planning call.
- *   - `teamProviderConfig` drives every IC standup.
- *
- * Build them from the user's Team settings with
- * `AgentRuntimeClient.buildProviderConfigSnapshot(getTeamLeadConfig())` and
- * `…(getTeamMemberConfig())`. When the user hasn't overridden either, both
- * resolve to the active chat model, so the team rides the chat provider by
- * default.
- */
-export async function runPlanning(
-  repoPath: string,
-  goal: string,
-  leadProviderConfig: ProviderConfigSnapshot,
-  teamProviderConfig: ProviderConfigSnapshot,
-  maxSize: number,
-  desiredIcs?: number,
-): Promise<TeamProjectState> {
-  requireRuntime("runPlanning");
-  return auroraInvoke<TeamProjectState>("team_run_planning", {
-    repoPath,
-    goal,
-    leadProviderConfig,
-    teamProviderConfig,
-    maxSize,
-    desiredIcs: desiredIcs ?? null,
-  });
-}
-
-// ─── Parallel build + scope enforcement (Phase 3) ─────────────────────
-//
-// These drive the build phase (§9 step 3) and enforce the scope partition
-// (§8). The mutations return a fresh snapshot; `checkScope` is read-only and
-// returns only its decision.
-
-/**
- * Start the parallel build: move the team into the Building phase and flip
- * every scoped IC to `building` (§9). Rejected on a disbanded team.
- */
-export async function beginBuild(repoPath: string): Promise<TeamProjectState> {
-  requireRuntime("beginBuild");
-  return auroraInvoke<TeamProjectState>("team_begin_build", { repoPath });
-}
-
-/**
- * Run the full parallel build round: flip the team to Building, then drive
- * each scoped IC through a guarded tool-calling loop that edits **only** its
- * owned files in the real repo (§8/§9). Per-IC summaries + lifecycle events
- * arrive live via {@link subscribeTeamEvents}; the resolved snapshot is the
- * settled brain (Integrating once every IC finishes).
- *
- * `teamProviderConfig` is the provider every IC runs on — build it from the
- * user's Team settings with
- * `AgentRuntimeClient.buildProviderConfigSnapshot(getTeamMemberConfig())`
- * (defaults to the active chat model when not overridden).
- */
-export async function runBuild(
-  repoPath: string,
-  goal: string,
-  teamProviderConfig: ProviderConfigSnapshot,
-): Promise<TeamProjectState> {
-  requireRuntime("runBuild");
-  return auroraInvoke<TeamProjectState>("team_run_build", {
-    repoPath,
-    goal,
-    teamProviderConfig,
-  });
-}
-
-/**
- * Ask the scope write-guard whether `agentId` may write `path` against the
- * current ownership partition (§8). Read-only — no brain mutation. The build
- * runner runs this before letting an IC's write land; the team view uses it
- * to explain a refused edit.
+ * Ask the scope write-guard whether `agentId` may write `path` (read-only —
+ * the Team view uses it to explain a refused edit).
  */
 export async function checkScope(
   repoPath: string,
@@ -348,136 +162,66 @@ export async function checkScope(
 }
 
 /**
- * Raise a boundary question from one agent to a scope owner (§8). Persisted
- * + broadcast on the team channel as a `boundary_question`.
+ * The Lead grants a member write access to additional paths — structured,
+ * no magic text directives. The partition stays non-overlapping and the
+ * grant is posted to the team chat.
  */
-export async function askBoundary(
-  repoPath: string,
-  fromAgent: string,
-  toOwner: string,
-  question: string,
-): Promise<TeamProjectState> {
-  requireRuntime("askBoundary");
-  return auroraInvoke<TeamProjectState>("team_ask_boundary", {
-    repoPath,
-    fromAgent,
-    toOwner,
-    question,
-  });
-}
-
-/**
- * Publish a shared interface other agents can depend on (§8). Recorded under
- * the author's `ownedContracts` and posted as a `contract_published`.
- */
-export async function publishContract(
+export async function grantScope(
   repoPath: string,
   agentId: string,
-  name: string,
-  body: string,
+  paths: string[],
 ): Promise<TeamProjectState> {
-  requireRuntime("publishContract");
-  return auroraInvoke<TeamProjectState>("team_publish_contract", {
+  requireRuntime("grantScope");
+  return auroraInvoke<TeamProjectState>("team_grant_scope", {
     repoPath,
     agentId,
-    name,
-    body,
+    paths,
   });
 }
 
 /**
- * Mark an IC finished. When every IC is done, the team closes and the Lead
- * receives the worker reports.
+ * Post a Lead message to the team chat AND deliver it into the live
+ * members' conversations (all, or one via `to`). Returns the member ids
+ * actually reached.
  */
-export async function markAgentDone(
+export async function leadMessage(
   repoPath: string,
-  agentId: string,
-): Promise<TeamProjectState> {
-  requireRuntime("markAgentDone");
-  return auroraInvoke<TeamProjectState>("team_mark_agent_done", {
+  text: string,
+  to?: string,
+): Promise<{ delivered: string[] }> {
+  requireRuntime("leadMessage");
+  return auroraInvoke<{ delivered: string[] }>("team_lead_message", {
     repoPath,
-    agentId,
-  });
-}
-
-// ─── Phase 4: integration & peer review ───────────────────────────────
-//
-// The review/gate mutations return a fresh snapshot; `runIntegration` drives
-// the whole gate (review round + build/lint/test) and streams as it goes (§9
-// step 5, §14).
-
-/**
- * Record one agent's peer-review verdict on another's work (§9 step 5).
- * Persists a thread under `integration/reviews/` and posts a `review_verdict`.
- */
-export async function recordReview(
-  repoPath: string,
-  reviewer: string,
-  target: string,
-  verdict: ReviewVerdict,
-  comments: string,
-): Promise<TeamProjectState> {
-  requireRuntime("recordReview");
-  return auroraInvoke<TeamProjectState>("team_record_review", {
-    repoPath,
-    reviewer,
-    target,
-    verdict,
-    comments,
+    text,
+    to: to ?? null,
   });
 }
 
 /**
- * Record the integration gate result to `integration/status.json` and post a
- * Lead summary (§9 step 5, §14).
+ * Questions members routed to the real Lead and are waiting on
+ * (input-required). The notifier polls this and injects each question into
+ * the Lead's conversation exactly once.
  */
-export async function setGateStatus(
-  repoPath: string,
-  build: GateStatus,
-  lint: GateStatus,
-  test: GateStatus,
-): Promise<TeamProjectState> {
-  requireRuntime("setGateStatus");
-  return auroraInvoke<TeamProjectState>("team_set_gate_status", {
-    repoPath,
-    build,
-    lint,
-    test,
-  });
+export async function leadInbox(repoPath: string): Promise<LeadQuestion[]> {
+  requireRuntime("leadInbox");
+  return auroraInvoke<LeadQuestion[]>("team_lead_inbox", { repoPath });
 }
 
 /**
- * Close the integration phase: move the team to `done` when no gate failed,
- * else keep it integrating (§14).
+ * The Lead answers a member's parked question. The waiting member resumes
+ * immediately; the answer is also posted to the team chat. Resolves false
+ * when the member already stopped waiting (the chat post still lands).
  */
-export async function finishIntegration(
+export async function leadReply(
   repoPath: string,
-): Promise<TeamProjectState> {
-  requireRuntime("finishIntegration");
-  return auroraInvoke<TeamProjectState>("team_finish_integration", {
+  questionId: string,
+  text: string,
+): Promise<boolean> {
+  requireRuntime("leadReply");
+  return auroraInvoke<boolean>("team_lead_reply", {
     repoPath,
-  });
-}
-
-/**
- * Run the full integration & peer-review gate (§9 step 5, §14): a round-robin
- * review pass plus the build/lint/test gate, then the Lead's finish. Verdicts,
- * gate results, and the wrap-up stream live on `team_event`; resolves to the
- * settled brain (`done` when the gate passes).
- *
- * `teamProviderConfig` drives the review calls; `gate` carries the opt-in
- * shell commands (an omitted command leaves that gate `unknown`).
- */
-export async function runIntegration(
-  repoPath: string,
-  teamProviderConfig: ProviderConfigSnapshot,
-  gate?: GateCommands,
-): Promise<TeamProjectState> {
-  requireRuntime("runIntegration");
-  return auroraInvoke<TeamProjectState>("team_run_integration", {
-    repoPath,
-    teamProviderConfig,
-    gate: gate ?? null,
+    questionId,
+    text,
   });
 }
 
@@ -490,36 +234,30 @@ export async function runIntegration(
 // context every message.
 
 /**
- * Dispatch the assigned worker run in the background. Resolves to the current
- * (just-scaffolded) brain snapshot WITHOUT waiting for the run — the team works
- * on its own engine while the Lead keeps chatting. Progress streams live via
- * {@link subscribeTeamEvents}; the outcome is read from {@link getRunStatus}.
- *
- * `desiredIcs` is kept for IPC compatibility; assigned `members` define the
- * actual workers. Rejected (throws) if a run is already in progress for this
- * workspace.
+ * Dispatch the Lead-defined team in the background. Resolves to the current
+ * (just-reset) brain snapshot WITHOUT waiting for the run — each member runs
+ * as a real agent on its own task while the Lead keeps chatting. Progress
+ * streams live via {@link subscribeTeamEvents}; the outcome (per-member
+ * reports included) is read from {@link getRunStatus}. Rejected (throws) if
+ * a run is already in progress for this workspace.
  */
 export async function dispatchTeam(
   repoPath: string,
   goal: string,
+  members: DispatchMember[],
   leadProviderConfig: ProviderConfigSnapshot,
   teamProviderConfig: ProviderConfigSnapshot,
   maxSize: number,
-  desiredIcs?: number,
-  gate?: GateCommands,
   origin?: TeamDispatchOrigin,
-  members?: DispatchMember[],
 ): Promise<TeamProjectState> {
   requireRuntime("dispatchTeam");
   return auroraInvoke<TeamProjectState>("team_dispatch", {
     repoPath,
     goal,
-    members: members ?? null,
+    members,
     leadProviderConfig,
     teamProviderConfig,
     maxSize,
-    desiredIcs: desiredIcs ?? null,
-    gate: gate ?? null,
     originThreadId: origin?.originThreadId ?? null,
     originSurface: origin?.originSurface ?? null,
   });

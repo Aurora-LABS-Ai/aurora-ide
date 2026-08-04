@@ -34,14 +34,16 @@ export type TimelineEvent =
   | { kind: "content"; id: string; text: string }
   | { kind: "tool"; id: string; call: ToolCall }
   | { kind: "user_injection"; id: string; text: string }
-  | { kind: "compaction"; id: string; beforeTokens: number; afterTokens: number; running: boolean };
+  | { kind: "compaction"; id: string; beforeTokens: number; afterTokens: number; running: boolean }
+  | { kind: "notice"; id: string; text: string };
 
 export type TimelineRow =
   | { type: "thinking"; id: string; text: string }
   | { type: "content"; id: string; text: string }
   | { type: "tools"; id: string; tools: ToolCall[] }
   | { type: "user_injection"; id: string; text: string }
-  | { type: "compaction"; id: string; beforeTokens: number; afterTokens: number; running: boolean };
+  | { type: "compaction"; id: string; beforeTokens: number; afterTokens: number; running: boolean }
+  | { type: "notice"; id: string; text: string };
 
 export interface AgwTurn {
   id: string;
@@ -64,6 +66,56 @@ export interface AgwTurn {
    * The summary itself is never carried to the UI.
    */
   compaction?: { beforeTokens: number; afterTokens: number; running: boolean };
+  /**
+   * Assistant only — when the work started, i.e. the timestamp of the user
+   * message that prompted this turn. Paired with {@link AgwTurn.endedAt} it
+   * gives the wall-clock the agent spent on this turn.
+   */
+  startedAt?: string;
+  /** Assistant only — timestamp of the last message merged into this turn. */
+  endedAt?: string;
+}
+
+const parseTs = (value: string | undefined): number | null => {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+};
+
+/**
+ * Wall-clock the agent spent on one assistant turn, in ms.
+ *
+ * Derived from timestamps the runtime already persists on every message, so
+ * this is correct for reloaded history as well as a live turn — nothing extra
+ * is recorded.
+ *
+ * `null` when the turn has no usable span (a turn with no preceding user
+ * message, or clock values that would produce a negative duration).
+ */
+export function turnWorkedMs(turn: AgwTurn): number | null {
+  if (turn.role !== "assistant") return null;
+  const start = parseTs(turn.startedAt);
+  const end = parseTs(turn.endedAt);
+  if (start === null || end === null) return null;
+  const span = end - start;
+  return span > 0 ? span : null;
+}
+
+/**
+ * Compact duration label: `12s`, `4m`, `1h 4m`.
+ *
+ * Sub-second work reads as `<1s` rather than `0s` — a turn that ran at all
+ * should never claim it took no time.
+ */
+export function formatWorkedDuration(ms: number): string {
+  if (ms < 1000) return "<1s";
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
 }
 
 let seq = 0;
@@ -96,6 +148,17 @@ export function appendContent(tl: TimelineEvent[], text: string): TimelineEvent[
  *  the note appears exactly where the model saw it. */
 export function appendUserInjection(tl: TimelineEvent[], text: string): TimelineEvent[] {
   return [...tl, { kind: "user_injection", id: nextEventId(), text }];
+}
+
+/** Append a runtime notice (e.g. "the reply was cut off at the output limit")
+ *  at the CURRENT point in the assistant timeline. It sits inline, in its own
+ *  marker — never folded into the message text, because a limit the RUNTIME
+ *  hit is not something the model said. Deduped against the last event so a
+ *  repeated notice within one turn doesn't stack. */
+export function appendNotice(tl: TimelineEvent[], text: string): TimelineEvent[] {
+  const last = tl[tl.length - 1];
+  if (last?.kind === "notice" && last.text === text) return tl;
+  return [...tl, { kind: "notice", id: nextEventId(), text }];
 }
 
 /** Append a compaction marker at the CURRENT point in the assistant timeline,
@@ -156,6 +219,10 @@ function eventsOf(m: DbMessage): TimelineEvent[] {
 /** Collapse the flat message list into render turns (assistant runs merged). */
 export function buildTurns(messages: DbMessage[]): AgwTurn[] {
   const turns: AgwTurn[] = [];
+  // The user message that prompted the current assistant run. An assistant
+  // turn's clock starts when the user asked, not when the first token landed —
+  // otherwise queueing and model latency vanish from the number.
+  let lastUserTs: string | undefined;
   for (const m of messages) {
     if (m.role === "compaction") {
       // Inline compaction marker. `content` is a small JSON of counts +
@@ -182,7 +249,23 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
       });
       continue;
     }
+    if (m.role === "notice") {
+      // A persisted runtime notice ("this reply is cut off at the output
+      // limit"). It describes the assistant turn it follows, so fold it into
+      // that turn's events — identical placement to the live path, which
+      // appends it to the streaming message's timeline. Only when there is no
+      // assistant turn to attach to does it stand alone.
+      const host = turns[turns.length - 1];
+      if (host && host.role === "assistant") {
+        host.events.push({ kind: "notice", id: m.id, text: m.content || "" });
+      }
+      // No assistant turn to describe (a truncated first turn that never
+      // persisted): drop it rather than let it fall through and render as an
+      // assistant bubble containing product copy.
+      continue;
+    }
     if (m.role === "user") {
+      lastUserTs = m.timestamp;
       turns.push({
         id: m.id,
         role: "user",
@@ -202,6 +285,9 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
       }
       prev.events.push(...eventsOf(m));
       prev.isThinking = m.isThinking ?? prev.isThinking;
+      // Consecutive assistant messages are one turn, so the clock runs to the
+      // LAST of them rather than stopping at the first reply.
+      if (m.timestamp) prev.endedAt = m.timestamp;
     } else {
       turns.push({
         id: m.id,
@@ -209,6 +295,8 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
         content: m.content || "",
         events: eventsOf(m),
         isThinking: !!m.isThinking,
+        startedAt: lastUserTs,
+        endedAt: m.timestamp,
       });
     }
   }
@@ -216,6 +304,31 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
 }
 
 /** Group consecutive tool events into one row; text/thinking break the run. */
+/**
+ * Tool calls that render NOTHING in the transcript.
+ *
+ * Only `todo` with `op: "read"`. A read changes nothing — it is the agent
+ * looking up where it stands — so a row for it is pure noise in a reply.
+ * Set and update DO render (as a one-line beat): they are events, and a
+ * checklist that changes with no trace in the transcript reads as if nothing
+ * happened. It also made a FAILED todo call invisible, which is how a broken
+ * checklist went unnoticed.
+ *
+ * The bar for adding a case here is high: the call must change nothing a
+ * reader could care about. Silence is otherwise indistinguishable from a tool
+ * that failed to run.
+ */
+function isSilentToolCall(call: ToolCall): boolean {
+  if (call.name !== "todo") return false;
+  try {
+    return (JSON.parse(call.arguments || "{}") as { op?: unknown }).op === "read";
+  } catch {
+    // Arguments still streaming or malformed — show it. An unreadable call is
+    // exactly the one worth seeing.
+    return false;
+  }
+}
+
 export function buildRows(events: TimelineEvent[]): TimelineRow[] {
   const rows: TimelineRow[] = [];
   let run: ToolCall[] = [];
@@ -231,6 +344,9 @@ export function buildRows(events: TimelineEvent[]): TimelineRow[] {
 
   for (const e of events) {
     if (e.kind === "tool") {
+      // Dropped WITHOUT flushing the run, so a silent call sandwiched between
+      // two file edits does not split them into two separate groups.
+      if (isSilentToolCall(e.call)) continue;
       if (run.length === 0) runStart = e.id;
       run.push(e.call);
     } else {
@@ -239,6 +355,8 @@ export function buildRows(events: TimelineEvent[]): TimelineRow[] {
         rows.push({ type: "thinking", id: e.id, text: e.text });
       } else if (e.kind === "user_injection") {
         rows.push({ type: "user_injection", id: e.id, text: e.text });
+      } else if (e.kind === "notice") {
+        rows.push({ type: "notice", id: e.id, text: e.text });
       } else if (e.kind === "compaction") {
         rows.push({
           type: "compaction",

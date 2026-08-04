@@ -61,6 +61,10 @@ pub mod auroro_websearch;
 pub mod delete_path;
 pub mod file_edit;
 pub mod file_read;
+/// Marker a self-bounding read stamps on its payload so the runtime's
+/// spill and history clamp leave it alone. Re-exported here because the
+/// runtime checks it without needing the tool's internals.
+pub use file_read::EXACT_READ_MARKER;
 pub mod file_write;
 pub mod folder_create;
 pub mod glob;

@@ -1,15 +1,24 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 import type { AgentArtifactKind } from "../../services/agent-artifacts";
+import type { PlanStepStatus } from "../../services/agent-plans";
 import { buildArtifactDocument } from "../lib/artifact-render";
 import { useAgentArtifactStore } from "../store/useAgentArtifactStore";
 import { useAgentChatStore } from "../store/useAgentChatStore";
+import {
+  presentPlanSteps,
+  useAgentPlanStore,
+  workspaceKey,
+} from "../store/useAgentPlanStore";
 import { AgentIcon, AgentSelect } from "../shared";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { CanvasDiagram } from "./CanvasDiagram";
+import { PlanCanvas } from "./PlanCanvas";
 import { ToolCode } from "./tool-views/ToolCode";
 
 type CanvasMode = "preview" | "source";
+/** Which document the Canvas is showing. A plan outranks artifacts by default. */
+type CanvasSource = "plan" | "artifact";
 
 const extensionFor = (kind: AgentArtifactKind): string => {
   if (kind === "markdown") return "md";
@@ -19,6 +28,18 @@ const extensionFor = (kind: AgentArtifactKind): string => {
 
 export const CanvasPanel: React.FC = () => {
   const threadId = useAgentChatStore((state) => state.currentThreadId);
+  const projectRoot = useAgentChatStore((state) => state.projectRoot);
+  const liveTurns = useAgentChatStore((state) => state.liveTurns);
+  const plan = useAgentPlanStore((state) =>
+    projectRoot ? state.byWorkspace[workspaceKey(projectRoot)] : undefined,
+  );
+  const planError = useAgentPlanStore((state) =>
+    projectRoot ? state.errorsByWorkspace[workspaceKey(projectRoot)] : undefined,
+  );
+  const refreshPlan = useAgentPlanStore((state) => state.refresh);
+  const setStepStatus = useAgentPlanStore((state) => state.setStepStatus);
+  const [source, setSource] = useState<CanvasSource>("plan");
+  const [planBusy, setPlanBusy] = useState(false);
   const bundle = useAgentArtifactStore((state) =>
     threadId ? state.bundles[threadId] : undefined,
   );
@@ -38,6 +59,39 @@ export const CanvasPanel: React.FC = () => {
     if (!threadId || bundle || loading) return;
     void loadThread(threadId).catch(() => undefined);
   }, [bundle, loadThread, loading, threadId]);
+
+  // Disk is the source of truth, so re-read on every workspace change rather
+  // than trusting a cached plan from the folder the user just left.
+  useEffect(() => {
+    if (!projectRoot) return;
+    void refreshPlan(projectRoot);
+  }, [projectRoot, refreshPlan]);
+
+  /**
+   * Liveness input: the threads streaming right now. A step whose run claim is
+   * outside this set is paused, however recently it was marked in progress.
+   */
+  const liveThreadIds = useMemo(
+    () => new Set(Object.keys(liveTurns ?? {})),
+    [liveTurns],
+  );
+  const planStates = useMemo(
+    () => (plan ? presentPlanSteps(plan, liveThreadIds) : new Map()),
+    [plan, liveThreadIds],
+  );
+
+  const handleStepStatus = async (stepId: string, status: PlanStepStatus) => {
+    if (!projectRoot || !plan) return;
+    setPlanBusy(true);
+    try {
+      await setStepStatus(projectRoot, plan.id, stepId, status);
+    } catch {
+      // The store recorded the message; the panel keeps showing the last good
+      // state rather than blanking out mid-run.
+    } finally {
+      setPlanBusy(false);
+    }
+  };
 
   const artifact = useMemo(() => {
     if (!bundle) return undefined;
@@ -70,12 +124,60 @@ export const CanvasPanel: React.FC = () => {
     }
   };
 
+  const hasArtifact = Boolean(artifact && version);
+  // A plan belongs to the workspace, so it shows whether or not a conversation
+  // is open — and it outranks artifacts, because it is the active work.
+  const showPlan = Boolean(plan) && (source === "plan" || !hasArtifact);
+
+  const sourceSwitch = plan && hasArtifact && (
+    <div className="agw-canvas-mode" role="group" aria-label="Canvas document">
+      <button
+        type="button"
+        data-active={showPlan || undefined}
+        aria-pressed={showPlan}
+        onClick={() => setSource("plan")}
+      >
+        Plan
+      </button>
+      <button
+        type="button"
+        data-active={!showPlan || undefined}
+        aria-pressed={!showPlan}
+        onClick={() => setSource("artifact")}
+      >
+        Artifact
+      </button>
+    </div>
+  );
+
+  if (showPlan && plan) {
+    return (
+      <div className="agw-canvas-plan-wrap">
+        {sourceSwitch && <div className="agw-canvas-toolbar">{sourceSwitch}</div>}
+        {planError && (
+          <div className="agw-canvas-error" role="alert">
+            {planError}
+          </div>
+        )}
+        <PlanCanvas
+          plan={plan}
+          states={planStates}
+          onSetStepStatus={handleStepStatus}
+          busy={planBusy}
+        />
+      </div>
+    );
+  }
+
   if (!threadId) {
     return (
       <div className="agw-canvas-empty">
         <AgentIcon name="panel-right" size={24} />
-        <strong>Canvas belongs to a conversation</strong>
-        <span>Open a saved conversation to view its artifacts.</span>
+        <strong>Nothing on Canvas yet</strong>
+        <span>
+          Switch the composer to Plan mode and ask for a plan, and it will be
+          written here as you agree it.
+        </span>
       </div>
     );
   }
@@ -107,7 +209,10 @@ export const CanvasPanel: React.FC = () => {
       <div className="agw-canvas-empty">
         <AgentIcon name="panel-right" size={24} />
         <strong>Nothing on Canvas yet</strong>
-        <span>When the agent creates a visual artifact, it will open here automatically.</span>
+        <span>
+          Ask for a plan in Plan mode, or let the agent build a diagram or
+          prototype — either one opens here automatically.
+        </span>
       </div>
     );
   }
@@ -115,6 +220,7 @@ export const CanvasPanel: React.FC = () => {
   return (
     <section className="agw-canvas" aria-label="Artifact Canvas">
       <div className="agw-canvas-toolbar">
+        {sourceSwitch}
         <div className="agw-canvas-field">
           <span>Artifact</span>
           <AgentSelect

@@ -177,25 +177,30 @@ export function getMcpToolsSummary(): string {
     "## MCP (Model Context Protocol) Servers",
     "",
     `You have access to ${totalToolCount} MCP tool(s) across ${connectedServers.length} connected server(s).`,
-    "When describing MCP tools to the user, use friendly names in the form `Server Name: Tool Name`.",
-    "Do not expose raw internal MCP tool IDs unless the user explicitly asks for the exact callable name.",
+    "Each entry below is `callable name` — \"display name\". Call tools by the callable name, exactly as written.",
+    "The display name exists only for talking to the user; it is not an identifier and cannot be converted back into a callable name.",
     "Skills and rules are separate from tools and must not be counted as tools.",
     "",
   ];
 
   for (const server of connectedServers) {
-    lines.push(`### ${server.config.name}`);
-    if (server.serverInfo?.version) {
-      lines.push(`Version: ${server.serverInfo.version}`);
-    }
-    lines.push(`Tool count: ${server.tools.length}`);
+    const version = server.serverInfo?.version
+      ? ` (v${server.serverInfo.version})`
+      : "";
+    lines.push(
+      `### ${server.config.name}${version} — ${server.tools.length} tool(s)`,
+    );
     lines.push("");
 
     if (server.tools.length > 0) {
-      lines.push("Available tools:");
+      // Descriptions are deliberately omitted: every one of these tools is
+      // already in the request's tool schema with its full description, so
+      // repeating them here bought nothing and cost real tokens on servers with
+      // large rosters. What the schema does NOT give is the friendly-name
+      // mapping, which is the only reason this block still exists.
       for (const tool of server.tools) {
         lines.push(
-          `- \`${server.config.name}: ${formatMcpToolLabel(tool.name)}\`${tool.description ? ` — ${tool.description}` : ""}`,
+          `- \`${mcpCallableName(server.config.id, tool.name)}\` — "${server.config.name}: ${formatMcpToolLabel(tool.name)}"`,
         );
       }
       lines.push("");
@@ -203,7 +208,7 @@ export function getMcpToolsSummary(): string {
   }
 
   lines.push(
-    "Internally, MCP tools are callable by a prefixed name, but user-facing explanations should prefer friendly display names.",
+    "If a call fails with an unknown-tool error, re-read the callable name in this list instead of guessing another spelling of it.",
   );
   lines.push("");
 
@@ -323,6 +328,24 @@ export function isMcpTool(toolName: string): boolean {
 }
 
 /**
+ * The `mcp_`-prefixed name a server's tool is actually callable by.
+ *
+ * The single owner of this rule. It used to be inlined at three sites
+ * (`mcpToolToDefinition`, `populateMcpToolDisplayNameCache`, and the prefix scan
+ * in `parseMcpToolName`), so a change to the sanitizer in one place could
+ * silently stop matching the others — and the model would be handed a name the
+ * dispatcher does not accept.
+ */
+export function mcpCallableName(serverId: string, toolName: string): string {
+  return `${mcpServerPrefix(serverId)}${toolName}`;
+}
+
+/** The callable-name prefix for a server — `mcpCallableName` minus the tool. */
+export function mcpServerPrefix(serverId: string): string {
+  return `mcp_${serverId.replace(/[^a-zA-Z0-9]/g, "_")}_`;
+}
+
+/**
  * Convert MCP tool info to Aurora tool definition format
  */
 export function mcpToolToDefinition(
@@ -331,7 +354,7 @@ export function mcpToolToDefinition(
   tool: McpToolInfo,
 ): ToolDefinition {
   // Create a unique tool name prefixed with mcp_ and server id
-  const toolName = `mcp_${serverId.replace(/[^a-zA-Z0-9]/g, "_")}_${tool.name}`;
+  const toolName = mcpCallableName(serverId, tool.name);
   const friendlyToolName = formatMcpToolLabel(tool.name);
 
   // Cache the display name for later use (so we don't need store lookup)
@@ -388,7 +411,7 @@ export function parseMcpToolName(toolName: string): ParsedMcpToolName | null {
     | { advertised: boolean; prefix: string; server: McpServerState }
     | null = null;
   for (const server of servers) {
-    const serverPrefix = `mcp_${server.config.id.replace(/[^a-zA-Z0-9]/g, "_")}_`;
+    const serverPrefix = mcpServerPrefix(server.config.id);
     if (
       !toolName.startsWith(serverPrefix) ||
       toolName.length <= serverPrefix.length
@@ -432,7 +455,7 @@ export function populateMcpToolDisplayNameCache(
   tools: Array<{ name: string }>,
 ): void {
   for (const tool of tools) {
-    const toolName = `mcp_${serverId.replace(/[^a-zA-Z0-9]/g, "_")}_${tool.name}`;
+    const toolName = mcpCallableName(serverId, tool.name);
     mcpToolDisplayNameCache.set(
       toolName,
       `${serverName}: ${formatMcpToolLabel(tool.name)}`,

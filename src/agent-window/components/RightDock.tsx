@@ -13,7 +13,7 @@
  * Themed entirely with `--agw-*`.
  */
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
 import { FileIcon } from "../../components/explorer/FileIcons";
@@ -23,6 +23,13 @@ import { FileViewer } from "./FileViewer";
 import { TerminalPanel } from "./TerminalPanel";
 import { BrowserPanel, closeAgentBrowser, hideAgentBrowser, showAgentBrowser } from "./BrowserPanel";
 import { CanvasPanel } from "./CanvasPanel";
+import { ProjectPanel } from "./ProjectPanel";
+import { TeamPanel } from "./team/TeamPanel";
+import { MemberPanel } from "./team/MemberPanel";
+import { ChatPanel } from "./ChatPanel";
+import { StreamingDotMatrix } from "./StreamingDotMatrix";
+import { useAgentChatStore } from "../store/useAgentChatStore";
+import { authorColor } from "./team/team-ui";
 import type { DockSingletonKind, DockTabInstance } from "../types";
 import { DOCK_TAB_LABELS } from "../types";
 import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
@@ -33,15 +40,34 @@ const SINGLETON_ICON: Record<DockSingletonKind, AgentIconName> = {
   files: "files",
   browser: "browser",
   terminal: "terminal",
+  team: "users",
 };
 
 /** Entries in the `+` menu. `enabled:false` = structurally present, not wired. */
 const ADD_MENU: Array<{ kind: DockSingletonKind; shortcut?: string; enabled: boolean }> = [
+  { kind: "team", enabled: true },
   { kind: "canvas", enabled: true },
   { kind: "files", shortcut: "Ctrl+P", enabled: true },
   { kind: "browser", shortcut: "Ctrl+T", enabled: true },
   { kind: "terminal", enabled: true },
 ];
+
+/**
+ * A chat tab's glyph — the streaming dot matrix while THAT conversation is
+ * working, the static chat icon otherwise.
+ *
+ * The point of docking a chat is watching it without watching it: with two
+ * models answering at once, the tab you aren't reading still has to say it's
+ * busy. `size={18}` renders a ~13px grid, matching the other tab glyphs.
+ */
+const ChatTabGlyph: React.FC<{ threadId: string }> = ({ threadId }) => {
+  const streaming = useAgentChatStore((s) => !!s.liveTurns[threadId]);
+  return streaming ? (
+    <StreamingDotMatrix size={18} />
+  ) : (
+    <AgentIcon name="chat" size={13} />
+  );
+};
 
 const TabPill: React.FC<{
   tab: DockTabInstance;
@@ -53,6 +79,17 @@ const TabPill: React.FC<{
     <button type="button" className="agw-tabpill-main" onClick={onSelect} title={tab.title}>
       {tab.kind === "file" ? (
         <FileIcon name={tab.title} path={tab.path} className="agw-file-ico" />
+      ) : tab.kind === "member" ? (
+        // A team member's tab carries their identity color as a small dot —
+        // the same color as their name chip in the group chat.
+        <span
+          className="agw-tabpill-dot"
+          style={{ background: authorColor(tab.memberId ?? "") }}
+        />
+      ) : tab.kind === "project" ? (
+        <AgentIcon name="folder" size={13} />
+      ) : tab.kind === "chat" ? (
+        <ChatTabGlyph threadId={tab.threadId ?? ""} />
       ) : (
         <AgentIcon name={SINGLETON_ICON[tab.kind]} size={13} />
       )}
@@ -140,12 +177,118 @@ const AddMenu: React.FC<{
   );
 };
 
+/** Which edges of the tab strip have tabs hidden past them. */
+type StripOverflow = "none" | "start" | "end" | "both";
+
+/**
+ * Make the tab strip reachable once it overflows.
+ *
+ * The strip hides its scrollbar (a visible one in a 44px header reads as
+ * debris), which left a plain mouse with no way to move it and nothing saying
+ * more tabs existed — open enough tabs and the ones past the edge became
+ * unreachable. Three affordances, one per input method:
+ *
+ *  - **wheel** → horizontal scroll, so a mouse can drive a one-axis strip with
+ *    the gesture it already has;
+ *  - **the active tab is always revealed**, so opening or selecting a tab can
+ *    never leave it off-screen (this also covers keyboard, since focus reveal
+ *    is the browser's own behaviour);
+ *  - **an edge fade** on whichever side has more, because a hidden scrollbar
+ *    also hides the fact that there is anything to scroll to.
+ *
+ * Touch needs nothing extra — drag already works.
+ */
+function useTabStripScroll(activeId: string | null, tabCount: number) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [overflow, setOverflow] = useState<StripOverflow>("none");
+
+  const measure = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    // Sub-pixel layout means scrollWidth can exceed clientWidth by a hair with
+    // nothing actually clipped; 1px of slack keeps the fade off in that case.
+    const max = el.scrollWidth - el.clientWidth;
+    if (max <= 1) {
+      setOverflow("none");
+      return;
+    }
+    const atStart = el.scrollLeft <= 1;
+    const atEnd = el.scrollLeft >= max - 1;
+    setOverflow(atStart ? "end" : atEnd ? "start" : "both");
+  }, []);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    const onWheel = (event: WheelEvent) => {
+      // A horizontal wheel / trackpad swipe already does the right thing.
+      if (event.deltaY === 0) return;
+      if (el.scrollWidth - el.clientWidth <= 0) return;
+      // Only claim the gesture when there is somewhere to go, so the event
+      // stays available to anything else when the strip fits.
+      event.preventDefault();
+      el.scrollLeft += event.deltaY;
+      measure();
+    };
+    // Non-passive: translating the axis requires preventing the default.
+    el.addEventListener("wheel", onWheel, { passive: false });
+    el.addEventListener("scroll", measure, { passive: true });
+
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("scroll", measure);
+      observer.disconnect();
+    };
+  }, [measure]);
+
+  // Re-measure when the tab set changes (closing a tab can end the overflow).
+  // Deferred one frame on purpose: a pill added in this same commit has not
+  // been laid out yet, so measuring synchronously would read the PREVIOUS
+  // scrollWidth and miss the overflow that the new tab just caused.
+  useEffect(() => {
+    const frame = requestAnimationFrame(measure);
+    return () => cancelAnimationFrame(frame);
+  }, [measure, tabCount, activeId]);
+
+  // Reveal the active tab. `block: "nearest"` keeps this to the one axis the
+  // strip scrolls — without it the whole dock can be nudged vertically.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !activeId) return;
+    const pill = el.querySelector<HTMLElement>("[data-active]");
+    if (!pill) return;
+    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    pill.scrollIntoView({
+      block: "nearest",
+      inline: "nearest",
+      behavior: reduced ? "auto" : "smooth",
+    });
+  }, [activeId]);
+
+  return { ref, overflow };
+}
+
 const TabBody: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
   switch (tab.kind) {
     case "review":
       return <ReviewPanel />;
     case "canvas":
       return <CanvasPanel />;
+    case "team":
+      return <TeamPanel />;
+    case "member":
+      return <MemberPanel agentId={tab.memberId ?? ""} />;
+    case "chat":
+      return (
+        <ChatPanel
+          threadId={tab.threadId ?? ""}
+          projectRoot={tab.threadProjectRoot ?? null}
+          fallbackTitle={tab.title}
+        />
+      );
     case "files":
       return <FilesPanel />;
     case "file":
@@ -155,6 +298,8 @@ const TabBody: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
       return <TerminalPanel />;
     case "browser":
       return <BrowserPanel />;
+    case "project":
+      return <ProjectPanel root={tab.projectRoot ?? ""} />;
     default: {
       const _exhaustive: never = tab.kind;
       return _exhaustive;
@@ -173,6 +318,10 @@ export const RightDock: React.FC = () => {
   const toggleExpanded = useAgentWorkspaceStore((s) => s.toggleExpanded);
 
   const active = tabs.find((t) => t.id === activeTabId) ?? tabs[0] ?? null;
+  const { ref: stripRef, overflow: stripOverflow } = useTabStripScroll(
+    active?.id ?? null,
+    tabs.length,
+  );
 
   // Switching to a different tab is instant (no glide), so hide the native
   // webview immediately — it paints above DOM and would otherwise cover the new
@@ -192,7 +341,11 @@ export const RightDock: React.FC = () => {
     >
       {/* Tab strip */}
       <div className="agw-tabstrip">
-        <div className="agw-tabstrip-scroll agw-scroll">
+        <div
+          ref={stripRef}
+          className="agw-tabstrip-scroll agw-scroll"
+          data-overflow={stripOverflow === "none" ? undefined : stripOverflow}
+        >
           {tabs.map((tab) => (
             <TabPill
               key={tab.id}
@@ -252,9 +405,9 @@ export const RightDock: React.FC = () => {
       ) : (
         <div className="agw-files-empty">
           <AgentIcon name="files" size={22} style={{ color: "var(--agw-text-subtle)" }} />
-          <div style={{ fontSize: 13, color: "var(--agw-text-muted)", fontWeight: 600 }}>No tab open</div>
+          <div style={{ fontSize: 13, color: "var(--agw-text-muted)", fontWeight: "var(--agw-fw-medium)" }}>No tab open</div>
           <div style={{ fontSize: 12, color: "var(--agw-text-subtle)", maxWidth: 220 }}>
-            Use <span style={{ fontWeight: 600 }}>＋</span> to open Files, or review changes from a message.
+            Use <span style={{ fontWeight: "var(--agw-fw-medium)" }}>＋</span> to open Files, or review changes from a message.
           </div>
         </div>
       )}

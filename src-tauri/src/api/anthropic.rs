@@ -55,6 +55,15 @@ impl AnthropicAdapter {
             .no_gzip()
             .no_brotli()
             .no_deflate()
+            // Keepalives, not timeouts. A high reasoning effort can leave the
+            // socket near-silent for minutes while the model thinks, which is
+            // exactly when an idle-connection reaper (NAT, proxy, LB) kills it.
+            // These keep the connection demonstrably alive; there is
+            // deliberately no request timeout, since a long think is legitimate.
+            .tcp_keepalive(std::time::Duration::from_secs(30))
+            .http2_keep_alive_interval(std::time::Duration::from_secs(20))
+            .http2_keep_alive_timeout(std::time::Duration::from_secs(20))
+            .http2_keep_alive_while_idle(true)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self { config, http }
@@ -148,6 +157,10 @@ where
 
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<String> = None;
+    // Anthropic closes a healthy stream with `message_stop` (and carries the
+    // real stop reason on the preceding `message_delta`). Reaching EOF without
+    // either means the connection dropped mid-reply — see the check below.
+    let mut saw_terminator = false;
 
     loop {
         let chunk = tokio::select! {
@@ -168,6 +181,10 @@ where
                     Err(_) => continue, // tolerate malformed events (kernel parity)
                 };
 
+                if event.event_type == "message_stop" {
+                    saw_terminator = true;
+                }
+
                 handle_anthropic_event(
                     event,
                     &mut blocks,
@@ -182,6 +199,17 @@ where
 
         // Cancellation may also arrive between frames — the next
         // iteration will pick it up via `biased; cancelled()`.
+    }
+
+    // No `message_stop` and no stop reason: Anthropic never signalled the end,
+    // so the socket died mid-reply. Reporting it as a recoverable network error
+    // beats fabricating `end_turn` and passing a truncated answer off as a
+    // finished one — the user would see the agent stop for no visible reason.
+    if !saw_terminator && stop_reason.is_none() {
+        return Err(ApiError::Network(
+            "the response stream ended before the model finished — the connection dropped              mid-reply. Retry to run the turn again."
+                .to_string(),
+        ));
     }
 
     let final_stop = stop_reason
@@ -418,5 +446,56 @@ async fn handle_anthropic_event(
         }
 
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn drive(body: &str) -> Result<TurnUsage, ApiError> {
+        let chunks: Vec<Result<Vec<u8>, std::io::Error>> = vec![Ok(body.as_bytes().to_vec())];
+        let (tx, _rx) = mpsc::channel(256);
+        drive_anthropic_stream(
+            futures_util::stream::iter(chunks),
+            tx,
+            CancellationToken::new(),
+        )
+        .await
+    }
+
+    /// A dropped connection reaches EOF with neither `message_stop` nor a
+    /// stop reason. Fabricating `end_turn` there presented a truncated reply
+    /// as a complete one; it must surface as an error instead.
+    #[tokio::test]
+    async fn truncated_stream_is_an_error_not_a_finished_turn() {
+        let body = "data: {\"type\":\"content_block_delta\",\"index\":0,\
+                    \"delta\":{\"type\":\"text_delta\",\"text\":\"half a sen\"}}\n\n";
+        match drive(body).await {
+            Err(ApiError::Network(msg)) => {
+                assert!(msg.contains("ended before"), "unexpected message: {msg}");
+            }
+            other => panic!("expected a Network error for a truncated stream, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn message_stop_closes_the_stream_cleanly() {
+        let body = "data: {\"type\":\"content_block_delta\",\"index\":0,\
+                    \"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n\
+                    data: {\"type\":\"message_stop\"}\n\n";
+        let turn = drive(body).await.expect("message_stop should complete the turn");
+        assert_eq!(turn.stop_reason, "end_turn");
+    }
+
+    /// Hitting the output cap is a real ending, not a truncation — the turn
+    /// completes and carries `max_tokens`, which is what drives the
+    /// "this reply is cut off" notice.
+    #[tokio::test]
+    async fn max_tokens_stop_completes_the_turn_and_is_reported_verbatim() {
+        let body = "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n\
+                    data: {\"type\":\"message_stop\"}\n\n";
+        let turn = drive(body).await.expect("a capped turn still completes");
+        assert_eq!(turn.stop_reason, "max_tokens");
     }
 }

@@ -42,22 +42,25 @@
 //!
 //! ## Roster invariant
 //!
-//! After a successful [`register_builtin_tools`] call the destination
-//! registry contains exactly the union of [`file_workspace_search::TOOL_NAMES`]
-//! and [`shell_editor_todo::TOOL_NAMES`] (10 + 6 = 16), plus the 8
-//! browser tools when a `BrowserManager` is supplied (total 24). The
-//! `Sub-E` verify crate (`__verify_phase3_e/`) pins this count.
+//! After a successful [`register_builtin_tools`] call the destination registry
+//! contains exactly the union of every bucket's `TOOL_NAMES`:
+//! [`file_workspace_search`], [`shell_editor_todo`], [`plan`], [`design`], and
+//! [`browser`] when a `BrowserManager` is supplied — [`BUILTIN_TOOL_COUNT`] in
+//! total. The `Sub-E` verify crate (`__verify_phase3_e/`) pins this count.
 //!
-//! (This paragraph read "9 + 6 = 15 … plus the 6 browser tools (total 21)"
-//! while the real totals were 9/8/23 — the browser bucket had grown twice
-//! without it. `builtin_tool_count_is_correct` guards the constant, not the
-//! prose, so keep them in step by hand.)
+//! (Do not restate the per-bucket numbers here. This paragraph has been wrong
+//! three separate times — "9 + 6 = 15 … total 21" against a real 9/8/23, then
+//! "10 + 6 = 16 … total 24" against a real 30 — because
+//! `builtin_tool_count_is_correct` guards the constant and never the prose.
+//! Naming the buckets instead of counting them cannot drift.)
 
 #![allow(dead_code)]
 
 pub mod browser;
+pub mod design;
 pub mod file_workspace_search;
 pub mod permissions;
+pub mod plan;
 pub mod shell_editor_todo;
 
 /// Number of tools pre-populated in the production
@@ -73,12 +76,23 @@ pub mod shell_editor_todo;
 /// but the lib-test binary cannot launch on Windows here (0xc0000139 — see
 /// `.knowledge/lesson.md`), so the drift sat unnoticed. Corrected alongside
 /// the `browser_page_outline` addition.
-pub const BUILTIN_TOOL_COUNT: usize = 24;
+/// Raised again 29 -> 30 by `design_guidelines`, the standing surface doctrine.
+/// Raised 24 -> 29 by the Plan Canvas work: the `plan` bucket adds
+/// `plan_write` / `plan_read` / `plan_step_update`, and `shell_editor_todo`
+/// gained `todo_read` / `todo_update` so the agent can finally read back the
+/// task list it wrote instead of re-inventing it after a compaction.
+/// Raised 30 -> 31 by `shell_read_output`, which replaces the poll-file_read-and
+/// -hope loop for watching a background process.
+/// Lowered 31 -> 29 by folding `todo_write` / `todo_update` / `todo_read` into a
+/// single `todo` tool with a typed `op`. Three names for one piece of state made
+/// the model choose before it could act, and every one of them spoke the same
+/// vocabulary of ids, statuses and the cursor.
+pub const BUILTIN_TOOL_COUNT: usize = 29;
 
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
 /// `sink` is shared across Sub-D's four event-firing tools
-/// (`shell_spawn`, `editor_open_file`, `read_lints`, `todo_write`)
+/// (`shell_spawn`, `editor_open_file`, `read_lints`, `todo`)
 /// so they can dispatch IDE events without seeing the Tauri
 /// `AppHandle` directly. Production builds wire a Tauri-backed
 /// sink in `lib.rs::setup`; the verify crate uses a recording
@@ -116,7 +130,9 @@ pub fn register_builtin_tools(
     // `&self`, so the transfer is a normal interior-mutating insert.
     let mut staging = ToolRegistry::new();
     file_workspace_search::register(&mut staging, sink.clone());
-    shell_editor_todo::register(&mut staging, sink);
+    shell_editor_todo::register(&mut staging, sink.clone());
+    plan::register(&mut staging, sink);
+    design::register(&mut staging);
     if let Some(manager) = browser_manager {
         browser::register(&mut staging, manager);
     }
@@ -176,12 +192,28 @@ mod tests {
     // a real one needs a Tauri AppHandle. The browser bucket has its
     // own unit tests inside `tools::browser::tests`.
 
+    /// Every bucket except browser, which needs a Tauri `AppHandle` to mount.
+    ///
+    /// Derived, never a literal: the two registry tests below used to hardcode
+    /// this and both had to be hand-edited every time a bucket gained a tool,
+    /// which is noise that teaches nothing. The one literal worth keeping is in
+    /// `builtin_tool_count_is_correct`, where it exists precisely to fail when
+    /// the roster changes so the change has to be deliberate.
+    fn count_without_browser() -> usize {
+        file_workspace_search::TOOL_NAMES.len()
+            + shell_editor_todo::TOOL_NAMES.len()
+            + plan::TOOL_NAMES.len()
+            + design::TOOL_NAMES.len()
+    }
+
     #[test]
     fn builtin_tool_count_is_correct() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 24);
+        assert_eq!(BUILTIN_TOOL_COUNT, 29);
         assert_eq!(
             file_workspace_search::TOOL_NAMES.len()
                 + shell_editor_todo::TOOL_NAMES.len()
+                + plan::TOOL_NAMES.len()
+                + design::TOOL_NAMES.len()
                 + browser::TOOL_NAMES.len(),
             BUILTIN_TOOL_COUNT
         );
@@ -191,8 +223,7 @@ mod tests {
     fn register_builtin_tools_without_browser_mounts_bucket_tools() {
         let reg = ToolRegistry::new();
         register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
-        // Sub-C (10) + Sub-D (6) = 16 without the browser bucket.
-        assert_eq!(reg.len(), 16);
+        assert_eq!(reg.len(), count_without_browser());
     }
 
     #[test]
@@ -220,11 +251,12 @@ mod tests {
         let reg = ToolRegistry::new();
         register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
         register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
-        // Same 16 as `register_builtin_tools_without_browser_mounts_bucket_tools`
-        // — re-registering overwrites by name and cannot grow the roster. The
-        // stale `16` here was never observed failing because the test binary
-        // could not launch on Windows (see `lib.rs::TEST_BINARY_MANIFEST`).
-        assert_eq!(reg.len(), 16, "re-register must coalesce");
+        // Re-registering overwrites by name and cannot grow the roster.
+        assert_eq!(
+            reg.len(),
+            count_without_browser(),
+            "re-register must coalesce"
+        );
     }
 
     #[test]

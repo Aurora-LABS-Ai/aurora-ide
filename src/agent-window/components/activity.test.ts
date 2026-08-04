@@ -185,3 +185,42 @@ describe("live tool activity", () => {
     expect(describeToolActivity(tool, args)).toEqual(activity);
   });
 });
+
+describe("spilled tool output never surfaces as a filename", () => {
+  const SPILL =
+    "C:\\Users\\a\\AppData\\Local\\AuroraIDE\\sessions\\6daeb9de.tool-results\\out-b6179211-content.txt";
+
+  it("reads as tool output, not as a project file", () => {
+    const activity = describeToolActivity(
+      "file_read",
+      JSON.stringify({ path: SPILL, start_line: 1, end_line: 100 }),
+    );
+    expect(activity.label).toBe("Reading tool output");
+    // No file chip: there is nothing here the user can usefully open.
+    expect(activity.path).toBeUndefined();
+    expect(activity.targets).toBeUndefined();
+  });
+
+  it("applies to the batch form too", () => {
+    expect(
+      describeToolActivity("multi_file_read", JSON.stringify({ paths: [SPILL] })).label,
+    ).toBe("Reading tool output");
+  });
+
+  it("leaves a real project file alone", () => {
+    const activity = describeToolActivity(
+      "file_read",
+      JSON.stringify({ path: "components/ProfileForm.tsx" }),
+    );
+    expect(activity.label).toBe("Reading ProfileForm.tsx");
+  });
+
+  it("is not fooled by a project folder that merely contains the words", () => {
+    // `.tool-results/` is the marker; a similarly named project dir is not.
+    const activity = describeToolActivity(
+      "file_read",
+      JSON.stringify({ path: "src/tool-results-viewer/index.tsx" }),
+    );
+    expect(activity.label).toBe("Reading index.tsx");
+  });
+});

@@ -38,6 +38,39 @@ pub const READ_LINTS_EVENT: &str = "agent_read_lints";
 /// Tauri event channel emitted by [`crate::tools::shell_editor_todo::todo_write`].
 pub const TODO_WRITE_EVENT: &str = "agent_todo_write";
 
+/// Tauri event channel fired whenever a plan document changes on disk —
+/// authored, revised, or a step's status flipped.
+///
+/// The payload deliberately carries **no plan content**. Disk is the source of
+/// truth, so the frontend re-reads the file; shipping the document through the
+/// event would create a second copy that can disagree with it.
+pub const PLAN_CHANGED_EVENT: &str = "agent_plan_changed";
+
+/// Why a plan changed.
+///
+/// The Canvas opens itself when a plan is **authored**, because that is the
+/// deliverable of a planning conversation and the user should see it without
+/// hunting for a tab. It deliberately does NOT open on every status flip —
+/// stealing the panel mid-run, repeatedly, would be hostile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlanChangeReason {
+    Authored,
+    Progress,
+}
+
+/// Which plan changed, and where it lives.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanChangedPayload {
+    /// Workspace the plan belongs to.
+    pub workspace_root: String,
+    pub plan_id: String,
+    /// Thread that made the change — also the run claim used for liveness.
+    pub thread_id: String,
+    pub reason: PlanChangeReason,
+}
+
 /// Tauri event channel fired after every successful file/folder mutation
 /// by an agent tool (`file_write`, `file_create`, `file_patch`,
 /// `search_replace`, `multi_search_replace`, `file_delete`,
@@ -182,7 +215,9 @@ pub struct ShellStreamRequest {
     /// Thread this process belongs to. The sink uses it to place the output
     /// log beside the thread, so it is cleaned up with the thread and can be
     /// read back later with `file_read`.
-    pub session_id: String,
+    /// The CONVERSATION, so the log lands in the same per-thread directory
+    /// the thread cleanup deletes. See `ToolContext::thread_id`.
+    pub thread_id: String,
     pub name: Option<String>,
     pub command: String,
     pub cwd: Option<String>,
@@ -200,6 +235,14 @@ pub struct ShellRunOutput {
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub success: bool,
+    /// The run was killed for exceeding its timeout rather than finishing.
+    ///
+    /// Without this the streamed path reported a timeout as `exit_code: 1,
+    /// success: false` — identical to a command that genuinely failed with code
+    /// 1 — so the model had no way to know it should raise the timeout or move
+    /// the work to `shell_spawn`, and would instead "fix" a command that was
+    /// never broken.
+    pub timed_out: bool,
 }
 
 /// What a background spawn looked like after its startup window.
@@ -230,8 +273,10 @@ pub enum RecordedEvent {
         paths: Vec<String>,
     },
     TodoWrite {
+        thread_id: String,
         todos: Value,
     },
+    PlanChanged(PlanChangedPayload),
     ShellStream(ShellStreamRequest),
     FileChanged(FileChangedPayload),
 }
@@ -268,7 +313,15 @@ pub trait IdeEventSink: Send + Sync + 'static {
     fn emit_read_lints(&self, paths: &[String]) -> Result<(), String>;
 
     /// Emit the `"agent_todo_write"` Tauri event with the new task list.
-    fn emit_todo_write(&self, todos: &Value) -> Result<(), String>;
+    ///
+    /// `thread_id` is REQUIRED: the agent window runs turns in several threads
+    /// at once, so a payload that only carries the items cannot be routed and
+    /// the receiving window has to guess (it used to guess wrong, showing one
+    /// conversation's checklist under another, or ignoring the event entirely).
+    fn emit_todo_write(&self, thread_id: &str, todos: &Value) -> Result<(), String>;
+
+    /// Emit [`PLAN_CHANGED_EVENT`] so the Canvas re-reads the plan file.
+    fn emit_plan_changed(&self, payload: &PlanChangedPayload) -> Result<(), String>;
 
     /// Spawn a streamed shell command in the background and return.
     ///
@@ -295,6 +348,20 @@ pub trait IdeEventSink: Send + Sync + 'static {
     /// `Err` but tool callers map it to a soft warning rather than
     /// failing the tool itself (the file is already safely on disk).
     fn emit_file_changed(&self, payload: &FileChangedPayload) -> Result<(), String>;
+
+    /// Absolute path of the file a background process's output is mirrored into.
+    ///
+    /// Derived from `thread_id` + `process_id` rather than looked up in the
+    /// live process ledger, so it still resolves after the process exited and
+    /// `cleanup_command_stream` dropped its row — which is exactly the moment
+    /// the agent most needs to read what the process printed before it died.
+    ///
+    /// Defaults to `None`: sinks that never spawn anything (the no-op and
+    /// recording test sinks) have no log to point at.
+    fn background_log_path(&self, thread_id: &str, process_id: &str) -> Option<String> {
+        let _ = (thread_id, process_id);
+        None
+    }
 }
 
 /// No-op sink for unit tests that don't care about emissions.
@@ -318,7 +385,11 @@ impl IdeEventSink for NoopIdeEventSink {
         Ok(())
     }
 
-    fn emit_todo_write(&self, _todos: &Value) -> Result<(), String> {
+    fn emit_todo_write(&self, _thread_id: &str, _todos: &Value) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn emit_plan_changed(&self, _payload: &PlanChangedPayload) -> Result<(), String> {
         Ok(())
     }
 
@@ -340,6 +411,7 @@ impl IdeEventSink for NoopIdeEventSink {
             stderr: output.stderr,
             exit_code: output.exit_code,
             success: output.success,
+            timed_out: output.timed_out,
         })
     }
 
@@ -419,10 +491,15 @@ impl IdeEventSink for RecordingIdeEventSink {
         })
     }
 
-    fn emit_todo_write(&self, todos: &Value) -> Result<(), String> {
+    fn emit_todo_write(&self, thread_id: &str, todos: &Value) -> Result<(), String> {
         self.record(RecordedEvent::TodoWrite {
+            thread_id: thread_id.to_string(),
             todos: todos.clone(),
         })
+    }
+
+    fn emit_plan_changed(&self, payload: &PlanChangedPayload) -> Result<(), String> {
+        self.record(RecordedEvent::PlanChanged(payload.clone()))
     }
 
     async fn spawn_shell_stream(&self, req: ShellStreamRequest) -> Result<SpawnOutcome, String> {
@@ -455,7 +532,7 @@ mod tests {
         let sink = NoopIdeEventSink;
         assert!(sink.emit_editor_open("p", None, None).is_ok());
         assert!(sink.emit_read_lints(&[]).is_ok());
-        assert!(sink.emit_todo_write(&serde_json::json!([])).is_ok());
+        assert!(sink.emit_todo_write("thread-1", &serde_json::json!([])).is_ok());
     }
 
     #[test]
@@ -465,6 +542,7 @@ mod tests {
         sink.emit_read_lints(&vec!["a.rs".into(), "b.rs".into()])
             .unwrap();
         sink.emit_todo_write(
+            "thread-1",
             &serde_json::json!([{"content":"hi","activeForm":"saying hi","status":"pending"}]),
         )
         .unwrap();
@@ -477,7 +555,9 @@ mod tests {
         assert!(
             matches!(&events[1], RecordedEvent::ReadLints { paths } if paths == &vec!["a.rs".to_string(), "b.rs".to_string()])
         );
-        assert!(matches!(&events[2], RecordedEvent::TodoWrite { .. }));
+        assert!(
+            matches!(&events[2], RecordedEvent::TodoWrite { thread_id, .. } if thread_id == "thread-1")
+        );
     }
 
     #[tokio::test]
@@ -497,7 +577,7 @@ mod tests {
             .spawn_shell_stream(ShellStreamRequest {
                 process_id: "bg-r1".into(),
                 request_id: "r1".into(),
-                session_id: "s1".into(),
+                thread_id: "s1".into(),
                 name: Some("test".into()),
                 command: "ls".into(),
                 cwd: None,

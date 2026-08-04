@@ -17,21 +17,7 @@ import { ActivityChart } from "./ActivityChart";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { AgentIcon } from "../shared/AgentIcon";
 import { AgwButton, AgwSegmented } from "./primitives";
-
-/**
- * "deepseek:deepseek-v4-pro" → the model's catalog label ("DeepSeek V4 Pro")
- * when we know it, else a cleaned-up key ("Deepseek V4 Pro"). Raw ids look
- * broken on a profile page.
- */
-function prettyModel(raw: string, models: Array<{ modelKey: string; label?: string }>): string {
-  const key = raw.includes(":") ? raw.slice(raw.indexOf(":") + 1) : raw;
-  const known = models.find((m) => m.modelKey === key);
-  if (known?.label) return known.label;
-  return key
-    .split(/[-_/]/)
-    .map((p) => (p.length <= 3 ? p.toUpperCase() : p.charAt(0).toUpperCase() + p.slice(1)))
-    .join(" ");
-}
+import { formatTokens as fmtTokens, prettyModel } from "../lib/model-label";
 
 interface DayUsage {
   date: string;
@@ -57,13 +43,6 @@ interface UsageStats {
 type ChartMode = "daily" | "weekly" | "cumulative";
 
 /** 3417890114 → "3.4B", 141_300_000 → "141.3M", 4520 → "4.5K". */
-function fmtTokens(n: number): string {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
-  return String(n);
-}
-
 function fmtDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
   const h = Math.floor(s / 3600);

@@ -22,7 +22,16 @@
    *   is what makes a modal read as "on top of a backdrop" — so a scrim is
    *   present by default even when --agw-overlay (the tint) is set transparent.
    *   The overlay token still tints on top of this blur. */
-  --agw-popover-surface: var(--agw-surface-elevated);
+  /* One elevation STEP above the frame, not three: at the raw elevated fill
+   * (#2e2e2e on a #161616 rail) a popover was the brightest thing on screen
+   * and read as a detached slab floating over the app. Mixing it back toward
+   * the rail keeps a visible lift while the panel still clearly belongs to
+   * the surface it opened from. Derived, so every theme keeps the ratio. */
+  --agw-popover-surface: color-mix(
+    in srgb,
+    var(--agw-surface-elevated) 55%,
+    var(--agw-rail)
+  );
   --agw-modal-blur: blur(8px) saturate(0.85);
 
   /* Selected/active fill for rows, tabs and nav items. DERIVED from the text
@@ -57,17 +66,43 @@
   --agw-hover-paint: var(--agw-hover);
 
   /* ── Type scale ──────────────────────────────────────────────────────────
-   * SIX sizes for the whole window. The half-pixel one-off sizes that grew
-   * organically (9.5 / 10.5 / 11.5 / 12.5 / 13.5 / 14.5) collapsed onto this
-   * scale — near-duplicate sizes read as visual noise ("almost aligned"),
-   * a fixed scale reads as intent. New styles MUST pick from these tokens;
-   * raw px font-sizes are reserved for display/hero text (>15px). */
-  --agw-fs-micro: 10px;  /* badges, eyebrows, code metadata      */
-  --agw-fs-label: 11px;  /* section labels, sublines, chips      */
-  --agw-fs-ui: 12px;     /* controls, inputs, list rows          */
-  --agw-fs-md: 13px;     /* emphasized UI, headers, empty states */
+   * FIVE sizes for the whole window (11/12/13/14/15). The half-pixel one-off
+   * sizes that grew organically (9.5 / 10.5 / 11.5 / 12.5 / 13.5 / 14.5)
+   * collapsed onto this scale — near-duplicate sizes read as visual noise
+   * ("almost aligned"), a fixed scale reads as intent. New styles MUST pick
+   * from these tokens; raw px sizes are reserved for display text (>15px).
+   *
+   * The whole chrome tier moved UP one step (10/11/12/13 → 11/12/13/14).
+   * Measured against the reference app: it sets its chrome on 12 and 14px and
+   * holds 10/11 in reserve, while this window had 266 of ~310 size
+   * declarations at ≤12px. Small type set in semibold is the combination that
+   * reads cheap — bigger and lighter is what reads considered. `md` now lands
+   * on the reading size rather than a step below it: an "emphasized UI" label
+   * and body copy wanting the same size is correct, not a collision. */
+  --agw-fs-micro: 11px;  /* badges, eyebrows, code metadata      */
+  --agw-fs-label: 12px;  /* section labels, sublines, chips      */
+  --agw-fs-ui: 13px;     /* controls, inputs, list rows          */
+  --agw-fs-md: 14px;     /* emphasized UI, headers, empty states */
   --agw-fs-body: 14px;   /* transcript / reading text            */
   --agw-fs-title: 15px;  /* pane titles                          */
+
+  /* ── Weight scale ────────────────────────────────────────────────────────
+   * FOUR roles. Every `font-weight` in this file resolves through one of them,
+   * so the window's overall "loudness" is four numbers, not 151 decisions.
+   *
+   * `medium` is the DEFAULT for chrome — names, labels, values, list rows,
+   * controls. It used to be 600: 122 of 151 weight declarations were ≥600 and
+   * exactly one was 400, which removes the emphasis channel entirely (nothing
+   * can stand out when everything is already bold) and thickens stems at label
+   * sizes until the text reads dense instead of crafted.
+   *
+   * `strong` is reserved for things that must out-rank their neighbours: pane
+   * titles, the active tab/nav row, prose headings and `<strong>`. `display`
+   * is for non-reading marks only — wordmark, avatars, hero numerals. */
+  --agw-fw-body: 400;
+  --agw-fw-medium: 500;
+  --agw-fw-strong: 600;
+  --agw-fw-display: 700;
 
   /* ── Prose tier ──────────────────────────────────────────────────────────
    * The scale above fixed the CHROME. Prose — the surface actually read most —
@@ -108,11 +143,16 @@
   /* Base bumped 13 → 14px for a more comfortable read in the agent window. */
   font-size: var(--agw-fs-body);
   line-height: 1.55;
-  /* Inter is designed to be tracked tighter as it grows (dynamic metrics):
-   * untracked Inter at UI sizes reads loose/"default". ~-0.006em is the
-   * metric-correct value for the 14px base; reading text and headings tighten
-   * further below. Mono opts back out (negative tracking hurts code). */
-  letter-spacing: -0.006em;
+  /* Tracking is applied where the SIZE earns it, not globally.
+   *
+   * This used to be -0.006em on the root, which every 11–13px control, chip and
+   * label inherited. Inter's dynamic metrics do want tighter tracking as type
+   * grows — but the inverse is what matters here: at chrome sizes, negative
+   * tracking closes the counters, and combined with a semibold stem it is
+   * exactly what made this window read cramped next to apps that leave small
+   * text alone. The prose tier (--agw-md, 15px) and headings keep their own
+   * negative values below, where the size makes them correct. */
+  letter-spacing: normal;
   /* NOT `-webkit-font-smoothing: antialiased`.
    *
    * That is a macOS habit. On Windows it switches Chromium from subpixel (RGB)
@@ -208,6 +248,93 @@
 
 /* Jump rail — vertical strip of per-user-message pins on the right edge of the
  * conversation. Each pin is a short dash that widens + tints on hover/active. */
+/* "Jump to latest" — a floating return-to-bottom pill.
+ *
+ * Centred rather than right-aligned so it never lands on the jump rail, and
+ * elevated like a popover (not a card): it sits ABOVE the transcript rather
+ * than in it, so it earns a real shadow and a solid — not translucent —
+ * background. Text scrolling underneath must never show through a control the
+ * reader is trying to read. */
+.agw-jumplatest {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--agw-border);
+  border-radius: 999px;
+  background: var(--agw-surface-elevated);
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 28%);
+  transition:
+    color 0.12s ease,
+    border-color 0.12s ease,
+    transform 0.12s ease;
+  animation: agw-jumplatest-in 0.16s ease-out both;
+}
+.agw-jumplatest:hover {
+  color: var(--agw-text);
+  border-color: var(--agw-border-strong);
+}
+.agw-jumplatest:active {
+  /* Keep the centring transform — a bare scale() would drop translateX and
+   * throw the pill to the right on every press. */
+  transform: translateX(-50%) scale(0.97);
+}
+.agw-jumplatest:focus-visible {
+  outline: none;
+  box-shadow:
+    0 6px 18px rgb(0 0 0 / 28%),
+    0 0 0 2px var(--agw-ring);
+}
+.agw-jumplatest-label {
+  white-space: nowrap;
+}
+/* Live dot — only while a turn is streaming below the fold. Paired with a
+ * distinct aria-label, so it is never the sole carrier of that state. */
+.agw-jumplatest-live {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--agw-accent);
+  animation: agw-jumplatest-pulse 1.6s ease-in-out infinite;
+}
+@keyframes agw-jumplatest-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+@keyframes agw-jumplatest-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-jumplatest {
+    animation: none;
+  }
+  .agw-jumplatest-live {
+    animation: none;
+  }
+}
+
 .agw-jumprail {
   position: absolute;
   right: 4px;
@@ -350,7 +477,7 @@
 }
 .agw-titlebar-title {
   font-size: var(--agw-fs-ui);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   letter-spacing: 0.01em;
   color: var(--agw-text-muted);
   -webkit-user-select: none;
@@ -532,8 +659,11 @@
    * surfaces cannot be guaranteed to match; 95% makes the difference
    * imperceptible while still reading as a floating, blurred panel. */
   background: color-mix(in srgb, var(--agw-popover-surface) 95%, transparent);
-  -webkit-backdrop-filter: blur(24px) saturate(140%);
-  backdrop-filter: blur(24px) saturate(140%);
+  /* Restrained glass: enough blur for depth, but no saturation push — the
+   * 140% boost recolored whatever sat behind the panel, which is part of what
+   * made popovers look like foreign material instead of the app's own. */
+  -webkit-backdrop-filter: blur(14px) saturate(112%);
+  backdrop-filter: blur(14px) saturate(112%);
   border: 1px solid var(--agw-border-strong);
   border-radius: var(--agw-radius-lg);
   box-shadow: var(--agw-shadow-pop);
@@ -570,7 +700,7 @@
 .agw-model-trigger-effort {
   flex-shrink: 0;
   color: var(--agw-accent);
-  font-weight: 700;
+  font-weight: var(--agw-fw-strong);
   letter-spacing: 0.02em;
 }
 /* Leading mode glyph on the trigger — gives the pill identity and shows the
@@ -630,7 +760,7 @@
 .agw-model-trigger-name {
   min-width: 0;
   overflow: hidden;
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -791,7 +921,7 @@
 }
 .agw-mode-item-hint {
   font-size: var(--agw-fs-label);
-  font-weight: 400;
+  font-weight: var(--agw-fw-body);
   line-height: 1.4;
   color: var(--agw-text-subtle);
   white-space: normal;
@@ -802,7 +932,7 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  font-weight: 700;
+  font-weight: var(--agw-fw-display);
   border-radius: var(--agw-radius-sm);
   color: var(--agw-accent);
   background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
@@ -832,7 +962,7 @@
 }
 .agw-model-title {
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
 }
 .agw-model-count {
@@ -896,14 +1026,14 @@
   align-items: center;
   gap: 6px;
   font-size: var(--agw-fs-micro);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--agw-text-subtle);
   padding: 7px 8px 4px;
 }
 .agw-model-group-count {
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   opacity: 0.75;
 }
 .agw-model-item {
@@ -953,7 +1083,7 @@
 }
 .agw-model-name {
   font-size: var(--agw-fs-md);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -978,7 +1108,7 @@
   border: 1px solid var(--agw-border);
   border-radius: var(--agw-radius-pill);
   font-size: var(--agw-fs-micro);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
@@ -1007,7 +1137,7 @@
   background: transparent;
   color: var(--agw-accent);
   font-size: var(--agw-fs-micro);
-  font-weight: 700;
+  font-weight: var(--agw-fw-strong);
   letter-spacing: 0.02em;
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease;
@@ -1055,7 +1185,7 @@
 }
 .agw-bud-title {
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
 }
 .agw-bud-value {
@@ -1128,7 +1258,7 @@
   background: transparent;
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-micro);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   outline: none;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
@@ -1219,7 +1349,7 @@
   background: transparent;
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
   outline: none;
@@ -1586,7 +1716,7 @@
   background: var(--agw-control-muted);
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
 }
 
 /* Background-turn spinner — a small accent ring shown on the working chat / its
@@ -1624,143 +1754,256 @@
   }
 }
 
-/* ── Team screen (center takeover) ─────────────────────────────────────── */
-.agw-team-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 48px;
-  padding: 0 14px;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--agw-border);
-}
-.agw-team-title {
-  font-size: var(--agw-fs-md);
-  font-weight: 600;
-  color: var(--agw-text);
-}
-.agw-team-phase {
-  font-size: var(--agw-fs-label);
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: var(--agw-radius-pill);
-  color: var(--agw-accent);
-  background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
-}
-.agw-team-progress-label {
-  font-size: var(--agw-fs-label);
-  color: var(--agw-text-subtle);
-}
-.agw-team-progress {
-  width: 90px;
-  height: 5px;
-  border-radius: var(--agw-radius-pill);
-  background: var(--agw-border);
-  overflow: hidden;
-}
-.agw-team-progress-fill {
-  height: 100%;
-  border-radius: var(--agw-radius-pill);
-  background: var(--agw-accent);
-  transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.agw-team-body {
+/* ── Team panel (right-dock tab) ──────────────────────────────────────────
+ * The team surface: a group chat beside the conversation. Member bubbles
+ * stack LEFT (per-member tint), the Lead's bubbles stack RIGHT (your side of
+ * the room). Navigation is the Members dropdown; picking a member lays their
+ * live stream over the chat in the same area. View-only — no composer. */
+.agw-tp-root {
   flex: 1;
   min-height: 0;
   display: flex;
+  flex-direction: column;
+  background: var(--agw-conversation);
 }
-.agw-team-side {
-  width: 244px;
-  flex-shrink: 0;
-  overflow-y: auto;
-  padding: 12px 10px;
-  border-right: 1px solid var(--agw-border);
-}
-.agw-team-side-label {
-  font-size: var(--agw-fs-label);
-  font-weight: 600;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
-  color: var(--agw-text-subtle);
-  padding: 0 6px 6px;
-}
-.agw-team-member {
+.agw-tp-head {
   display: flex;
   align-items: center;
-  gap: 9px;
-  width: 100%;
-  padding: 7px 8px;
-  border: none;
-  background: transparent;
-  border-radius: var(--agw-radius-md);
-  cursor: pointer;
-  text-align: left;
+  gap: 8px;
+  height: 40px;
+  padding: 0 12px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-tp-title {
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-strong);
   color: var(--agw-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.agw-team-member:hover {
-  background: var(--agw-hover-paint);
+.agw-tp-meta {
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
-.agw-team-member[data-active="true"] {
+.agw-tp-body {
+  flex: 1;
+  min-width: 0;
+  overflow-y: scroll;
+  overflow-x: hidden;
+  padding: 14px 14px 16px;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+/* A conversation docked in the side panel (`ChatPanel`). It reuses the team
+ * panel's frame (`.agw-tp-*`) so a docked chat sits in the dock the same way a
+ * member's stream does.
+ *
+ * The transcript takes the same MEASURE as the main pane. The dock is resizable
+ * and has an Expand toggle, so "it's the narrow surface" is only true until the
+ * user widens it — an uncapped column then runs the same ~110-characters-per-
+ * line document dump the centre pane caps to avoid. Below the cap it costs
+ * nothing (the column is already narrower), so one rule covers both widths.
+ *
+ * 720px, not 768: the centre pane caps its BOX at 768 and pads it by 24 either
+ * side, so 720 is the text width it actually produces. `.agw-tp-body` already
+ * supplies this panel's gutter, so capping at 768 here would have made docked
+ * lines 48px longer than the same prose in the main pane.
+ *
+ * `min-height: 100%` keeps the auto-scroll ResizeObserver measuring a box that
+ * fills the viewport, so a short transcript doesn't sit in a collapsed content
+ * element that never reports growth. */
+.agw-chatpanel-turns {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  min-width: 0;
+  min-height: 100%;
+}
+/* The composer at dock width. The main pane can afford 16px of gutter either
+ * side of a 768px column; here that gutter is a visible share of the width. */
+.agw-tp-root > .agw-composer-dock {
+  padding: 10px 10px 8px;
+}
+
+/* View-only footer — the user talks to the team through the Lead. */
+.agw-tp-foot {
+  flex-shrink: 0;
+  border-top: 1px solid var(--agw-border);
+  padding: 6px 12px;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  text-align: center;
+}
+
+/* Messenger stacks. Members left, Lead right — BOTH on the same neutral
+ * bubble material as the main chat's user bubble. Identity is carried by the
+ * name label and the alignment, never by per-member colors (colored bubbles
+ * read as toy chat, not a work surface). */
+.agw-tp-member,
+.agw-tp-lead {
+  background: var(--agw-bubble-user);
+  border-radius: var(--agw-radius-lg);
+  padding: 5px 11px 7px;
+}
+.agw-tp-member {
+  align-self: flex-start;
+  max-width: 92%;
+  border-bottom-left-radius: var(--agw-radius-sm);
+}
+.agw-tp-lead {
+  align-self: flex-end;
+  max-width: 88%;
+  border-bottom-right-radius: var(--agw-radius-sm);
+}
+/* A long message never grows its bubble. The body is a fixed scroll window —
+ * the exact contract of a tool card's output area (`.agw-tool-result`,
+ * max-height + inline scroll): short messages take their natural height,
+ * long ones scroll in place. No expand state, no fade mask, no jumps.
+ * NO `overscroll-behavior: contain` here — Chromium treats every
+ * `overflow: auto` box as a scroll container and `contain` would swallow the
+ * wheel even on SHORT bubbles with nothing to scroll, freezing the feed
+ * whenever the cursor rests on a bubble. Default chaining gives the right
+ * feel: a long bubble scrolls in place, then hands off to the feed. */
+.agw-tp-clip {
+  max-height: 300px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+/* The author's name renders as a small tinted CHIP — the ONLY place a
+ * member's identity color appears. `currentColor` is the label color the
+ * bubble passes in, so the wash always matches the name automatically
+ * (same recipe as `.agw-model-avatar`: tinted fill + colored text). */
+.agw-tp-member .agw-turn-label,
+.agw-tp-lead .agw-turn-label {
+  padding: 2px 8px;
+  border-radius: var(--agw-radius-pill);
+  background: color-mix(in srgb, currentColor 13%, transparent);
+}
+
+/* An @mention inside a message renders as a chip, never plain text — the
+ * Slack convention: ONE uniform mention style (accent), instantly scannable,
+ * no rainbow. Emitted by `prettifyMentions` as `[@Name](#mention-id)` and
+ * swapped for this span by AgentMarkdown's link renderer. */
+.agw-mention-chip {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: var(--agw-radius-sm);
   background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
+  color: var(--agw-accent);
+  font-weight: var(--agw-fw-medium);
+  font-size: 0.95em;
+  line-height: 1.45;
+  white-space: nowrap;
 }
-.agw-team-chat-row {
-  color: var(--agw-text-muted);
+
+/* Members dropdown (the panel's only navigation). */
+.agw-tp-members-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--agw-border-strong);
+  background: var(--agw-state-quiet);
+  color: var(--agw-text);
+  border-radius: var(--agw-radius-pill);
+  padding: 3px 10px;
+  font-size: var(--agw-fs-ui);
+  cursor: pointer;
+}
+.agw-tp-members-btn:hover {
+  background: var(--agw-state-selected);
+}
+/* Container inherits the shared popover look from `.agw-menu` (same glassy
+ * surface, border, shadow, and entrance as the model selector / context
+ * tooltip); this class only positions and sizes it. */
+.agw-tp-dd {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 216px;
+  padding: 4px;
+  z-index: 30;
+}
+.agw-tp-dd-label {
+  font-size: var(--agw-fs-micro);
+  letter-spacing: 0.4px;
+  color: var(--agw-text-subtle);
+  padding: 7px 9px 3px;
+}
+/* Rows ride `.agw-menu-item` (identical hover/selected/focus behavior to
+ * every other popover row); this class only adds the row layout. */
+.agw-tp-dd-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 9px;
+  font-size: var(--agw-fs-ui);
+  text-align: left;
+}
+.agw-tp-dd-state {
+  margin-left: auto;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  white-space: nowrap;
+}
+.agw-tp-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.agw-tp-dot[data-pulse] {
+  animation: agw-team-pulse 1.4s ease-in-out infinite;
 }
 @keyframes agw-team-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .agw-team-unread[data-pulse] { animation: none; }
+  .agw-tp-dot[data-pulse] { animation: none; }
 }
-.agw-team-member-name {
+
+/* Team trace pill in the MAIN chat — the compact stand-in for team traffic
+ * whose content lives in the Team panel (a member messaged the Lead, or the
+ * finished run's report request). User-side aligned; click opens the panel. */
+.agw-team-trace {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: var(--agw-fs-md);
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-  flex: 1;
-}
-
-.agw-team-side-note {
-  padding: 6px 8px;
+  gap: 7px;
+  border: 1px solid var(--agw-border-strong);
+  background: var(--agw-chip-surface, var(--agw-surface));
+  color: var(--agw-text-muted);
+  border-radius: var(--agw-radius-pill);
+  padding: 5px 12px;
   font-size: var(--agw-fs-ui);
-  color: var(--agw-text-subtle);
-  font-style: italic;
+  cursor: pointer;
 }
-/* Unread badge on the "Team chat" row — a small accent dot, shown while new
- * team messages landed after the user switched to a member's transcript. */
-.agw-team-unread {
-  width: 8px;
-  height: 8px;
+.agw-team-trace:hover {
+  color: var(--agw-text);
+  border-color: color-mix(in srgb, var(--agw-accent) 45%, var(--agw-border-strong));
+}
+.agw-team-trace-dot {
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
-  margin-left: auto;
   background: var(--agw-accent);
 }
-.agw-team-unread[data-pulse] {
+.agw-team-trace[data-tone="ask"] .agw-team-trace-dot {
+  background: var(--agw-warning);
   animation: agw-team-pulse 1.4s ease-in-out infinite;
 }
-
-.agw-team-main {
-  flex: 1;
-  min-width: 0;
-  overflow-y: scroll;
-  /* Wide reasoning/code content must scroll INSIDE its card, never grow a
-   * horizontal scrollbar on the column (that reads as the view wobbling). */
-  overflow-x: hidden;
-  padding: 18px 22px;
-  /* Keep the transcript width stable when a reasoning block expands enough to
-   * make the pane scrollable. A permanent one-sided lane avoids the left-gutter
-   * jump that made member transcripts nudge sideways on expand/collapse. */
-  scrollbar-gutter: stable;
-  overscroll-behavior: contain;
+.agw-team-trace[data-tone="done"] .agw-team-trace-dot {
+  background: var(--agw-added);
 }
+
 /* Terminal run status — a full-width banner so a long failure (e.g. a raw
  * provider error) wraps readably instead of ballooning into a giant pill. */
 .agw-team-status {
@@ -1875,7 +2118,7 @@
   color: var(--agw-text);
   cursor: pointer;
   font-size: var(--agw-fs-md);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
 }
 .agw-rail-team:hover {
   background: var(--agw-hover-paint);
@@ -1887,7 +2130,7 @@
 .agw-rail-team-tag {
   margin-left: auto;
   font-size: var(--agw-fs-micro);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text-subtle);
 }
 .agw-rail-team-badge {
@@ -1941,7 +2184,7 @@
   color: var(--agw-accent);
 }
 .agw-done-flash-label {
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2108,7 +2351,7 @@
 .agw-bgtask-state {
   flex: 0 0 auto;
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text-muted);
   background: var(--agw-control-muted);
   padding: 1px 7px;
@@ -2248,7 +2491,7 @@
   flex: 1 1 auto;
   min-width: 0;
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
   white-space: nowrap;
   overflow: hidden;
@@ -2257,7 +2500,7 @@
 .agw-tasks-count {
   flex: 0 0 auto;
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text-muted);
   background: var(--agw-control-muted);
   padding: 1px 7px;
@@ -2336,6 +2579,28 @@
   height: 14px;
   border: 1.5px solid var(--agw-border-strong);
 }
+/* Paused: the task the agent was on when the turn ended. It is neither running
+   (no spinner) nor finished (no tick), so it gets its own SHAPE — the pending
+   ring with a held centre — rather than a recoloured copy of either. */
+.agw-task-ico-paused {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--agw-border-strong);
+  position: relative;
+}
+.agw-task-ico-paused::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--agw-text-subtle);
+}
+.agw-task-row[data-status="paused"] {
+  background: var(--agw-hover-paint);
+}
+.agw-task-row[data-status="paused"] .agw-task-label {
+  color: var(--agw-text-muted);
+}
 /* A process you stopped on purpose is not a failure. Red belongs to a non-zero
    exit; a deliberate stop is simply over. */
 .agw-task-ico-stopped {
@@ -2344,6 +2609,100 @@
 }
 .agw-task-spin {
   margin: 1px; /* visually align the 13px ring within the 16px icon column */
+}
+
+/* Available to any surface whose state is carried by a glyph. Clipped rather
+   than `display:none` so assistive technology still reads it. */
+.agw-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Task indicator (header) + checklist card ─────────────────────────
+ * Sits immediately left of the context ring: the two "how is this turn going"
+ * readouts, together. Glyph + `closed/total`, opening the checklist itself.
+ *
+ * Deliberately quieter than a button and louder than plain text: it is a
+ * readout you glance at, but unlike the context ring it IS clickable (click
+ * pins the card open), so it gets a real hover/press response rather than the
+ * ring's `cursor: help`.
+ *
+ * Height matches the header's 28px icon buttons so the row stays on one
+ * baseline no matter which of its tenants are present. */
+.agw-taskind-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+.agw-taskind {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 7px;
+  border: none;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  outline: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.agw-taskind:hover,
+.agw-taskind[data-open] {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-taskind:active {
+  /* A press must be felt, and hover-paint alone reads as "still hovering" on
+     a control the pointer is already over. */
+  background: color-mix(in srgb, var(--agw-text) 12%, transparent);
+}
+.agw-taskind:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-taskind-count {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  font-variant-numeric: tabular-nums; /* the ratio must not jitter as it ticks */
+  letter-spacing: 0.1px;
+}
+/* Running — the glyph is replaced by the SAME spinner the checklist rows use
+   for the active task, so the header and the card agree at a glance. This only
+   ever renders while the conversation is actually streaming (see
+   `TaskIndicator`): a spinner must never claim work that has stopped. */
+.agw-taskind-spin {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+.agw-taskind[data-state="running"] {
+  color: var(--agw-text);
+}
+/* Paused — a task left open by a turn that ended. Held, never spinning, and
+   marked in the warning role so it is distinguishable from idle without
+   relying on colour alone (the card below spells out "Paused — …"). */
+.agw-taskind[data-state="paused"] .agw-taskind-count {
+  color: var(--agw-warning);
+}
+/* Done — the ending state. A quiet, earned confirmation, not a celebration. */
+.agw-taskind[data-state="done"] {
+  color: var(--agw-added);
+}
+
+/* The checklist card. Surface, border and shadow come from the shared
+   `.agw-menu` popover family — this only sets its measure. */
+.agw-taskpop {
+  min-width: 260px;
+  max-width: min(28rem, calc(100vw - 24px));
+  border-radius: var(--agw-radius-md);
+  overflow: hidden;
 }
 
 /* ── Context ring (header) + hover card ───────────────────────────────
@@ -2387,7 +2746,7 @@
   gap: 6px;
   margin-bottom: 8px;
   font-size: var(--agw-fs-micro);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--agw-text-subtle);
@@ -2403,7 +2762,7 @@
 }
 .agw-ctx-val {
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
 }
 .agw-ctx-bar {
@@ -2442,7 +2801,7 @@
 /* Section header (Pinned label / Projects toggle + sort). */
 .agw-rail-section-label {
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   text-transform: uppercase;
   letter-spacing: 0.6px;
   color: var(--agw-text-subtle);
@@ -2466,7 +2825,7 @@
   background: transparent;
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   text-transform: uppercase;
   letter-spacing: 0.6px;
   cursor: pointer;
@@ -2489,7 +2848,7 @@
   background: transparent;
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
   outline: none;
@@ -2552,7 +2911,7 @@
   background: transparent;
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   text-align: left;
   outline: none;
@@ -2569,7 +2928,7 @@
   min-width: 20px;
   margin-left: 6px;
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   font-variant-numeric: tabular-nums;
   color: var(--agw-text-subtle);
 }
@@ -2666,7 +3025,7 @@
   border-radius: var(--agw-radius-md);
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-ui);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
 }
@@ -2708,7 +3067,7 @@
   position: relative; /* containing block for the pool + floor shadow */
   z-index: 0; /* own stacking context: they can't slip behind ancestor paints */
   font-size: min(248px, 31cqi);
-  font-weight: 700;
+  font-weight: var(--agw-fw-display);
   letter-spacing: -0.03em;
   line-height: 1;
   text-align: center;
@@ -2800,31 +3159,198 @@
  * Quiet by construction: it orients, it is not an action. The folder name
  * carries the weight; its parent path trails behind at label size so the eye
  * lands on the project, not the drive letter. */
-.agw-home-root {
+/* Home screen project switcher — the row naming the workspace this window acts
+ * on, and the control for changing it.
+ *
+ * Ghost at rest: no fill, no border. The home screen's job is to invite the
+ * first message, so the scope line must not compete with the composer. The chip
+ * surface appears on hover/focus, which is also where the affordance is
+ * revealed — and unlike the static label this replaced, the pressable look is
+ * now a promise the row actually keeps. */
+.agw-projsw-wrap {
   display: flex;
-  align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-width: 0;
   margin: 0 0 clamp(14px, 2.2vh, 22px);
+  min-width: 0;
+}
+.agw-projsw {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  /* Capped, so a deep project path cannot stretch the chip across the column.
+     Past this the path truncates — it is the disambiguator, not the label. */
+  max-width: min(100%, 460px);
+  min-width: 0;
+  padding: 5px 8px 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
   color: var(--agw-text-subtle);
-  font-size: var(--agw-fs-ui);
+  font-family: inherit;
+  font-size: var(--agw-fs-label);
   line-height: 1.4;
+  cursor: pointer;
+  transition:
+    background 0.13s ease,
+    border-color 0.13s ease,
+    color 0.13s ease;
 }
-.agw-home-root-name {
-  color: var(--agw-text-muted);
-  font-weight: 600;
-  white-space: nowrap;
+.agw-projsw:hover,
+.agw-projsw[data-open] {
+  background: var(--agw-surface);
+  border-color: var(--agw-border-strong);
 }
-.agw-home-root-path {
+.agw-projsw:focus-visible {
+  outline: none;
+  background: var(--agw-surface);
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* Same yield order as the menu rows: the path shrinks to nothing before the
+   project name loses a character. */
+.agw-projsw-name {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--agw-text);
+  font-weight: var(--agw-fw-medium);
+  font-size: var(--agw-fs-ui);
+}
+.agw-projsw-path {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Behind the name in the hierarchy — present to disambiguate two folders of
+     the same name, not to be read. */
+  color: var(--agw-text-subtle);
+}
+.agw-projsw-chev {
+  display: inline-flex;
+  flex: none;
+  color: var(--agw-text-subtle);
+  transition:
+    color 0.13s ease,
+    transform 0.13s ease;
+}
+.agw-projsw:hover .agw-projsw-chev,
+.agw-projsw:focus-visible .agw-projsw-chev {
+  color: var(--agw-text-muted);
+}
+.agw-projsw[data-open] .agw-projsw-chev {
+  transform: rotate(180deg);
+  color: var(--agw-text-muted);
+}
+
+/* The menu. Portaled to `.agw-root`, so it is positioned in viewport
+ * coordinates and needs its own elevation — it floats over the transcript
+ * rather than sitting in it, hence a popover shadow and a SOLID fill. */
+.agw-projmenu {
+  position: fixed;
+  z-index: 60;
+  max-height: min(52vh, 420px);
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: 10px;
+  background: var(--agw-surface-elevated);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 42%);
+  animation: agw-projmenu-in 0.12s ease-out both;
+}
+.agw-projmenu:focus {
+  outline: none;
+}
+.agw-projmenu-list {
+  min-height: 0;
+  overflow-y: auto;
+  /* Rows truncate; they never scroll sideways. A horizontal scrollbar in a
+     menu means the row layout failed, and it hides the end of every name
+     behind a gesture nobody makes in a dropdown. */
+  overflow-x: hidden;
+}
+.agw-projmenu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-family: inherit;
   font-size: var(--agw-fs-label);
-  /* Sits behind the name in the hierarchy — present for disambiguation, not
-     for reading. */
-  opacity: 0.72;
+  text-align: left;
+  cursor: pointer;
+}
+/* Keyboard and pointer share one highlight — the active row is the same row
+ * whichever input is driving, so there is never a second, competing cursor. */
+.agw-projmenu-row[data-active] {
+  background: #ffffff0f;
+}
+.agw-projmenu-row[data-current] .agw-projmenu-name {
+  color: var(--agw-accent);
+}
+/* The name is the thing you are choosing by, so it keeps its space and only
+   truncates when it alone overruns the row. */
+.agw-projmenu-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--agw-text);
+  font-weight: var(--agw-fw-medium);
+  font-size: var(--agw-fs-ui);
+}
+/* `flex-basis: 0` is what makes the path yield FIRST: it claims only leftover
+   space, so it can never push the name out of the row — it just gets shorter,
+   down to nothing, before the name gives up a single character. */
+.agw-projmenu-path {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--agw-text-subtle);
+}
+/* `AgentIcon` sets `flex-shrink: 0` itself, so the glyphs need nothing here. */
+.agw-projmenu-check {
+  margin-left: auto;
+  display: inline-flex;
+  flex: none;
+  color: var(--agw-accent);
+}
+/* "Add project…" is separated because it creates something rather than
+   selecting among what exists. */
+.agw-projmenu-add {
+  margin-top: 4px;
+  padding-top: 9px;
+  border-top: 1px solid var(--agw-border);
+  border-radius: 0 0 7px 7px;
+  flex: none;
+}
+@keyframes agw-projmenu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-projmenu {
+    animation: none;
+  }
+  .agw-projsw-chev {
+    transition: color 0.13s ease;
+  }
 }
 
 /* Faint pool of overhead light the letters stand in. */
@@ -2884,6 +3410,20 @@
 }
 .agw-suggestion:last-child {
   border-bottom: none;
+}
+/* Starter labels are full sentences carrying the project name, so a narrow pane
+ * WILL wrap them. The glyph must hold its size and the label must be allowed to
+ * shrink, or the icon is squashed to a sliver on the first wrap. */
+.agw-suggestion-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--agw-text-subtle);
+}
+.agw-suggestion-label {
+  min-width: 0;
+  line-height: 1.45;
+  /* A long unbroken project/folder name must break rather than overflow. */
+  overflow-wrap: anywhere;
 }
 .agw-suggestion:hover {
   color: var(--agw-text);
@@ -3049,6 +3589,44 @@
   color: var(--agw-accent);
 }
 
+/* ── Inline runtime notice (output limit hit, stream dropped, …) ────────────
+ * Same shape as `.agw-injection` so the transcript keeps ONE vocabulary for
+ * "this is not the model talking", switched to the warning role. The icon
+ * carries the state too — tint alone would fail for anyone who can't
+ * distinguish it from the accent-tinted user note directly above. */
+.agw-notice {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 8px 0;
+  padding: 7px 11px;
+  border-left: 2px solid var(--agw-warning);
+  border-radius: 0 var(--agw-radius-md) var(--agw-radius-md) 0;
+  background: color-mix(in srgb, var(--agw-warning) 10%, transparent);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-md);
+  line-height: 1.45;
+}
+/* Capped and scrollable for the same reason the injection marker is: a
+ * provider error body can be long, and letting it run full height buries the
+ * agent's own output underneath it. */
+.agw-notice > span {
+  min-width: 0;
+  flex: 1 1 auto;
+  max-height: calc(1.45em * 6);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+}
+.agw-notice svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--agw-warning);
+}
+
 /* ── Docked "queued message" card (mid-turn injection, above the composer) ──
  * Mirrors `.agw-tasks` chrome so it stacks cleanly with the task panel and
  * tucks 12px behind the composer's top edge. */
@@ -3076,7 +3654,7 @@
 .agw-queued-label {
   flex-shrink: 0;
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--agw-accent);
@@ -3175,14 +3753,14 @@
 .agw-canvas-launch-kicker {
   color: var(--agw-accent);
   font-size: var(--agw-fs-label);
-  font-weight: 650;
+  font-weight: var(--agw-fw-strong);
   line-height: 1.1;
 }
 .agw-canvas-launch-title {
   overflow: hidden;
   color: var(--agw-text);
   font-size: var(--agw-fs-md);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3195,7 +3773,7 @@
   color: var(--agw-text-muted);
   font-family: var(--agw-font-code);
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
 }
 .agw-canvas-launch-open {
   color: var(--agw-text-subtle);
@@ -3325,7 +3903,7 @@
    scans as "<td> · its label" rather than one undifferentiated string. */
 .agw-pill-sel .agw-sel-tag {
   font-family: var(--agw-font-code);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
 }
 .agw-pill-sel .agw-sel-text {
   max-width: 15ch;
@@ -3333,7 +3911,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: color-mix(in srgb, var(--agw-accent) 72%, var(--agw-text-muted));
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
 }
 /* Selectable chip variant — switches the active file in the expanded result. */
 .agw-tool-chip-btn {
@@ -3570,6 +4148,7 @@
 .agw-diffview,
 .agw-tool-stream,
 .agw-injection > span,
+.agw-notice > span,
 .agw-shell-command code {
   animation-name: agw-scroll-fade-b;
   animation-duration: auto; /* span the full scroll range (scroll-driven) */
@@ -3734,7 +4313,7 @@
   padding: 1px 6px;
   border-radius: var(--agw-radius-sm);
   font-size: var(--agw-fs-micro);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -3792,7 +4371,7 @@
 }
 .agw-tree-name-dir {
   color: var(--agw-text);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
 }
 .agw-tree-meta {
   margin-left: auto;
@@ -3892,7 +4471,7 @@
   min-width: 0;
   font-family: var(--agw-font-code);
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   line-height: 1.5;
   color: var(--agw-text);
   white-space: pre-wrap;
@@ -4223,7 +4802,7 @@
 .agw-rv-file-name {
   flex-shrink: 0;
   color: var(--agw-text);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
 }
 .agw-rv-file-stats {
   display: inline-flex;
@@ -4242,7 +4821,7 @@
   padding: 0 12px;
   border-radius: var(--agw-radius-sm);
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
   outline: none;
@@ -4345,7 +4924,7 @@
   /* Full text colour (body is dimmed) + tighter tracking at display sizes +
    * more air above — headings anchor sections instead of crowding them. */
   margin: 22px 0 9px;
-  font-weight: 600;
+  font-weight: var(--agw-fw-strong);
   line-height: 1.3;
   letter-spacing: -0.014em;
   color: var(--agw-text);
@@ -4383,7 +4962,7 @@
   text-decoration: underline;
 }
 .agw-md strong {
-  font-weight: 600;
+  font-weight: var(--agw-fw-strong);
   color: var(--agw-text);
 }
 .agw-md em {
@@ -4533,7 +5112,7 @@
 }
 .agw-md th {
   background: var(--agw-surface);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
 }
 
 /* ── Thinking / reasoning block ─────────────────────────────────────
@@ -4553,7 +5132,7 @@
 .agw-think-label {
   flex-shrink: 0;
   font-size: var(--agw-fs-ui);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
 }
 .agw-timeline-rule {
   height: 1px;
@@ -4834,7 +5413,7 @@
 }
 .agw-mention-name {
   font-size: var(--agw-fs-md);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   flex-shrink: 0;
 }
 .agw-mention-path {
@@ -4968,7 +5547,7 @@
 .agw-ghost-accept {
   margin-left: 6px;
   color: var(--agw-accent);
-  font-weight: 700;
+  font-weight: var(--agw-fw-strong);
   font-size: var(--agw-fs-ui);
 }
 
@@ -4987,7 +5566,7 @@
   background: color-mix(in srgb, var(--agw-accent) 15%, transparent);
   color: var(--agw-accent);
   font-size: var(--agw-fs-md);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   line-height: 1.45;
   white-space: nowrap;
   cursor: default;
@@ -5035,7 +5614,7 @@
   align-items: center;
   gap: 8px;
   font-size: var(--agw-fs-md);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
 }
 .agw-qp-title svg {
@@ -5070,7 +5649,7 @@
   gap: 7px;
   margin-bottom: 7px;
   font-size: var(--agw-fs-md);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   line-height: 1.45;
   color: var(--agw-text);
 }
@@ -5124,7 +5703,7 @@
   border: 1px solid var(--agw-border);
   background: color-mix(in srgb, var(--agw-text) 5%, transparent);
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   line-height: 1;
   color: var(--agw-text-subtle);
   flex-shrink: 0;
@@ -5350,7 +5929,7 @@
 .agw-files-result-name {
   flex-shrink: 0;
   color: var(--agw-text);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
 }
 .agw-files-result-dir {
   min-width: 0;
@@ -5425,7 +6004,7 @@
 .agw-fv-crumb-name {
   flex-shrink: 0;
   color: var(--agw-text);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
 }
 .agw-fv-openide {
   display: inline-flex;
@@ -5439,7 +6018,7 @@
   background: transparent;
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   outline: none;
@@ -5511,7 +6090,7 @@
   background: transparent;
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
   outline: none;
@@ -5634,6 +6213,35 @@
 .agw-tabstrip-scroll::-webkit-scrollbar {
   height: 0;
 }
+/* Overflow signifier. With the scrollbar hidden, nothing otherwise says tabs
+ * exist past the edge — a tab cut flat at the boundary reads as the last one.
+ * The fade is set only on the side that actually has more (see
+ * `useTabStripScroll`), so it disappears the moment you reach either end
+ * instead of implying content that isn't there. */
+.agw-tabstrip-scroll[data-overflow="end"] {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
+}
+.agw-tabstrip-scroll[data-overflow="start"] {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 22px);
+  mask-image: linear-gradient(to right, transparent, #000 22px);
+}
+.agw-tabstrip-scroll[data-overflow="both"] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 22px,
+    #000 calc(100% - 22px),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 22px,
+    #000 calc(100% - 22px),
+    transparent
+  );
+}
 
 /* A tab pill: title button + close affordance, fused into one rounded chip. */
 .agw-tabpill {
@@ -5668,12 +6276,12 @@
   background: transparent;
   color: inherit;
   font-size: var(--agw-fs-ui);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   outline: none;
 }
 .agw-tabpill[data-active] .agw-tabpill-main {
-  font-weight: 600;
+  font-weight: var(--agw-fw-strong);
 }
 .agw-tabpill-main:focus-visible {
   box-shadow: inset 0 0 0 2px var(--agw-ring);
@@ -5684,6 +6292,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Team-member tab: the member's identity color as a small dot (same color as
+ * their name chip in the group chat), sized to sit where a tab icon would. */
+.agw-tabpill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 .agw-tabpill-close {
   display: inline-flex;
@@ -5737,7 +6353,7 @@
   gap: 3px;
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
 }
 
 .agw-canvas-field .agw-csel-trigger {
@@ -5774,7 +6390,7 @@
   background: transparent;
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
 }
 
@@ -5833,7 +6449,7 @@
   overflow: hidden;
   color: var(--agw-text);
   font-family: var(--agw-font-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5867,6 +6483,11 @@
   cursor: grabbing;
 }
 
+/* The artwork box. Only PANNING rides the transform — zoom changes the box's
+ * width/height (see `CanvasDiagram`), because `will-change: transform` makes
+ * this a composited layer whose bitmap the GPU would otherwise stretch, turning
+ * a zoomed-in diagram into an unreadable smear. Resizing the layer forces a
+ * re-raster, so the SVG stays vector-sharp at every zoom level. */
 .agw-diagram-artwork {
   position: absolute;
   top: 0;
@@ -6069,7 +6690,7 @@
   outline: none;
   background: transparent;
   color: var(--agw-text-muted);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
 }
 
@@ -6113,7 +6734,7 @@
   background: transparent;
   color: var(--agw-text);
   font-size: var(--agw-fs-ui);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   text-align: left;
   cursor: pointer;
   transition: background 0.12s ease;
@@ -6203,7 +6824,7 @@
   background: transparent;
   color: inherit;
   font-size: var(--agw-fs-label);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   font-family: var(--agw-font-code);
   cursor: pointer;
   outline: none;
@@ -6361,7 +6982,7 @@
   background: transparent;
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   outline: none;
@@ -6425,7 +7046,7 @@
   background: color-mix(in srgb, var(--agw-accent) 15%, transparent);
   color: var(--agw-accent);
   font-size: var(--agw-fs-md);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   line-height: 1.45;
   white-space: nowrap;
   max-width: 220px;
@@ -6448,7 +7069,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
 }
 
 /* Provenance tag in the `/` picker rows — sits between the name and the id. */
@@ -6483,7 +7104,7 @@
 .agw-br-sugg-head {
   padding: 6px 9px 3px;
   font-size: var(--agw-fs-micro);
-  font-weight: 700;
+  font-weight: var(--agw-fw-strong);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
@@ -6577,7 +7198,7 @@
 }
 .agw-settings-nav-eyebrow {
   font-size: var(--agw-fs-micro);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
@@ -6585,7 +7206,7 @@
 .agw-settings-nav-title {
   margin-top: 2px;
   font-size: var(--agw-fs-md);
-  font-weight: 600;
+  font-weight: var(--agw-fw-strong);
   color: var(--agw-text);
 }
 .agw-settings-nav-scroll {
@@ -6599,7 +7220,7 @@
 .agw-settings-nav-group-label {
   padding: 0 8px 6px;
   font-size: var(--agw-fs-micro);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
@@ -6615,7 +7236,7 @@
   background: transparent;
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-ui);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   text-align: left;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
@@ -6634,7 +7255,7 @@
 }
 .agw-settings-nav-item[data-active] {
   color: var(--agw-set-nav-active-fg);
-  font-weight: 600;
+  font-weight: var(--agw-fw-strong);
   background: var(--agw-set-nav-active-bg);
 }
 .agw-settings-nav-item:focus-visible {
@@ -6681,7 +7302,7 @@
   background: var(--agw-surface);
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   box-shadow: var(--agw-set-shadow-soft);
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
@@ -6696,14 +7317,14 @@
 }
 .agw-settings-head-eyebrow {
   font-size: var(--agw-fs-micro);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
 }
 .agw-settings-head-title {
   font-size: 16px;
-  font-weight: 650;
+  font-weight: var(--agw-fw-strong);
   letter-spacing: -0.01em;
   color: var(--agw-text);
 }
@@ -6764,7 +7385,7 @@
 }
 .agw-set-section-title {
   font-size: var(--agw-fs-title);
-  font-weight: 650;
+  font-weight: var(--agw-fw-strong);
   letter-spacing: -0.01em;
   color: var(--agw-text);
 }
@@ -6800,7 +7421,7 @@
 }
 .agw-set-row-label-text {
   font-size: var(--agw-fs-md);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   line-height: 1.35;
   color: var(--agw-text);
 }
@@ -6912,7 +7533,7 @@
   background: transparent;
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   /* box-shadow rides the same curve so the active pill's shadow fades in
      with its background instead of popping on a frame. */
@@ -6967,7 +7588,7 @@
   border: 1px solid var(--agw-border);
   border-radius: var(--agw-radius-sm);
   font-size: var(--agw-fs-micro);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--agw-text-muted);
@@ -7014,7 +7635,7 @@
   background: var(--agw-surface);
   color: var(--agw-text);
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
   box-shadow: var(--agw-set-shadow-soft);
@@ -7147,7 +7768,7 @@
   align-items: center;
   gap: 7px;
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
@@ -7184,7 +7805,7 @@
 .agw-shell-add-label {
   display: block;
   font-size: var(--agw-fs-md);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
 }
 .agw-shell-add-hint {
@@ -7280,7 +7901,7 @@
 }
 .agw-shell-name {
   font-size: var(--agw-fs-md);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
 }
 .agw-shell-tag {
@@ -7361,7 +7982,7 @@
   color: var(--agw-text-subtle);
 }
 .agw-shell-foot strong {
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
 }
 
@@ -7411,7 +8032,7 @@
   flex: 1;
   min-width: 0;
   font-size: var(--agw-fs-md);
-  font-weight: 650;
+  font-weight: var(--agw-fw-strong);
   letter-spacing: -0.01em;
   color: var(--agw-text);
 }
@@ -7451,7 +8072,7 @@
   flex: 1;
   min-width: 0;
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7494,7 +8115,7 @@
   background: var(--agw-surface);
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   outline: none;
@@ -7563,7 +8184,7 @@
   flex: 1;
   min-width: 0;
   font-size: var(--agw-fs-body);
-  font-weight: 650;
+  font-weight: var(--agw-fw-strong);
   letter-spacing: -0.01em;
   color: var(--agw-text);
   overflow: hidden;
@@ -7606,7 +8227,7 @@
 .agw-set-group-foot-label {
   margin-right: 4px;
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
@@ -7625,7 +8246,7 @@
   background: var(--agw-surface-elevated);
   color: var(--agw-text);
   font-size: var(--agw-fs-md);
-  font-weight: 700;
+  font-weight: var(--agw-fw-display);
 }
 .agw-prov-conn {
   display: grid;
@@ -7644,7 +8265,7 @@
 }
 .agw-prov-edit-field > span {
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   letter-spacing: 0.04em;
   color: var(--agw-text-subtle);
 }
@@ -7674,7 +8295,7 @@
 }
 .agw-prov-models-head {
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
@@ -7763,7 +8384,7 @@
 }
 .agw-prov-model-name {
   font-size: var(--agw-fs-md);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7802,7 +8423,7 @@
   border: 1px solid var(--agw-border);
   border-radius: var(--agw-radius-pill);
   font-size: var(--agw-fs-micro);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text-muted);
 }
 .agw-prov-edit {
@@ -7829,7 +8450,7 @@
   background: transparent;
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
   outline: none;
@@ -7923,7 +8544,7 @@
 }
 .agw-prov-add-name {
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   white-space: nowrap;
 }
 .agw-prov-add-key {
@@ -7956,14 +8577,14 @@
 }
 .agw-profile-tile-value {
   font-size: 22px;
-  font-weight: 650;
+  font-weight: var(--agw-fw-strong);
   letter-spacing: -0.02em;
   color: var(--agw-text);
   font-variant-numeric: tabular-nums;
 }
 .agw-profile-tile-label {
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
@@ -8134,7 +8755,7 @@
 }
 .agw-profile-row-label {
   font-size: var(--agw-fs-ui);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
   white-space: nowrap;
   overflow: hidden;
@@ -8165,7 +8786,7 @@
 .agw-profile-row-val {
   text-align: right;
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   font-variant-numeric: tabular-nums;
   color: var(--agw-text-muted);
 }
@@ -8234,7 +8855,7 @@
 }
 .agw-profile-name {
   font-size: 17px;
-  font-weight: 650;
+  font-weight: var(--agw-fw-strong);
   letter-spacing: -0.01em;
   color: var(--agw-text);
 }
@@ -8253,13 +8874,13 @@
 }
 .agw-profile-readout-date {
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
 }
 .agw-profile-readout-val {
   font-size: var(--agw-fs-ui);
   color: var(--agw-accent);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
 }
 .agw-profile-readout-turns,
 .agw-profile-readout-hint {
@@ -8342,13 +8963,13 @@
   gap: 8px;
   padding: 14px 16px 10px;
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
 }
 .agw-prov-side-count {
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
 }
 .agw-prov-side-scroll {
   flex: 1;
@@ -8435,7 +9056,7 @@
 }
 .agw-prov-item-name {
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -8484,7 +9105,7 @@
   gap: 6px;
   padding: 6px 12px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text-muted);
   background: transparent;
   border: 1px solid var(--agw-border-strong);
@@ -8555,7 +9176,7 @@
 }
 .agw-prov-detail-name {
   font-size: var(--agw-fs-title);
-  font-weight: 650;
+  font-weight: var(--agw-fw-strong);
   letter-spacing: -0.01em;
   color: var(--agw-text);
   overflow: hidden;
@@ -8569,7 +9190,7 @@
 .agw-prov-models-count {
   margin-left: 4px;
   color: var(--agw-text-subtle);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
 }
 
 /* Custom select (replaces native <select>) */
@@ -8698,7 +9319,7 @@
   background: transparent;
   color: var(--agw-text);
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
@@ -8787,7 +9408,7 @@
   background: transparent;
   color: var(--agw-text);
   font-size: var(--agw-fs-ui);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   text-align: left;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
@@ -8810,7 +9431,7 @@
 }
 /* Value shown on the composer pill (chosen level / On / Off). */
 .agw-reason-value {
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text-subtle);
 }
 .agw-reason-value[data-on] {
@@ -8819,12 +9440,12 @@
 /* Master on/off row + its state chip. */
 .agw-reason-toggle {
   color: var(--agw-text);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
 }
 .agw-reason-state {
   flex-shrink: 0;
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   padding: 1px 8px;
   border-radius: var(--agw-radius-pill);
   background: var(--agw-control-muted);
@@ -8843,7 +9464,7 @@
 .agw-reason-heading {
   padding: 2px 8px 4px;
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
@@ -8983,7 +9604,7 @@
 }
 .agw-mcp-card-name {
   font-size: var(--agw-fs-body);
-  font-weight: 650;
+  font-weight: var(--agw-fw-strong);
   letter-spacing: -0.01em;
   color: var(--agw-text);
   overflow: hidden;
@@ -9076,7 +9697,7 @@
   align-items: center;
   gap: 8px;
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   letter-spacing: 0.04em;
   color: var(--agw-text-subtle);
 }
@@ -9097,7 +9718,7 @@
 }
 .agw-mcp-count {
   color: var(--agw-text-subtle);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
 }
 
 /* Multiline input — matches agw-set-input, flat, no focus halo. */
@@ -9183,7 +9804,7 @@
 }
 .agw-mcp-empty-title {
   font-size: var(--agw-fs-md);
-  font-weight: 650;
+  font-weight: var(--agw-fw-strong);
   color: var(--agw-text);
 }
 .agw-mcp-empty-sub {
@@ -9222,7 +9843,7 @@
 }
 .agw-mcp-path-copied {
   color: var(--agw-added);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -9278,7 +9899,7 @@
 }
 .agw-appr-card-name {
   font-size: var(--agw-fs-ui);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
   min-width: 0;
   overflow: hidden;
@@ -9319,7 +9940,7 @@
 }
 .agw-appr-drop strong {
   color: var(--agw-text);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
 }
 
 /* ── Color row (swatch + hex) ────────────────────────────────────────────── */
@@ -9466,7 +10087,7 @@
 }
 .agw-skill-hero-eyebrow {
   font-size: var(--agw-fs-micro);
-  font-weight: 700;
+  font-weight: var(--agw-fw-strong);
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
@@ -9479,7 +10100,7 @@
 }
 .agw-skill-hero-count b {
   font-size: 34px;
-  font-weight: 650;
+  font-weight: var(--agw-fw-strong);
   line-height: 1;
   color: var(--agw-added);
   font-variant-numeric: tabular-nums;
@@ -9489,7 +10110,7 @@
 }
 .agw-skill-hero-count span {
   font-size: var(--agw-fs-title);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text-subtle);
 }
 .agw-skill-hero-label {
@@ -9524,7 +10145,7 @@
 }
 .agw-skill-hero-state {
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text-subtle);
 }
 
@@ -9542,7 +10163,7 @@
 }
 .agw-skill-equipped-head > span:first-child {
   font-size: var(--agw-fs-label);
-  font-weight: 700;
+  font-weight: var(--agw-fw-display);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--agw-text);
@@ -9567,7 +10188,7 @@
   background: color-mix(in srgb, var(--agw-added) 12%, transparent);
   color: var(--agw-text);
   font-size: var(--agw-fs-ui);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease;
 }
@@ -9692,14 +10313,14 @@
   gap: 5px;
   align-self: flex-start;
   font-size: var(--agw-fs-micro);
-  font-weight: 700;
+  font-weight: var(--agw-fw-strong);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--agw-text-subtle);
 }
 .agw-skill-card-name {
   font-size: var(--agw-fs-md);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   line-height: 1.3;
   color: var(--agw-text);
   padding-right: 22px;
@@ -9897,21 +10518,185 @@
 }
 
 /* ── Composer: drag-drop + image attachments ──────────────────────────
- * Files dragged from the OS file manager land here (Tauri drag-drop). Images
- * (vision models only) become attachment cards; other files become @path pills. */
-.agw-composer-drop::after {
+ * Files land here from TWO transports that share one visual language: the OS
+ * file manager (Tauri drag-drop) and this window's own Files panel (pointer
+ * drag). Images (vision models only) become attachment cards; other files
+ * become @path pills. */
+/* The armed state is a SHINE, not an outline: two comets of accent light
+   travel the composer's border while a faint bloom pools beneath it. A static
+   ring read as "selected input"; a moving light reads as the surface being
+   alive and waiting. No dashes, no overlay text.
+
+   Anchored to `.agw-composer-surface` (the actual rounded input box), NOT the
+   `.agw-composer` wrapper — the wrapper also contains the disclaimer line
+   below the box, so a wrapper-anchored effect drew the wrong shape around the
+   wrong corners. `border-radius: inherit` tracks the surface exactly,
+   including its square-top `connectedTop` variant. */
+
+/* Registered so the conic angle itself is animatable — animating a plain
+   custom property would snap instead of sweep. */
+@property --agw-drop-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+/* Ambient underlight. The surface has no z-index of its own, so the
+   negative-z pseudo paints behind its background inside the wrapper's
+   stacking context: only the spill past the edges shows, biased downward so
+   the top stays dark. Deliberately quiet — the traveling shine carries the
+   state; this only keeps the box from floating on pure black. */
+.agw-composer-drop .agw-composer-surface::before {
   content: "";
   position: absolute;
-  inset: 0;
-  /* DERIVED, not a one-off: the composer surface is `rounded-[16px]` and this
-     ring sits ~6px outside it, so 16 + 6 keeps the two curves concentric.
-     Retune this only alongside the composer's own radius. */
-  border-radius: 22px;
+  inset: -1px;
+  border-radius: inherit;
   pointer-events: none;
-  border: 1.5px dashed var(--agw-accent);
-  background: color-mix(in srgb, var(--agw-accent) 7%, transparent);
-  z-index: 5;
+  z-index: -1;
+  box-shadow:
+    0 8px 26px -8px color-mix(in srgb, var(--agw-accent) 11%, transparent),
+    0 16px 56px -10px color-mix(in srgb, var(--agw-accent) 5%, transparent);
+  animation: agw-drop-arm 200ms ease-out both;
 }
+
+/* The shine itself: a conic gradient masked down to a 1.5px border band
+   (the two-layer mask + `exclude` punches out the middle), swept by rotating
+   the registered angle. Two symmetric comets, each with a dim tail and a hot
+   head brightened toward white from the theme accent — every theme shines in
+   its own color. The band overlays the surface's real border, so it needs a
+   positive z-index; at 1.5px it can never cover content. */
+.agw-composer-drop .agw-composer-surface::after {
+  content: "";
+  position: absolute;
+  inset: -1.5px;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 6;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--agw-drop-angle),
+    transparent 0deg,
+    color-mix(in srgb, var(--agw-accent) 45%, transparent) 55deg,
+    color-mix(in srgb, var(--agw-accent) 80%, white) 80deg,
+    transparent 110deg,
+    transparent 180deg,
+    color-mix(in srgb, var(--agw-accent) 45%, transparent) 235deg,
+    color-mix(in srgb, var(--agw-accent) 80%, white) 260deg,
+    transparent 290deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation:
+    agw-drop-arm 200ms ease-out both,
+    agw-drop-beam 3.2s linear infinite;
+}
+
+/* Entrance: the light fades up, confirming the window noticed the drag at
+   all — the moment users previously had no signal for. */
+@keyframes agw-drop-arm {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes agw-drop-beam {
+  to {
+    --agw-drop-angle: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* No sweep — the comets hold still as a partial edge light. */
+  .agw-composer-drop .agw-composer-surface::before,
+  .agw-composer-drop .agw-composer-surface::after {
+    animation: none;
+  }
+}
+
+/* The dragged file, in hand.
+ *
+ * Two layers: `-pos` is moved per-frame with a raw `transform` write from the
+ * store subscription (see AgentDragGhost.tsx), so it owns NOTHING except
+ * position; the pill inside owns the pickup animation and resting tilt, which
+ * would otherwise be clobbered by every pointer sample. Both must stay
+ * pointer-events:none — the drag coordinator hit-tests with elementFromPoint
+ * and would otherwise find this. */
+.agw-drag-ghost-pos {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 1200;
+  pointer-events: none;
+  will-change: transform;
+}
+/* Deliberately shaped like the `@` pill it becomes (accent tint, 13px icon,
+ * same radius) so the drag reads as carrying one object. The lift — slight
+ * scale-up from under the finger, a small resting tilt, just-shy-of-solid
+ * opacity — is what says "picked up, not yet placed". */
+.agw-drag-ghost {
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 280px;
+  padding: 3px 8px;
+  border-radius: var(--agw-radius-sm);
+  border: 1px solid color-mix(in srgb, var(--agw-accent) 38%, transparent);
+  background: color-mix(in srgb, var(--agw-accent) 16%, var(--agw-surface-elevated));
+  box-shadow: var(--agw-shadow-pop);
+  color: var(--agw-accent);
+  font-family: var(--agw-font-ui);
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.45;
+  opacity: 0.95;
+  transform: rotate(1.5deg);
+  transform-origin: 20% 20%;
+  animation: agw-ghost-pickup 140ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes agw-ghost-pickup {
+  from {
+    opacity: 0;
+    transform: scale(0.88) rotate(0deg);
+  }
+  to {
+    opacity: 0.95;
+    transform: scale(1) rotate(1.5deg);
+  }
+}
+.agw-drag-ghost-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* While something is in hand, the whole window shows a closed hand — rows,
+ * panels, and zones must not flicker their own cursors mid-carry. */
+body[data-agw-dragging],
+body[data-agw-dragging] * {
+  cursor: grabbing !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agw-drag-ghost {
+    animation: none;
+  }
+}
+
+/* The row a drag started from — dimmed so the origin of the ghost is obvious. */
+.agw-tree-row[data-dragging] {
+  opacity: 0.45;
+}
+
 .agw-attach-row {
   display: flex;
   flex-wrap: wrap;
@@ -10031,7 +10816,7 @@
 }
 .agw-confirm-title {
   font-size: var(--agw-fs-body);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
 }
 .agw-confirm-msg {
@@ -10053,7 +10838,7 @@
   background: transparent;
   color: var(--agw-text);
   font-size: var(--agw-fs-ui);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
@@ -10134,7 +10919,7 @@
 }
 .agw-mic-perm-title {
   font-size: var(--agw-fs-title);
-  font-weight: 650;
+  font-weight: var(--agw-fw-strong);
   color: var(--agw-text);
 }
 .agw-mic-perm-msg {
@@ -10175,7 +10960,7 @@
   background: transparent;
   color: var(--agw-text);
   font-size: var(--agw-fs-ui);
-  font-weight: 550;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease, filter 0.12s ease;
 }
@@ -10241,7 +11026,7 @@
   background: transparent;
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   cursor: pointer;
 }
 .agw-img-tool:hover:not(:disabled) {
@@ -10265,7 +11050,7 @@
   background: var(--agw-accent);
   color: var(--agw-on-accent);
   font-size: var(--agw-fs-ui);
-  font-weight: 700;
+  font-weight: var(--agw-fw-strong);
   cursor: pointer;
 }
 .agw-img-swatches {
@@ -10414,7 +11199,7 @@
   align-items: center;
   gap: 8px;
   font-size: var(--agw-fs-md);
-  font-weight: 650;
+  font-weight: var(--agw-fw-strong);
   color: var(--agw-text);
 }
 .agw-atlas-sub {
@@ -10454,7 +11239,7 @@
 }
 .agw-atlas-hero-num {
   font-size: 23px;
-  font-weight: 700;
+  font-weight: var(--agw-fw-display);
   line-height: 1;
   letter-spacing: -0.02em;
   color: var(--agw-text);
@@ -10468,14 +11253,14 @@
 .agw-atlas-hero-token {
   text-align: right;
   font-size: var(--agw-fs-md);
-  font-weight: 650;
+  font-weight: var(--agw-fw-strong);
   color: var(--agw-accent);
 }
 .agw-atlas-hero-token-hint {
   display: block;
   margin-top: 2px;
   font-size: var(--agw-fs-micro);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text-subtle);
 }
 
@@ -10531,7 +11316,7 @@
 .agw-atlas-stat-value {
   margin-top: 3px;
   font-size: var(--agw-fs-title);
-  font-weight: 650;
+  font-weight: var(--agw-fw-strong);
   color: var(--agw-text);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -10606,7 +11391,7 @@
   flex: 0 0 auto;
   padding: 4px 10px;
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   white-space: nowrap;
   border: 1px solid var(--agw-border);
   border-radius: var(--agw-radius-pill);
@@ -10647,7 +11432,7 @@
   background: var(--agw-canvas);
 }
 .agw-atlas-row-model {
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
   white-space: nowrap;
   overflow: hidden;
@@ -10682,7 +11467,7 @@
   font-size: var(--agw-fs-label);
 }
 .agw-atlas-bar-name {
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
   white-space: nowrap;
   overflow: hidden;
@@ -10724,7 +11509,7 @@
 }
 .agw-atlas-slide-name {
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text-muted);
 }
 .agw-atlas-updated {
@@ -10770,7 +11555,7 @@
   gap: 5px;
   padding: 4px 9px;
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   border: 1px solid var(--agw-border-strong);
   border-radius: var(--agw-radius-sm);
   background: var(--agw-surface);
@@ -10818,7 +11603,7 @@
 }
 .agw-codex-window-label {
   font-size: var(--agw-fs-ui);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
 }
 .agw-codex-window-meta {
@@ -10853,7 +11638,7 @@
   border: none;
   background: none;
   font-size: var(--agw-fs-label);
-  font-weight: 600;
+  font-weight: var(--agw-fw-medium);
   color: var(--agw-text-muted);
   cursor: pointer;
 }
@@ -11048,4 +11833,864 @@
   .agw-command-center { width: 100%; max-height: calc(100vh - 20px); border-radius: var(--agw-radius-lg); }
   .agw-command-footer { justify-content: center; }
   .agw-command-footer span:first-child { display: none; }
+}
+
+/* ── Composer rail ──────────────────────────────────────────────────────────
+ * The strip under the composer (see ComposerRail). Left slot = the disclaimer
+ * or a transient mic/refine notice; right = one chip per ambient system, each
+ * opening its panel UPWARD as a shared `.agw-menu` popover.
+ *
+ * The height is deliberately fixed. This replaced a stack of docked cards that
+ * mounted above the composer and shoved the transcript down every time a
+ * process spawned or a checklist arrived; a rail whose height changed with its
+ * contents would just reintroduce that jump one level lower. `min-height` is
+ * set from the chip's own height so an empty rail and a full one measure the
+ * same, and the notice is centred in it either way. */
+.agw-crail {
+  position: relative; /* the chips are taken out of flow — see below */
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  margin-top: 8px;
+}
+/* The notice is centred against the FULL width of the strip, and the chip
+   cluster floats over its right end rather than sharing the row.
+   In flow, the cluster stole width from the notice, so the disclaimer shifted
+   left by half the chip width whenever a process started — text that moves
+   because something unrelated appeared is exactly the kind of small
+   instability that makes a surface feel unfinished. The symmetric padding is
+   what keeps the centring honest AND stops a long notice from running under
+   the chips. */
+.agw-crail-notice {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0 84px;
+  text-align: center;
+  font-size: var(--agw-fs-micro);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-crail-chips {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.agw-crail-chipwrap {
+  position: relative;
+  display: inline-flex;
+}
+
+/* The chip. Quiet by default — it is ambient information, and the composer next
+   to it must stay the loudest thing on this edge of the window. The attention
+   dot, not weight or colour, is what makes one chip out-rank the others. */
+.agw-crail-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 7px;
+  border: none;
+  border-radius: var(--agw-radius-pill);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  cursor: pointer;
+  outline: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.agw-crail-chip:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text-muted);
+}
+.agw-crail-chip[data-open] {
+  background: var(--agw-state-quiet);
+  color: var(--agw-text);
+}
+.agw-crail-chip:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-crail-chip-readout {
+  font-variant-numeric: tabular-nums; /* a ticking count must not reflow the chip */
+}
+.agw-crail-chip-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--agw-accent);
+  animation: agw-team-pulse 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-crail-chip-dot { animation: none; }
+}
+
+/* The popover. Right-anchored to its chip and opening upward, because the rail
+   sits at the bottom of the window — there is no room below it. */
+.agw-crail-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 50;
+  width: 380px;
+  max-width: min(420px, calc(100vw - 32px));
+  transform-origin: bottom right;
+  overflow: hidden;
+}
+/* Panel bodies inside a popover: the popover IS the open state, so the panel
+   drops its own card surface and its collapse control (see the `popover`
+   variant in AgentTaskPanel / BackgroundTaskDock). */
+.agw-crail-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.agw-crail-panel .agw-tasks-toggle[data-static] {
+  cursor: default;
+}
+.agw-crail-panel-body {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* ==========================================================================
+   Plan Canvas
+   --------------------------------------------------------------------------
+   Steps are a list with a status rail, NOT cards: twelve equal-weight boxes
+   would flatten the hierarchy and hide the one thing the user came to read.
+   Brightness is spent on the running step and withheld from everything else,
+   which is how the panel answers "where is the work" at a glance.
+
+   Every state carries an icon AND a word (see PlanCanvas.tsx), so nothing here
+   relies on colour alone.
+   ========================================================================== */
+
+.agw-canvas-plan-wrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.agw-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 20px 24px;
+}
+
+/* --- Header ------------------------------------------------------------- */
+
+.agw-plan-head {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agw-plan-headline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agw-plan-title {
+  margin: 0;
+  font-size: var(--agw-fs-h3);
+  font-weight: var(--agw-fw-strong);
+  color: var(--agw-text);
+  letter-spacing: -0.014em;
+}
+
+.agw-plan-count {
+  flex: none;
+  font-size: var(--agw-fs-label);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-muted);
+}
+
+.agw-plan-meter {
+  height: 3px;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-border);
+  overflow: hidden;
+}
+
+.agw-plan-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--agw-accent);
+  transition: width 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agw-plan-now {
+  margin: 0;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+}
+
+.agw-plan-overview {
+  font-size: var(--agw-fs-md);
+  color: var(--agw-text-muted);
+}
+
+/* --- Steps -------------------------------------------------------------- */
+
+.agw-plan-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agw-plan-step {
+  position: relative;
+  border-radius: var(--agw-radius-md);
+  /* The rail: a hairline that the running step turns into an accent edge. */
+  box-shadow: inset 2px 0 0 transparent;
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+
+.agw-plan-step[data-state="running"] {
+  background: var(--agw-surface-elevated);
+  box-shadow: inset 2px 0 0 var(--agw-accent);
+}
+
+.agw-plan-step-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+}
+
+.agw-plan-step-head:hover {
+  background: var(--agw-hover);
+}
+
+.agw-plan-step-head:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: -2px;
+}
+
+.agw-plan-step-index {
+  flex: none;
+  min-width: 14px;
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+}
+
+.agw-plan-step-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The running step is the only bright title in the list. */
+.agw-plan-step[data-state="running"] .agw-plan-step-title {
+  color: var(--agw-text);
+  font-weight: var(--agw-fw-strong);
+}
+
+.agw-plan-step[data-state="done"] .agw-plan-step-title,
+.agw-plan-step[data-state="skipped"] .agw-plan-step-title {
+  color: var(--agw-text-subtle);
+}
+
+.agw-plan-step-state {
+  flex: none;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+.agw-plan-step[data-state="running"] .agw-plan-step-state {
+  color: var(--agw-accent);
+}
+
+.agw-plan-step[data-state="paused"] .agw-plan-step-state {
+  color: var(--agw-warning);
+}
+
+.agw-plan-step[data-state="failed"] .agw-plan-step-state {
+  color: var(--agw-danger);
+}
+
+.agw-plan-step-chevron {
+  flex: none;
+  color: var(--agw-text-subtle);
+  transition: transform 160ms ease;
+}
+
+.agw-plan-step[data-open] .agw-plan-step-chevron {
+  transform: rotate(180deg);
+}
+
+/* --- Status markers ----------------------------------------------------- */
+
+.agw-plan-marker {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid var(--agw-border-strong);
+  color: var(--agw-text-subtle);
+}
+
+.agw-plan-marker-done {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--agw-added) 18%, transparent);
+  color: var(--agw-added);
+}
+
+.agw-plan-marker-failed {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--agw-danger) 18%, transparent);
+  color: var(--agw-danger);
+}
+
+.agw-plan-marker-skipped {
+  border-style: dashed;
+}
+
+.agw-plan-marker-paused {
+  border-color: var(--agw-warning);
+  /* A half-filled ring: started, not finished, nothing driving it. */
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--agw-warning) 45%, transparent) 50%,
+    transparent 50%
+  );
+}
+
+/* The spinner is the ONLY animated state, and it only renders when a run is
+   genuinely streaming — see resolvePlanStepState. */
+.agw-plan-marker-running {
+  border-color: color-mix(in srgb, var(--agw-accent) 28%, transparent);
+  border-top-color: var(--agw-accent);
+  animation: agw-plan-spin 720ms linear infinite;
+}
+
+@keyframes agw-plan-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agw-plan-marker-running {
+    animation: none;
+    border-color: var(--agw-accent);
+    background: color-mix(in srgb, var(--agw-accent) 35%, transparent);
+  }
+
+  .agw-plan-meter-fill,
+  .agw-plan-step,
+  .agw-plan-step-chevron {
+    transition: none;
+  }
+}
+
+/* --- Inline help, notes, body ------------------------------------------- */
+
+.agw-plan-step-help,
+.agw-plan-step-note {
+  margin: -2px 0 6px;
+  padding: 0 10px 0 34px;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+.agw-plan-step-help {
+  color: var(--agw-warning);
+}
+
+.agw-plan-step-body {
+  padding: 0 10px 12px 34px;
+  font-size: var(--agw-fs-md);
+  color: var(--agw-text-muted);
+}
+
+.agw-plan-step-empty {
+  margin: 0;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+.agw-plan-step-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.agw-plan-step-action {
+  padding: 4px 10px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: transparent;
+  font: inherit;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.agw-plan-step-action:hover:not(:disabled) {
+  background: var(--agw-hover);
+  color: var(--agw-text);
+}
+
+.agw-plan-step-action:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: 1px;
+}
+
+.agw-plan-step-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* --- Footer ------------------------------------------------------------- */
+
+.agw-plan-foot {
+  padding-top: 4px;
+  border-top: 1px solid var(--agw-border);
+}
+
+.agw-plan-path {
+  display: block;
+  font-family: var(--agw-font-mono);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+/* Plan progress beat — the `plan_step_update` card.
+   A status flip is one moment in a run, not a result worth unfolding, so it
+   renders as a single quiet line that opens the Canvas for the full picture. */
+.agw-plan-beat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  font: inherit;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agw-plan-beat:hover {
+  background: var(--agw-hover);
+}
+
+.agw-plan-beat:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: -2px;
+}
+
+.agw-plan-beat-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--agw-border-strong);
+}
+
+.agw-plan-beat[data-step-status="in_progress"] .agw-plan-beat-dot {
+  background: var(--agw-accent);
+}
+
+.agw-plan-beat[data-step-status="done"] .agw-plan-beat-dot {
+  background: var(--agw-added);
+}
+
+.agw-plan-beat[data-step-status="failed"] .agw-plan-beat-dot {
+  background: var(--agw-danger);
+}
+
+.agw-plan-beat-verb {
+  flex: none;
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+}
+
+.agw-plan-beat-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agw-plan-beat-count {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Checklist beat (`todo`) — the same quiet one-line rhythm as the plan beat,
+   minus the affordances. The plan beat opens the Canvas; this one has nowhere
+   to go, because the full checklist is one hover away in the header. Making it
+   look clickable would be a dead control. */
+.agw-task-beat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 10px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  text-align: left;
+}
+
+.agw-task-beat-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--agw-border-strong);
+}
+
+/* Laying out the list is the one beat that starts something, so it carries the
+   accent; a status flip is progress within it and stays quiet. */
+.agw-task-beat[data-task-op="set"] .agw-task-beat-dot {
+  background: var(--agw-accent);
+}
+
+.agw-task-beat-verb {
+  flex: none;
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+}
+
+.agw-task-beat-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agw-task-beat-count {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* "Worked 4m" in the assistant turn footer.
+   Information, not an action: it sits at the lowest contrast in the row so it
+   never competes with Copy or Retry, and uses tabular figures so a ticking
+   live counter doesn't jitter the buttons beside it. */
+.agw-msg-worked {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 2px;
+  padding: 0 2px;
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* ==========================================================================
+   Project details panel
+   --------------------------------------------------------------------------
+   A reading surface inside a resizable dock. Content is capped at a readable
+   measure and centred: letting rows follow the panel to 1400px put a metre of
+   dead gutter between every title and its number, which is what made the first
+   version unreadable.
+
+   Rows are two-line — primary text, then muted context — so a long prompt and
+   its conversation name each get room instead of both clipping. Numbers live
+   in a fixed right column with tabular figures so they can be read vertically.
+   ========================================================================== */
+
+.agw-proj {
+  height: 100%;
+  overflow-y: auto;
+  padding: 20px 22px 28px;
+}
+
+.agw-proj-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  /* The measure. Wider than this and the eye loses the line. */
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.agw-proj-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.agw-proj-title {
+  margin: 0;
+  font-size: var(--agw-fs-h3);
+  font-weight: var(--agw-fw-strong);
+  color: var(--agw-text);
+  letter-spacing: -0.014em;
+}
+
+.agw-proj-path {
+  font-family: var(--agw-font-mono);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+/* Headline figures — four across, wrapping to two in a narrow dock. */
+.agw-proj-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 16px 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-surface);
+}
+
+.agw-proj-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agw-proj-stat-value {
+  font-size: var(--agw-fs-h4);
+  font-weight: var(--agw-fw-strong);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text);
+  letter-spacing: -0.01em;
+}
+
+.agw-proj-stat-label {
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+.agw-proj-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Sentence case, not an uppercase eyebrow: shouty micro-labels are the exact
+   generic-dashboard tell this panel should not have. */
+.agw-proj-h {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--agw-border);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+}
+
+.agw-proj-h-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--agw-fw-body);
+  color: var(--agw-text-subtle);
+}
+
+.agw-proj-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agw-proj-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  font: inherit;
+  color: var(--agw-text-muted);
+  text-align: left;
+}
+
+.agw-proj-row-open {
+  cursor: pointer;
+}
+
+.agw-proj-row-open:hover {
+  background: var(--agw-hover);
+}
+
+.agw-proj-row-open:hover .agw-proj-row-main {
+  color: var(--agw-text);
+}
+
+.agw-proj-row-open:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: -2px;
+}
+
+.agw-proj-row[data-archived] {
+  opacity: 0.6;
+}
+
+.agw-proj-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.agw-proj-row-main {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Long prompts wrap to two lines instead of clipping mid-word. */
+.agw-proj-row-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+  overflow: hidden;
+}
+
+/* Context line: never clipped — these are short values like "3d ago · 4 turns"
+   and truncating them to "3d a…" destroys the only information they carry. */
+.agw-proj-row-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+.agw-proj-row-num {
+  flex: none;
+  min-width: 44px;
+  padding-top: 1px;
+  font-size: var(--agw-fs-label);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--agw-text);
+}
+
+.agw-proj-tag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-chip-surface);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+.agw-proj-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agw-proj-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-chip-surface);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-muted);
+}
+
+.agw-proj-chip-num {
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+}
+
+/* Skeleton — the panel's own shape while it resolves, reusing the shimmer the
+   team views already use so loading looks the same everywhere. */
+.agw-proj-skel-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.agw-proj-skel-line {
+  border-radius: var(--agw-radius-sm);
+  background: linear-gradient(
+    90deg,
+    var(--agw-surface) 25%,
+    var(--agw-surface-elevated) 37%,
+    var(--agw-surface) 63%
+  );
+  background-size: 400% 100%;
+  animation: agw-skel-shimmer 1.4s ease infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agw-proj-skel-line {
+    animation: none;
+    background: var(--agw-surface);
+  }
 }

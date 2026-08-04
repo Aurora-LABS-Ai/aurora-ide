@@ -18,12 +18,21 @@ use super::resolve_path_for_read;
 
 /// Chosen to match the TS executor (`MAX_FILE_SIZE = 500 * 1024`).
 const MAX_FILE_SIZE: usize = 500 * 1024;
-/// `MAX_SINGLE_READ_LINES` from `src/tools/executors/file-read-policy.ts`.
+/// Most lines any single call returns unless `force_full_content` is set.
+/// A request for more is CAPPED to this and told to page — never silently
+/// widened and never silently gutted.
 const MAX_SINGLE_READ_LINES: usize = 1_000;
-/// `DEFAULT_LINE_WINDOW` from `src/tools/executors/file-read-policy.ts`.
-const DEFAULT_LINE_WINDOW: usize = 250;
-/// `LARGE_FILE_LINE_THRESHOLD` from the same TS file.
-const LARGE_FILE_LINE_THRESHOLD: usize = 1_500;
+
+/// Marker the runtime honours to leave a payload alone.
+///
+/// `file_read` bounds its own output by lines (see [`read_with_policy`]), so a
+/// result that reaches here is already exactly what the model asked for. The
+/// generic spill/clamp layers used to bound it a SECOND time — a 30 KB, 739-line
+/// component came back with its middle 22 KB replaced by a "read this file"
+/// pointer, and the model then spent five more calls paging the spill file back
+/// in. Anything a read returns is verbatim, or an exact-match `file_edit` built
+/// from it fails.
+pub const EXACT_READ_MARKER: &str = "\"exactRead\":true";
 
 pub struct FileReadTool;
 
@@ -44,8 +53,11 @@ impl ToolExecutor for FileReadTool {
             description: "Read file content safely using exactly one form. For ONE file, pass a \
                           non-empty `path` and optional start_line/end_line/max_lines; omit `paths`. \
                           For SEVERAL files, pass a non-empty `paths` array; omit `path` and all line \
-                          range fields. Never send `paths: []`. Small files return in full; large files \
-                          return a bounded line window. A missing path reports exists=false rather than failing."
+                          range fields. Never send `paths: []`. A line range is returned EXACTLY as \
+                          asked, up to 1000 lines per call — ask for more and you get the first 1000 \
+                          plus the total, so continue with the next range. Files of 1000 lines or \
+                          fewer come back whole. To read a longer file in one call anyway, set \
+                          force_full_content: true. A missing path reports exists=false rather than failing."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -62,9 +74,10 @@ impl ToolExecutor for FileReadTool {
                         "items": { "type": "string", "minLength": 1 },
                         "description": "Batch form only: 1-20 non-empty file paths. Omit `path` and line range fields; never send an empty array."
                     },
-                    "start_line": { "type": "number", "description": "Single-file form: 1-based first line to return." },
-                    "end_line": { "type": "number", "description": "Single-file form: 1-based inclusive last line to return." },
-                    "max_lines": { "type": "number", "description": "Single-file form: maximum lines to return from start_line." }
+                    "start_line": { "type": "number", "description": "Single-file form: 1-based first line to return. The returned range is exactly what you ask for, capped at 1000 lines." },
+                    "end_line": { "type": "number", "description": "Single-file form: 1-based inclusive last line to return. Ranges wider than 1000 lines return the first 1000; continue from the next line." },
+                    "max_lines": { "type": "number", "description": "Single-file form: maximum lines to return from start_line (hard cap 1000)." },
+                    "force_full_content": { "type": "boolean", "description": "Return the whole file in one call with no line cap, however long it is. Use when you genuinely need the entire file; otherwise page with start_line/end_line." }
                 },
                 // NOTE: the "exactly one of `path` / `paths`" contract is
                 // carried by the descriptions above and ENFORCED at runtime in
@@ -107,19 +120,41 @@ impl ToolExecutor for FileReadTool {
             ));
         }
 
+        let wants_window = input.get("start_line").is_some()
+            || input.get("end_line").is_some()
+            || input.get("max_lines").is_some();
+
+        // `paths: ["one/file.rs"], start_line: 1, end_line: 80` used to be a hard
+        // error. It should not be: a one-element array names exactly one file, so
+        // the line window has precisely one meaning and the request is not
+        // ambiguous at all.
+        //
+        // It is also SCHEMA-VALID input. The `path` xor `paths` contract can't be
+        // expressed in the schema (a top-level `oneOf` makes strict validators
+        // return HTTP 400 — see `schema()`), so every one of these fields is
+        // declared as an independent optional sibling. A model that emits this is
+        // obeying the schema it was given; rejecting it made a correct-looking
+        // call fail for a reason only the prose description hinted at, which is
+        // exactly the kind of unforced error that derails a turn.
+        //
+        // So: normalise it to the single-file form and serve the read. Only an
+        // array of TWO OR MORE files with a line window stays an error, because
+        // there the window genuinely has no single referent.
+        let coerced_single: Option<String> = match paths {
+            Some(arr) if wants_window && arr.len() == 1 => arr[0]
+                .as_str()
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_string),
+            _ => None,
+        };
+        let paths = if coerced_single.is_some() { None } else { paths };
+        let path = path.or(coerced_single.as_deref());
+
         // An empty `paths` array is treated as an omitted optional placeholder
         // only when a valid single-file `path` is present. This keeps a model's
         // redundant default from overriding the unambiguous requested read.
         if let Some(arr) = paths {
-            if input.get("start_line").is_some()
-                || input.get("end_line").is_some()
-                || input.get("max_lines").is_some()
-            {
-                return Err(ToolError::InvalidInput(
-                    "`start_line`, `end_line`, and `max_lines` only work with single-file `path`; omit them when using `paths`"
-                        .into(),
-                ));
-            }
             if arr.iter().any(|entry| {
                 entry
                     .as_str()
@@ -128,6 +163,17 @@ impl ToolExecutor for FileReadTool {
             }) {
                 return Err(ToolError::InvalidInput(
                     "every entry in `paths` must be a non-empty file path string".into(),
+                ));
+            }
+            if wants_window {
+                // Reachable only for 2+ files now. Name the recovery that KEEPS
+                // the model's intent — telling it to drop the line range throws
+                // away what it actually asked for.
+                return Err(ToolError::InvalidInput(
+                    "a line range needs one file: re-issue with `path` set to the file you want \
+                     windowed (one call per file), or drop `start_line`/`end_line`/`max_lines` to \
+                     read all of `paths` in full"
+                        .into(),
                 ));
             }
 
@@ -140,7 +186,7 @@ impl ToolExecutor for FileReadTool {
                         ctx.workspace_root.as_deref(),
                         ctx.allow_outside_workspace,
                     ) {
-                        super::read_tracker::record(&ctx.session_id, &resolved.to_string_lossy());
+                        super::read_tracker::record(&ctx.thread_id, &resolved.to_string_lossy());
                     }
                 }
             }
@@ -189,13 +235,28 @@ impl ToolExecutor for FileReadTool {
             .get("max_lines")
             .and_then(Value::as_u64)
             .map(|n| n as usize);
+        // Accept the boolean, and also the string spelling some providers emit
+        // for boolean-valued function args — refusing "true" would make the
+        // opt-out silently do nothing.
+        let force_full_content = match input.get("force_full_content") {
+            Some(Value::Bool(flag)) => *flag,
+            Some(Value::String(text)) => text.eq_ignore_ascii_case("true"),
+            _ => false,
+        };
 
         let path_owned = resolved.to_string_lossy().to_string();
         let resolved_for_record = path_owned.clone();
         let raw_path = path.to_string();
 
         let body = tokio::task::spawn_blocking(move || {
-            read_with_policy(&path_owned, &raw_path, start_line, end_line, max_lines)
+            read_with_policy(
+                &path_owned,
+                &raw_path,
+                start_line,
+                end_line,
+                max_lines,
+                force_full_content,
+            )
         })
         .await
         .map_err(|err| ToolError::Execution(format!("file_read task panicked: {err}")))??;
@@ -203,7 +264,7 @@ impl ToolExecutor for FileReadTool {
         // Mark the file seen so a subsequent file_edit passes the
         // read-before-edit guard. Recording the attempt (even on a miss)
         // is harmless: file_edit independently fails on a missing file.
-        super::read_tracker::record(&ctx.session_id, &resolved_for_record);
+        super::read_tracker::record(&ctx.thread_id, &resolved_for_record);
 
         Ok(body)
     }
@@ -215,6 +276,7 @@ fn read_with_policy(
     start_line: Option<usize>,
     end_line: Option<usize>,
     max_lines: Option<usize>,
+    force_full_content: bool,
 ) -> Result<String, ToolError> {
     let content = match std::fs::read_to_string(Path::new(full_path)) {
         Ok(c) => c,
@@ -234,39 +296,52 @@ fn read_with_policy(
     };
 
     let total_lines = count_lines(&content);
-    let explicit = start_line.is_some() || end_line.is_some();
 
-    if explicit || total_lines > LARGE_FILE_LINE_THRESHOLD {
-        let (sliced, range_start, range_end, omit_before, omit_after, truncated) =
-            slice_window(&content, total_lines, start_line, end_line, max_lines);
-        let warning = if truncated {
-            Some(format!(
-                "Returned lines {}-{} of {}. Use start_line/end_line to read another range.",
-                range_start, range_end, total_lines
-            ))
-        } else {
-            None
-        };
+    // Opt-out of every bound. The caller said it needs the whole file, so it
+    // gets the whole file — `exactRead` then keeps the spill and history clamp
+    // from quietly undoing that downstream.
+    if force_full_content {
         let payload = json!({
             "success": true,
+            "exactRead": true,
             "path": rel_path,
             "fullPath": full_path,
-            "content": sliced,
+            "content": content,
             "totalLines": total_lines,
             "size": content.len(),
-            "largeFile": total_lines > LARGE_FILE_LINE_THRESHOLD,
-            "range": { "startLine": range_start, "endLine": range_end },
-            "truncated": truncated,
-            "omittedLinesBefore": omit_before,
-            "omittedLinesAfter": omit_after,
-            "warning": warning,
+            "largeFile": false,
+            "range": { "startLine": 1, "endLine": total_lines },
+            "truncated": false,
+            "forcedFullContent": true,
         });
         return Ok(serde_json::to_string(&payload).unwrap());
     }
 
-    if content.len() > MAX_FILE_SIZE {
+    let explicit = start_line.is_some() || end_line.is_some() || max_lines.is_some();
+
+    // A file that fits the per-call line cap comes back whole, with no window
+    // bookkeeping to reason about.
+    if !explicit && total_lines <= MAX_SINGLE_READ_LINES && content.len() <= MAX_FILE_SIZE {
         let payload = json!({
             "success": true,
+            "exactRead": true,
+            "path": rel_path,
+            "fullPath": full_path,
+            "content": content,
+            "totalLines": total_lines,
+            "size": content.len(),
+            "largeFile": false,
+        });
+        return Ok(serde_json::to_string(&payload).unwrap());
+    }
+
+    // A single line can hold megabytes (minified / generated output), so the
+    // line cap alone is not a real bound. Refuse rather than flood the context,
+    // and name both ways forward.
+    if !explicit && content.len() > MAX_FILE_SIZE {
+        let payload = json!({
+            "success": true,
+            "exactRead": true,
             "path": rel_path,
             "fullPath": full_path,
             "totalLines": total_lines,
@@ -275,25 +350,56 @@ fn read_with_policy(
             "requiresLineRange": true,
             "content": "",
             "warning": format!(
-                "File is too large to return safely ({} bytes, {} lines). Call file_read with start_line/end_line; maximum {MAX_SINGLE_READ_LINES} lines per call.",
+                "This file is {} bytes over {} lines — too large to return unasked. Read it chunk by chunk with start_line/end_line (max {MAX_SINGLE_READ_LINES} lines per call), or set force_full_content: true to take all of it in one call.",
                 content.len(), total_lines
             ),
             "suggestedRange": {
                 "startLine": 1,
-                "endLine": std::cmp::min(DEFAULT_LINE_WINDOW, total_lines),
+                "endLine": std::cmp::min(MAX_SINGLE_READ_LINES, total_lines),
             }
         });
         return Ok(serde_json::to_string(&payload).unwrap());
     }
 
+    let (sliced, range_start, range_end, omit_before, omit_after, truncated, capped) =
+        slice_window(&content, total_lines, start_line, end_line, max_lines);
+
+    // Three different situations used to share one vague sentence. Say which
+    // one happened, because the right next move differs for each.
+    let warning = if capped {
+        // The caller asked for a wider range than one call returns. It did NOT
+        // get what it asked for, so say so first and give the exact resume point.
+        Some(format!(
+            "Capped at {MAX_SINGLE_READ_LINES} lines: returned {range_start}-{range_end} of \
+             {total_lines}. This is a big file — read it chunk by chunk, continuing from \
+             start_line: {}. To take the whole file in one call instead, set \
+             force_full_content: true.",
+            range_end.saturating_add(1)
+        ))
+    } else if truncated {
+        Some(format!(
+            "Returned lines {range_start}-{range_end} of {total_lines} exactly as requested. \
+             Continue with start_line/end_line, or set force_full_content: true for the whole file."
+        ))
+    } else {
+        None
+    };
+
     let payload = json!({
         "success": true,
+        "exactRead": true,
         "path": rel_path,
         "fullPath": full_path,
-        "content": content,
+        "content": sliced,
         "totalLines": total_lines,
         "size": content.len(),
-        "largeFile": false,
+        "largeFile": total_lines > MAX_SINGLE_READ_LINES,
+        "range": { "startLine": range_start, "endLine": range_end },
+        "truncated": truncated,
+        "cappedAtMaxLines": capped,
+        "omittedLinesBefore": omit_before,
+        "omittedLinesAfter": omit_after,
+        "warning": warning,
     });
     Ok(serde_json::to_string(&payload).unwrap())
 }
@@ -329,34 +435,39 @@ fn count_lines(content: &str) -> usize {
     separators + 1
 }
 
+/// Slice the requested window.
+///
+/// Returns `(text, start, end, omitted_before, omitted_after, truncated, capped)`.
+/// `capped` means the caller asked for a WIDER range than [`MAX_SINGLE_READ_LINES`]
+/// and got the first slice of it — the one case where the result is deliberately
+/// not what was requested, so the caller has to be told explicitly.
 fn slice_window(
     content: &str,
     total_lines: usize,
     start_line: Option<usize>,
     end_line: Option<usize>,
     max_lines: Option<usize>,
-) -> (String, usize, usize, usize, usize, bool) {
+) -> (String, usize, usize, usize, usize, bool, bool) {
     let lines: Vec<&str> = if content.is_empty() {
         Vec::new()
     } else {
         content.split('\n').map(trim_trailing_cr).collect()
     };
     let total = lines.len().max(1);
-    let explicit = start_line.is_some() || end_line.is_some();
 
     let start = start_line.unwrap_or(1).max(1).min(total);
-    let max_window = max_lines
-        .unwrap_or(if explicit {
-            MAX_SINGLE_READ_LINES
-        } else {
-            DEFAULT_LINE_WINDOW
-        })
-        .min(MAX_SINGLE_READ_LINES);
-    let natural_end = end_line.unwrap_or(start + max_window - 1);
-    let end = natural_end
+    // `max_lines` is a request like any other: honoured up to the hard cap.
+    let window = max_lines.unwrap_or(MAX_SINGLE_READ_LINES).max(1);
+    let allowed = window.min(MAX_SINGLE_READ_LINES);
+
+    // What the caller actually asked to see, clamped only to the file's end.
+    let requested_end = end_line
+        .unwrap_or_else(|| start.saturating_add(allowed - 1))
         .max(start)
-        .min(start + max_window - 1)
         .min(total);
+    let cap_end = start.saturating_add(allowed - 1);
+    let end = requested_end.min(cap_end);
+    let capped = requested_end > cap_end;
 
     let selected = if lines.is_empty() {
         String::new()
@@ -366,7 +477,15 @@ fn slice_window(
     let omit_before = start.saturating_sub(1);
     let omit_after = total_lines.saturating_sub(end);
     let truncated = omit_before > 0 || omit_after > 0;
-    (selected, start, end, omit_before, omit_after, truncated)
+    (
+        selected,
+        start,
+        end,
+        omit_before,
+        omit_after,
+        truncated,
+        capped,
+    )
 }
 
 fn trim_trailing_cr(line: &str) -> &str {
@@ -385,7 +504,7 @@ mod tests {
             allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
-            session_id: "s".into(),
+            thread_id: "s".into(),
             workspace_root: workspace,
             cancel_token: CancellationToken::new(),
         }
@@ -459,8 +578,10 @@ mod tests {
         );
     }
 
+    /// A line window over TWO files has no single referent — still an error,
+    /// but the message must name the recovery that preserves the intent.
     #[tokio::test]
-    async fn rejects_line_ranges_on_batch_reads() {
+    async fn rejects_line_ranges_on_multi_file_batch_reads() {
         let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
         let err = tool
             .execute(
@@ -469,9 +590,216 @@ mod tests {
             )
             .await
             .unwrap_err();
+        let ToolError::InvalidInput(message) = err else {
+            panic!("expected InvalidInput, got {err:?}");
+        };
+        assert!(message.contains("a line range needs one file"), "{message}");
+        // Must point at the form that keeps the window, not just "omit them".
+        assert!(message.contains("`path`"), "{message}");
+    }
+
+    /// The regression this fix exists for. `paths: ["x"]` + a line range is
+    /// schema-valid and unambiguous, so it must READ, not fail. Frontier models
+    /// emit this shape occasionally because the schema cannot forbid it.
+    #[tokio::test]
+    async fn single_element_paths_with_a_line_window_is_honoured() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("lines.txt");
+        let body: String = (1..=40).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(&file, body).unwrap();
+
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let out = tool
+            .execute(
+                serde_json::json!({
+                    "paths": [file.to_string_lossy()],
+                    "start_line": 3,
+                    "end_line": 5,
+                }),
+                &ctx_for(None),
+            )
+            .await
+            .expect("a one-file batch with a line window must be served, not rejected");
+
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], serde_json::json!(true), "{parsed}");
+        let content = parsed["content"].as_str().unwrap_or_default();
+        assert!(content.contains("line 3"), "{content}");
+        assert!(content.contains("line 5"), "{content}");
+        // Honoured as a WINDOW, not silently widened to the whole file.
+        assert!(!content.contains("line 1\n"), "{content}");
+        assert!(!content.contains("line 40"), "{content}");
+    }
+
+    /// Without a line window the one-element batch form keeps its existing
+    /// multi-file response shape — the coercion must not change what already works.
+    #[tokio::test]
+    async fn single_element_paths_without_a_window_still_uses_the_batch_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("solo.txt");
+        std::fs::write(&file, "hello").unwrap();
+
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let out = tool
+            .execute(
+                serde_json::json!({ "paths": [file.to_string_lossy()] }),
+                &ctx_for(None),
+            )
+            .await
+            .expect("batch read of one file");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
         assert!(
-            matches!(err, ToolError::InvalidInput(message) if message.contains("only work with single-file `path`"))
+            parsed.get("files").is_some(),
+            "expected the batch response shape, got {parsed}"
         );
+    }
+
+    /// An empty entry reports the entry problem, not the line-range rule.
+    #[tokio::test]
+    async fn blank_single_entry_with_a_window_reports_the_entry_problem() {
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let err = tool
+            .execute(
+                serde_json::json!({ "paths": ["  "], "start_line": 2 }),
+                &ctx_for(None),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidInput(message) if message.contains("non-empty file path string"))
+        );
+    }
+
+    /// Helper: a file of exactly `n` numbered lines.
+    ///
+    /// Deliberately written WITHOUT a trailing newline. `count_lines` mirrors
+    /// TypeScript's `splitLines`, which counts the empty segment after a final
+    /// `\n` — so a trailing newline here would make every `totalLines`
+    /// assertion off by one and read like a bug in the policy.
+    fn numbered_file(dir: &Path, name: &str, n: usize) -> std::path::PathBuf {
+        let path = dir.join(name);
+        let body = (1..=n)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    async fn read(input: serde_json::Value) -> Value {
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let out = tool.execute(input, &ctx_for(None)).await.expect("read ok");
+        serde_json::from_str(&out).unwrap()
+    }
+
+    /// An explicit range is the contract: exactly those lines, nothing widened,
+    /// nothing trimmed off the end.
+    #[tokio::test]
+    async fn explicit_range_is_returned_exactly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = numbered_file(tmp.path(), "a.txt", 500);
+        let got = read(serde_json::json!({
+            "path": file.to_string_lossy(), "start_line": 120, "end_line": 300,
+        }))
+        .await;
+
+        assert_eq!(got["range"]["startLine"], 120);
+        assert_eq!(got["range"]["endLine"], 300);
+        assert_eq!(got["cappedAtMaxLines"], serde_json::json!(false));
+        let content = got["content"].as_str().unwrap();
+        let lines: Vec<&str> = content.split('\n').collect();
+        assert_eq!(lines.len(), 181, "300-120+1 lines");
+        assert_eq!(lines[0], "line 120");
+        assert_eq!(lines[180], "line 300");
+    }
+
+    /// The user's scenario: an over-wide range (1..12000 on a small file) must
+    /// cap, say it capped, and name where to resume — not silently return less.
+    #[tokio::test]
+    async fn over_wide_range_caps_and_says_how_to_continue() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = numbered_file(tmp.path(), "big.txt", 1_200);
+        let got = read(serde_json::json!({
+            "path": file.to_string_lossy(), "start_line": 1, "end_line": 12_000,
+        }))
+        .await;
+
+        assert_eq!(got["range"]["endLine"], 1_000, "capped at the per-call limit");
+        assert_eq!(got["cappedAtMaxLines"], serde_json::json!(true));
+        assert_eq!(got["totalLines"], 1_200);
+        let warning = got["warning"].as_str().unwrap();
+        assert!(warning.contains("Capped at 1000 lines"), "{warning}");
+        assert!(warning.contains("chunk by chunk"), "{warning}");
+        assert!(warning.contains("start_line: 1001"), "{warning}");
+        assert!(warning.contains("force_full_content"), "{warning}");
+    }
+
+    /// `force_full_content` overrides every bound, however long the file is.
+    #[tokio::test]
+    async fn force_full_content_returns_everything() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = numbered_file(tmp.path(), "huge.txt", 5_000);
+        let got = read(serde_json::json!({
+            "path": file.to_string_lossy(), "force_full_content": true,
+        }))
+        .await;
+
+        assert_eq!(got["forcedFullContent"], serde_json::json!(true));
+        assert_eq!(got["truncated"], serde_json::json!(false));
+        let content = got["content"].as_str().unwrap();
+        assert!(content.contains("line 1\n"), "starts at the top");
+        assert!(content.contains("line 5000"), "reaches the very last line");
+    }
+
+    /// A file within the per-call limit comes back whole, with no window noise.
+    #[tokio::test]
+    async fn file_within_the_line_cap_comes_back_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 739 lines — the size that used to be gutted by the spill layer.
+        let file = numbered_file(tmp.path(), "component.tsx", 739);
+        let got = read(serde_json::json!({ "path": file.to_string_lossy() })).await;
+
+        assert_eq!(got["totalLines"], 739);
+        assert_eq!(got["largeFile"], serde_json::json!(false));
+        assert!(got.get("range").is_none(), "no window bookkeeping: {got}");
+        let content = got["content"].as_str().unwrap();
+        assert!(content.contains("line 1\n"));
+        assert!(content.contains("line 739"), "the tail must survive");
+    }
+
+    /// Over the cap with no range asked for: first window plus the honest count.
+    #[tokio::test]
+    async fn oversized_default_read_returns_the_first_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = numbered_file(tmp.path(), "long.txt", 2_400);
+        let got = read(serde_json::json!({ "path": file.to_string_lossy() })).await;
+
+        assert_eq!(got["range"]["startLine"], 1);
+        assert_eq!(got["range"]["endLine"], 1_000);
+        assert_eq!(got["totalLines"], 2_400);
+        assert_eq!(got["truncated"], serde_json::json!(true));
+        assert!(got["warning"].as_str().unwrap().contains("force_full_content"));
+    }
+
+    /// Every read payload carries the marker the runtime keys off, or the spill
+    /// and clamp layers will bound the result a second time.
+    #[tokio::test]
+    async fn every_read_payload_is_marked_exact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = numbered_file(tmp.path(), "m.txt", 1_500);
+        for input in [
+            serde_json::json!({ "path": file.to_string_lossy() }),
+            serde_json::json!({ "path": file.to_string_lossy(), "start_line": 5, "end_line": 9 }),
+            serde_json::json!({ "path": file.to_string_lossy(), "force_full_content": true }),
+        ] {
+            let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+            let out = tool.execute(input.clone(), &ctx_for(None)).await.unwrap();
+            assert!(
+                out.contains(EXACT_READ_MARKER),
+                "missing marker for {input}: {}",
+                &out[..out.len().min(160)]
+            );
+        }
     }
 
     #[tokio::test]

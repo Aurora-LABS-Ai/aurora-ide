@@ -13,14 +13,25 @@
  * plus the live `team_event` stream.
  */
 
-/** Live status of one agent in the visible team view (§13). */
+/**
+ * Live status of one agent in the visible team view.
+ *
+ * Mirrors a real teammate's day: `working` at their desk, `waiting_input`
+ * when they asked the Lead and are blocked on the answer, `done`/`blocked`
+ * as their own report, `failed` when their engine died. The legacy
+ * `planning`/`building`/`reviewing` values may still arrive from old brains.
+ */
 export type AgentStatus =
   | "idle"
+  | "working"
+  | "waiting_input"
+  | "blocked"
+  | "failed"
+  | "done"
+  // Legacy values from brains written before the actor engine.
   | "planning"
   | "building"
-  | "reviewing"
-  | "blocked"
-  | "done";
+  | "reviewing";
 
 /** Kind of a team-channel event — these are the lateral arrows (§7). */
 export type ChannelEventKind =
@@ -39,11 +50,13 @@ export type TaskStatus = "todo" | "in_progress" | "blocked" | "done";
  */
 export type TeamPhase =
   | "forming"
+  | "working"
+  | "done"
+  | "disbanded"
+  // Legacy values from brains written before the actor engine.
   | "planning"
   | "building"
-  | "integrating"
-  | "done"
-  | "disbanded";
+  | "integrating";
 
 /** Legacy result of one manual integration gate (build / lint / test). */
 export type GateStatus = "unknown" | "pending" | "passed" | "failed";
@@ -231,6 +244,52 @@ export interface TeamRunStatus {
    * never re-triggers) a run that was already acknowledged.
    */
   acknowledged?: boolean;
+  /** Live per-member states while running; final states after. */
+  members?: MemberRunState[];
+  /** Per-member reports, present once the run is terminal. */
+  reports?: MemberReport[];
+}
+
+/**
+ * How a member said its assignment ended — its own statement via its
+ * `report` tool, not an inference from file counts. Mirrors Rust
+ * `ReportStatus`. `failed` is engine-assigned (crash/silence), never chosen.
+ */
+export type ReportStatus = "done" | "blocked" | "failed";
+
+/** One member's final report back to the Lead. Mirrors Rust `MemberReport`. */
+export interface MemberReport {
+  agentId: string;
+  role: string;
+  status: ReportStatus;
+  /** The member's own words: what it did, found, verified, left open. */
+  summary: string;
+  /** Paths the engine actually saw this member change (authoritative). */
+  changedFiles: string[];
+}
+
+/** Live per-member entry inside the run status. Mirrors `MemberRunState`. */
+export interface MemberRunState {
+  id: string;
+  role: string;
+  status: AgentStatus;
+  changedCount: number;
+}
+
+/**
+ * A question a member routed to the real Lead and is waiting on
+ * (A2A input-required). Mirrors Rust `LeadQuestion`.
+ */
+export interface LeadQuestion {
+  /** Stable id `team_lead_reply` targets. */
+  id: string;
+  runId?: string;
+  /** Asking member's agent id. */
+  from: string;
+  /** Asking member's role (for a readable prompt). */
+  role: string;
+  question: string;
+  askedAt: string;
 }
 
 // ─── Lead control inputs (Phase 2a) ───────────────────────────────────
@@ -276,25 +335,6 @@ export interface ScopeDecision {
   reason: string;
   /** When denied because a peer owns the path, the owning agent id. */
   blockingOwner?: string;
-}
-
-// ─── Legacy manual integration helpers ────────────────────────────────
-
-/**
- * A peer-review verdict on another agent's work before integration
- * (§7 "review a peer", §9 step 5). Mirrors Rust `ReviewVerdict`.
- */
-export type ReviewVerdict = "approve" | "changes_requested";
-
-/**
- * Legacy build/lint/test gate commands. Each is
- * optional — an omitted command leaves that gate `unknown` (skipped).
- * Mirrors Rust `GateCommands`.
- */
-export interface GateCommands {
-  build?: string;
-  lint?: string;
-  test?: string;
 }
 
 // ─── Per-agent transcript (the team window's individual agent view) ────

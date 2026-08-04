@@ -45,14 +45,26 @@ use super::api_client::ToolSchema;
 /// Per-execution context handed to a tool's `execute` call.
 ///
 /// Carries enough identity for logging/tracing (`turn_id`,
-/// `tool_call_id`, `session_id`), the workspace root every file-touching
+/// `tool_call_id`, `thread_id`), the workspace root every file-touching
 /// tool resolves paths against, and the cancel token tied to the
 /// surrounding turn.
 #[derive(Debug, Clone)]
 pub struct ToolContext {
     pub turn_id: String,
     pub tool_call_id: String,
-    pub session_id: String,
+    /// The CONVERSATION this call belongs to — the same id the frontend
+    /// knows the thread by, and the key for every piece of durable
+    /// per-conversation state a tool owns.
+    ///
+    /// This field was `session_id`, filled from `Session::session_id`, which
+    /// is a fresh UUIDv4 on every load and is documented as distinct from the
+    /// thread. Nothing in the tool layer ever wanted that: the todo sidecar,
+    /// a plan step's run claim, and background-process logs are all
+    /// per-conversation, so they were written under an id that changed each
+    /// restart and broadcast to a UI that filed them under a thread nobody
+    /// was looking at. Renamed rather than reassigned so it cannot be
+    /// misread the same way twice.
+    pub thread_id: String,
     pub workspace_root: Option<PathBuf>,
     /// When true, read-only file tools may resolve paths OUTSIDE the workspace
     /// (the user opted in via Settings → Agent). Writes stay workspace-bound.
@@ -555,7 +567,7 @@ mod tests {
         ToolContext {
             turn_id: "t-1".into(),
             tool_call_id: "call-1".into(),
-            session_id: "s-1".into(),
+            thread_id: "s-1".into(),
             workspace_root: None,
             allow_outside_workspace: false,
             cancel_token: CancellationToken::new(),
@@ -664,7 +676,7 @@ mod tests {
         // The schema list rides in every request's cacheable prefix. A
         // DashMap-iteration order re-randomizes per process, which defeats
         // prompt caching outright and shifts tool selection.
-        let names = ["file_read", "grep", "shell_execute", "todo_write"];
+        let names = ["file_read", "grep", "shell_execute", "todo"];
         let reg = registry_of(&names);
 
         let ordered: Vec<String> = reg.schemas().into_iter().map(|s| s.name).collect();

@@ -5,6 +5,7 @@ import { useSettingsStore } from "../../store/useSettingsStore";
 import type { ThreadSummary } from "../../services/thread-service";
 import { matchesCommandShortcut, formatCommandShortcut } from "../lib/command-shortcut";
 import { fuzzyCommandScore } from "../lib/command-search";
+import { openIdeWindow } from "../adapters/open-in-ide";
 import { useAgentChatStore } from "../store/useAgentChatStore";
 import { useAgentThemeStore } from "../store/useAgentThemeStore";
 import { useAgentUiStore, type SettingsSection } from "../store/useAgentUiStore";
@@ -57,7 +58,6 @@ function chatCommand(thread: ThreadSummary): CommandItem {
     icon: "chat",
     run: async () => {
       useAgentUiStore.getState().closeSettings();
-      useAgentUiStore.getState().closeTeam();
       await useAgentChatStore.getState().selectThread(thread.id, thread.workspaceRoot);
     },
   };
@@ -105,7 +105,6 @@ export const AgentCommandCenter: React.FC = () => {
   const items = useMemo<CommandItem[]>(() => {
     const closeToChat = () => {
       useAgentUiStore.getState().closeSettings();
-      useAgentUiStore.getState().closeTeam();
     };
     const addProject = async () => {
       const picked = await openFileDialog({ directory: true });
@@ -137,12 +136,31 @@ export const AgentCommandCenter: React.FC = () => {
         run: addProject,
       },
       {
+        // The only path-free way back to the editor. It matters most when the
+        // agent window is the startup surface (Settings → Preferences →
+        // Startup) or was launched with `agw`: the IDE is then hidden or absent,
+        // and every other route to it — "Open in IDE" — needs a file first.
+        id: "open-ide",
+        title: "Open the editor",
+        subtitle: "Aurora IDE window",
+        keywords: "ide main editor monaco switch window back",
+        group: "Navigate",
+        icon: "external",
+        run: () => {
+          useAgentUiStore.getState().closeSettings();
+          void openIdeWindow();
+        },
+      },
+      {
         id: "open-team",
         title: "Open agent team",
         keywords: "parallel lead agents",
         group: "Navigate",
         icon: "users",
-        run: () => useAgentUiStore.getState().openTeam(),
+        run: () => {
+          useAgentUiStore.getState().closeSettings();
+          useAgentWorkspaceStore.getState().openTab("team");
+        },
       },
       ...(["files", "browser", "terminal", "review"] as const).map<CommandItem>((kind) => ({
         id: `dock:${kind}`,

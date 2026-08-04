@@ -97,10 +97,24 @@ export interface AgentTheme {
  * browser-style tab system (see CODEX-UI-REFERENCE §12.7): singleton surfaces
  * (Review / Canvas / Files / Browser / Terminal) plus one `file` tab per opened file.
  */
-export type DockTabKind = "review" | "canvas" | "files" | "browser" | "terminal" | "file";
+export type DockTabKind =
+  | "review"
+  | "canvas"
+  | "files"
+  | "browser"
+  | "terminal"
+  | "team"
+  | "file"
+  | "member"
+  | "project"
+  | "chat";
 
-/** The singleton (one-instance) tab kinds — everything except per-file tabs. */
-export type DockSingletonKind = Exclude<DockTabKind, "file">;
+/** The singleton (one-instance) tab kinds — everything except the per-file,
+ *  per-team-member, per-project and per-conversation tabs. */
+export type DockSingletonKind = Exclude<
+  DockTabKind,
+  "file" | "member" | "project" | "chat"
+>;
 
 export const DOCK_TAB_LABELS: Record<DockSingletonKind, string> = {
   review: "Review",
@@ -108,14 +122,31 @@ export const DOCK_TAB_LABELS: Record<DockSingletonKind, string> = {
   files: "Files",
   browser: "Browser",
   terminal: "Terminal",
+  team: "Team",
 };
 
 /** A live tab in the dock's strip. Singletons use their kind as the id; file
- *  tabs use `file:<absolutePath>` so re-opening the same file refocuses it. */
+ *  tabs use `file:<absolutePath>`, team-member tabs `member:<agentId>` and
+ *  conversation tabs `chat:<threadId>`, so re-opening the same one refocuses it
+ *  instead of stacking duplicates. */
 export interface DockTabInstance {
   id: string;
   kind: DockTabKind;
   title: string;
   /** Absolute path — only for `kind === "file"`. */
   path?: string;
+  /** Team agent id — only for `kind === "member"`. */
+  memberId?: string;
+  /** Workspace folder — only for `kind === "project"`. */
+  projectRoot?: string;
+  /** Conversation id — only for `kind === "chat"`. */
+  threadId?: string;
+  /**
+   * The project that conversation belongs to — only for `kind === "chat"`.
+   *
+   * Carried on the tab rather than read from the window's current scope: a
+   * docked chat keeps running against ITS project even after you re-scope the
+   * window to another one, so its tools must stay rooted where it started.
+   */
+  threadProjectRoot?: string | null;
 }

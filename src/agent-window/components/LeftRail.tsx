@@ -18,17 +18,16 @@
  */
 
 import React, { useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { writeClipboardText } from "../../lib/clipboard";
 import { openFileDialog, openInTerminal, revealInExplorer } from "../../lib/tauri";
 import { deriveThreadTitle } from "../../lib/thread-title";
-import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
+import { AgentIcon } from "../shared/AgentIcon";
 import { AgentConfirm } from "./AgentConfirm";
+import { RailMenu, type RailMenuItem, type RailMenuState } from "./RailMenu";
 import { useAgentChatStore } from "../store/useAgentChatStore";
 import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
-import { useAgentUiStore } from "../store/useAgentUiStore";
 import { useTeamHistoryStore } from "../store/useTeamHistoryStore";
 import { useTeamStore } from "../../store/useTeamStore";
 import { PHASE_LABEL, isActivePhase, teamProgress } from "./team/team-ui";
@@ -37,40 +36,29 @@ import {
   type DbThread,
   type ThreadSummary,
 } from "../../services/thread-service";
+import {
+  folderName,
+  loadPinnedProjects,
+  loadProjectSort,
+  orderProjects,
+  projectActivity,
+  PINNED_PROJECTS_KEY,
+  SORT_KEY,
+  SORT_LABEL,
+  SORT_ORDER,
+  type ProjectSort,
+} from "../lib/project-order";
 
-type ProjectSort = "recent" | "name" | "oldest";
-const SORT_LABEL: Record<ProjectSort, string> = {
-  recent: "Recent",
-  name: "Name",
-  oldest: "Oldest",
-};
-const SORT_ORDER: ProjectSort[] = ["recent", "name", "oldest"];
-const SORT_KEY = "agw-rail-project-sort";
-const PINNED_PROJECTS_KEY = "agw-rail-pinned-projects";
+// Project identity, ordering and its two localStorage preferences live in
+// `lib/project-order` so the home screen's switcher lists projects in exactly
+// this order — two lists of the same thing disagreeing in front of the user is
+// the bug that sharing them prevents.
 const SHOW_ALL_PROJECTS_KEY = "agw-rail-projects-show-all";
 
 /** Codex-style: collapse a long project list to this many rows, with a
  *  "Show more" affordance to reveal the rest. */
 const PROJECTS_PREVIEW_LIMIT = 8;
 
-/** Pinned projects are a client-side rail preference (projects aren't DB rows). */
-function loadPinnedProjects(): string[] {
-  if (typeof localStorage === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(PINNED_PROJECTS_KEY);
-    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-/** Last path segment, for the compact project label. */
-function folderName(path: string | null): string {
-  if (!path) return "No project";
-  const parts = path.split(/[\\/]+/).filter(Boolean);
-  return parts[parts.length - 1] || path;
-}
 
 /**
  * Human "last worked" label + a staleness flag for a project row. Relative time
@@ -169,111 +157,20 @@ const Collapse: React.FC<{ open: boolean; children: React.ReactNode }> = ({
   </AnimatePresence>
 );
 
-interface RailMenuItem {
-  icon: AgentIconName;
-  label: string;
-  danger?: boolean;
-  separatorBefore?: boolean;
-  onSelect: () => void;
-}
-interface RailMenuState {
-  x: number;
-  y: number;
-  items: RailMenuItem[];
-}
-
 interface RailActionNotice {
   message: string;
   tone: "success" | "error";
 }
 
-const RAIL_MENU_WIDTH = 228;
-const RAIL_MENU_ROW = 34;
-
-/**
- * Right-click context menu for rail rows — the standard surface for row
- * actions (hover buttons stay for the two most common ones). Portaled into
- * the window root so the rail's own scroll/overflow can't clip it; closes on
- * outside press, Escape, scroll, or after any pick.
- */
-const RailMenu: React.FC<{ menu: RailMenuState; onClose: () => void }> = ({
-  menu,
-  onClose,
-}) => {
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    const onPointerDown = (event: PointerEvent) => {
-      const el = document.querySelector(".agw-rail-menu");
-      if (el && el.contains(event.target as Node)) return;
-      onClose();
-    };
-    const onScroll = (event: Event) => {
-      const el = document.querySelector(".agw-rail-menu");
-      if (el && el.contains(event.target as Node)) return;
-      onClose();
-    };
-    const onResize = () => onClose();
-    document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onResize);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onResize);
-    };
-  }, [onClose]);
-
-  const separatorCount = menu.items.reduce(
-    (count, item) => count + (item.separatorBefore ? 1 : 0),
-    0,
-  );
-  const height = menu.items.length * RAIL_MENU_ROW + separatorCount * 7 + 12;
-  const left = Math.max(8, Math.min(menu.x, window.innerWidth - RAIL_MENU_WIDTH - 8));
-  const top = Math.max(8, Math.min(menu.y, window.innerHeight - height - 8));
-  const portalTarget =
-    (document.querySelector(".agw-root") as HTMLElement | null) ?? document.body;
-
-  return createPortal(
-    <div
-      className="agw-menu agw-rail-menu"
-      role="menu"
-      style={{ position: "fixed", left, top, width: RAIL_MENU_WIDTH, zIndex: 1000 }}
-    >
-      {menu.items.map((item) => (
-        <React.Fragment key={item.label}>
-          {item.separatorBefore && <div className="agw-rail-menu-separator" role="separator" />}
-          <button
-            type="button"
-            role="menuitem"
-            className="agw-menu-item agw-rail-menu-item"
-            data-danger={item.danger || undefined}
-            onClick={() => {
-              onClose();
-              item.onSelect();
-            }}
-          >
-            <AgentIcon name={item.icon} size={14} />
-            <span>{item.label}</span>
-          </button>
-        </React.Fragment>
-      ))}
-    </div>,
-    portalTarget,
-  );
-};
-
 export const LeftRail: React.FC = () => {
   const toggleRail = useAgentWorkspaceStore((s) => s.toggleRail);
+  const openChatTab = useAgentWorkspaceStore((s) => s.openChatTab);
 
-  // Team screen is a center-column takeover (rail stays). The "Team" entry opens
-  // it; opening any chat returns the center to the conversation.
-  const centerView = useAgentUiStore((s) => s.centerView);
-  const openTeam = useAgentUiStore((s) => s.openTeam);
-  const closeTeam = useAgentUiStore((s) => s.closeTeam);
+  // The Team lives in the right dock now ("Team" tab beside Canvas/Files).
+  // Active when the dock is open on that tab.
+  const teamTabActive = useAgentWorkspaceStore(
+    (s) => s.dockOpen && s.tabs.find((t) => t.id === s.activeTabId)?.kind === "team",
+  );
 
   // Live team run for the current project (kept warm in AgentWindow). Drives the
   // Team entry's tag; `null`/inactive → no tag.
@@ -387,10 +284,7 @@ export const LeftRail: React.FC = () => {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [pinnedProjects, setPinnedProjects] = useState<string[]>(loadPinnedProjects);
   const pinnedProjectSet = useMemo(() => new Set(pinnedProjects), [pinnedProjects]);
-  const [sortMode, setSortMode] = useState<ProjectSort>(() => {
-    const saved = typeof localStorage !== "undefined" ? localStorage.getItem(SORT_KEY) : null;
-    return saved && SORT_ORDER.includes(saved as ProjectSort) ? (saved as ProjectSort) : "recent";
-  });
+  const [sortMode, setSortMode] = useState<ProjectSort>(loadProjectSort);
   // Codex-style "Show more / Show less" for the projects list (persisted).
   const [projectsShowAll, setProjectsShowAll] = useState<boolean>(
     () => typeof localStorage !== "undefined" && localStorage.getItem(SHOW_ALL_PROJECTS_KEY) === "1",
@@ -454,18 +348,7 @@ export const LeftRail: React.FC = () => {
 
   // Latest / earliest activity per project (from ALL chats, not the filtered
   // view) — drives the sort modes.
-  const activity = useMemo(() => {
-    const latest = new Map<string, string>();
-    const earliest = new Map<string, string>();
-    for (const t of allWithLive) {
-      const root = t.workspaceRoot;
-      if (!root) continue;
-      if (!latest.has(root) || t.updatedAt > latest.get(root)!) latest.set(root, t.updatedAt);
-      if (!earliest.has(root) || t.createdAt < earliest.get(root)!)
-        earliest.set(root, t.createdAt);
-    }
-    return { latest, earliest };
-  }, [allWithLive]);
+  const activity = useMemo(() => projectActivity(allWithLive), [allWithLive]);
 
   // Per-project row meta: active (non-archived) chat count + last-activity, for
   // the "12 chats · 2d ago" subtitle on each project row.
@@ -485,32 +368,18 @@ export const LeftRail: React.FC = () => {
     return map;
   }, [allWithLive]);
 
-  const projects = useMemo(() => {
-    const set = new Set(knownProjects);
-    for (const t of allWithLive) if (t.workspaceRoot) set.add(t.workspaceRoot);
-    if (projectRoot) set.add(projectRoot);
-    const list = [...set];
-    list.sort((a, b) => {
-      // Pinned projects float to the top regardless of the active sort.
-      const pa = pinnedProjectSet.has(a) ? 0 : 1;
-      const pb = pinnedProjectSet.has(b) ? 0 : 1;
-      if (pa !== pb) return pa - pb;
-      if (sortMode === "name") return folderName(a).localeCompare(folderName(b));
-      if (sortMode === "oldest") {
-        return (activity.earliest.get(a) ?? "\uffff").localeCompare(
-          activity.earliest.get(b) ?? "\uffff",
-        );
-      }
-      // recent: newest activity first; projects without chats fall to the end.
-      const la = activity.latest.get(a);
-      const lb = activity.latest.get(b);
-      if (la && lb) return lb.localeCompare(la);
-      if (la) return -1;
-      if (lb) return 1;
-      return folderName(a).localeCompare(folderName(b));
-    });
-    return list;
-  }, [knownProjects, allWithLive, projectRoot, sortMode, activity, pinnedProjectSet]);
+  const projects = useMemo(
+    () =>
+      orderProjects({
+        knownProjects,
+        threads: allWithLive,
+        projectRoot,
+        sortMode,
+        pinned: pinnedProjectSet,
+        activity,
+      }),
+    [knownProjects, allWithLive, projectRoot, sortMode, activity, pinnedProjectSet],
+  );
 
   // Rebuild the team-history index off the ROOT SET (not the sorted array), so
   // re-sorting/pinning projects doesn't refetch. A team phase change means a run
@@ -583,14 +452,11 @@ export const LeftRail: React.FC = () => {
     });
   };
 
-  // Opening any chat returns the center to the conversation (out of the team screen).
   const openChat = (id: string, ws?: string | null) => {
-    closeTeam();
     void selectThread(id, ws);
   };
 
   const newChatInProject = (root: string) => {
-    closeTeam();
     void setProject(root);
     setExpanded((prev) => ({ ...prev, [root]: true }));
     newChat();
@@ -713,8 +579,17 @@ export const LeftRail: React.FC = () => {
         ]
       : [
           {
+            // First, and the only entry that OPENS something: it is the reason
+            // most people reach for this menu on a chat they can already click.
+            icon: "panel-right",
+            label: "Open in side panel",
+            onSelect: () =>
+              openChatTab(thread.id, thread.title, thread.workspaceRoot ?? null),
+          },
+          {
             icon: "file-edit",
             label: "Rename chat",
+            separatorBefore: true,
             onSelect: () => setRenamingId(thread.id),
           },
           {
@@ -761,6 +636,15 @@ export const LeftRail: React.FC = () => {
           icon: "inspect",
           label: "New chat here",
           onSelect: () => newChatInProject(root),
+        },
+        {
+          icon: "sliders",
+          label: "Project details",
+          separatorBefore: true,
+          onSelect: () =>
+            useAgentWorkspaceStore
+              .getState()
+              .openProjectTab(root, folderName(root)),
         },
         {
           icon: "external",
@@ -1073,9 +957,9 @@ export const LeftRail: React.FC = () => {
         <button
           type="button"
           className="agw-rail-team"
-          data-active={centerView === "team" || undefined}
-          onClick={() => openTeam()}
-          title="Open the team for this project"
+          data-active={teamTabActive || undefined}
+          onClick={() => useAgentWorkspaceStore.getState().openTab("team")}
+          title="Open the team panel for this project"
         >
           <AgentIcon name="users" size={15} />
           <span>Team</span>

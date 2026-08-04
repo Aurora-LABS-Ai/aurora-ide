@@ -500,6 +500,9 @@ async fn run_checker(
                 stderr: String::from_utf8_lossy(&output.stderr).to_string(),
                 exit_code: output.status.code(),
                 success: output.status.success(),
+                // The timeout branch above returns `Err`, so reaching here means
+                // the checker exited on its own.
+                timed_out: false,
             })
         }
     }
@@ -528,7 +531,7 @@ mod tests {
             allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
-            session_id: "s".into(),
+            thread_id: "s".into(),
             workspace_root,
             cancel_token: CancellationToken::new(),
         }

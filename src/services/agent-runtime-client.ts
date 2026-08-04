@@ -835,6 +835,17 @@ export class AgentRuntimeClient {
         callbacks.onCompactionCompleted?.(event.before_tokens, event.after_tokens);
         break;
       case "error":
+        // Never swallow this. A recoverable notice (output cap hit, provider
+        // hiccup the runtime absorbed) becomes an inline marker; anything
+        // non-recoverable also goes down the normal error path so the turn
+        // can't end without an explanation.
+        callbacks.onRuntimeNotice?.({
+          message: event.message,
+          recoverable: event.recoverable,
+        });
+        if (!event.recoverable) {
+          callbacks.onError?.(new Error(event.message));
+        }
         break;
       default: {
         // Defensive: log unknown event types so a future Sub-A

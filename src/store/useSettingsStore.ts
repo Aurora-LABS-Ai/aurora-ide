@@ -157,19 +157,6 @@ interface SettingsState {
    */
   teamMemberModel: string;
   /**
-   * Default integration-gate commands the Lead runs after the build to verify
-   * the whole project (empty string = skip that gate). A `team_dispatch` call
-   * inherits these when the model doesn't pass its own `gate`. Persisted so the
-   * setting sticks across sessions and both surfaces read the same value.
-   */
-  teamGateBuild: string;
-  teamGateLint: string;
-  teamGateTest: string;
-  /** Update one or more default integration-gate commands and persist. */
-  setTeamGate: (
-    patch: Partial<{ build: string; lint: string; test: string }>,
-  ) => void;
-  /**
    * Global, workspace-agnostic user instructions injected into the agent's
    * system prompt for EVERY workspace (like a global rule). Empty = none.
    */
@@ -258,6 +245,16 @@ interface SettingsState {
     label: string;
   }>;
   getLLMConfig: () => ProviderConfig | null;
+  /**
+   * `getLLMConfig` for an EXPLICIT `"providerId:modelKey"` selection rather
+   * than the globally-selected one — how a conversation rides the model it is
+   * pinned to instead of whichever model was picked last, anywhere.
+   *
+   * Falls back to {@link getLLMConfig} for a null/empty selection, or one whose
+   * provider no longer exists (deleted provider, edited config): a conversation
+   * pinned to a model that is gone must still be sendable.
+   */
+  getLLMConfigFor: (selection: string | null | undefined) => ProviderConfig | null;
   getSelectedProvider: () => LLMProvider | undefined;
   getToolApproval: (toolName: string) => 'auto' | 'always_ask' | 'deny';
 
@@ -371,6 +368,12 @@ interface SettingsState {
   modelsForProvider: (providerId: string) => LLMModel[];
   /** Look up the active model from `selectedModel` (`providerId:modelKey`). */
   getActiveModel: () => LLMModel | undefined;
+  /**
+   * {@link getActiveModel} for an explicit selection. The model row carries the
+   * reasoning config, so a conversation pinned to a model must read ITS row —
+   * reading the active one would apply another chat's reasoning tier.
+   */
+  getModelFor: (selection: string | null | undefined) => LLMModel | undefined;
   /** Active model with overrides resolved against the provider's defaults. */
   getResolvedActiveModel: () => ResolvedLLMModel | undefined;
   addModel: (
@@ -923,7 +926,11 @@ function buildProviderConfigForSelection(
     customHeaders: provider.customHeaders,
     customParams: provider.customParams,
     defaultTemperature: provider.defaultTemperature,
-    defaultMaxTokens: provider.defaultMaxTokens ?? provider.maxOutputTokens,
+    // ONLY the user's explicit provider-wide override. It must NOT fall back to
+    // `provider.maxOutputTokens`: consumers read `defaultMaxTokens ?? maxOutputTokens`,
+    // so a legacy provider-row value (often a stale 8192) would outrank the
+    // per-model cap resolved just above and silently cap a 128k model at 8k.
+    defaultMaxTokens: provider.defaultMaxTokens ?? undefined,
   };
 }
 
@@ -993,9 +1000,6 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   teamLeadModel: '',
   teamMemberModel: '',
   // Default integration-gate commands (Settings → Team). Empty = skip that gate.
-  teamGateBuild: '',
-  teamGateLint: '',
-  teamGateTest: '',
   // Global, workspace-agnostic user instructions (one global rule applied
   // everywhere). Empty by default.
   globalInstructions: '',
@@ -1290,9 +1294,6 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           maxTeamSize: clampTeamSize(appSettings.maxTeamSize ?? TEAM_SIZE_RECOMMENDED),
           teamLeadModel: appSettings.teamLeadModel ?? '',
           teamMemberModel: appSettings.teamMemberModel ?? '',
-          teamGateBuild: appSettings.teamGateBuild ?? '',
-          teamGateLint: appSettings.teamGateLint ?? '',
-          teamGateTest: appSettings.teamGateTest ?? '',
           globalInstructions: appSettings.globalInstructions ?? '',
           compactionThresholdPct: clampCompactionThreshold(
             appSettings.compactionThresholdPct ?? DEFAULT_COMPACTION_THRESHOLD_PCT,
@@ -1401,9 +1402,6 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         maxTeamSize: state.maxTeamSize,
         teamLeadModel: state.teamLeadModel,
         teamMemberModel: state.teamMemberModel,
-        teamGateBuild: state.teamGateBuild,
-        teamGateLint: state.teamGateLint,
-        teamGateTest: state.teamGateTest,
         globalInstructions: state.globalInstructions,
         compactionThresholdPct: state.compactionThresholdPct,
         compactionSummaryBudget: state.compactionSummaryBudget,
@@ -1757,6 +1755,18 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     );
   },
 
+  getModelFor: (selection) => {
+    if (!selection) return get().getActiveModel();
+    const state = get();
+    const [providerId, modelKey] = selection.split(":");
+    if (!providerId || !modelKey) return state.getActiveModel();
+    return (
+      state.models.find(
+        (m) => m.providerId === providerId && m.modelKey === modelKey,
+      ) ?? undefined
+    );
+  },
+
   getResolvedActiveModel: () => {
     const state = get();
     const [providerId] = state.selectedModel.split(":");
@@ -1946,15 +1956,6 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setTeamMemberModel: (selection: string) => {
     set({ teamMemberModel: selection });
-    get().saveToDatabase();
-  },
-
-  setTeamGate: (patch) => {
-    const next: Partial<SettingsState> = {};
-    if (patch.build !== undefined) next.teamGateBuild = patch.build;
-    if (patch.lint !== undefined) next.teamGateLint = patch.lint;
-    if (patch.test !== undefined) next.teamGateTest = patch.test;
-    set(next);
     get().saveToDatabase();
   },
 
@@ -2203,8 +2204,9 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         customHeaders: provider.customHeaders,
         customParams: provider.customParams,
         defaultTemperature: provider.defaultTemperature,
-        defaultMaxTokens:
-          provider.defaultMaxTokens ?? provider.maxOutputTokens,
+        // Explicit override only — see `toLlmConfig`. Falling back to the
+        // provider row here lets a stale 8192 outrank the per-model cap.
+        defaultMaxTokens: provider.defaultMaxTokens ?? undefined,
       };
     }
 
@@ -2236,13 +2238,22 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         customHeaders: fallback.customHeaders,
         customParams: fallback.customParams,
         defaultTemperature: fallback.defaultTemperature,
-        defaultMaxTokens:
-          fallback.defaultMaxTokens ?? fallback.maxOutputTokens,
+        // Explicit override only — see `toLlmConfig`.
+        defaultMaxTokens: fallback.defaultMaxTokens ?? undefined,
       };
     }
 
     // No provider available
     return null;
+  },
+
+  getLLMConfigFor: (selection) => {
+    if (!selection) return get().getLLMConfig();
+    const { providers, models } = get();
+    return (
+      buildProviderConfigForSelection(selection, providers, models) ??
+      get().getLLMConfig()
+    );
   },
 
   // Agent Team provider overrides. Each resolves the configured

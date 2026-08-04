@@ -96,6 +96,27 @@ export const runningEverywhere = (
     .flat()
     .filter((entry) => entry.status === "running");
 
+/**
+ * Every process the user should be able to see and stop right now: this
+ * thread's own rows (running or finished) plus anything still running anywhere
+ * else, deduped.
+ *
+ * Lives here rather than in a component because two surfaces need the SAME
+ * list — the process panel and the composer rail's chip count. Two copies of
+ * the union rule is how the counter and the list start disagreeing.
+ */
+export const visibleProcesses = (
+  byThread: Record<string, BackgroundProcess[]>,
+  threadId: string | null,
+): BackgroundProcess[] => {
+  const mine = threadId ? (byThread[threadId] ?? []) : [];
+  const seen = new Set(mine.map((entry) => entry.processId));
+  return [
+    ...mine,
+    ...runningEverywhere(byThread).filter((entry) => !seen.has(entry.processId)),
+  ];
+};
+
 /** Signature of `settle`, for components that take it as a dependency. */
 export type BackgroundSettle = BackgroundState["settle"];
 

@@ -622,12 +622,12 @@ mod tests {
         ws.ensure_scaffold("/repo", None).unwrap();
         let manifest = TeamManifest {
             project_id: "pid-test".into(),
-            phase: TeamPhase::Planning,
+            phase: TeamPhase::Working,
             agents: vec![AgentRecord {
                 id: "a1".into(),
                 role: "app-owner".into(),
                 model: Some("m".into()),
-                status: AgentStatus::Building,
+                status: AgentStatus::Working,
             }],
             updated_at: now_rfc3339(),
             schema_version: TEAM_SCHEMA_VERSION,
@@ -636,7 +636,7 @@ mod tests {
         let back = ws.read_team().unwrap().unwrap();
         assert_eq!(back.agents.len(), 1);
         assert_eq!(back.agents[0].role, "app-owner");
-        assert!(matches!(back.agents[0].status, AgentStatus::Building));
+        assert!(matches!(back.agents[0].status, AgentStatus::Working));
     }
 
     #[test]

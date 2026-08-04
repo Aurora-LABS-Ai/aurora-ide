@@ -95,6 +95,24 @@ pub enum ContentBlock {
         /// Unix epoch milliseconds when compaction fired.
         created_at: i64,
     },
+
+    /// Something the RUNTIME needs to tell the user about this turn — most
+    /// importantly that the reply was cut off at the output-token limit.
+    ///
+    /// Carried in a [`MessageRole::System`] message appended straight after the
+    /// assistant message it describes, so it reloads in the right place. Like
+    /// [`ContentBlock::Compaction`] it is **never sent to a provider**: the model
+    /// does not need to be told about its own truncation, and echoing product
+    /// copy back into the conversation would teach it to imitate the voice.
+    ///
+    /// It exists because the live-only version vanished on thread reload — the
+    /// truncated reply persisted but the explanation for it did not, so
+    /// reopening a thread turned a diagnosed turn back into a mystery.
+    Notice {
+        message: String,
+        /// Unix epoch milliseconds when the notice was raised.
+        created_at: i64,
+    },
 }
 
 /// Token usage attributed to a single assistant turn.

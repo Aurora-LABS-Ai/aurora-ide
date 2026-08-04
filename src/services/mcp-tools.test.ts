@@ -14,7 +14,12 @@ import {
   type McpServerState,
   useMcpStore,
 } from "../store/useMcpStore";
-import { parseMcpToolName } from "./mcp-tools";
+import {
+  getMcpToolDefinitions,
+  getMcpToolsSummary,
+  mcpCallableName,
+  parseMcpToolName,
+} from "./mcp-tools";
 
 function makeServer(
   id: string,
@@ -134,5 +139,88 @@ describe("parseMcpToolName", () => {
     expect(parseMcpToolName("mcp_browser_testing_browser_connect")?.serverId).toBe(
       "browser-testing",
     );
+  });
+});
+
+/**
+ * The system-prompt inventory must agree with the tool schema.
+ *
+ * It used to list tools by display name only — `formatMcpToolLabel` title-cases
+ * and splits on `_`, so `events_get-response-body` rendered as
+ * "Events Get-response-body" with no way back to
+ * `mcp_http_toolkit_events_get-response-body`. The prompt then told the model a
+ * prefixed callable name existed without ever printing one, which cost a wasted
+ * turn and an unknown-tool retry every time it reached for an MCP tool.
+ */
+describe("getMcpToolsSummary", () => {
+  beforeEach(() => {
+    useMcpStore.setState({ servers: [] });
+  });
+
+  it("lists every tool by the exact name it is callable by", () => {
+    useMcpStore.setState({
+      servers: [
+        makeServer("http-toolkit", "http-toolkit", [
+          "events_get-response-body",
+          "events_list",
+        ]),
+      ],
+    });
+
+    const summary = getMcpToolsSummary();
+    const callables = getMcpToolDefinitions().map((t) => t.function.name);
+
+    expect(callables).toHaveLength(2);
+    for (const callable of callables) {
+      expect(summary).toContain(callable);
+    }
+    expect(summary).toContain("mcp_http_toolkit_events_get-response-body");
+  });
+
+  it("does not present the display name as an identifier", () => {
+    useMcpStore.setState({
+      servers: [
+        makeServer("http-toolkit", "http-toolkit", ["events_get-response-body"]),
+      ],
+    });
+
+    const summary = getMcpToolsSummary();
+    // The old format put the un-invertible label in the code span where the
+    // callable name belongs. The label may still appear as quoted prose.
+    expect(summary).not.toContain("`http-toolkit: Events Get-response-body`");
+    expect(summary).toContain('"http-toolkit: Events Get-response-body"');
+  });
+
+  it("emits names that parse back to their own server and tool", () => {
+    useMcpStore.setState({
+      servers: [
+        makeServer("http-toolkit", "http-toolkit", ["events_get-response-body"]),
+      ],
+    });
+
+    const callable = mcpCallableName("http-toolkit", "events_get-response-body");
+    const parsed = parseMcpToolName(callable);
+    expect(parsed?.serverId).toBe("http-toolkit");
+    expect(parsed?.originalToolName).toBe("events_get-response-body");
+  });
+
+  it("stops repeating descriptions the tool schema already carries", () => {
+    useMcpStore.setState({
+      servers: [
+        {
+          ...makeServer("http-toolkit", "http-toolkit", ["events_list"]),
+          tools: [
+            {
+              name: "events_list",
+              description: "Return every captured HTTP event.",
+            },
+          ],
+        },
+      ],
+    });
+
+    const summary = getMcpToolsSummary();
+    expect(summary).toContain("mcp_http_toolkit_events_list");
+    expect(summary).not.toContain("Return every captured HTTP event.");
   });
 });

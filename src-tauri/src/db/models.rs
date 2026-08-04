@@ -390,16 +390,6 @@ pub struct AppSettings {
     /// pin the Lead to one provider and the team to another.
     #[serde(default)]
     pub team_member_model: String,
-    /// Default integration-gate commands the Lead runs after the build to verify
-    /// the whole project (§14). Empty string = skip that gate. Sourced from
-    /// Settings → Team; a `team_dispatch` call inherits these when the model
-    /// doesn't pass its own `gate`. `serde(default)` so legacy rows load clean.
-    #[serde(default)]
-    pub team_gate_build: String,
-    #[serde(default)]
-    pub team_gate_lint: String,
-    #[serde(default)]
-    pub team_gate_test: String,
     /// Global, workspace-agnostic user instructions injected into the agent's
     /// system prompt for EVERY workspace (the "global rule" surface). Empty
     /// string means none. Default added via `serde(default)` so existing rows
@@ -492,9 +482,6 @@ impl Default for AppSettings {
             max_team_size: 5,
             team_lead_model: String::new(),
             team_member_model: String::new(),
-            team_gate_build: String::new(),
-            team_gate_lint: String::new(),
-            team_gate_test: String::new(),
             global_instructions: String::new(),
             compaction_threshold_pct: 80.0,
             compaction_summary_budget: 8192,

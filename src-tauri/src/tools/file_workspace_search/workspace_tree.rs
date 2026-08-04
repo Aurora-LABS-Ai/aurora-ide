@@ -731,7 +731,7 @@ mod tests {
             allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
-            session_id: "s".into(),
+            thread_id: "s".into(),
             workspace_root: workspace,
             cancel_token: CancellationToken::new(),
         }

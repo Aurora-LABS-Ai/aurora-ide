@@ -12,7 +12,7 @@
  * - Shell: 4 (execute, spawn, kill, list_processes)
  * - Editor: 2 (open_file, read_lints)
  * - Search: 1 (auroro_websearch)
- * - Todo: 1 (todo_write)
+ * - Todo: 1 (todo_write — legacy IDE chat only; the agent uses Rust's `todo`)
  * - MCP: Tools are dynamically loaded from connected servers
  */
 import type { ToolDefinition } from "../types";

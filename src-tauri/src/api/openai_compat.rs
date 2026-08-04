@@ -36,8 +36,8 @@ use crate::agent_runtime::types::TokenUsage;
 use super::client::ProviderConfigSnapshot;
 use super::provider_kernel_adapter::{
     build_openai_body, build_openai_headers, build_openai_url, finalize_assistant_message,
-    frame_payloads, map_reqwest_error, map_status_error, parse_tool_input, BlockState,
-    OpenAiStreamingResponse, SseFrameBuffer,
+    frame_has_done_marker, frame_payloads, map_reqwest_error, map_status_error, parse_tool_input,
+    BlockState, OpenAiStreamingResponse, SseFrameBuffer,
 };
 
 pub struct OpenAICompatAdapter {
@@ -51,6 +51,15 @@ impl OpenAICompatAdapter {
             .no_gzip()
             .no_brotli()
             .no_deflate()
+            // Keepalives, not timeouts. A high reasoning effort can leave the
+            // socket near-silent for minutes while the model thinks, which is
+            // exactly when an idle-connection reaper (NAT, proxy, LB) kills it.
+            // These keep the connection demonstrably alive; there is
+            // deliberately no request timeout, since a long think is legitimate.
+            .tcp_keepalive(std::time::Duration::from_secs(30))
+            .http2_keep_alive_interval(std::time::Duration::from_secs(20))
+            .http2_keep_alive_timeout(std::time::Duration::from_secs(20))
+            .http2_keep_alive_while_idle(true)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self { config, http }
@@ -163,6 +172,10 @@ where
 
     let mut usage = TokenUsage::default();
     let mut finish_reason: Option<String> = None;
+    // Did the provider actually close the stream, or did the connection just
+    // die? A `finish_reason` or the `[DONE]` sentinel means goodbye was said.
+    // Without one, EOF is a TRUNCATED stream — see the check after the loop.
+    let mut saw_terminator = false;
 
     loop {
         let chunk = tokio::select! {
@@ -177,6 +190,9 @@ where
 
         sse.extend(chunk.as_ref());
         for frame in sse.take_frames() {
+            if frame_has_done_marker(&frame) {
+                saw_terminator = true;
+            }
             for payload in frame_payloads(&frame) {
                 let parsed: OpenAiStreamingResponse = match serde_json::from_str(&payload) {
                     Ok(p) => p,
@@ -301,10 +317,23 @@ where
 
                     if let Some(reason) = choice.finish_reason {
                         finish_reason = Some(reason);
+                        saw_terminator = true;
                     }
                 }
             }
         }
+    }
+
+    // The stream hit EOF without a `finish_reason` or `[DONE]`. The provider
+    // never said it was finished, so this is a dropped connection — report it
+    // as the recoverable network failure it is. Falling through would fabricate
+    // a `stop` reason and hand back a truncated reply as a completed turn,
+    // which reads to the user as the agent stopping for no reason.
+    if !saw_terminator {
+        return Err(ApiError::Network(
+            "the response stream ended before the model finished — the connection dropped              mid-reply. Retry to run the turn again."
+                .to_string(),
+        ));
     }
 
     // Emit one ToolUse event per accumulated tool call now that the
@@ -379,4 +408,63 @@ fn append_or_open_thinking(
         signature: None,
     });
     *last = Some(DeltaKind::Thinking);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Drive the SSE driver over a canned body, returning its result.
+    async fn drive(body: &str) -> Result<TurnUsage, ApiError> {
+        let chunks: Vec<Result<Vec<u8>, std::io::Error>> = vec![Ok(body.as_bytes().to_vec())];
+        let (tx, _rx) = mpsc::channel(256);
+        drive_openai_stream(
+            futures_util::stream::iter(chunks),
+            tx,
+            CancellationToken::new(),
+        )
+        .await
+    }
+
+    /// The regression: a connection that dies mid-reply reaches EOF with no
+    /// `finish_reason` and no `[DONE]`. That used to fall through as a
+    /// perfectly normal turn with a fabricated `stop`, so the agent appeared
+    /// to stop for no reason. It must be an error.
+    #[tokio::test]
+    async fn truncated_stream_is_an_error_not_a_finished_turn() {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"half a sen\"}}]}\n\n";
+        match drive(body).await {
+            Err(ApiError::Network(msg)) => {
+                assert!(msg.contains("ended before"), "unexpected message: {msg}");
+            }
+            other => panic!("expected a Network error for a truncated stream, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn done_sentinel_closes_the_stream_cleanly() {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n";
+        let turn = drive(body).await.expect("[DONE] should complete the turn");
+        assert_eq!(turn.stop_reason, "stop");
+    }
+
+    #[tokio::test]
+    async fn finish_reason_alone_closes_the_stream_cleanly() {
+        // Providers that never send `[DONE]` still say goodbye via finish_reason.
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n";
+        let turn = drive(body).await.expect("finish_reason should complete the turn");
+        assert_eq!(turn.stop_reason, "stop");
+    }
+
+    /// The exact shape of the reported bug: the model spent its whole output
+    /// budget reasoning and was cut off at the cap. That is a REAL terminator
+    /// (`length`), so the turn completes — and `length` is what tells the
+    /// runtime to warn the user the reply is truncated.
+    #[tokio::test]
+    async fn length_stop_completes_the_turn_and_is_reported_verbatim() {
+        let body = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking…\"},\
+                    \"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n";
+        let turn = drive(body).await.expect("a capped turn still completes");
+        assert_eq!(turn.stop_reason, "length");
+    }
 }

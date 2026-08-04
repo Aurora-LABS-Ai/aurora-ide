@@ -729,6 +729,67 @@ describe("AgentRuntimeClient.chat — completion + cleanup", () => {
     expect(invokeMock).not.toHaveBeenCalledWith(AGENT_CHAT_COMMAND, expect.anything());
   });
 
+  // The runtime's `error` event used to hit a bare `case "error": break;` — the
+  // only event in the switch with no callback. That is how a turn cut off at the
+  // output-token cap reached the user as a stream that simply stopped: Rust sent
+  // the "this reply is cut off" warning and the client dropped it on the floor.
+  it("surfaces a recoverable runtime error as a notice without failing the turn", async () => {
+    const onRuntimeNotice = vi.fn();
+    const onError = vi.fn();
+    const client = buildClient({ onRuntimeNotice, onError });
+    const promise = client.chat(sampleInput);
+    const { turnId } = await awaitChatInvocation();
+
+    dispatch(AGENT_EVENT_CHANNEL, {
+      turnId,
+      seq: 1,
+      event: {
+        type: "error",
+        message: "This reply is cut off — the model reached its output limit.",
+        recoverable: true,
+      },
+    });
+
+    expect(onRuntimeNotice).toHaveBeenCalledWith({
+      message: "This reply is cut off — the model reached its output limit.",
+      recoverable: true,
+    });
+    // Recoverable: the turn is still alive, so this is NOT an error path.
+    expect(onError).not.toHaveBeenCalled();
+
+    dispatch(AGENT_TURN_COMPLETE_CHANNEL, {
+      turnId,
+      stop_reason: "length",
+      iterations: 1,
+    });
+    await promise;
+  });
+
+  it("also routes a non-recoverable runtime error to onError", async () => {
+    const onRuntimeNotice = vi.fn();
+    const onError = vi.fn();
+    const client = buildClient({ onRuntimeNotice, onError });
+    const promise = client.chat(sampleInput);
+    const { turnId } = await awaitChatInvocation();
+
+    dispatch(AGENT_EVENT_CHANNEL, {
+      turnId,
+      seq: 1,
+      event: { type: "error", message: "provider exploded", recoverable: false },
+    });
+
+    expect(onRuntimeNotice).toHaveBeenCalledWith({
+      message: "provider exploded",
+      recoverable: false,
+    });
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "provider exploded" }),
+    );
+
+    dispatch(AGENT_TURN_ERROR_CHANNEL, { turnId, error: "provider exploded" });
+    await expect(promise).rejects.toThrow("provider exploded");
+  });
+
   it("rejects with the runtime error and unsubscribes on agent_turn_error", async () => {
     const onError = vi.fn();
     const client = buildClient({ onError });

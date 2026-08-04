@@ -31,8 +31,29 @@ use super::shell_execute::{
     shell_required_arguments, shell_tool_description,
 };
 
+/// The lifetime cap for this spawn: an explicit `timeout`, clamped, else the
+/// effectively-unbounded default.
+///
+/// Extracted so the clamp is testable without spawning a real process — the
+/// floor is the part worth pinning, since `timeout: 1` would otherwise kill a
+/// dev server before it finished booting and report it as a startup failure.
+fn resolve_background_timeout(input: &Value) -> u64 {
+    input
+        .get("timeout")
+        .or_else(|| input.get("timeout_ms"))
+        .and_then(Value::as_u64)
+        .map(|value| value.clamp(MIN_BACKGROUND_TIMEOUT_MS, BACKGROUND_PROCESS_TIMEOUT_MS))
+        .unwrap_or(BACKGROUND_PROCESS_TIMEOUT_MS)
+}
+
 const SHELL_EXECUTION_MODE: ExecutionMode = ExecutionMode::WorkspaceWrite;
+/// Lifetime cap when the caller does not set one. Effectively "no cap" — a dev
+/// server is expected to outlive the turn that started it and to be stopped by
+/// `shell_kill`, not by a clock.
 const BACKGROUND_PROCESS_TIMEOUT_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+/// Floor on an explicit `timeout`, so a stray `timeout: 1` cannot kill a
+/// process before it has finished starting.
+const MIN_BACKGROUND_TIMEOUT_MS: u64 = 1_000;
 
 pub struct ShellSpawnTool {
     sink: Arc<dyn IdeEventSink>,
@@ -79,6 +100,14 @@ impl ToolExecutor for ShellSpawnTool {
                                 composer while it runs — e.g. \"Vite dev server\", \"Jest watch\", \
                                 \"Docker compose up\". Keep it under about 40 characters and \
                                 describe what the process is, not the command line."
+            },
+            "timeout": {
+                "type": "number",
+                "description": "Hard lifetime cap in milliseconds — the process is killed after \
+                                this long even if it is still healthy. Omit it for a dev server or \
+                                watcher you intend to stop yourself with shell_kill. Set it when \
+                                the run should be bounded, e.g. a log follower you only need for a \
+                                few minutes."
             }
         });
         let shell_argument = shell_argument_schema();
@@ -164,10 +193,12 @@ impl ToolExecutor for ShellSpawnTool {
             .map(str::to_string)
             .or_else(|| Some(title_from_command(command)));
 
+        let timeout_ms = resolve_background_timeout(&input);
+
         let req = ShellStreamRequest {
             process_id: process_id.clone(),
             request_id: request_id.clone(),
-            session_id: ctx.session_id.clone(),
+            thread_id: ctx.thread_id.clone(),
             name: name.clone(),
             command: command.to_string(),
             cwd: cwd.clone(),
@@ -175,7 +206,7 @@ impl ToolExecutor for ShellSpawnTool {
             // spawned dev server can never end up in a different shell than
             // the one its command was checked against.
             shell: resolve_shell(requested_shell.map(str::to_string)),
-            timeout_ms: Some(BACKGROUND_PROCESS_TIMEOUT_MS),
+            timeout_ms: Some(timeout_ms),
         };
 
         let outcome = self
@@ -231,6 +262,7 @@ impl ToolExecutor for ShellSpawnTool {
             "command": command,
             "intent": intent,
             "cwd": cwd,
+            "timeoutMs": timeout_ms,
             // The live stream goes to the UI, which the model never sees. This
             // file is how it reads what the process actually printed.
             "outputFile": output_file,
@@ -239,10 +271,11 @@ impl ToolExecutor for ShellSpawnTool {
             // because the run ended — and how — instead of leaving it to guess
             // between a crash, a clean exit, and someone hitting stop.
             "readOutputWith": output_file.as_ref().map(|_|
-                "file_read on outputFile — pass start_line to read only what is new since last \
-                 time. The run's closing line is written by Aurora and starts with '[aurora]': it \
-                 names how the run ended (exit code, timeout, stopped by the user, or stopped by \
-                 shell_kill). No '[aurora]' line yet means the process is still running."
+                "shell_read_output with this processId. Pass the returned nextStartLine as \
+                 start_line on each later call to read only what is new, and set wait_ms to block \
+                 until output arrives instead of polling. It reports `running: false` and quotes \
+                 how the run ended, so you never have to guess between a crash, a clean exit, and \
+                 a timeout."
             ),
             "shell": resolved.as_ref().map(|r| r.kind.id()),
             "shellNote": resolved.as_ref().and_then(|r| {
@@ -270,6 +303,58 @@ fn title_from_command(command: &str) -> String {
 }
 
 #[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    #[test]
+    fn no_timeout_means_effectively_unbounded() {
+        assert_eq!(
+            resolve_background_timeout(&json!({})),
+            BACKGROUND_PROCESS_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn an_explicit_timeout_is_honoured() {
+        assert_eq!(
+            resolve_background_timeout(&json!({"timeout": 600_000})),
+            600_000
+        );
+    }
+
+    /// A one-millisecond cap would kill the process inside its own startup
+    /// window and surface as "exited during startup" — a failure the model
+    /// caused and could not diagnose.
+    #[test]
+    fn a_too_small_timeout_is_raised_to_the_floor() {
+        assert_eq!(
+            resolve_background_timeout(&json!({"timeout": 1})),
+            MIN_BACKGROUND_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn an_absurd_timeout_is_capped_not_rejected() {
+        assert_eq!(
+            resolve_background_timeout(&json!({"timeout": u64::MAX})),
+            BACKGROUND_PROCESS_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn schema_advertises_the_timeout_argument() {
+        let tool = ShellSpawnTool::new(std::sync::Arc::new(
+            crate::tools::shell_editor_todo::ide_event_sink::NoopIdeEventSink,
+        ));
+        let schema = tool.schema();
+        assert!(
+            schema.input_schema["properties"]["timeout"].is_object(),
+            "the model cannot pass a timeout it is never told about"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::tools::shell_editor_todo::ide_event_sink::{
@@ -284,7 +369,7 @@ mod tests {
             allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
-            session_id: "s".into(),
+            thread_id: "s".into(),
             workspace_root: None,
             cancel_token: CancellationToken::new(),
         }

@@ -28,6 +28,12 @@ import {
   shortcutFromKeyboardEvent,
 } from "../lib/command-shortcut";
 import {
+  DEFAULT_LAUNCH_SURFACE,
+  getLaunchSurface,
+  setLaunchSurface,
+  type LaunchSurface,
+} from "../adapters/launch-surface";
+import {
   AgwButton,
   AgwPill,
   AgwSegmented,
@@ -44,6 +50,40 @@ export const PreferencesSettings: React.FC = () => {
 
   const showActivityInTitle = useSettingsStore((s) => s.showActivityInTitle);
   const setShowActivityInTitle = useSettingsStore((s) => s.setShowActivityInTitle);
+
+  // Startup surface. Not a store: it lives in a boot-config FILE that Rust must
+  // read before the database exists, so it is loaded once on mount and written
+  // straight through (see adapters/launch-surface.ts).
+  const [launchSurface, setLaunchSurfaceState] =
+    React.useState<LaunchSurface>(DEFAULT_LAUNCH_SURFACE);
+  const [launchSurfaceError, setLaunchSurfaceError] = React.useState<string | null>(
+    null,
+  );
+
+  React.useEffect(() => {
+    let cancelled = false;
+    void getLaunchSurface().then((surface) => {
+      if (!cancelled) setLaunchSurfaceState(surface);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Optimistic, then reverted if the write fails. A startup preference that
+  // shows the new value while the next launch still does the old thing is worse
+  // than one that visibly refuses.
+  const changeLaunchSurface = (next: LaunchSurface) => {
+    const previous = launchSurface;
+    setLaunchSurfaceState(next);
+    setLaunchSurfaceError(null);
+    void setLaunchSurface(next).catch((err: unknown) => {
+      setLaunchSurfaceState(previous);
+      setLaunchSurfaceError(
+        `Couldn't save this. ${String((err as Error)?.message ?? err)}`,
+      );
+    });
+  };
 
   // Composer layout (agent-window scoped — lives in the theme store).
   const modelSelectorPosition = useAgentThemeStore((s) => s.modelSelectorPosition);
@@ -125,6 +165,35 @@ export const PreferencesSettings: React.FC = () => {
 
   return (
     <div className="agw-set-wide">
+      <SettingsSection
+        icon="external"
+        title="Startup"
+        description="Which window opens when you launch Aurora."
+      >
+        <SettingsRow
+          last
+          label="Open on launch"
+          // Required help, so it is stated inline rather than in a tooltip: the
+          // preference deliberately does NOT apply to launches that name a
+          // path, and a user who set "Agent window" would otherwise read the
+          // Explorer menu still opening the editor as the setting being broken.
+          hint={
+            launchSurfaceError ??
+            "Applies to the app icon only. Opening a folder or file — from the CLI, the Explorer menu, or a file association — always opens the editor."
+          }
+        >
+          <AgwSegmented<LaunchSurface>
+            value={launchSurface}
+            ariaLabel="Window to open on launch"
+            options={[
+              { value: "ide", label: "Editor" },
+              { value: "agent", label: "Agent window" },
+            ]}
+            onChange={changeLaunchSurface}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
       <SettingsSection
         icon="send"
         title="Composer"

@@ -18,10 +18,14 @@ import { AnimatePresence, motion } from "framer-motion";
 import { AgentIcon } from "../shared/AgentIcon";
 import { useAgentChatStore } from "../store/useAgentChatStore";
 
-export const AgentQueuedDock: React.FC = () => {
-  const currentThreadId = useAgentChatStore((s) => s.currentThreadId);
+export const AgentQueuedDock: React.FC<{
+  /** The conversation whose queue this shows. Omit for the open chat. */
+  threadId?: string | null;
+}> = ({ threadId }) => {
+  const openThreadId = useAgentChatStore((s) => s.currentThreadId);
+  const currentThreadId = threadId === undefined ? openThreadId : threadId;
   const queued = useAgentChatStore((s) =>
-    s.currentThreadId ? s.queuedByThread[s.currentThreadId] : undefined,
+    currentThreadId ? s.queuedByThread[currentThreadId] : undefined,
   );
   const cancel = useAgentChatStore((s) => s.cancelQueuedMessage);
 

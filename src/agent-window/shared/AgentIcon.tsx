@@ -44,6 +44,7 @@ export type AgentIconName =
   | "process-list"
   | "diagnostics"
   | "task-list"
+  | "checklist"
   | "browser-click"
   | "browser-fill"
   | "browser-scroll"
@@ -201,13 +202,22 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     <path d="M7 4h10a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3h-6l-4 3.2V15a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3z" />
   ),
 
-  // Chat title glyph — the bespoke bubble with two text lines inside (a written
-  // message), longer over shorter. Reads cleaner than the old dialog dots.
+  // Chat / thread glyph (rail rows + conversation header) — TURNS, not a bubble.
+  //
+  // Two pill bars: a long one aligned LEFT, a short one aligned RIGHT. That is
+  // this app's own transcript shape (incoming stacks left, the reply stacks
+  // right) reduced to two strokes, so the mark says "a conversation with turns"
+  // instead of borrowing the generic speech balloon every other chat app uses.
+  //
+  // Why it survives 14px, where the old outlined bubble did not: no contour to
+  // enclose anything, no interior detail competing with it — two heavy strokes
+  // (2.7 vs the set's 1.8) with round caps, held 6 units apart so the gap is
+  // still ~3 device px at the sizes this is actually rendered at. The staggered
+  // alignment is what keeps it from reading as a list or a menu icon.
   chat: (
     <>
-      <path d="M7 4h10a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3h-6l-4 3.2V15a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3z" />
-      <path d="M8.5 9h7" />
-      <path d="M8.5 12h4" />
+      <path d="M4.5 8.6h12.5" strokeWidth={2.9} />
+      <path d="M13.5 15.4h6" strokeWidth={2.9} />
     </>
   ),
 
@@ -331,6 +341,25 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <path d="M10 12h10" />
       <rect x="4" y="16" width="3" height="3" rx="0.7" />
       <path d="M10 17.5h7" />
+    </>
+  ),
+
+  /**
+   * The header task indicator's glyph.
+   *
+   * Distinct from `task-list` on purpose. That one is three empty boxes — it
+   * says "a list exists". This one ticks its first row and shortens the last,
+   * so at 13px it reads as PROGRESS THROUGH a list, which is the single thing
+   * the header indicator is there to communicate.
+   */
+  checklist: (
+    <>
+      <path d="M3.6 6.4l1.6 1.6 3-3.2" />
+      <path d="M11 6h9.4" />
+      <path d="M3.6 12.6h4.2" />
+      <path d="M11 12h9.4" />
+      <path d="M3.6 18.2h4.2" />
+      <path d="M11 18h6" />
     </>
   ),
 

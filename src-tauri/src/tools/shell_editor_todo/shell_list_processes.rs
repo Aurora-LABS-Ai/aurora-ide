@@ -26,9 +26,10 @@ impl ToolExecutor for ShellListProcessesTool {
         ToolSchema {
             name: "shell_list_processes".into(),
             description: "List background processes started by shell_spawn. Returns the same \
-                          process ID accepted by shell_kill, plus name, command, working \
-                          directory, OS pid, start time, and outputFile — read that file with \
-                          file_read to see what a running process has printed."
+                          process ID accepted by shell_kill and shell_read_output, plus name, \
+                          command, working directory, OS pid, start time, and outputFile. To see \
+                          what a process has printed, call shell_read_output with its process ID — \
+                          it reads by line and can wait for new output instead of being polled."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -67,8 +68,9 @@ struct ProcessRow {
     pub pid: Option<u32>,
     pub cancelled: bool,
     pub started_at_ms: u64,
-    /// File the process's output is mirrored into. Read it with `file_read`
-    /// to see what a still-running process has printed.
+    /// File the process's output is mirrored into. Prefer `shell_read_output`
+    /// over reading it directly — it tracks line position and can wait for new
+    /// output rather than being polled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_file: Option<String>,
 }
@@ -106,7 +108,7 @@ mod tests {
             allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
-            session_id: "s".into(),
+            thread_id: "s".into(),
             workspace_root: None,
             cancel_token: CancellationToken::new(),
         }

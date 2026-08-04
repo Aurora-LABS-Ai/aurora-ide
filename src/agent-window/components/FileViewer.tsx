@@ -148,7 +148,7 @@ const ImageBody: React.FC<{ path: string; name: string }> = ({ path, name }) => 
     return (
       <Centered>
         <FileIcon name={name} path={path} className="agw-fv-bigicon" />
-        <div style={{ fontSize: 13, color: "var(--agw-text-muted)", fontWeight: 600 }}>
+        <div style={{ fontSize: 13, color: "var(--agw-text-muted)", fontWeight: "var(--agw-fw-medium)" }}>
           Couldn't load this image
         </div>
         <div style={{ fontSize: 12, color: "var(--agw-text-subtle)", maxWidth: 240 }}>
@@ -190,7 +190,7 @@ const ImageBody: React.FC<{ path: string; name: string }> = ({ path, name }) => 
 const BinaryNote: React.FC<{ path: string; name: string }> = ({ path, name }) => (
   <Centered>
     <FileIcon name={name} path={path} className="agw-fv-bigicon" />
-    <div style={{ fontSize: 13, color: "var(--agw-text-muted)", fontWeight: 600 }}>
+    <div style={{ fontSize: 13, color: "var(--agw-text-muted)", fontWeight: "var(--agw-fw-medium)" }}>
       Can't preview this file here
     </div>
     <div style={{ fontSize: 12, color: "var(--agw-text-subtle)", maxWidth: 240 }}>
@@ -341,7 +341,7 @@ export const FileViewer: React.FC<{
           {text.kind === "error" && (
             <Centered>
               <AgentIcon name="close" size={20} style={{ color: "var(--agw-removed)" }} />
-              <div style={{ fontSize: 13, color: "var(--agw-text-muted)", fontWeight: 600 }}>
+              <div style={{ fontSize: 13, color: "var(--agw-text-muted)", fontWeight: "var(--agw-fw-medium)" }}>
                 Couldn't open this file
               </div>
               <div style={{ fontSize: 12, color: "var(--agw-text-subtle)", maxWidth: 260, wordBreak: "break-word" }}>

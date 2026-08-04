@@ -21,10 +21,12 @@ import { FileIcon } from "../../components/explorer/FileIcons";
 import { resolveExplorerIcon } from "../../lib/icon-registry";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { ModelSelector } from "./ModelSelector";
+import { ComposerRail } from "./composer-rail/ComposerRail";
 import {
   invalidateFileIndex,
   loadFileIndex,
   rankFiles,
+  relativize,
   type MentionFile,
 } from "../adapters/file-index";
 import {
@@ -34,8 +36,9 @@ import {
   type PromptCommand,
   type PromptCommandKind,
 } from "../adapters/prompt-commands";
-import { useAgentCommandStore } from "../store/useAgentCommandStore";
+import { composerCommands, useAgentCommandStore } from "../store/useAgentCommandStore";
 import { useAgentChatStore } from "../store/useAgentChatStore";
+import { pinnedThreadModel } from "../lib/thread-model";
 import {
   useAgentSelectionStore,
   type SelectedEntry,
@@ -43,12 +46,16 @@ import {
 import { useAgentThemeStore } from "../store/useAgentThemeStore";
 import { useAgentSpeech } from "../hooks/useAgentSpeech";
 import { useAgentExternalDrop } from "../hooks/useAgentExternalDrop";
+import { useAgentPathDrop } from "../hooks/useAgentPathDrop";
 import { useComposerTyping } from "../hooks/useComposerTyping";
 import { useComposerRefine } from "../hooks/useComposerRefine";
 import { MAX_REFINE_CHARS } from "../adapters/prompt-refine";
 import {
   attachmentDataUrl,
+  composerImages,
+  composerKey,
   useAgentAttachmentStore,
+  type ImageAttachment,
 } from "../store/useAgentAttachmentStore";
 import {
   basenameOf,
@@ -71,6 +78,23 @@ interface AgentComposerProps {
   sending?: boolean;
   onStop?: () => void;
   connectedTop?: boolean;
+  /**
+   * The conversation this composer writes into. Omit for the open chat; pass it
+   * explicitly for a composer that isn't the main one (a chat docked in the side
+   * panel). It selects which model the picker shows and which model's
+   * capabilities gate the composer — both are per-conversation.
+   */
+  threadId?: string | null;
+  /**
+   * The project this composer's conversation belongs to. Omit to follow the
+   * window's current scope (the main pane); pass it explicitly for a docked
+   * chat, whose project is fixed at the moment it was docked and may not be the
+   * one the window is scoped to now.
+   *
+   * It decides which project's files `@` offers and which project's rules and
+   * skills `/` offers — both would silently be the wrong project's otherwise.
+   */
+  projectRoot?: string | null;
 }
 
 const MENTION_RE = /(^|[\s(])@([^\s@]{0,48})$/;
@@ -244,7 +268,29 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   sending = false,
   onStop,
   connectedTop = false,
+  threadId,
+  projectRoot,
 }) => {
+  // The conversation this composer belongs to. `undefined` (the common case)
+  // means "the open chat"; an explicit value — including `null` for a draft —
+  // is honoured as given, so a docked chat's composer never reads the main
+  // pane's thread.
+  const openThreadId = useAgentChatStore((s) => s.currentThreadId);
+  const composerThreadId = threadId === undefined ? openThreadId : threadId;
+  const pinnedModel = useAgentChatStore((s) =>
+    pinnedThreadModel(s, composerThreadId),
+  );
+  const defaultModel = useSettingsStore((s) => s.selectedModel);
+  const composerModel = pinnedModel ?? defaultModel;
+  // Everything this composer stages before send — images, `/` directives — is
+  // filed under its own key, so a second composer in the side panel can't
+  // consume what was staged here (or vice versa).
+  const stageKey = composerKey(composerThreadId);
+  // The project whose files `@` searches and whose rules/skills `/` lists.
+  const windowProjectRoot = useAgentChatStore((s) => s.projectRoot);
+  const composerProjectRoot =
+    projectRoot === undefined ? windowProjectRoot : projectRoot;
+
   const editorRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const lastEmittedRef = useRef<string>("");
@@ -287,12 +333,31 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   // ── Image attachments + vision gate ────────────────────────────────
   // The composer is the SOLE gate: images only attach when the active model is
   // vision-capable. Non-vision models get a transient inline warning instead.
-  const images = useAgentAttachmentStore((s) => s.images);
-  const addImage = useAgentAttachmentStore((s) => s.add);
-  const removeImage = useAgentAttachmentStore((s) => s.remove);
-  const updateImage = useAgentAttachmentStore((s) => s.update);
+  const images = useAgentAttachmentStore((s) => composerImages(s, stageKey));
+  const addImageAt = useAgentAttachmentStore((s) => s.add);
+  const removeImageAt = useAgentAttachmentStore((s) => s.remove);
+  const updateImageAt = useAgentAttachmentStore((s) => s.update);
+  // Bound to THIS composer's staging key so the drop / paste / annotate paths
+  // below read exactly as before, while writing into the right tray.
+  const addImage = useCallback(
+    (image: ImageAttachment) => addImageAt(stageKey, image),
+    [addImageAt, stageKey],
+  );
+  const removeImage = useCallback(
+    (id: string) => removeImageAt(stageKey, id),
+    [removeImageAt, stageKey],
+  );
+  const updateImage = useCallback(
+    (id: string, patch: Pick<ImageAttachment, "base64" | "mediaType">) =>
+      updateImageAt(stageKey, id, patch),
+    [updateImageAt, stageKey],
+  );
+  // Gated on THIS conversation's model, not the app-wide selection: with a
+  // model per chat, the globally-selected one may be vision-capable while the
+  // chat you're typing in is not — which would let an image attach to a model
+  // that can never see it.
   const visionSupported = useSettingsStore(
-    (s) => s.getResolvedActiveModel()?.supportsVision ?? false,
+    (s) => s.getModelFor(composerModel)?.supportsVision ?? false,
   );
   const [visionWarn, setVisionWarn] = useState<string | null>(null);
   const [annotateId, setAnnotateId] = useState<string | null>(null);
@@ -370,8 +435,16 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   const [slash, setSlash] = useState<{ query: string } | null>(null);
   const [commandIndex, setCommandIndex] = useState<PromptCommand[]>([]);
   const [cmdSel, setCmdSel] = useState(0);
-  const addCommand = useAgentCommandStore((s) => s.add);
-  const removeCommand = useAgentCommandStore((s) => s.remove);
+  const addCommandAt = useAgentCommandStore((s) => s.add);
+  const removeCommandAt = useAgentCommandStore((s) => s.remove);
+  const addCommand = useCallback(
+    (command: PromptCommand) => addCommandAt(stageKey, command),
+    [addCommandAt, stageKey],
+  );
+  const removeCommand = useCallback(
+    (key: string) => removeCommandAt(stageKey, key),
+    [removeCommandAt, stageKey],
+  );
 
   const commandResults = useMemo(() => {
     if (!slash) return [];
@@ -446,7 +519,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     }
     applyMentionQuery(m[2]);
     if (fileIndex.length === 0) {
-      void loadFileIndex(useAgentChatStore.getState().projectRoot).then(setFileIndex);
+      void loadFileIndex(composerProjectRoot).then(setFileIndex);
     }
   };
 
@@ -470,9 +543,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     }
     applySlashQuery(m[2]);
     if (commandIndex.length === 0) {
-      void loadPromptCommands(useAgentChatStore.getState().projectRoot).then(
-        setCommandIndex,
-      );
+      void loadPromptCommands(composerProjectRoot).then(setCommandIndex);
     }
   };
 
@@ -507,7 +578,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       const domKeys = new Set(
         Array.from(el.querySelectorAll<HTMLElement>("[data-cmd]")).map((n) => n.dataset.cmd),
       );
-      for (const c of useAgentCommandStore.getState().commands) {
+      for (const c of composerCommands(useAgentCommandStore.getState(), stageKey)) {
         if (!domKeys.has(c.key)) removeCommand(c.key);
       }
       // Same contract for inspector picks: the pill IS the attachment, so
@@ -662,9 +733,13 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     el.focus();
   };
 
-  // Drag-from-Explorer: insert a pill carrying the ABSOLUTE path so it
-  // serializes to `@<abs path>` — the agent then reads it with its file tools.
-  const insertPathPill = (absPath: string) => {
+  // Dropped file → the SAME pill the `@` picker builds, so a mention behaves
+  // identically however it got here: `data-rel` is what serializes into the
+  // message (`@src\foo.ts`), `data-path` is the absolute path the file chip and
+  // "open in IDE" use. A file inside the project is written relative to it —
+  // matching the picker — and anything outside keeps its absolute path, which is
+  // the only form that can resolve.
+  const insertPathPill = (absPath: string, isDir = false) => {
     const el = editorRef.current;
     if (!el) return;
     el.focus();
@@ -675,14 +750,20 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     const range = window.getSelection()?.getRangeAt(0);
     if (!range) return;
     const name = basenameOf(absPath);
+    const rel = composerProjectRoot
+      ? relativize(composerProjectRoot, absPath)
+      : absPath;
     const pill = document.createElement("span");
     pill.className = "agw-pill-inline";
     pill.contentEditable = "false";
-    pill.dataset.rel = absPath;
+    pill.dataset.rel = rel;
     pill.dataset.path = absPath;
+    // Marks the pill as a DIRECTORY. Read at submit so the model is told it was
+    // handed a folder to look inside, not a file to read.
+    if (isDir) pill.dataset.kind = "dir";
     try {
       const resolved = resolveExplorerIcon(
-        { name, path: absPath, isFolder: false },
+        { name, path: absPath, isFolder: isDir },
         useSettingsStore.getState().explorerIconPack,
       );
       if (resolved.src) {
@@ -712,25 +793,47 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     el.focus();
   };
 
-  // Classify OS-dropped paths: images → attachment (vision-gated), else a
-  // `@path` mention so the agent can read the file with its tools.
-  const handlePaths = (paths: string[]) => {
-    for (const p of paths) {
-      if (isImagePath(p)) {
-        if (!visionSupported) {
-          warnNoVision();
-          continue;
+  // Classify dropped/picked paths: folders → folder pill, images → attachment
+  // (vision-gated), else a `@path` mention so the agent can read the file with
+  // its tools. The Files panel says `isDir` at press time; an OS drop or picker
+  // pick is a bare path string, so those are stat'ed — Tauri adds every
+  // dropped/picked path to the fs scope, so the stat is always permitted.
+  const handlePaths = (paths: string[], meta?: { isDir?: boolean }) => {
+    void (async () => {
+      for (const p of paths) {
+        let isDir = meta?.isDir;
+        if (isDir === undefined) {
+          try {
+            const { stat } = await import("@tauri-apps/plugin-fs");
+            isDir = (await stat(p)).isDirectory;
+          } catch {
+            // Unreadable/missing → treat as a file; the pill still points at it.
+            isDir = false;
+          }
         }
-        void imageFileToAttachment(p)
-          .then(addImage)
-          .catch((err) => console.error("[agent-window] read dropped image failed:", err));
-      } else {
-        insertPathPill(p);
+        if (isDir) {
+          insertPathPill(p, true);
+        } else if (isImagePath(p)) {
+          if (!visionSupported) {
+            warnNoVision();
+            continue;
+          }
+          void imageFileToAttachment(p)
+            .then(addImage)
+            .catch((err) => console.error("[agent-window] read dropped image failed:", err));
+        } else {
+          insertPathPill(p);
+        }
       }
-    }
+    })();
   };
 
-  const isDragOver = useAgentExternalDrop(composerRef, handlePaths);
+  // Two transports, one destination: the OS file manager (Tauri drag-drop) and
+  // this window's Files panel (pointer drag). Both land in `handlePaths`, so a
+  // file behaves identically whichever side it was dragged from.
+  const isOsDragOver = useAgentExternalDrop(composerRef, handlePaths);
+  const isPathDragOver = useAgentPathDrop(composerRef, handlePaths);
+  const isDragOver = isOsDragOver || isPathDragOver;
 
   // The `+` affordance: open the OS file picker and route the picks through the
   // same handler as a drag-drop — images attach (vision-gated), other files
@@ -774,7 +877,10 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   const prevSending = useRef(sending);
   useEffect(() => {
     if (prevSending.current && !sending) {
-      const root = useAgentChatStore.getState().projectRoot;
+      // THIS composer's project, not the window's: a docked chat's turn changed
+      // files in its own project, and invalidating the window's cache would
+      // both miss those and needlessly drop an unrelated project's index.
+      const root = composerProjectRoot;
       // A finished turn may have changed files/commands — drop the cached
       // indexes so the next @/ picker reloads them fresh.
       invalidateFileIndex(root ?? undefined);
@@ -784,7 +890,10 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       setCommandIndex([]);
     }
     prevSending.current = sending;
-  }, [sending]);
+    // `composerProjectRoot` only matters at the moment a turn settles, and the
+    // `prevSending` guard means a change to it alone can't fire the body — but
+    // it must be listed so the effect never closes over a stale project.
+  }, [sending, composerProjectRoot]);
 
   // Speech → text: drop the transcript at the caret (or end), then resync.
   const insertTranscript = (text: string) => {
@@ -825,12 +934,24 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     const fileChips: AttachedPromptChip[] = Array.from(
       el.querySelectorAll<HTMLElement>("[data-rel]"),
     ).map((pill) => ({
-      kind: "file",
+      kind: pill.dataset.kind === "dir" ? "folder" : "file",
       title: pill.textContent?.trim() || basenameOf(pill.dataset.rel ?? ""),
       value: pill.dataset.rel ?? "",
       path: pill.dataset.path ?? pill.dataset.rel ?? "",
     }));
-    onSubmit(text, fileChips);
+    // A dragged FOLDER is a different instruction from a file mention: the path
+    // alone reads as something to open, and a model that tries to read a
+    // directory just burns a failed tool call. One line names what it is and
+    // what was wanted, appended once no matter how many folders came in — the
+    // user sees exactly what the model was told, because it is the same text.
+    const folders = fileChips.filter((chip) => chip.kind === "folder");
+    const outgoing =
+      folders.length === 0
+        ? text
+        : `${text}\n\n(${folders.length === 1 ? "Folder" : "Folders"} dragged in by the user: ` +
+          `${folders.map((chip) => chip.value).join(", ")} — look inside ` +
+          `${folders.length === 1 ? "it" : "them"}.)`;
+    onSubmit(outgoing, fileChips);
     el.innerHTML = "";
     lastEmittedRef.current = "";
     setIsEmpty(true);
@@ -1037,7 +1158,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       </AnimatePresence>
 
       <div
-        className={`cursor-text relative ${
+        className={`agw-composer-surface cursor-text relative ${
           /* Radius — sharper, closer to Codex. Change 16px to taste. */
           connectedTop ? "rounded-t-none rounded-b-[16px]" : "rounded-[16px]"
         }`}
@@ -1055,7 +1176,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
             so the placeholder sits near the top like Codex, no empty strip. */}
         {modelSelectorPosition === "top" && (
           <div className="agw-composer-band">
-            <ModelSelector align="left" streaming={sending} />
+            <ModelSelector align="left" streaming={sending} threadId={composerThreadId} />
           </div>
         )}
 
@@ -1155,7 +1276,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
           </button>
           <div className="agw-composer-actions">
           {modelSelectorPosition === "bottom" && (
-            <ModelSelector align="right" streaming={sending} />
+            <ModelSelector align="right" streaming={sending} threadId={composerThreadId} />
           )}
           {refine.ready && (
             <button
@@ -1277,33 +1398,25 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
         </div>
       </div>
 
-      {/* Footer — surfaces a transient microphone notice inline (a tooltip alone
-          reads as a dead button). Warnings show soft yellow, errors red; both
-          auto-dismiss after ~5s (see useAgentSpeech), then the default hint
-          returns. */}
-      <div className="mt-3 text-center">
-        {micNotice ? (
-          <p
-            className="text-[11px]"
-            style={{
-              color:
-                micNotice.severity === "warning"
-                  ? "var(--agw-warning)"
-                  : "var(--agw-removed)",
-            }}
-          >
-            Microphone: {micNotice.text}
-          </p>
-        ) : refine.notice ? (
-          <p className="text-[11px]" style={{ color: "var(--agw-warning)" }}>
-            {refine.notice}
-          </p>
-        ) : (
-          <p className="text-[11px]" style={{ color: "var(--agw-text-subtle)" }}>
-            AI can make mistakes. Review generated code.
-          </p>
-        )}
-      </div>
+      {/* The strip under the composer. It still carries the transient microphone
+          and prompt-refine notices inline (a tooltip alone reads as a dead
+          button) — warnings soft yellow, errors red, both auto-dismissing after
+          ~5s (see useAgentSpeech) — but it is now the rail that also hosts
+          ambient state as chips, so nothing has to push the transcript down to
+          be seen. See ComposerRail for what belongs here and what does not. */}
+      <ComposerRail
+        threadId={composerThreadId}
+        notice={
+          micNotice
+            ? {
+                text: `Microphone: ${micNotice.text}`,
+                tone: micNotice.severity === "warning" ? "warning" : "error",
+              }
+            : refine.notice
+              ? { text: refine.notice, tone: "warning" }
+              : null
+        }
+      />
 
       {/* Annotate a staged attachment — flattened back onto the card on Done. */}
       <AgentImageModal

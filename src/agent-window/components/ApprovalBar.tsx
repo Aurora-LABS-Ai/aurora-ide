@@ -65,7 +65,7 @@ export const ApprovalBar: React.FC<ApprovalBarProps> = ({
       </span>
 
       <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--agw-text)" }}>
+        <div style={{ fontSize: 13, fontWeight: "var(--agw-fw-medium)", color: "var(--agw-text)" }}>
           Run <span className="agw-code">{toolName}</span>?
         </div>
         {preview && (

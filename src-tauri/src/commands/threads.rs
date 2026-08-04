@@ -70,6 +70,11 @@ pub struct ThreadSummary {
     /// unscoped threads, which a project-filtered list omits entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_root: Option<String>,
+    /// The model this conversation is on (`"providerId:modelKey"`), or `None`
+    /// when it has never run a turn and was never pinned to one — the composer
+    /// then falls back to the user's default model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Whether the chat is pinned to the top of the rail.
     #[serde(default)]
     pub pinned: bool,
@@ -125,6 +130,32 @@ fn session_to_db_messages_rich(
                             "afterTokens": after,
                         })
                         .to_string(),
+                        // Cloned: a System message carries either a compaction
+                        // marker or a notice, and the notice arm below needs the
+                        // same stamp.
+                        timestamp: timestamp.clone(),
+                        tool_calls: None,
+                        thinking: None,
+                        is_thinking: None,
+                        tools: None,
+                        timeline: None,
+                        tool_proposal: None,
+                        attached_selected_elements: None,
+                        attached_prompt_chips: None,
+                    });
+                }
+                // A runtime notice ("this reply is cut off at the output
+                // limit") surfaces as its own row the UI folds into the
+                // assistant turn it describes, so a reloaded thread explains
+                // its truncated reply instead of just showing one.
+                if let Some(message) = msg.blocks.iter().find_map(|b| match b {
+                    ContentBlock::Notice { message, .. } => Some(message.clone()),
+                    _ => None,
+                }) {
+                    out.push(Message {
+                        id: synthetic_message_id("notice", msg.timestamp, out.len()),
+                        role: "notice".to_string(),
+                        content: message,
                         timestamp,
                         tool_calls: None,
                         thinking: None,
@@ -188,9 +219,10 @@ fn session_to_db_messages_rich(
                             // Defensive — tool results live on Tool
                             // messages, not Assistant. Ignore.
                         }
-                        ContentBlock::Compaction { .. } => {
-                            // Compaction markers live on System messages and are
-                            // surfaced as their own card; never on Assistant.
+                        ContentBlock::Compaction { .. } | ContentBlock::Notice { .. } => {
+                            // Compaction markers and runtime notices live on
+                            // System messages and are surfaced as their own
+                            // rows; never on Assistant.
                         }
                     }
                 }
@@ -326,7 +358,7 @@ fn session_to_api_messages(messages: &[ConversationMessage]) -> Vec<ApiMessage> 
                             });
                         }
                         ContentBlock::ToolResult { .. } => {}
-                        ContentBlock::Compaction { .. } => {}
+                        ContentBlock::Compaction { .. } | ContentBlock::Notice { .. } => {}
                     }
                 }
                 let content_opt = if content.is_empty() {
@@ -569,6 +601,7 @@ fn build_thread_summary(
         message_count: summary.message_count,
         preview: summary.preview,
         workspace_root: summary.workspace_root,
+        model: summary.model,
         pinned: summary.pinned,
         archived_at: summary.archived_at,
         created_at: summary.created_at,
@@ -650,6 +683,9 @@ pub fn thread_create(
                 message_count: 0,
                 preview: String::new(),
                 workspace_root: ws_root,
+                // A brand-new chat has no model yet — the composer resolves the
+                // user's default until a pick or a turn writes one.
+                model: None,
                 pinned: false,
                 archived_at: None,
                 created_at: state.created_at.clone(),
@@ -853,6 +889,27 @@ pub fn thread_set_archived(
         .map_err(|e| format!("Failed to set archived: {e}"))
 }
 
+/// Pin a conversation to a model (`"providerId:modelKey"`), or clear it with
+/// `None` so it falls back to the user's default.
+///
+/// Written when the user picks a model for an OPEN chat — before any turn has
+/// run with it. The runtime writes the same field per turn, so the two agree:
+/// whichever happened last is what the conversation is on. Persisted in the
+/// metadata sidecar; does not bump `updated_at` (choosing a model isn't
+/// activity and must not reorder the rail).
+#[tauri::command]
+pub fn thread_set_model(
+    thread_id: String,
+    model: Option<String>,
+    registry: State<'_, Arc<AgentRegistry>>,
+) -> Result<(), String> {
+    let store = store_from_state(registry.inner());
+    store
+        .set_model(&thread_id, model)
+        .map(|_| ())
+        .map_err(|e| format!("Failed to set model: {e}"))
+}
+
 /// Persist usage metadata after a turn so the chat list can show
 /// token + context bars.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -954,6 +1011,35 @@ mod tests {
             }],
             ts,
         )
+    }
+
+    /// A runtime notice must reload as its own `notice` row so a thread
+    /// reopened after a truncated turn still explains why the reply stops.
+    /// Before this it was a live-only UI event: the cut-off reply persisted,
+    /// the reason for it did not.
+    #[test]
+    fn notice_marker_reloads_as_its_own_row() {
+        let messages = vec![
+            user_msg("build it", 1),
+            assistant_text("half an ans", 2),
+            ConversationMessage {
+                role: MessageRole::System,
+                blocks: vec![ContentBlock::Notice {
+                    message: "This reply is cut off.".into(),
+                    created_at: 3,
+                }],
+                usage: None,
+                timestamp: 3,
+                attached_selected_elements: None,
+                attached_prompt_chips: None,
+            },
+        ];
+
+        let out = session_to_db_messages(&messages);
+        let roles: Vec<&str> = out.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, vec!["user", "assistant", "notice"]);
+        let notice = out.last().expect("notice row");
+        assert_eq!(notice.content, "This reply is cut off.");
     }
 
     #[test]

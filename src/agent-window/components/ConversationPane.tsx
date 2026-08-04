@@ -14,18 +14,18 @@ import { AnimatePresence, motion } from "framer-motion";
 
 import { AgentIcon } from "../shared/AgentIcon";
 import { AgentComposer } from "./AgentComposer";
-import { AgentTaskPanel } from "./AgentTaskPanel";
-import { BackgroundTaskDock } from "./BackgroundTaskDock";
 import { AgentQueuedDock } from "./AgentQueuedDock";
 import { ApprovalBar } from "./ApprovalBar";
 import { ContextRing } from "./ContextRing";
+import { TaskIndicator } from "./TaskIndicator";
 import { EmptyState } from "./EmptyState";
 import { MessageBubble } from "./MessageBubble";
 import { JumpRail } from "./JumpRail";
+import { JumpToLatest } from "./JumpToLatest";
 import { CompactionCard } from "./CompactionCard";
 import { QuestionPrompt } from "./QuestionPrompt";
 import { StreamingDotMatrix } from "./StreamingDotMatrix";
-import { buildTurns } from "./timeline";
+import { buildTurns, turnWorkedMs } from "./timeline";
 import { useAgentChatStore } from "../store/useAgentChatStore";
 import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
 import { useAgentUiStore } from "../store/useAgentUiStore";
@@ -210,11 +210,12 @@ export const ConversationPane: React.FC = () => {
   // Dedicated smooth auto-scroll. A ResizeObserver follows EVERY transcript
   // growth — token text, reasoning, tool cards — and glides to the bottom while
   // streaming, unless the user scrolled up to read (then the jump pill appears).
-  const { containerRef, contentRef, bottomRef } = useAgentAutoScroll({
-    isStreaming: openIsStreaming,
-    resetKey: currentThreadId,
-    growthKey: messages.length,
-  });
+  const { containerRef, contentRef, bottomRef, showJump, jumpToBottom } =
+    useAgentAutoScroll({
+      isStreaming: openIsStreaming,
+      resetKey: currentThreadId,
+      growthKey: messages.length,
+    });
 
   // The suggestion drum mounts AFTER the turn settles (auto-scroll already
   // released) and grows the dock, shrinking the transcript viewport — without
@@ -312,7 +313,7 @@ export const ConversationPane: React.FC = () => {
                 gap: 5,
                 minWidth: 0,
                 fontSize: 13,
-                fontWeight: 600,
+                fontWeight: "var(--agw-fw-medium)",
                 color: isActivity ? "var(--agw-text-muted)" : "var(--agw-text)",
                 whiteSpace: "nowrap",
                 overflow: "hidden",
@@ -349,6 +350,9 @@ export const ConversationPane: React.FC = () => {
         <div style={{ flex: 1 }} />
 
         <JustFinishedFlash />
+        {/* The two "how is this turn going" readouts, together: what the agent
+            is working through, and how much context it has left. */}
+        <TaskIndicator />
         <ContextRing />
         <button
           type="button"
@@ -481,6 +485,8 @@ export const ConversationPane: React.FC = () => {
                         events={isAssistant ? turn.events : undefined}
                         showLabel={isAssistant}
                         streaming={streaming}
+                        workedMs={isAssistant ? turnWorkedMs(turn) : null}
+                        startedAt={isAssistant ? turn.startedAt : undefined}
                         showActions={showActions}
                         onRetry={
                           canRetry
@@ -502,6 +508,14 @@ export const ConversationPane: React.FC = () => {
           {userPins.length > 1 && (
             <JumpRail pins={userPins} onJump={jumpToTurn} />
           )}
+
+          {/* Back to the newest content. Centred, so it never collides with the
+              jump rail on the right edge. */}
+          <JumpToLatest
+            show={showJump}
+            streaming={openIsStreaming}
+            onJump={() => jumpToBottom()}
+          />
           </div>
 
           {/* Composer dock. NB: no `overflow-x:hidden` here — that would force
@@ -516,13 +530,13 @@ export const ConversationPane: React.FC = () => {
             className="agw-composer-dock"
             data-drum={(!openIsStreaming && suggestions.length > 0) || undefined}
           >
-            {/* Docked checklist (todo_write) for the open thread — sits above
-                the composer, per-thread so background turns don't bleed in. */}
-            <AgentTaskPanel />
-            {/* Live background processes (shell_spawn). Sits under the
-                checklist: a running dev server is the thing most likely to
-                need stopping, so it stays within reach of the composer. */}
-            <BackgroundTaskDock />
+            {/* The checklist (`todo`) and the live background processes
+                (shell_spawn) used to mount their own cards HERE, which pushed
+                the transcript down every time one woke up. Processes are now a
+                chip in the composer rail (see ComposerRail), which has a fixed
+                height, and the checklist moved to the header's TaskIndicator —
+                so ambient state costs the reading area nothing. Only
+                turn-BLOCKING surfaces still dock above the composer. */}
             {/* Docked "queued message" card — a mid-turn injection waiting to
                 ride in with the next tool result. Stacks under the task panel,
                 directly above the composer (same dock slot). */}

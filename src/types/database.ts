@@ -25,9 +25,6 @@ export interface AppSettings {
    * build to verify the project. Empty/undefined skips that gate. A
    * `team_dispatch` call inherits these when the model doesn't pass its own.
    */
-  teamGateBuild?: string;
-  teamGateLint?: string;
-  teamGateTest?: string;
   /**
    * Global, workspace-agnostic user instructions injected into the agent's
    * system prompt for every workspace. Empty/undefined means none.

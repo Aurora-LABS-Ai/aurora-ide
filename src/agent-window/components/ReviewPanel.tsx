@@ -140,7 +140,7 @@ export const ReviewPanel: React.FC = () => {
         }}
       >
         <AgentIcon name="diff" size={22} style={{ color: "var(--agw-text-subtle)" }} />
-        <div style={{ fontSize: 13, color: "var(--agw-text-muted)", fontWeight: 600 }}>
+        <div style={{ fontSize: 13, color: "var(--agw-text-muted)", fontWeight: "var(--agw-fw-medium)" }}>
           No file changes yet
         </div>
         <div style={{ fontSize: 12, color: "var(--agw-text-subtle)", maxWidth: 240 }}>
@@ -175,7 +175,7 @@ export const ReviewPanel: React.FC = () => {
         >
           {scope === "all" ? "All changes" : "Last turn"}
         </button>
-        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--agw-text)" }}>
+        <span style={{ fontSize: 12, fontWeight: "var(--agw-fw-medium)", color: "var(--agw-text)" }}>
           {changes.length} file{changes.length === 1 ? "" : "s"}
         </span>
         {totals.added > 0 && (

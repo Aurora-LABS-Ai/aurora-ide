@@ -63,12 +63,33 @@ fn tolerance(name: &str) -> usize {
     }
 }
 
+/// Names Aurora retired, mapped to what replaced them.
+///
+/// Edit distance cannot bridge a rename — `todo_write` is six edits from
+/// `todo`, well past any sane tolerance, and loosening the tolerance far
+/// enough to catch it would start producing confident wrong answers for
+/// everything else. These are the renames worth naming explicitly, and the
+/// bar for adding one is that a model is LIKELY to reach for the old name:
+/// `TodoWrite` in particular is in essentially every agent model's training
+/// data, so the first turn of every conversation would otherwise be a
+/// guaranteed miss.
+///
+/// A row only fires when its target is actually registered, so this table
+/// can never resurrect a name that is itself gone.
+const RETIRED_NAMES: &[(&str, &str)] = &[
+    ("todo_write", "todo"),
+    ("todowrite", "todo"),
+    ("todo_update", "todo"),
+    ("todo_read", "todo"),
+];
+
 /// Best registered name for a name the model got wrong, if one is close
 /// enough to be worth suggesting.
 ///
-/// Matching is case-insensitive. Ties break toward the candidate sharing
-/// the longest prefix, which is what separates `browser_click` from
-/// `browser_fill` when the model wrote `browser_clik`.
+/// A known retirement ([`RETIRED_NAMES`]) is answered first and exactly.
+/// Otherwise matching is case-insensitive edit distance, with ties breaking
+/// toward the candidate sharing the longest prefix — which is what separates
+/// `browser_click` from `browser_fill` when the model wrote `browser_clik`.
 ///
 /// Returns `None` rather than a bad guess — a wrong "did you mean" is worse
 /// than none, because the model will spend an iteration taking it.
@@ -78,9 +99,18 @@ where
 {
     let needle = name.to_ascii_lowercase();
     let limit = tolerance(&needle);
+    let retired = RETIRED_NAMES
+        .iter()
+        .find(|(old, _)| *old == needle)
+        .map(|(_, new)| *new);
 
     let mut best: Option<(usize, usize, &'a str)> = None;
     for candidate in candidates {
+        // An exact retirement beats any fuzzy score, but only once we have
+        // seen the replacement in the live roster.
+        if retired == Some(candidate) {
+            return Some(candidate);
+        }
         let distance = edit_distance(&needle, &candidate.to_ascii_lowercase());
         if distance > limit {
             continue;
@@ -117,7 +147,7 @@ mod tests {
         "workspace_tree",
         "shell_execute",
         "shell_spawn",
-        "todo_write",
+        "todo",
         "read_lints",
         "browser_navigate",
         "browser_click",
@@ -145,12 +175,30 @@ mod tests {
     fn catches_typos() {
         assert_eq!(suggest_in_roster("file_reed"), Some("file_read"));
         assert_eq!(suggest_in_roster("browser_clik"), Some("browser_click"));
-        assert_eq!(suggest_in_roster("todo_wrte"), Some("todo_write"));
+        assert_eq!(suggest_in_roster("todos"), Some("todo"));
     }
 
     #[test]
     fn is_case_insensitive() {
         assert_eq!(suggest_in_roster("File_Read"), Some("file_read"));
+    }
+
+    #[test]
+    fn retired_todo_names_resolve_to_the_consolidated_tool() {
+        // `TodoWrite` is in every agent model's training data and is six edits
+        // from `todo` — pure edit distance can never bridge it, so without the
+        // retirement table the first turn of a conversation is a guaranteed
+        // dead end.
+        for old in ["todo_write", "TodoWrite", "todo_update", "todo_read"] {
+            assert_eq!(suggest_in_roster(old), Some("todo"), "{old}");
+        }
+    }
+
+    #[test]
+    fn a_retirement_never_names_a_tool_that_is_also_gone() {
+        // The table maps onto the LIVE roster, so a roster without `todo`
+        // must not answer `todo_write` with it.
+        assert_eq!(suggest("todo_write", ["file_read", "grep"]), None);
     }
 
     #[test]

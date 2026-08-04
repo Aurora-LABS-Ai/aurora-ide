@@ -26,10 +26,20 @@ use crate::agent_safety::shell_validation::validate_for_shell;
 
 use super::ide_event_sink::{IdeEventSink, ShellStreamRequest};
 
-/// Default timeout — matches the TS `DEFAULT_SHELL_TIMEOUT_MS`.
-const DEFAULT_TIMEOUT_MS: u64 = 30_000;
-/// Maximum timeout — matches the TS `MAX_SHELL_TIMEOUT_MS`.
-const MAX_TIMEOUT_MS: u64 = 300_000;
+/// Default timeout when the caller does not pass one.
+///
+/// Was 30s, which is under the time a cold `cargo check` or `tsc -b` needs on
+/// this repo — so the common case was a timeout that looked like a broken
+/// command. Two minutes covers ordinary build and test commands; anything
+/// genuinely long belongs in `shell_spawn`.
+const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+/// Maximum timeout a caller may ask for.
+///
+/// Was 5 minutes, so a legitimately long test suite could not be waited out at
+/// all: the model's only options were a command it knew would be killed, or
+/// backgrounding work it needed the result of. Half an hour is enough for a
+/// real suite while still bounding a runaway process.
+const MAX_TIMEOUT_MS: u64 = 1_800_000;
 /// Minimum timeout — matches the TS `MIN_SHELL_TIMEOUT_MS`.
 const MIN_TIMEOUT_MS: u64 = 1_000;
 
@@ -76,7 +86,7 @@ impl ToolExecutor for ShellExecuteTool {
             },
             "timeout": {
                 "type": "number",
-                "description": "Timeout in milliseconds. Defaults to 30000 (30 seconds), maximum 300000 (5 minutes)."
+                "description": "Timeout in milliseconds. Defaults to 120000 (2 minutes), maximum 1800000 (30 minutes). Set this yourself whenever you expect the command to be slow — a build, a full test suite, an install. If the timeout is hit the process is killed and you get whatever it printed first, with timedOut: true. For work with no natural end (dev servers, watchers) use shell_spawn instead of a long timeout."
             }
             // No `type: inline|terminal`. It advertised routing a command to
             // the IDE terminal, but the executor never read it and the Agent
@@ -161,7 +171,7 @@ impl ToolExecutor for ShellExecuteTool {
         let request = ShellStreamRequest {
             process_id: ctx.tool_call_id.clone(),
             request_id: ctx.tool_call_id.clone(),
-            session_id: ctx.session_id.clone(),
+            thread_id: ctx.thread_id.clone(),
             name: None,
             command: command.to_string(),
             cwd: cwd.clone(),
@@ -206,6 +216,22 @@ impl ToolExecutor for ShellExecuteTool {
                 "stdout": output.stdout,
                 "stderr": output.stderr,
                 "exitCode": output.exit_code,
+                // A timeout is not a failing command, and the model cannot tell
+                // the two apart from stdout alone. Both the flag and the note
+                // are here so it stops "fixing" commands that only ran long.
+                "timedOut": output.timed_out,
+                "timeoutMs": timeout_ms,
+                "note": if output.timed_out {
+                    Some(format!(
+                        "Killed after {timeout_ms}ms — the command had not finished. The output \
+                         above is only what it printed before being stopped, so treat it as \
+                         partial, not as the result. Re-run with a larger `timeout` if it just \
+                         needs longer, or start it with shell_spawn and follow it with \
+                         shell_read_output if it has no natural end."
+                    ))
+                } else {
+                    None
+                },
             })
             .to_string()),
             Err(err) => Ok(json!({
@@ -385,7 +411,7 @@ mod tests {
             allow_outside_workspace: false,
             turn_id: "t".into(),
             tool_call_id: "c".into(),
-            session_id: "s".into(),
+            thread_id: "s".into(),
             workspace_root: None,
             cancel_token: CancellationToken::new(),
         }
@@ -506,6 +532,110 @@ mod tests {
         let resolved =
             resolve_working_directory(&json!({ "cwd": "packages/api" }), &context).expect("ok");
         assert_eq!(resolved, tmp.path().join("packages/api").to_string_lossy());
+    }
+
+    /// Sink that reports a run killed by the timeout, with partial output —
+    /// exactly the shape `execute_command_stream` returns in that case.
+    struct TimedOutSink;
+
+    #[async_trait]
+    impl crate::tools::shell_editor_todo::ide_event_sink::IdeEventSink for TimedOutSink {
+        fn emit_editor_open(
+            &self,
+            _path: &str,
+            _line: Option<u64>,
+            _column: Option<u64>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn emit_read_lints(&self, _paths: &[String]) -> Result<(), String> {
+            Ok(())
+        }
+        fn emit_todo_write(&self, _thread_id: &str, _todos: &Value) -> Result<(), String> {
+            Ok(())
+        }
+        fn emit_plan_changed(
+            &self,
+            _payload: &crate::tools::shell_editor_todo::PlanChangedPayload,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn spawn_shell_stream(
+            &self,
+            _req: ShellStreamRequest,
+        ) -> Result<crate::tools::shell_editor_todo::ide_event_sink::SpawnOutcome, String> {
+            Err("not used".into())
+        }
+        async fn run_shell_stream(
+            &self,
+            _req: ShellStreamRequest,
+        ) -> Result<crate::tools::shell_editor_todo::ide_event_sink::ShellRunOutput, String> {
+            Ok(
+                crate::tools::shell_editor_todo::ide_event_sink::ShellRunOutput {
+                    stdout: "compiling...\n".into(),
+                    stderr: String::new(),
+                    exit_code: None,
+                    success: false,
+                    timed_out: true,
+                },
+            )
+        }
+        fn emit_file_changed(
+            &self,
+            _payload: &crate::tools::shell_editor_todo::FileChangedPayload,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// The regression this guards: a timeout used to arrive as
+    /// `exitCode: 1, success: false` with no other signal, so the model read a
+    /// slow command as a broken one and "fixed" working code.
+    #[tokio::test]
+    async fn a_timeout_is_reported_as_a_timeout_not_a_failed_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut context = ctx();
+        context.workspace_root = Some(tmp.path().to_path_buf());
+
+        let out = ShellExecuteTool::new(Arc::new(TimedOutSink))
+            .execute(json!({"command": "cargo test", "timeout": 5_000}), &context)
+            .await
+            .expect("ok");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+
+        assert_eq!(parsed["timedOut"], json!(true));
+        assert_eq!(parsed["timeoutMs"], json!(5_000));
+        assert_eq!(parsed["exitCode"], Value::Null, "it never reported one");
+        assert_eq!(parsed["stdout"], json!("compiling...\n"), "keep partial output");
+
+        let note = parsed["note"].as_str().unwrap_or_default();
+        assert!(note.contains("partial"), "must not read as a result: {note}");
+        assert!(note.contains("shell_spawn"), "must name the way out: {note}");
+    }
+
+    #[tokio::test]
+    async fn a_normal_run_carries_no_timeout_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut context = ctx();
+        context.workspace_root = Some(tmp.path().to_path_buf());
+
+        let out = ShellExecuteTool::new(Arc::new(NoopIdeEventSink))
+            .execute(json!({"command": "echo hi"}), &context)
+            .await
+            .expect("ok");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+
+        assert_eq!(parsed["timedOut"], json!(false));
+        assert_eq!(parsed["note"], Value::Null);
+        // The default the schema advertises must be the default applied.
+        assert_eq!(parsed["timeoutMs"], json!(DEFAULT_TIMEOUT_MS));
+    }
+
+    #[test]
+    fn an_over_large_timeout_is_clamped_to_the_ceiling() {
+        let clamped = 9_999_999u64.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
+        assert_eq!(clamped, MAX_TIMEOUT_MS);
+        assert_eq!(MAX_TIMEOUT_MS, 1_800_000, "30 minutes");
     }
 
     #[test]

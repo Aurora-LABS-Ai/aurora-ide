@@ -7,7 +7,7 @@ import {
 } from "../../services/mermaid-artifacts";
 import { AgentIcon } from "../shared";
 import { useAgentThemeStore } from "../store/useAgentThemeStore";
-import { readMermaidSvgSize } from "../lib/mermaid-svg";
+import { diagramArtworkBox, readMermaidSvgSize } from "../lib/mermaid-svg";
 
 interface CanvasDiagramProps {
   source: string;
@@ -202,6 +202,8 @@ export const CanvasDiagram: React.FC<CanvasDiagramProps> = ({ source, title, ref
     return () => stage.removeEventListener("wheel", onWheel);
   }, [svg, zoomBy]);
 
+  const artwork = diagramArtworkBox(diagramSize, viewport);
+
   return (
     <div
       ref={stageRef}
@@ -273,10 +275,15 @@ export const CanvasDiagram: React.FC<CanvasDiagramProps> = ({ source, title, ref
           className="agw-diagram-artwork"
           role="img"
           aria-label={`${title} Mermaid diagram`}
+          // Zoom is SIZE, panning is transform — see `diagramArtworkBox`. The
+          // artwork is a composited layer, and Chromium stretches such a
+          // layer's cached bitmap rather than re-rendering it, so a diagram
+          // that auto-fit small stayed rasterized small and zooming in only
+          // enlarged the blur. Growing the box re-renders the SVG as vector.
           style={{
-            width: diagramSize.width,
-            height: diagramSize.height,
-            transform: `translate3d(${viewport.x}px, ${viewport.y}px, 0) scale(${viewport.scale})`,
+            width: artwork.width,
+            height: artwork.height,
+            transform: `translate3d(${artwork.left}px, ${artwork.top}px, 0)`,
           }}
           dangerouslySetInnerHTML={{ __html: svg }}
         />

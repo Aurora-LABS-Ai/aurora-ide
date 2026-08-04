@@ -9,6 +9,7 @@
 
 import React, { useEffect } from "react";
 import { MotionConfig } from "framer-motion";
+import { AgentDragGhost } from "./AgentDragGhost";
 import { AgentThemeProvider } from "./AgentThemeProvider";
 import { AgentTitlebar } from "./AgentTitlebar";
 import { AgentShell } from "./AgentShell";
@@ -16,12 +17,14 @@ import { SettingsPage } from "../settings/SettingsPage";
 import { registerQuestionHandler } from "../../services/question-bridge";
 import { registerTeamViewOpener } from "../../services/team-view-bridge";
 import { useAgentEditorOpen } from "../hooks/useAgentEditorOpen";
+import { useAgentPathDrag } from "../hooks/useAgentPathDrag";
 import { useAgentWindowBounds } from "../hooks/useAgentWindowBounds";
 import { restoreThreadAfterReload, useReloadRestore } from "../hooks/useReloadRestore";
 import { useTeamStore } from "../../store/useTeamStore";
 import { useAgentChatStore } from "../store/useAgentChatStore";
 import { useAgentQuestionStore } from "../store/useAgentQuestionStore";
 import { useAgentUiStore } from "../store/useAgentUiStore";
+import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
 import { AgentCommandCenter } from "./AgentCommandCenter";
 import { useAgentArtifactStore } from "../store/useAgentArtifactStore";
 
@@ -48,6 +51,10 @@ export const AgentWindow: React.FC = () => {
   // Files open in this window's right rail, never in the IDE's editor.
   useAgentEditorOpen();
 
+  // Dragging a file out of the Files panel and onto a composer. One coordinator
+  // per window owns the pointer listeners for every source and drop zone in it.
+  useAgentPathDrag();
+
   // Bind the window to its project + load that project's chats once. If this
   // mount is a RELOAD of the same window (Ctrl+R, or the native crash-recovery
   // auto-reload after a renderer crash), re-open the chat that was on screen —
@@ -60,11 +67,15 @@ export const AgentWindow: React.FC = () => {
     })();
   }, [init]);
 
-  // The team lives INSIDE this window now (a center-column takeover), not a
-  // separate OS window. Let the Lead's `team_show` / `team_dispatch` tools
-  // reveal it via the bridge instead of spawning a window.
+  // The team lives in the RIGHT DOCK (a "Team" tab beside Canvas/Files), so
+  // it sits side-by-side with the conversation — the ask-lead loop needs both
+  // visible at once. The Lead's `team_show` / `team_dispatch` tools reveal it
+  // via the bridge.
   useEffect(
-    () => registerTeamViewOpener(() => useAgentUiStore.getState().openTeam()),
+    () =>
+      registerTeamViewOpener(() =>
+        useAgentWorkspaceStore.getState().openTab("team"),
+      ),
     [],
   );
 
@@ -103,6 +114,8 @@ export const AgentWindow: React.FC = () => {
         <AgentTitlebar />
         {view === "settings" ? <SettingsPage /> : <AgentShell />}
         <AgentCommandCenter />
+        {/* Follows the cursor during a file drag; renders nothing otherwise. */}
+        <AgentDragGhost />
       </AgentThemeProvider>
     </MotionConfig>
   );

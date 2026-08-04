@@ -9,14 +9,12 @@ import {
 } from "lucide-react";
 
 import { useWorkspaceSummary } from "../../hooks/useWorkspaceSummary";
+import {
+  buildStarterPrompts,
+  type StarterPromptKind,
+} from "../../services/workspace-starter-prompts";
 
 type EmptyStateMode = "chat" | "agent";
-
-interface PromptOption {
-  Icon: React.ComponentType<{ className?: string }>;
-  title: string;
-  prompt: string;
-}
 
 interface WorkspaceAwareEmptyStateProps {
   mode: EmptyStateMode;
@@ -24,129 +22,23 @@ interface WorkspaceAwareEmptyStateProps {
   rootPath: string;
 }
 
-const joinList = (items: string[]): string => {
-  if (items.length === 0) return "";
-  if (items.length === 1) return items[0];
-  if (items.length === 2) return `${items[0]} and ${items[1]}`;
-  return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
-};
-
-const buildWorkspacePromptOptions = (
-  rootPath: string,
-  summary: ReturnType<typeof useWorkspaceSummary>,
-): PromptOption[] => {
-  if (!summary && !rootPath) {
-    return [
-      {
-        Icon: ClipboardList,
-        title: "Show me how to start using Aurora on a real project",
-        prompt:
-          "Help me get started with Aurora. Explain the best workflow once I open a project workspace.",
-      },
-      {
-        Icon: FolderTree,
-        title: "Review some code and explain what matters first",
-        prompt:
-          "I want to paste in a file or idea. Help me review it, explain it, and suggest the next move.",
-      },
-      {
-        Icon: FilePenLine,
-        title: "Turn a feature idea into an implementation plan",
-        prompt:
-          "Help me turn a feature idea into an implementation plan with steps, files, and validation.",
-      },
-      {
-        Icon: ShieldAlert,
-        title: "Debug a problem step by step",
-        prompt:
-          "Help me debug a bug systematically. Start by asking for the failing behavior, files, and any errors.",
-      },
-    ];
-  }
-
-  if (!summary) {
-    return [
-      {
-        Icon: FolderTree,
-        title: "Explain how this codebase is organized",
-        prompt:
-          "Explain the architecture of this workspace, identify the main entry points, and summarize how the important pieces fit together.",
-      },
-      {
-        Icon: ShieldAlert,
-        title: "Find likely bugs, risky areas, and missing validation",
-        prompt:
-          "Review this workspace for likely bugs, risky areas, and missing validation. Prioritize the highest-impact findings first.",
-      },
-      {
-        Icon: FilePenLine,
-        title: "Plan the next high-impact improvement",
-        prompt:
-          "Propose the next high-impact improvement for this workspace, then outline the files and implementation steps involved.",
-      },
-      {
-        Icon: ListTodo,
-        title: "Identify the most important missing tests",
-        prompt:
-          "Identify the most important untested flows in this workspace and propose a focused test plan before writing tests.",
-      },
-    ];
-  }
-
-  const architecturePrompt =
-    summary.framework === "Tauri"
-      ? `Explain how the React frontend, Tauri commands, and Rust backend are connected in the ${summary.name} workspace. Map the main files and runtime data flow.`
-      : summary.framework === "Next.js"
-        ? `Explain the ${summary.name} workspace architecture with emphasis on routing, server/client boundaries, and the main data flow.`
-        : summary.framework === "Rust (Cargo)"
-          ? `Explain the ${summary.name} workspace structure, its main Rust modules, and how responsibilities are split across the codebase.`
-          : `Explain the architecture of the ${summary.name} workspace, focusing on the main modules, data flow, and how the primary features are organized.`;
-
-  const implementationPrompt =
-    summary.hasTsConfig || summary.hasPackageJson
-      ? `Propose the next high-impact improvement for the ${summary.name} workspace, then identify the frontend files and state/services that would need to change.`
-      : `Propose the next high-impact improvement for the ${summary.name} workspace, then identify the files and modules that should change first.`;
-
-  const options: PromptOption[] = [
-    {
-      Icon: FolderTree,
-      title: `Explain how ${summary.name} is organized`,
-      prompt: architecturePrompt,
-    },
-    {
-      Icon: ShieldAlert,
-      title: `Review ${summary.name} for bugs and risky areas`,
-      prompt: `Review the ${summary.name} workspace for likely bugs, regressions, and missing validation. Prioritize the highest-impact findings first.`,
-    },
-    {
-      Icon: FilePenLine,
-      title: `Plan the next high-impact improvement for ${summary.name}`,
-      prompt: implementationPrompt,
-    },
-    {
-      Icon: ListTodo,
-      title: `Identify the most important missing tests in ${summary.name}`,
-      prompt: `Identify the most important untested flows in the ${summary.name} workspace and propose a focused test plan before writing tests.`,
-    },
-  ];
-
-  if (summary.hasGit) {
-    options[1] = {
-      Icon: ShieldAlert,
-      title: `Review the current state of ${summary.name}`,
-      prompt: `Review the ${summary.name} workspace like a code reviewer. Focus on behavioral risks, architectural debt, and the most important gaps to fix next.`,
-    };
-  }
-
-  if (summary.languages.length > 0 && !summary.hasPackageJson && !summary.hasTsConfig) {
-    options[2] = {
-      Icon: ClipboardList,
-      title: `Show me the core ${joinList(summary.languages)} files to read first`,
-      prompt: `The ${summary.name} workspace looks centered around ${joinList(summary.languages)}. Identify the core files I should understand first and explain why they matter.`,
-    };
-  }
-
-  return options;
+/**
+ * Semantic starter kind -> lucide glyph, for the IDE's icon family.
+ *
+ * The Agent Window maps the same kinds onto its own `AgentIcon` set, so the two
+ * empty states share wording and logic without sharing an icon library.
+ */
+const KIND_ICONS: Record<
+  StarterPromptKind,
+  React.ComponentType<{ className?: string }>
+> = {
+  "getting-started": ClipboardList,
+  architecture: FolderTree,
+  review: ShieldAlert,
+  debug: ShieldAlert,
+  plan: FilePenLine,
+  tests: ListTodo,
+  "read-first": ClipboardList,
 };
 
 export const WorkspaceAwareEmptyState: React.FC<
@@ -155,7 +47,7 @@ export const WorkspaceAwareEmptyState: React.FC<
   const workspaceSummary = useWorkspaceSummary(rootPath);
 
   const promptOptions = useMemo(
-    () => buildWorkspacePromptOptions(rootPath, workspaceSummary),
+    () => buildStarterPrompts(rootPath, workspaceSummary),
     [rootPath, workspaceSummary],
   );
 
@@ -199,10 +91,11 @@ export const WorkspaceAwareEmptyState: React.FC<
         </div>
 
         <div className="flex flex-col">
-          {promptOptions.map(({ Icon, title: optionTitle, prompt }, index) => {
+          {promptOptions.map(({ kind, title: optionTitle, prompt }, index) => {
+            const Icon = KIND_ICONS[kind];
             return (
               <button
-                key={optionTitle}
+                key={kind}
                 onClick={() => onSelectPrompt(prompt)}
                 className={`group flex items-center gap-4 py-4 text-left transition-colors duration-150 ${
                   index > 0

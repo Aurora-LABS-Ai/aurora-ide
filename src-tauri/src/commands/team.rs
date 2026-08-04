@@ -1,19 +1,22 @@
-//! Tauri commands for the Agent Team shared brain + TeamBus (Phase 1).
+//! Tauri commands for the Agent Team.
 //!
 //! These are the IPC entry points the frontend team client
-//! (`src/services/team-client.ts`) calls to scaffold a project's brain,
-//! read its current state, and post to the team channel. They are thin
-//! wrappers — all the real work lives in
-//! [`crate::agent_runtime::team`] (the workspace store + bus). The whole
-//! brain lives in `~/.aurora/projects/<projectId>/`, not SQLite
-//! (ground truth §18).
+//! (`src/services/team-client.ts`) calls. They are thin wrappers — all the
+//! real work lives in [`crate::agent_runtime::team`]. The whole brain lives
+//! in `~/.aurora/projects/<projectId>/`, not SQLite.
 //!
-//! Posting goes through the [`TeamBus`] in managed state so the event is
-//! persisted to `channel/events.jsonl` **and** broadcast on the
-//! `"team_event"` Tauri channel in one path (§7).
+//! The surface is deliberately small now:
 //!
-//! Tauri exposes each snake_case parameter to JS as camelCase
-//! (`repo_path` → `repoPath`, `lead_model` → `leadModel`, …).
+//! - brain reads (`team_get_state`, `team_channel_tail`, transcript, …);
+//! - the Lead's control tools (`team_dispatch`, `team_lead_message`,
+//!   `team_remove_agent`, `team_disband`, `team_grant_scope`);
+//! - the run status / ack pair the completion notifier drives;
+//! - the **lead inbox** (`team_lead_inbox` / `team_lead_reply`): questions
+//!   members routed to the real chat Lead, and the Lead's answers back.
+//!
+//! The old phased commands (planning round, build round, integration gate,
+//! per-step board mutations) are gone with the phases themselves — the
+//! engine owns that lifecycle end to end.
 
 use std::sync::Arc;
 
@@ -21,25 +24,20 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::agent_runtime::team::{
-    now_rfc3339, project_id_for, AgentSpec, AgentStatus, ChannelEvent, ChannelEventKind,
-    ConveneRequest, DispatchMember, GateCommands, GateStatus, ProjectWorkspace, ReviewVerdict,
-    ScopeDecision, TaskStatus, TeamBus, TeamDispatcher, TeamProjectState, TeamRunStatus,
-    TeamSession, DEFAULT_CHANNEL_TAIL,
+    now_rfc3339, project_id_for, ChannelEvent, ChannelEventKind, DispatchMember, LeadQuestion,
+    ProjectWorkspace, ScopeDecision, TeamBus, TeamDispatcher, TeamProjectState, TeamRunStatus,
+    TeamSession, DEFAULT_CHANNEL_TAIL, LEAD_AGENT_ID,
 };
 use crate::agent_runtime::types::{ContentBlock, ConversationMessage, MessageRole};
 
 /// Resolve the stable `projectId` for a repo path without touching disk.
-/// Useful for the frontend to key its team store before init.
 #[tauri::command]
 pub async fn team_resolve_project_id(repo_path: String) -> Result<String, String> {
     Ok(project_id_for(&repo_path))
 }
 
 /// Scaffold (or open) a project's shared brain and return its full state.
-///
-/// Idempotent: calling it on an already-initialized project just returns
-/// the existing brain — `project.json`'s `created_at` and `repo_path` are
-/// preserved (see [`ProjectWorkspace::ensure_scaffold`]).
+/// Idempotent.
 #[tauri::command]
 pub async fn team_init(
     repo_path: String,
@@ -52,10 +50,7 @@ pub async fn team_init(
         .map_err(|e| e.to_string())
 }
 
-/// Read a project's brain snapshot. Safe to call before `team_init` —
-/// an un-scaffolded project returns an uninitialized snapshot
-/// (`initialized: false`) rather than erroring, so the UI can render an
-/// empty team view immediately.
+/// Read a project's brain snapshot. Safe to call before `team_init`.
 #[tauri::command]
 pub async fn team_get_state(
     repo_path: String,
@@ -77,16 +72,12 @@ pub async fn team_channel_tail(
         .map_err(|e| e.to_string())
 }
 
-/// The distinct chat/thread ids that have ever dispatched a team run for this
-/// project, read from the durable channel log (`meta.originThreadId`, stamped on
-/// each run's lifecycle events). Powers the left-rail "this chat has team work"
-/// badge. Returns an empty list for a project with no brain or no runs — never
-/// errors on a missing brain (an un-scaffolded project simply has no history).
+/// The distinct chat/thread ids that have ever dispatched a team run for
+/// this project (left-rail badge). Never errors on a missing brain.
 #[tauri::command]
 pub async fn team_origin_threads(repo_path: String) -> Result<Vec<String>, String> {
     let ws = ProjectWorkspace::resolve(&repo_path);
     let events = ws.read_channel(None).map_err(|e| e.to_string())?;
-    // De-dupe + stable order so the frontend cache key stays stable across reads.
     let mut seen = std::collections::BTreeSet::new();
     for event in events {
         if let Some(meta) = event.meta.as_ref() {
@@ -101,12 +92,7 @@ pub async fn team_origin_threads(repo_path: String) -> Result<Vec<String>, Strin
     Ok(seen.into_iter().collect())
 }
 
-/// Post one event to the team channel: persist it to `events.jsonl` and
-/// broadcast it live on the `"team_event"` channel via the [`TeamBus`].
-///
-/// The brain is scaffolded on demand so posting to a not-yet-initialized
-/// project can never silently drop the event. The runtime stamps the id
-/// and timestamp — the caller supplies only author/kind/body/meta.
+/// Post one event to the team channel (persist + broadcast via the bus).
 #[tauri::command]
 pub async fn team_post_channel_event(
     bus: State<'_, Arc<TeamBus>>,
@@ -130,13 +116,7 @@ pub async fn team_post_channel_event(
     bus.post(&ws, event).map_err(|e| e.to_string())
 }
 
-// ─── Lead team-control commands (Phase 2a) ────────────────────────────
-//
-// These are the IPC entry points behind the Lead's team-control tools
-// (ground truth §7). Each drives the [`TeamSession`] state machine over
-// the brain, then returns a fresh [`TeamProjectState`] snapshot so the
-// frontend team store can replace its state in one shot. Lifecycle changes
-// also stream live on the `"team_event"` channel via the [`TeamBus`].
+// ── Lead control ────────────────────────────────────────────────────────
 
 /// Reload the brain snapshot after a mutation.
 fn snapshot(session: &TeamSession) -> Result<TeamProjectState, String> {
@@ -146,40 +126,7 @@ fn snapshot(session: &TeamSession) -> Result<TeamProjectState, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Convene the team: seed the roster (Lead + clamped ICs) and enter the
-/// Planning phase. `max_size` is the user's configured ceiling (the
-/// frontend passes it from settings); it is clamped again to the hard
-/// ceiling in the runtime.
-#[tauri::command]
-pub async fn team_convene(
-    bus: State<'_, Arc<TeamBus>>,
-    repo_path: String,
-    request: ConveneRequest,
-    max_size: usize,
-) -> Result<TeamProjectState, String> {
-    let session = TeamSession::open(&repo_path).map_err(|e| e.to_string())?;
-    session
-        .convene(&bus, request, max_size)
-        .map_err(|e| e.to_string())?;
-    snapshot(&session)
-}
-
-/// Add one IC to the running team (rejected if it would exceed `max_size`).
-#[tauri::command]
-pub async fn team_add_agent(
-    bus: State<'_, Arc<TeamBus>>,
-    repo_path: String,
-    agent: AgentSpec,
-    max_size: usize,
-) -> Result<TeamProjectState, String> {
-    let session = TeamSession::open(&repo_path).map_err(|e| e.to_string())?;
-    session
-        .add_agent(&bus, agent, max_size)
-        .map_err(|e| e.to_string())?;
-    snapshot(&session)
-}
-
-/// Remove/dismiss an IC; its scope is released and its tasks unassigned.
+/// Remove/dismiss a member; its scope is released and its tasks unassigned.
 #[tauri::command]
 pub async fn team_remove_agent(
     bus: State<'_, Arc<TeamBus>>,
@@ -193,7 +140,7 @@ pub async fn team_remove_agent(
     snapshot(&session)
 }
 
-/// Stop the whole team run (soft stop → Disbanded; brain stays on disk).
+/// Stop the whole team run (graceful cancel → Disbanded; brain stays on disk).
 #[tauri::command]
 pub async fn team_disband(
     dispatcher: State<'_, Arc<TeamDispatcher>>,
@@ -206,156 +153,8 @@ pub async fn team_disband(
     snapshot(&session)
 }
 
-/// Update one agent's live status (no channel post; reflected on read).
-#[tauri::command]
-pub async fn team_set_agent_status(
-    repo_path: String,
-    agent_id: String,
-    status: AgentStatus,
-) -> Result<TeamProjectState, String> {
-    let session = TeamSession::open(&repo_path).map_err(|e| e.to_string())?;
-    session
-        .set_agent_status(&agent_id, status)
-        .map_err(|e| e.to_string())?;
-    snapshot(&session)
-}
-
-/// Authoritatively (re)assign folder ownership to an agent, keeping the
-/// partition non-overlapping (§8).
-#[tauri::command]
-pub async fn team_assign_scope(
-    bus: State<'_, Arc<TeamBus>>,
-    repo_path: String,
-    agent_id: String,
-    owned_paths: Vec<String>,
-    owned_contracts: Option<Vec<String>>,
-) -> Result<TeamProjectState, String> {
-    let session = TeamSession::open(&repo_path).map_err(|e| e.to_string())?;
-    session
-        .assign_scope(
-            &bus,
-            &agent_id,
-            owned_paths,
-            owned_contracts.unwrap_or_default(),
-        )
-        .map_err(|e| e.to_string())?;
-    snapshot(&session)
-}
-
-/// Push a ticket onto the board for an owner (or unassigned).
-#[tauri::command]
-pub async fn team_assign_task(
-    bus: State<'_, Arc<TeamBus>>,
-    repo_path: String,
-    title: String,
-    owner: Option<String>,
-    depends_on: Option<Vec<String>>,
-) -> Result<TeamProjectState, String> {
-    let session = TeamSession::open(&repo_path).map_err(|e| e.to_string())?;
-    session
-        .assign_task(&bus, title, owner, depends_on.unwrap_or_default())
-        .map_err(|e| e.to_string())?;
-    snapshot(&session)
-}
-
-/// Update a task's status.
-#[tauri::command]
-pub async fn team_set_task_status(
-    repo_path: String,
-    task_id: String,
-    status: TaskStatus,
-) -> Result<TeamProjectState, String> {
-    let session = TeamSession::open(&repo_path).map_err(|e| e.to_string())?;
-    session
-        .set_task_status(&task_id, status)
-        .map_err(|e| e.to_string())?;
-    snapshot(&session)
-}
-
-// ─── Live planning round (Phase 2b) ───────────────────────────────────────
-
-/// Run the live planning round: the Lead proposes a team + non-overlapping
-/// scope partition + seeded board via real model calls, then each IC runs a
-/// one-shot standup turn. Every step streams on the `"team_event"` channel
-/// via the [`TeamBus`] as it happens; the returned snapshot is the settled
-/// brain state.
-///
-/// `lead_provider_config` and `team_provider_config` are
-/// [`crate::api::ProviderConfigSnapshot`]s resolved on the frontend from the
-/// user's Agent → Team settings (`getTeamLeadConfig()` /
-/// `getTeamMemberConfig()` → `buildProviderConfigSnapshot`). When the user
-/// hasn't overridden either, both resolve to the active chat model, so the
-/// team rides on the chat provider by default. When they differ, the Lead
-/// and the IC team run on separate configured providers. Tauri exposes them
-/// as `leadProviderConfig` / `teamProviderConfig` on the JS side.
-#[tauri::command]
-pub async fn team_run_planning(
-    bus: State<'_, Arc<TeamBus>>,
-    repo_path: String,
-    goal: String,
-    lead_provider_config: crate::api::ProviderConfigSnapshot,
-    team_provider_config: crate::api::ProviderConfigSnapshot,
-    max_size: usize,
-    desired_ics: Option<usize>,
-) -> Result<TeamProjectState, String> {
-    crate::agent_runtime::team::run_planning(
-        &bus,
-        &repo_path,
-        &goal,
-        &lead_provider_config,
-        &team_provider_config,
-        max_size,
-        desired_ics,
-    )
-    .await
-    .map_err(|e| e.to_string())
-}
-
-// ─── Parallel build + scope enforcement (Phase 3) ─────────────────────────
-//
-// These drive the build phase of the lifecycle (§9 step 3): flip the team
-// into Building, enforce the scope partition on writes (§8), and carry the
-// lateral coordination an in-scope build needs (boundary questions +
-// published contracts). Each mutation returns a fresh snapshot; the
-// read-only guard check returns just its decision.
-
-/// Start the parallel build: move the team into the Building phase and flip
-/// every scoped IC to `building` (§9). Rejected on a disbanded team.
-#[tauri::command]
-pub async fn team_begin_build(
-    bus: State<'_, Arc<TeamBus>>,
-    repo_path: String,
-) -> Result<TeamProjectState, String> {
-    let session = TeamSession::open(&repo_path).map_err(|e| e.to_string())?;
-    session.begin_build(&bus).map_err(|e| e.to_string())?;
-    snapshot(&session)
-}
-
-/// Run the full parallel build round: flip the team to Building, then drive
-/// each scoped IC through a guarded tool-calling loop that edits **only** its
-/// owned files in the real repo (§8/§9). Per-IC summaries + lifecycle events
-/// stream live on `"team_event"`; the returned snapshot is the settled brain
-/// (Integrating once every IC finishes).
-///
-/// `team_provider_config` is the [`crate::api::ProviderConfigSnapshot`] every
-/// IC runs on (resolved on the frontend from Agent → Team `getTeamMemberConfig()`,
-/// defaulting to the active chat model). Exposed as `teamProviderConfig` to JS.
-#[tauri::command]
-pub async fn team_run_build(
-    bus: State<'_, Arc<TeamBus>>,
-    repo_path: String,
-    goal: String,
-    team_provider_config: crate::api::ProviderConfigSnapshot,
-) -> Result<TeamProjectState, String> {
-    crate::agent_runtime::team::run_build(&bus, &repo_path, &goal, &team_provider_config)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// Ask the scope write-guard whether `agent_id` may write `path` against the
-/// current ownership partition (§8). Read-only — no brain mutation, no
-/// channel post. The build runner runs this before letting an IC's write
-/// land; the team view uses it to explain a refused edit.
+/// Ask the scope write-guard whether `agent_id` may write `path` (read-only
+/// — the Team view uses it to explain a refused edit).
 #[tauri::command]
 pub async fn team_check_scope(
     repo_path: String,
@@ -368,145 +167,159 @@ pub async fn team_check_scope(
         .map_err(|e| e.to_string())
 }
 
-/// Raise a boundary question from one agent to a scope owner (§8). Persisted
-/// + broadcast on the team channel as a `boundary_question`.
+/// The Lead grants a member write access to additional paths. Structured —
+/// no magic text directives. The partition stays non-overlapping (granted
+/// paths are taken from any previous owner) and the grant is posted to the
+/// channel so the whole team sees the transfer.
 #[tauri::command]
-pub async fn team_ask_boundary(
-    bus: State<'_, Arc<TeamBus>>,
-    repo_path: String,
-    from_agent: String,
-    to_owner: String,
-    question: String,
-) -> Result<TeamProjectState, String> {
-    let session = TeamSession::open(&repo_path).map_err(|e| e.to_string())?;
-    session
-        .ask_boundary(&bus, &from_agent, &to_owner, &question)
-        .map_err(|e| e.to_string())?;
-    snapshot(&session)
-}
-
-/// Publish a shared interface other agents can depend on (§8). Records it
-/// under the author's `owned_contracts` and posts a `contract_published`.
-#[tauri::command]
-pub async fn team_publish_contract(
+pub async fn team_grant_scope(
+    dispatcher: State<'_, Arc<TeamDispatcher>>,
     bus: State<'_, Arc<TeamBus>>,
     repo_path: String,
     agent_id: String,
-    name: String,
-    body: String,
+    paths: Vec<String>,
 ) -> Result<TeamProjectState, String> {
+    let paths: Vec<String> = paths
+        .into_iter()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if paths.is_empty() {
+        return Err("'paths' must name at least one repo-relative path".into());
+    }
     let session = TeamSession::open(&repo_path).map_err(|e| e.to_string())?;
+
+    // Serialize with the live run's brain mutations when one is active.
+    let comms = dispatcher.comms_for(&project_id_for(&repo_path));
+    let _guard = match &comms {
+        Some(c) => Some(c.lock_brain().await),
+        None => None,
+    };
+
+    // Extend (not replace) the member's current scope.
+    let mut owned = session
+        .workspace()
+        .read_scope_map()
+        .map_err(|e| e.to_string())?
+        .and_then(|s| {
+            s.assignments
+                .into_iter()
+                .find(|a| a.agent_id == agent_id)
+                .map(|a| (a.owned_paths, a.owned_contracts))
+        })
+        .unwrap_or_default();
+    for p in &paths {
+        if !owned.0.contains(p) {
+            owned.0.push(p.clone());
+        }
+    }
     session
-        .publish_contract(&bus, &agent_id, &name, &body)
+        .assign_scope(&bus, &agent_id, owned.0, owned.1)
         .map_err(|e| e.to_string())?;
     snapshot(&session)
 }
 
-/// Mark an IC finished. When every IC is done, the team closes and the Lead
-/// gets the worker reports.
+// ── Lead ↔ member messaging ─────────────────────────────────────────────
+
+/// Post a Lead message to the team chat AND deliver it into the live
+/// members' conversations (all of them, or one specific member). This is
+/// real steering: the member reads it mid-work, not "maybe sees the
+/// channel tail eventually".
 #[tauri::command]
-pub async fn team_mark_agent_done(
+pub async fn team_lead_message(
+    dispatcher: State<'_, Arc<TeamDispatcher>>,
     bus: State<'_, Arc<TeamBus>>,
     repo_path: String,
-    agent_id: String,
-) -> Result<TeamProjectState, String> {
-    let session = TeamSession::open(&repo_path).map_err(|e| e.to_string())?;
-    session
-        .mark_agent_done(&bus, &agent_id)
+    text: String,
+    to: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("'text' must not be empty".into());
+    }
+    let ws = ProjectWorkspace::resolve(&repo_path);
+    ws.ensure_scaffold(&repo_path, None)
         .map_err(|e| e.to_string())?;
-    snapshot(&session)
+    bus.post(
+        &ws,
+        ChannelEvent {
+            id: Uuid::new_v4().to_string(),
+            ts: now_rfc3339(),
+            author: LEAD_AGENT_ID.to_string(),
+            kind: ChannelEventKind::Message,
+            body: text.clone(),
+            meta: Some(serde_json::json!({ "phase": "working", "chat": true })),
+        },
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut delivered: Vec<String> = Vec::new();
+    if let Some(comms) = dispatcher.comms_for(&project_id_for(&repo_path)) {
+        match to.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            Some(target) => {
+                if comms.send_to(target, LEAD_AGENT_ID, &text).is_ok() {
+                    delivered.push(target.to_string());
+                }
+            }
+            None => delivered = comms.broadcast(LEAD_AGENT_ID, &text),
+        }
+    }
+    Ok(serde_json::json!({ "delivered": delivered }))
 }
 
-// ── Phase 4: integration & peer review ─────────────────────────────────────
-
-/// Record one agent's peer-review verdict on another's work (§9 step 5).
-/// Persists a note under `integration/reviews/` and posts a `review_verdict`
-/// to the channel. `verdict` is `"approve"` or `"changes_requested"`.
+/// Questions members routed to the real Lead and are currently waiting on
+/// (A2A `input-required`). The completion notifier polls this and injects
+/// each question into the Lead's conversation exactly once.
 #[tauri::command]
-pub async fn team_record_review(
+pub async fn team_lead_inbox(
+    dispatcher: State<'_, Arc<TeamDispatcher>>,
+    repo_path: String,
+) -> Result<Vec<LeadQuestion>, String> {
+    Ok(dispatcher
+        .comms_for(&project_id_for(&repo_path))
+        .map(|c| c.lead_pending())
+        .unwrap_or_default())
+}
+
+/// The Lead answers a member's parked question. Resolves the waiting
+/// member (it resumes immediately) and posts the answer to the channel.
+/// Returns false when the ticket is unknown or the member stopped waiting
+/// — the posted answer still lands in the chat either way.
+#[tauri::command]
+pub async fn team_lead_reply(
+    dispatcher: State<'_, Arc<TeamDispatcher>>,
     bus: State<'_, Arc<TeamBus>>,
     repo_path: String,
-    reviewer: String,
-    target: String,
-    verdict: ReviewVerdict,
-    comments: String,
-) -> Result<TeamProjectState, String> {
-    let session = TeamSession::open(&repo_path).map_err(|e| e.to_string())?;
-    session
-        .record_review(&bus, &reviewer, &target, verdict, &comments)
-        .map_err(|e| e.to_string())?;
-    snapshot(&session)
+    question_id: String,
+    text: String,
+) -> Result<bool, String> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("'text' must not be empty".into());
+    }
+    let ws = ProjectWorkspace::resolve(&repo_path);
+    let _ = bus.post(
+        &ws,
+        ChannelEvent {
+            id: Uuid::new_v4().to_string(),
+            ts: now_rfc3339(),
+            author: LEAD_AGENT_ID.to_string(),
+            kind: ChannelEventKind::Message,
+            body: text.clone(),
+            meta: Some(serde_json::json!({ "phase": "working", "replyTo": question_id })),
+        },
+    );
+    Ok(dispatcher
+        .comms_for(&project_id_for(&repo_path))
+        .map(|c| c.lead_reply(&question_id, &text))
+        .unwrap_or(false))
 }
 
-/// Record the integration gate result to `integration/status.json` and post a
-/// Lead summary (§9 step 5, §14). Each field is a `GateStatus`
-/// (`unknown` / `pending` / `passed` / `failed`).
-#[tauri::command]
-pub async fn team_set_gate_status(
-    bus: State<'_, Arc<TeamBus>>,
-    repo_path: String,
-    build: GateStatus,
-    lint: GateStatus,
-    test: GateStatus,
-) -> Result<TeamProjectState, String> {
-    let session = TeamSession::open(&repo_path).map_err(|e| e.to_string())?;
-    session
-        .set_gate_status(&bus, build, lint, test)
-        .map_err(|e| e.to_string())?;
-    snapshot(&session)
-}
+// ── Background dispatch ─────────────────────────────────────────────────
 
-/// Close the integration phase: move the team to `done` when no gate failed,
-/// else keep it integrating (§14). Posts the Lead's wrap-up to the channel.
-#[tauri::command]
-pub async fn team_finish_integration(
-    bus: State<'_, Arc<TeamBus>>,
-    repo_path: String,
-) -> Result<TeamProjectState, String> {
-    let session = TeamSession::open(&repo_path).map_err(|e| e.to_string())?;
-    session
-        .finish_integration(&bus)
-        .map_err(|e| e.to_string())?;
-    snapshot(&session)
-}
-
-/// Run the full integration & peer-review gate (§9 step 5, §14): a round-robin
-/// review pass (each scoped IC reviews a peer) followed by the build/lint/test
-/// gate run in the real repo, then the Lead's finish. Review verdicts + gate
-/// results + the wrap-up stream live on `"team_event"`; the returned snapshot
-/// is the settled brain (`done` when the gate passes).
-///
-/// `team_provider_config` drives the review calls; `gate` carries the opt-in
-/// shell commands (a missing command leaves that gate `unknown`).
-#[tauri::command]
-pub async fn team_run_integration(
-    bus: State<'_, Arc<TeamBus>>,
-    repo_path: String,
-    team_provider_config: crate::api::ProviderConfigSnapshot,
-    gate: Option<GateCommands>,
-) -> Result<TeamProjectState, String> {
-    let gate = gate.unwrap_or_default();
-    crate::agent_runtime::team::run_integration(&bus, &repo_path, &team_provider_config, &gate)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-// ── Background dispatch (the team is its own engine) ────────────────────────
-//
-// `team_dispatch` is the Lead's single non-blocking entry point: it hands the
-// assigned worker run to the [`TeamDispatcher`], which runs it on a detached
-// task and returns control to the Lead immediately. The Lead is then free to
-// keep chatting; it learns the outcome via `team_run_status` (injected into its
-// context every message). The phased commands above remain for tests/manual
-// control.
-
-/// Dispatch the assigned worker run in the background and return the current
-/// (just-scaffolded) brain snapshot. Does NOT wait for the run — the team
-/// works on its own engine while the Lead stays free (ground truth §17).
-///
-/// `desired_ics` and `gate` remain in the IPC shape for compatibility; assigned
-/// `members` define the actual workers. Rejected if a run is already in
-/// progress for this workspace.
+/// Dispatch the Lead-defined team in the background and return the current
+/// (just-reset) brain snapshot. Does NOT wait for the run. Rejected if a
+/// run is already in progress for this workspace.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn team_dispatch(
@@ -514,12 +327,10 @@ pub async fn team_dispatch(
     bus: State<'_, Arc<TeamBus>>,
     repo_path: String,
     goal: String,
-    members: Option<Vec<DispatchMember>>,
+    members: Vec<DispatchMember>,
     lead_provider_config: crate::api::ProviderConfigSnapshot,
     team_provider_config: crate::api::ProviderConfigSnapshot,
     max_size: usize,
-    desired_ics: Option<usize>,
-    gate: Option<GateCommands>,
     origin_thread_id: Option<String>,
     origin_surface: Option<String>,
 ) -> Result<TeamProjectState, String> {
@@ -535,8 +346,6 @@ pub async fn team_dispatch(
         lead_provider_config,
         team_provider_config,
         max_size,
-        desired_ics,
-        gate.unwrap_or_default(),
         origin_thread_id,
         origin_surface,
     )?;
@@ -545,9 +354,8 @@ pub async fn team_dispatch(
         .map_err(|e| e.to_string())
 }
 
-/// Read the live background-run status for a workspace (`idle` / `running` +
-/// phase / `done` / `failed`). The frontend injects this into the Lead's
-/// context on every message so the Lead always knows where the team stands.
+/// Read the live background-run status for a workspace — lifecycle, live
+/// per-member states, and (once terminal) the member reports.
 #[tauri::command]
 pub async fn team_run_status(
     dispatcher: State<'_, Arc<TeamDispatcher>>,
@@ -556,10 +364,8 @@ pub async fn team_run_status(
     Ok(dispatcher.status(&project_id_for(&repo_path)))
 }
 
-/// Mark a terminal run's completion report as delivered to the Lead. The
-/// dispatcher owns the flag, so delivery is exactly-once across window
-/// reloads — the completion notifier acks before it submits the report turn,
-/// and skips any run that is already acknowledged. Returns the fresh status.
+/// Mark a terminal run's completion report as delivered to the Lead
+/// (exactly-once across window reloads). Returns the fresh status.
 #[tauri::command]
 pub async fn team_run_ack(
     dispatcher: State<'_, Arc<TeamDispatcher>>,
@@ -571,13 +377,7 @@ pub async fn team_run_ack(
     Ok(dispatcher.status(&project_id))
 }
 
-// ── Per-agent transcript (the team-window's individual agent view) ──────────
-//
-// The team channel is the *group* chat; it deliberately doesn't carry an
-// agent's tool calls/results. The per-agent view in the window needs exactly
-// that — "what is Nina calling, and what is she getting back" — which lives in
-// `agents/<id>/session.jsonl`, persisted live as the IC works. These DTOs are
-// the display projection of that transcript.
+// ── Per-agent transcript (the team-window's individual agent view) ──────
 
 /// Caps so a single huge file read can't bloat the transcript payload.
 const TRANSCRIPT_TEXT_CAP: usize = 6000;
@@ -622,9 +422,8 @@ fn clamp_display(s: &str, max: usize) -> String {
     }
 }
 
-/// Read one agent's transcript (`agents/<id>/session.jsonl`) as display turns —
-/// what it called and what it got back. Empty until the agent starts building.
-/// Safe to poll (the team window refreshes the selected agent on an interval).
+/// Read one agent's transcript (`agents/<id>/session.jsonl`) as display
+/// turns. Empty until the agent starts. Safe to poll.
 #[tauri::command]
 pub async fn team_get_agent_transcript(
     repo_path: String,
@@ -679,9 +478,9 @@ pub async fn team_get_agent_transcript(
                         is_error: is_error.unwrap_or(false),
                     });
                 }
-                // Compaction markers carry no transcript-visible content (the
-                // summary is model-only); the team transcript view skips them.
-                ContentBlock::Compaction { .. } => {}
+                // Compaction markers and runtime notices carry no
+                // transcript-visible content for a teammate's turn.
+                ContentBlock::Compaction { .. } | ContentBlock::Notice { .. } => {}
             }
         }
 

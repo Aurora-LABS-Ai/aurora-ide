@@ -19,6 +19,7 @@ import { createPortal } from "react-dom";
 
 import { AgentIcon } from "../shared/AgentIcon";
 import { useAgentChatStore } from "../store/useAgentChatStore";
+import { pinnedThreadModel } from "../lib/thread-model";
 import { useAgentContextStore } from "../store/useAgentContextStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import {
@@ -114,12 +115,19 @@ export const ContextRing: React.FC = () => {
   // `getResolvedActiveModel()` would hand zustand a fresh reference each render
   // and spin "getSnapshot should be cached". `getActiveModel()` is a stable
   // row lookup; the window is read as a number.
-  const contextWindow = useSettingsStore(
-    (s) => s.getLLMConfig()?.contextWindow ?? 128_000,
-  );
-  const activeModel = useSettingsStore((s) => s.getActiveModel());
+  // The ring measures the OPEN conversation against ITS model's window. Reading
+  // the app-wide selection would size the bar by another chat's model — a chat
+  // on a 32k model would read as comfortable while sitting inside a 200k window
+  // it doesn't have. Both selectors stay safe: one returns a number, the other
+  // a stable row from the models array.
+  const pinnedModel = useAgentChatStore((s) => pinnedThreadModel(s, s.currentThreadId));
   // Primitive (string) selector — safe to derive from on every render.
-  const selectedModel = useSettingsStore((s) => s.selectedModel);
+  const defaultModel = useSettingsStore((s) => s.selectedModel);
+  const selectedModel = pinnedModel ?? defaultModel;
+  const contextWindow = useSettingsStore(
+    (s) => s.getLLMConfigFor(selectedModel)?.contextWindow ?? 128_000,
+  );
+  const activeModel = useSettingsStore((s) => s.getModelFor(selectedModel));
   const isCodex = selectedModel.startsWith(`${CODEX_PROVIDER_ID}:`);
 
   const triggerRef = useRef<HTMLDivElement | null>(null);

@@ -168,6 +168,16 @@ interface AgentChatState {
   /** Pin or unpin a chat (persisted); updates the in-memory list optimistically. */
   togglePin: (id: string) => Promise<void>;
   /**
+   * Pin a conversation to a model (`"providerId:modelKey"`), persisted on the
+   * thread's own sidecar.
+   *
+   * The model is a property OF THE CONVERSATION, not of the app: picking one in
+   * chat A must not silently re-point chat B. The runtime writes the same field
+   * at the end of every turn, so a chat you never touched still reports what it
+   * actually ran on.
+   */
+  setThreadModel: (id: string, selection: string) => Promise<void>;
+  /**
    * Archive or unarchive a chat (persisted). Archived chats leave the rail tree
    * for the "Archived" view; if the archived chat is open it drops to the empty
    * state. Updates the in-memory list optimistically and reverts on failure.
@@ -451,6 +461,25 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     }
   },
 
+  setThreadModel: async (id, selection) => {
+    const current =
+      get().allThreads.find((t) => t.id === id) ?? get().threads.find((t) => t.id === id);
+    if (!selection || current?.model === selection) return;
+    const apply = (value: string | null) => (state: AgentChatState) => ({
+      threads: state.threads.map((t) => (t.id === id ? { ...t, model: value } : t)),
+      allThreads: state.allThreads.map((t) => (t.id === id ? { ...t, model: value } : t)),
+    });
+    // Optimistic — the composer pill must change the instant it's picked.
+    set(apply(selection));
+    if (!isTauri()) return;
+    try {
+      await threadService.setModel(id, selection);
+    } catch (err) {
+      console.error(`[agent-chat] failed to set model for chat ${id}:`, err);
+      set(apply(current?.model ?? null));
+    }
+  },
+
   toggleArchive: async (id) => {
     const current =
       get().allThreads.find((t) => t.id === id) ?? get().threads.find((t) => t.id === id);
@@ -491,17 +520,25 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
   beginTurn: (threadId, seed, projectRoot) => {
     set((state) => {
       const now = new Date().toISOString();
-      const base: DbThread =
-        seed ?? (state.currentThreadId === threadId && state.currentThread
-          ? state.currentThread
-          : {
-              id: threadId,
-              title: "New Chat",
-              summary: null,
-              messages: [],
-              created_at: now,
-              updated_at: now,
-            });
+      // The OPEN thread's own view outranks a supplied seed when they are the
+      // same conversation. Both hold the same turns, but the open view holds
+      // the optimistic messages this window has been rendering, while a seed
+      // from elsewhere (a docked copy of this chat, which re-reads from disk)
+      // carries fresh ids for the same content — swapping it in would remount
+      // the whole transcript, collapsing tool groups and jumping the scroll for
+      // no visible gain. A seed still wins for any OTHER thread, where the open
+      // view says nothing about it.
+      const openView =
+        state.currentThreadId === threadId ? state.currentThread : null;
+      const base: DbThread = openView ??
+        seed ?? {
+          id: threadId,
+          title: "New Chat",
+          summary: null,
+          messages: [],
+          created_at: now,
+          updated_at: now,
+        };
       return {
         liveTurns: { ...state.liveTurns, [threadId]: base },
         liveProjects: {

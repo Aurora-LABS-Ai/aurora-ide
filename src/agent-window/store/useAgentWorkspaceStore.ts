@@ -57,6 +57,16 @@ interface AgentWorkspaceState {
   openTab: (kind: DockSingletonKind) => void;
   /** Open (or refocus) a file in its own tab. */
   openFileTab: (path: string, title?: string) => void;
+  /** Open (or refocus) a team member's live stream in its own tab. */
+  openMemberTab: (agentId: string, title: string) => void;
+  /** Open (or focus) the details tab for a project folder. */
+  openProjectTab: (root: string, title: string) => void;
+  /**
+   * Open (or refocus) a CONVERSATION in its own dock tab — a second, fully live
+   * chat beside the main one, so two models can be watched answering at once
+   * instead of switching back and forth between them.
+   */
+  openChatTab: (threadId: string, title: string, projectRoot: string | null) => void;
   /** Activate an existing tab by id. */
   setActiveTab: (id: string) => void;
   /** Close a tab; activates a neighbor, or closes the dock if it was the last. */
@@ -114,6 +124,47 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
           return { dockOpen: true, activeTabId: id, tabs };
         }),
 
+      openMemberTab: (agentId, title) =>
+        set((s) => {
+          const id = `member:${agentId}`;
+          const exists = s.tabs.some((t) => t.id === id);
+          const tabs = exists
+            ? s.tabs.map((t) => (t.id === id ? { ...t, title } : t))
+            : [...s.tabs, { id, kind: "member" as const, title, memberId: agentId }];
+          return { dockOpen: true, activeTabId: id, tabs };
+        }),
+
+      openProjectTab: (root, title) =>
+        set((s) => {
+          const id = `project:${root}`;
+          const exists = s.tabs.some((t) => t.id === id);
+          const tabs = exists
+            ? s.tabs.map((t) => (t.id === id ? { ...t, title } : t))
+            : [...s.tabs, { id, kind: "project" as const, title, projectRoot: root }];
+          return { dockOpen: true, activeTabId: id, tabs };
+        }),
+
+      openChatTab: (threadId, title, projectRoot) =>
+        set((s) => {
+          const id = `chat:${threadId}`;
+          const exists = s.tabs.some((t) => t.id === id);
+          const tabs = exists
+            ? // Re-opening refocuses and re-titles (the chat may have been
+              // renamed, or auto-titled since it was docked).
+              s.tabs.map((t) => (t.id === id ? { ...t, title } : t))
+            : [
+                ...s.tabs,
+                {
+                  id,
+                  kind: "chat" as const,
+                  title,
+                  threadId,
+                  threadProjectRoot: projectRoot,
+                },
+              ];
+          return { dockOpen: true, activeTabId: id, tabs };
+        }),
+
       setActiveTab: (id) => set({ activeTabId: id, dockOpen: true }),
 
       closeTab: (id) =>
@@ -137,8 +188,12 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
         railWidth: s.railWidth,
         dockWidth: s.dockWidth,
         diffMode: s.diffMode,
-        // Only singleton tabs survive a reload — file tabs are project-specific.
-        tabs: s.tabs.filter((t) => t.kind !== "file"),
+        // File tabs are project-specific and member tabs die with their run (a
+        // re-dispatch mints new agent ids), so neither survives a reload. Chat
+        // tabs DO: a thread id is durable, and a side-by-side comparison you set
+        // up is worth keeping — the panel handles a since-deleted thread as an
+        // honest empty state rather than a broken tab.
+        tabs: s.tabs.filter((t) => t.kind !== "file" && t.kind !== "member"),
         activeTabId: s.activeTabId,
       }),
       // After rehydrate, make sure activeTabId still points at a surviving tab.

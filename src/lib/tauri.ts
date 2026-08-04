@@ -10,6 +10,14 @@ export interface CommandOutput {
   stderr: string;
   stdout: string;
   success: boolean;
+  /**
+   * The process was killed for exceeding its timeout rather than finishing.
+   *
+   * When true, `exit_code` is null and `stdout`/`stderr` hold only what the
+   * process printed before the kill — partial output, not a result. Optional
+   * because the fallbacks below synthesize a `CommandOutput` without it.
+   */
+  timed_out?: boolean;
 }
 
 export interface RipgrepFileCount {

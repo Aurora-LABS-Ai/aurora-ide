@@ -28,27 +28,14 @@ export type SettingsSection =
   | "preferences";
 // NB: "team" already reserved here; the Team settings tab renders `TeamSettings`.
 
-/**
- * What the CENTER column shows inside the shell (rail + dock stay put): the
- * normal conversation, or the team screen (a takeover of the center, opened from
- * the left-rail "Team" entry). Distinct from `view`, which swaps the WHOLE
- * surface for full-window Settings.
- */
-export type CenterView = "chat" | "team";
-
 interface AgentUiState {
   view: AgentView;
   settingsSection: SettingsSection;
-  centerView: CenterView;
   /** Open the settings page, optionally jumping straight to a section. */
   openSettings: (section?: SettingsSection) => void;
   /** Return to the conversation workspace. */
   closeSettings: () => void;
   setSection: (section: SettingsSection) => void;
-  /** Swap the center column to the team screen. */
-  openTeam: () => void;
-  /** Return the center column to the conversation. */
-  closeTeam: () => void;
 }
 
 export const useAgentUiStore = create<AgentUiState>()(
@@ -56,7 +43,6 @@ export const useAgentUiStore = create<AgentUiState>()(
     (set) => ({
       view: "chat",
       settingsSection: "preferences",
-      centerView: "chat",
       openSettings: (section) =>
         set((s) => ({
           view: "settings",
@@ -64,8 +50,6 @@ export const useAgentUiStore = create<AgentUiState>()(
         })),
       closeSettings: () => set({ view: "chat" }),
       setSection: (section) => set({ settingsSection: section }),
-      openTeam: () => set({ centerView: "team", view: "chat" }),
-      closeTeam: () => set({ centerView: "chat" }),
     }),
     {
       name: "aurora-agent-window-ui",

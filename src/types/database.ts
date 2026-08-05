@@ -49,6 +49,12 @@ export interface AppSettings {
   notifyOnTurnComplete?: boolean;
   /** While a turn streams, replace the header title with a live activity line. Default on. */
   showActivityInTitle?: boolean;
+  /**
+   * Let the agent split a long turn into named chapters. Adds a short
+   * instruction to the system prompt and gives the agent the `chapter` tool, so
+   * it only takes effect on turns started after it is switched on. Default off.
+   */
+  transcriptChapters?: boolean;
   autoAcceptChanges?: boolean;
   autoApproveTools: boolean;
   autoSave: string;

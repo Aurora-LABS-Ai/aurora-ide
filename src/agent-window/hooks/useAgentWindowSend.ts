@@ -25,11 +25,15 @@ import { useCallback, useRef, useState } from "react";
 import {
   AgentService,
   threadService,
-  type ProviderConfig,
   type PromptOverhead,
   type ToolCallRequest,
 } from "../../services";
-import { reasoningIsOn, useSettingsStore } from "../../store/useSettingsStore";
+import { useSettingsStore } from "../../store/useSettingsStore";
+import {
+  DEFAULT_MAX_OUTPUT_TOKENS,
+  resolveModelRequestKnobs,
+  withProviderDefaults,
+} from "../../services/model-request-config";
 import { classifyError } from "../../lib/error-classifier";
 import type {
   AttachedPromptChip,
@@ -114,7 +118,6 @@ const MODEL_TOOL_RESULT_CLAMP = 8_192;
 // writes a visible word — the turn then ends at the cap with only thinking to
 // show for it. Keep this comfortably above a long reasoning pass; users can
 // still set an exact `Max output` per model in provider settings.
-const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 
 /**
  * Estimate token usage for a turn the provider never reported. Many OpenAI-
@@ -272,17 +275,8 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function withProviderDefaults(config: ProviderConfig): ProviderConfig {
-  return {
-    ...config,
-    providerType: config.providerType || "custom",
-    contextWindow: config.contextWindow || 128_000,
-    maxOutputTokens: config.maxOutputTokens || DEFAULT_MAX_OUTPUT_TOKENS,
-    supportsThinking: config.supportsThinking ?? false,
-    supportsToolStream: config.supportsToolStream ?? false,
-    supportsVision: config.supportsVision ?? false,
-  };
-}
+// `withProviderDefaults` now lives in services/model-request-config so the
+// provider connection test normalizes configs exactly as a turn does.
 
 /**
  * Load the user's `/`-selected project rules and format them as an authoritative
@@ -1125,49 +1119,13 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // (effort tier / thinking budget) hangs off the model, so reading the
     // active row would apply another conversation's reasoning settings here.
     const activeModel = useSettingsStore.getState().getModelFor(modelSelection);
-    const reasoning = activeModel?.reasoning;
-    let thinkingEnabled = settings.thinkingEnabled && (llmConfig.supportsThinking ?? false);
-    // Budget models carry a token number instead of a tier. It rides its own
-    // field to the runtime (NOT customParams) because the wire shape differs
-    // per provider: Anthropic wants `thinking.budget_tokens`, OpenAI-compat
-    // backends mostly want nothing at all.
-    let thinkingBudgetTokens: number | undefined;
-    if (reasoning) {
-      const on = reasoningIsOn(reasoning);
-      if (reasoning.type === "budget" && on && typeof reasoning.default === "number") {
-        thinkingBudgetTokens = reasoning.default;
-      }
-      if (reasoning.type === "effort") {
-        // Effort models control reasoning with `reasoning_effort` — NOT the
-        // `thinking` field. Sending BOTH is rejected by some providers
-        // ("cannot specify both 'thinking' and 'reasoning_effort'"), so we never
-        // set the `thinking` field for an effort model; the effort level alone
-        // turns reasoning on. (A provider that also wants `thinking` can add it
-        // via the model's Extra request fields.)
-        thinkingEnabled = false;
-        if (on && reasoning.default) {
-          providerConfig.customParams = {
-            ...(providerConfig.customParams || {}),
-            // The EXACT level the user picked (low/medium/high/xhigh) — verbatim.
-            reasoning_effort: String(reasoning.default),
-          };
-        }
-      } else {
-        // toggle / budget — the `thinking` field is the on/off control.
-        thinkingEnabled = on;
-      }
-    }
-
-    // Manual escape hatch: merge the model's extra request-body fields verbatim.
-    // These are applied LAST so a user can override anything (including the
-    // structured `reasoning_effort` above) per model — e.g. add
-    // `{ "thinking": { "type": "enabled" } }` for a provider we don't special-case.
-    if (activeModel?.extraBody && Object.keys(activeModel.extraBody).length > 0) {
-      providerConfig.customParams = {
-        ...(providerConfig.customParams || {}),
-        ...activeModel.extraBody,
-      };
-    }
+    // Shared with the provider settings connection test so a "working"
+    // test and a working turn can never mean different things.
+    const { thinkingEnabled, thinkingBudgetTokens } = resolveModelRequestKnobs(
+      providerConfig,
+      activeModel,
+      settings.thinkingEnabled,
+    );
 
     // Track whether the provider ever reported token usage this turn. If it
     // doesn't (many OpenAI-compatible backends skip `stream_options.include_usage`),
@@ -1214,6 +1172,11 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       compactionThresholdPct: settings.compactionThresholdPct,
       compactionSummaryBudget: settings.compactionSummaryBudget,
       allowOutsideWorkspace: settings.allowOutsideWorkspace,
+      // Read once, here, for BOTH the tool roster and the prompt instruction —
+      // this config field is what `AgentService` hands to
+      // `composeAgentSystemPrompt` AND what the runtime client forwards to Rust,
+      // so a turn can never have the tool without the instruction or vice versa.
+      transcriptChapters: settings.transcriptChapters,
     });
 
     try {

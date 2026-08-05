@@ -194,16 +194,27 @@ fn session_to_db_messages_rich(
                 });
             }
             MessageRole::Assistant => {
+                let message_id = synthetic_message_id("assistant", msg.timestamp, out.len());
                 let mut content = String::new();
                 let mut thinking = String::new();
                 let mut tool_calls: Vec<DbToolCall> = Vec::new();
+                // The order the model actually emitted this turn's parts in.
+                // A real turn INTERLEAVES — it speaks, calls a tool, speaks
+                // again, calls more — and `blocks` is the only record of that.
+                // Dropping it made every reloaded turn render as "thought,
+                // spoke, then ran every tool", which is not what happened and
+                // put anything positional (a chapter marker, a notice) in the
+                // wrong place the moment the chat was reopened.
+                let mut timeline: Vec<serde_json::Value> = Vec::new();
                 for block in &msg.blocks {
                     match block {
                         ContentBlock::Text { text } => {
                             push_with_newline(&mut content, text);
+                            push_timeline_text(&mut timeline, &message_id, "content", text);
                         }
                         ContentBlock::Thinking { text, .. } => {
                             push_with_newline(&mut thinking, text);
+                            push_timeline_text(&mut timeline, &message_id, "thinking", text);
                         }
                         ContentBlock::ToolUse { id, name, input } => {
                             let arguments =
@@ -214,6 +225,11 @@ fn session_to_db_messages_rich(
                                 arguments,
                                 result: None,
                             });
+                            // ORDER ONLY. The call — and the result a later
+                            // Tool message folds in below — lives in
+                            // `tool_calls`; a second copy here would be a
+                            // second truth that can disagree with it.
+                            timeline.push(serde_json::json!({ "kind": "tool", "id": id }));
                         }
                         ContentBlock::ToolResult { .. } => {
                             // Defensive — tool results live on Tool
@@ -232,7 +248,7 @@ fn session_to_db_messages_rich(
                     Some(thinking)
                 };
                 out.push(Message {
-                    id: synthetic_message_id("assistant", msg.timestamp, out.len()),
+                    id: message_id,
                     role: "assistant".to_string(),
                     content,
                     timestamp,
@@ -244,7 +260,11 @@ fn session_to_db_messages_rich(
                     thinking: thinking_opt,
                     is_thinking: Some(false),
                     tools: None,
-                    timeline: None,
+                    timeline: if timeline.is_empty() {
+                        None
+                    } else {
+                        Some(serde_json::Value::Array(timeline))
+                    },
                     tool_proposal: None,
                     attached_selected_elements: None,
                     attached_prompt_chips: None,
@@ -427,6 +447,38 @@ fn push_with_newline(out: &mut String, s: &str) {
         out.push('\n');
     }
     out.push_str(s);
+}
+
+/// Append a text-bearing event to a reconstructed assistant timeline, merging
+/// into the previous event when it is already the same kind.
+///
+/// Adjacent blocks of one kind are ONE segment, which is what the live stream
+/// produces (it coalesces its deltas the same way). Without merging, a reply
+/// that happened to arrive as three text blocks would reload as three separate
+/// paragraphs — and a tool row could then appear between parts of one sentence.
+///
+/// Empty text is skipped: it contributes nothing to read, and an empty segment
+/// renders as a blank gap in the transcript.
+fn push_timeline_text(
+    timeline: &mut Vec<serde_json::Value>,
+    message_id: &str,
+    kind: &str,
+    text: &str,
+) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(last) = timeline.last_mut() {
+        if last["kind"] == kind {
+            let merged = format!("{}\n{}", last["text"].as_str().unwrap_or_default(), text);
+            last["text"] = serde_json::Value::String(merged);
+            return;
+        }
+    }
+    // Index-derived id: block order on disk is fixed, so this is stable across
+    // reloads and unique within the message.
+    let id = format!("{message_id}-e{}", timeline.len());
+    timeline.push(serde_json::json!({ "kind": kind, "id": id, "text": text }));
 }
 
 fn duplicate_title(title: &str) -> String {
@@ -1351,5 +1403,156 @@ mod tests {
         let id2 = synthetic_message_id("user", 42, 0);
         assert_eq!(id1, id2);
         assert_ne!(synthetic_message_id("user", 42, 1), id1);
+    }
+
+    /// Read the `kind` of every event in a reloaded message's timeline.
+    fn timeline_kinds(message: &Message) -> Vec<String> {
+        message
+            .timeline
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .expect("assistant messages carry an ordered timeline")
+            .iter()
+            .map(|event| event["kind"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_reloaded_turn_keeps_the_order_the_model_emitted() {
+        // The whole point: a real turn interleaves. Before this, reload
+        // flattened every turn to thinking → content → all tools, so anything
+        // positional landed somewhere the model never put it.
+        let messages = vec![ConversationMessage::assistant(
+            vec![
+                ContentBlock::Thinking {
+                    text: "let me look".into(),
+                    signature: None,
+                },
+                ContentBlock::Text {
+                    text: "Reading the hook first.".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "file_read".into(),
+                    input: serde_json::json!({"path": "a.ts"}),
+                },
+                ContentBlock::Text {
+                    text: "Now the fix.".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "t2".into(),
+                    name: "search_replace".into(),
+                    input: serde_json::json!({"path": "a.ts"}),
+                },
+            ],
+            1,
+        )];
+
+        let db = session_to_db_messages(&messages);
+        assert_eq!(
+            timeline_kinds(&db[0]),
+            vec!["thinking", "content", "tool", "content", "tool"],
+        );
+    }
+
+    #[test]
+    fn a_reloaded_tool_event_carries_only_its_id() {
+        // Order lives in the timeline, the payload lives in `tool_calls`. Two
+        // copies of the call would be two truths that can drift apart.
+        let messages = vec![assistant_with_tool(
+            "c",
+            "ping",
+            serde_json::json!({"x": 1}),
+            1,
+        )];
+
+        let db = session_to_db_messages(&messages);
+        let events = db[0].timeline.as_ref().unwrap().as_array().unwrap();
+        let tool = events.iter().find(|e| e["kind"] == "tool").expect("tool");
+
+        assert_eq!(tool["id"], "c");
+        assert!(tool.get("call").is_none(), "the call is not duplicated here");
+        assert!(tool.get("name").is_none(), "nor is its name");
+
+        let calls = db[0].tool_calls.as_ref().expect("tool_calls");
+        assert_eq!(calls[0].id, "c");
+        assert_eq!(calls[0].name, "ping");
+        assert_eq!(calls[0].arguments, r#"{"x":1}"#);
+    }
+
+    #[test]
+    fn adjacent_text_blocks_merge_into_one_segment() {
+        // Otherwise a reply split across blocks reloads as separate paragraphs
+        // that a tool row can slot between — mid-sentence.
+        let messages = vec![ConversationMessage::assistant(
+            vec![
+                ContentBlock::Text { text: "one".into() },
+                ContentBlock::Text { text: "two".into() },
+                ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "grep".into(),
+                    input: serde_json::json!({}),
+                },
+            ],
+            1,
+        )];
+
+        let db = session_to_db_messages(&messages);
+        assert_eq!(timeline_kinds(&db[0]), vec!["content", "tool"]);
+        let events = db[0].timeline.as_ref().unwrap().as_array().unwrap();
+        assert_eq!(events[0]["text"], "one\ntwo");
+        assert_eq!(db[0].content, "one\ntwo", "content stays the joined prose");
+    }
+
+    #[test]
+    fn empty_text_blocks_do_not_become_blank_segments() {
+        let messages = vec![ConversationMessage::assistant(
+            vec![
+                ContentBlock::Text { text: String::new() },
+                ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "grep".into(),
+                    input: serde_json::json!({}),
+                },
+            ],
+            1,
+        )];
+
+        assert_eq!(timeline_kinds(&session_to_db_messages(&messages)[0]), vec!["tool"]);
+    }
+
+    #[test]
+    fn a_result_reaches_the_call_the_timeline_points_at() {
+        // The timeline references by id, so folding the result into
+        // `tool_calls` is enough for the reloaded card to render it.
+        let messages = vec![
+            assistant_with_tool("c", "ping", serde_json::json!({}), 1),
+            tool_result("c", "pong", 2),
+        ];
+
+        let db = session_to_db_messages(&messages);
+        let events = db[0].timeline.as_ref().unwrap().as_array().unwrap();
+        let referenced = events
+            .iter()
+            .find(|e| e["kind"] == "tool")
+            .and_then(|e| e["id"].as_str())
+            .expect("tool event");
+        let call = db[0]
+            .tool_calls
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|c| c.id == referenced)
+            .expect("the referenced call exists");
+
+        assert_eq!(call.result.as_deref(), Some("pong"));
+    }
+
+    #[test]
+    fn a_message_with_no_renderable_blocks_has_no_timeline() {
+        // `None` keeps the frontend on its synthesis fallback rather than
+        // handing it an empty array to render.
+        let messages = vec![ConversationMessage::assistant(vec![], 1)];
+        assert!(session_to_db_messages(&messages)[0].timeline.is_none());
     }
 }

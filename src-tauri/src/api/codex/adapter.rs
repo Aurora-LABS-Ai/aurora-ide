@@ -161,6 +161,7 @@ mod tests {
     fn config() -> ProviderConfigSnapshot {
         ProviderConfigSnapshot {
             provider_id: "codex".into(),
+            provider_type: None,
             base_url: "https://chatgpt.com/backend-api/codex".into(),
             api_key: String::new(),
             api_keys: None,

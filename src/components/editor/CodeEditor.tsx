@@ -22,6 +22,8 @@
 
 import React, { useMemo, useEffect, useRef, useState } from 'react';
 import Editor, { useMonaco, type OnMount } from '@monaco-editor/react';
+// Side effect: binds Monaco to the bundled copy instead of the jsdelivr CDN.
+import '../../lib/monaco-setup';
 import { useEditorStore } from '../../store/useEditorStore';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { useThemeStore } from '../../store/useThemeStore';

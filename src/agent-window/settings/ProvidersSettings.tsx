@@ -21,6 +21,7 @@ import { lookupModel, type ModelsDevEntry } from "../../services/models-dev";
 import { isAtlasCloudProvider } from "../../services/atlascloud";
 import { isCodexProvider } from "../../services/codex";
 import { AgentIcon } from "../shared/AgentIcon";
+import { ModelTestButton } from "./ModelTestButton";
 import { AtlasCloudUsageCard } from "./AtlasCloudUsageCard";
 import { CodexUsageCard } from "./CodexUsageCard";
 import { AgwButton, AgwPill, AgwSegmented, AgwSwitch, AgwTextInput } from "./primitives";
@@ -502,6 +503,7 @@ const ModelRow: React.FC<{ model: LLMModel; active: boolean; onActivate: () => v
               onChange={(lvl) => updateModel(model.id, { reasoning: { ...reasoning, default: lvl } })}
             />
           ) : null}
+          <ModelTestButton model={model} />
           <button
             type="button"
             className="agw-prov-icon-btn"

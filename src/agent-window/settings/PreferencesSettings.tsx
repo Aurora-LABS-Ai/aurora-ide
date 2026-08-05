@@ -51,6 +51,15 @@ export const PreferencesSettings: React.FC = () => {
   const showActivityInTitle = useSettingsStore((s) => s.showActivityInTitle);
   const setShowActivityInTitle = useSettingsStore((s) => s.setShowActivityInTitle);
 
+  // Transcript layout. The two live in different stores on purpose: the spine is
+  // appearance (and so resets with the rest of it), while chapters change the
+  // agent's instructions and tool roster and must not be swept away by a
+  // "reset appearance".
+  const transcriptSpine = useAgentThemeStore((s) => s.transcriptSpine);
+  const setTranscriptSpine = useAgentThemeStore((s) => s.setTranscriptSpine);
+  const transcriptChapters = useSettingsStore((s) => s.transcriptChapters);
+  const setTranscriptChapters = useSettingsStore((s) => s.setTranscriptChapters);
+
   // Startup surface. Not a store: it lives in a boot-config FILE that Rust must
   // read before the database exists, so it is loaded once on mount and written
   // straight through (see adapters/launch-surface.ts).
@@ -560,6 +569,39 @@ export const PreferencesSettings: React.FC = () => {
             checked={notifyOnTurnComplete}
             onChange={setNotifyOnTurnComplete}
             ariaLabel="Notify when a chat's turn finishes"
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection
+        icon="message"
+        title="Transcript"
+        description="How a reply is laid out as you read it. Both are off to start, which is the layout you have today."
+      >
+        <SettingsRow
+          label="Timeline spine"
+          hint="Draw one continuous line down the reply, with a marker beside each step, so a long turn reads as a single thread instead of a stack of separate cards."
+        >
+          <AgwSwitch
+            checked={transcriptSpine}
+            onChange={setTranscriptSpine}
+            ariaLabel="Draw a timeline spine down the transcript"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          last
+          alignTop
+          label="Chapters"
+          // Stated plainly, not hidden in a tooltip: this one asks something of
+          // the agent, and a switch that quietly edits the agent's instructions
+          // is a switch the user can't reason about.
+          hint="Ask the agent to plan a long turn as named chapters — “Read the render path”, “Fix the join”, “Run the tests” — and announce each one as it starts. This adds two lines to the agent's instructions and gives it a tool to mark them, so it changes what the agent does, not just how it looks. Turns already in flight are unaffected."
+        >
+          <AgwSwitch
+            checked={transcriptChapters}
+            onChange={setTranscriptChapters}
+            ariaLabel="Let the agent split long turns into chapters"
           />
         </SettingsRow>
       </SettingsSection>

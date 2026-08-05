@@ -1,0 +1,726 @@
+/**
+ * `aurora/canvas` component styles.
+ *
+ * Injected into the canvas sandbox document, never loaded by the window. Every
+ * colour is an `--agw-*` token forwarded from the host, so a canvas follows the
+ * user's theme — including themes that do not exist yet.
+ *
+ * Density note: this is a narrow analytical panel beside a conversation, not a
+ * marketing page. Where the doctrine specifies 50–60px stat numerals and
+ * 96–160px section rhythm, those are hero-scale values for a full viewport;
+ * here the same hierarchy is expressed at panel scale (28px numerals, 32px
+ * section gaps). The RATIOS are preserved, the absolute sizes are not.
+ */
+
+/* ── tone: one colour vocabulary ─────────────────────────────────────────────
+ * A tone sets --ac-tone once; every component paints from it. Adding a
+ * component means choosing a tone, never choosing a colour. */
+.ac-tone-neutral {
+  --ac-tone: var(--agw-text-subtle);
+}
+.ac-tone-info {
+  --ac-tone: var(--agw-accent);
+}
+.ac-tone-good {
+  --ac-tone: var(--agw-added);
+}
+.ac-tone-warn {
+  --ac-tone: var(--agw-warning);
+}
+.ac-tone-bad {
+  --ac-tone: var(--agw-removed);
+}
+
+.ac-canvas {
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+/* ── frame ───────────────────────────────────────────────────────────────── */
+
+.ac-canvas-head {
+  margin-bottom: 32px;
+}
+
+.ac-canvas-head h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  color: var(--agw-text);
+}
+
+.ac-canvas-sub {
+  margin: 6px 0 0;
+  font-size: 13.5px;
+  color: var(--agw-text-muted);
+}
+
+/* Provenance is quieter than the claim it supports, but never hidden. */
+.ac-canvas-source {
+  margin: 10px 0 0;
+  font-family: var(--agw-font-code);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--agw-text-subtle);
+}
+
+.ac-section {
+  margin-top: 32px;
+}
+
+.ac-section:first-of-type {
+  margin-top: 0;
+}
+
+.ac-section h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+
+.ac-section-desc {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--agw-text-muted);
+}
+
+.ac-section-body {
+  margin-top: 12px;
+}
+
+/* ── rows: hairlines, not boxes ──────────────────────────────────────────── */
+
+.ac-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--agw-border);
+}
+
+.ac-row {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 11px 8px;
+  border-bottom: 1px solid var(--agw-border);
+  /* Restraint law: colour only, no transform, no shadow. */
+  transition: background-color 180ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.ac-row:hover {
+  background: var(--agw-hover);
+}
+
+.ac-row-rank {
+  flex: 0 0 auto;
+  min-width: 20px;
+  font-family: var(--agw-font-code);
+  font-size: 11px;
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.ac-row-main {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ac-row-title {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--agw-text);
+  overflow-wrap: anywhere;
+}
+
+.ac-row-desc {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--agw-text-muted);
+}
+
+.ac-row-trail {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.ac-row-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--agw-text);
+}
+
+.ac-row-unit {
+  font-size: 11px;
+  color: var(--agw-text-subtle);
+}
+
+/* ── stats ───────────────────────────────────────────────────────────────── */
+
+.ac-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
+  background: var(--agw-border);
+  border: 1px solid var(--agw-border);
+}
+
+/* One hairline grid, not four floating cards: the separation comes from the
+   1px gap showing through, which is cheaper visually than four borders. */
+.ac-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 14px 16px;
+  background: var(--agw-conversation);
+}
+
+.ac-stat-label {
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--agw-text-muted);
+}
+
+.ac-stat-value {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  color: var(--agw-text);
+}
+
+/* Neutral keeps the plain text colour: a figure with no status should not be
+   tinted just because tone has a default. */
+.ac-stat:not(.ac-tone-neutral) .ac-stat-value {
+  color: var(--ac-tone);
+}
+
+.ac-stat-unit {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--agw-text-subtle);
+}
+
+.ac-stat-note {
+  font-size: 11.5px;
+  color: var(--agw-text-subtle);
+}
+
+/* ── table ───────────────────────────────────────────────────────────────── */
+
+/* The panel is narrow; a wide table scrolls inside its own box so the page
+   body never scrolls horizontally. */
+.ac-table-wrap {
+  margin: 0;
+  overflow-x: auto;
+}
+
+.ac-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.ac-table caption {
+  margin-bottom: 10px;
+  font-size: 11.5px;
+  text-align: left;
+  color: var(--agw-text-subtle);
+}
+
+.ac-table th {
+  padding: 0;
+  border-bottom: 1px solid var(--agw-border-strong);
+  text-align: left;
+  font-weight: 500;
+}
+
+.ac-table th button {
+  display: inline-flex;
+  width: 100%;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 10px;
+  border: 0;
+  background: none;
+  color: var(--agw-text-muted);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: color 180ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.ac-table th[data-align="right"] button,
+.ac-table th[data-align="right"] .ac-th-static {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+/* A column that cannot be sorted gets the same geometry without the affordance
+   — nothing should look clickable that is not. */
+.ac-th-static {
+  display: inline-flex;
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  color: var(--agw-text-muted);
+}
+
+.ac-table th button:hover {
+  color: var(--agw-text);
+}
+
+.ac-table th button:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: -2px;
+}
+
+.ac-table th[aria-sort="ascending"] button,
+.ac-table th[aria-sort="descending"] button {
+  color: var(--agw-text);
+}
+
+/* The affordance is visible at rest, not only on hover — a sort control that
+   appears on hover does not exist for touch or keyboard. */
+.ac-sort {
+  font-size: 9px;
+  opacity: 0.55;
+}
+
+.ac-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--agw-border);
+  color: var(--agw-text);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.ac-table th[data-align="right"],
+.ac-table td[data-align="right"] {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Components inside a cell (a Badge, a bar, a <code> path) must not inherit
+   the block margins they carry in prose. */
+.ac-table td > .ac-text {
+  margin: 0;
+}
+
+.ac-table tbody tr {
+  transition: background-color 180ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.ac-table tbody tr:hover {
+  background: var(--agw-hover);
+}
+
+.ac-absent {
+  color: var(--agw-text-subtle);
+  font-style: italic;
+}
+
+/* ── text atoms ──────────────────────────────────────────────────────────── */
+
+.ac-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-family: var(--agw-font-code);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--agw-text-muted);
+  background: var(--agw-chip-surface);
+}
+
+/* Status chips: full-hue text on the same hue at low opacity. Colour is never
+   the only carrier — the badge's own word is the message. */
+.ac-badge:not(.ac-tone-neutral) {
+  color: var(--ac-tone);
+  background: color-mix(in srgb, var(--ac-tone) 14%, transparent);
+}
+
+.ac-note {
+  margin: 12px 0 0;
+  padding: 9px 12px;
+  border-left: 2px solid var(--agw-border-strong);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--agw-text-muted);
+}
+
+.ac-note:not(.ac-tone-neutral) {
+  border-left-color: var(--ac-tone);
+}
+
+.ac-text {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--agw-text);
+}
+
+.ac-text:last-child {
+  margin-bottom: 0;
+}
+
+.ac-text-muted {
+  color: var(--agw-text-muted);
+}
+
+.ac-code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--agw-code-surface);
+  font-family: var(--agw-font-code);
+  font-size: 0.92em;
+  color: var(--agw-text);
+}
+
+.ac-num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── responsive ──────────────────────────────────────────────────────────── */
+
+/* The dock can be dragged genuinely narrow. Recompose rather than shrink:
+   the row's trailing metric drops under its title instead of crushing it. */
+@media (max-width: 520px) {
+  .ac-row {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .ac-row-trail {
+    width: 100%;
+    padding-left: 34px;
+  }
+
+  .ac-stats {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ac-row,
+  .ac-table tbody tr,
+  .ac-table th button {
+    transition: none;
+  }
+}
+
+/* ── measure: bars, charts, sparklines ───────────────────────────────────── */
+
+.ac-bar {
+  display: block;
+  overflow: hidden;
+  width: 100%;
+  min-width: 48px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--agw-border);
+}
+
+/* Neutral bars use the text colour rather than the muted tone default: a bar
+   IS the data, so it should not read as secondary. */
+.ac-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--ac-tone);
+}
+
+.ac-bar.ac-tone-neutral .ac-bar-fill {
+  background: var(--agw-text-muted);
+}
+
+.ac-chart {
+  margin: 0;
+}
+
+.ac-chart-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 12px;
+}
+
+.ac-chart-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--agw-text);
+}
+
+.ac-chart-unit {
+  font-weight: 400;
+  color: var(--agw-text-muted);
+}
+
+.ac-chart-source {
+  font-size: 11px;
+  color: var(--agw-text-subtle);
+}
+
+.ac-chart-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Label · bar · value. The bar column flexes so every bar shares one baseline
+   scale — bars of different widths would make the comparison meaningless. */
+.ac-chart-row {
+  display: grid;
+  grid-template-columns: minmax(80px, 0.4fr) 1fr auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.ac-chart-label {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--agw-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ac-chart-value {
+  font-size: 12px;
+  color: var(--agw-text);
+}
+
+.ac-spark {
+  display: inline-block;
+  width: 64px;
+  height: 18px;
+  vertical-align: middle;
+  color: var(--ac-tone);
+}
+
+.ac-spark.ac-tone-neutral {
+  color: var(--agw-text-muted);
+}
+
+/* ── structure: facts, columns, detail, tabs, timeline ───────────────────── */
+
+.ac-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0;
+  margin: 0;
+  border-top: 1px solid var(--agw-border);
+}
+
+.ac-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 8px;
+  border-bottom: 1px solid var(--agw-border);
+}
+
+.ac-fact dt {
+  font-size: 11.5px;
+  color: var(--agw-text-muted);
+}
+
+.ac-fact dd {
+  margin: 0;
+  font-size: 13px;
+  color: var(--agw-text);
+  overflow-wrap: anywhere;
+}
+
+.ac-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 24px;
+}
+
+.ac-divider {
+  height: 0;
+  margin: 24px 0;
+  border: 0;
+  border-top: 1px solid var(--agw-border);
+}
+
+.ac-detail {
+  border-top: 1px solid var(--agw-border);
+  border-bottom: 1px solid var(--agw-border);
+}
+
+.ac-detail + .ac-detail {
+  border-top: 0;
+}
+
+.ac-detail summary {
+  padding: 10px 8px;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  font-size: 12.5px;
+  list-style: none;
+  transition: color 180ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.ac-detail summary::-webkit-details-marker {
+  display: none;
+}
+
+/* A disclosure triangle we draw ourselves, so it rotates with open state and
+   matches the type scale instead of the platform's. */
+.ac-detail summary::before {
+  display: inline-block;
+  width: 14px;
+  content: "›";
+  transition: transform 180ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.ac-detail[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.ac-detail summary:hover {
+  color: var(--agw-text);
+}
+
+.ac-detail summary:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: -2px;
+}
+
+.ac-detail-body {
+  padding: 2px 8px 14px 22px;
+}
+
+.ac-tablist {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--agw-border);
+}
+
+.ac-tablist button {
+  padding: 7px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+  transition: color 180ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.ac-tablist button:hover {
+  color: var(--agw-text);
+}
+
+.ac-tablist button:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: -2px;
+}
+
+/* Selection is carried by the underline AND the text weight, never by colour
+   alone. */
+.ac-tablist button[data-active] {
+  border-bottom-color: var(--agw-accent);
+  color: var(--agw-text);
+  font-weight: 500;
+}
+
+.ac-tabpanel {
+  padding-top: 14px;
+}
+
+.ac-timeline {
+  margin: 0;
+  padding: 0 0 0 14px;
+  border-left: 1px solid var(--agw-border);
+  list-style: none;
+}
+
+.ac-event {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 0 16px;
+}
+
+.ac-event:last-child {
+  padding-bottom: 0;
+}
+
+.ac-event::before {
+  position: absolute;
+  top: 5px;
+  left: -18px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ac-tone);
+  content: "";
+}
+
+.ac-event.ac-tone-neutral::before {
+  background: var(--agw-border-strong);
+}
+
+.ac-event-when {
+  font-family: var(--agw-font-code);
+  font-size: 10.5px;
+  color: var(--agw-text-subtle);
+}
+
+.ac-event-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--agw-text);
+}
+
+.ac-event-desc {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--agw-text-muted);
+}
+
+@media (max-width: 520px) {
+  .ac-chart-row {
+    grid-template-columns: 1fr auto;
+  }
+
+  .ac-chart-row .ac-bar {
+    grid-column: 1 / -1;
+  }
+
+  .ac-facts {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ac-detail summary,
+  .ac-detail summary::before,
+  .ac-tablist button {
+    transition: none;
+  }
+}

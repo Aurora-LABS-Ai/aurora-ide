@@ -30,6 +30,13 @@ pub enum StepStatus {
 
 impl StepStatus {
     /// A step nobody is waiting on any more.
+    ///
+    /// No production Rust caller: presentation runs in the frontend
+    /// (`useAgentPlanStore.presentPlanSteps` applies the same rule). Kept as
+    /// the canonical statement of the contract, pinned by the tests below —
+    /// not `#[cfg(test)]`, because doc links and future Rust consumers need it
+    /// in the normal build.
+    #[allow(dead_code)]
     #[must_use]
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Done | Self::Failed | Self::Skipped)
@@ -108,6 +115,12 @@ impl PlanStep {
     /// This is the whole liveness rule. A step left `InProgress` by a stopped
     /// run, a closed window, or a session from three hours ago is *not* live,
     /// and must never be presented as though work were happening.
+    ///
+    /// No production Rust caller: the Canvas applies this rule in the frontend
+    /// (`useAgentPlanStore.presentPlanSteps`). This is the canonical, tested
+    /// statement of the contract the module docs point at — kept in the normal
+    /// build so those links resolve and a Rust consumer can adopt it.
+    #[allow(dead_code)]
     #[must_use]
     pub fn is_live_under(&self, live_run_id: Option<&str>) -> bool {
         if self.status != StepStatus::InProgress {
@@ -123,6 +136,10 @@ impl PlanStep {
     }
 
     /// `InProgress` but abandoned by whatever run claimed it.
+    ///
+    /// Same standing as [`PlanStep::is_live_under`]: contract mirrored by the
+    /// frontend, pinned here by tests.
+    #[allow(dead_code)]
     #[must_use]
     pub fn is_interrupted(&self, live_run_id: Option<&str>) -> bool {
         self.status == StepStatus::InProgress && !self.is_live_under(live_run_id)

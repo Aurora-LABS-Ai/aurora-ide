@@ -305,6 +305,11 @@ export class AgentService {
         executionMode,
         mcpSummary: getMcpToolsSummary(),
         promptContext: promptContext ?? { userMessage },
+        // The same config field the runtime client forwards as the request's
+        // `transcriptChapters`, so the instruction and the tool roster are
+        // switched by one value. A surface that doesn't set it (the IDE chat)
+        // gets neither, instead of an instruction with no tool behind it.
+        transcriptChapters: this.config.transcriptChapters,
       });
 
       if (composedPrompt.explicitSkills.length > 0) {

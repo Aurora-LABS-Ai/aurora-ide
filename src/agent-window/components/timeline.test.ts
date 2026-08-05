@@ -48,6 +48,75 @@ describe("agent-window mid-turn injection reload", () => {
   });
 });
 
+describe("agent-window reloaded turn order", () => {
+  /** What Rust's reload path emits: order in `timeline`, payload in `tool_calls`. */
+  const reloaded = (): DbMessage => ({
+    id: "assistant-1",
+    role: "assistant",
+    content: "Reading the hook first.\nNow the fix.",
+    timestamp: "2026-08-04T00:00:00.000Z",
+    tool_calls: [
+      { id: "t1", name: "file_read", arguments: '{"path":"a.ts"}', result: "214 lines" },
+      { id: "t2", name: "search_replace", arguments: '{"path":"a.ts"}', result: "ok" },
+    ],
+    timeline: [
+      { kind: "content", id: "assistant-1-e0", text: "Reading the hook first." },
+      { kind: "tool", id: "t1" },
+      { kind: "content", id: "assistant-1-e2", text: "Now the fix." },
+      { kind: "tool", id: "t2" },
+    ],
+  });
+
+  it("renders content and tools in the order the model emitted them", () => {
+    const [turn] = buildTurns([reloaded()]);
+    expect(buildRows(turn.events).map((row) => row.type)).toEqual([
+      "content",
+      "tools",
+      "content",
+      "tools",
+    ]);
+  });
+
+  it("joins each tool event to its call and result from tool_calls", () => {
+    const [turn] = buildTurns([reloaded()]);
+    const rows = buildRows(turn.events);
+    const first = rows[1];
+    const second = rows[3];
+    if (first.type !== "tools" || second.type !== "tools") {
+      throw new Error("expected both tool runs to render");
+    }
+    expect(first.tools[0].name).toBe("file_read");
+    expect(first.tools[0].result).toBe("214 lines");
+    expect(second.tools[0].name).toBe("search_replace");
+  });
+
+  it("drops a tool event whose call is missing rather than render a blank card", () => {
+    const message = reloaded();
+    message.tool_calls = [message.tool_calls![0]];
+    const [turn] = buildTurns([message]);
+    const rows = buildRows(turn.events);
+    expect(rows.map((row) => row.type)).toEqual(["content", "tools", "content"]);
+  });
+
+  it("still synthesises a turn that carries no ordered timeline", () => {
+    const [turn] = buildTurns([
+      {
+        id: "legacy",
+        role: "assistant",
+        content: "Done.",
+        timestamp: "2026-08-04T00:00:00.000Z",
+        thinking: "considering",
+        tool_calls: [{ id: "t1", name: "grep", arguments: "{}", result: "3 matches" }],
+      },
+    ]);
+    expect(buildRows(turn.events).map((row) => row.type)).toEqual([
+      "thinking",
+      "content",
+      "tools",
+    ]);
+  });
+});
+
 describe("agent-window prompt chip reload", () => {
   it("keeps exact file and slash-command metadata on the user turn", () => {
     const chips = [
@@ -285,5 +354,94 @@ describe("todo rows in the transcript", () => {
       { kind: "tool", id: "x", call: { id: "x", name: "todo", arguments: "{op:" } },
     ]);
     expect(rows[0].type === "tools" && rows[0].tools).toHaveLength(1);
+  });
+});
+
+describe("chapters in the transcript", () => {
+  const chapter = (id: string, args: string, result?: string) =>
+    ({
+      kind: "tool" as const,
+      id,
+      call: { id, name: "chapter", arguments: args, result },
+    });
+  const tool = (id: string, name: string) =>
+    ({ kind: "tool" as const, id, call: { id, name, arguments: "{}" } });
+
+  it("becomes a heading, not a tool card", () => {
+    const rows = buildRows([chapter("c1", JSON.stringify({ title: "Read the reload path" }))]);
+    expect(rows).toEqual([{ type: "chapter", id: "c1", title: "Read the reload path" }]);
+  });
+
+  it("lands between the work either side of it, in emission order", () => {
+    // The whole point: a chapter marks where a part of the work STARTS, so it
+    // must break the tool run rather than be swept into it.
+    const rows = buildRows([
+      tool("t1", "file_read"),
+      chapter("c1", JSON.stringify({ title: "Fix the tool join" })),
+      tool("t2", "file_edit"),
+    ]);
+    expect(rows.map((r) => r.type)).toEqual(["tools", "chapter", "tools"]);
+  });
+
+  it("reads a title that is still streaming, so the heading types in", () => {
+    // Partial JSON: `JSON.parse` would fail here, and the call would flash as a
+    // tool card for a frame before turning into a heading.
+    const rows = buildRows([chapter("c1", '{"title": "Read the rel')]);
+    expect(rows).toEqual([{ type: "chapter", id: "c1", title: "Read the rel" }]);
+  });
+
+  it("holds the row back until the title has any characters at all", () => {
+    // A heading with nothing in it is worse than a heading that arrives a frame
+    // late — and it arrives at this same position either way.
+    for (const args of ["", "{", '{"ti', '{"title": "', '{"title": "   ']) {
+      expect(buildRows([chapter("c1", args)])).toEqual([]);
+    }
+  });
+
+  it("does not split a tool run while its title is unreadable", () => {
+    const rows = buildRows([tool("t1", "file_read"), chapter("c1", "{"), tool("t2", "file_edit")]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].type === "tools" && rows[0].tools).toHaveLength(2);
+  });
+
+  it("falls back to a tool card when the runtime rejected it", () => {
+    // A rejected chapter is a heading the user never got. Rendering the title
+    // anyway would show a heading the runtime refused; hiding the call entirely
+    // would leave nothing to notice.
+    const rows = buildRows([
+      chapter("c1", JSON.stringify({ title: "x".repeat(80) }), "[error] `title` is 80 characters"),
+    ]);
+    expect(rows.map((r) => r.type)).toEqual(["tools"]);
+  });
+
+  it("still shows the heading before the call is acknowledged", () => {
+    // No result yet is pending, not failed — the announcement is the point, and
+    // it has to be visible before the work it announces.
+    const rows = buildRows([chapter("c1", JSON.stringify({ title: "Run the tests" }))]);
+    expect(rows[0]).toMatchObject({ type: "chapter", title: "Run the tests" });
+  });
+
+  it("survives a reload, at the point it was called", () => {
+    // Reloaded tool events carry only their id; the payload is joined from
+    // `tool_calls`. A chapter must come back as a heading in the same place.
+    const [turn] = buildTurns([
+      {
+        id: "m1",
+        role: "assistant",
+        content: "Done.",
+        timestamp: "2026-08-04T07:00:00.000Z",
+        timeline: [
+          { kind: "tool", id: "c1" },
+          { kind: "content", id: "e1", text: "Done." },
+        ],
+        tool_calls: [
+          { id: "c1", name: "chapter", arguments: '{"title":"Wire the reload"}', result: "{}" },
+        ],
+      },
+    ] as never);
+    expect(buildRows(turn.events)).toEqual([
+      { type: "chapter", id: "c1", title: "Wire the reload" },
+      { type: "content", id: "e1", text: "Done." },
+    ]);
   });
 });

@@ -50,8 +50,18 @@ export const ProjectSwitcher: React.FC = () => {
   // under the cursor if a background turn touches a thread mid-choice.
   const [menu, setMenu] = useState<{ projects: string[] } | null>(null);
   const [active, setActive] = useState(0);
+  // The filter box above the list. Project lists grow past a screen (this one
+  // has dozens), and scanning a scrolling menu for a name is exactly the job a
+  // type-to-filter does better. Cleared on every open: a stale filter would
+  // open onto a mysteriously shortened list.
+  const [query, setQuery] = useState("");
   const open = menu !== null;
   const projects = menu?.projects ?? [];
+  // Filter on the full root path, case-insensitive: the folder name and the
+  // parent path shown in the row are both substrings of it, so matching the
+  // root matches everything the eye can see.
+  const q = query.trim().toLowerCase();
+  const filtered = q ? projects.filter((root) => root.toLowerCase().includes(q)) : projects;
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null);
@@ -82,8 +92,9 @@ export const ProjectSwitcher: React.FC = () => {
   }, []);
 
   // One row past the projects is "Add project…", so it is reachable by keyboard
-  // like any other row rather than being a mouse-only afterthought.
-  const rowCount = projects.length + 1;
+  // like any other row rather than being a mouse-only afterthought. Counted
+  // over the FILTERED list — the highlight can only rest on rows that exist.
+  const rowCount = filtered.length + 1;
 
   /**
    * Everything that happens on open, in one event handler.
@@ -108,6 +119,7 @@ export const ProjectSwitcher: React.FC = () => {
     // you already are rather than from the top of a list you did not choose.
     const index = ordered.findIndex((root) => root === projectRoot);
     setActive(index >= 0 ? index : 0);
+    setQuery("");
     setMenu({ projects: ordered });
   }, [place, knownProjects, allThreads, projectRoot]);
 
@@ -168,6 +180,10 @@ export const ProjectSwitcher: React.FC = () => {
   };
 
   const onMenuKeyDown = (event: React.KeyboardEvent) => {
+    // Focus lives in the filter input, so most keys are TYPING and must reach
+    // it untouched. Only the keys that drive the list are intercepted — and
+    // Home/End/Space stay with the input, where they move the caret and type.
+    const typing = event.target instanceof HTMLInputElement;
     if (event.key === "Escape") {
       event.preventDefault();
       close();
@@ -183,20 +199,20 @@ export const ProjectSwitcher: React.FC = () => {
       setActive((i) => (i - 1 + rowCount) % rowCount);
       return;
     }
-    if (event.key === "Home") {
+    if (event.key === "Home" && !typing) {
       event.preventDefault();
       setActive(0);
       return;
     }
-    if (event.key === "End") {
+    if (event.key === "End" && !typing) {
       event.preventDefault();
       setActive(rowCount - 1);
       return;
     }
-    if (event.key === "Enter" || event.key === " ") {
+    if (event.key === "Enter" || (event.key === " " && !typing)) {
       event.preventDefault();
-      if (active === projects.length) void addProject();
-      else if (projects[active]) void choose(projects[active]);
+      if (active === filtered.length) void addProject();
+      else if (filtered[active]) void choose(filtered[active]);
     }
   };
 
@@ -238,12 +254,35 @@ export const ProjectSwitcher: React.FC = () => {
             role="menu"
             aria-label="Switch project"
             tabIndex={-1}
-            ref={(el) => el?.focus()}
             onKeyDown={onMenuKeyDown}
             style={{ top: pos.top, left: pos.left, width: pos.width }}
           >
+            {/* Focus opens IN the field (autoFocus, not the menu div), so the
+                list is filterable the moment it appears — type to narrow,
+                arrows to move, Enter to switch. Same recipe as the model
+                menu's search box. */}
+            <div className="agw-projmenu-search">
+              <AgentIcon name="search" size={13} />
+              <input
+                type="text"
+                autoFocus
+                value={query}
+                placeholder="Filter projects"
+                aria-label="Filter projects"
+                spellCheck={false}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  // A new filter is a new list; the highlight restarts at its
+                  // first match instead of pointing at a row that moved.
+                  setActive(0);
+                }}
+              />
+            </div>
             <div className="agw-projmenu-list agw-scroll">
-              {projects.map((root, index) => {
+              {filtered.length === 0 && (
+                <div className="agw-projmenu-none">No projects match</div>
+              )}
+              {filtered.map((root, index) => {
                 const current = root === projectRoot;
                 return (
                   <button
@@ -275,8 +314,8 @@ export const ProjectSwitcher: React.FC = () => {
               type="button"
               role="menuitem"
               className="agw-projmenu-row agw-projmenu-add"
-              data-active={active === projects.length || undefined}
-              onMouseEnter={() => setActive(projects.length)}
+              data-active={active === filtered.length || undefined}
+              onMouseEnter={() => setActive(filtered.length)}
               onClick={() => void addProject()}
             >
               <AgentIcon name="plus" size={13} />

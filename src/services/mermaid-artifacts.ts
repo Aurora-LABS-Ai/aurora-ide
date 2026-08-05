@@ -35,20 +35,55 @@ export const describeMermaidError = (error: unknown): string => {
   return message.replace(/^Error:\s*/i, "").split("\n").slice(0, 5).join("\n").trim();
 };
 
+/**
+ * Layout-neutral palette for validation renders. The colours are irrelevant —
+ * only the LAYOUT phase can fail — but `initialize` demands a full config, and
+ * using the same config shape as the live render keeps the two paths from
+ * diverging in which errors they surface.
+ */
+const VALIDATION_PALETTE: MermaidPalette = {
+  canvas: "#111111",
+  surface: "#181818",
+  surfaceElevated: "#202020",
+  text: "#ededed",
+  textMuted: "#9a9a9a",
+  border: "#444444",
+  accent: "#8b8bff",
+  fontFamily: "system-ui, sans-serif",
+};
+
+let validationSequence = 0;
+
+/**
+ * Validate by rendering the WHOLE diagram, not just parsing it.
+ *
+ * `mermaid.parse` accepts sources the renderer then rejects — a subgraph id
+ * colliding with a node id ("Setting RELAY as parent of RELAY would create a
+ * cycle") only fails in layout. Parse-only validation let those save with a
+ * green tool result: the model believed the diagram worked while the Canvas
+ * showed an error card the model never saw. Rendering here means the write is
+ * refused with the renderer's exact message — the same words the user would
+ * have seen — so the model can fix the source instead of being told it
+ * succeeded.
+ */
 export const validateMermaidSource = (source: string): Promise<void> =>
   enqueueMermaid(async () => {
     const mermaid = await loadMermaid();
-    await mermaid.parse(source, { suppressErrors: false });
+    const id = `agw-mermaid-validate-${++validationSequence}`;
+    mermaid.initialize(buildMermaidConfig(VALIDATION_PALETTE));
+    try {
+      await mermaid.parse(source, { suppressErrors: false });
+      await mermaid.render(id, source);
+    } finally {
+      // Mermaid parks its work in elements named after the id; a failed render
+      // can leave them behind.
+      document.getElementById(id)?.remove();
+      document.getElementById(`d${id}`)?.remove();
+    }
   });
 
-export function renderMermaidSource(
-  source: string,
-  id: string,
-  palette: MermaidPalette,
-): Promise<string> {
-  return enqueueMermaid(async () => {
-    const mermaid = await loadMermaid();
-    const config: MermaidConfig = {
+function buildMermaidConfig(palette: MermaidPalette): MermaidConfig {
+  return {
       startOnLoad: false,
       suppressErrorRendering: true,
       securityLevel: "strict",
@@ -88,9 +123,17 @@ export function renderMermaidSource(
         activationBkgColor: palette.surfaceElevated,
         activationBorderColor: palette.accent,
       },
-    };
+  };
+}
 
-    mermaid.initialize(config);
+export function renderMermaidSource(
+  source: string,
+  id: string,
+  palette: MermaidPalette,
+): Promise<string> {
+  return enqueueMermaid(async () => {
+    const mermaid = await loadMermaid();
+    mermaid.initialize(buildMermaidConfig(palette));
     await mermaid.parse(source, { suppressErrors: false });
     const { svg } = await mermaid.render(id, source);
     return svg;

@@ -34,13 +34,30 @@ describe("Mermaid artifact rendering", () => {
     mermaidMocks.render.mockReset().mockResolvedValue({ svg: '<svg viewBox="0 0 100 50" />' });
   });
 
-  it("parses source without rendering during validation", async () => {
+  it("validates by rendering the whole diagram, not just parsing it", async () => {
+    // mermaid.parse accepts sources the renderer then rejects (e.g. a subgraph
+    // id colliding with a node id fails only in layout). Validation must run
+    // the same phase the Canvas runs, or a broken diagram saves with a green
+    // tool result the model believes.
     await validateMermaidSource("flowchart LR\nA --> B");
 
     expect(mermaidMocks.parse).toHaveBeenCalledWith("flowchart LR\nA --> B", {
       suppressErrors: false,
     });
-    expect(mermaidMocks.render).not.toHaveBeenCalled();
+    expect(mermaidMocks.render).toHaveBeenCalledWith(
+      expect.stringMatching(/^agw-mermaid-validate-\d+$/),
+      "flowchart LR\nA --> B",
+    );
+  });
+
+  it("surfaces the renderer's error from validation", async () => {
+    mermaidMocks.render.mockRejectedValueOnce(
+      new Error("Setting RELAY as parent of RELAY would create a cycle"),
+    );
+
+    await expect(validateMermaidSource("flowchart TD\nsubgraph RELAY\nRELAY\nend")).rejects.toThrow(
+      /would create a cycle/,
+    );
   });
 
   it("renders with strict security and Aurora theme tokens", async () => {

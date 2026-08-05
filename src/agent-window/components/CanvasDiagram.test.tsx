@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { diagramArtworkBox, readMermaidSvgSize } from "../lib/mermaid-svg";
+import {
+  diagramArtworkBox,
+  fitDiagramViewport,
+  initialDiagramViewport,
+  READABLE_MIN_SCALE,
+  readMermaidSvgSize,
+} from "../lib/mermaid-svg";
 
 describe("readMermaidSvgSize", () => {
   it("uses a valid viewBox before fixed SVG dimensions", () => {
@@ -59,5 +65,51 @@ describe("diagramArtworkBox", () => {
     const fitted = diagramArtworkBox(size, { x: 0, y: 0, scale: 0.1 });
     const zoomed = diagramArtworkBox(size, { x: 0, y: 0, scale: 1.8 });
     expect(zoomed.width).toBeCloseTo(fitted.width * 18);
+  });
+});
+
+describe("initialDiagramViewport", () => {
+  const stage = { width: 900, height: 700 };
+
+  it("keeps the plain fit while it stays readable", () => {
+    const diagram = { width: 800, height: 500 };
+    expect(initialDiagramViewport(stage, diagram)).toEqual(
+      fitDiagramViewport(stage, diagram),
+    );
+  });
+
+  it("refuses to open a large diagram below the readable floor", () => {
+    // The reported failure: a big architecture diagram fit whole into the dock
+    // opened at ~25% — every label illegible, and the first act was always the
+    // same rescue zoom ("had to zoom 300+").
+    const diagram = { width: 4000, height: 3000 };
+    const fitted = fitDiagramViewport(stage, diagram);
+    const opened = initialDiagramViewport(stage, diagram);
+    expect(fitted && fitted.scale).toBeLessThan(READABLE_MIN_SCALE);
+    expect(opened?.scale).toBe(READABLE_MIN_SCALE);
+  });
+
+  it("anchors a floored diagram at its top, centred, where reading starts", () => {
+    const diagram = { width: 4000, height: 3000 };
+    const opened = initialDiagramViewport(stage, diagram);
+    expect(opened).not.toBeNull();
+    // Horizontal centre: equal overflow either side.
+    expect(opened!.x).toBeCloseTo((stage.width - diagram.width * opened!.scale) / 2);
+    // Top anchored with a small breathing gap, not vertically centred into the
+    // middle of the diagram.
+    expect(opened!.y).toBeGreaterThan(0);
+    expect(opened!.y).toBeLessThan(40);
+  });
+
+  it("is null while either box is unmeasured", () => {
+    expect(initialDiagramViewport({ width: 0, height: 0 }, { width: 100, height: 100 })).toBeNull();
+    expect(initialDiagramViewport(stage, { width: 0, height: 0 })).toBeNull();
+  });
+
+  it("never enlarges a small diagram past the fit cap", () => {
+    const diagram = { width: 120, height: 80 };
+    const opened = initialDiagramViewport(stage, diagram);
+    expect(opened?.scale).toBeLessThanOrEqual(2);
+    expect(opened?.scale).toBeGreaterThanOrEqual(1);
   });
 });

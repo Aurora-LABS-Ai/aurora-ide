@@ -181,6 +181,14 @@ pub struct AgentChatRequest {
     #[serde(default)]
     pub allow_outside_workspace: Option<bool>,
 
+    /// When true, the model is advertised the `chapter` tool so it can name the
+    /// parts of a long turn (user opt-in, Settings → Preferences → Transcript).
+    /// Sent per turn from the same preference read that decides whether the
+    /// chapter instruction goes into the system prompt, so the roster and the
+    /// instruction can never disagree. `None`/`false` withholds the tool.
+    #[serde(default)]
+    pub transcript_chapters: Option<bool>,
+
     /// Browser-inspector element chips the user attached to this message
     /// in the composer. Persisted verbatim onto the user
     /// [`crate::agent_runtime::types::ConversationMessage`] so the chips
@@ -235,6 +243,7 @@ mod tests {
     fn minimal_provider_config() -> ProviderConfigSnapshot {
         ProviderConfigSnapshot {
             provider_id: "anthropic".into(),
+            provider_type: None,
             base_url: "https://api.anthropic.com/v1".into(),
             api_key: "sk-ant-test".into(),
             api_keys: None,
@@ -279,6 +288,7 @@ mod tests {
             compaction_threshold_pct: None,
             compaction_summary_budget: None,
             allow_outside_workspace: None,
+            transcript_chapters: None,
         }
     }
 
@@ -437,6 +447,7 @@ mod tests {
             compaction_threshold_pct: None,
             compaction_summary_budget: None,
             allow_outside_workspace: None,
+            transcript_chapters: None,
         };
         let s = serde_json::to_string(&req).expect("serialize");
         // Phase 2.3 contract: camelCase, no skip_serializing_if on

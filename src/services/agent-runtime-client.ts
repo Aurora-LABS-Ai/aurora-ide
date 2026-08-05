@@ -82,7 +82,23 @@ export interface AllowedTool {
  * camelCase on the wire to match the Rust struct.
  */
 export interface ProviderConfigSnapshot {
+  /**
+   * Provider ROW id — a preset slug for built-ins, a generated UUID for
+   * user-added providers. Identity only. Never infer the wire shape from
+   * it; that is `providerType`'s job.
+   */
   providerId: string;
+  /**
+   * The user's explicit "API type" selection. Decides the wire shape in
+   * Rust (`ProviderKind::detect`) plus prompt caching, `stream_options`
+   * and reasoning-field replay.
+   *
+   * MUST be forwarded. Omitting it makes Rust fall back to `providerId`,
+   * which for a custom provider is a UUID that matches no known type —
+   * so every custom provider silently degrades to OpenAI Chat
+   * Completions regardless of what the user picked.
+   */
+  providerType?: string;
   baseUrl: string;
   apiKey: string;
   /**
@@ -157,6 +173,14 @@ export interface AgentChatRequest {
   compactionSummaryBudget: number | null;
   /** Allow read-only file tools to read files outside the workspace. */
   allowOutsideWorkspace: boolean | null;
+  /**
+   * Advertise the `chapter` tool for this turn (Settings → Preferences →
+   * Transcript). Sent from the same preference read that decides whether the
+   * chapter instruction goes into the system prompt, so the model is never asked
+   * to announce chapters without the tool, or given the tool with nothing telling
+   * it when to call it.
+   */
+  transcriptChapters: boolean | null;
   /**
    * Browser-inspector element chips attached to this user turn. Persisted
    * by the runtime onto the user `ConversationMessage` in the session JSONL
@@ -417,6 +441,7 @@ export class AgentRuntimeClient {
   ): ProviderConfigSnapshot {
     return {
       providerId: config.id,
+      providerType: config.providerType,
       baseUrl: config.baseUrl,
       apiKey: config.apiKey,
       // Only forward a real pool (>1 non-blank key). A single/empty pool is
@@ -511,6 +536,10 @@ export class AgentRuntimeClient {
       allowOutsideWorkspace:
         typeof config.allowOutsideWorkspace === "boolean"
           ? config.allowOutsideWorkspace
+          : null,
+      transcriptChapters:
+        typeof config.transcriptChapters === "boolean"
+          ? config.transcriptChapters
           : null,
       attachedSelectedElements:
         input.attachedSelectedElements && input.attachedSelectedElements.length > 0

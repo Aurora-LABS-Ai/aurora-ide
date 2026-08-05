@@ -37,7 +37,7 @@ use super::client::ProviderConfigSnapshot;
 use super::provider_kernel_adapter::{
     build_openai_body, build_openai_headers, build_openai_url, finalize_assistant_message,
     frame_has_done_marker, frame_payloads, map_reqwest_error, map_status_error, parse_tool_input,
-    BlockState, OpenAiStreamingResponse, SseFrameBuffer,
+    BlockState, OpenAiStreamError, OpenAiStreamingResponse, SseFrameBuffer,
 };
 
 pub struct OpenAICompatAdapter {
@@ -198,6 +198,18 @@ where
                     Ok(p) => p,
                     Err(_) => continue,
                 };
+
+                // An in-band error ends the turn, whatever the HTTP status
+                // said. Checked BEFORE the choices so a frame carrying both
+                // an error and an empty delta cannot be mistaken for content.
+                //
+                // Returning here (rather than noting it and continuing) is
+                // deliberate: the provider has stopped generating, and any
+                // `[DONE]` that follows would otherwise mark the stream as a
+                // clean finish and bury the reason.
+                if let Some(err) = parsed.error.filter(OpenAiStreamError::is_populated) {
+                    return Err(ApiError::Provider(err.render()));
+                }
 
                 if let Some(u) = parsed.usage {
                     usage.input_tokens = u.prompt_tokens;
@@ -424,6 +436,57 @@ mod tests {
             CancellationToken::new(),
         )
         .await
+    }
+
+    /// THE root cause of "the agent stopped mid-task in silence".
+    ///
+    /// Proxies and providers answer HTTP 200, stream a few deltas, then emit
+    /// an error object in-band and close with `[DONE]`. That frame used to
+    /// deserialize cleanly into `{choices: [], usage: None}` — the message
+    /// was discarded, `[DONE]` marked the stream healthy, and the turn ended
+    /// as an empty assistant message with no explanation anywhere.
+    #[tokio::test]
+    async fn in_band_error_frame_fails_the_turn_with_the_provider_message() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Let me check\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"error\":{\"message\":\"upstream request timeout\",\"type\":\"server_error\",\"code\":504}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        match drive(body).await {
+            Err(ApiError::Provider(msg)) => {
+                assert!(
+                    msg.contains("upstream request timeout"),
+                    "must surface the provider's own words, got: {msg}"
+                );
+            }
+            other => panic!("an in-band error must fail the turn, got {other:?}"),
+        }
+    }
+
+    /// The same envelope with no `message` still has to say something.
+    #[tokio::test]
+    async fn in_band_error_without_a_message_still_reports() {
+        let body = concat!(
+            "data: {\"error\":{\"type\":\"rate_limit_error\"}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        match drive(body).await {
+            Err(ApiError::Provider(msg)) => assert!(msg.contains("rate_limit_error"), "got {msg}"),
+            other => panic!("expected a Provider error, got {other:?}"),
+        }
+    }
+
+    /// Guard against over-triggering: backends that put `"error": null` (or an
+    /// empty object) on ordinary chunks must not have healthy turns aborted.
+    #[tokio::test]
+    async fn null_or_empty_error_field_does_not_abort_a_healthy_stream() {
+        let body = concat!(
+            "data: {\"error\":null,\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"error\":{},\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let usage = drive(body).await.expect("healthy stream must not be aborted");
+        assert_eq!(usage.stop_reason, "stop");
     }
 
     /// The regression: a connection that dies mid-reply reaches EOF with no

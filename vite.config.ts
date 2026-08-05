@@ -1,9 +1,11 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+import { auroraCanvasRuntime } from "./vite-canvas-plugin";
+
 // https://vite.dev/config/
 export default defineConfig({
-    plugins: [react()],
+    plugins: [react(), auroraCanvasRuntime()],
 
     build: {
         // Aurora ships as a Tauri desktop bundle — chunks are loaded

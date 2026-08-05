@@ -2807,11 +2807,23 @@
   color: var(--agw-text-subtle);
   padding: 8px 6px 4px;
 }
+/* STICKY to the rail scroller's top edge: while you're anywhere inside the
+ * (possibly very long) expanded projects list, the header — and with it the
+ * scope toggle and the order button — stays one click away, instead of the
+ * old footer pill waiting below the last row. It can pin because it is a
+ * direct child of the scroller, NOT inside the section's overflow-hidden
+ * Collapse (which would disable sticky). Solid rail paint: rows scroll under
+ * it while pinned; the hairline seam reads as a plain section rule at rest. */
 .agw-rail-section {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 8px 4px 4px 2px;
+  background: var(--agw-rail-paint);
+  box-shadow: 0 1px 0 var(--agw-border);
 }
 .agw-rail-section-toggle {
   flex: 1;
@@ -3012,33 +3024,31 @@
   color: var(--agw-text-subtle);
 }
 
-/* Codex-style "Show more / less" toggle at the foot of the projects list. */
-.agw-rail-show-more {
-  display: flex;
+/* Scope toggle in the sticky section header — "8 of 21" while previewing,
+ * "Show less" while expanded. Same chip register as the order button beside
+ * it: the two are one family of view controls sharing one corner. */
+.agw-rail-scope {
+  flex-shrink: 0;
+  display: inline-flex;
   align-items: center;
-  gap: 5px;
-  width: 100%;
-  margin-top: 2px;
-  padding: 6px 8px;
+  padding: 3px 7px;
   border: none;
+  border-radius: var(--agw-radius-sm);
   background: transparent;
-  border-radius: var(--agw-radius-md);
   color: var(--agw-text-subtle);
-  font-size: var(--agw-fs-ui);
+  font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-medium);
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
 }
-.agw-rail-show-more svg {
-  transition: transform 0.18s ease;
-}
-.agw-rail-show-more:hover {
+.agw-rail-scope:hover {
   background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
-.agw-rail-show-more:focus-visible {
-  outline: 2px solid var(--agw-accent);
-  outline-offset: -2px;
+.agw-rail-scope:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
 }
 
 /* Home ghost wordmark — the new-chat landing brands itself with a giant
@@ -3262,6 +3272,46 @@
 }
 .agw-projmenu:focus {
   outline: none;
+}
+/* The filter box. Same recipe as `.agw-model-search` (icon + borderless input
+ * in a bordered row, fixed height, only the list scrolls), sized down to this
+ * menu's tighter 4px frame. No focus halo — the caret and fill are the
+ * affordance, and the field is focused the moment the menu opens. */
+.agw-projmenu-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  align-self: stretch;
+  box-sizing: border-box;
+  height: 30px;
+  margin: 2px 2px 6px;
+  padding: 0 8px;
+  border: 1px solid var(--agw-border);
+  border-radius: 7px;
+  background: var(--agw-surface);
+  color: var(--agw-text-subtle);
+}
+.agw-projmenu-search input {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  color: var(--agw-text);
+  font-family: inherit;
+  font-size: var(--agw-fs-label);
+}
+.agw-projmenu-search input::placeholder {
+  color: var(--agw-text-subtle);
+}
+/* An empty filter result says so where the rows would be — quiet, and the
+ * "Add project…" row below stays live, so the dead end still has a way out. */
+.agw-projmenu-none {
+  padding: 10px 8px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
 }
 .agw-projmenu-list {
   min-height: 0;
@@ -4863,6 +4913,7 @@
   background: var(--agw-bubble-assistant);
   border-radius: var(--agw-radius-md);
 }
+
 .agw-msg:hover .agw-msg-actions,
 .agw-msg:focus-within .agw-msg-actions {
   opacity: 1;
@@ -4888,6 +4939,270 @@
 }
 .agw-msg-action:focus-visible {
   box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+/* ── Chapter (the agent naming the part of the work it is starting) ─────
+ * A `chapter` tool call, rendered where it was emitted.
+ *
+ * NOT set as bigger, bolder prose. A reply is already full of bold sentences and
+ * markdown headings the model wrote itself — anything typed like prose, only
+ * heavier, is indistinguishable from them at a glance, and a section marker you
+ * have to READ to recognise has failed at the one job it has. So a chapter
+ * changes type ROLE instead of type weight: it is a section LABEL, in the same
+ * uppercase-with-tracking register this window already uses for structure (the
+ * turn label, rail sections, reasoning header), followed by a rule that runs to
+ * the edge. Label-plus-rule is also exactly the tool group header's form, so a
+ * named boundary in the timeline looks like one wherever it appears.
+ *
+ * Reusing `.agw-timeline-rule` rather than a second gradient: same idiom, same
+ * token, one place to change it. Its `flex: 1` fills whatever the title leaves,
+ * with an 18px minimum, so a title too long for one line wraps and the rule
+ * simply gets shorter.
+ *
+ * Full text strength, not the subtle grey those other labels use — this one is
+ * meant to be the thing your eye lands on when skimming a long turn, and the
+ * uppercase register at label size already keeps it from shouting over the reply.
+ *
+ * The air belongs ABOVE it (a chapter opens what follows) and lives in padding,
+ * not margin, so the spine's line runs continuously through the break instead of
+ * being cut by a collapsed gap. The first row of a turn drops it — there is
+ * nothing above to separate from. Boxing it was never an option: a card would
+ * make the one element that stands outside the content read as content. */
+.agw-chapter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 2px;
+  padding-top: 14px;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.35;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.agw-chapter-title {
+  min-width: 0;
+  /* A model can always write a longer title than the pane is wide; wrap it
+   * rather than clip a heading the user is meant to read. */
+  overflow-wrap: anywhere;
+}
+.agw-row:first-child .agw-chapter {
+  padding-top: 0;
+}
+
+/* ── Transcript spine (opt-in) ──────────────────────────────────────────
+ * Settings → Preferences → Transcript. Draws one continuous hairline down the
+ * turn with a marker per row, so a long turn reads as a single thread of work
+ * instead of a stack of unrelated cards.
+ *
+ * Everything here hangs off `[data-transcript-spine]` on the root, so with the
+ * preference off not one declaration applies and the transcript is byte-for-byte
+ * today's look. `.agw-row` itself stays unstyled by default: the wrapper exists
+ * on every row either way, which is what lets the toggle re-style the transcript
+ * without remounting anything inside it. */
+.agw-root[data-transcript-spine] .agw-msg-assistant {
+  padding-left: 20px;
+}
+.agw-root[data-transcript-spine] .agw-row {
+  position: relative;
+}
+/* The branch box. Zero-cost when the spine is off, and out of flow when it is
+   on, so a row's own layout is identical either way. */
+.agw-row-branch {
+  display: none;
+}
+
+/* The line. Runs from this row's marker down to the NEXT row's marker; the
+   last row is exempt so nothing dangles below the turn.
+
+   `-18px` is the 10px inter-row gap PLUS the 8px lead-in every row's segment
+   starts with. At the old `-10px` a segment stopped dead on the next row's top
+   edge while that row's own segment didn't begin until 8px lower — so the rail
+   carried an 8px break at every single boundary and read as a dashed line
+   rather than a thread. */
+.agw-root[data-transcript-spine] .agw-row:not([data-last])::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: -18px;
+  left: -13px;
+  width: 1px;
+  background: var(--agw-border);
+}
+/* No special case for a chapter: its own segment starts at the same 8px as
+   every other row's, so the rail runs continuously THROUGH the break it opens
+   with and the chapter's lower marker simply sits on the line. */
+
+/* ── The branch ─────────────────────────────────────────────────────────
+ * A quarter-turn that leaves the rail at this row's marker and arrives
+ * horizontally at the row's own content edge, so a marker reads as belonging
+ * to its row instead of floating in the gutter beside it.
+ *
+ * Geometry, in the row's own coordinates (x=0 is the content edge, the rail
+ * occupies x=-13…-12):
+ *   left  -13px  the left border lands exactly ON the rail, not beside it
+ *   width  13px  the bottom border therefore terminates exactly AT x=0
+ *   top     8px  1px of straight left border before the arc, which falls
+ *                inside the marker (y=6…11) so the two read as one stroke
+ *   radius  6px  arc from (-13,9) to (-7,15), then a 7px straight run in
+ *
+ * Only `border-left` + `border-bottom` are painted, so the box draws an L with
+ * a rounded corner and nothing else. */
+.agw-root[data-transcript-spine] .agw-row-branch {
+  display: block;
+  position: absolute;
+  top: 8px;
+  left: -13px;
+  width: 13px;
+  height: 7px;
+  border-left: 1px solid var(--agw-border);
+  border-bottom: 1px solid var(--agw-border);
+  border-bottom-left-radius: 6px;
+  pointer-events: none;
+}
+/* Follows the chapter marker down past the break it opens with. */
+.agw-root[data-transcript-spine] .agw-row[data-row="chapter"] > .agw-row-branch {
+  top: 21px;
+}
+.agw-root[data-transcript-spine]
+  .agw-row[data-row="chapter"]:first-child
+  > .agw-row-branch {
+  top: 8px;
+}
+/* The marker, painted after the line so the line passes cleanly behind it. */
+.agw-root[data-transcript-spine] .agw-row::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: -15px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--agw-border-strong);
+}
+/* A compaction or notice row is the runtime speaking, not the agent — it already
+   reads as an interruption, so its marker steps back rather than competing. */
+.agw-root[data-transcript-spine] .agw-row[data-row="compaction"]::after,
+.agw-root[data-transcript-spine] .agw-row[data-row="notice"]::after {
+  background: var(--agw-border);
+}
+/* A chapter is the one row that OPENS a section rather than being a step inside
+   one, so its marker is filled at text strength while the rest stay hairline —
+   and it sits level with the label, below the break the chapter opens with. */
+.agw-root[data-transcript-spine] .agw-row[data-row="chapter"]::after {
+  top: 19px; /* 14px break + centre of the label's line */
+  background: var(--agw-text-subtle);
+}
+.agw-root[data-transcript-spine] .agw-row[data-row="chapter"]:first-child::after {
+  top: 6px;
+}
+/* A tools row is not ONE step — it is every call the model made between two
+   pieces of text, each rendered as its own card. One marker above the run left
+   ten calls sharing a single dot at the top, so the thread read as if it had
+   stalled up there while the work was moving down the list. The marker moves onto
+   the calls instead: one per card, at the height of that card's own first line. */
+.agw-root[data-transcript-spine] .agw-row[data-row="tools"]::after {
+  display: none;
+}
+/* …and the row's single branch goes with it — each card grows its own below. */
+.agw-root[data-transcript-spine] .agw-row[data-row="tools"] > .agw-row-branch {
+  display: none;
+}
+.agw-root[data-transcript-spine] .agw-tool-step {
+  position: relative;
+}
+.agw-root[data-transcript-spine] .agw-tool-step::after {
+  content: "";
+  position: absolute;
+  top: 13px; /* first line of the card, whichever card shape it is */
+  left: -15px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--agw-border-strong);
+}
+/* A card's branch. `::before` is free here (the step only spends `::after` on
+   its marker), so this needs no extra element. Same geometry as a row's,
+   offset to sit under the card's own marker. */
+.agw-root[data-transcript-spine] .agw-tool-step::before {
+  content: "";
+  position: absolute;
+  top: 15px;
+  left: -13px;
+  width: 13px;
+  height: 7px;
+  border-left: 1px solid var(--agw-border);
+  border-bottom: 1px solid var(--agw-border);
+  border-bottom-left-radius: 6px;
+  pointer-events: none;
+}
+/* A run of six or more collapses behind one "N calls" header and its cards live
+   in a bounded internal scroller. There the run genuinely IS one step — and a
+   marker inside a scroll box would be clipped by it and drift as it scrolled —
+   so the row keeps its single marker and the calls give theirs up. */
+.agw-root[data-transcript-spine] .agw-row[data-row="tools"]:has(.agw-tool-group-body)::after {
+  display: block;
+}
+.agw-root[data-transcript-spine]
+  .agw-row[data-row="tools"]:has(.agw-tool-group-body)
+  > .agw-row-branch {
+  display: block;
+}
+.agw-root[data-transcript-spine] .agw-tool-group-body .agw-tool-step::after {
+  content: none;
+}
+/* A branch inside the scroller would be clipped by it and drift as it scrolls,
+   exactly as its marker would — so the cards give theirs up too and the run's
+   single branch above speaks for all of them. */
+.agw-root[data-transcript-spine] .agw-tool-group-body .agw-tool-step::before {
+  content: none;
+}
+
+/* The live marker — where the work is RIGHT NOW.
+ *
+ * Two cases, and both mean the same thing to the reader: the call that is still
+ * running, and (for text and reasoning) the last row of a streaming turn.
+ *
+ * Same left→right sheen as the streaming turn label above it, on the same 2.5s
+ * cadence and the same keyframes, so "still working" is ONE motion vocabulary in
+ * this window rather than two that nearly match. Only one marker moves at a time:
+ * a whole column of pulsing dots would say the turn is live — already obvious
+ * from the label — while saying nothing about where it is.
+ *
+ * Last in the block so it outranks the marker colours above, which carry the
+ * same specificity.
+ *
+ * The running call's marker is `.agw-tool-step::after` (the card itself has no
+ * pseudo-element with content, so styling `.agw-tool-card::after` paints
+ * nothing) — the step wrapper is matched via `:has()` on the card's status. */
+.agw-root[data-transcript-spine]
+  .agw-tool-step:has(.agw-tool-card[data-status="running"])::after,
+.agw-root[data-transcript-spine] .agw-row[data-live]:not([data-row="tools"])::after,
+.agw-root[data-transcript-spine]
+  .agw-row[data-live][data-row="tools"]:has(.agw-tool-group-body)::after {
+  background: linear-gradient(
+    90deg,
+    var(--agw-border-strong) 0%,
+    var(--agw-border-strong) 28%,
+    var(--agw-text) 50%,
+    var(--agw-border-strong) 72%,
+    var(--agw-border-strong) 100%
+  );
+  background-size: 200% 100%;
+  animation: agw-shimmer 2.5s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Motion off, state kept: the live marker holds at full text strength instead
+     of sweeping, so it is still the one dot that stands out. */
+  .agw-root[data-transcript-spine]
+    .agw-tool-step:has(.agw-tool-card[data-status="running"])::after,
+  .agw-root[data-transcript-spine] .agw-row[data-live]:not([data-row="tools"])::after,
+  .agw-root[data-transcript-spine]
+    .agw-row[data-live][data-row="tools"]:has(.agw-tool-group-body)::after {
+    background: var(--agw-text);
+    animation: none;
+  }
 }
 
 /* ── Assistant markdown ─────────────────────────────────────────────
@@ -6599,7 +6914,10 @@
   cursor: default;
 }
 
-.agw-diagram-zoom {
+/* The zoom readout is a BUTTON (click = actual size), so it inherits the
+ * controls' shared button states; qualified with the parent so its width and
+ * type win over the 26px button base. */
+.agw-diagram-controls .agw-diagram-zoom {
   width: 48px;
   color: var(--agw-text-muted);
   font-family: var(--agw-font-code);
@@ -6639,6 +6957,49 @@
   height: 100%;
   border: 0;
   background: white;
+}
+
+/* A live canvas paints its own themed background, so it must NOT inherit the
+   white sheet html/svg artifacts sit on — those are authored as documents and
+   assume a page. */
+.agw-canvas-react {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.agw-canvas-react > .agw-canvas-frame {
+  flex: 1;
+  min-height: 0;
+  background: var(--agw-conversation);
+}
+
+/* Compile failures own the panel; a runtime crash is a strip under a canvas
+   that already rendered something, so it stays out of the way of the part that
+   still works. */
+.agw-canvas-runtime-error {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 8px;
+  max-height: 30%;
+  padding: 10px 14px;
+  border-top: 1px solid var(--agw-border-strong);
+  background: var(--agw-surface);
+  color: var(--agw-text-muted);
+  overflow: auto;
+}
+
+.agw-canvas-runtime-error pre {
+  margin: 0;
+  font-family: var(--agw-font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .agw-canvas-markdown {
@@ -8402,6 +8763,146 @@
   gap: 6px 9px;
   margin-top: 7px;
 }
+/* Why a Retry didn't run. Sits directly above the composer, at the bottom
+ * of the transcript, so it lands near the click that caused it. */
+.agw-retry-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--agw-removed) 34%, transparent);
+  border-radius: var(--agw-radius-md);
+  background: color-mix(in srgb, var(--agw-removed) 10%, transparent);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+}
+.agw-retry-error-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+}
+.agw-retry-error-close:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+
+/* ── Per-model connection test ─────────────────────────────────────────
+ * The button lives in the model row's action cluster and inherits
+ * .agw-prov-icon-btn, so it shares the sliders/close geometry exactly.
+ * Only the verdict colour is added on top. */
+.agw-prov-test {
+  position: relative;
+  display: inline-flex;
+}
+.agw-prov-test-btn[data-state="running"] {
+  color: var(--agw-text);
+  /* Breathing, not spinning: the row is dense and a spinner next to two
+   * static icons pulls far more attention than the wait deserves. */
+  animation: agw-prov-test-pulse 1.1s ease-in-out infinite;
+}
+.agw-prov-test-btn[data-state="pass"] {
+  color: var(--agw-added);
+  border-color: color-mix(in srgb, var(--agw-added) 34%, transparent);
+}
+.agw-prov-test-btn[data-state="fail"] {
+  color: var(--agw-removed);
+  border-color: color-mix(in srgb, var(--agw-removed) 34%, transparent);
+}
+.agw-prov-test-btn:disabled {
+  cursor: progress;
+}
+@keyframes agw-prov-test-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* Result panel. Right-aligned so it never runs off the settings sheet,
+ * and pointer-events:none so it cannot swallow a click meant for the
+ * row underneath — it is a readout, not a surface to interact with. */
+.agw-prov-test-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: max-content;
+  max-width: 340px;
+  padding: 9px 11px;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--agw-popover-surface) 95%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(112%);
+  backdrop-filter: blur(14px) saturate(112%);
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-lg);
+  box-shadow: var(--agw-shadow-pop);
+  animation: agw-pop-in 0.12s cubic-bezier(0.2, 0.9, 0.3, 1);
+  text-align: left;
+  white-space: normal;
+}
+
+/* The route line answers the question that matters most here: which wire
+ * shape did this configuration actually resolve to? */
+.agw-prov-test-route {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agw-prov-test-shape {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-prov-test-url {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  word-break: break-all;
+}
+.agw-prov-test-reply {
+  padding-top: 6px;
+  border-top: 1px solid var(--agw-border);
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text);
+}
+.agw-prov-test-line {
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text);
+}
+.agw-prov-test-line[data-tone="bad"] {
+  padding-top: 6px;
+  border-top: 1px solid var(--agw-border);
+  color: var(--agw-removed);
+}
+.agw-prov-test-meta {
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agw-prov-test-btn[data-state="running"] {
+    animation: none;
+    opacity: 0.7;
+  }
+  .agw-prov-test-pop {
+    animation: none;
+  }
+}
+
 .agw-prov-key {
   font-family: var(--agw-font-code);
   font-size: var(--agw-fs-label);
@@ -10040,7 +10541,12 @@
 .agw-root[data-translucent] .agw-settings-nav,
 .agw-root[data-translucent] .agw-titlebar,
 .agw-root[data-translucent] .agw-canvas,
-.agw-root[data-translucent] .agw-prov-side {
+.agw-root[data-translucent] .agw-prov-side,
+/* The sticky Projects header: its fill is rail paint, which this mode makes
+ * 55% transparent — without the blur, rows scrolling beneath it read straight
+ * through the label. With it, they frost out like under every other
+ * translucent surface, so the pinned header stays legible glass. */
+.agw-root[data-translucent] .agw-rail-section {
   backdrop-filter: blur(16px) saturate(1.3);
   -webkit-backdrop-filter: blur(16px) saturate(1.3);
 }

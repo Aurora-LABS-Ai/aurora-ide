@@ -1,5 +1,6 @@
 import React, { useMemo, useEffect } from 'react';
 import { DiffEditor, useMonaco } from '@monaco-editor/react';
+import '../../lib/monaco-setup';
 import { Loader2, X } from 'lucide-react';
 
 import { getMonacoThemeId, themeService } from '../../services/theme-service';

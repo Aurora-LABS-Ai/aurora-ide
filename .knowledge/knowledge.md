@@ -3545,3 +3545,115 @@ OS-level `onDragDropEvent`.
   well as its label. See the 2026-08-04 entry in `lesson.md` before touching that subscription.
 - VERIFIED: 330 frontend tests (11 new), `tsc -b` + eslint + `pnpm build` clean. The in-window drag is
   RUNTIME-verified (Files-panel folder → composer produced the pill end to end); the OS drop fix is not.
+
+## 2026-08-04 — Agent-window surface audit (read-only; no code changed)
+
+Read the whole `src/agent-window` surface to propose new features. Confirmed gaps, each verified in
+source rather than inferred:
+
+- **No rollback anywhere in the agent window.** `services/checkpoint.ts` and the Rust `checkpoint_*`
+  commands exist but are wired ONLY into the IDE (`hooks/useAgentSend.ts`, `components/chat/*`). The
+  agent window writes files with no undo path; `ReviewPanel` is read-only + "Open in IDE".
+- **`ReviewPanel` diffs the TRANSCRIPT, not disk.** `review.ts::collectFileChanges` walks reported
+  tool results, so the panel shows what the agent *claimed*; a size-capped edit is skipped entirely
+  and later manual edits are invisible. No per-file revert.
+- **No transcript search.** `LeftRail`'s box filters `title` + the 120-char `preview` only. Nothing
+  searches message bodies, thinking, tool args, paths or commands, in one chat or across chats.
+- **No fork-at-turn.** `thread_duplicate` copies the FULL transcript; "Retry" re-sends the last user
+  message into the same thread. Branching an approach means the docked `ChatPanel` + retyping.
+- **Per-turn cost is computed then discarded.** `ContextRing` derives it from
+  `priceCacheMissPerMtok`/`priceCacheHitPerMtok`/`priceOutputPerMtok`, renders it on hover, and
+  returns `null` entirely once `usedTokens === 0`. Nothing accumulates it; Profile has tokens, no money.
+- **No turn-level digest.** `buildRows` + `parseToolResult` + `turnWorkedMs` already know every file,
+  command, diff stat, failure and the duration of a turn — nothing summarises them, so reading back a
+  long turn means scanning collapsed rows one by one.
+
+Five proposals were put to the owner from these findings (rewind/checkpoints, turn digest, find-in-
+conversation, disk-truth Review with revert, cost ledger). Awaiting a pick — nothing implemented.
+
+## 2026-08-04 — Transcript spine + chapters (both opt-in, both shipped)
+
+The owner rejected all five feature proposals above and asked instead for VISUAL treatments of what the
+transcript already emits, off by default, under Settings → Preferences → Transcript. Two independent
+toggles (either, both, neither).
+
+- **Assistant `timeline` is now PERSISTED** (`commands/threads.rs::session_to_db_messages`). It was
+  always `None`, so a reload synthesised the order (all text, then all tools) and anything positional
+  died on restart. It is rebuilt from `msg.blocks`, which already carry the true interleaving, with
+  adjacent text/thinking coalesced the way live streaming does. The frontend re-joins it in
+  `timeline.ts::hydrateToolEvents`: a persisted `tool` event carries only an id, the payload stays in
+  `tool_calls`, so there is one copy of a tool call on disk. This landed FIRST because chapters are
+  worthless without it. `ChatMessage.tsx` (IDE chat) grew a shape guard — its `TimelineEvent` is
+  `type`-keyed, the agent window's is `kind`-keyed, and it must ignore the other shape.
+- **Spine** (`useAgentThemeStore.transcriptSpine`, appearance-only, resets with customisations): a
+  hairline down the turn with a marker per step, drawn entirely from `[data-transcript-spine]` +
+  `.agw-row[data-row]` — the row wrapper exists on every turn regardless, so the toggle re-styles a
+  live transcript without remounting anything. Markers hang on `.agw-tool-step` (one per CALL), NOT on
+  the tools row; the row keeps a single marker only for a grouped run (≥6), whose cards live in a
+  clipping scroller. Live marker = the running call, or the last row for text/reasoning, shimmering on
+  the same `agw-shimmer` keyframes as the turn label (reduced-motion holds it solid).
+- **Chapters** (`useSettingsStore.transcriptChapters`, persisted end-to-end through
+  `AppSettings.transcript_chapters`) come from the MODEL, not from parsing its prose: a real Rust tool
+  (`tools/transcript/mod.rs`, validate-and-echo, no state) advertised only when the pref is on
+  (`agent_v2::is_tool_available_this_turn`) and paired with a two-line instruction injected by the same
+  pref (`agent-prompt.ts::CHAPTER_INSTRUCTIONS`). `buildRows` turns an accepted call into a `chapter`
+  row at its emission point; a rejected one falls back to a normal tool card. Typed as an uppercase
+  label + `agw-timeline-rule`, NOT as bigger bold text — see `lesson.md`.
+- VERIFIED: 51 tests in `timeline.test.ts` + `activity.test.ts`, lints clean on the touched files, and
+  the owner runtime-confirmed chapters and the spine in the app. `tsc`/`cargo` were NOT re-run after
+  the final CSS/TSX pass.
+
+## 2026-08-04 (later) — Review of the spine/chapters work: two fixes applied
+- Claude Code audited the uncommitted Cursor changes. Verified green: `pnpm build`, all 342 frontend
+  tests, `cargo check`, 73 Rust tests across threads/transcript/agent_v2/tools.
+- Fixed: `composeAgentSystemPrompt` now takes `transcriptChapters` from the caller
+  (`AgentService.config`) instead of the settings store — the IDE chat was getting the chapter
+  instruction with the tool withheld. `compactThread` deliberately passes nothing (zero-tool call).
+- Fixed: the spine's running-call shimmer selector targeted a content-less pseudo-element
+  (`.agw-tool-card::after`); now `.agw-tool-step:has(.agw-tool-card[data-status="running"])::after`.
+  Note `data-status` exists only on the STANDARD card root — the four special card shapes (canvas,
+  plan launch, plan step, checklist) still have no running shimmer. See lesson.md same date.
+
+## 2026-08-05 — Canvas fixes: render-validated mermaid, artifact visibility, readable zoom
+- `validateMermaidSource` (services/mermaid-artifacts.ts) now parse+RENDERs with the shared
+  `buildMermaidConfig`; both present_artifact paths (content + patch preview) reject layout-broken
+  diagrams with the renderer's message. Tool description updated to promise it.
+- `useAgentArtifactStore.canvasSource` ("plan"|"artifact") replaces CanvasPanel's local state;
+  `present`/`select`/launch-card claim "artifact" so a new diagram is never hidden behind a plan.
+- Diagrams open at `initialDiagramViewport` (fit floored at READABLE_MIN_SCALE 0.65, top-anchored);
+  Fit button/double-click keep the full fit; the % readout is now a click-to-100% button.
+- VERIFIED: full frontend suite 348 tests + `pnpm build` clean. Runtime check still wanted:
+  present a cycle-broken mermaid source and confirm the tool result carries the renderer error.
+
+## Provider API type + per-model connection test (2026-08-05)
+- `ProviderConfigSnapshot` now carries `provider_type` (the user's "API type" pick) SEPARATELY from
+  `provider_id` (row id / UUID). `effective_provider_type()` is the only input to wire-shape dispatch
+  and to prompt-caching / `stream_options` / reasoning-field decisions. `provider_id` stays the key
+  for `unprefix_model` only. Frontend must forward `providerType` in `buildProviderConfigSnapshot`.
+- Per-model test button (`ModelTestButton` + `provider_test_model` command) fires one real 64-token
+  turn through `build_api_client` — the same factory a turn uses — and reports the resolved wire
+  shape, endpoint, reply snippet, latency and usage. It deliberately shares reasoning/extraBody
+  resolution with the send path via `services/model-request-config.ts`; if those ever diverge the
+  test stops meaning anything.
+
+## 2026-08-06 — Live canvases (`kind: "react"`) + `aurora/canvas` SDK
+- New artifact kind `react`: ONE component file, compiled and RUN in a sandboxed frame in the
+  right rail. Reuses the whole existing artifact contract (thread sidecar, immutable v1..vN,
+  exact-text patches, `read_artifact`), so persistence/versioning came free.
+- Gate: `compileCanvasSource` (services/canvas-react.ts, TypeScript `transpileModule`) runs BEFORE
+  the write, same position as `validateMermaidSource`. Catches syntax, disallowed imports, missing
+  default export, and unknown `aurora/canvas` names. It does **NOT** typecheck — asserted by a test
+  so the tool description stays honest. Semantic checking needs `ts.createProgram` + lib d.ts.
+- Rust now REFUSES `mermaid`/`react` without `validated: true` (`ArtifactKind::requires_validation`).
+  Closes the old hole where any direct `thread_artifact_upsert` caller persisted broken Mermaid.
+  `validate_upsert(_, enforce_gate)` — false for patch preview, which is what produces the text.
+- Sandbox: `default-src 'none'` CSP is what actually blocks `fetch` (sandbox attr alone does not).
+  React/ReactDOM UMD + the SDK are inlined as text via `vite-canvas-plugin.ts` (shared by
+  vite.config + vitest.config so tests use the real generated module). `react-dom` does not export
+  `./umd/*`, so it is resolved from `./package.json`'s dirname, not imported.
+- SDK (`src/canvas-sdk/`) is shaped by refusal: **no `Card`** (the agent's hand-built canvas was 12
+  identical bordered cards), no `style`/`className` props, required labels, empty renders `null`.
+  Guidance lives in the `canvas_guidelines` Rust tool (sibling of `design_guidelines`, NOT a skill);
+  system prompt carries only 2 lines. Rust + TS tests pin the guide and the export list to each other.
+- An iframe inherits NO window CSS: the canvas document must restate scrollbar tokens or it draws
+  the platform's default bars. Same trap will apply to any future frame.

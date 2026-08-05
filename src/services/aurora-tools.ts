@@ -275,14 +275,43 @@ async function runReadArtifact(
   const versionTag = typeof args.versionTag === "string" ? args.versionTag.trim() : "";
   const query = typeof args.query === "string" ? args.query : "";
   const contextLines = args.contextLines === undefined ? 2 : Number(args.contextLines);
-  if (!artifactId) throw new Error("read_artifact: artifactId is required");
   if (!Number.isInteger(contextLines) || contextLines < 0 || contextLines > 20) {
     throw new Error("read_artifact: contextLines must be an integer from 0 to 20");
   }
 
   const bundle = await useAgentArtifactStore.getState().loadThread(threadId);
+
+  // Artifacts outlive the context that made them: reopen a conversation weeks
+  // later, or compact the turn that created one, and the model no longer has
+  // the id from its own tool result. Omitting artifactId lists what this
+  // conversation actually has on disk, so the source is always reachable
+  // instead of being reachable only by remembering.
+  if (!artifactId) {
+    return JSON.stringify({
+      success: true,
+      artifacts: bundle.artifacts.map((entry) => ({
+        artifactId: entry.id,
+        title: entry.title,
+        kind: entry.kind,
+        latestVersionTag: entry.versions[entry.versions.length - 1]?.tag ?? null,
+        versionCount: entry.versions.length,
+      })),
+      message:
+        bundle.artifacts.length === 0
+          ? "This conversation has no Canvas artifacts yet."
+          : "Call read_artifact again with one of these artifactId values to read its source.",
+    });
+  }
+
   const artifact = bundle.artifacts.find((entry) => entry.id === artifactId);
-  if (!artifact) throw new Error(`read_artifact: artifact '${artifactId}' does not exist`);
+  if (!artifact) {
+    const known = bundle.artifacts.map((entry) => entry.id);
+    throw new Error(
+      known.length > 0
+        ? `read_artifact: artifact '${artifactId}' does not exist. This conversation has: ${known.join(", ")}`
+        : `read_artifact: artifact '${artifactId}' does not exist; this conversation has no artifacts yet`,
+    );
+  }
   const version = versionTag
     ? artifact.versions.find((entry) => entry.tag === versionTag)
     : artifact.versions[artifact.versions.length - 1];
@@ -316,9 +345,13 @@ async function runPresentArtifact(
   const artifactId = typeof args.artifactId === "string" ? args.artifactId.trim() : "";
   const title = typeof args.title === "string" ? args.title.trim() : "";
   const kind = args.kind;
-  if (!artifactId || !title || !["html", "svg", "markdown", "mermaid"].includes(String(kind))) {
+  if (
+    !artifactId ||
+    !title ||
+    !["html", "svg", "markdown", "mermaid", "react"].includes(String(kind))
+  ) {
     throw new Error(
-      "present_artifact: artifactId, title, and kind (html|svg|markdown|mermaid) are required",
+      "present_artifact: artifactId, title, and kind (html|svg|markdown|mermaid|react) are required",
     );
   }
 
@@ -363,16 +396,6 @@ async function runPresentArtifact(
     );
   }
 
-  if (kind === "mermaid" && content) {
-    try {
-      await validateMermaidSource(content);
-    } catch (reason: unknown) {
-      throw new Error(
-        `present_artifact: Mermaid source is invalid and was not saved. ${describeMermaidError(reason)} Correct the source and retry with raw Mermaid syntax, not a Markdown code fence.`,
-      );
-    }
-  }
-
   type PatchArtifactInput = Extract<PresentArtifactInput, { baseVersionTag: string }>;
   let input: PresentArtifactInput;
   let patchInput: PatchArtifactInput | null = null;
@@ -389,15 +412,41 @@ async function runPresentArtifact(
     input = patchInput;
   }
 
-  if (kind === "mermaid" && patchInput) {
-    const preview = await previewThreadArtifactPatch(threadId, patchInput);
-    try {
-      await validateMermaidSource(preview);
-    } catch (reason: unknown) {
-      throw new Error(
-        `present_artifact: patches would create invalid Mermaid source and were not saved. ${describeMermaidError(reason)} Read ${artifactId} ${baseVersionTag}, correct the patch, and retry.`,
-      );
+  // The engine gate. `mermaid` and `react` are not stored as authored — they
+  // are drawn or compiled — so the source is put through the real engine here
+  // and a failure aborts the write with that engine's own words. Rust refuses
+  // these kinds without the `validated` claim set below, which is what stops a
+  // future call path from quietly skipping this.
+  if (kind === "mermaid" || kind === "react") {
+    // For a patch, the thing to judge is the RESULT, so ask Rust to apply the
+    // patches against the saved base without committing anything.
+    const subject = content ?? (await previewThreadArtifactPatch(threadId, patchInput!));
+
+    if (kind === "mermaid") {
+      try {
+        await validateMermaidSource(subject);
+      } catch (reason: unknown) {
+        throw new Error(
+          content
+            ? `present_artifact: Mermaid source is invalid and was not saved. ${describeMermaidError(reason)} Correct the source and retry with raw Mermaid syntax, not a Markdown code fence.`
+            : `present_artifact: patches would create invalid Mermaid source and were not saved. ${describeMermaidError(reason)} Read ${artifactId} ${baseVersionTag}, correct the patch, and retry.`,
+        );
+      }
+    } else {
+      const { compileCanvasSource } = await import("./canvas-react");
+      try {
+        await compileCanvasSource(subject);
+      } catch (reason: unknown) {
+        const detail = reason instanceof Error ? reason.message : String(reason);
+        throw new Error(
+          content
+            ? `present_artifact: the canvas did not compile and was not saved.\n${detail}\nCorrect the source and retry.`
+            : `present_artifact: patches would produce a canvas that does not compile, and were not saved.\n${detail}\nRead ${artifactId} ${baseVersionTag}, correct the patch, and retry.`,
+        );
+      }
     }
+
+    input = { ...input, validated: true } as PresentArtifactInput;
   }
 
   const bundle = await useAgentArtifactStore.getState().present(threadId, input);

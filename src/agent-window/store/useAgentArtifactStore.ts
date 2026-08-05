@@ -12,6 +12,17 @@ interface AgentArtifactState {
   bundles: Record<string, ThreadArtifactBundle | undefined>;
   loadingByThread: Record<string, boolean | undefined>;
   errorsByThread: Record<string, string | undefined>;
+  /**
+   * Which document the Canvas shows when the workspace ALSO has a plan. Lives
+   * here, not in CanvasPanel state, because the flip has to survive the panel
+   * mounting: `present` runs before the tab opens, and a freshly presented
+   * artifact hidden behind the plan is an artifact the user cannot find (the
+   * plan "outranks by default" rule buried every new diagram in a planned
+   * project). Presenting or explicitly selecting an artifact claims the
+   * canvas; the toggle in the panel writes it back.
+   */
+  canvasSource: "plan" | "artifact";
+  setCanvasSource: (source: "plan" | "artifact") => void;
   loadThread: (threadId: string) => Promise<ThreadArtifactBundle>;
   present: (threadId: string, input: PresentArtifactInput) => Promise<ThreadArtifactBundle>;
   select: (
@@ -29,6 +40,10 @@ export const useAgentArtifactStore = create<AgentArtifactState>((set) => ({
   bundles: {},
   loadingByThread: {},
   errorsByThread: {},
+  // A plan is the standing work, so it keeps the canvas until an artifact
+  // event claims it.
+  canvasSource: "plan",
+  setCanvasSource: (canvasSource) => set({ canvasSource }),
 
   loadThread: async (threadId) => {
     set((state) => ({
@@ -57,6 +72,9 @@ export const useAgentArtifactStore = create<AgentArtifactState>((set) => ({
       set((state) => ({
         bundles: { ...state.bundles, [threadId]: bundle },
         errorsByThread: { ...state.errorsByThread, [threadId]: undefined },
+        // The agent just put something on the canvas — showing anything else
+        // (the plan) would hide the very thing the tool result says is there.
+        canvasSource: "artifact",
       }));
       return bundle;
     } catch (error) {
@@ -73,6 +91,8 @@ export const useAgentArtifactStore = create<AgentArtifactState>((set) => ({
       set((state) => ({
         bundles: { ...state.bundles, [threadId]: bundle },
         errorsByThread: { ...state.errorsByThread, [threadId]: undefined },
+        // Selecting an artifact IS choosing to look at artifacts.
+        canvasSource: "artifact",
       }));
       return bundle;
     } catch (error) {

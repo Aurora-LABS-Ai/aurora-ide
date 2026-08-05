@@ -134,11 +134,15 @@ const ToolGroupImpl: React.FC<{
           }}
         >
           {tools.map((call) => (
-            <ToolCallCard
-              key={call.id}
-              call={call}
-              isActivelyStreaming={isActivelyStreaming}
-            />
+            // One wrapper per call, unstyled by default. `ToolCallCard` renders
+            // five different roots depending on the tool (standard card, canvas
+            // launch, plan beat, checklist beat), so this is the only element
+            // that reliably means "one call" — which is what the transcript
+            // spine hangs its marker on, and what a sixth card shape would get
+            // for free.
+            <div className="agw-tool-step" key={call.id}>
+              <ToolCallCard call={call} isActivelyStreaming={isActivelyStreaming} />
+            </div>
           ))}
         </div>
       </motion.div>

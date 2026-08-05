@@ -235,6 +235,11 @@ const CanvasLaunchCard: React.FC<{
       scope?.threadId ?? useAgentChatStore.getState().currentThreadId;
     if (!threadId) return;
     useAgentWorkspaceStore.getState().openTab("canvas");
+    // Claim the canvas for artifacts up front — `select` also does this on
+    // success, but an old card with no version tag (or a failed select) must
+    // still land the user on the artifact view they asked for, not on a plan
+    // covering it.
+    useAgentArtifactStore.getState().setCanvasSource("artifact");
     if (versionTag) {
       void useAgentArtifactStore
         .getState()
@@ -684,7 +689,10 @@ const StandardToolCallCard: React.FC<{
   };
 
   return (
-    <div className="agw-tool-card">
+    // `data-status` on the card itself (not only on the inner dot) so the
+    // transcript spine can mark the call that is running right now without
+    // reaching into this card's internals.
+    <div className="agw-tool-card" data-status={status}>
       <button
         type="button"
         className="agw-tool-head"

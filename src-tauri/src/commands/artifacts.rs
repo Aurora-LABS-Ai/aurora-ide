@@ -21,6 +21,10 @@ const MAX_ARTIFACT_ID_LEN: usize = 64;
 const MAX_TITLE_LEN: usize = 120;
 const MAX_CONTENT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MERMAID_CONTENT_BYTES: usize = 256 * 1024;
+/// A canvas is ONE component file, and every byte of it is compiled before it
+/// can be saved. The ceiling keeps that gate fast and pushes genuinely large
+/// payloads toward several focused canvases.
+const MAX_REACT_CONTENT_BYTES: usize = 512 * 1024;
 const MAX_PATCHES: usize = 128;
 
 /// Serialises read-modify-write cycles. Artifact calls are rare and small, so a
@@ -34,6 +38,34 @@ pub enum ArtifactKind {
     Svg,
     Markdown,
     Mermaid,
+    /// A live canvas: one React component file, compiled and run beside the
+    /// conversation instead of displayed as text.
+    React,
+}
+
+impl ArtifactKind {
+    /// Kinds whose source is put through a real engine — Mermaid's renderer,
+    /// the TypeScript compiler — before it may be persisted.
+    ///
+    /// The check itself can only run in the window (both engines are browser
+    /// libraries), so Rust cannot perform it. What Rust *can* do is refuse to
+    /// store a payload that does not claim to have passed, which turns a silent
+    /// bypass into a compile error at the call site. Mermaid was previously
+    /// guarded on one frontend path only: any other caller of
+    /// `thread_artifact_upsert` persisted broken diagrams.
+    fn requires_validation(self) -> bool {
+        matches!(self, ArtifactKind::Mermaid | ArtifactKind::React)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ArtifactKind::Html => "HTML",
+            ArtifactKind::Svg => "SVG",
+            ArtifactKind::Markdown => "Markdown",
+            ArtifactKind::Mermaid => "Mermaid",
+            ArtifactKind::React => "Canvas",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +125,10 @@ pub struct ArtifactUpsertRequest {
     pub base_version_tag: Option<String>,
     #[serde(default)]
     pub patches: Vec<ArtifactTextPatch>,
+    /// Set by the caller that actually ran the engine gate for this kind. See
+    /// [`ArtifactKind::requires_validation`].
+    #[serde(default)]
+    pub validated: bool,
 }
 
 enum ArtifactUpdate {
@@ -133,7 +169,10 @@ fn validate_key(value: &str, label: &str, max_len: usize) -> Result<(), String> 
     Ok(())
 }
 
-fn validate_upsert(request: &ArtifactUpsertRequest) -> Result<(), String> {
+/// `enforce_gate` is false for patch PREVIEW: preview is the step that produces
+/// the text the engine gate then judges, so demanding the gate there would be
+/// circular.
+fn validate_upsert(request: &ArtifactUpsertRequest, enforce_gate: bool) -> Result<(), String> {
     validate_key(&request.thread_id, "threadId", 128)?;
     validate_key(&request.artifact_id, "artifactId", MAX_ARTIFACT_ID_LEN)?;
     let title = request.title.trim();
@@ -178,6 +217,15 @@ fn validate_upsert(request: &ArtifactUpsertRequest) -> Result<(), String> {
             )
         }
     }
+    // Last, deliberately: a malformed or oversized payload should be reported
+    // as what it is. The gate says only "nobody ran the engine", which is the
+    // less specific answer whenever the input was never valid to begin with.
+    if enforce_gate && request.kind.requires_validation() && !request.validated {
+        return Err(format!(
+            "{} artifacts must pass their engine check before being saved; the caller did not run it",
+            request.kind.label()
+        ));
+    }
     Ok(())
 }
 
@@ -196,13 +244,17 @@ fn validate_content(content: &str) -> Result<(), String> {
 
 fn validate_kind_content(kind: ArtifactKind, content: &str) -> Result<(), String> {
     validate_content(content)?;
-    if kind == ArtifactKind::Mermaid && content.len() > MAX_MERMAID_CONTENT_BYTES {
-        return Err(format!(
+    match kind {
+        ArtifactKind::Mermaid if content.len() > MAX_MERMAID_CONTENT_BYTES => Err(format!(
             "Mermaid content exceeds the {} KiB diagram limit; split the architecture into smaller artifacts",
             MAX_MERMAID_CONTENT_BYTES / 1024
-        ));
+        )),
+        ArtifactKind::React if content.len() > MAX_REACT_CONTENT_BYTES => Err(format!(
+            "Canvas source exceeds the {} KiB single-component limit; split it into several focused canvases",
+            MAX_REACT_CONTENT_BYTES / 1024
+        )),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 fn apply_patches(base: &str, patches: &[ArtifactTextPatch]) -> Result<String, String> {
@@ -377,7 +429,7 @@ fn upsert(
     store: &SessionStore,
     request: ArtifactUpsertRequest,
 ) -> Result<ThreadArtifactBundle, String> {
-    validate_upsert(&request)?;
+    validate_upsert(&request, true)?;
     let ArtifactUpsertRequest {
         thread_id,
         artifact_id,
@@ -386,6 +438,7 @@ fn upsert(
         content,
         base_version_tag,
         patches,
+        ..
     } = request;
     let update = match (content, base_version_tag) {
         (Some(content), None) => ArtifactUpdate::Full(content),
@@ -478,7 +531,7 @@ fn upsert(
 }
 
 fn preview_patch(store: &SessionStore, request: ArtifactUpsertRequest) -> Result<String, String> {
-    validate_upsert(&request)?;
+    validate_upsert(&request, false)?;
     let ArtifactUpsertRequest {
         thread_id,
         artifact_id,
@@ -604,6 +657,7 @@ mod tests {
             content: Some(content.to_string()),
             base_version_tag: None,
             patches: Vec::new(),
+            validated: false,
         }
     }
 
@@ -620,7 +674,47 @@ mod tests {
                 replace: replace.to_string(),
                 all: false,
             }],
+            validated: false,
         }
+    }
+
+    #[test]
+    fn compiled_kinds_cannot_be_saved_without_passing_their_engine_gate() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(directory.path().to_path_buf());
+        store.ensure_thread("thread-1", None, None).unwrap();
+
+        let mut ungated = request("export default function () { return null }");
+        ungated.kind = ArtifactKind::React;
+        let error = upsert(&store, ungated).unwrap_err();
+        assert!(error.contains("engine check"), "{error}");
+        // Nothing was written: a rejected gate must not create v1.
+        assert!(load_bundle_unlocked(&store, "thread-1")
+            .unwrap()
+            .artifacts
+            .is_empty());
+
+        let mut gated = request("export default function () { return null }");
+        gated.kind = ArtifactKind::React;
+        gated.validated = true;
+        let saved = upsert(&store, gated).unwrap();
+        assert_eq!(saved.selected_version_tag.as_deref(), Some("v1"));
+
+        // HTML/SVG/Markdown are displayed as-authored, so they keep working
+        // without a gate. Separate id: the kind of an existing artifact is
+        // immutable, so reusing this one would fail for that reason instead.
+        let mut plain = request("<h1>Plain</h1>");
+        plain.artifact_id = "plain-note".to_string();
+        assert!(upsert(&store, plain).is_ok());
+    }
+
+    #[test]
+    fn canvas_source_is_bounded_to_one_component_file() {
+        let mut oversized = request(&"x".repeat(MAX_REACT_CONTENT_BYTES + 1));
+        oversized.kind = ArtifactKind::React;
+        oversized.validated = true;
+        let error = validate_upsert(&oversized, true).unwrap_err();
+        assert!(error.contains("single-component limit"), "{error}");
     }
 
     #[test]
@@ -870,16 +964,16 @@ mod tests {
     fn rejects_unsafe_ids_and_oversized_content() {
         let mut unsafe_request = request("content");
         unsafe_request.artifact_id = "../escape".to_string();
-        assert!(validate_upsert(&unsafe_request).is_err());
+        assert!(validate_upsert(&unsafe_request, true).is_err());
 
         let mut huge = request("content");
         huge.content = Some("x".repeat(MAX_CONTENT_BYTES + 1));
-        assert!(validate_upsert(&huge).is_err());
+        assert!(validate_upsert(&huge, true).is_err());
 
         let mut huge_mermaid = request("flowchart LR\nA --> B");
         huge_mermaid.kind = ArtifactKind::Mermaid;
         huge_mermaid.content = Some("x".repeat(MAX_MERMAID_CONTENT_BYTES + 1));
-        assert!(validate_upsert(&huge_mermaid)
+        assert!(validate_upsert(&huge_mermaid, true)
             .unwrap_err()
             .contains("diagram limit"));
     }

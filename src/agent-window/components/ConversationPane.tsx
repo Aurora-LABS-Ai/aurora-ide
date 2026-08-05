@@ -25,7 +25,7 @@ import { JumpToLatest } from "./JumpToLatest";
 import { CompactionCard } from "./CompactionCard";
 import { QuestionPrompt } from "./QuestionPrompt";
 import { StreamingDotMatrix } from "./StreamingDotMatrix";
-import { buildTurns, turnWorkedMs } from "./timeline";
+import { buildTurns, turnWorkedMs, type AgwTurn } from "./timeline";
 import { useAgentChatStore } from "../store/useAgentChatStore";
 import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
 import { useAgentUiStore } from "../store/useAgentUiStore";
@@ -150,6 +150,8 @@ export const ConversationPane: React.FC = () => {
   const currentThreadId = useAgentChatStore((s) => s.currentThreadId);
   const currentThread = useAgentChatStore((s) => s.currentThread);
   const threadLoading = useAgentChatStore((s) => s.threadLoading);
+  const rewindToMessage = useAgentChatStore((s) => s.rewindToMessage);
+  const newChat = useAgentChatStore((s) => s.newChat);
 
   const send = useAgentWindowSend();
   // When the background team run finishes/fails, submit a report turn to the
@@ -200,13 +202,34 @@ export const ConversationPane: React.FC = () => {
   const turns = useMemo(() => buildTurns(messages), [messages]);
   const lastTurnIndex = turns.length - 1;
 
-  // The text we'd resend for "Retry" = the most recent user turn.
-  const lastUserContent = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "user") return messages[i].content;
-    }
-    return null;
-  }, [messages]);
+  // Why a retry didn't happen. Cleared on the next attempt — a stale
+  // failure notice next to a working button is worse than none.
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  /**
+   * Re-run an assistant turn.
+   *
+   * Rewinds the thread — transcript and Rust session both — to just before
+   * the user message that opened this turn, then sends that message again.
+   * The retried turn REPLACES the failed one rather than stacking after it,
+   * so history gains no duplicate and the prompt-cache prefix survives.
+   */
+  const retryTurn = useCallback(
+    async (turn: AgwTurn) => {
+      setRetryError(null);
+      try {
+        const content = await rewindToMessage(turn.id);
+        if (content) await send.send(content);
+      } catch (err) {
+        // The runtime refuses to rewind under a live turn. Surface it
+        // rather than leaving a dead button — the user's next move is to
+        // stop the turn first.
+        console.error("[agent-chat] retry failed:", err);
+        setRetryError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [rewindToMessage, send],
+  );
   // Dedicated smooth auto-scroll. A ResizeObserver follows EVERY transcript
   // growth — token text, reasoning, tool cards — and glides to the bottom while
   // streaming, unless the user scrolled up to read (then the jump pill appears).
@@ -354,6 +377,26 @@ export const ConversationPane: React.FC = () => {
             is working through, and how much context it has left. */}
         <TaskIndicator />
         <ContextRing />
+        {/* Starting a new chat lived only on left-rail hover, which meant it
+            existed only if you already had the rail open and knew to reach for
+            it. It is the most common action in the window, so it belongs where
+            the other always-visible controls are. Same behaviour as the rail's
+            pencil: a draft in the CURRENT project, materialised on first send.
+
+            Absent rather than disabled on the empty state: with no thread open
+            you are ALREADY in a new chat, so the control has nothing to do. A
+            greyed-out button still asks the reader to work out why it is dead. */}
+        {(currentThreadId || currentThread) && (
+          <button
+            type="button"
+            className="agw-icon-btn"
+            title="New chat"
+            aria-label="Start a new chat"
+            onClick={() => newChat()}
+          >
+            <AgentIcon name="inspect" size={16} />
+          </button>
+        )}
         <button
           type="button"
           className="agw-icon-btn"
@@ -460,9 +503,10 @@ export const ConversationPane: React.FC = () => {
                   const streaming = openIsStreaming && isAssistant && isLast;
                   // Actions render once per turn, when idle (not mid-stream).
                   const showActions = isAssistant ? !streaming : true;
-                  // Retry hangs off the last assistant turn only, when idle.
-                  const canRetry =
-                    isAssistant && isLast && !openIsStreaming && !!lastUserContent;
+                  // Retry is offered on ANY assistant turn, not just the
+                  // newest: a turn that failed several messages ago is still
+                  // worth re-running, and rewinding makes that well-defined.
+                  const canRetry = isAssistant && !openIsStreaming;
                   return (
                     <div
                       key={turn.id}
@@ -488,11 +532,7 @@ export const ConversationPane: React.FC = () => {
                         workedMs={isAssistant ? turnWorkedMs(turn) : null}
                         startedAt={isAssistant ? turn.startedAt : undefined}
                         showActions={showActions}
-                        onRetry={
-                          canRetry
-                            ? () => void send.send(lastUserContent)
-                            : undefined
-                        }
+                        onRetry={canRetry ? () => void retryTurn(turn) : undefined}
                       />
                     </div>
                   );
@@ -530,6 +570,21 @@ export const ConversationPane: React.FC = () => {
             className="agw-composer-dock"
             data-drum={(!openIsStreaming && suggestions.length > 0) || undefined}
           >
+            {/* A retry that didn't happen says why, next to where the user
+                just clicked. Dismissible, and cleared by the next attempt. */}
+            {retryError && (
+              <div className="agw-retry-error" role="status">
+                <span>{retryError}</span>
+                <button
+                  type="button"
+                  className="agw-retry-error-close"
+                  onClick={() => setRetryError(null)}
+                  aria-label="Dismiss"
+                >
+                  <AgentIcon name="close" size={12} />
+                </button>
+              </div>
+            )}
             {/* The checklist (`todo`) and the live background processes
                 (shell_spawn) used to mount their own cards HERE, which pushed
                 the transcript down every time one woke up. Processes are now a

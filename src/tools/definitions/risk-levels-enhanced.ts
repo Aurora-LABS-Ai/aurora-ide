@@ -103,6 +103,13 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   todo_write: 'low',               // retired name, kept so a stale roster can't escalate
 
   // ============================================
+  // TRANSCRIPT ANNOTATION - AUTO-APPROVED
+  // ============================================
+  // Naming the part of the work it is starting. Touches nothing; listed so the
+  // unknown-tool default ('medium') never applies to it.
+  chapter: 'low',
+
+  // ============================================
   // SEARCH TOOLS - AUTO-APPROVED
   // ============================================
   auroro_websearch: 'low',         // Web search/fetch - read only operation

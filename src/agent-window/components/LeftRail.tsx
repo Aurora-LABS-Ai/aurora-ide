@@ -27,6 +27,7 @@ import { AgentIcon } from "../shared/AgentIcon";
 import { AgentConfirm } from "./AgentConfirm";
 import { RailMenu, type RailMenuItem, type RailMenuState } from "./RailMenu";
 import { useAgentChatStore } from "../store/useAgentChatStore";
+import { useAgentTerminalStore } from "../store/useAgentTerminalStore";
 import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
 import { useTeamHistoryStore } from "../store/useTeamHistoryStore";
 import { useTeamStore } from "../../store/useTeamStore";
@@ -427,7 +428,6 @@ export const LeftRail: React.FC = () => {
   const visibleProjects = showingAllProjects
     ? projects
     : projects.slice(0, PROJECTS_PREVIEW_LIMIT);
-  const hiddenProjectCount = projects.length - PROJECTS_PREVIEW_LIMIT;
   const toggleShowAllProjects = () => {
     setProjectsShowAll((v) => {
       const next = !v;
@@ -654,7 +654,17 @@ export const LeftRail: React.FC = () => {
         },
         {
           icon: "terminal",
-          label: "Open terminal here",
+          label: "Open in integrated terminal",
+          onSelect: () => {
+            // Session before tab, so the Terminal panel's first-show
+            // auto-shell effect doesn't race a second session into being.
+            useAgentTerminalStore.getState().createSession("powershell", root);
+            useAgentWorkspaceStore.getState().openTab("terminal");
+          },
+        },
+        {
+          icon: "terminal",
+          label: "Open in external terminal",
           onSelect: () => void openProjectTerminal(root),
         },
         {
@@ -994,6 +1004,27 @@ export const LeftRail: React.FC = () => {
             />
             <span>Projects</span>
           </button>
+          {/* Scope toggle, beside the order button so view controls share one
+              corner. "8 of 21" names what you're looking at (a preview), and
+              the header row itself is sticky in the scroller — so this stays
+              one click away from anywhere inside the expanded list. */}
+          {projectsOpen && !q && projects.length > PROJECTS_PREVIEW_LIMIT && (
+            <button
+              type="button"
+              className="agw-rail-scope"
+              onClick={toggleShowAllProjects}
+              aria-expanded={projectsShowAll}
+              title={
+                projectsShowAll
+                  ? `Show only the first ${PROJECTS_PREVIEW_LIMIT} projects`
+                  : `Show all ${projects.length} projects`
+              }
+            >
+              {projectsShowAll
+                ? "Show less"
+                : `${PROJECTS_PREVIEW_LIMIT} of ${projects.length}`}
+            </button>
+          )}
           <button
             type="button"
             className="agw-rail-sort"
@@ -1133,25 +1164,6 @@ export const LeftRail: React.FC = () => {
             })
           )}
 
-          {/* Codex-style show more / less — only when the list overflows the
-              preview and we're not searching (search reveals everything). */}
-          {!q && projects.length > PROJECTS_PREVIEW_LIMIT && (
-            <button
-              type="button"
-              className="agw-rail-show-more"
-              onClick={toggleShowAllProjects}
-              aria-expanded={projectsShowAll}
-            >
-              <AgentIcon
-                name="chevron-down"
-                size={12}
-                style={{ transform: projectsShowAll ? "rotate(180deg)" : "none" }}
-              />
-              <span>
-                {projectsShowAll ? "Show less" : `Show ${hiddenProjectCount} more`}
-              </span>
-            </button>
-          )}
         </Collapse>
 
         {/* Archived — a collapsible section that expands/collapses inline,

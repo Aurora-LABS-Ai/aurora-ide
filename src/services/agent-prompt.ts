@@ -138,6 +138,40 @@ const SKILL_SYSTEM_INSTRUCTIONS = `## Skill System
 - If a skill is explicitly attached to a turn, treat it as authoritative for that turn.
 - If no skill applies, continue with base Aurora behavior.`;
 
+/**
+ * The chapter instruction, added ONLY when the user has turned chapters on
+ * (Settings → Preferences → Transcript).
+ *
+ * Deliberately two lines. The `chapter` tool's own schema teaches the mechanics
+ * — what a good title looks like, when a chapter is too small to be worth one.
+ * All this has to do is tell the model to think in chapters before it starts,
+ * because that is the part a tool description cannot reach: by the time the model
+ * is reading a tool schema it has already decided how to approach the work.
+ *
+ * The same preference gates the tool itself in Rust, so this is never present
+ * without `chapter` available to act on it.
+ */
+const CHAPTER_INSTRUCTIONS = `## Chapters
+- Before starting work that will take several steps, decide the two to four distinct parts it breaks into.
+- Call \`chapter\` as you begin each one, naming what you are about to do, so the user can see the shape of a long reply.`;
+
+/**
+ * The canvas pointer — two lines, on purpose.
+ *
+ * A live canvas has a real contract (one file, two legal imports, a required
+ * default export, no network, theme tokens only) plus a body of taste about
+ * density and labelling. All of that lives in the `canvas_guidelines` tool and
+ * costs nothing on the overwhelming majority of turns that never build one.
+ *
+ * What cannot live in a tool description is the *decision*: by the time the
+ * model is reading `present_artifact`'s schema it has already chosen to answer
+ * in prose. So the prompt carries only the trigger, and the tool carries
+ * everything else. Same split as the surface doctrine above it.
+ */
+const CANVAS_INSTRUCTIONS = `## Canvas
+- When the answer is a standalone artifact the user will study rather than read once — analysis, findings, comparisons, any dataset you were about to render as a large markdown table — present it on the Canvas instead of in chat.
+- Call \`canvas_guidelines\` before your first \`present_artifact\` with \`kind: "react"\`; those canvases are compiled, so an unread contract is a failed write.`;
+
 const MAX_PREVIEW_SNIPPET_CHARS = 200;
 
 function clipPreviewLine(line: string): string {
@@ -277,8 +311,22 @@ export async function composeAgentSystemPrompt(options: {
   executionMode?: AgentExecutionMode;
   mcpSummary?: string;
   promptContext: AgentPromptContext;
+  /**
+   * Include the chapter instruction. Must be the SAME value the caller sends as
+   * `transcriptChapters` on the chat request — that flag is what makes Rust
+   * advertise the `chapter` tool, and reading the store here instead let a
+   * surface that never forwards the flag (the IDE chat) compose a prompt that
+   * asked for chapters the model had no tool to mark.
+   */
+  transcriptChapters?: boolean;
 }): Promise<ComposedAgentPrompt> {
-  const { basePrompt, executionMode = "agent", mcpSummary, promptContext } = options;
+  const {
+    basePrompt,
+    executionMode = "agent",
+    mcpSummary,
+    promptContext,
+    transcriptChapters = false,
+  } = options;
   const settings = useSettingsStore.getState();
   const hasActivePlan = await projectHasActivePlan(promptContext.workspacePath);
   const { allSkills, activeSkills, enabledSkills, explicitSkills } = await resolveSkillsForPrompt({
@@ -298,8 +346,16 @@ export async function composeAgentSystemPrompt(options: {
     // Aurora's one built-in doctrine. Always present, never a skill — the
     // depth is pulled on demand via the `design_guidelines` tool.
     SURFACE_DOCTRINE_CORE,
+    CANVAS_INSTRUCTIONS,
     SKILL_SYSTEM_INSTRUCTIONS,
   ];
+
+  // Chapters are opt-in, and the caller passes the same value it sends on the
+  // chat request (which is what makes Rust advertise the `chapter` tool) — so
+  // the model is never told to announce chapters it has no way to mark.
+  if (transcriptChapters) {
+    sections.push(CHAPTER_INSTRUCTIONS);
+  }
 
   // Global user instructions: a single, workspace-agnostic rule set the user
   // configured in Settings → Agent. Applies to every workspace and turn, so it

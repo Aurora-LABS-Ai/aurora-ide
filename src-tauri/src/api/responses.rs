@@ -973,6 +973,7 @@ mod tests {
     fn config() -> ProviderConfigSnapshot {
         ProviderConfigSnapshot {
             provider_id: "openai-responses".into(),
+            provider_type: None,
             base_url: "https://api.openai.com/v1".into(),
             api_key: "sk-test".into(),
             api_keys: None,

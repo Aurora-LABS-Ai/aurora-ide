@@ -18,10 +18,11 @@ Behavior:
 - A source-identical update is rejected instead of creating a meaningless duplicate version.
 - The user can switch artifacts, inspect any saved version, and toggle Preview/Source after reopening the conversation.
 - Use mermaid for architecture, flowchart, sequence, state, class, ER, journey, timeline, quadrant, or mind-map diagrams. Send raw Mermaid syntax without Markdown fences. Canvas provides pan, zoom, fit, Source view, and themed rendering.
-- Use html for custom interactive compositions, svg for bespoke graphics Mermaid cannot express, and markdown for document-style artifacts. Prefer mermaid over hand-writing diagram SVG or embedding Mermaid in HTML.
-- Produce self-contained content. HTML and SVG render in a sandbox; do not depend on access to the parent app or local files.
+- Use react for a LIVE canvas: one component file Aurora compiles and runs, so it can have working controls, sortable tables, filters, and tabs. Prefer it whenever the deliverable is a dataset or a set of findings the user will study — anything you were about to render as a large markdown table. Call canvas_guidelines before your first react artifact; the source is compiled and a contract violation rejects the write.
+- Use html for custom interactive compositions, svg for bespoke graphics Mermaid cannot express, and markdown for document-style artifacts. Prefer mermaid over hand-writing diagram SVG, and react over hand-writing an interactive HTML page.
+- Produce self-contained content. HTML, SVG, and react canvases render in a sandbox with no network access; embed the data instead of fetching it, and do not depend on the parent app or local files.
 
-Returns artifactId, title, kind, and the saved immutable versionTag. Mermaid source is syntax-checked before saving. Patch failures do not create a version: overlap errors name both conflicting patch indices, stale errors report the latest version, ambiguous matches report their count, and Mermaid errors include parser context. Correct the identified input and retry; use read_artifact when the exact latest source is needed.`,
+Returns artifactId, title, kind, and the saved immutable versionTag. Mermaid source is FULLY RENDERED and react source is COMPILED before saving — layout errors (duplicate ids, a subgraph id colliding with a node id, cyclic nesting) and compile errors (invalid syntax, a missing default export, a disallowed import) reject the write with the engine's exact message. Type errors are not caught yet, so a react canvas that compiles can still throw at run time; the panel reports the crash, but write defensively against missing or empty data rather than relying on the compiler. Patch failures do not create a version: overlap errors name both conflicting patch indices, stale errors report the latest version, ambiguous matches report their count, and Mermaid errors include renderer context. Correct the identified input and retry; use read_artifact when the exact latest source is needed.`,
     parameters: {
       type: "object",
       properties: {
@@ -36,9 +37,9 @@ Returns artifactId, title, kind, and the saved immutable versionTag. Mermaid sou
         },
         kind: {
           type: "string",
-          enum: ["html", "svg", "markdown", "mermaid"],
+          enum: ["html", "svg", "markdown", "mermaid", "react"],
           description:
-            "Rendering format. Use mermaid for diagrams and provide raw Mermaid syntax without ``` fences. The kind cannot change for an existing artifactId.",
+            "Rendering format. Use mermaid for diagrams and provide raw Mermaid syntax without ``` fences. Use react for a live, interactive canvas — one component file with a default export, importing only from \"react\" and \"aurora/canvas\". The kind cannot change for an existing artifactId.",
         },
         content: {
           type: "string",
@@ -86,13 +87,16 @@ export const readArtifactTool: ToolDefinition = {
     name: "read_artifact",
     description: `Read the immutable source of a saved Canvas artifact before revising it.
 
-Use the artifactId and versionTag from an earlier present_artifact result. Omit query to retrieve the complete source. For a focused edit, provide a case-sensitive query and this returns exact matching excerpts with line numbers, reducing context usage while preserving text suitable for a patch find value.`,
+Call it with NO artifactId to list every artifact this conversation has saved, with titles, kinds, and latest version tags. Do that when reopening older work or when you no longer have an id in context — artifacts persist for the life of the conversation, long after the turn that created them.
+
+Otherwise pass the artifactId and versionTag from an earlier present_artifact result. Omit query to retrieve the complete source. For a focused edit, provide a case-sensitive query and this returns exact matching excerpts with line numbers, reducing context usage while preserving text suitable for a patch find value.`,
     parameters: {
       type: "object",
       properties: {
         artifactId: {
           type: "string",
-          description: "Stable artifact id to read.",
+          description:
+            "Stable artifact id to read. Omit it to list every artifact saved in this conversation.",
         },
         versionTag: {
           type: "string",
@@ -110,7 +114,10 @@ Use the artifactId and versionTag from an earlier present_artifact result. Omit 
           description: "Lines of surrounding context for query matches. Defaults to 2.",
         },
       },
-      required: ["artifactId"],
+      // Nothing is required: a bare call lists this conversation's artifacts,
+      // which is how a model that has lost the id in a compaction finds its
+      // way back to source it wrote.
+      required: [],
     },
   },
 };

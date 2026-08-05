@@ -352,6 +352,7 @@ mod tests {
     fn base_config() -> ProviderConfigSnapshot {
         ProviderConfigSnapshot {
             provider_id: "deepseek".into(),
+            provider_type: None,
             base_url: "https://api.deepseek.com/v1".into(),
             api_key: "test-key".into(),
             api_keys: None,

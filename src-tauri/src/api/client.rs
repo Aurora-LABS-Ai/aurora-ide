@@ -7,11 +7,16 @@
 //! `aurora_provider_*` so the Tauri command surface (Implementer E) can
 //! pass the existing payload through unchanged.
 //!
-//! The factory dispatches purely on `provider_id` (no `base_url`
-//! introspection — that path is brittle, and the frontend always sets
-//! `provider_id` from a known preset). `provider_id` of `"anthropic"`
-//! or `"minimax"` returns an [`AnthropicAdapter`]; everything else
-//! (including empty / unknown ids) returns an [`OpenAICompatAdapter`].
+//! The factory dispatches purely on `provider_type` — the user's
+//! explicit "API type" selection — falling back to `provider_id` when no
+//! type was sent (no `base_url` introspection; that path is brittle).
+//! A type of `"anthropic"` or `"minimax"` returns an
+//! [`AnthropicAdapter`]; everything else (including empty / unknown
+//! types) returns an [`OpenAICompatAdapter`].
+//!
+//! Dispatching on `provider_id` was a bug: user-added providers carry a
+//! generated UUID there, so every custom provider silently fell through
+//! to Chat Completions no matter which API type the user picked.
 //!
 //! [`StreamingApiClient`]: crate::agent_runtime::api_client::StreamingApiClient
 
@@ -41,12 +46,30 @@ use super::responses::OpenAIResponsesAdapter;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfigSnapshot {
-    /// Frontend-managed provider identifier. Used by [`build_api_client`]
-    /// to choose the adapter. Examples: `"anthropic"`, `"minimax"`,
-    /// `"deepseek"`, `"glm"`, `"openai"`, `"openai-responses"`,
-    /// `"fireworks"`, `"lmstudio"`, `"ollama"`, `"custom"`.
-    #[serde(default, alias = "provider_type", alias = "providerType")]
+    /// Frontend-managed provider **row** identifier. For built-in presets
+    /// this happens to equal the provider type (`"anthropic"`,
+    /// `"deepseek"`, `"openai-responses"`, …); for user-added providers it
+    /// is a generated UUID.
+    ///
+    /// Identity only — never infer the wire shape from it. That is
+    /// [`Self::provider_type`]'s job. This *is* the right key for
+    /// [`super::provider_kernel_adapter::unprefix_model`], which strips a
+    /// `"{row_id}:"` prefix off the model name.
+    #[serde(default)]
     pub provider_id: String,
+    /// The user's explicit **API type** selection — the "API type" dropdown
+    /// on the provider settings page: `"openai"`, `"openai-responses"`,
+    /// `"anthropic"`, `"deepseek"`, `"codex"`, `"glm"`, `"minimax"`,
+    /// `"fireworks"`, `"lmstudio"`, `"ollama"`, `"custom"`.
+    ///
+    /// This — not `provider_id` — decides the wire shape and every other
+    /// provider-family behaviour (prompt caching, `stream_options`,
+    /// reasoning-field replay). Optional so pre-cutover payloads keep
+    /// working: when absent, [`Self::effective_provider_type`] falls back
+    /// to `provider_id`, which is correct for the built-in rows whose id
+    /// equals their type.
+    #[serde(default, alias = "provider_type")]
+    pub provider_type: Option<String>,
     pub base_url: String,
     #[serde(default)]
     pub api_key: String,
@@ -81,6 +104,21 @@ pub struct ProviderConfigSnapshot {
 }
 
 impl ProviderConfigSnapshot {
+    /// The provider family every wire-shape decision must key on.
+    ///
+    /// Prefers the user's explicit API-type selection; falls back to
+    /// `provider_id` only when no type was sent. Without the fallback,
+    /// pre-cutover payloads (which carried the type *in* `provider_id`)
+    /// would all collapse to OpenAI Chat Completions.
+    #[must_use]
+    pub fn effective_provider_type(&self) -> &str {
+        self.provider_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| self.provider_id.trim())
+    }
+
     /// The ordered list of API keys to try for this provider. Dedupes the
     /// pool while preserving order, drops blanks, and always falls back to
     /// the single `api_key` when the pool is empty. Guaranteed non-empty
@@ -130,10 +168,12 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    /// Decide kind purely from `provider_id`. Empty / unknown → OpenAI.
+    /// Decide kind purely from the provider **type** (see
+    /// [`ProviderConfigSnapshot::effective_provider_type`]). Empty /
+    /// unknown → OpenAI Chat Completions.
     #[must_use]
-    pub fn detect(provider_id: &str) -> Self {
-        match provider_id.trim() {
+    pub fn detect(provider_type: &str) -> Self {
+        match provider_type.trim() {
             "anthropic" | "minimax" => ProviderKind::Anthropic,
             "deepseek" => ProviderKind::DeepSeek,
             "openai-responses" | "openai_responses" => ProviderKind::OpenAIResponses,
@@ -174,7 +214,7 @@ pub fn build_api_client(config: &ProviderConfigSnapshot) -> Arc<dyn StreamingApi
 /// It never wraps in a pool — that would recurse.
 #[must_use]
 pub fn build_single_api_client(config: &ProviderConfigSnapshot) -> Arc<dyn StreamingApiClient> {
-    match ProviderKind::detect(&config.provider_id) {
+    match ProviderKind::detect(config.effective_provider_type()) {
         ProviderKind::Anthropic => Arc::new(AnthropicAdapter::new(config.clone())),
         ProviderKind::DeepSeek => Arc::new(DeepSeekAdapter::new(config.clone())),
         ProviderKind::OpenAIResponses => Arc::new(OpenAIResponsesAdapter::new(config.clone())),
@@ -190,6 +230,7 @@ mod tests {
     fn config(provider_id: &str) -> ProviderConfigSnapshot {
         ProviderConfigSnapshot {
             provider_id: provider_id.to_string(),
+            provider_type: None,
             base_url: "https://example.test".into(),
             api_key: "key".into(),
             api_keys: None,
@@ -333,16 +374,68 @@ mod tests {
     }
 
     #[test]
-    fn config_accepts_provider_type_alias() {
-        // The existing aurora frontend payload uses `providerType` /
-        // `provider_type`; our serde alias maps both onto `provider_id`.
-        let json = serde_json::json!({
-            "providerType": "minimax",
-            "baseUrl": "https://api.minimax.chat",
-            "apiKey": "xxx",
-            "model": "abab",
-        });
-        let cfg: ProviderConfigSnapshot = serde_json::from_value(json).expect("deserialize");
-        assert_eq!(cfg.provider_id, "minimax");
+    fn config_accepts_provider_type_in_both_cases() {
+        for key in ["providerType", "provider_type"] {
+            let json = serde_json::json!({
+                "providerId": "25879d0f-72b3-4f56-875a-32254420d5ec",
+                key: "minimax",
+                "baseUrl": "https://api.minimax.chat",
+                "apiKey": "xxx",
+                "model": "abab",
+            });
+            let cfg: ProviderConfigSnapshot = serde_json::from_value(json).expect("deserialize");
+            assert_eq!(cfg.provider_type.as_deref(), Some("minimax"), "key {key}");
+            assert_eq!(cfg.effective_provider_type(), "minimax", "key {key}");
+        }
+    }
+
+    /// The reported bug: a user adds a provider, picks "OpenAI Responses"
+    /// as the API type, and Aurora posts Chat Completions anyway — because
+    /// dispatch keyed on the row id, which for a user-added provider is a
+    /// UUID that matches no known type.
+    #[test]
+    fn custom_provider_honours_selected_api_type_not_row_id() {
+        let mut c = config("b1846984-2777-4815-8a29-90e29392a8e6");
+        c.provider_type = Some("openai-responses".into());
+        assert_eq!(
+            ProviderKind::detect(c.effective_provider_type()),
+            ProviderKind::OpenAIResponses,
+        );
+
+        // Every other family must survive a UUID row id too.
+        for (api_type, expected) in [
+            ("anthropic", ProviderKind::Anthropic),
+            ("minimax", ProviderKind::Anthropic),
+            ("deepseek", ProviderKind::DeepSeek),
+            ("codex", ProviderKind::Codex),
+            ("openai", ProviderKind::OpenAICompat),
+            ("glm", ProviderKind::OpenAICompat),
+            ("custom", ProviderKind::OpenAICompat),
+        ] {
+            let mut c = config("b1846984-2777-4815-8a29-90e29392a8e6");
+            c.provider_type = Some(api_type.into());
+            assert_eq!(
+                ProviderKind::detect(c.effective_provider_type()),
+                expected,
+                "api type {api_type} must not be overridden by the row id",
+            );
+        }
+    }
+
+    #[test]
+    fn effective_provider_type_falls_back_to_row_id_when_absent() {
+        // Built-in rows (id == type) and pre-cutover payloads that never
+        // send a type must keep working unchanged.
+        let c = config("deepseek");
+        assert_eq!(c.effective_provider_type(), "deepseek");
+        assert_eq!(
+            ProviderKind::detect(c.effective_provider_type()),
+            ProviderKind::DeepSeek,
+        );
+
+        // A blank type is treated as absent, not as "unknown → OpenAI".
+        let mut c = config("anthropic");
+        c.provider_type = Some("   ".into());
+        assert_eq!(c.effective_provider_type(), "anthropic");
     }
 }

@@ -162,6 +162,7 @@ mod tests {
     fn base_config() -> ProviderConfigSnapshot {
         ProviderConfigSnapshot {
             provider_id: "custom".into(),
+            provider_type: None,
             base_url: "https://example.test/v1".into(),
             api_key: String::new(),
             api_keys: Some(vec!["k1".into(), "k2".into(), "k3".into()]),

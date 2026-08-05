@@ -38,7 +38,7 @@ use super::client::ProviderConfigSnapshot;
 use super::provider_kernel_adapter::{
     build_anthropic_body, build_anthropic_headers, build_anthropic_url, finalize_assistant_message,
     frame_payloads, map_reqwest_error, map_status_error, merge_usage, AnthropicStreamEvent,
-    BlockState, SseFrameBuffer,
+    BlockState, OpenAiStreamError, SseFrameBuffer,
 };
 
 /// Anthropic / MiniMax streaming adapter.
@@ -180,6 +180,23 @@ where
                     Ok(e) => e,
                     Err(_) => continue, // tolerate malformed events (kernel parity)
                 };
+
+                // An `error` event ends the turn with the provider's own
+                // reason. Handled here rather than in the event match
+                // because that match returns `()` and cannot fail the
+                // stream — which is exactly how this used to fall through
+                // to `_ => {}` and vanish.
+                if event.event_type == "error" {
+                    let message = event
+                        .error
+                        .as_ref()
+                        .filter(|e| e.is_populated())
+                        .map_or_else(
+                            || "the provider reported an error but gave no detail".to_string(),
+                            OpenAiStreamError::render,
+                        );
+                    return Err(ApiError::Provider(message));
+                }
 
                 if event.event_type == "message_stop" {
                     saw_terminator = true;
@@ -462,6 +479,21 @@ mod tests {
             CancellationToken::new(),
         )
         .await
+    }
+
+    /// Anthropic streams `event: error` after HTTP 200 too (`overloaded_error`
+    /// is the common one). It used to hit the event match's `_ => {}` and
+    /// vanish, leaving the turn to end with no content and no reason.
+    #[tokio::test]
+    async fn in_band_error_event_fails_the_turn_with_the_provider_message() {
+        let body = "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\
+                    \"message\":\"Overloaded\"}}\n\n";
+        match drive(body).await {
+            Err(ApiError::Provider(msg)) => {
+                assert!(msg.contains("Overloaded"), "unexpected message: {msg}");
+            }
+            other => panic!("an in-band error must fail the turn, got {other:?}"),
+        }
     }
 
     /// A dropped connection reaches EOF with neither `message_stop` nor a

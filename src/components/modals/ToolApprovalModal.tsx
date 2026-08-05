@@ -22,6 +22,7 @@
 
 import React from 'react';
 import { DiffEditor } from '@monaco-editor/react';
+import '../../lib/monaco-setup';
 import { useUiStore } from '../../store/useUiStore';
 import { useChatStore } from '../../store/useChatStore';
 import { X, AlertTriangle, Check, ShieldAlert } from 'lucide-react';

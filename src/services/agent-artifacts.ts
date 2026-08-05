@@ -1,6 +1,6 @@
 import { auroraInvoke } from "../lib/runtime";
 
-export type AgentArtifactKind = "html" | "svg" | "markdown" | "mermaid";
+export type AgentArtifactKind = "html" | "svg" | "markdown" | "mermaid" | "react";
 
 export interface AgentArtifactVersion {
   tag: string;
@@ -32,6 +32,12 @@ interface PresentArtifactBase {
   artifactId: string;
   title: string;
   kind: AgentArtifactKind;
+  /**
+   * Set by the caller that ran this kind's engine gate — the Mermaid renderer,
+   * the canvas compiler. Rust refuses to persist `mermaid` or `react` without
+   * it, so the check cannot be skipped by a future call site that forgets.
+   */
+  validated?: boolean;
 }
 
 export type PresentArtifactInput = PresentArtifactBase &

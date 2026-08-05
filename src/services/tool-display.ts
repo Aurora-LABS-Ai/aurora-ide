@@ -34,6 +34,11 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   // Without these entries the fallback title-cased them into "Todo" and
   // "Plan Step Update", which read as internal names.
   todo: "Task List",
+  // Only ever seen when the call was REJECTED — an accepted `chapter` renders as
+  // a heading in the transcript, not a tool card. The label has to make sense in
+  // that one context: "Chapter" alone would read as a heading that failed for no
+  // stated reason, next to the error the runtime returned.
+  chapter: "Name This Part",
   plan_write: "Write Plan",
   plan_read: "Read Plan",
   plan_step_update: "Plan Progress",

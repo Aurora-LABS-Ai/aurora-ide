@@ -215,6 +215,18 @@ interface AgentChatState {
   /** Patch a single message in the open thread by id (token / tool updates). */
   patchMessage: (id: string, patch: (message: DbMessage) => DbMessage) => void;
   /**
+   * Rewind the thread to just before the turn containing `messageId`,
+   * dropping that turn and everything after it from BOTH the transcript and
+   * the Rust session. Returns the user message text that opened the removed
+   * turn so the caller can re-send it, or `null` when there is nothing to
+   * rewind to.
+   *
+   * This is what makes Retry a retry rather than a resend: the re-sent
+   * message lands on the same prefix, so history gains no duplicate and the
+   * provider's prompt cache still hits. Rejects while a turn is streaming.
+   */
+  rewindToMessage: (messageId: string) => Promise<string | null>;
+  /**
    * Reload the open thread from disk (the runtime owns the authoritative JSONL)
    * and refresh the scoped list so a freshly created chat appears in the rail.
    */
@@ -686,6 +698,52 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
         },
       };
     });
+  },
+
+  rewindToMessage: async (messageId) => {
+    const state = get();
+    const thread = state.currentThread;
+    if (!thread) return null;
+
+    const cut = thread.messages.findIndex((m) => m.id === messageId);
+    if (cut < 0) return null;
+
+    // The user message that opened the turn being retried. Retry re-runs
+    // THAT message, not whatever the newest one happens to be.
+    let userIndex = -1;
+    for (let i = cut; i >= 0; i--) {
+      if (thread.messages[i].role === "user") {
+        userIndex = i;
+        break;
+      }
+    }
+    if (userIndex < 0) return null;
+
+    // Its ordinal among user messages — the one ordering the frontend
+    // transcript and the Rust session agree on, since the runtime holds
+    // extra tool/notice messages the UI folds away.
+    const ordinal = thread.messages
+      .slice(0, userIndex)
+      .filter((m) => m.role === "user").length;
+    const content = thread.messages[userIndex].content;
+
+    // Rust first: if it refuses (a turn is still streaming) the transcript
+    // must stay exactly as it was, or the UI would drop messages the model
+    // is still appending to.
+    if (isTauri()) {
+      await auroraInvoke("agent_rewind_to_user_message", {
+        threadId: thread.id,
+        userMessageOrdinal: ordinal,
+      });
+    }
+
+    const kept = thread.messages.slice(0, userIndex);
+    const trimmed: DbThread = { ...thread, messages: kept };
+    set({ currentThread: trimmed });
+    if (isTauri()) {
+      await threadService.saveThread(trimmed);
+    }
+    return content;
   },
 
   reloadCurrentThread: async () => {

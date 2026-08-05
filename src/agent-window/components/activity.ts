@@ -285,6 +285,7 @@ const STREAMED_STRING_KEYS = [
   "direction",
   "level",
   "action",
+  "title",
   "processId",
   "requestId",
   "pid",
@@ -369,6 +370,15 @@ export function describeToolActivity(name: string, argsJson: string): AgentActiv
           targets: [target],
         }
       : { label: "Inspecting the workspace" };
+  }
+
+  // The agent naming the part of the work it is starting. The transcript is
+  // where this lands (as a heading); the narrator frame exists because every
+  // call gets one, and it should read as the announcement it is rather than as
+  // a tool being run on something.
+  if (name === "chapter") {
+    const title = asStr(args.title);
+    return { label: title ? `Starting: ${clip(title, 40)}` : "Starting the next part" };
   }
 
   const webUrl = asStr(args.url);

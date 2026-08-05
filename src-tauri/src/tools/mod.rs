@@ -57,11 +57,13 @@
 #![allow(dead_code)]
 
 pub mod browser;
+pub mod canvas;
 pub mod design;
 pub mod file_workspace_search;
 pub mod permissions;
 pub mod plan;
 pub mod shell_editor_todo;
+pub mod transcript;
 
 /// Number of tools pre-populated in the production
 /// [`crate::agent_runtime::tool_executor::ToolRegistry`]:
@@ -87,7 +89,15 @@ pub mod shell_editor_todo;
 /// single `todo` tool with a typed `op`. Three names for one piece of state made
 /// the model choose before it could act, and every one of them spoke the same
 /// vocabulary of ids, statuses and the cursor.
-pub const BUILTIN_TOOL_COUNT: usize = 29;
+/// Raised 29 -> 30 by the `transcript` bucket's `chapter`, which the model is
+/// only ever advertised when the user turns chapters on (the gate lives in
+/// `commands::agent_v2::is_tool_available_this_turn`). It is registered
+/// unconditionally here, so this count is the roster's size, not its per-turn
+/// visibility.
+/// Raised 30 -> 31 by `canvas_guidelines`: live canvases are compiled and run,
+/// so their authoring contract is enforced by a compiler rather than by taste,
+/// and the model has to be told it before its first `kind: "react"` write.
+pub const BUILTIN_TOOL_COUNT: usize = 31;
 
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
@@ -133,6 +143,8 @@ pub fn register_builtin_tools(
     shell_editor_todo::register(&mut staging, sink.clone());
     plan::register(&mut staging, sink);
     design::register(&mut staging);
+    canvas::register(&mut staging);
+    transcript::register(&mut staging);
     if let Some(manager) = browser_manager {
         browser::register(&mut staging, manager);
     }
@@ -204,16 +216,20 @@ mod tests {
             + shell_editor_todo::TOOL_NAMES.len()
             + plan::TOOL_NAMES.len()
             + design::TOOL_NAMES.len()
+            + canvas::TOOL_NAMES.len()
+            + transcript::TOOL_NAMES.len()
     }
 
     #[test]
     fn builtin_tool_count_is_correct() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 29);
+        assert_eq!(BUILTIN_TOOL_COUNT, 31);
         assert_eq!(
             file_workspace_search::TOOL_NAMES.len()
                 + shell_editor_todo::TOOL_NAMES.len()
                 + plan::TOOL_NAMES.len()
                 + design::TOOL_NAMES.len()
+                + canvas::TOOL_NAMES.len()
+                + transcript::TOOL_NAMES.len()
                 + browser::TOOL_NAMES.len(),
             BUILTIN_TOOL_COUNT
         );

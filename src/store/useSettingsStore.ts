@@ -206,6 +206,14 @@ interface SettingsState {
   showActivityInTitle: boolean;
   setShowActivityInTitle: (value: boolean) => void;
   /**
+   * Let the agent split a long turn into named chapters, rendered as headings in
+   * the transcript. This is NOT a display setting: it adds a short instruction
+   * to the system prompt and hands the agent a `chapter` tool, so it only
+   * affects turns started after it is switched on. Off by default.
+   */
+  transcriptChapters: boolean;
+  setTranscriptChapters: (value: boolean) => void;
+  /**
    * Resolve the {@link ProviderConfig} the Lead should run on — the
    * `teamLeadModel` override when set and valid, otherwise the active chat
    * config (`getLLMConfig`).
@@ -1025,6 +1033,9 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // Live activity in the streaming header title is on by default.
   showActivityInTitle: true,
 
+  // Chapters change what the agent is told to do, so they stay off until asked for.
+  transcriptChapters: false,
+
   // File Changes Approval
   autoAcceptChanges: false,
 
@@ -1315,6 +1326,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           allowOutsideWorkspace: appSettings.allowOutsideWorkspace ?? false,
           notifyOnTurnComplete: appSettings.notifyOnTurnComplete ?? true,
           showActivityInTitle: appSettings.showActivityInTitle ?? true,
+          transcriptChapters: appSettings.transcriptChapters ?? false,
           autoAcceptChanges: appSettings.autoAcceptChanges ?? false,
           explorerIconPack,
           syntaxValidationEnabled: appSettings.syntaxValidationEnabled ?? true,
@@ -1413,6 +1425,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         allowOutsideWorkspace: state.allowOutsideWorkspace,
         notifyOnTurnComplete: state.notifyOnTurnComplete,
         showActivityInTitle: state.showActivityInTitle,
+        transcriptChapters: state.transcriptChapters,
         autoApproveTools: state.autoApproveTools,
         autoAcceptChanges: state.autoAcceptChanges,
         explorerIconPack: state.explorerIconPack,
@@ -1951,6 +1964,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setShowActivityInTitle: (value: boolean) => {
     set({ showActivityInTitle: value });
+    get().saveToDatabase();
+  },
+
+  setTranscriptChapters: (value: boolean) => {
+    set({ transcriptChapters: value });
     get().saveToDatabase();
   },
 

@@ -102,7 +102,9 @@ async function attachSession(session: TermSession, container: HTMLDivElement, on
 
   const cols = term.cols || 80;
   const rows = term.rows || 24;
-  const cwd = useAgentChatStore.getState().projectRoot ?? undefined;
+  // A session opened AT a folder (Files panel / project menu) starts there;
+  // one opened from the tab bar starts at the chat's project root.
+  const cwd = session.cwd ?? useAgentChatStore.getState().projectRoot ?? undefined;
 
   // Resolved by Rust from the verified shell registry — not a path guessed
   // here. A machine with no registered shell says so and points at the place

@@ -185,7 +185,7 @@ pub fn project_stats_get(
 
         // Open turn: (user timestamp, prompt preview, last message timestamp).
         let mut open_turn: Option<(i64, String, i64)> = None;
-        let mut close_turn = |turn: Option<(i64, String, i64)>,
+        let close_turn = |turn: Option<(i64, String, i64)>,
                               active: &mut i64,
                               longest: &mut Vec<ProjectLongTurn>| {
             let Some((start, prompt, end)) = turn else {

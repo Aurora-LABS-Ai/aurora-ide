@@ -422,6 +422,11 @@ pub struct AppSettings {
     /// When true, read-only file tools may read files outside the workspace.
     #[serde(default)]
     pub allow_outside_workspace: bool,
+    /// When true, the agent is told to split long turns into named chapters and
+    /// is given the `chapter` tool to mark them. Affects the system prompt and
+    /// the tool roster, so it must survive a restart.
+    #[serde(default)]
+    pub transcript_chapters: bool,
     pub auto_approve_tools: bool,
     pub auto_accept_changes: bool,
     pub explorer_icon_pack: String,
@@ -491,6 +496,7 @@ impl Default for AppSettings {
             title_maker_api_key: String::new(),
             title_maker_model: String::new(),
             allow_outside_workspace: false,
+            transcript_chapters: false,
             auto_approve_tools: false,
             auto_accept_changes: false,
             explorer_icon_pack: "material".to_string(),

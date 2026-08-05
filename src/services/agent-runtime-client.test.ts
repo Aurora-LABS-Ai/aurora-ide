@@ -133,6 +133,23 @@ const awaitChatInvocation = async (): Promise<{ turnId: string }> => {
   return (call[1] as { request: { turnId: string } }).request;
 };
 
+describe("AgentRuntimeClient.buildProviderConfigSnapshot", () => {
+  it("forwards the selected API type for a user-added provider", () => {
+    // A user-added provider's row id is a UUID. Rust dispatches on the
+    // provider TYPE; if the snapshot drops it, dispatch falls back to the
+    // UUID, matches nothing, and silently runs Chat Completions instead of
+    // the API type the user picked.
+    const snapshot = AgentRuntimeClient.buildProviderConfigSnapshot({
+      ...sampleProviderConfig,
+      id: "b1846984-2777-4815-8a29-90e29392a8e6",
+      providerType: "openai-responses",
+    });
+
+    expect(snapshot.providerId).toBe("b1846984-2777-4815-8a29-90e29392a8e6");
+    expect(snapshot.providerType).toBe("openai-responses");
+  });
+});
+
 describe("AgentRuntimeClient.buildRequest", () => {
   it("builds a camelCase request snapshot from the chat input", () => {
     const request = AgentRuntimeClient.buildRequest({
@@ -160,6 +177,10 @@ describe("AgentRuntimeClient.buildRequest", () => {
 
     expect(request.providerConfig).toEqual({
       providerId: "fireworks",
+      // Must be forwarded: Rust picks the wire shape from this, and falling
+      // back to `providerId` sends every custom (UUID-id) provider to Chat
+      // Completions no matter which API type the user selected.
+      providerType: "fireworks",
       baseUrl: "https://api.fireworks.ai",
       apiKey: "fw-test-key",
       model: "accounts/fireworks/models/glm-4p7",

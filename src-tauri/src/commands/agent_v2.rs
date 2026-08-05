@@ -557,6 +557,7 @@ impl<E: EventEmitter> TurnDriver<E> {
                 request.provider_config.supports_vision,
                 request.execution_mode,
                 request.workspace_path.as_deref(),
+                request.transcript_chapters.unwrap_or(false),
             )),
             build_runtime_config(&request),
         )
@@ -658,6 +659,7 @@ impl<E: EventEmitter> TurnDriver<E> {
             request.provider_config.supports_vision,
             request.execution_mode,
             request.workspace_path.as_deref(),
+            request.transcript_chapters.unwrap_or(false),
         );
 
         // 4. Construct the runtime with a fresh RuntimeConfig overlaying
@@ -959,6 +961,7 @@ fn build_per_turn_tool_registry(
     supports_vision: bool,
     execution_mode: AgentExecutionMode,
     workspace_path: Option<&str>,
+    chapters_enabled: bool,
 ) -> ToolRegistry {
     let registry = ToolRegistry::new();
     let vision_blocked = |name: &str| {
@@ -967,8 +970,9 @@ fn build_per_turn_tool_registry(
     // Resolved once per turn: `plan_store::active` walks the plans directory,
     // and the answer cannot change mid-registry-build.
     let has_plan = workspace_has_plan(workspace_path);
-    let mode_blocked =
-        |name: &str| !is_tool_available_this_turn(name, execution_mode, has_plan);
+    let mode_blocked = |name: &str| {
+        !is_tool_available_this_turn(name, execution_mode, has_plan, chapters_enabled)
+    };
     // 1. Bridge fallback for every AllowedTool the model can see.
     for tool in tools {
         if vision_blocked(&tool.name) || is_withdrawn_tool(&tool.name) || mode_blocked(&tool.name) {
@@ -1056,6 +1060,7 @@ fn is_tool_available_this_turn(
     name: &str,
     execution_mode: AgentExecutionMode,
     has_plan: bool,
+    chapters_enabled: bool,
 ) -> bool {
     let planning = execution_mode == AgentExecutionMode::Plan;
     if planning && is_plan_mutating_tool(name) {
@@ -1068,6 +1073,11 @@ fn is_tool_available_this_turn(
         // Nothing to read or mark until a plan exists. In Plan mode the tool
         // stays available so the agent can re-read a plan it is revising.
         "plan_read" | "plan_step_update" => planning || has_plan,
+        // Chapters are opt-in. Gated in the same place as the instruction that
+        // teaches them (see `agent-prompt.ts`) and driven by the same preference
+        // read, so the model is never told to announce chapters without the tool
+        // to do it — or handed the tool with nothing telling it when to call.
+        "chapter" => chapters_enabled,
         _ => true,
     }
 }
@@ -1326,6 +1336,46 @@ mod tauri_layer {
             .map_err(|e| e.to_string())?;
         let guard = session.lock().await;
         Ok(guard.messages().to_vec())
+    }
+
+    /// Rewind a thread's session to just before its `userMessageOrdinal`-th
+    /// user message (0-indexed), dropping that message and everything after.
+    ///
+    /// This is the server half of Retry. The frontend trims its own
+    /// transcript to the same point and then re-sends the user message, so
+    /// the retried turn REPLACES the failed one instead of stacking after
+    /// it. Without this the model would see the dead turn plus a duplicate
+    /// of the user's message, and the provider's prompt cache would miss.
+    ///
+    /// Returns how many runtime messages were dropped. A refusal to
+    /// truncate mid-turn is deliberate: rewinding history under a running
+    /// turn would corrupt the message list it is actively appending to.
+    #[tauri::command]
+    pub async fn agent_rewind_to_user_message(
+        state: State<'_, Arc<AgentRegistry>>,
+        thread_id: String,
+        user_message_ordinal: usize,
+    ) -> Result<usize, String> {
+        let session = state
+            .load_or_create_session(&thread_id)
+            .map_err(|e| e.to_string())?;
+        // A running turn holds this mutex for its entire duration, so a
+        // failed `try_lock` IS "the thread is still streaming". Awaiting the
+        // lock instead would silently rewind history the moment the turn
+        // finished — destroying the reply the user was waiting for.
+        let mut guard = session
+            .try_lock()
+            .map_err(|_| "This thread is still running. Stop it before retrying.".to_string())?;
+        let removed = guard.truncate_before_user_message(user_message_ordinal);
+        if removed > 0 {
+            // Rewrite the JSONL so a reload (or the next turn) sees the
+            // rewound history. `save_to_path` truncates the file, unlike
+            // the append path used during a turn.
+            guard
+                .save_to_path(state.session_path(&thread_id))
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(removed)
     }
 
     /// Resolve a pending frontend tool-call started by a
@@ -1664,6 +1714,7 @@ mod tests {
     fn default_provider_config() -> crate::api::ProviderConfigSnapshot {
         crate::api::ProviderConfigSnapshot {
             provider_id: "mock-provider".into(),
+            provider_type: None,
             base_url: "https://example.invalid/v1".into(),
             api_key: "mock-key".into(),
             api_keys: None,
@@ -1700,6 +1751,7 @@ mod tests {
             compaction_threshold_pct: None,
             compaction_summary_budget: None,
             allow_outside_workspace: None,
+            transcript_chapters: None,
         }
     }
 
@@ -1724,6 +1776,7 @@ mod tests {
             false,
             AgentExecutionMode::Plan,
             None,
+            false,
         );
 
         for name in PLAN_MUTATING_TOOLS {
@@ -1752,11 +1805,11 @@ mod tests {
         // model a plan existed when none did.
         for name in ["plan_read", "plan_step_update"] {
             assert!(
-                !is_tool_available_this_turn(name, AgentExecutionMode::Agent, false),
+                !is_tool_available_this_turn(name, AgentExecutionMode::Agent, false, false),
                 "{name} was offered with no plan in the project"
             );
             assert!(
-                is_tool_available_this_turn(name, AgentExecutionMode::Agent, true),
+                is_tool_available_this_turn(name, AgentExecutionMode::Agent, true, false),
                 "{name} was withheld from a project that has a plan"
             );
         }
@@ -1767,11 +1820,12 @@ mod tests {
         assert!(is_tool_available_this_turn(
             "plan_write",
             AgentExecutionMode::Plan,
+            false,
             false
         ));
         for mode in [AgentExecutionMode::Agent, AgentExecutionMode::Team] {
             assert!(
-                !is_tool_available_this_turn("plan_write", mode, true),
+                !is_tool_available_this_turn("plan_write", mode, true, false),
                 "execution mode could rewrite the plan the user approved"
             );
         }
@@ -1783,8 +1837,40 @@ mod tests {
         // the phase being executed. Neither suppresses the other.
         for has_plan in [false, true] {
             assert!(
-                is_tool_available_this_turn("todo", AgentExecutionMode::Agent, has_plan),
+                is_tool_available_this_turn("todo", AgentExecutionMode::Agent, has_plan, false),
                 "todo withheld (has_plan={has_plan})"
+            );
+        }
+    }
+
+    #[test]
+    fn chapters_are_withheld_until_the_user_asks_for_them() {
+        // The instruction that teaches chapters is gated on the same preference.
+        // If this gate ever defaulted open, every user would get a tool no part
+        // of the prompt told them about; if it stuck shut, the prompt would ask
+        // for chapters the model had no way to mark.
+        for mode in [
+            AgentExecutionMode::Agent,
+            AgentExecutionMode::Plan,
+            AgentExecutionMode::Team,
+        ] {
+            assert!(
+                !is_tool_available_this_turn("chapter", mode, false, false),
+                "chapter was advertised with the preference off ({mode:?})"
+            );
+            assert!(
+                is_tool_available_this_turn("chapter", mode, false, true),
+                "chapter was withheld with the preference on ({mode:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn the_chapter_gate_leaves_every_other_tool_alone() {
+        for name in ["file_read", "todo", "shell_execute", "grep"] {
+            assert!(
+                is_tool_available_this_turn(name, AgentExecutionMode::Agent, false, false),
+                "{name} was caught by the chapter gate"
             );
         }
     }
@@ -1809,6 +1895,7 @@ mod tests {
             false,
             AgentExecutionMode::Agent,
             Some(&ws.to_string_lossy()),
+            false,
         );
         assert!(registry.get("plan_step_update").is_some());
 
@@ -1857,6 +1944,7 @@ mod tests {
             false,
             AgentExecutionMode::Plan,
             None,
+            false,
         );
         let tool = registry
             .get("shell_execute")

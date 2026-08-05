@@ -481,6 +481,46 @@ impl ConversationRuntime {
                 // bump `seq` again; nothing reads it after the break.
                 stop_reason = turn.stop_reason;
 
+                // A reply with no tool call and nothing to say is not a
+                // finished turn. The usual cause is an in-band provider
+                // error (see `OpenAiStreamingResponse::error`), which the
+                // adapters now surface before we ever get here — this is the
+                // backstop for a provider that closes cleanly having emitted
+                // nothing at all. Say so; ending silently is what made this
+                // class of failure impossible to diagnose.
+                if !has_visible_answer(&turn.assistant_message) {
+                    let notice = if has_thinking(&turn.assistant_message) {
+                        "The model reasoned but never produced an answer, so this turn stopped \
+                         early. Retry, or lower the reasoning effort for this model."
+                    } else {
+                        "The provider returned an empty reply — no text, no tool call, no error. \
+                         Nothing was changed. Retry to run the turn again."
+                    };
+                    seq += 1;
+                    let _ = event_sink
+                        .send(AgentEventEnvelope {
+                            turn_id: turn_id.clone(),
+                            seq,
+                            event: AssistantEvent::Error {
+                                message: notice.to_string(),
+                                recoverable: true,
+                            },
+                        })
+                        .await;
+                    let now = chrono::Utc::now().timestamp_millis();
+                    session.append_message(ConversationMessage {
+                        role: MessageRole::System,
+                        blocks: vec![ContentBlock::Notice {
+                            message: notice.to_string(),
+                            created_at: now,
+                        }],
+                        usage: None,
+                        timestamp: now,
+                        attached_selected_elements: None,
+                        attached_prompt_chips: None,
+                    });
+                }
+
                 // `length` means the model was cut off mid-sentence by the
                 // output cap, not that it finished. This used to end the
                 // turn indistinguishably from a clean stop, so a truncated
@@ -1086,6 +1126,30 @@ struct PendingToolCall {
 /// OpenAI family says `length`. Both mean the reply is incomplete.
 fn is_length_stop(stop_reason: &str) -> bool {
     matches!(stop_reason, "length" | "max_tokens")
+}
+
+/// Did this assistant message actually say anything to the user?
+///
+/// Thinking blocks do NOT count. A reasoning model that spends its whole
+/// output budget thinking and emits no answer has not replied — it has
+/// stalled, and the turn ends looking identical to a completed one.
+fn has_visible_answer(message: &ConversationMessage) -> bool {
+    message.blocks.iter().any(|block| match block {
+        ContentBlock::Text { text } => !text.trim().is_empty(),
+        _ => false,
+    })
+}
+
+/// Did the model produce reasoning but no answer?
+///
+/// Worth distinguishing, because the fix differs: reasoning-only means the
+/// output cap or effort tier is wrong, while nothing-at-all points at the
+/// provider or the route.
+fn has_thinking(message: &ConversationMessage) -> bool {
+    message
+        .blocks
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Thinking { .. }))
 }
 
 /// Detects a model re-issuing a tool call that has already failed with the

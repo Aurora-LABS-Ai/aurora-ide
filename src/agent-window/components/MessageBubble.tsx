@@ -24,9 +24,15 @@ import { AgentMarkdown } from "./AgentMarkdown";
 import { AgentThinkingBlock } from "./AgentThinkingBlock";
 import { AgentImageModal } from "./AgentImageModal";
 import { ToolGroup } from "./ToolGroup";
+import { ChapterHeading } from "./ChapterHeading";
 import { CompactionCard } from "./CompactionCard";
 import { NoticeCard } from "./NoticeCard";
-import { buildRows, formatWorkedDuration, type TimelineEvent } from "./timeline";
+import {
+  buildRows,
+  formatWorkedDuration,
+  type TimelineEvent,
+  type TimelineRow,
+} from "./timeline";
 import { parseUserContent } from "../lib/image-markers";
 import { attachmentDataUrl } from "../store/useAgentAttachmentStore";
 import { FileIcon, FolderIcon } from "../../components/explorer/FileIcons";
@@ -463,6 +469,63 @@ const AssistantTurn: React.FC<{
     return isThinking && last?.type === "thinking" ? last.id : null;
   }, [rows, isThinking]);
 
+  const renderRow = (row: TimelineRow) => {
+    if (row.type === "thinking") {
+      return (
+        <AgentThinkingBlock
+          content={row.text}
+          isGenerating={row.id === activeThinkingId}
+        />
+      );
+    }
+    if (row.type === "content") {
+      return (
+        <AgentMarkdown
+          content={row.text}
+          streaming={streaming && row.id === lastContentId}
+        />
+      );
+    }
+    if (row.type === "user_injection") {
+      // The user's mid-turn message, drained by the runtime at a tool-result
+      // boundary and injected here — inline so it reads in the order the
+      // model saw it (after the tool result, before the agent continues).
+      return (
+        <div className="agw-injection" title="You added this mid-turn">
+          <AgentIcon name="message" size={13} />
+          <span>{row.text}</span>
+        </div>
+      );
+    }
+    if (row.type === "chapter") {
+      // The agent naming the part of the work it is starting. A heading, not a
+      // card — it exists to be skipped between, not read as a result.
+      return <ChapterHeading title={row.title} />;
+    }
+    if (row.type === "notice") {
+      // A runtime message (output limit hit, stream dropped), rendered where
+      // it happened and visibly NOT part of what the model wrote.
+      return <NoticeCard text={row.text} />;
+    }
+    if (row.type === "compaction") {
+      // Compaction fired here mid-turn — render inline so everything the
+      // agent streamed AFTER it lands below the marker (and everything
+      // before stays above), matching what the model actually re-ingested.
+      return (
+        <CompactionCard
+          beforeTokens={row.beforeTokens}
+          afterTokens={row.afterTokens}
+          running={row.running}
+        />
+      );
+    }
+    // tools — ALWAYS render through ToolGroup (even a single call). It shows
+    // the collapsible header only once the run reaches TOOL_GROUP_MIN, but
+    // because the component type never changes, the cards stay mounted and
+    // the header animates in instead of the whole row jumping at the 6th call.
+    return <ToolGroup tools={row.tools} isActivelyStreaming={streaming} />;
+  };
+
   return (
     <div
       className="agw-msg agw-msg-assistant"
@@ -494,62 +557,34 @@ const AssistantTurn: React.FC<{
         </span>
       )}
 
-      {rows.map((row) => {
-        if (row.type === "thinking") {
-          return (
-            <AgentThinkingBlock
-              key={row.id}
-              content={row.text}
-              isGenerating={row.id === activeThinkingId}
-            />
-          );
-        }
-        if (row.type === "content") {
-          return (
-            <AgentMarkdown
-              key={row.id}
-              content={row.text}
-              streaming={streaming && row.id === lastContentId}
-            />
-          );
-        }
-        if (row.type === "user_injection") {
-          // The user's mid-turn message, drained by the runtime at a tool-result
-          // boundary and injected here — inline so it reads in the order the
-          // model saw it (after the tool result, before the agent continues).
-          return (
-            <div key={row.id} className="agw-injection" title="You added this mid-turn">
-              <AgentIcon name="message" size={13} />
-              <span>{row.text}</span>
-            </div>
-          );
-        }
-        if (row.type === "notice") {
-          // A runtime message (output limit hit, stream dropped), rendered where
-          // it happened and visibly NOT part of what the model wrote.
-          return <NoticeCard key={row.id} text={row.text} />;
-        }
-        if (row.type === "compaction") {
-          // Compaction fired here mid-turn — render inline so everything the
-          // agent streamed AFTER it lands below the marker (and everything
-          // before stays above), matching what the model actually re-ingested.
-          return (
-            <CompactionCard
-              key={row.id}
-              beforeTokens={row.beforeTokens}
-              afterTokens={row.afterTokens}
-              running={row.running}
-            />
-          );
-        }
-        // tools — ALWAYS render through ToolGroup (even a single call). It shows
-        // the collapsible header only once the run reaches TOOL_GROUP_MIN, but
-        // because the component type never changes, the cards stay mounted and
-        // the header animates in instead of the whole row jumping at the 6th call.
-        return (
-          <ToolGroup key={row.id} tools={row.tools} isActivelyStreaming={streaming} />
-        );
-      })}
+      {rows.map((row, idx) => (
+        // Every row carries the same wrapper, on every turn, whether or not an
+        // opt-in transcript treatment is on. It is the single hook those
+        // treatments style — and keeping it unconditional means switching one on
+        // re-styles the transcript without remounting a row, so open tool groups
+        // and scroll position survive the toggle.
+        <div
+          key={row.id}
+          className="agw-row"
+          data-row={row.type}
+          // The spine's connector bridges the gap to the NEXT row, so the last
+          // one must not draw a line into empty space below the turn.
+          data-last={idx === rows.length - 1 || undefined}
+          // The frontier of a live turn: the row being written right now. The
+          // spine's marker shimmers here and nowhere else, so the eye can find
+          // where the work is without following the whole column.
+          data-live={(streaming && idx === rows.length - 1) || undefined}
+        >
+          {/* The spine's branch — the curve that leaves the rail and turns
+              into this row. It needs its own box because the wrapper's two
+              pseudo-elements are already spent on the rail and the marker,
+              and a curve is a third shape. Rendered unconditionally and
+              display:none by default, exactly like the wrapper itself, so
+              toggling the spine never remounts a row. */}
+          <i className="agw-row-branch" aria-hidden="true" />
+          {renderRow(row)}
+        </div>
+      ))}
 
       {/* Streaming skeleton before any event arrives. */}
       {streaming && rows.length === 0 && (

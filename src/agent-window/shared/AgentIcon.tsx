@@ -21,6 +21,7 @@
 import React from "react";
 
 export type AgentIconName =
+  | "alert"
   | "panel-left"
   | "panel-right"
   | "chevrons-left"
@@ -484,6 +485,16 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
 
   // Check — selection mark (e.g. active model in the selector).
   check: <path d="M5 12.5l4.5 4.5L19 7" />,
+
+  // Alert — a failed check. Triangle + bang, so failure reads without
+  // relying on colour alone.
+  alert: (
+    <>
+      <path d="M12 4.4L21 19.6H3z" />
+      <path d="M12 10v4.2" />
+      <path d="M12 17.1v.05" />
+    </>
+  ),
 
   // Copy — two stacked sheets (message bubble actions).
   copy: (

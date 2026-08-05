@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::error::RuntimeError;
-use super::types::ConversationMessage;
+use super::types::{ConversationMessage, MessageRole};
 
 /// Shared, lock-free-from-the-session-mutex slot for the mid-turn
 /// queued user message. Held both by the [`Session`] (so the
@@ -265,6 +265,42 @@ impl Session {
         self.touch();
     }
 
+    /// Rewind the session to the state it was in immediately BEFORE the
+    /// `ordinal`-th user message (0-indexed), dropping that message and
+    /// everything after it. Returns the number of messages removed.
+    ///
+    /// This is what Retry rewinds with. The cut point is expressed as a
+    /// user-message ordinal rather than a raw index because the frontend
+    /// transcript and this session do not have the same message count —
+    /// the runtime holds extra tool-role messages, notices and compaction
+    /// markers the UI folds away. Counting user messages is the one
+    /// ordering both sides agree on.
+    ///
+    /// Rewinding rather than appending is what makes a retry a retry: the
+    /// re-sent user message lands on a byte-identical prefix, so history
+    /// carries no duplicate turn and the provider's cache still hits.
+    /// Out-of-range ordinals are a no-op.
+    pub fn truncate_before_user_message(&mut self, ordinal: usize) -> usize {
+        let mut seen = 0usize;
+        let mut cut: Option<usize> = None;
+        for (index, message) in self.messages.iter().enumerate() {
+            if message.role == MessageRole::User {
+                if seen == ordinal {
+                    cut = Some(index);
+                    break;
+                }
+                seen += 1;
+            }
+        }
+        let Some(cut) = cut else {
+            return 0;
+        };
+        let removed = self.messages.len() - cut;
+        self.messages.truncate(cut);
+        self.touch();
+        removed
+    }
+
     /// Number of messages currently held in memory.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -448,6 +484,57 @@ mod tests {
             attached_selected_elements: None,
             attached_prompt_chips: None,
         }
+    }
+
+    fn msg(role: MessageRole, text: &str) -> ConversationMessage {
+        ConversationMessage {
+            role,
+            blocks: vec![ContentBlock::Text { text: text.into() }],
+            usage: None,
+            timestamp: 0,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+        }
+    }
+
+    /// Retry rewinds to just before the chosen user message so the re-sent
+    /// message lands on an identical prefix. Everything after the cut —
+    /// the failed assistant turn AND its tool messages — must go.
+    #[test]
+    fn truncate_before_user_message_rewinds_to_the_chosen_turn() {
+        let mut session = Session::new("t");
+        session.append_message(msg(MessageRole::User, "first"));
+        session.append_message(msg(MessageRole::Assistant, "ok"));
+        session.append_message(msg(MessageRole::User, "second"));
+        session.append_message(msg(MessageRole::Assistant, "working"));
+        session.append_message(msg(MessageRole::Tool, "tool result"));
+        session.append_message(msg(MessageRole::Assistant, "")); // the empty turn
+
+        let removed = session.truncate_before_user_message(1);
+
+        assert_eq!(removed, 4, "the user turn and everything after it");
+        assert_eq!(session.len(), 2);
+        assert_eq!(session.messages()[0].role, MessageRole::User);
+        assert_eq!(session.messages()[1].role, MessageRole::Assistant);
+    }
+
+    #[test]
+    fn truncate_before_user_message_ignores_out_of_range() {
+        let mut session = Session::new("t");
+        session.append_message(user_msg("only"));
+        assert_eq!(session.truncate_before_user_message(7), 0);
+        assert_eq!(session.len(), 1, "an unknown ordinal must not destroy history");
+    }
+
+    /// Ordinal 0 rewinds to an empty session — retrying the very first
+    /// message of a thread.
+    #[test]
+    fn truncate_before_first_user_message_empties_the_session() {
+        let mut session = Session::new("t");
+        session.append_message(user_msg("hi"));
+        session.append_message(msg(MessageRole::Assistant, "hello"));
+        assert_eq!(session.truncate_before_user_message(0), 2);
+        assert!(session.is_empty());
     }
 
     #[test]

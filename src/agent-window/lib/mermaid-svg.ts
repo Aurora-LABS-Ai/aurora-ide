@@ -36,6 +36,71 @@ export const diagramArtworkBox = (
 
 const capDimension = (value: number): number => Math.min(50_000, Math.max(1, value));
 
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, value));
+
+export const MIN_DIAGRAM_SCALE = 0.005;
+export const MAX_DIAGRAM_SCALE = 4;
+/** Explicit fit never enlarges past 2× — a three-node sketch should not fill the wall. */
+const FIT_MAX_SCALE = 2;
+const FIT_PADDING = 72;
+
+/**
+ * The floor under the INITIAL zoom. 0.65 puts Mermaid's default 16px labels at
+ * ~10.4px on screen — the smallest size this window uses anywhere. Below that a
+ * diagram is a shape, not a document.
+ */
+export const READABLE_MIN_SCALE = 0.65;
+/** Breathing room above the diagram head when the readable floor applies. */
+const READABLE_TOP_PAD = 20;
+
+/** Whole-diagram fit, centred — the overview. Null while either box is unmeasured. */
+export const fitDiagramViewport = (
+  stage: MermaidSvgSize,
+  diagram: MermaidSvgSize,
+): DiagramViewport | null => {
+  if (!stage.width || !stage.height || !diagram.width || !diagram.height) return null;
+  const padding = Math.min(FIT_PADDING, stage.width * 0.12, stage.height * 0.12);
+  const scale = clamp(
+    Math.min(
+      (stage.width - padding * 2) / diagram.width,
+      (stage.height - padding * 2) / diagram.height,
+    ),
+    MIN_DIAGRAM_SCALE,
+    FIT_MAX_SCALE,
+  );
+  return {
+    scale,
+    x: (stage.width - diagram.width * scale) / 2,
+    y: (stage.height - diagram.height * scale) / 2,
+  };
+};
+
+/**
+ * Where a freshly rendered diagram OPENS.
+ *
+ * Fit-to-view is right only while it stays readable. A large architecture
+ * diagram fit whole into a dock column lands at 20–30% — every label
+ * illegible, and the reader's first act is always the same rescue zoom (the
+ * owner measured "had to zoom 300+"). So the initial scale keeps the fit when
+ * it clears {@link READABLE_MIN_SCALE}, and otherwise opens AT the floor,
+ * centred horizontally and anchored to the top — where a diagram starts
+ * reading — leaving the full fit one click away on the Fit button.
+ */
+export const initialDiagramViewport = (
+  stage: MermaidSvgSize,
+  diagram: MermaidSvgSize,
+): DiagramViewport | null => {
+  const fit = fitDiagramViewport(stage, diagram);
+  if (!fit || fit.scale >= READABLE_MIN_SCALE) return fit;
+  const scale = READABLE_MIN_SCALE;
+  return {
+    scale,
+    x: (stage.width - diagram.width * scale) / 2,
+    y: READABLE_TOP_PAD,
+  };
+};
+
 export const readMermaidSvgSize = (svg: string): MermaidSvgSize => {
   const document = new DOMParser().parseFromString(svg, "image/svg+xml");
   const root = document.documentElement;

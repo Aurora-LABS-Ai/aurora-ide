@@ -20,6 +20,13 @@ export interface TermSession {
   id: string;
   title: string;
   profile: ShellProfile;
+  /**
+   * Working directory the shell starts in. Absent means the chat's project
+   * root — the default for a terminal opened from the tab bar. Set when the
+   * session was opened AT a folder ("Open in integrated terminal"), and shown
+   * in the pill title so two shells in different folders stay tellable apart.
+   */
+  cwd?: string;
   /** False once the shell process exits. */
   running: boolean;
 }
@@ -30,12 +37,18 @@ function nextId(): string {
   return `agw-term-${seq}`;
 }
 
+function folderName(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const cut = Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/"));
+  return cut >= 0 ? trimmed.slice(cut + 1) : trimmed;
+}
+
 interface AgentTerminalState {
   sessions: TermSession[];
   activeId: string | null;
 
   /** Create a session and make it active; returns its id. */
-  createSession: (profile?: ShellProfile) => string;
+  createSession: (profile?: ShellProfile, cwd?: string) => string;
   /** Remove a session's metadata (TerminalView disposes the live PTY/term). */
   removeSession: (id: string) => void;
   setActive: (id: string) => void;
@@ -46,11 +59,20 @@ export const useAgentTerminalStore = create<AgentTerminalState>((set, get) => ({
   sessions: [],
   activeId: null,
 
-  createSession: (profile = "powershell") => {
+  createSession: (profile = "powershell", cwd) => {
     const id = nextId();
-    const count = get().sessions.filter((s) => s.profile === profile).length + 1;
-    const title = `${profile === "bash" ? "bash" : "pwsh"} ${count}`;
-    set((s) => ({ sessions: [...s.sessions, { id, title, profile, running: true }], activeId: id }));
+    const shell = profile === "bash" ? "bash" : "pwsh";
+    const folder = cwd ? folderName(cwd) : "";
+    // A directory-pinned session is named by WHERE it is ("pwsh · api"), a
+    // plain one by which shell it is ("pwsh 2") — the folder is the fact that
+    // distinguishes it.
+    const title = folder
+      ? `${shell} · ${folder}`
+      : `${shell} ${get().sessions.filter((s) => s.profile === profile).length + 1}`;
+    set((s) => ({
+      sessions: [...s.sessions, { id, title, profile, cwd, running: true }],
+      activeId: id,
+    }));
     return id;
   },
 

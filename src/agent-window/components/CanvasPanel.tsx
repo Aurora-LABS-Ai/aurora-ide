@@ -13,17 +13,30 @@ import {
 import { AgentIcon, AgentSelect } from "../shared";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { CanvasDiagram } from "./CanvasDiagram";
+import { CanvasReact } from "./CanvasReact";
 import { PlanCanvas } from "./PlanCanvas";
 import { ToolCode } from "./tool-views/ToolCode";
 
 type CanvasMode = "preview" | "source";
-/** Which document the Canvas is showing. A plan outranks artifacts by default. */
-type CanvasSource = "plan" | "artifact";
 
 const extensionFor = (kind: AgentArtifactKind): string => {
   if (kind === "markdown") return "md";
   if (kind === "mermaid") return "mmd";
+  if (kind === "react") return "tsx";
   return kind;
+};
+
+/**
+ * What the kind is called to a person. `kind` is a storage enum, and shouting
+ * `REACT` at the reader tells them about our implementation rather than about
+ * their artifact — the name of the framework is not the name of the thing.
+ */
+const KIND_LABELS: Record<AgentArtifactKind, string> = {
+  html: "Web page",
+  svg: "Graphic",
+  markdown: "Document",
+  mermaid: "Diagram",
+  react: "Interactive",
 };
 
 export const CanvasPanel: React.FC = () => {
@@ -38,7 +51,12 @@ export const CanvasPanel: React.FC = () => {
   );
   const refreshPlan = useAgentPlanStore((state) => state.refresh);
   const setStepStatus = useAgentPlanStore((state) => state.setStepStatus);
-  const [source, setSource] = useState<CanvasSource>("plan");
+  // Plan-vs-artifact lives in the ARTIFACT STORE, not component state: the
+  // agent presents artifacts before this panel mounts, and a mount-time
+  // default of "plan" was how every new diagram in a planned project ended up
+  // invisible behind the plan.
+  const source = useAgentArtifactStore((state) => state.canvasSource);
+  const setSource = useAgentArtifactStore((state) => state.setCanvasSource);
   const [planBusy, setPlanBusy] = useState(false);
   const bundle = useAgentArtifactStore((state) =>
     threadId ? state.bundles[threadId] : undefined,
@@ -293,9 +311,12 @@ export const CanvasPanel: React.FC = () => {
         </div>
       )}
 
+      {/* The artifact's own name is already in the selector directly above, so
+          repeating it here says nothing. What this strip is for is the state
+          the selector does not show: what kind of thing it is, and that it is
+          on disk. */}
       <div className="agw-canvas-meta">
-        <span>{artifact.title}</span>
-        <span>{artifact.kind.toUpperCase()}</span>
+        <span>{KIND_LABELS[artifact.kind]}</span>
         <span>{version.tag}</span>
         <span>Saved</span>
       </div>
@@ -312,6 +333,13 @@ export const CanvasPanel: React.FC = () => {
           </div>
         ) : artifact.kind === "mermaid" ? (
           <CanvasDiagram
+            key={`${artifact.id}:${version.tag}`}
+            source={version.content}
+            title={artifact.title}
+            refreshKey={refresh}
+          />
+        ) : artifact.kind === "react" ? (
+          <CanvasReact
             key={`${artifact.id}:${version.tag}`}
             source={version.content}
             title={artifact.title}

@@ -28,6 +28,7 @@ import { writeClipboardText } from "../../lib/clipboard";
 import { useAgentChatStore } from "../store/useAgentChatStore";
 import { dragJustEnded, useAgentDragStore } from "../store/useAgentDragStore";
 import { useAgentFilesStore } from "../store/useAgentFilesStore";
+import { useAgentTerminalStore } from "../store/useAgentTerminalStore";
 import { useAgentWorkspaceStore } from "../store/useAgentWorkspaceStore";
 import { openInTerminal, revealInExplorer, type FileEntry } from "../../lib/tauri";
 import { RailMenu, type RailMenuItem, type RailMenuState } from "./RailMenu";
@@ -35,7 +36,7 @@ import { RailMenu, type RailMenuItem, type RailMenuState } from "./RailMenu";
 /** A right-clicked row, before it is turned into menu items. */
 type RowMenuHandler = (event: React.MouseEvent, path: string, isDir: boolean) => void;
 
-/** The directory a file lives in — where "Open terminal here" should land. */
+/** The directory a file lives in — where the terminal actions should land. */
 function parentDirOf(path: string): string {
   const cut = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
   return cut > 0 ? path.slice(0, cut) : path;
@@ -249,10 +250,23 @@ export const FilesPanel: React.FC = () => {
       },
       {
         icon: "terminal",
-        label: "Open terminal here",
+        label: "Open in integrated terminal",
+        onSelect: () => {
+          // Session first, then the tab: with a session already present the
+          // Terminal panel's "open one shell on first show" effect stays
+          // quiet, so the dock reveals exactly the shell just created.
+          useAgentTerminalStore
+            .getState()
+            .createSession("powershell", isDir ? path : parentDirOf(path));
+          useAgentWorkspaceStore.getState().openTab("terminal");
+        },
+      },
+      {
+        icon: "terminal",
+        label: "Open in external terminal",
         onSelect: () => {
           openInTerminal(isDir ? path : parentDirOf(path)).catch((err) =>
-            console.error("[files-panel] open terminal failed:", err),
+            console.error("[files-panel] open external terminal failed:", err),
           );
         },
       },

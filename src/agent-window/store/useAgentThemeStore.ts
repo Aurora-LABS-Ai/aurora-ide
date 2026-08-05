@@ -51,6 +51,10 @@ interface AgentThemeState {
   modelSelectorPosition: "top" | "bottom";
   /** Keyboard chord that opens the agent-window command center. */
   commandCenterShortcut: string;
+  /** Draw a continuous vertical rule down the transcript, with each row's
+   *  marker sitting on it, so a turn reads as one thread of work instead of a
+   *  stack of separate cards. Purely visual — off is today's look. */
+  transcriptSpine: boolean;
 
   setActiveTheme: (id: string) => void;
   registerTheme: (theme: AgentTheme) => void;
@@ -68,6 +72,7 @@ interface AgentThemeState {
   setRailGlideMs: (v: number) => void;
   setModelSelectorPosition: (v: "top" | "bottom") => void;
   setCommandCenterShortcut: (shortcut: string) => void;
+  setTranscriptSpine: (v: boolean) => void;
   /**
    * Apply a pasted/dropped theme JSON to the active theme. Accepts a full
    * `AgentTheme`, a `{ tokens: {...} }` wrapper, or a flat token map. Only
@@ -90,6 +95,7 @@ export const useAgentThemeStore = create<AgentThemeState>()(
       railGlideMs: DEFAULT_RAIL_GLIDE_MS,
       modelSelectorPosition: "bottom",
       commandCenterShortcut: "Mod+K",
+      transcriptSpine: false,
 
       setActiveTheme: (id) => set({ activeThemeId: id }),
       registerTheme: (theme) =>
@@ -129,6 +135,7 @@ export const useAgentThemeStore = create<AgentThemeState>()(
             syntaxHighlighting: true,
             railGlide: true,
             railGlideMs: DEFAULT_RAIL_GLIDE_MS,
+            transcriptSpine: false,
           };
         }),
 
@@ -141,6 +148,7 @@ export const useAgentThemeStore = create<AgentThemeState>()(
         set({ railGlideMs: Math.max(120, Math.min(1200, Math.round(v))) }),
       setModelSelectorPosition: (v) => set({ modelSelectorPosition: v }),
       setCommandCenterShortcut: (commandCenterShortcut) => set({ commandCenterShortcut }),
+      setTranscriptSpine: (v) => set({ transcriptSpine: v }),
 
       importThemeJson: (text) => {
         let parsed: unknown;
@@ -185,6 +193,7 @@ export const useAgentThemeStore = create<AgentThemeState>()(
         railGlideMs: s.railGlideMs,
         modelSelectorPosition: s.modelSelectorPosition,
         commandCenterShortcut: s.commandCenterShortcut,
+        transcriptSpine: s.transcriptSpine,
       }),
     },
   ),

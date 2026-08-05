@@ -7,7 +7,14 @@ import {
 } from "../../services/mermaid-artifacts";
 import { AgentIcon } from "../shared";
 import { useAgentThemeStore } from "../store/useAgentThemeStore";
-import { diagramArtworkBox, readMermaidSvgSize } from "../lib/mermaid-svg";
+import {
+  diagramArtworkBox,
+  fitDiagramViewport,
+  initialDiagramViewport,
+  MAX_DIAGRAM_SCALE,
+  MIN_DIAGRAM_SCALE,
+  readMermaidSvgSize,
+} from "../lib/mermaid-svg";
 
 interface CanvasDiagramProps {
   source: string;
@@ -25,10 +32,6 @@ interface Viewport {
   y: number;
   scale: number;
 }
-
-const MIN_SCALE = 0.005;
-const MAX_SCALE = 4;
-const FIT_PADDING = 72;
 
 let renderSequence = 0;
 
@@ -120,27 +123,21 @@ export const CanvasDiagram: React.FC<CanvasDiagramProps> = ({ source, title, ref
     };
   }, [activeCustomization, activeThemeId, contrast, refreshKey, renderId, source]);
 
+  /** Whole-diagram overview — the EXPLICIT action (Fit button, double-click). */
   const fit = useCallback(() => {
-    if (!stageSize.width || !stageSize.height || !diagramSize.width || !diagramSize.height) return;
-    const padding = Math.min(FIT_PADDING, stageSize.width * 0.12, stageSize.height * 0.12);
-    const scale = clamp(
-      Math.min(
-        (stageSize.width - padding * 2) / diagramSize.width,
-        (stageSize.height - padding * 2) / diagramSize.height,
-      ),
-      MIN_SCALE,
-      2,
-    );
-    setViewport({
-      scale,
-      x: (stageSize.width - diagramSize.width * scale) / 2,
-      y: (stageSize.height - diagramSize.height * scale) / 2,
-    });
+    const next = fitDiagramViewport(stageSize, diagramSize);
+    if (next) setViewport(next);
+  }, [diagramSize, stageSize]);
+
+  /** Where a fresh render opens: the fit, floored at a readable scale. */
+  const place = useCallback(() => {
+    const next = initialDiagramViewport(stageSize, diagramSize);
+    if (next) setViewport(next);
   }, [diagramSize, stageSize]);
 
   useLayoutEffect(() => {
-    if (svg && autoFit) fit();
-  }, [autoFit, fit, svg]);
+    if (svg && autoFit) place();
+  }, [autoFit, place, svg]);
 
   /**
    * Scale by `factor`, keeping the point (x, y) — in stage coordinates —
@@ -153,7 +150,7 @@ export const CanvasDiagram: React.FC<CanvasDiagramProps> = ({ source, title, ref
   const zoomBy = useCallback((factor: number, x: number, y: number) => {
     setAutoFit(false);
     setViewport((current) => {
-      const scale = clamp(current.scale * factor, MIN_SCALE, MAX_SCALE);
+      const scale = clamp(current.scale * factor, MIN_DIAGRAM_SCALE, MAX_DIAGRAM_SCALE);
       const ratio = scale / current.scale;
       return {
         scale,
@@ -217,7 +214,9 @@ export const CanvasDiagram: React.FC<CanvasDiagramProps> = ({ source, title, ref
       aria-label={`${title} diagram canvas`}
       onDoubleClick={(event) => {
         if (isControl(event.target)) return;
-        setAutoFit(true);
+        // Explicit overview — autoFit stays OFF so the readable-first initial
+        // placement doesn't immediately override the fit the user asked for.
+        setAutoFit(false);
         fit();
       }}
       onPointerDown={(event) => {
@@ -312,19 +311,30 @@ export const CanvasDiagram: React.FC<CanvasDiagramProps> = ({ source, title, ref
           disabled={!svg}
           aria-label="Zoom out"
           title="Zoom out"
-          onClick={() => zoomFromCenter(0.85)}
+          onClick={() => zoomFromCenter(0.8)}
         >
           <AgentIcon name="zoom-out" size={14} />
         </button>
-        <span className="agw-diagram-zoom" aria-live="polite">
+        {/* The readout is also the reset: % means "of actual size", and
+            clicking it takes you there — one action instead of a hunt through
+            zoom steps. */}
+        <button
+          type="button"
+          className="agw-diagram-zoom"
+          disabled={!svg}
+          aria-label="Zoom to actual size"
+          title="Zoom to actual size (100%)"
+          aria-live="polite"
+          onClick={() => zoomFromCenter(1 / viewport.scale)}
+        >
           {Math.round(viewport.scale * 100)}%
-        </span>
+        </button>
         <button
           type="button"
           disabled={!svg}
           aria-label="Zoom in"
           title="Zoom in"
-          onClick={() => zoomFromCenter(1.18)}
+          onClick={() => zoomFromCenter(1.25)}
         >
           <AgentIcon name="zoom-in" size={14} />
         </button>
@@ -335,7 +345,7 @@ export const CanvasDiagram: React.FC<CanvasDiagramProps> = ({ source, title, ref
           aria-label="Fit diagram"
           title="Fit diagram"
           onClick={() => {
-            setAutoFit(true);
+            setAutoFit(false);
             fit();
           }}
         >

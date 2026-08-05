@@ -739,3 +739,128 @@ bug in the content — look for a composited ancestor being scaled.
   window and see which fires; that 5-minute experiment settled what two sessions of source-reading got wrong.
 - Fix: `listen(ev, h, { target: { kind: 'WebviewWindow', label } })` in `useAgentExternalDrop.ts` (or
   `getCurrentWebview().onDragDropEvent`). One line; everything else in the drop chain was already correct.
+
+## 2026-08-04 — A structural marker set as heavier prose is invisible in a transcript
+- Chapters first shipped as 15px/600 text over a rule. The owner's verdict: "feel like same as bold
+  bullet header". Correct — a reply is FULL of `**bold**` lines and markdown headings the model wrote
+  itself, so anything that differs only in weight and one size step cannot be told apart at a glance,
+  and a section marker you have to read to recognise has already failed.
+- Fix: change type ROLE, not type amount — uppercase at `--agw-fs-label`, medium weight, tracking, plus
+  `agw-timeline-rule` (the window's existing named-boundary idiom). Full `--agw-text`, not the subtle
+  grey the other labels use, because this one is what the eye should land on when skimming.
+- I made it worse first: the spine variant zeroed the chapter's `border-top` and `margin-top` to avoid a
+  crossbar, which removed the ONLY structural signals it had and left literally a bold line of text.
+  When an opt-in treatment strips another feature's ornament, check what is left carrying its meaning.
+- Also: the break above a chapter lives in `padding-top`, not `margin-top`. A child's top margin
+  collapses out of the row wrapper and adds to the flex gap, which cut the spine's line at every
+  chapter. Padding keeps the space inside the row so the line runs through it.
+- Centring the title between two rules was tried on request and rejected immediately — every other line
+  in a turn starts at the same left edge, and breaking that column defeats vertical scanning.
+
+## 2026-08-04 — One timeline marker per ROW is wrong when a row holds N tool calls
+- The spine drew its marker on `.agw-row`, but a tools row is EVERY call between two pieces of text. Ten
+  calls therefore shared one dot pinned at the top of the group, so the thread read as if it had stalled
+  up there while the work was visibly moving down the list ("marker still above 10 tools").
+- Fix: `ToolGroup` wraps each call in `.agw-tool-step` and the marker hangs on that. The wrapper is
+  necessary because `ToolCallCard` returns FIVE different roots (standard card, canvas launch, plan
+  launch, plan step, checklist beat) — matching on those class names would have silently skipped a sixth.
+- Exception that is not a bug: a grouped run (≥6) keeps the single row marker. Its cards sit in a
+  `max-height` scroller, where an absolutely positioned marker at negative `left` is clipped by the
+  scroll box and drifts as it scrolls.
+
+## 2026-08-04 — "The same preference gates both" is only true on the surface that forwards it
+- The chapter feature gated its prompt instruction on a GLOBAL store read inside
+  `composeAgentSystemPrompt`, while the tool roster was gated on a per-request flag only
+  `useAgentWindowSend` forwarded. The IDE chat composes the same prompt but never set the flag, so
+  with Chapters on, every IDE turn was instructed to call a tool Rust withheld. When one preference
+  must switch a prompt section AND a tool roster, thread ONE value through the caller's config to
+  both — a store read inside a shared helper silently applies the union of every surface's settings.
+- The spine's "live marker" shimmer targeted `.agw-tool-card[data-status="running"]::after`, a
+  pseudo-element with no `content` anywhere — CSS on a content-less pseudo-element paints nothing and
+  fails silently. The marker lives on `.agw-tool-step::after`; select it via
+  `:has(.agw-tool-card[data-status="running"])`. When styling a pseudo-element you didn't create,
+  first grep for the rule that gives it `content`.
+
+## 2026-08-04 — Sticky UI inside the rail: two traps hit back to back
+- `position: sticky` silently does nothing inside the rail's `Collapse` wrapper — framer-motion's
+  height tween needs `overflow: hidden`, and any non-visible-overflow ancestor becomes the sticky
+  containing block. A rail element that must pin to the scroller's edge has to live OUTSIDE the
+  Collapse, gated by the same `projectsOpen` condition the Collapse encodes.
+- Any pinned/floating element filled with `--agw-rail-paint` (or `--agw-dock-paint`) is 45%
+  see-through when Translucent sidebar is on — content scrolling beneath reads straight through the
+  label. The fix is the window's existing glass idiom: add the element to the
+  `[data-translucent] … backdrop-filter: blur(16px) saturate(1.3)` selector list, not an opaque
+  one-off colour that would break the user's chosen frame.
+
+## 2026-08-05 — Canvas: three ways the same surface lied to someone
+- `mermaid.parse` is NOT the renderer's contract: sources it accepts still die in LAYOUT ("Setting
+  RELAY as parent of RELAY would create a cycle"). Write-time validation that only parses returned
+  `success:true` for diagrams the Canvas then error-carded — the model was told it worked and the
+  user saw it broken. Validate with the same phase the display runs (`mermaid.render`), and return
+  the renderer's exact message in the rejection. A validator weaker than the renderer is a liar.
+- A "X outranks Y by default" rule held in a COMPONENT'S mount-time useState buried every new
+  artifact in a planned project: `present_artifact` ran before CanvasPanel mounted, so the panel
+  woke up defaulting to the plan with the new diagram invisible behind it. Priority state that
+  events must flip belongs in the store next to those events (`canvasSource`), never in local state
+  a mount re-defaults.
+- Fit-to-view is an OVERVIEW policy, not an OPENING policy: fitting a 4000px architecture diagram
+  into a dock column lands at ~25% and every label is illegible ("had to zoom 300+"). Open at
+  max(fit, readable floor 0.65) anchored top-centre; keep full fit on the explicit Fit button.
+  Extracted pure (`initialDiagramViewport`) because jsdom can't layout.
+
+## 2026-08-05 — The provider "API type" dropdown was decorative
+- `ProviderKind::detect` keyed on `provider_id`, but that field carries the provider ROW id — a
+  preset slug for built-ins, a generated **UUID** for user-added providers. So every custom provider
+  matched no arm and fell to `OpenAICompat`, silently running Chat Completions no matter which API
+  type was selected. It survived because built-in rows (`deepseek`, `codex`, `openai-responses`)
+  have id == type, so the only broken cases were the ones nobody had unit-tested.
+- Three more decisions keyed on the same wrong field and were equally broken for custom providers:
+  `supports_prompt_caching`, `should_request_stream_usage`, `reasoning_field_for`. Fix was a distinct
+  `provider_type` on `ProviderConfigSnapshot` + `effective_provider_type()` (falls back to
+  `provider_id`, which is why built-ins kept working). **Row identity is not provider family — a
+  field that means "which one" must never be reused to answer "what kind".**
+- The console log printed `providerType` while the request used `providerId`. The log confirmed the
+  belief it should have falsified; that is why this lasted. Log the value the code branched on.
+- Symptom to recognise: HTTP 200, `choices: []`, immediate `[DONE]`, tokens billed, blank UI. A
+  wrong-but-live endpoint (here `api.a6api.com/chat/completions`, no `/v1`) answers instead of 404ing.
+  Aurora treated an empty stream as success — it now reports it as a failure.
+
+## 2026-08-05 — Screenshots were being thrown away by half the providers
+- Aurora put `browser_screenshot` images INSIDE the `role:"tool"` message on the OpenAI-compat
+  path (`openai_tool_result_content`), mirroring the Anthropic adapter — where images inside
+  `tool_result` genuinely are the native, correct shape. On Chat Completions that placement is
+  **provider-dependent and fails silently**: HTTP 200, no error, the image just never enters the
+  prompt. Measured with one screenshot: a6api dropped it for BOTH `claude-opus-5` and
+  `gpt-5.6-luna` (model answered `NO_IMAGE`; prompt_tokens 7,311 vs 244,502 for the same image in
+  a user message), while a vLLM-family endpoint (MODAL/kimi-k3) accepted it and reported
+  `image_tokens: 437`. The agent looked like it was using screenshots while actually reasoning
+  from `browser_page_outline`.
+- METHOD that settled it: `prompt_tokens` is the honest witness. An 849 KB base64 image is ~240k
+  tokens — if the count doesn't jump, the image was discarded no matter what the model says. Don't
+  ask the model whether it saw the image; read the token count.
+- I twice asserted "OpenAI-compat cannot carry images in a tool message" as an absolute before
+  testing. It is false — lenient servers accept it. The true statement is narrower: only the
+  user-message placement works EVERYWHERE, and the providers that reject it say nothing. Fix is
+  unconditional (no provider sniffing): images are split out of tool results and ride in a
+  following `role:"user"` message, tool entry keeps the text + a hand-off note.
+- `responses.rs` already did this correctly (trailing user item) — only the Chat Completions
+  adapter had the bug. Anthropic is untouched and must stay that way.
+
+## 2026-08-06 — The canvas SDK's first Table API was wrong, not the model's usage
+The agent wrote `columns={[{ key, header, align: "right", disableSort }]}` and put `<code>`,
+`<Badge>` and a bar `<div>` in cells. The SDK demanded `{ key, label, numeric }` and typed cells as
+`string | number`. Result: every heading blank, every cell `[object Object]`.
+
+**The API was the outlier.** `header`/`align` is what every table library uses, and components in
+cells is the obvious want — a path needs `<code>`, a category needs a badge, a share needs a bar.
+Fixed by accepting `header` (with `label` as synonym), taking `ReactNode` cells, and **inferring**
+numeric/sortable from the data instead of asking for flags that can be wrong.
+
+Two rules this cost us:
+1. When designing an API a model will call, match the convention it has already seen ten thousand
+   times. Novel-but-tidy loses to conventional-but-boring every single time.
+2. Without semantic typechecking, a wrong prop name renders BLANK rather than failing. Any required
+   prop must therefore throw with the exact fix (`columns[0] has no heading. Give it header: "…"`),
+   and any value that would stringify to `[object Object]` must throw instead of rendering.
+
+Also: `r#"…"#` in Rust cannot hold a TSX example containing `"#` (a `header: "#"` column). Use `r##`.

@@ -146,6 +146,10 @@ impl<'a> SettingsRepository<'a> {
                     settings.allow_outside_workspace = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.allow_outside_workspace)
                 }
+                "transcriptChapters" => {
+                    settings.transcript_chapters = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.transcript_chapters)
+                }
                 "autoApproveTools" => {
                     settings.auto_approve_tools =
                         serde_json::from_str(&setting.value).unwrap_or(settings.auto_approve_tools)
@@ -333,6 +337,10 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting(
             "allowOutsideWorkspace",
             &serde_json::to_string(&settings.allow_outside_workspace).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "transcriptChapters",
+            &serde_json::to_string(&settings.transcript_chapters).unwrap_or_default(),
         )?;
         self.set_setting(
             "autoApproveTools",

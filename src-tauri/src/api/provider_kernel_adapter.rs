@@ -97,6 +97,12 @@ pub struct AnthropicStreamEvent {
     pub content_block: Option<AnthropicContentBlockMeta>,
     pub delta: Option<AnthropicDelta>,
     pub usage: Option<AnthropicUsageWire>,
+    /// Anthropic's in-band `event: error` payload (`overloaded_error`,
+    /// `api_error`, …), delivered after HTTP 200 like everyone else's.
+    /// Same reasoning as [`OpenAiStreamingResponse::error`]: unparsed, it
+    /// fell through the event match and the turn ended in silence.
+    #[serde(default)]
+    pub error: Option<OpenAiStreamError>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,6 +152,66 @@ pub struct OpenAiStreamingResponse {
     #[serde(default)]
     pub choices: Vec<OpenAiStreamingChoice>,
     pub usage: Option<OpenAiUsageData>,
+    /// An error the provider streamed **in-band**, after having already
+    /// returned HTTP 200.
+    ///
+    /// This is how upstream timeouts, capacity errors and moderation stops
+    /// actually arrive from OpenAI-compatible backends and the proxies in
+    /// front of them: the headers say 200, the body carries
+    /// `data: {"error":{...}}`, and the stream then closes — usually with a
+    /// `[DONE]` right behind it.
+    ///
+    /// Without this field the frame still deserialized *successfully* into
+    /// `{choices: [], usage: None}`, so the message was dropped on the floor
+    /// and the turn ended looking like a clean, empty completion. That is
+    /// the entire reason agent turns appeared to stop mid-task for no
+    /// reason. Never remove this field.
+    #[serde(default)]
+    pub error: Option<OpenAiStreamError>,
+}
+
+/// The in-band error envelope. Every field is optional because the shape
+/// varies by vendor; [`OpenAiStreamError::render`] copes with all of them.
+#[derive(Debug, Deserialize)]
+pub struct OpenAiStreamError {
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default, rename = "type")]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub code: Option<Value>,
+}
+
+impl OpenAiStreamError {
+    /// A message worth showing a person. Falls back through the envelope's
+    /// other fields so an error with no `message` still says something more
+    /// useful than "the turn ended".
+    #[must_use]
+    pub fn render(&self) -> String {
+        if let Some(msg) = self.message.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            return msg.to_string();
+        }
+        let code = self.code.as_ref().map(|c| match c {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        });
+        match (self.kind.as_deref(), code.as_deref()) {
+            (Some(kind), Some(code)) => format!("provider error {code} ({kind})"),
+            (Some(kind), None) => format!("provider error ({kind})"),
+            (None, Some(code)) => format!("provider error {code}"),
+            (None, None) => "the provider reported an error but gave no detail".to_string(),
+        }
+    }
+
+    /// Is this envelope actually populated? Some backends emit
+    /// `"error": null` or `"error": {}` on ordinary chunks; those must not
+    /// abort a healthy stream.
+    #[must_use]
+    pub fn is_populated(&self) -> bool {
+        self.message.as_deref().is_some_and(|m| !m.trim().is_empty())
+            || self.kind.is_some()
+            || self.code.is_some()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -507,7 +573,9 @@ fn anthropic_tool_schema(schema: &ToolSchema) -> Value {
 /// The cost of a false positive is every request failing with HTTP 400, so
 /// this errs hard toward off.
 fn supports_prompt_caching(config: &ProviderConfigSnapshot) -> bool {
-    config.provider_id.eq_ignore_ascii_case("anthropic")
+    config
+        .effective_provider_type()
+        .eq_ignore_ascii_case("anthropic")
 }
 
 /// Attach an ephemeral `cache_control` marker to a JSON object in place.
@@ -836,7 +904,13 @@ fn extract_attr(header: &str, name: &str) -> Option<String> {
 /// itself, OpenRouter) accept on the `tool` role. Falls back to a
 /// plain string when no images are present so non-screenshot tool
 /// results stay shape-compatible with strict providers.
-fn openai_tool_result_content(content: &str) -> Value {
+/// Build the `content` of a `role: "user"` message that may embed
+/// `<aurora_image>` markers (composer paste/drop, and now the screenshots
+/// relocated off tool results).
+///
+/// This is the placement that works on every provider tested, which is why
+/// [`openai_tool_result_split`] moves images here.
+fn openai_user_content(content: &str) -> Value {
     let pieces = split_aurora_images(content);
     if pieces
         .iter()
@@ -851,13 +925,67 @@ fn openai_tool_result_content(content: &str) -> Value {
             AuroraImagePiece::Text(t) => Some(json!({ "type": "text", "text": t })),
             AuroraImagePiece::Image { media_type, base64 } => Some(json!({
                 "type": "image_url",
-                "image_url": {
-                    "url": format!("data:{media_type};base64,{base64}"),
-                },
+                "image_url": { "url": format!("data:{media_type};base64,{base64}") },
             })),
         })
         .collect();
     Value::Array(blocks)
+}
+
+/// Note left in the `role: "tool"` message when its images had to travel in a
+/// separate user message, so the model knows to look at what follows rather
+/// than concluding the screenshot failed.
+pub(crate) const OPENAI_IMAGE_HANDOFF_NOTE: &str =
+    "[The screenshot from this tool call is attached in the next message.]";
+
+/// Split a tool result into the text a `role: "tool"` message may carry, and
+/// the image parts that are delivered separately.
+///
+/// **Whether a `role: "tool"` message can carry an image is provider-specific,
+/// and the failure mode is silent.** Aurora used to build the tool result as a
+/// multimodal array with `image_url` parts in it, mirroring what the Anthropic
+/// path does natively. Lenient servers accept that; strict ones return HTTP
+/// 200, no error, no warning — and simply never put the image in the prompt.
+/// Measured with one screenshot, three providers, same request otherwise:
+///
+/// | endpoint / model              | image in `role:"tool"` | in a `user` msg |
+/// |-------------------------------|------------------------|-----------------|
+/// | a6api · `claude-opus-5`       | dropped (`NO_IMAGE`)   | read correctly  |
+/// | a6api · `gpt-5.6-luna`        | dropped (`NO_IMAGE`)   | read correctly  |
+/// | MODAL (vLLM) · `kimi-k3`      | read correctly         | read correctly  |
+///
+/// So this is not "OpenAI forbids it" — it is that only the user-message
+/// placement works EVERYWHERE, and the providers that reject it do so without
+/// saying so. That silence is why `browser_screenshot` looked like it worked
+/// while the agent kept reasoning from the page outline instead of the
+/// picture. Images therefore ride in a following user message on every
+/// OpenAI-compatible provider, and the tool message keeps the text plus
+/// [`OPENAI_IMAGE_HANDOFF_NOTE`] so the model knows to look ahead.
+///
+/// (The Anthropic and Responses adapters are unaffected: Anthropic supports
+/// images inside `tool_result` natively, and `responses.rs` already appended
+/// them as a trailing user item.)
+fn openai_tool_result_split(content: &str) -> (String, Vec<Value>) {
+    let mut text = String::new();
+    let mut images = Vec::new();
+    for piece in split_aurora_images(content) {
+        match piece {
+            AuroraImagePiece::Text(t) => {
+                if t.trim().is_empty() {
+                    continue;
+                }
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                text.push_str(&t);
+            }
+            AuroraImagePiece::Image { media_type, base64 } => images.push(json!({
+                "type": "image_url",
+                "image_url": { "url": format!("data:{media_type};base64,{base64}") },
+            })),
+        }
+    }
+    (text, images)
 }
 
 /// Replace every `<aurora_image …>BASE64</aurora_image>` block with a
@@ -899,7 +1027,7 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
         Value::Array(openai_messages(
             request,
             config.supports_vision,
-            &config.provider_id,
+            config.effective_provider_type(),
         )),
     );
     body.insert("stream".to_string(), Value::Bool(true));
@@ -947,8 +1075,9 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
     // event entirely, which is why pre-Phase-2.2 runs reported zero
     // tokens and never surfaced DeepSeek's `prompt_cache_hit_tokens`.
     // Fireworks, Ollama and "custom" providers can reject unknown body
-    // fields with HTTP 400 — gate by provider_id.
-    if should_request_stream_usage(&config.provider_id) {
+    // fields with HTTP 400 — gate by provider TYPE (a custom provider's
+    // row id is a UUID and would match nothing).
+    if should_request_stream_usage(config.effective_provider_type()) {
         body.insert(
             "stream_options".to_string(),
             json!({ "include_usage": true }),
@@ -969,9 +1098,9 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
 /// legacy `provider_kernel::presets::ProviderPreset.include_stream_options`
 /// matrix — keeping the two stacks aligned avoids a regression when
 /// Phase 5 retires the legacy kernel.
-pub(crate) fn should_request_stream_usage(provider_id: &str) -> bool {
+pub(crate) fn should_request_stream_usage(provider_type: &str) -> bool {
     matches!(
-        provider_id.to_ascii_lowercase().as_str(),
+        provider_type.to_ascii_lowercase().as_str(),
         // Verified to accept `stream_options: {include_usage: true}` and emit a
         // closing usage chunk. NOTE: Fireworks, Ollama and "custom" providers are
         // deliberately absent — they HTTP 400 on unknown body fields. The agent
@@ -1005,8 +1134,8 @@ pub(crate) fn should_request_stream_usage(provider_id: &str) -> bool {
 ///
 /// Returns `Some("reasoning_content")`, `Some("reasoning")`, or
 /// `None` (= drop reasoning entirely from outgoing messages).
-fn reasoning_field_for(provider_id: &str) -> Option<&'static str> {
-    match provider_id.to_ascii_lowercase().as_str() {
+fn reasoning_field_for(provider_type: &str) -> Option<&'static str> {
+    match provider_type.to_ascii_lowercase().as_str() {
         // DeepSeek + GLM thinking-mode models *require* the original
         // `reasoning_content` to be replayed or the API returns 400.
         "deepseek" | "glm" | "zhipu" | "z-ai" | "zai" => Some("reasoning_content"),
@@ -1025,7 +1154,7 @@ fn reasoning_field_for(provider_id: &str) -> Option<&'static str> {
 fn openai_messages(
     request: &ApiRequest<'_>,
     supports_vision: bool,
-    provider_id: &str,
+    provider_type: &str,
 ) -> Vec<Value> {
     let mut output: Vec<Value> = Vec::new();
 
@@ -1054,7 +1183,7 @@ fn openai_messages(
                 // base64. Reuses the same splitter as tool-result images.
                 let text = collect_text(&message.blocks);
                 let content = if supports_vision {
-                    openai_tool_result_content(&text)
+                    openai_user_content(&text)
                 } else {
                     Value::String(strip_aurora_images_for_text(&text))
                 };
@@ -1083,7 +1212,7 @@ fn openai_messages(
                 // 400). OpenAI-compat is a tribe, not a spec — emit
                 // whichever key (if any) the actual provider accepts.
                 if !reasoning.is_empty() {
-                    if let Some(key) = reasoning_field_for(provider_id) {
+                    if let Some(key) = reasoning_field_for(provider_type) {
                         payload.insert(key.into(), Value::String(reasoning));
                     }
                 }
@@ -1102,6 +1231,10 @@ fn openai_messages(
                 // human-intended ordering ("here's the result, and
                 // also …").
                 let mut injected_text = String::new();
+                // Images pulled out of tool results, waiting for the user
+                // message below. See `openai_tool_result_split`: a tool-role
+                // message cannot deliver them.
+                let mut pending_images: Vec<Value> = Vec::new();
                 for block in &message.blocks {
                     match block {
                         ContentBlock::ToolResult {
@@ -1110,7 +1243,15 @@ fn openai_messages(
                             ..
                         } => {
                             let content_value = if supports_vision {
-                                openai_tool_result_content(content)
+                                let (mut text, images) = openai_tool_result_split(content);
+                                if !images.is_empty() {
+                                    if !text.is_empty() && !text.ends_with('\n') {
+                                        text.push('\n');
+                                    }
+                                    text.push_str(OPENAI_IMAGE_HANDOFF_NOTE);
+                                    pending_images.extend(images);
+                                }
+                                Value::String(text)
                             } else {
                                 Value::String(strip_aurora_images_for_text(content))
                             };
@@ -1133,11 +1274,20 @@ fn openai_messages(
                         }
                     }
                 }
-                if !injected_text.is_empty() {
-                    output.push(json!({
-                        "role": "user",
-                        "content": injected_text,
-                    }));
+                // One user message carrying whatever could not ride on a
+                // tool-role entry: the screenshots first (the model reads them
+                // as the answer to the call it just made), then any mid-turn
+                // text the human queued.
+                if pending_images.is_empty() {
+                    if !injected_text.is_empty() {
+                        output.push(json!({ "role": "user", "content": injected_text }));
+                    }
+                } else {
+                    let mut parts = pending_images;
+                    if !injected_text.is_empty() {
+                        parts.push(json!({ "type": "text", "text": injected_text }));
+                    }
+                    output.push(json!({ "role": "user", "content": Value::Array(parts) }));
                 }
             }
         }
@@ -1543,6 +1693,87 @@ pub fn __unused_hashmap_marker() -> HashMap<i32, String> {
 mod tests {
     use super::*;
 
+    /// A tool result carrying a screenshot must move the image off the
+    /// `role: "tool"` entry, because whether that entry delivers an image is
+    /// provider-specific and fails silently. Measured: a6api dropped it for
+    /// both `claude-opus-5` and `gpt-5.6-luna` (model replied `NO_IMAGE`,
+    /// prompt_tokens showed the image never entered the prompt), while a
+    /// vLLM-family endpoint read it fine. The user-message placement is the
+    /// only one all three accepted.
+    #[test]
+    fn openai_tool_result_moves_images_into_a_following_user_message() {
+        let content = "Screenshot captured.\n\
+             <aurora_image media_type=\"image/png\">QUJD</aurora_image>";
+        let (text, images) = openai_tool_result_split(content);
+
+        assert_eq!(text, "Screenshot captured.");
+        assert_eq!(images.len(), 1, "the image must be split out");
+        assert_eq!(
+            images[0]["image_url"]["url"].as_str().unwrap(),
+            "data:image/png;base64,QUJD"
+        );
+    }
+
+    /// The overwhelming majority of tool results are plain text and must keep
+    /// riding on the tool message alone — no stray user message, no note.
+    #[test]
+    fn openai_tool_result_without_images_stays_a_plain_tool_message() {
+        let (text, images) = openai_tool_result_split("wrote 12 lines to main.rs");
+        assert_eq!(text, "wrote 12 lines to main.rs");
+        assert!(images.is_empty());
+    }
+
+    /// End-to-end through the message builder: the tool entry keeps text plus
+    /// the hand-off note, and exactly one user message follows carrying the
+    /// image part.
+    #[test]
+    fn openai_messages_emits_tool_text_then_user_image() {
+        let messages = vec![ConversationMessage {
+            role: MessageRole::Tool,
+            blocks: vec![ContentBlock::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "Screenshot captured.\n\
+                    <aurora_image media_type=\"image/png\">QUJD</aurora_image>"
+                    .into(),
+                is_error: None,
+            }],
+            usage: None,
+            timestamp: 0,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+        }];
+        let request = ApiRequest {
+            messages: &messages,
+            system_prompt: None,
+            tools: &[],
+            model: "claude-opus-5",
+            temperature: None,
+            max_output_tokens: 1024,
+            thinking_enabled: false,
+            thinking_budget_tokens: None,
+        };
+
+        let out = openai_messages(&request, true, "openai");
+
+        assert_eq!(out.len(), 2, "one tool message + one user message");
+        assert_eq!(out[0]["role"], "tool");
+        let tool_text = out[0]["content"].as_str().expect("tool content is a string");
+        assert!(tool_text.contains("Screenshot captured."));
+        assert!(
+            tool_text.contains(OPENAI_IMAGE_HANDOFF_NOTE),
+            "the model must be told the image follows, got: {tool_text}"
+        );
+        assert!(
+            !tool_text.contains("base64"),
+            "no image may remain on the tool entry"
+        );
+
+        assert_eq!(out[1]["role"], "user");
+        let parts = out[1]["content"].as_array().expect("user content is an array");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "image_url");
+    }
+
     #[test]
     fn frame_buffer_splits_on_double_newline() {
         let mut buf = SseFrameBuffer::new();
@@ -1748,6 +1979,7 @@ mod tests {
     fn thinking_config() -> ProviderConfigSnapshot {
         ProviderConfigSnapshot {
             provider_id: "custom".into(),
+            provider_type: None,
             base_url: "https://example.invalid/v1".into(),
             api_key: String::new(),
             api_keys: None,

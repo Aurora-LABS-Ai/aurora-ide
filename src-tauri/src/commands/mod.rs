@@ -37,6 +37,7 @@ pub mod project_stats;
 pub mod prompt_refine;
 pub mod provider_catalog;
 pub mod provider_kernel;
+pub mod provider_test;
 pub mod settings;
 pub mod shell_profiles;
 pub mod speech;

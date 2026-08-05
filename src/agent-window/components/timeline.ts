@@ -24,7 +24,7 @@ import type {
   AttachedSelectedElement,
   DbMessage,
 } from "../../services/thread-service";
-import type { ToolCall } from "./tool-call";
+import { streamedToolStringArguments, toolStatus, type ToolCall } from "./tool-call";
 
 /** Group a run of tool calls when there are at least this many (matches IDE). */
 export const TOOL_GROUP_MIN = 6;
@@ -43,7 +43,9 @@ export type TimelineRow =
   | { type: "tools"; id: string; tools: ToolCall[] }
   | { type: "user_injection"; id: string; text: string }
   | { type: "compaction"; id: string; beforeTokens: number; afterTokens: number; running: boolean }
-  | { type: "notice"; id: string; text: string };
+  | { type: "notice"; id: string; text: string }
+  /** A `chapter` call — the agent naming the part of the work it is starting. */
+  | { type: "chapter"; id: string; title: string };
 
 export interface AgwTurn {
   id: string;
@@ -195,7 +197,18 @@ export function upsertToolEvent(tl: TimelineEvent[], call: ToolCall): TimelineEv
 
 // ── Reload path (synthesise a timeline from persisted fields) ─────────
 
-function isLiveTimeline(raw: unknown): raw is TimelineEvent[] {
+/**
+ * A timeline as it arrives from the RELOAD path (Rust `session_to_db_messages`).
+ * Identical to the live shape except that a tool event carries its ID ONLY —
+ * the call, and the result a later Tool message folds into it, live in
+ * `tool_calls`. Joining by id at read time keeps exactly one copy of that
+ * payload, so the order and the call can never disagree.
+ */
+type OrderedTimelineEvent =
+  | Exclude<TimelineEvent, { kind: "tool" }>
+  | { kind: "tool"; id: string; call?: ToolCall };
+
+function isOrderedTimeline(raw: unknown): raw is OrderedTimelineEvent[] {
   return (
     Array.isArray(raw) &&
     raw.length > 0 &&
@@ -203,10 +216,43 @@ function isLiveTimeline(raw: unknown): raw is TimelineEvent[] {
   );
 }
 
+/**
+ * Join a timeline's ORDER with the call payloads on the message.
+ *
+ * Returns the input untouched when every tool event already carries its call,
+ * which is always true of a live stream — so a streaming turn pays nothing for
+ * this on any frame.
+ */
+function hydrateToolEvents(
+  events: OrderedTimelineEvent[],
+  calls: ToolCall[],
+): TimelineEvent[] {
+  if (!events.some((e) => e.kind === "tool" && !e.call)) {
+    // Checked above: every tool event carries its call, so this IS the live shape.
+    return events as TimelineEvent[];
+  }
+  const byId = new Map(calls.map((c) => [c.id, c]));
+  const out: TimelineEvent[] = [];
+  for (const e of events) {
+    if (e.kind !== "tool") {
+      out.push(e);
+      continue;
+    }
+    const call = e.call ?? byId.get(e.id);
+    // An id with no payload cannot render anything truthful, and `tool_calls`
+    // is the authority on what ran — so drop it rather than show a blank card.
+    if (call) out.push({ kind: "tool", id: e.id, call });
+  }
+  return out;
+}
+
 function eventsOf(m: DbMessage): TimelineEvent[] {
-  const live = (m as { timeline?: unknown }).timeline;
-  if (isLiveTimeline(live)) return live;
-  // Synthesised order: reasoning, then the spoken preamble, then its tools.
+  const ordered = (m as { timeline?: unknown }).timeline;
+  if (isOrderedTimeline(ordered)) {
+    return hydrateToolEvents(ordered, (m.tool_calls ?? []) as ToolCall[]);
+  }
+  // No ordered timeline (a legacy thread, or a message with no blocks): fall
+  // back to the shape an assistant message with tool calls is emitted in.
   const out: TimelineEvent[] = [];
   if (m.thinking) out.push({ kind: "thinking", id: `${m.id}-t`, text: m.thinking });
   if (m.content) out.push({ kind: "content", id: `${m.id}-c`, text: m.content });
@@ -329,6 +375,42 @@ function isSilentToolCall(call: ToolCall): boolean {
   }
 }
 
+/**
+ * `chapter` is not a tool card — it is the agent naming the part of the work it
+ * is starting, and it renders as a heading at the exact point it was called.
+ *
+ * Nothing else in the transcript needs to know: the call already sits at its own
+ * index in the event list, so it lands in the right place live AND after a
+ * reload, with no state of its own.
+ */
+const CHAPTER_TOOL_NAME = "chapter";
+
+/**
+ * The title of a `chapter` call, or `null` while it is unreadable.
+ *
+ * Read with the streaming-aware argument reader rather than `JSON.parse`, so the
+ * heading types in as the model writes it. Parsing would fail on every partial
+ * frame, and the call would flash as a tool card before becoming a heading.
+ */
+function chapterTitleOf(call: ToolCall): string | null {
+  const [first] = streamedToolStringArguments(call.arguments || "", ["title"]).title ?? [];
+  const title = first?.value.trim();
+  return title ? title : null;
+}
+
+/**
+ * Did the runtime REJECT this chapter (blank or over-long title)?
+ *
+ * `isActivelyStreaming: true` here means "no result yet is pending, not failed":
+ * a chapter that has been announced but not yet acknowledged must still show as
+ * a heading. Only an explicit error result disqualifies it — and then it falls
+ * through to a normal tool card, because a rejected chapter is a heading the
+ * user never got, and hiding the failure would leave nothing to notice.
+ */
+function chapterWasRejected(call: ToolCall): boolean {
+  return toolStatus(call, true) === "failed";
+}
+
 export function buildRows(events: TimelineEvent[]): TimelineRow[] {
   const rows: TimelineRow[] = [];
   let run: ToolCall[] = [];
@@ -347,6 +429,15 @@ export function buildRows(events: TimelineEvent[]): TimelineRow[] {
       // Dropped WITHOUT flushing the run, so a silent call sandwiched between
       // two file edits does not split them into two separate groups.
       if (isSilentToolCall(e.call)) continue;
+      if (e.call.name === CHAPTER_TOOL_NAME && !chapterWasRejected(e.call)) {
+        const title = chapterTitleOf(e.call);
+        // Title still on the wire — skip rather than open a blank heading. It
+        // lands at this same position as soon as the first characters arrive.
+        if (!title) continue;
+        flush();
+        rows.push({ type: "chapter", id: e.id, title });
+        continue;
+      }
       if (run.length === 0) runStart = e.id;
       run.push(e.call);
     } else {

@@ -252,7 +252,18 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({
   onApprovePendingRemember,
 }) => {
   const isUser = message.sender === 'user';
-  const hasTimeline = message.timeline && message.timeline.length > 0;
+  // A timeline belongs to THIS renderer only when its events are IDE-shaped
+  // (`type` + content/thinking/tool). The Rust reload path also populates
+  // `timeline`, in the agent window's own `kind`-based shape, and those events
+  // resolve to nothing here — so rendering them replaced the whole reply with
+  // empty rows. Falling through to content/tools is the correct read of a
+  // timeline this surface doesn't speak.
+  const hasTimeline =
+    !!message.timeline &&
+    message.timeline.length > 0 &&
+    message.timeline.every(
+      (event) => typeof (event as { type?: unknown }).type === 'string',
+    );
   const timelineRows = useMemo(
     () => (hasTimeline ? buildTimelineRows(message.timeline!) : []),
     [hasTimeline, message.timeline],

@@ -48,6 +48,7 @@ export const AgentThemeProvider: React.FC<AgentThemeProviderProps> = ({
   const contrast = useAgentThemeStore((s) => s.contrast);
   const translucentSidebar = useAgentThemeStore((s) => s.translucentSidebar);
   const reduceMotion = useAgentThemeStore((s) => s.reduceMotion);
+  const transcriptSpine = useAgentThemeStore((s) => s.transcriptSpine);
 
   const theme = useMemo(
     () =>
@@ -68,6 +69,10 @@ export const AgentThemeProvider: React.FC<AgentThemeProviderProps> = ({
       data-appearance={theme.appearance}
       data-translucent={translucentSidebar || undefined}
       data-reduce-motion={reduceMotion || undefined}
+      // Set here, on the root, rather than per row: the spine is a property of
+      // the whole transcript, and toggling one attribute high up re-styles every
+      // row without re-rendering (or remounting) a single one of them.
+      data-transcript-spine={transcriptSpine || undefined}
       style={cssVars as React.CSSProperties}
     >
       {children}

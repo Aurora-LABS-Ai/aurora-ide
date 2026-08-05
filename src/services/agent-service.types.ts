@@ -63,6 +63,13 @@ export interface AgentConfig {
   compactionSummaryBudget?: number;
   /** Allow read-only file tools to read files outside the workspace. */
   allowOutsideWorkspace?: boolean;
+  /**
+   * Advertise the `chapter` tool so the agent can name the parts of a long turn
+   * (Settings → Preferences → Transcript). The same value gates the chapter
+   * instruction in `composeAgentSystemPrompt`, so the roster and the prompt are
+   * switched together.
+   */
+  transcriptChapters?: boolean;
   providerConfig?: import("./providers").ProviderConfig;
   systemPrompt?: string;
   temperature?: number;

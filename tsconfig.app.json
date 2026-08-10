@@ -10,6 +10,15 @@
 
     /* Bundler mode */
     "moduleResolution": "bundler",
+    "baseUrl": ".",
+    /* One alias, mirrored in vite.config.ts and vitest.config.ts. Cross-module
+       imports go through `@/…` so a file's location stops being encoded in
+       every importer — which is what makes the Phase 3 folder move a path
+       rewrite instead of a 300-file relative-path rewrite. Intra-module
+       imports stay relative (`./sibling`, `../parent`). */
+    "paths": {
+      "@/*": ["src/*"]
+    },
     "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,

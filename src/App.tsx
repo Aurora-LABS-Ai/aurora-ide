@@ -16,32 +16,36 @@
  * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
  * 
  * See: DOCS/theme-dev.md for full token reference
- * See: src/types/theme.ts for TypeScript interfaces
- * See: src/services/theme-service.ts for theme utilities
+ * See: src/kernel/types/theme.ts for TypeScript interfaces
+ * See: src/apps/ide/services/theme-service.ts for theme utilities
  */
 
 import { useEffect, useState } from "react";
-import { MainLayout } from "./components/layout/MainLayout";
-import { AgentWindow } from "./agent-window";
+// The router is the one file that legitimately knows about both products.
+import { MainLayout } from "@/apps/ide/app/MainLayout";
+import { AgentWindow } from "@/apps/agent";
 
-import { useWorkspaceBootstrap } from "./hooks/useWorkspaceBootstrap";
-import { useEditorStore } from "./store/useEditorStore";
-import { useSettingsStore } from "./store/useSettingsStore";
-import { useThemeStore } from "./store/useThemeStore";
-import { useAutoSave } from "./hooks/useAutoSave";
-import { useTauriDragDrop } from "./hooks/useTauriDragDrop";
-import { useInternalDrag } from "./hooks/useInternalDrag";
-import { useWindowClose } from "./hooks/useWindowClose";
-import { useCliOpen } from "./hooks/useCliOpen";
-import { DragPreview } from "./components/ui/DragPreview";
-import { OnboardingModal } from "./components/modals/OnboardingModal";
-import { QuickOpenModal } from "./components/modals/QuickOpenModal";
-import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
-import { initializeSystemInfo } from "./services/context-builder";
-import { installAgentIdeListeners, handleOpenInIde } from "./services/agent-ide-events";
-import { auroraInvoke } from "./lib/runtime";
-import { useLocalProviderDetection } from "./hooks/useLocalProviderDetection";
-import { useMcpStore } from "./store/useMcpStore";
+import { useWorkspaceBootstrap } from "@/apps/ide/hooks/useWorkspaceBootstrap";
+import { useEditorStore } from "@/kernel/store/useEditorStore";
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useThemeStore } from "@/apps/ide/store/useThemeStore";
+import { useAutoSave } from "@/apps/ide/hooks/useAutoSave";
+import { useTauriDragDrop } from "@/apps/ide/hooks/useTauriDragDrop";
+import { useInternalDrag } from "@/apps/ide/hooks/useInternalDrag";
+import { useWindowClose } from "@/bridge/useWindowClose";
+import { useCliOpen } from "@/apps/ide/hooks/useCliOpen";
+import { DragPreview } from "@/apps/ide/ui/DragPreview";
+import { OnboardingModal } from "@/apps/ide/features/settings/OnboardingModal";
+import { QuickOpenModal } from "@/apps/ide/features/settings/QuickOpenModal";
+import { useGlobalShortcuts } from "@/apps/ide/hooks/useGlobalShortcuts";
+import { initializeSystemInfo } from "@/apps/agent/services/runtime/context-builder";
+import {
+  installAgentIdeListeners,
+  handleOpenInIde,
+} from "@/bridge/agent-ide-events";
+import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
+import { useLocalProviderDetection } from "@/apps/ide/hooks/useLocalProviderDetection";
+import { useMcpStore } from "@/apps/agent/store/tools/useMcpStore";
 
 // Global handler to suppress Tauri stream cancellation errors
 // These are expected when user clicks stop during AI streaming

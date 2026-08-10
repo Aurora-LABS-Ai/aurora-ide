@@ -16,7 +16,10 @@ pub enum PlanParseError {
     UnterminatedFrontmatter,
     Yaml(String),
     /// A file written by a newer Aurora. Refused rather than misread.
-    UnsupportedVersion { found: u32, supported: u32 },
+    UnsupportedVersion {
+        found: u32,
+        supported: u32,
+    },
 }
 
 impl std::fmt::Display for PlanParseError {
@@ -26,10 +29,9 @@ impl std::fmt::Display for PlanParseError {
                 f,
                 "not an Aurora plan: the file must open with a `---` frontmatter block"
             ),
-            Self::UnterminatedFrontmatter => write!(
-                f,
-                "the `---` frontmatter block was opened but never closed"
-            ),
+            Self::UnterminatedFrontmatter => {
+                write!(f, "the `---` frontmatter block was opened but never closed")
+            }
             Self::Yaml(msg) => write!(f, "plan frontmatter is not valid YAML: {msg}"),
             Self::UnsupportedVersion { found, supported } => write!(
                 f,
@@ -75,7 +77,10 @@ fn split_frontmatter(raw: &str) -> Result<(&str, &str), PlanParseError> {
             .strip_prefix(FENCE)
             .ok_or(PlanParseError::MissingFrontmatter)?;
         // The opening fence must be alone on its line.
-        match rest.strip_prefix("\r\n").or_else(|| rest.strip_prefix('\n')) {
+        match rest
+            .strip_prefix("\r\n")
+            .or_else(|| rest.strip_prefix('\n'))
+        {
             Some(rest) => rest,
             None if rest.is_empty() => return Err(PlanParseError::UnterminatedFrontmatter),
             None => return Err(PlanParseError::MissingFrontmatter),
@@ -113,8 +118,8 @@ pub fn parse(raw: &str) -> Result<PlanDocument, PlanParseError> {
 
 /// Serialise back to file text.
 pub fn serialize(doc: &PlanDocument) -> Result<String, PlanParseError> {
-    let yaml = serde_yaml::to_string(&doc.frontmatter)
-        .map_err(|e| PlanParseError::Yaml(e.to_string()))?;
+    let yaml =
+        serde_yaml::to_string(&doc.frontmatter).map_err(|e| PlanParseError::Yaml(e.to_string()))?;
     let mut out = String::with_capacity(yaml.len() + doc.body.len() + 16);
     out.push_str(FENCE);
     out.push('\n');
@@ -138,7 +143,11 @@ fn split_anchor(heading: &str) -> (String, Option<String>) {
         return (trimmed.to_string(), None);
     }
     let id = &trimmed[open + 2..trimmed.len() - 1];
-    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return (trimmed.to_string(), None);
     }
     (trimmed[..open].trim_end().to_string(), Some(id.to_string()))
@@ -183,8 +192,8 @@ pub fn sections(body: &str, step_ids: &[String]) -> Vec<BodySection> {
     for line in body.split_inclusive('\n') {
         let bare = line.trim_end_matches(['\r', '\n']);
         let hashes = bare.chars().take_while(|c| *c == '#').count();
-        let is_heading = (1..=6).contains(&hashes)
-            && bare.chars().nth(hashes).is_some_and(char::is_whitespace);
+        let is_heading =
+            (1..=6).contains(&hashes) && bare.chars().nth(hashes).is_some_and(char::is_whitespace);
 
         if is_heading {
             if let Some((heading, level, anchor, content)) = current.take() {
@@ -255,7 +264,10 @@ mod tests {
         let reparsed = parse(&written).expect("reparses");
 
         assert_eq!(reparsed.body, body_before, "prose must never be rewritten");
-        assert_eq!(reparsed.frontmatter.step("s2").unwrap().status, StepStatus::Done);
+        assert_eq!(
+            reparsed.frontmatter.step("s2").unwrap().status,
+            StepStatus::Done
+        );
     }
 
     #[test]
@@ -303,7 +315,10 @@ mod tests {
         let err = parse(&future).expect_err("must refuse");
         assert_eq!(
             err,
-            PlanParseError::UnsupportedVersion { found: 99, supported: 1 }
+            PlanParseError::UnsupportedVersion {
+                found: 99,
+                supported: 1
+            }
         );
     }
 
@@ -344,7 +359,10 @@ mod tests {
 
     #[test]
     fn preamble_is_the_text_before_the_first_heading() {
-        assert_eq!(preamble("Intro line.\n\n## 1. Step {#s1}\n\nBody.\n"), "Intro line.");
+        assert_eq!(
+            preamble("Intro line.\n\n## 1. Step {#s1}\n\nBody.\n"),
+            "Intro line."
+        );
         assert_eq!(preamble("## 1. Step {#s1}\n\nBody.\n"), "", "no overview");
         assert_eq!(preamble("Only prose, no steps.\n"), "Only prose, no steps.");
     }

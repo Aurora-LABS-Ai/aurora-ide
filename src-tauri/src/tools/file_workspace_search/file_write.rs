@@ -147,6 +147,10 @@ impl ToolExecutor for FileWriteTool {
 
         match result {
             Ok(old_content) => {
+                let old_normalized = old_content.replace("\r\n", "\n");
+                let new_normalized = content_for_result.replace("\r\n", "\n");
+                let (lines_added, lines_removed) =
+                    line_change_counts(&old_normalized, &new_normalized);
                 // Fire the IDE event so the open Monaco buffer + explorer +
                 // pending-changes UI refresh. A `Created` kind is emitted
                 // when the file did not exist before the write — this lets
@@ -187,11 +191,16 @@ impl ToolExecutor for FileWriteTool {
                     "path": raw_path,
                     "fullPath": resolved.to_string_lossy(),
                     "bytes": bytes,
+                    // Same names file_edit reports, so every modify tool's card
+                    // gets its −removed/+added header counts. A brand-new file
+                    // is all additions (green +N, no red side).
+                    "linesAdded": lines_added,
+                    "linesRemoved": lines_removed,
                     // Full before/after for the Review panel. Line endings are
                     // normalised to LF on both sides so a CRLF file doesn't render
                     // as an all-lines-changed diff.
-                    "oldContent": diff_side(&old_content.replace("\r\n", "\n")),
-                    "newContent": diff_side(&content_for_result.replace("\r\n", "\n")),
+                    "oldContent": diff_side(&old_normalized),
+                    "newContent": diff_side(&new_normalized),
                 }))
                 .unwrap())
             }
@@ -204,6 +213,50 @@ impl ToolExecutor for FileWriteTool {
             .unwrap()),
         }
     }
+}
+
+/// Line-change counts for a whole-file overwrite, matching what
+/// `file_edit` reports so every modify tool's card header can show the
+/// same −removed/+added pair.
+///
+/// The empty→content fast path matters twice over: it is the common case
+/// (most `file_write` calls create new files), and it skips running a
+/// diff whose answer is known — every line is an addition.
+fn line_change_counts(old_content: &str, new_content: &str) -> (usize, usize) {
+    // Same line split the agent window's `computeDiff` uses (a single trailing
+    // newline is not its own line), so both ends state the same numbers. Diffing
+    // raw text with `TextDiff::from_lines` would count a final line that merely
+    // gained a trailing newline as one removal plus one addition.
+    fn to_lines(text: &str) -> Vec<&str> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let mut lines: Vec<&str> = text.split('\n').collect();
+        if lines.last() == Some(&"") {
+            lines.pop();
+        }
+        lines
+    }
+
+    let old_lines = to_lines(old_content);
+    let new_lines = to_lines(new_content);
+    if old_lines.is_empty() {
+        return (new_lines.len(), 0);
+    }
+    if new_lines.is_empty() {
+        return (0, old_lines.len());
+    }
+    let diff = similar::TextDiff::from_slices(&old_lines, &new_lines);
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            similar::ChangeTag::Insert => added += 1,
+            similar::ChangeTag::Delete => removed += 1,
+            similar::ChangeTag::Equal => {}
+        }
+    }
+    (added, removed)
 }
 
 #[cfg(test)]
@@ -261,6 +314,40 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("out.txt")).unwrap(),
             "hi"
         );
+    }
+
+    #[tokio::test]
+    async fn a_new_file_reports_every_line_as_added() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(noop_tool());
+        let result = tool
+            .execute(
+                serde_json::json!({ "path": "fresh.txt", "content": "one\ntwo\nthree" }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("ok");
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["linesAdded"], 3);
+        assert_eq!(parsed["linesRemoved"], 0);
+    }
+
+    #[tokio::test]
+    async fn an_overwrite_reports_real_line_change_counts() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("pre.txt"), "one\ntwo\nthree").unwrap();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(noop_tool());
+        let result = tool
+            .execute(
+                serde_json::json!({ "path": "pre.txt", "content": "one\nTWO\nthree\nfour" }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("ok");
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        // "two" → "TWO" is one removal + one addition; "four" is a pure addition.
+        assert_eq!(parsed["linesAdded"], 2);
+        assert_eq!(parsed["linesRemoved"], 1);
     }
 
     #[tokio::test]

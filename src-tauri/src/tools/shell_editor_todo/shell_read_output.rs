@@ -121,7 +121,9 @@ impl ToolExecutor for ShellReadOutputTool {
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| ToolError::InvalidInput("`processId` must be a non-empty string".into()))?
+            .ok_or_else(|| {
+                ToolError::InvalidInput("`processId` must be a non-empty string".into())
+            })?
             .to_string();
 
         let start_line = usize::try_from(
@@ -148,10 +150,7 @@ impl ToolExecutor for ShellReadOutputTool {
             .unwrap_or(0)
             .min(MAX_WAIT_MS);
 
-        let Some(log_path) = self
-            .sink
-            .background_log_path(&ctx.thread_id, &process_id)
-        else {
+        let Some(log_path) = self.sink.background_log_path(&ctx.thread_id, &process_id) else {
             return Ok(json!({
                 "success": false,
                 "processId": process_id,
@@ -334,7 +333,10 @@ fn build_message(
 ) -> String {
     if window.output.is_empty() {
         if let Some(ending) = &snapshot.ending {
-            return format!("The run has ended and there is no output after line {start}. {ending}", start = start_line.saturating_sub(1));
+            return format!(
+                "The run has ended and there is no output after line {start}. {ending}",
+                start = start_line.saturating_sub(1)
+            );
         }
         if !tracked {
             return "No output, and no process with this ID is running in this conversation. \

@@ -63,6 +63,13 @@ use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor, ToolRegistry};
 use crate::services::browser_runtime::{BrowserManager, BrowserResult};
 
+/// Accessibility-tree inspection (engine-computed, not DOM-derived).
+mod a11y_tools;
+/// Viewport and media emulation.
+mod devtools_tools;
+/// Real pointer and keyboard input.
+mod input_tools;
+
 /// The one browser the agent drives: the agent window's right-dock panel.
 const AGENT_BROWSER_LABEL: &str = "browser-agentwin";
 
@@ -77,11 +84,15 @@ const AGENT_BROWSER_LABEL: &str = "browser-agentwin";
 /// re-render, then get retried with another guess.
 ///
 /// Selector priority is deliberate: `#id` → `data-testid`/`name`/`aria-label`
-/// → `a[href]` → tag + class → an id-anchored `:nth-of-type` — and every
-/// candidate is confirmed to match exactly one node via `querySelectorAll`
-/// before being emitted. An element with no stable selector reports `null`
-/// rather than a fragile path, because a plausible-but-wrong selector is worse
-/// than an admitted gap: it sends the model down a retry loop.
+/// → `a[href]` → tag + class — and when the element itself has no stable hook
+/// (radios, tabs, repeated rows), a `:nth-of-type` child chain anchored to the
+/// nearest uniquely-addressable ancestor (or `body`). Every candidate is
+/// confirmed to match exactly one node via `querySelectorAll` before being
+/// emitted; `null` remains only for elements nothing could address, because an
+/// UNVERIFIED plausible-but-wrong selector is worse than an admitted gap. The
+/// anchored chains are position-based, so they are correct for this render but
+/// may go stale after a re-render — re-scan rather than reuse them across
+/// navigations.
 ///
 /// Framework-generated class names (`css-`, `sc-`, `ng-`) are skipped — they
 /// change on every build, so a selector built from one is stale immediately.
@@ -102,7 +113,7 @@ const PAGE_OUTLINE_JS: &str = r#"(() => {
     return cs.visibility !== 'hidden' && cs.display !== 'none' && cs.opacity !== '0';
   };
 
-  const selectorFor = (el) => {
+  const baseFor = (el) => {
     const tag = el.tagName.toLowerCase();
     if (el.id && unique('#' + esc(el.id))) return '#' + esc(el.id);
     for (const a of ['data-testid', 'data-test-id', 'data-test', 'name', 'aria-label']) {
@@ -117,11 +128,30 @@ const PAGE_OUTLINE_JS: &str = r#"(() => {
       ? el.className.trim().split(/\s+/).filter((c) => c && c.length < 30 && !/^(css-|sc-|ng-)/.test(c)).slice(0, 2)
       : [];
     if (cls.length) { const s = tag + '.' + cls.map(esc).join('.'); if (unique(s)) return s; }
-    const p = el.parentElement;
-    if (p && p.id) {
-      const sibs = Array.from(p.children).filter((c) => c.tagName === el.tagName);
-      const s = '#' + esc(p.id) + ' > ' + tag + ':nth-of-type(' + (sibs.indexOf(el) + 1) + ')';
-      if (unique(s)) return s;
+    return null;
+  };
+
+  const selectorFor = (el) => {
+    const direct = baseFor(el);
+    if (direct) return direct;
+    // No stable hook on the element itself (the common case for radios, tabs
+    // and repeated rows). Walk up to the nearest uniquely-addressable ancestor
+    // — or body — building a `>` chain of :nth-of-type steps down to the
+    // element. Verified against querySelectorAll like every other candidate,
+    // so what is emitted matches exactly one node in THIS render.
+    let chain = '', node = el;
+    for (let depth = 0; depth < 6 && node.parentElement; depth++) {
+      const p = node.parentElement;
+      const tag = node.tagName.toLowerCase();
+      const sibs = Array.from(p.children).filter((c) => c.tagName === node.tagName);
+      const step = sibs.length > 1 ? tag + ':nth-of-type(' + (sibs.indexOf(node) + 1) + ')' : tag;
+      chain = ' > ' + step + chain;
+      const anchor = p === document.body ? 'body' : baseFor(p);
+      if (anchor) {
+        const s = anchor + chain;
+        if (unique(s)) return s;
+      }
+      node = p;
     }
     return null;
   };
@@ -178,6 +208,13 @@ pub const TOOL_NAMES: &[&str] = &[
     "browser_click",
     "browser_fill",
     "browser_scroll",
+    // QA tools — driven through the DevTools channel rather than injected
+    // script, because none of these can be done from inside the page.
+    "browser_set_viewport",
+    "browser_emulate_media",
+    "browser_press_key",
+    "browser_hover",
+    "browser_a11y_tree",
 ];
 
 /// Tools that opt into the Phase 4 permission gate.
@@ -186,6 +223,11 @@ pub const TOOLS_REQUIRING_PERMISSION: &[&str] = &[
     "browser_click",
     "browser_fill",
     "browser_scroll",
+    "browser_set_viewport",
+    "browser_emulate_media",
+    "browser_press_key",
+    "browser_hover",
+    "browser_a11y_tree",
 ];
 
 /// Tools whose result is an image (a vision content block on the next
@@ -216,7 +258,25 @@ pub fn register(reg: &mut ToolRegistry, manager: Arc<BrowserManager>) {
     reg.register(Arc::new(BrowserInspectElementTool::new(manager.clone())));
     reg.register(Arc::new(BrowserClickTool::new(manager.clone())));
     reg.register(Arc::new(BrowserFillTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserScrollTool::new(manager)));
+    reg.register(Arc::new(BrowserScrollTool::new(manager.clone())));
+    // QA tools. Everything below drives the BROWSER rather than the page, so
+    // none of it can be built on script injection — see `services::
+    // browser_devtools` for why the script versions silently report success.
+    reg.register(Arc::new(devtools_tools::BrowserSetViewportTool::new(
+        manager.clone(),
+    )));
+    reg.register(Arc::new(devtools_tools::BrowserEmulateMediaTool::new(
+        manager.clone(),
+    )));
+    reg.register(Arc::new(input_tools::BrowserPressKeyTool::new(
+        manager.clone(),
+    )));
+    reg.register(Arc::new(input_tools::BrowserHoverTool::new(
+        manager.clone(),
+    )));
+    reg.register(Arc::new(a11y_tools::BrowserAccessibilityTreeTool::new(
+        manager,
+    )));
 }
 
 // ---------------------------------------------------------------------------
@@ -763,3 +823,50 @@ impl ToolExecutor for BrowserScrollTool {
 // Compiled-but-unregistered tools (kept for IPC-driven IDE features and
 // for completeness; the agent surface no longer advertises them).
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A name in the permission list that no tool answers to is a gate on
+    /// nothing — it reads as protection while the tool runs unprompted.
+    #[test]
+    fn every_permission_gated_name_is_a_real_tool() {
+        for name in TOOLS_REQUIRING_PERMISSION {
+            assert!(
+                TOOL_NAMES.contains(name),
+                "{name} is permission-gated but is not a registered browser tool"
+            );
+        }
+    }
+
+    /// The roster is what the model is advertised; a duplicate would ship the
+    /// same tool twice and a stale entry would advertise one that cannot run.
+    #[test]
+    fn the_browser_roster_has_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for name in TOOL_NAMES {
+            assert!(seen.insert(*name), "{name} appears twice in TOOL_NAMES");
+        }
+    }
+
+    /// Every QA tool added for design/accessibility auditing is gated. They
+    /// drive real input and change how the page renders, so none of them is a
+    /// read-only observation the way a screenshot is.
+    #[test]
+    fn the_qa_tools_are_all_permission_gated() {
+        for name in [
+            "browser_set_viewport",
+            "browser_emulate_media",
+            "browser_press_key",
+            "browser_hover",
+            "browser_a11y_tree",
+        ] {
+            assert!(TOOL_NAMES.contains(&name), "{name} missing from the roster");
+            assert!(
+                TOOLS_REQUIRING_PERMISSION.contains(&name),
+                "{name} must be permission-gated"
+            );
+        }
+    }
+}

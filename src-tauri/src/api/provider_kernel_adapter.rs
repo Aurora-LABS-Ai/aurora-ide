@@ -48,6 +48,13 @@ pub use super::sse_shared::{frame_has_done_marker, frame_payloads, SseFrameBuffe
 /// Turn an HTTP status code + response body into the appropriate
 /// [`ApiError`] variant per the brief's mapping table.
 pub fn map_status_error(status: u16, body: String) -> ApiError {
+    // Full body to the log file: 401/429 discard it entirely below, and the
+    // other arms keep only a summary slice — but a production diagnosis
+    // usually lives in exactly the part that gets cut.
+    crate::logging::log_error(
+        "api.http",
+        &format!("upstream HTTP {status} rejected request: {body}"),
+    );
     let summary = summarize_body(&body);
     let message = if summary.is_empty() {
         format!("HTTP {status}")
@@ -116,6 +123,191 @@ pub struct AnthropicContentBlockMeta {
     pub block_type: String,
     pub id: Option<String>,
     pub name: Option<String>,
+    /// Payload of a `redacted_thinking` block: the model's reasoning, encrypted
+    /// by Anthropic's safety systems instead of returned as readable text.
+    /// Opaque, and must be replayed verbatim or the history is rejected.
+    pub data: Option<String>,
+}
+
+/// The five effort tiers Anthropic accepts under `output_config.effort`.
+///
+/// Ordered, because the ladder grew over time and a tier a model does not know
+/// is a 400 — `xhigh` arrived with Opus 4.7 and does not exist on 4.6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AnthropicEffort {
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+}
+
+impl AnthropicEffort {
+    #[must_use]
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+
+    /// Parse a user-supplied tier. Accepts the hyphenated spelling some
+    /// gateways use for `xhigh`.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "low" | "minimal" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" | "x-high" | "extra-high" => Some(Self::XHigh),
+            "max" | "maximum" => Some(Self::Max),
+            _ => None,
+        }
+    }
+}
+
+/// How one Anthropic model's reasoning surface is shaped.
+///
+/// The `/v1/messages` reasoning contract changed materially at Claude 4.7 and
+/// the old shape is now a hard error, not a deprecation: `budget_tokens` and
+/// `temperature`/`top_p`/`top_k` each return a 400 on Opus 4.7 and later. A
+/// single request shape therefore cannot serve both generations — Aurora has
+/// to know which one it is talking to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnthropicSurface {
+    /// `true` → `{"type":"adaptive"}` and `output_config.effort`.
+    /// `false` → the legacy `{"type":"enabled","budget_tokens":N}`.
+    pub adaptive: bool,
+    /// Omitting `thinking` entirely still reasons (Opus 5, Sonnet 5, Fable 5).
+    pub thinks_by_default: bool,
+    /// `{"type":"disabled"}` is accepted at all — Fable 5 rejects it outright
+    /// and wants the parameter omitted instead.
+    pub allows_disabled: bool,
+    /// Highest tier this model accepts; `None` means it has no effort control.
+    pub max_effort: Option<AnthropicEffort>,
+    /// `temperature` / `top_p` / `top_k` are accepted.
+    pub allows_sampling: bool,
+    /// `thinking.display` defaults to `"omitted"`, so a readable summary has to
+    /// be asked for. On 4.6 the default was `"summarized"` and asking is a
+    /// no-op — but harmless, so this only gates whether we bother.
+    pub summaries_need_opt_in: bool,
+}
+
+/// The reasoning surface for a model id.
+///
+/// Matching is on a normalized id so a Bedrock `anthropic.` prefix, a dated
+/// snapshot suffix, or a gateway's casing all land on the same row.
+///
+/// **Unknown models get the legacy shape**, deliberately. A provider typed
+/// "anthropic" is very often a gateway that speaks the Messages API without
+/// being Anthropic, and `{"type":"enabled","budget_tokens":N}` is the shape
+/// those gateways universally implement — `adaptive` is recent and many do not
+/// know it. Guessing modern on an unknown id would break every gateway; the
+/// cost of guessing legacy on a genuinely new Claude is one 400 the user can
+/// fix by naming the model.
+#[must_use]
+pub fn anthropic_surface_for(model: &str) -> AnthropicSurface {
+    let id = model
+        .trim()
+        .to_ascii_lowercase()
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .trim_start_matches("anthropic.")
+        .to_string();
+
+    let has = |needle: &str| id.contains(needle);
+
+    // Claude Fable 5 / Mythos 5 — thinking is always on and cannot be turned
+    // off; an explicit `disabled` is a 400 at any effort.
+    if has("fable-5") || has("mythos-5") {
+        return AnthropicSurface {
+            adaptive: true,
+            thinks_by_default: true,
+            allows_disabled: false,
+            max_effort: Some(AnthropicEffort::Max),
+            allows_sampling: false,
+            summaries_need_opt_in: true,
+        };
+    }
+
+    // Claude Opus 5 / Sonnet 5 — adaptive by default when `thinking` is
+    // omitted, which is the opposite of 4.8/4.7.
+    if has("opus-5") || has("sonnet-5") {
+        return AnthropicSurface {
+            adaptive: true,
+            thinks_by_default: true,
+            allows_disabled: true,
+            max_effort: Some(AnthropicEffort::Max),
+            allows_sampling: false,
+            summaries_need_opt_in: true,
+        };
+    }
+
+    // Opus 4.7 / 4.8 — same request surface, but omitting `thinking` means no
+    // thinking, so it has to be asked for explicitly.
+    if has("opus-4-8") || has("opus-4.8") || has("opus-4-7") || has("opus-4.7") {
+        return AnthropicSurface {
+            adaptive: true,
+            thinks_by_default: false,
+            allows_disabled: true,
+            max_effort: Some(AnthropicEffort::Max),
+            allows_sampling: false,
+            summaries_need_opt_in: true,
+        };
+    }
+
+    // Opus 4.6 / Sonnet 4.6 — adaptive exists and is recommended, but the
+    // ladder stops at `max` with no `xhigh`, sampling is still accepted, and
+    // summaries are already the default.
+    if has("opus-4-6") || has("opus-4.6") || has("sonnet-4-6") || has("sonnet-4.6") {
+        return AnthropicSurface {
+            adaptive: true,
+            thinks_by_default: false,
+            allows_disabled: true,
+            max_effort: Some(AnthropicEffort::Max),
+            allows_sampling: true,
+            summaries_need_opt_in: false,
+        };
+    }
+
+    // Everything older, and everything unrecognized: the legacy budget shape.
+    AnthropicSurface {
+        adaptive: false,
+        thinks_by_default: false,
+        allows_disabled: true,
+        // Opus 4.5 accepted low/medium/high; nothing older takes effort at all.
+        max_effort: (has("opus-4-5") || has("opus-4.5")).then_some(AnthropicEffort::High),
+        allows_sampling: true,
+        summaries_need_opt_in: false,
+    }
+}
+
+/// Pack a `redacted_thinking` payload into the `Thinking.signature` slot,
+/// tagged so replay can tell it apart from a real signature (and from the
+/// Responses adapter's encrypted reasoning items, which use the same slot).
+///
+/// Reusing the slot rather than adding a `ContentBlock` variant keeps this to
+/// the two adapters that care: everything in between — persistence, token
+/// counting, the UI's "Thought" affordance, `ReasoningReplay` — already treats
+/// it correctly as a thinking block with no readable text.
+#[must_use]
+pub fn encode_redacted_thinking(data: &str) -> String {
+    json!({ "provider": "anthropic-redacted", "data": data }).to_string()
+}
+
+/// The payload of a signature written by [`encode_redacted_thinking`], or
+/// `None` when this is an ordinary signature.
+#[must_use]
+pub fn decode_redacted_thinking(signature: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(signature).ok()?;
+    if value.get("provider")?.as_str()? != "anthropic-redacted" {
+        return None;
+    }
+    Some(value.get("data")?.as_str()?.to_string())
 }
 
 /// Anthropic delta. Used for both `content_block_delta` (where
@@ -188,7 +380,12 @@ impl OpenAiStreamError {
     /// useful than "the turn ended".
     #[must_use]
     pub fn render(&self) -> String {
-        if let Some(msg) = self.message.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+        if let Some(msg) = self
+            .message
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+        {
             return msg.to_string();
         }
         let code = self.code.as_ref().map(|c| match c {
@@ -208,7 +405,9 @@ impl OpenAiStreamError {
     /// abort a healthy stream.
     #[must_use]
     pub fn is_populated(&self) -> bool {
-        self.message.as_deref().is_some_and(|m| !m.trim().is_empty())
+        self.message
+            .as_deref()
+            .is_some_and(|m| !m.trim().is_empty())
             || self.kind.is_some()
             || self.code.is_some()
     }
@@ -270,6 +469,16 @@ pub struct OpenAiUsageData {
     /// Nullable: streaming responses often send `prompt_tokens_details: null`.
     #[serde(default)]
     pub prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
+    /// What the PROVIDER says this request cost, in USD.
+    ///
+    /// Routers in the OpenRouter family report this on the final usage chunk.
+    /// When present it outranks anything Aurora can compute: it already
+    /// includes gateway markup, BYOK rates, promotional pricing and
+    /// per-account discounts, none of which a published list price knows
+    /// about. Absent for direct providers (Anthropic, OpenAI), where the
+    /// catalog price is the best available answer.
+    #[serde(default)]
+    pub cost: Option<f64>,
 }
 
 /// The `usage.prompt_tokens_details` sub-object in the OpenAI wire shape.
@@ -401,37 +610,91 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
 
     let wants_thinking = (request.thinking_enabled && config.supports_thinking) || effort.is_some();
 
-    let thinking_on = if wants_thinking {
-        match anthropic_thinking_plan(
-            request.thinking_budget_tokens,
-            effort.as_deref(),
-            max_tokens,
-        ) {
-            Some((budget, total_max_tokens)) => {
-                body.insert(
-                    "thinking".to_string(),
-                    json!({ "type": "enabled", "budget_tokens": budget }),
-                );
-                // Reasoning tokens bill against `max_tokens` too, so the cap
-                // has to cover the budget ON TOP of the answer the user asked
-                // for. Without this the model can spend the whole allowance
-                // thinking and get cut off at `max_tokens` mid-thought, having
-                // emitted no reply at all.
-                body.insert("max_tokens".to_string(), Value::from(total_max_tokens));
-                true
+    // What THIS model accepts. The reasoning contract changed at Claude 4.7 and
+    // the old shape is a hard error there, so one body cannot serve both.
+    let surface = anthropic_surface_for(request.model);
+
+    let thinking_on = if surface.adaptive {
+        // ── Claude 4.6+ ──────────────────────────────────────────────
+        // `budget_tokens` is a 400 here. Depth is `output_config.effort`;
+        // the `thinking` object only says on, off, or how to display.
+        let on = wants_thinking || surface.thinks_by_default;
+
+        if on {
+            let mut thinking = json!({ "type": "adaptive" });
+            if surface.summaries_need_opt_in {
+                // `display` defaults to "omitted" on 4.7+, which streams
+                // thinking blocks whose text is empty. Aurora renders those
+                // blocks, so without this the UI shows a reasoning card with
+                // nothing in it and a long pause before the answer.
+                thinking["display"] = Value::String("summarized".into());
             }
-            // Answer budget too small to pair with a valid reasoning budget —
-            // omit `thinking` rather than send a body Anthropic would reject.
-            None => false,
+            body.insert("thinking".to_string(), thinking);
+        } else if surface.allows_disabled {
+            body.insert("thinking".to_string(), json!({ "type": "disabled" }));
         }
+        // Fable 5 with reasoning off: omit the field entirely — an explicit
+        // `disabled` is a 400 there, and omitting it runs adaptive anyway.
+
+        if let Some(ceiling) = surface.max_effort {
+            // Clamp rather than reject: a tier the model doesn't know is a 400,
+            // and `xhigh` does not exist below 4.7.
+            let mut level = effort
+                .as_deref()
+                .and_then(AnthropicEffort::parse)
+                .unwrap_or(AnthropicEffort::High)
+                .min(ceiling);
+            // Disabling thinking is only accepted at `high` or below; pairing
+            // it with `xhigh`/`max` is a 400 on Opus 5.
+            if !on {
+                level = level.min(AnthropicEffort::High);
+            }
+            body.insert(
+                "output_config".to_string(),
+                json!({ "effort": level.wire() }),
+            );
+        }
+        on
     } else {
-        false
+        // ── Claude 4.6 and earlier, and every unrecognized model ─────
+        // The legacy budget shape, which is also what Anthropic-compatible
+        // gateways implement.
+        if wants_thinking {
+            match anthropic_thinking_plan(
+                request.thinking_budget_tokens,
+                effort.as_deref(),
+                max_tokens,
+            ) {
+                Some((budget, total_max_tokens)) => {
+                    body.insert(
+                        "thinking".to_string(),
+                        json!({ "type": "enabled", "budget_tokens": budget }),
+                    );
+                    // Reasoning tokens bill against `max_tokens` too, so the cap
+                    // has to cover the budget ON TOP of the answer the user asked
+                    // for. Without this the model can spend the whole allowance
+                    // thinking and get cut off at `max_tokens` mid-thought, having
+                    // emitted no reply at all.
+                    body.insert("max_tokens".to_string(), Value::from(total_max_tokens));
+                    true
+                }
+                // Answer budget too small to pair with a valid reasoning budget —
+                // omit `thinking` rather than send a body Anthropic would reject.
+                None => false,
+            }
+        } else {
+            false
+        }
     };
 
-    // Extended thinking requires `temperature = 1`; any other value is a 400 on
-    // Anthropic proper. Drop it rather than fight the user's provider default.
-    if thinking_on {
+    // Sampling parameters were REMOVED at Claude 4.7 — sending `temperature`
+    // at all is a 400 there, not merely ignored. On the models that still take
+    // it, extended thinking additionally pins it to 1, so any other value is
+    // also rejected; dropping it beats fighting the provider's default.
+    if !surface.allows_sampling || thinking_on {
         body.remove("temperature");
+        body.remove("top_p");
+        body.remove("top_k");
     }
 
     if let Some(custom) = &config.custom_params {
@@ -708,15 +971,29 @@ fn message_blocks_to_anthropic_content(blocks: &[ContentBlock], supports_vision:
             ContentBlock::Text { text } => {
                 arr.extend(anthropic_text_to_blocks(text, supports_vision));
             }
-            ContentBlock::Thinking { text, signature } => {
-                let mut obj = json!({
-                    "type": "thinking",
-                    "thinking": text,
-                });
-                if let Some(sig) = signature {
-                    obj["signature"] = Value::String(sig.clone());
+            ContentBlock::Thinking {
+                text, signature, ..
+            } => {
+                // A redacted block must go back as `redacted_thinking` with its
+                // original `data`. Re-sending it as a `thinking` block whose
+                // signature is our own JSON wrapper is a signature Anthropic
+                // cannot verify, and it rejects the whole request.
+                match signature.as_deref().and_then(decode_redacted_thinking) {
+                    Some(data) => arr.push(json!({
+                        "type": "redacted_thinking",
+                        "data": data,
+                    })),
+                    None => {
+                        let mut obj = json!({
+                            "type": "thinking",
+                            "thinking": text,
+                        });
+                        if let Some(sig) = signature {
+                            obj["signature"] = Value::String(sig.clone());
+                        }
+                        arr.push(obj);
+                    }
                 }
-                arr.push(obj);
             }
             ContentBlock::ToolUse { id, name, input } => arr.push(json!({
                 "type": "tool_use",
@@ -805,48 +1082,44 @@ pub(crate) enum AuroraImagePiece {
 }
 
 /// Split a tool_result body into image and surrounding text segments.
-/// Markers without a valid `media_type` attribute or with an empty
-/// payload are kept as plain text — defensive against malformed
-/// output. Capped at 8 images per result.
+///
+/// Detection is delegated to [`crate::api::aurora_image`], which only accepts a
+/// **structurally valid** marker: well-formed attributes, an `image/*`
+/// `media_type`, a close tag, and a body that is either valid base64 or blank
+/// (lean). Text that merely quotes the marker syntax — this project's own docs
+/// and source do, repeatedly — stays text, instead of being shipped as an image
+/// part the provider then rejects with HTTP 400.
+///
+/// Capped at 8 images per result.
 pub(crate) fn split_aurora_images(content: &str) -> Vec<AuroraImagePiece> {
+    use crate::api::aurora_image::find_marker;
+
     const MAX_IMAGES: usize = 8;
     let mut pieces: Vec<AuroraImagePiece> = Vec::new();
     let mut images_emitted = 0usize;
     let mut cursor = 0usize;
 
-    while cursor < content.len() && images_emitted < MAX_IMAGES {
-        let rest = &content[cursor..];
-        let Some(open) = rest.find("<aurora_image ") else {
+    while images_emitted < MAX_IMAGES {
+        let Some(marker) = find_marker(content, cursor) else {
             break;
         };
-        let absolute_open = cursor + open;
-        let Some(close_attr) = content[absolute_open..].find('>') else {
-            break;
-        };
-        let header_end = absolute_open + close_attr + 1;
-        let header = &content[absolute_open..header_end];
-        let Some(end_tag) = content[header_end..].find("</aurora_image>") else {
-            break;
-        };
-        let payload_end = header_end + end_tag;
-        let body = &content[header_end..payload_end];
-
-        let media_type = extract_attr(header, "media_type").unwrap_or_else(|| "image/png".into());
-        if absolute_open > cursor {
-            let leading = content[cursor..absolute_open].trim_matches(['\n', '\r']);
+        if marker.start > cursor {
+            let leading = content[cursor..marker.start].trim_matches(['\n', '\r']);
             if !leading.is_empty() {
                 pieces.push(AuroraImagePiece::Text(leading.to_string()));
             }
         }
-        if !body.trim().is_empty() {
-            // Inline base64 (legacy threads, or a capture whose on-disk save
-            // failed so the body carries the bytes directly).
+        let media_type = marker.media_type().to_string();
+        if let Some(payload) = marker.payload() {
+            // Inline base64 (composer attachments, legacy threads, or a capture
+            // whose on-disk save failed so the body carries the bytes directly).
+            // Validated as base64 by the parser.
             pieces.push(AuroraImagePiece::Image {
                 media_type,
-                base64: body.trim().to_string(),
+                base64: payload.to_string(),
             });
             images_emitted += 1;
-        } else if let Some(base64) = rehydrate_image_from_src(header) {
+        } else if let Some(base64) = rehydrate_image_from_src(marker.src()) {
             // Lean marker: the base64 was stripped from history to keep the JSONL
             // small; the PNG lives on disk (referenced by `src`). Re-read it now.
             pieces.push(AuroraImagePiece::Image { media_type, base64 });
@@ -855,7 +1128,7 @@ pub(crate) fn split_aurora_images(content: &str) -> Vec<AuroraImagePiece> {
         // else: empty body + unreadable/absent `src` (e.g. pruned screenshot) →
         // drop the image; the caption text is still emitted so context stays
         // coherent and the model isn't handed a broken reference.
-        cursor = payload_end + "</aurora_image>".len();
+        cursor = marker.end;
     }
 
     if cursor < content.len() {
@@ -870,30 +1143,18 @@ pub(crate) fn split_aurora_images(content: &str) -> Vec<AuroraImagePiece> {
     pieces
 }
 
-/// Rehydrate a screenshot's base64 from the on-disk PNG referenced by the
-/// `<aurora_image src="…">` header. The persisted/model-history copy stores the
-/// path, not the bytes (small JSONL, no re-uploading base64 every turn); this
-/// reads the file back at request-build time. Returns `None` when there's no
-/// `src` or the file can't be read (e.g. it was pruned) — the caller then keeps
-/// only the caption text.
-fn rehydrate_image_from_src(header: &str) -> Option<String> {
+/// Rehydrate a screenshot's base64 from the on-disk PNG referenced by a lean
+/// marker's `src`. The persisted/model-history copy stores the path, not the
+/// bytes (small JSONL, no re-uploading base64 every turn); this reads the file
+/// back at request-build time. Returns `None` when there's no `src` or the file
+/// can't be read (e.g. it was pruned) — the caller then keeps only the caption
+/// text.
+fn rehydrate_image_from_src(src: Option<&str>) -> Option<String> {
     use base64::Engine;
-    let src = extract_attr(header, "src")?;
     // The value was minimally XML-escaped when written into the attribute.
-    let path = src.replace("&quot;", "\"").replace("&amp;", "&");
+    let path = src?.replace("&quot;", "\"").replace("&amp;", "&");
     let bytes = std::fs::read(&path).ok()?;
     Some(base64::engine::general_purpose::STANDARD.encode(bytes))
-}
-
-/// Find `name="value"` in an open tag. Whitespace-tolerant; returns
-/// the value without quotes. Only matches double-quoted values to
-/// keep the parser dumb (the tool always emits double quotes).
-fn extract_attr(header: &str, name: &str) -> Option<String> {
-    let needle = format!("{name}=\"");
-    let start = header.find(&needle)? + needle.len();
-    let rest = &header[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
 }
 
 /// OpenAI-compat counterpart to `anthropic_tool_result_content`.
@@ -1134,7 +1395,7 @@ pub(crate) fn should_request_stream_usage(provider_type: &str) -> bool {
 ///
 /// Returns `Some("reasoning_content")`, `Some("reasoning")`, or
 /// `None` (= drop reasoning entirely from outgoing messages).
-fn reasoning_field_for(provider_type: &str) -> Option<&'static str> {
+pub(crate) fn reasoning_field_for(provider_type: &str) -> Option<&'static str> {
     match provider_type.to_ascii_lowercase().as_str() {
         // DeepSeek + GLM thinking-mode models *require* the original
         // `reasoning_content` to be replayed or the API returns 400.
@@ -1277,15 +1538,30 @@ fn openai_messages(
                 // One user message carrying whatever could not ride on a
                 // tool-role entry: the screenshots first (the model reads them
                 // as the answer to the call it just made), then any mid-turn
-                // text the human queued.
+                // text the human queued. The injected text itself can carry
+                // `<aurora_image>` markers (mid-turn composer attachments) —
+                // expand them through the same splitter a user message uses,
+                // vision-gated, so they arrive as real image parts rather
+                // than base64 prose.
+                let injected_content: Option<Value> = if injected_text.is_empty() {
+                    None
+                } else if supports_vision {
+                    Some(openai_user_content(&injected_text))
+                } else {
+                    Some(Value::String(strip_aurora_images_for_text(&injected_text)))
+                };
                 if pending_images.is_empty() {
-                    if !injected_text.is_empty() {
-                        output.push(json!({ "role": "user", "content": injected_text }));
+                    if let Some(content) = injected_content {
+                        output.push(json!({ "role": "user", "content": content }));
                     }
                 } else {
                     let mut parts = pending_images;
-                    if !injected_text.is_empty() {
-                        parts.push(json!({ "type": "text", "text": injected_text }));
+                    match injected_content {
+                        Some(Value::Array(injected_parts)) => parts.extend(injected_parts),
+                        Some(Value::String(text)) if !text.is_empty() => {
+                            parts.push(json!({ "type": "text", "text": text }));
+                        }
+                        _ => {}
                     }
                     output.push(json!({ "role": "user", "content": Value::Array(parts) }));
                 }
@@ -1508,6 +1784,16 @@ pub enum BlockState {
     Thinking {
         text: String,
         signature: Option<String>,
+        /// Epoch ms of the first reasoning delta in this segment, and of the
+        /// most recent one. Their span is the wall clock the UI reports.
+        ///
+        /// Measured per-delta rather than at finalization because EVERY block
+        /// in a turn is finalized together at stream end (see the single
+        /// `into_content_block` call site) — so a `now - started` computed
+        /// there would charge a short reasoning pass for all the text and
+        /// tool streaming that followed it.
+        started_at_ms: i64,
+        ended_at_ms: i64,
     },
     ToolUse {
         id: String,
@@ -1517,10 +1803,55 @@ pub enum BlockState {
 }
 
 impl BlockState {
+    /// Open a reasoning block and start its clock.
+    pub fn new_thinking(text: String, signature: Option<String>) -> Self {
+        let now = now_unix_ms();
+        BlockState::Thinking {
+            text,
+            signature,
+            started_at_ms: now,
+            ended_at_ms: now,
+        }
+    }
+
+    /// Append a reasoning delta AND extend the segment's clock.
+    ///
+    /// Every append site must go through this. Writing `text.push_str(..)`
+    /// against the variant directly compiles fine and silently freezes the
+    /// duration at whatever the opening delta stamped — the block still
+    /// renders, just with a number that is always too small, which is the
+    /// shape of bug nobody files.
+    ///
+    /// Returns `false` when `self` is not a reasoning block, so callers can
+    /// fall through to opening one.
+    pub fn push_thinking(&mut self, delta: &str) -> bool {
+        match self {
+            BlockState::Thinking {
+                text, ended_at_ms, ..
+            } => {
+                text.push_str(delta);
+                *ended_at_ms = now_unix_ms();
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn into_content_block(self) -> ContentBlock {
         match self {
             BlockState::Text { text } => ContentBlock::Text { text },
-            BlockState::Thinking { text, signature } => ContentBlock::Thinking { text, signature },
+            BlockState::Thinking {
+                text,
+                signature,
+                started_at_ms,
+                ended_at_ms,
+            } => ContentBlock::Thinking {
+                text,
+                signature,
+                // `saturating_sub` so a clock that steps backwards mid-turn
+                // reports 0 rather than wrapping into a nonsense duration.
+                duration_ms: Some(ended_at_ms.saturating_sub(started_at_ms).max(0) as u64),
+            },
             BlockState::ToolUse {
                 id,
                 name,
@@ -1701,6 +2032,102 @@ mod tests {
     /// vLLM-family endpoint read it fine. The user-message placement is the
     /// only one all three accepted.
     #[test]
+    #[test]
+    fn a_modern_claude_gets_adaptive_thinking_and_no_sampling_params() {
+        // `budget_tokens` and `temperature` are each a 400 on Opus 4.7+ — this
+        // is the shape Aurora used to send to every Anthropic model.
+        for model in ["claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"] {
+            let s = anthropic_surface_for(model);
+            assert!(s.adaptive, "{model} must use adaptive thinking");
+            assert!(!s.allows_sampling, "{model} rejects sampling parameters");
+            assert!(s.summaries_need_opt_in, "{model} needs display: summarized");
+        }
+    }
+
+    #[test]
+    fn fable_cannot_have_thinking_disabled() {
+        // An explicit `{"type":"disabled"}` is a 400 at any effort — the
+        // parameter has to be omitted instead.
+        assert!(!anthropic_surface_for("claude-fable-5").allows_disabled);
+        assert!(anthropic_surface_for("claude-opus-5").allows_disabled);
+    }
+
+    #[test]
+    fn thinking_defaults_differ_between_opus_5_and_opus_4_8() {
+        // Omitting `thinking` reasons on Opus 5 and does not on Opus 4.8 —
+        // the one silent default change between those generations.
+        assert!(anthropic_surface_for("claude-opus-5").thinks_by_default);
+        assert!(!anthropic_surface_for("claude-opus-4-8").thinks_by_default);
+    }
+
+    #[test]
+    fn an_unknown_model_gets_the_legacy_shape() {
+        // A provider typed "anthropic" is very often a gateway that speaks the
+        // Messages API without being Anthropic. `budget_tokens` is what those
+        // universally implement; guessing `adaptive` would break all of them.
+        let s = anthropic_surface_for("some-gateway/llama-70b-anthropic-shim");
+        assert!(!s.adaptive);
+        assert!(s.allows_sampling);
+        assert_eq!(s.max_effort, None);
+    }
+
+    #[test]
+    fn a_bedrock_prefix_and_a_dated_snapshot_resolve_to_the_same_row() {
+        assert_eq!(
+            anthropic_surface_for("anthropic.claude-opus-5"),
+            anthropic_surface_for("claude-opus-5"),
+        );
+        assert!(anthropic_surface_for("claude-opus-4-5-20251101").max_effort.is_some());
+    }
+
+    #[test]
+    fn xhigh_is_clamped_on_models_that_predate_it() {
+        // `xhigh` arrived with Opus 4.7; sending it to 4.6 is a 400.
+        assert_eq!(
+            anthropic_surface_for("claude-sonnet-4-6").max_effort,
+            Some(AnthropicEffort::Max),
+        );
+        assert!(AnthropicEffort::XHigh < AnthropicEffort::Max);
+        assert_eq!(AnthropicEffort::parse("x-high"), Some(AnthropicEffort::XHigh));
+    }
+
+    #[test]
+    fn a_redacted_thinking_block_goes_back_as_redacted_thinking() {
+        // Anthropic encrypts a reasoning block when its safety systems flag
+        // it. The payload is opaque and must be replayed verbatim — re-sending
+        // it as a `thinking` block carrying our own JSON wrapper in the
+        // signature slot is a signature Anthropic cannot verify, and it
+        // rejects the entire request.
+        let blocks = vec![ContentBlock::Thinking {
+            text: String::new(),
+            signature: Some(encode_redacted_thinking("EncRypTeDbLoB==")),
+            duration_ms: None,
+        }];
+
+        let content = message_blocks_to_anthropic_content(&blocks, false);
+        let arr = content.as_array().expect("array");
+        assert_eq!(arr[0]["type"], "redacted_thinking");
+        assert_eq!(arr[0]["data"], "EncRypTeDbLoB==");
+        assert!(arr[0].get("signature").is_none());
+        assert!(arr[0].get("thinking").is_none());
+    }
+
+    #[test]
+    fn an_ordinary_signature_is_left_alone() {
+        let blocks = vec![ContentBlock::Thinking {
+            text: "step one".into(),
+            signature: Some("real-anthropic-signature".into()),
+            duration_ms: None,
+        }];
+
+        let content = message_blocks_to_anthropic_content(&blocks, false);
+        let arr = content.as_array().expect("array");
+        assert_eq!(arr[0]["type"], "thinking");
+        assert_eq!(arr[0]["thinking"], "step one");
+        assert_eq!(arr[0]["signature"], "real-anthropic-signature");
+    }
+
+    #[test]
     fn openai_tool_result_moves_images_into_a_following_user_message() {
         let content = "Screenshot captured.\n\
              <aurora_image media_type=\"image/png\">QUJD</aurora_image>";
@@ -1708,6 +2135,52 @@ mod tests {
 
         assert_eq!(text, "Screenshot captured.");
         assert_eq!(images.len(), 1, "the image must be split out");
+        assert_eq!(
+            images[0]["image_url"]["url"].as_str().unwrap(),
+            "data:image/png;base64,QUJD"
+        );
+    }
+
+    /// Reading a file that DOCUMENTS the marker syntax must produce text, not an
+    /// image part. This is the regression behind the provider 400: a `file_read`
+    /// of `.knowledge/knowledge.md` matched the old substring test, and ~2.8 KB
+    /// of markdown between the quoted open and close tokens was shipped as
+    /// `data:image/png;base64,<markdown>` — rejected as
+    /// "invalid base64-encoded value", killing the whole turn.
+    #[test]
+    fn prose_documenting_the_marker_is_never_split_into_an_image() {
+        let content = concat!(
+            "{\"success\":true,\"path\":\".knowledge/knowledge.md\",\"content\":\"",
+            "FIX: `truncate_tool_content` returns early when `s.contains(\"<aurora_image \")`. ",
+            "Downscale bounds the size so this is safe. The MODEL copy keeps the full ",
+            "`<aurora_image>` block (vision); reload parses the raw ",
+            "`<aurora_image ... src=.. w.. h..>BASE64</aurora_image>` block.",
+            "\"}",
+        );
+
+        let (text, images) = openai_tool_result_split(content);
+        assert!(images.is_empty(), "prose must not become an image part");
+        assert_eq!(text, content, "the text must survive intact");
+
+        // Same for the Anthropic and Responses shapes.
+        assert_eq!(
+            anthropic_tool_result_content(content),
+            Value::String(content.to_string()),
+        );
+        assert!(matches!(
+            split_aurora_images(content).as_slice(),
+            [AuroraImagePiece::Text(_)],
+        ));
+    }
+
+    /// A genuine screenshot appearing AFTER prose that quotes the syntax is
+    /// still delivered — validation skips bad candidates, it doesn't give up.
+    #[test]
+    fn a_real_image_after_quoted_prose_is_still_delivered() {
+        let content = "docs mention `<aurora_image ...>` loosely.\n\
+             <aurora_image media_type=\"image/png\">QUJD</aurora_image>";
+        let (_text, images) = openai_tool_result_split(content);
+        assert_eq!(images.len(), 1);
         assert_eq!(
             images[0]["image_url"]["url"].as_str().unwrap(),
             "data:image/png;base64,QUJD"
@@ -1741,6 +2214,7 @@ mod tests {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            model: None,
         }];
         let request = ApiRequest {
             messages: &messages,
@@ -1757,7 +2231,9 @@ mod tests {
 
         assert_eq!(out.len(), 2, "one tool message + one user message");
         assert_eq!(out[0]["role"], "tool");
-        let tool_text = out[0]["content"].as_str().expect("tool content is a string");
+        let tool_text = out[0]["content"]
+            .as_str()
+            .expect("tool content is a string");
         assert!(tool_text.contains("Screenshot captured."));
         assert!(
             tool_text.contains(OPENAI_IMAGE_HANDOFF_NOTE),
@@ -1769,9 +2245,69 @@ mod tests {
         );
 
         assert_eq!(out[1]["role"], "user");
-        let parts = out[1]["content"].as_array().expect("user content is an array");
+        let parts = out[1]["content"]
+            .as_array()
+            .expect("user content is an array");
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0]["type"], "image_url");
+    }
+
+    /// A mid-turn injected message carrying an `<aurora_image>` marker (a
+    /// composer attachment) must reach the model as a real image part in the
+    /// trailing user message — the same delivery `browser_screenshot` gets —
+    /// not as base64 prose.
+    #[test]
+    fn openai_messages_expands_injected_image_markers() {
+        let messages = vec![ConversationMessage {
+            role: MessageRole::Tool,
+            blocks: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "lint passed".into(),
+                    is_error: None,
+                },
+                ContentBlock::Text {
+                    text: "use this design\n\
+                        <aurora_image media_type=\"image/png\">QUJD</aurora_image>"
+                        .into(),
+                },
+            ],
+            usage: None,
+            timestamp: 0,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            model: None,
+        }];
+        let request = ApiRequest {
+            messages: &messages,
+            system_prompt: None,
+            tools: &[],
+            model: "claude-opus-5",
+            temperature: None,
+            max_output_tokens: 1024,
+            thinking_enabled: false,
+            thinking_budget_tokens: None,
+        };
+
+        let out = openai_messages(&request, true, "openai");
+        assert_eq!(out.len(), 2, "one tool message + one user message");
+        assert_eq!(out[1]["role"], "user");
+        let parts = out[1]["content"].as_array().expect("multimodal array");
+        assert!(
+            parts.iter().any(|p| p["type"] == "text"
+                && p["text"].as_str().unwrap_or("").contains("use this design")),
+            "injected text survives as a text part"
+        );
+        assert!(
+            parts.iter().any(|p| p["type"] == "image_url"),
+            "the marker becomes a real image part"
+        );
+
+        // Non-vision: the marker is stripped to a placeholder, never base64.
+        let out = openai_messages(&request, false, "openai");
+        let content = out[1]["content"].as_str().expect("plain string content");
+        assert!(content.contains("use this design"));
+        assert!(!content.contains("QUJD"), "no raw base64 for non-vision");
     }
 
     #[test]
@@ -1889,7 +2425,13 @@ mod tests {
         for answer in [
             1_025_u32, 2_000, 8_192, 16_384, 32_000, 40_000, 64_000, 100_000,
         ] {
-            for effort in [None, Some("low"), Some("medium"), Some("high"), Some("xhigh")] {
+            for effort in [
+                None,
+                Some("low"),
+                Some("medium"),
+                Some("high"),
+                Some("xhigh"),
+            ] {
                 let Some((budget, total)) = anthropic_thinking_plan(None, effort, answer) else {
                     continue; // no valid config at this size — caller omits `thinking`
                 };
@@ -1918,7 +2460,10 @@ mod tests {
         );
         // The combined cap always leaves `budget < max_tokens`.
         let (budget, total) = anthropic_thinking_plan(None, Some("max"), 1_100).unwrap();
-        assert!(budget < total, "budget {budget} must be < max_tokens {total}");
+        assert!(
+            budget < total,
+            "budget {budget} must be < max_tokens {total}"
+        );
         assert!(budget >= 1_024, "budget {budget} must be >= 1024");
         // Too small to pair with a valid budget → omit `thinking` entirely.
         assert_eq!(anthropic_thinking_budget(None, Some("high"), 1_024), None);
@@ -2107,6 +2652,7 @@ mod tests {
                 timestamp: 2,
                 attached_selected_elements: None,
                 attached_prompt_chips: None,
+                model: None,
             },
         ];
 

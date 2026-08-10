@@ -2,6 +2,172 @@
 
 Append 2-4 lines per mistake / broken assumption / project-specific warning.
 
+## 2026-08-10 — Never put the user's real project names in Aurora's own source
+- I wrote a test fixture in `code_index/store.rs` using the owner's private package name and one of
+  its classes as the sample data, plus half a dozen comments naming his private repos and files.
+  Aurora is a shipped, source-available product; that leaks his project identity into code he
+  distributes, and reads to any future maintainer as though those were real dependencies.
+- Rule: fixtures and comments use neutral names (`@acme/core`, `Client`, "a real 594-file Electron
+  app"). **Keep the measurement, drop the identity** — "282 files across 4 workspace members were
+  invisible" is the durable fact; which repo it was is not. Real names belong in `.knowledge/` and
+  `DOCS/`, which are working notes, never in `src/` or `src-tauri/src/`.
+- Grep before finishing any session that involved testing against a private repo.
+
+## 2026-08-10 — An exclusion list is a bet, and a name can mean opposite things in two ecosystems
+- `packages/` was skipped as a .NET/NuGet output name. In a pnpm/yarn workspace it is where ALL the
+  source lives. Result on a real monorepo: 282 files across 4 first-class libraries indexed as zero,
+  while the exclusion saved nothing — a NuGet folder contains .dll/.nupkg, none of which is in any
+  language the indexer reads. All cost, no benefit. `bin` is the same trap (Node CLI entry points).
+- Before adding a directory name to a skip list, ask what it means in EVERY ecosystem, and price
+  both sides: what does excluding it save, and what does it destroy if the other meaning applies?
+- The thing that made this findable was reporting skipped directories in the build stats instead of
+  dropping them silently. A silent exclusion would have looked like a complete index forever.
+- Second monorepo bug from the same test: cross-package imports use the PACKAGE NAME, not a relative
+  path, so every one looked external and the whole-repo dependency graph came back with zero edges.
+  A "bare specifier means npm dependency" rule is only true outside a workspace.
+
+## 2026-08-10 — Read a competitor's source for its DECISIONS; verify its ANSWERS before copying
+- Evaluated `symgraph` (a shipped code-intelligence CLI) against Aurora's index on the same repos.
+  Three of its ideas were better than anything Aurora had and were ported: coupling broken down by
+  KIND, a directory dependency graph, and git churn as a ranking signal. Its ANSWERS were worse.
+- The finding that mattered: `impact ScreenReader` claimed 6 inbound edges from `ControlSession.cs`,
+  a file containing **zero** mentions of ScreenReader. It had matched the bare method name `Set`
+  and attributed calls to an unrelated `HaloOverlay.Set`. A FALSE dependency is the dangerous
+  direction to be wrong in — it sends you to "fix" code that was never affected. Aurora's
+  import → same-file → same-dir cascade gets that case right (both files sit in `src/`).
+- It also merged 8 callers of two different `Set` methods into one list with no warning — the exact
+  failure documented in these notes on 2026-08-09, shipped as a feature.
+- Method that made all this findable: establish ground truth with `grep` FIRST, independently of
+  both tools, then compare. I nearly reported "it does not index `export const` symbols" — checking
+  showed the symbol WAS indexed and only the lookup was broken. Different bug, different fix.
+- Do not evaluate a crate as a dependency and as a source of ideas in the same breath. symgraph is
+  a 22 MB SQLite index with an MCP server attached; Aurora indexes the same repo in 4.9 MB with
+  more symbols. Take the design, leave the package.
+
+## 2026-08-10 — A schema option offered at the top level is offered to EVERY op
+- Added `in_file` to the `code` tool and wired it into `usages` only, documenting it as "For
+  `usages`:". The very first live turn, the model sent it to `definition` three times — reasonably,
+  since the schema lists it as a sibling of `op` and `name`. `definition` ignored it, returned all
+  3 homonyms of `hasCapability`, and the model then told the user it had "resolved the ambiguity by
+  restricting the search to ai-orchestrator.ts". **The filter never ran and the model narrated it
+  anyway.** Silently ignoring a parameter is worse than rejecting it: it manufactures a false
+  claim in the transcript rather than an error anyone can see.
+- In a one-tool-many-ops schema, every property is visible to every op. Either implement the option
+  everywhere it plausibly applies, or reject it explicitly for the ops that do not take it. Prose in
+  the description is a hint, not a gate — the same lesson as the `file_read` `oneOf` case.
+- Corollary that made this findable at all: read the SESSION JSONL, not the rendered transcript.
+  The UI showed the model's confident prose; only the persisted `tool_use` inputs and `tool_result`
+  payloads showed `in_file` going in and `found: 3` coming back. `%LOCALAPPDATA%\AuroraIDE\
+  sessions\<id>.jsonl`, found by `grep -l "<symbol>" *.jsonl`.
+- Note the repo map is correctly ABSENT from the JSONL — it rides the request body only. Do not
+  "fix" that; see the caching rationale in knowledge.md.
+
+## 2026-08-09 (later) — A refusal can be a missing feature wearing a safety jacket
+- `usages` refused on ambiguity, and the refusal was CORRECT given name-only matching — it is in
+  these notes as a win. It was also hiding the real gap: the index was throwing away the one fact
+  that resolves names. The queries captured `@ref.import` (the imported NAME) and discarded the
+  module it came from, so `Session` imported from `./session` was stored identically to any other
+  `Session`. Adding the pair turned 65% of ambiguous references into resolved ones.
+- Rule: when a tool refuses honestly and often, check whether the refusal is protecting the user
+  from a limitation you could remove, rather than from an unanswerable question. "We cannot know"
+  deserves the same audit as "we got it wrong".
+- The mechanism worth remembering: tree-sitter captures are grouped **by match and by nothing
+  else**. Two facts that only mean something together (a name and its module) must be captured by
+  ONE pattern; as two separate patterns the association is unrecoverable. Aurora's extractor looped
+  per-capture and so could never have expressed this, whatever the queries said.
+- Also: an `import` is not a usage. Counting it made every TypeScript caller count one too high per
+  importing file and put a useless `<top level of …>` row against each. Report it as its own number.
+- And a budget must cover the whole artifact: the repo map reserved nothing for its closing tag and
+  omission notice, so it shipped 20,068 chars against a 20,000 budget. Caught only by printing the
+  real length — every unit test used a budget loose enough to hide it.
+
+## 2026-08-09 — Evaluate a crate as a DEPENDENCY separately from its ideas
+- `coraline` (suggested for the code index) was the right thing to read and the wrong thing to
+  depend on: 597 downloads, one maintainer, and it brings SQLite + ONNX vector embeddings — the
+  exact stack this project deliberately deleted at migration v12. Its resolution cascade
+  (import hint → same file → same dir → refuse) was excellent and took ~200 lines to port.
+- `github/stack-graphs`, the "proper" precise-resolution answer, was **archived by GitHub in
+  September 2025**. Check whether a foundational crate is still alive before designing on it.
+- Rule: read competitors' source for their DECISIONS, not their packages. A 16k-line application
+  crate that owns a database and a model runtime is not a library primitive, however good its ideas.
+
+## 2026-08-09 — An advisory caveat in a tool result is not a safeguard; the model drops it
+- `code`'s `usages` returned a merged caller list PLUS an `ambiguous` field naming 23 rival
+  definitions. Live against quantumhub-client the model dropped the field and presented 27 callers
+  of 23 unrelated things as one confident answer — strictly worse than grep, which at least LOOKS
+  messy. Fix was structural: when a name resolves to >1 callable, return NO caller list at all, only
+  the candidates. The model then relayed it perfectly, because there was nothing left to drop.
+- If a result can be misread by dropping one field, remove the field's subject from the payload
+  instead of adding a warning next to it.
+- Second bug from the same test: the refusal said "re-ask with a qualified name", but those 7 were
+  module-level functions in 7 files with NO container, so no such name exists. A refusal that names
+  an impossible next step is worse than the ambiguity — it looks actionable. Now branches on whether
+  any candidate has a container (`qualifiable`).
+- Also: `usages` now filters to callable kinds. `handle` had 23 definitions of which 16 were struct
+  FIELDS — "who calls a field" is a category error the old version happily answered.
+
+## 2026-08-09 — A service that writes to app data will have its TESTS write to app data
+- `CodeIndexService`'s cache path came from `paths::code_index_dir()` with no override, so every
+  `cargo test` run wrote a dozen tempdir-fixture caches into the user's REAL
+  `%LOCALAPPDATA%\AuroraIDE\code-index\`. All 32 tests passed the whole time — the damage was
+  outside everything they asserted on, and it was only found by listing the directory by hand while
+  looking for something else.
+- Rule: any service that touches a user directory needs a constructor that says WHERE, and its tests
+  must use it. Green tests are not evidence of hermetic tests. When adding one, verify by clearing
+  the real directory, running the suite, and confirming it is still empty.
+
+## 2026-08-09 — Blind-test an analyzer on an unfamiliar repo, or you only ever confirm yourself
+- Indexing `qg-native` BEFORE reading a line of it, writing down falsifiable predictions, and only
+  then opening the source found a bug that three passes over Aurora had not: every reference was
+  counted TWICE. `_ctl(args)` matches both the `@ref.call` pattern and the `@ref.ident` catch-all,
+  and refs were de-duplicated only against DEFS, never against each other — so `callers` reported
+  "2x" for a single call site. On a familiar repo the doubled numbers looked plausible; against
+  grep's hard count of 24 `_cmd_*` functions it was instantly wrong.
+- Rule for overlapping capture sets: if patterns can match the same node, they need a specificity
+  rank AND range-keyed de-dup on BOTH sides (defs and refs), not just one.
+- Also: a 1.9 MB minified `index.js` was 88% of an entire index build and 34% of its symbols, while
+  sitting UNDER the 2 MB size cap. Bytes are the wrong axis for "is this generated" — LINE SHAPE is
+  the right one (avg > 200 B/line). A size threshold tuned for "too big to parse" says nothing about
+  "not worth parsing".
+
+## 2026-08-09 — `ignore` silently drops .gitignore outside a git repo, and `cargo test` won't rebuild a bin
+- `ignore::WalkBuilder::git_ignore(true)` applies NOTHING unless the directory is a real git repo —
+  `require_git` defaults to true. A workspace with a `.gitignore` but no `.git` (an IDE opens plenty)
+  indexes everything it was told to skip. Set `.require_git(false)`. Aurora's `grep` uses the same
+  crate, so check it there too before assuming the tool respects ignores.
+- `cargo test --release` does NOT refresh the `bin` target's exe. I edited queries, saw 18 tests pass,
+  ran the binary, and read numbers from the PREVIOUS build — then started theorising about why the
+  edit "had no effect". When a code change appears to do nothing, verify the artifact you executed
+  was rebuilt (`cargo build`, check mtime) before forming any hypothesis about the code.
+- An ancestor walk with a HOP LIMIT cannot express a scope rule. `is_exported` walked up 4 levels for
+  an `export_statement` and so marked every local inside an exported function as public API. The fix
+  is a barrier node (`statement_block`), not a bigger number — but the barrier must not include the
+  declaration's own parent, or every function reports as private. Both directions need a test.
+
+## 2026-08-09 — A contenteditable=false span at the caret is not inert
+- The composer's ghost text inserted a `contentEditable=false` span AT the caret via
+  `Range.insertNode` — which splits the text node (empty-node residue) and leaves Chromium free
+  to normalize the caret to the FAR side of the span: typed chars appended after the grey ghost,
+  and Backspace deleted the whole span as a unit (native rule) leaving the hook's refs pointing
+  at a detached node. The assist looked haunted; every individual piece was "correct".
+- Rule: native editing must NEVER execute against a DOM containing the ghost — drop it in
+  keydown before any mutating/moving key, insert split-free (`Text.after()`), re-pin the caret
+  explicitly, and clean residue on removal. Also: `execCommand` loops fire one input event EACH
+  (re-entering your own pipeline: double-learn, killed refine-undo) — replace ranges atomically
+  and flag programmatic edits so input handlers can tell them from the user.
+
+## 2026-08-08 — A size-based transform ahead of a type-aware one eats the type
+- `tool_spill` (12 KB threshold, head+tail elision) ran BEFORE `truncate_tool_content`'s
+  aurora_image leanify branch. Every screenshot is >12 KB by design, so the spill cut the marker
+  mid-base64 and the vision pipeline downstream never fired — the model got "253577 of 261769 bytes
+  hidden" instead of seeing the page. The downscale/leanify/adapter chain was all correct and all
+  unreachable. When stages transform the same payload, every EARLIER stage needs the same type
+  exemptions as the later ones, or the special case only exists below the point where it was destroyed.
+- Same session: `grep` passed the pattern as a bare positional, so any pattern starting with `-`
+  (CSS custom properties) was parsed by ripgrep as flags. Third harness-mutates-input bug in this
+  tool (comma-split globs, path-operand globs, now flag-eating patterns) — when wrapping a CLI,
+  every value that can start with `-` must go behind `-e`/`--`.
+
 ## The Rust test suite never ran on Windows — FIXED (2026-07-25)
 - `cargo test` died with exit `0xc0000139` STATUS_ENTRYPOINT_NOT_FOUND before `main`. This was written off in
   these notes as an environment limitation for months. It was not. **Root cause:** `tauri_build::build()`
@@ -328,6 +494,14 @@ clean 199ms runtime verification of the typing-assist engine.
 - The user expects a VISUAL DESIGN PROBE before implementing any non-trivial UI/design change: a self-contained HTML file with several live-rendered variants (numbered cards, real tokens, real sizes, live hover, a recommendation), saved to `C:\Users\Alvan\Documents\` for them to open and pick from. Example they pointed to: `aurora-tool-icon-designs-v2.html`. I skipped this on the composer send-button work and iterated live instead, which burned many rounds and frustrated them.
 - Format that works: `:root` with approximated `--agw-*` dark tokens; a `.grid` of `.card`s each with `.num` + `h3` (+ `Recommended`/`Current` pill) + `.desc` + a `.stage` rendering the actual control at real size across its states; footer with my pick + one-line rationale per variant. Inline SVG glyphs directly (NOT `<use href>` — external class CSS incl. `filter` glows can't pierce a `<use>` shadow tree).
 - Apply relevant lessons BEFORE related work: check `.knowledge` at task start. New send-button probe: `C:\Users\Alvan\Documents\aurora-send-button-designs.html`.
+- **"probe" in the user's vocabulary means THIS html file, not the qg-probe MCP.** 2026-08-10: asked to
+  "create probe first like before", I drove qg-probe against the live window instead and had to be
+  corrected. qg-probe inspects what already ships; the design probe is how a change gets chosen
+  BEFORE it ships. When the ask is about how something should look, it is always the html one.
+  Model-selector probe: `C:\Users\Alvan\Documents\aurora-model-selector-designs.html`.
+- Worth keeping from that same task: bug fixes and design choices are separable. Shipping the three
+  selector BUGS (wrong tooltip target, label collapsing to a raw id, `split(":").pop()`) without a
+  probe was fine; the provider-on-trigger question is the part that needed one.
 
 ## 2026-07-22 — Resolve skill roots from the advertised catalog
 - I incorrectly looked for the required `surface` skills under the repository `.codex` folder even though the active catalog mapped them to `C:\Users\Alvan\.agents\skills`; both reads failed.
@@ -864,3 +1038,600 @@ Two rules this cost us:
    and any value that would stringify to `[object Object]` must throw instead of rendering.
 
 Also: `r#"…"#` in Rust cannot hold a TSX example containing `"#` (a `header: "#"` column). Use `r##`.
+
+## 2026-08-06 — Moving 400 files: what a codemod cannot see, and how a rename corrupts itself
+Restructuring `src/` into `apps/ + kernel/`. `tsc` stayed green through failures that only the
+test suite caught, twice leaving the tree in a state that looked finished and was not.
+
+**Three things import-rewriting misses entirely.** They are not imports, so no `from "…"` regex
+touches them and TypeScript never sees them:
+1. `vi.mock("…")` path strings. A stale mock does **not** error — it silently stops applying, the
+   real module runs, and the failure surfaces somewhere unrelated. 9 broke across two moves.
+   Fixed by making mock paths `@/…` absolute so they stop being position-dependent.
+2. Hardcoded filesystem paths — `readFileSync` on `src/apps/agent/components/…/MessageBubble.tsx`
+   in `appearance-token-coverage.test.ts`. Broke **three separate times**; it is the one category
+   neither a codemod nor a resolver-based repair pass can reach.
+3. Doc comments naming paths (23 files still pointed at the old `src/types/theme.ts`), plus
+   `scripts/add-theme-notice.js`, which *stamps* that header and would re-introduce them.
+
+**Bare side-effect imports are invisible to naive dependency scans.** `import 'x'` has no `from`,
+so a reachability script matching only `from '…'` / `import('…')` reports live files as dead.
+`lib/monaco-setup.ts` was nearly deleted this way; two editor components depend on it for Monaco
+registration. Any "is this dead?" check must include `^import '…'`. Related: ripgrep patterns
+anchored with `$` silently fail on this repo's CRLF files — anchor with `\s*$`.
+
+**A failed move plus a successful rewrite is worse than either alone.** `git mv <dir> <dir>` fails
+with "Permission denied" when the destination already exists — and because the mover discarded
+git's output and never checked status, the import rewrite ran anyway, leaving every import
+pointing at paths nothing had moved to. Then a filesystem move into an existing directory
+**nests** rather than merges (`apps/agent/store/store/`). Verify a move actually landed before
+rewriting anything that depends on it.
+
+**Sequential string replacement over overlapping keys corrupts already-correct paths.** Grouping
+`skills.ts` under `services/skills/` meant the prefix `@/apps/agent/services/skills` then matched
+*inside* the freshly-correct `…/services/skills/prompt-assets`, yielding
+`skills/skills/prompt-assets`. Use one single-pass regex with a lookup callback, so a rewritten
+span can never be rewritten again.
+
+**A shared god-store poisons ownership analysis.** An import-graph classifier reported 8 services
+as shared by both products; they were reachable only *through* `useSettingsStore`, which both
+windows import. Only `git` and `database` were genuinely shared. The boundary lint rule — not the
+graph — is what exposed it. Treat "reachable from both roots" as a hypothesis, then check who
+imports it directly.
+
+**Cleanup deleted a live test.** A recursive force-delete of a folder that looked empty took
+`theme-system-integration.test.ts` with it (recovered via `git checkout`). List a directory's
+files recursively before deleting it, however empty it appears.
+
+**PowerShell footguns hit during this work.** `-replace` is case-insensitive, so renaming
+`ModelOption` also renamed `modelOptions` — use `-creplace` for identifiers. `-Include` silently
+matches nothing unless the path ends in a wildcard (`dir\*`). Multi-line `-replace` patterns are
+regex, so a literal `import {` matches nothing.
+
+## 2026-08-06 — A capture-phase `scroll` listener on `window` hears every scroller in the app
+- Right-clicking a chat row in the left rail during a streaming turn opened the context menu and
+  dismissed it instantly. `RailMenu` closes on `scroll` bound with `capture: true` on `window`
+  (necessary — `scroll` does not bubble), and `useAgentAutoScroll`'s follow loop assigns
+  `scrollTop` on the TRANSCRIPT once per animation frame while a turn streams. ~60 dismissals a
+  second, from a scroller in a completely different panel.
+- Third instance of the 2026-08-02 rule (`a scroll event is not user intent`) and the first where
+  the listener belonged to an unrelated component. RULE: a close-on-scroll handler must decide
+  against the thing it is anchored to — `RailMenuState` now carries the row (`anchor`) and closes
+  only when `event.target.contains(anchor)`. `contains` also covers `document` for page scroll.
+- The anchor is read as `event.currentTarget` inside the handler and held in a REF, not a dep: the
+  owning panel re-renders constantly during a turn, and an `onClose` identity in the effect deps
+  re-subscribes the listeners on every one of those renders.
+
+## 2026-08-06 — A per-block duration has to be measured per DELTA, not at finalization
+- Adding "Thought · 4m 14s" to the reasoning block: the obvious Rust implementation is
+  `now - started` inside `BlockState::into_content_block`. It is wrong here because EVERY block in
+  a turn is finalized together at stream end (one `into_content_block` call site,
+  `provider_kernel_adapter.rs`), so a 3-second reasoning pass followed by two minutes of tool
+  streaming would report two minutes. Stamp `ended_at_ms` on each delta instead.
+- Three adapters (`anthropic`, `openai_compat`, `responses`) append thinking text, and a bare
+  `text.push_str` on the variant compiles fine while silently freezing the clock. Gave `BlockState`
+  a `push_thinking()` that appends AND stamps, plus `new_thinking()` — the append sites can no
+  longer forget. Same reason the tool count is derived rather than repeated.
+- The reload path is a SECOND source for the same widget: `commands/threads.rs` rebuilds the block
+  from `ContentBlock::Thinking`, which had no timestamps — so shipping only the frontend clock gives
+  a number while streaming and a blank after reopening the chat. `duration_ms` is `Option` +
+  `serde(default)`: pre-existing sessions render NO number, never a zero. "measured as instant"
+  (`<1s`) and "never measured" (absent) are different facts and the block renders them differently.
+
+## 2026-08-06 — Workspace containment is skipped entirely when no workspace is bound
+- `resolve_path` / `resolve_path_for_create` (`tools/file_workspace_search/mod.rs`) take
+  `Option<&Path>` and their `None` arm is `Ok(raw.to_path_buf())` — no containment check at all.
+  So `ToolContext.workspace_root: None` is not "deny everything", it is "allow everything",
+  including `file_write` / `delete_path` / `move_path`, regardless of the "Read outside workspace"
+  setting being off. `openAgentWindow(rootPath || null)` omits `?ws=` when the IDE has no folder
+  open, which is the reachable route to that state.
+- `session.workspace_root` is assigned only `if session.workspace_root.is_none()` (`agent_v2.rs`
+  ~579/747) — pinned on the first turn and never refreshed, while the request carries the
+  authoritative root every turn. The `model` field two lines below documents this exact bug class
+  and was fixed; `workspace_root` was not.
+- The "Read outside workspace" escape is honoured by `file_read`, `multi_file_read` and
+  `workspace_tree` only. `grep` and `glob` go through `resolve_path`, which has no `allow_outside`
+  parameter — so with the setting ON the agent can list and read an outside directory but cannot
+  search it. Team members (`member_actor.rs`) hardcode `allow_outside_workspace: false`.
+
+## 2026-08-06 — "Turn cost" was one API request out of twenty, and four other cost bugs behind it
+Owner spotted it from an implausible number: `$0.0173` of output on a turn where the model
+reasoned for fifteen minutes. Backing the rates out of the card (`$0.0220 / 4.4K` → $5/Mtok,
+`$0.1257 / 251.3K` → $0.50/Mtok) put the output at ~690 tokens — a closing summary, not a turn.
+The arithmetic was right; it was applied to the wrong SCOPE.
+- `AssistantEvent::Usage` fires once per API request, and a turn makes one per tool iteration.
+  Both writers OVERWROTE (`useAgentContextStore.setUsage`, `agent-service.ts latestUsage = usage`).
+  Rust had summed it correctly the whole time (`conversation.rs sum_usage`, tested), shipped it on
+  `agent_turn_complete`, the client mapped it — and `await agent.chat(...)` discarded the return.
+  **A correct value that reaches the frontend and is never read is indistinguishable from a
+  missing feature.** Grep for discarded return values when a number looks scoped wrong.
+- Four more, each a *silent understatement* rather than a visible error: cache-WRITE tokens were
+  priced at zero because no column existed for them; no-usage providers persisted ZEROS (the live
+  `~estimate` was never written back), so a reopened chat totalled an exact-looking `$0.00`;
+  compaction's summarization call — which sends the entire head of the conversation and is often
+  the largest single request in a thread — discarded `turn.usage` entirely; and there was no
+  per-message model, so a thread that switched models could not be priced at all.
+- RULE for money: sum MONEY per model, never tokens. Price is a property of the model and a chat
+  can move between them mid-task, so one multiply at the end misprices every request that ran
+  under a different one. `group_usage_by_model` + `priceUsage` keep the groups apart.
+- RULE: a missing price is not a zero price, and an estimate is not a measurement. Unpriced
+  requests are excluded from the total and disclosed by count; estimated ones force a `~`. Both
+  used to fold in silently, which is the failure mode that loses trust — a total that is quietly
+  short looks exactly like a total that is right.
+- `getModelFor` falls back to the ACTIVE model on a miss. Correct for "where will this send",
+  catastrophic for pricing history: it would price an unattributed request at today's rates and
+  present it as measured. Cost needs an EXACT lookup; a miss must stay a miss.
+- Key it on the presence of usage, not the role. Counting only `Assistant` messages hid the
+  compaction charge, which lives on a `System` message. Anything that cost money records usage.
+
+## 2026-08-06 — Cost precedence: the provider's own number beats any rate card
+- models.dev publishes `cost.cache_write` (1,172 models — every Anthropic one; opus-5 is `6.25`
+  against `input: 5`, exactly the 1.25x Anthropic documents). Aurora's `RawModel.cost` typed only
+  `{input, output, cache_read}` and dropped it, which is WHY cache creation was priced at zero.
+  When a catalog field looks missing, check the catalog before adding a manual field — the type
+  we wrote was the limit, not the data.
+- Routers in the OpenRouter family return `usage.cost` in USD on the final chunk.
+  `OpenAiUsageData` never parsed it. That figure OUTRANKS anything we multiply out: it already
+  includes gateway markup, BYOK rates, promos and account discounts, none of which a published
+  list price knows. Precedence is now reported > configured > catalog.
+- The trap when mixing sources: a group must be entirely reported or entirely computed. Groups
+  are keyed on `(model, cost_usd.is_some())` in Rust and mirrored in the live accumulator — if
+  one group held both, its reported dollars would sit beside tokens that also get priced, and any
+  consumer either double-counts or silently drops half.
+- `cost: 0` is a CLAIM ("this request was free"), not an absence. Filtering it out as falsy sends
+  the request back to catalog pricing and invents a charge the provider says it did not make.
+  Only `null`/absent may fall through. Same shape as the cache-price fallback: `?? base` must not
+  swallow an explicit `0`.
+
+## 2026-08-06 — Read the transcripts, not the error message: `paths` as a JSON-encoded string
+- Owner: "is that our path bug or model calling bug?" over
+  `paths: ["alvanworld-engine/src/modules/chats/st` + "`paths` must be a non-empty array". The
+  path in the error was TRUNCATED, which is the same tell as the grep comma-split bug — the value
+  in the message is not the value that was sent.
+- Settled by scanning all 470 session JSONLs rather than reasoning about it: 3,534 `file_read`
+  calls, of which **8 sent `paths` as a JSON-ENCODED STRING** (`"[\"a.ts\", \"b.ts\"]"`), across
+  5 different conversations and projects — ~1.5% of batch reads. One `input` was two whole JSON
+  objects concatenated. `%LOCALAPPDATA%\AuroraIDE\sessions\*.jsonl` persists every tool call's
+  input verbatim; USE IT before theorising about a tool-call bug.
+- The agent's own words in the transcript were the confirmation: "the paths array approach isn't
+  working with the tool, so I'll switch to reading individual paths instead." A capable model
+  routing AROUND a tool is evidence about the interface, and the workaround cost N-1 extra round
+  trips per batch. Same rule as 2026-07-29: resolve every unambiguous input instead of failing it.
+- Trap while fixing: `file_read` delegates the batch to `multi_file_read::read_many(input, ..)`,
+  which RE-READS `paths` off the input it is handed. Coercing only the local variable left the
+  original string in `input`, so the fix looked applied and changed nothing — the test caught it.
+  When normalising input, hand the normalised value to every downstream consumer, not just the
+  local branch.
+- Separate real harness bug found in the same scan: `openai_compat` keyed tool-call accumulation
+  on `tool_calls[].index` alone. A gateway that restarts the index per call glued the second
+  call's arguments onto the first (`{"path":"a"}{"path":"b"}` — invalid JSON, BOTH calls lost).
+  A changed non-empty `id` at a known index now starts a new block; id-less argument deltas still
+  accumulate onto their index.
+
+## 2026-08-06 — `<1s` is a hedge over a number you actually measured
+- The reasoning line showed a column of `<1s` markers. It was defensible while durations were
+  whole seconds ("never claim work took no time"), but a reasoning block emits MANY short
+  segments, and repeating an identical bound tells the reader less than the tenths would — and
+  the value is measured, so there is nothing to hedge.
+- Now `0.4s` under a second, with `<0.1s` reserved for the one case that genuinely cannot be
+  attributed (first and last token in the same tick). Rule: bound a number only when you could
+  not measure it; if you measured it, state it.
+
+## 2026-08-07 — Browser QA tools: the script version reports success and verifies nothing
+- An agent inside Aurora asked for viewport/media emulation, keyboard, hover and an a11y tree, and
+  suggested Aurora provision Playwright's Chromium. All six capability gaps were real (verified
+  against the registered roster, which is `click fill navigate scroll screenshot page_outline
+  inspect_element get_console_logs` — note CLAUDE.md still lists `browser_eval`/`browser_get_dom`,
+  which no longer exist). The Playwright ask was wrong: ~150MB of a second engine, separately
+  versioned, to do what the embedded one already can.
+- THE POINT: the obvious implementation of every one of these is script injection, and it produces
+  FALSE PASSES. `dispatchEvent(new MouseEvent("mouseover"))` fires page handlers but never paints
+  CSS `:hover`; `dispatchEvent(new KeyboardEvent("keydown",{key:"Tab"}))` does not move focus at
+  all. A keyboard audit built that way walks zero stops and reports success. A tool that certifies
+  work it never did is strictly worse than a missing tool.
+- The real channel was ALREADY in the codebase: `services/browser_native_capture.rs` reaches
+  `ICoreWebView2` through `with_webview` → `controller()` → `CoreWebView2()` for screenshots, and
+  the same object exposes `CallDevToolsProtocolMethod` — the Chrome DevTools Protocol. Both the
+  method and its completion handler ship in `webview2-com 0.38`, already a dependency. Before
+  concluding a capability needs new infrastructure, check what the existing native escape hatch
+  can already reach.
+- `webview2-com`'s `#[completed_callback]` macro already converts the returned `PCWSTR` into an
+  owned `String` — the closure signature is `(Result<(),Error>, String)`, not `PCWSTR`. Do not
+  hand-roll the wide-string copy.
+- Emulation overrides live on the BROWSER, not the page, so they survive navigation. A 390px
+  viewport set for a responsive check would silently apply to the next site and leave the user's
+  panel stuck at phone width with nothing on screen explaining it. `navigate` now clears them
+  fire-and-forget, and every emulation tool takes an explicit `reset`.
+
+## 2026-08-07 — `console.error(new Error(...))` was recording `{}`
+- The browser's injected console capture stringified with `JSON.stringify`, and an Error's own
+  properties are NON-ENUMERABLE, so `JSON.stringify(new Error("boom"))` is `"{}"`. The single most
+  common way to log a failure recorded an empty object and threw away the message AND the stack —
+  the one line anyone actually needs. DOM nodes had the same problem, and a circular object threw
+  and fell back to `[object Object]`.
+- Second bug in the same block: `wrap()` trimmed the buffer to MAX but the `error` and
+  `unhandledrejection` listeners pushed WITHOUT trimming. A page stuck in an error loop grew the
+  array without bound — a memory leak in the user's page caused by our debugging aid. One shared
+  `record()` now owns the trim, so a future writer cannot forget it.
+- Also: uncaught errors recorded `e.message` with no `filename:lineno:colno`, which is barely more
+  useful than silence. VERIFY METHOD worth reusing: extract the `r#"…"#` init script out of the
+  Rust source with a regex, `node --check` it (a syntax error there silently breaks every page),
+  then run the real extracted script in a `vm` sandbox against the specific failure cases. That
+  caught all of this without launching the app.
+
+## 2026-08-07 — A perf measurement that doesn't validate its own output measures nothing
+- Benchmarking `AgentMarkdown` per streamed frame gave a suspiciously flat 0.1-0.2 ms across a 46x
+  size range. It was `renderToStaticMarkup`, and Streamdown renders CLIENT-side only, so every
+  size produced the same **73 html chars** — an empty wrapper div. The timing was real and
+  measured nothing.
+- The tell was the flatness, not the speed. RULE: a perf probe must assert its own work happened
+  (output size scales with input) before its numbers are quotable. Shipping a "fix" off that
+  measurement would have been guessing with extra steps.
+- Real markdown-per-frame cost needs a browser profile; jsdom/SSR cannot see it. Not measured, not
+  claimed.
+
+## 2026-08-07 — `useSmoothReveal` advanced per FRAME, so a slow machine revealed text slowly
+- The reveal closed a flat `remaining * 0.2` per animation frame. That silently ties reveal SPEED
+  to frame RATE: at 30fps text appeared at half the speed of 60fps. The coupling runs the wrong
+  way — a fast model (measured 217 tok/s on Agnes) is exactly when frames drop, so the harder the
+  UI worked the further the text fell behind, which reads as the app being unable to keep up.
+- Fixed by expressing the same 20%-per-16.7ms curve as exponential decay over ELAPSED time:
+  `1 - (1 - 0.2)^(dt / 16.7)`. Frame-rate independence is now pinned by a test that walks the
+  reveal to completion at 30/60/120fps and asserts the wall-clock agrees within 25%.
+- Two guards the time-based form needs and the frame-based one didn't: clamp `dt` (a backgrounded
+  tab or GC pause leaves a multi-second hole, and scaling by it dumps the whole backlog in one
+  frame — the exact lurch the hook exists to prevent), and reject a non-finite `dt`, because
+  `Math.min`/`Math.max` PROPAGATE NaN and a NaN advance freezes the reveal permanently.
+
+## 2026-08-07 — Closing the agent window left a hidden `main` keeping the process alive
+- Symptom: quit the agent window, Aurora keeps running with nothing on screen; only Task Manager
+  ends it. Cause: launching straight into the agent window (`launch_prefs::LaunchSurface::Agent`)
+  runs `main_win.hide()` rather than `.close()` — deliberately, because `agent_open_in_ide` needs
+  `main` alive as its sole listener. Tauri keeps the process alive while ANY window exists, so a
+  hidden one is an invisible anchor. `tauri.conf.json` also ships `main` with `visible: false`,
+  and there was NO `on_window_event` handler anywhere in the app.
+- RULE: a hidden window is a live IPC target, never a way for a person to quit. Exit when the last
+  window the user can SEE goes away, not the last window that exists. Now an `on_window_event`
+  `Destroyed` handler exits when no remaining webview reports `is_visible()`. Minimizing is safe —
+  on Windows a minimized window still reports visible — and an un-queryable window counts as not
+  visible, since an error is not a reason to keep a headless process running.
+
+## 2026-08-07 — A 400 that names a byte offset is useless if you never print the request
+- Provider rejected a turn with `did not match any variant of untagged enum ResponseInput at line
+  1 column 39956`. `responses.rs` had no request tracing at all (only `openai_compat.rs` had
+  `AURORA_DEBUG_API`), so the one piece of information the server gave — the exact offset — could
+  not be used. Undiagnosable by construction.
+- Fix is better than a debug flag: PARSE the offset out of the rejection and quote that slice of
+  what we actually sent, in the surfaced error. A window (±220 bytes), never the whole body — one
+  screenshot makes the request megabytes of base64 and dumping it buries the answer. Must be
+  char-boundary safe: the offset is a byte count and naive slicing panics mid-codepoint.
+- Likely cause, and fixed alongside: message items were emitted as `{role, content}` with no
+  `type`. OpenAI INFERS `type: "message"`, so this was invisible against the reference API — but
+  the Responses shape is now reimplemented by gateways whose strict untagged-union deserializer
+  matches on the discriminator and rejects the whole request without it. Stating `type` explicitly
+  is spec-valid everywhere and costs one field. GENERAL RULE: when a wire format has an optional
+  discriminator, send it — "the reference implementation infers it" is not portability.
+
+## 2026-08-07 — Make the rejection name the ITEM, not the bytes
+- The byte-window diagnostic paid for itself on its first run: the 400 came back with
+  `…-Webapp-Engine\README.md","fullPath":"E:\…`, which identified the region as a file-tool
+  result inside a `function_call_output`. Quoting what we SENT at the offset the server named
+  turned an opaque 400 into a located one in a single round trip.
+- A window still isn't the answer, though — it shows bytes, not the item. `describe_rejected_item`
+  now walks the serialized `input` array (string-aware: braces and quotes inside a tool result's
+  JSON payload are DATA, and this app's payloads are full of escaped Windows backslashes), finds
+  the element spanning the offset, and reports `item N of M`, its `type`/`role`, and each field's
+  NAME and SIZE. Values are never echoed: a tool result can carry whole file contents.
+- Boundary detail that matters: serde's `#[serde(untagged)]` buffers the whole value before giving
+  up, so the reported offset usually sits at the END of the offending item. The lookup is
+  `start <= column <= end`, and there is a test pinning it at an exact boundary.
+- TEST-FIXTURE TRAP, again: writing the Rust test through a `<<'EOF'` heredoc collapsed `\` to
+  `\`, so the fixture's JSON was invalid and the test failed against CORRECT code. I nearly
+  "fixed" a working walker. Two rules: build escaped fixtures with `json!(...).to_string()` rather
+  than typing them, and when a test fails, check the fixture reached disk intact before touching
+  the implementation. This shell mangles backslashes in heredocs — use the Write/Edit tools for
+  any content containing them.
+
+## 2026-08-07 — `app.exit()` tears down out of order; close the windows instead
+- After adding the "quit when no visible window remains" handler, shutdown started logging
+  `Failed to unregister class Chrome_WidgetWin_0. Error = 1412` (ERROR_CLASS_HAS_WINDOWS).
+  Chromium unregisters its window class on the way out and cannot while HWNDs of that class are
+  still alive — which is exactly what `app.exit(0)` guarantees when other webviews still exist.
+- The log line is cosmetic; the ordering it reveals is not. `exit` also SKIPS every window's close
+  handler, and `main`'s is where the IDE persists explorer state, open tabs and the current thread
+  (`useWindowClose`). So the abrupt exit silently dropped that save.
+- Fix: close the remaining windows and let Tauri exit on its own once the last one is gone. Their
+  handlers run, the webviews destroy in order, and the class unregisters cleanly. Re-entry is safe
+  because the handler fires again per close, finds nothing visible and nothing left to close.
+- RULE: prefer ending an app by closing its windows over calling exit. `exit` is a process-level
+  hammer that skips application-level teardown, and the first symptom is usually a confusing
+  platform error at shutdown rather than the lost work underneath it.
+
+## 2026-08-07 — A card sized by one arbitrary string, again
+- The cost card rendered "13 requests not priced" and the model name as the two halves of a
+  `space-between` flex row with NO gap. With a user-added provider the "model name" is
+  `<uuid>:agnes-2.5-flash`, so the two spans touched — reading as one corrupted string — and the
+  raw UUID stretched the card across the window.
+- Three separate faults, all mine, all the same root: **content was allowed to size the
+  container.** `.agw-ctx-card` had `min-width` and no `max-width`; `.agw-ctx-line` had no `gap`
+  and no truncation. Identical to the 2026-08-02 project-switcher bug — a popover is its own
+  object and sizes to its OWN budget, never to whichever value lands in it. Check for a max-width
+  and a gap on ANY row that renders a value the app does not control.
+- Never print a provider ROW id at a person. It is a readable slug for built-ins and a generated
+  UUID for user-added providers, so the raw `providerId:modelKey` is meaningless half the time.
+  `modelLabel()` strips it (first colon only — a model key can contain one).
+- `$0` beside "13 requests not counted" contradicts itself: one says the work was free, the other
+  says it was never measured. When nothing could be priced there is NO figure — render a dash. And
+  a limitation must name its recovery: the note now says which model has no price and where to set
+  it, instead of stating a fact the user cannot act on.
+
+## 2026-08-07 — Request counts: the per-message `model` made an approximation exact
+- `usage_stats.rs` carried the comment "per-message attribution isn't stored, so this is a
+  thread-granularity approximation" — true when written, FALSE since `ConversationMessage.model`
+  landed with the cost work. The same field that fixed mid-chat model-switch pricing also turns
+  the profile's model stats from an estimate into a count. When you add a field, grep for the
+  comments that apologise for not having it.
+- "Requests" counts every message carrying `usage`, which deliberately includes the calls made to
+  process tool RESULTS and the compaction summariser — each is a real call against a rate limit
+  and a bill. That is why the number is far larger than the turn count, and why it is the number
+  worth showing.
+- Derived from the JSONL on demand rather than written to a new DB table. The transcript is
+  already the durable record; a second copy is the drift this project has been bitten by twice
+  (background-process dock, todo panel). Persistence was the ask; a table was not.
+- Counts are rendered with `toLocaleString`, NOT the `1.2K` token formatter. A request count is
+  reconcilable against a provider dashboard and rounding 1,247 to "1.2K" destroys that. Tokens are
+  estimates at that scale; requests are not.
+- Two shapes reused from earlier today: strip the provider ROW id before showing a model (it is a
+  UUID for user-added providers), and give any flex cell holding arbitrary user text
+  `min-width: 0` so it truncates instead of pushing the number out of the row.
+
+## 2026-08-07 — One tally, two surfaces
+- Request counts now appear in the Profile page (all chats) and the Project panel (one workspace).
+  Both go through a shared `RequestTally` in `usage_stats.rs` rather than each counting for itself.
+  The two numbers sit next to each other in the product, so a second implementation would drift the
+  first time either was touched and the disagreement would be the user's problem to notice.
+- `project_stats.rs` already imported `DayUsage`/`ModelUsage`/`ToolUsage` from `usage_stats.rs`, so
+  the seam existed — worth checking for an established sharing pattern before inventing one.
+- Provider-name resolution is duplicated in both views on purpose: it needs the frontend settings
+  store (Rust only knows the row id), and the fallback copy differs per surface. What must not
+  duplicate is the COUNTING.
+
+## 2026-08-07 — A marker detected by substring is a marker any document can forge
+- `<aurora_image …>` was detected everywhere with `contains("<aurora_image ")`, then "header = up to
+  the next `>`, body = up to the next `</aurora_image>`". `.knowledge/knowledge.md` DOCUMENTS that
+  pipeline, so `file_read` on it produced an image part whose payload was 2,847 chars of markdown →
+  `HTTP 400 … 'input[15].content[0].image_url' … invalid base64-encoded value` (codex:gpt-5.5,
+  thread `8ef99c78`). Eight files in this repo still carry both tokens — the agent could not read
+  its own screenshot pipeline without killing the turn.
+- Detection now lives in `src-tauri/src/api/aurora_image.rs` (mirrored by `findImageMarker` in
+  `src/apps/agent/lib/render/image-markers.ts`) and requires structure: attributes-only header, an
+  `image/*` `media_type`, a close tag, and a body that is valid base64 or blank (lean). Invalid
+  candidates are SKIPPED, not fatal, so a real marker after quoted prose still ships. Consumers may
+  now treat the body as valid base64 without rechecking — that guarantee is the point of the module.
+- Same substring test had also short-circuited `truncate_tool_content` into the leanify branch, so
+  any quoting result skipped the size cap; and the UI labelled a plain file read "Captured
+  screenshot". One loose predicate, three surfaces — self-describing formats need a validating
+  parser, not a `contains`.
+
+## 2026-08-07 — Stopping a turn mid-tool-call corrupted the thread permanently
+- Repro: model emits tool calls → user hits Stop before results → next prompt → provider 400,
+  forever. `run_turn` appends the assistant message (with `tool_use`) at `conversation.rs:516`,
+  cancellation returned `Err(Cancelled)` before any `tool_result`, and `agent_v2.rs` persists the
+  session on the error path too. Every later turn rebuilt the same malformed request. Anthropic:
+  "tool_use ids were found without tool_result blocks"; OpenAI: "must be followed by tool messages".
+- Fixed in two layers, and both are needed. SOURCE: cancel-before-dispatch, cancel-mid-batch and
+  the undispatched tail each get real `tool_result` blocks (`STOPPED_BEFORE_RUN` / `STOPPED_MID_RUN`),
+  and `execute_tool_calls` now returns `ToolBatchOutcome { message, cancelled }` instead of
+  early-returning — finished work in the batch is kept. NET: `tool_pairing::repair_tool_pairing`
+  runs on the final message view (after compaction AND trim, so it catches cuts they introduce) and
+  on the compaction request. That one repairs threads ALREADY broken on disk — without it the
+  user's existing threads stay dead.
+- Pairing must be checked by INDEX, not by id-set membership: a `tool_result` that precedes its
+  `tool_use` passes a set check and still 400s.
+- Same turn: a `length` stop that lands while the model is emitting tool calls no longer executes
+  them. Arguments that parse may be silently incomplete and the calls after the cut are missing
+  entirely, so the batch is not the batch the model asked for. It now fails with `TRUNCATED_CALL`,
+  emits the truncation notice (which previously fired only on the no-tool-call path), and ends the
+  turn — retrying just re-truncates.
+
+## 2026-08-08 — "The chip is broken" was really "the path isn't streamed yet"
+
+Symptom: Write File cards showed no file chip while streaming; blamed on the card. The whole
+event chain (adapter deltas → forwarder → agent_event → upsertToolCall → streamed-arg scanner)
+was correct. Session JSONL showed the model emits `content` before `path` in most `file_write`
+calls despite schema descriptions demanding path-first — the filename literally isn't in the
+buffer until the end. Lesson: before debugging a "renderer ignores data" report, check the
+persisted args/results to confirm the data existed at that moment; emission ORDER inside one
+tool call is part of the contract and models (especially proxied ones) do not reliably honor
+prose ordering instructions.
+
+## 2026-08-08 — 92k of phantom context: reasoning signatures counted as prompt text
+
+Symptom: `/compact` reported 431k → 272k on a chat the provider then measured at 180k, and the
+ring "dropped" from 272k to 180k after one message. Read as three separate bugs (model switch,
+compaction math, ring math); it was one.
+
+`estimate_message_tokens` ran tiktoken over `Thinking.signature`. On the Responses API that field
+holds a JSON-wrapped `encrypted_content` blob — in the reported session, **190,392 chars in the
+post-compaction tail alone, 22.7% of the entire transcript**. Those blobs are replayed only by
+Responses/Codex; every other provider strips reasoning entirely (`reasoning_field_for` → `None`).
+The chat had run GPT-5.x and then switched to an OpenAI-compat model, so 100% of it was phantom.
+Measured on the real JSONL: messages-only estimate 267,725 → 133,923 after the fix, and
+133,923 + system + tool schemas ≈ the provider's 180,235.
+
+Two lessons:
+1. Anything stored in the transcript but *conditionally* sent must be priced by the provider view,
+   not by its on-disk size. Persisted ≠ sent.
+2. The projection was ALSO missing tool schemas, an under-count of the opposite sign. Two errors
+   pointing opposite ways masked each other at some sizes and compounded at others — which is why
+   the number looked "roughly plausible" for months. When an estimate is wrong, check both signs.
+
+## 2026-08-08 — OpenClaude custom-anthropic profile drops 1M context overrides
+- User profile file `.openclaude-profile.json` had CLAUDE_CODE_OPENAI_CONTEXT_WINDOWS=1M, but the active plural provider profile (`custom-anthropic` in ~/.openclaude.json) only applies ANTHROPIC_BASE_URL/MODEL/auth. On apply it clears managed env keys including CONTEXT_WINDOWS, so runtime falls back to OPENAI_FALLBACK_CONTEXT_WINDOW=128000. That 128k looks like "context" but the profile description also says "128K max output" — easy to confuse. Fix: put `modelLimits` for the model in settings.json (survives profile apply); optionally also set CONTEXT_WINDOWS in settings.env when no plural profile wipe occurs.
+
+## 2026-08-08 (later) — Don't re-derive what the provider already measured
+
+Fixing the reasoning-signature phantom made Aurora's from-scratch estimator accurate. It was still
+the wrong architecture. `openclaude`'s `tokenCountWithEstimation` anchors on the last measured API
+usage and estimates only the delta since — so unmodelled quirks cost you the last few messages, not
+the whole conversation. Aurora now does the same. Two corollaries that were separately wrong here:
+
+- Context size must include `cache_creation_input_tokens`. It is disjoint from both `input_tokens`
+  and `cache_read_input_tokens`; omitting it understates a cache-writing turn by most of its prompt.
+- It must include `output_tokens`. "Cost vs context" is the wrong axis — the completion is re-sent
+  as input next request, so excluding it makes the window look emptier than it is, precisely at the
+  compaction boundary where that matters.
+
+Separately: any expensive recovery action that does NOT clear the condition that triggered it needs
+a failure ceiling. Compaction retried every turn on failure, each attempt re-sending the whole
+history. `openclaude` carries the same breaker (`MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES`) with a note
+that 1,279 sessions hit 50+ consecutive failures, wasting ~250K API calls/day.
+
+## 2026-08-08 (3rd) — Reasoning must never reach the summarizer
+
+Adding a per-conversation compaction model exposed it: the summarization request sets
+`thinking_enabled: false`, but `message_blocks_to_anthropic_content` emits `thinking` blocks
+unconditionally, and a `signature` is issued by one provider and meaningless to another. So
+summarizing a chat that carried reasoning history on a DIFFERENT provider would 400 on every
+attempt — and with the new circuit breaker, silently pause auto-compaction after three.
+
+`strip_reasoning` now runs on the head before `repair_tool_pairing` (strip first: it can drop whole
+messages, and the repair must see the shape actually sent). Justified three ways even same-provider:
+reasoning is not the record of what happened, it was 22.7% of one real transcript, and it does not
+travel. Messages emptied by the strip are dropped — providers reject empty content; nothing carrying
+a tool call can be emptied, so pairing is safe.
+
+Related wording fix: the compaction prompt said "you are about to lose YOUR memory" and the resume
+block said "the note YOU wrote to yourself". Both are false when a different model summarizes.
+Reframed to "you are writing the memory of this conversation" / "the record of that work" — same
+stakes, true either way.
+
+## 2026-08-08 (4th) — "The provider returned an empty reply" was Aurora dropping the reply
+
+Reported 5x in one day on `claude-opus-5` via an Anthropic-type provider. Proof from the session
+JSONL: two threads with an assistant message of `blocks: []` and `output_tokens` of 1 and 4. The
+provider produced content and billed for it; Aurora persisted nothing.
+
+Cause: `anthropic.rs` `content_block_start` matched only `text` / `thinking` / `tool_use`, with
+`_ => None`. **`redacted_thinking`** — a normal, intermittent block Anthropic returns when its
+safety systems encrypt a reasoning passage — fell through and was discarded. Because the block was
+never inserted, every `content_block_delta` and `content_block_stop` at that index also bailed
+(`blocks.get(&index)` misses), so an entire response could vanish. The message shown to the user
+was the runtime's honest backstop describing what it saw — an empty message — which is why it read
+like a model failure.
+
+Three fixes, each independently worth it:
+1. `redacted_thinking` is mapped, and round-trips via `encode_redacted_thinking` in the signature
+   slot (same trick as `openai-responses` encrypted items). It MUST go back as
+   `{"type":"redacted_thinking","data":…}`; re-sending it as a `thinking` block with our JSON
+   wrapper in `signature` is a signature Anthropic cannot verify → 400 on the whole request.
+2. Unknown block types now `eprintln!` the type name instead of vanishing. This bug had to be
+   reconstructed from disk because it was invisible from inside the app.
+3. A blockless assistant message is no longer appended to the session, and the turn re-issues the
+   request **once**. Persisting it was a second bug: it serializes to Anthropic as an assistant
+   turn with empty content, which the API rejects — one dropped response left a landmine that
+   would break every later turn in that thread.
+
+General rule: a `_ => None` arm in a wire-protocol decoder is a silent data-loss bug waiting to
+happen. Providers add block types; the decoder must say what it didn't understand.
+
+## 2026-08-08 (5th) — Aurora's Anthropic adapter was written for pre-4.7 Claude
+
+`build_anthropic_body` emitted `{"type":"enabled","budget_tokens":N}` and always inserted
+`temperature`. Both are **hard 400s on Claude 4.7 and later** (Opus 4.7/4.8/5, Sonnet 5, Fable 5) —
+`budget_tokens` was removed and so were `temperature`/`top_p`/`top_k`. Every request to a current
+Claude model through an Anthropic-typed provider was malformed.
+
+`anthropic_surface_for(model)` (in `provider_kernel_adapter.rs`) now picks the shape per model:
+adaptive + `output_config.effort` on 4.6+, the legacy budget form otherwise. Three things worth
+keeping straight:
+- **`thinking.display` defaults to `"omitted"` on 4.7+** — thinking blocks still stream, with empty
+  text. Aurora renders those blocks, so without `display: "summarized"` the UI shows an empty
+  reasoning card and a long pause. On 4.6 the default was `"summarized"`.
+- **Omitting `thinking` means different things per generation**: Opus 5 / Sonnet 5 / Fable 5 reason
+  by default; Opus 4.8 / 4.7 do not.
+- **`{"type":"disabled"}` is not universal**: Fable 5 rejects it at any effort (omit instead), and
+  Opus 5 accepts it only at effort ≤ `high`.
+
+**Unknown models deliberately get the LEGACY shape.** A provider typed "anthropic" is usually a
+gateway speaking the Messages API without being Anthropic, and `budget_tokens` is what those
+implement. Guessing adaptive would break every gateway; guessing legacy costs one 400 on an
+unrecognized new Claude.
+
+Related UI lesson: the API-type picker rewrote the wire body while the form stayed identical, so a
+reasoning setting could be configured, saved, and never sent. The picker now states the contract
+(which field carries reasoning, the depth control, whether sampling survives).
+
+## 2026-08-08 — A newline is not speech: whitespace text blocks split every tool run
+- SYMPTOM: a model reading 5 files rendered 5 separate single-call rows, never reaching
+  `TOOL_GROUP_MIN`, so grouping looked broken and lowering the threshold was a no-op.
+- CAUSE: models emit a bare `"\n"` / `"\n\n"` text block BETWEEN batched tool calls in ONE
+  assistant message (verified in session JSONL — 5 `file_read` calls, 4 newline-only blocks).
+  Each became a `content` event and `buildRows` flushed the run on ANY non-tool event. The run
+  length was therefore always 1. Fix: skip a whitespace-only content event WITHOUT flushing,
+  same treatment as `isSilentToolCall`.
+- The prior handoff diagnosed this as "coalescing doesn't work across iterations" and planned a
+  fix there. Wrong layer: the model WAS batching inside one message. Reading the raw session
+  JSONL block sequence settled in one command what screenshot-reading had mis-framed twice —
+  when transcript rendering looks wrong, dump the message's block kinds before theorising.
+- Corollary: `Read File [a][b][c][d] · Read 4 files` is ONE call with `paths[]` (`parsed.multiFile`),
+  not several calls merged. There is no cross-call coalescing in the agent window; a run of
+  separate calls renders as N cards inside one `ToolGroup`.
+
+## 2026-08-08 — Canvas font detection lies in a sandboxed renderer; GDI names are not CSS names
+- `canvas.measureText` reported INSTALLED system fonts as missing on first read — seen live as
+  `Segoe UI → Segoe UI Variable Text`, two stock Windows faces, one "appearing" seconds later with
+  nothing loading in between. Chromium's renderer is sandboxed and resolves families through the
+  browser process (`DWriteFontProxy`); a first reference can return before that lands, so the canvas
+  measures the fallback. Fix: measure through real DOM layout (`getBoundingClientRect`, not
+  `offsetWidth` — sub-pixel differences matter) and reference each family once to WARM the lookup
+  before the measurement that counts.
+- `document.fonts.check()` is useless for "is this family present": Chromium returns `true` for
+  names it has never heard of, because the fallback satisfies the query. It answers "can I paint
+  text". Keep it only as a "did this webfont finish loading" signal.
+- `(New-Object System.Drawing.Text.InstalledFontCollection).Families.Name` lists **GDI** names, which
+  split one family into per-weight families ("Gotham Book" / "Gotham Black"). Chromium matches
+  **DirectWrite** names, where both are family "Gotham" + a weight. So a font can be genuinely
+  installed, visible in that list, and still unmatchable from CSS under the name shown.
+
+## Console windows flashing on Windows — every spawn needs CREATE_NO_WINDOW (2026-08-10)
+
+Reported as "running diagnostics opens 10–15 terminal windows in 2 seconds", plus a single flash
+when the repo map builds on the first message. Both were spawns missing
+`creation_flags(CREATE_NO_WINDOW)` — the one thing every OTHER spawn in this codebase already had.
+
+- `tools/shell_editor_todo/read_lints.rs` → `run_checker`, the `CheckCommand::Program` arm. Its
+  sibling `CheckCommand::Shell` arm was always fine because it routes through `execute_command`,
+  which sets the flag. What made it a *burst*: `select_checks` falls to `vanilla_javascript_checks`
+  when the workspace has **no root `tsconfig.json`**, and that emits ONE `node --check` spec per
+  `.js` file, up to 100. Aurora itself has a root tsconfig and never hit it; the repo being
+  diagnosed did not.
+- `code_index/walk.rs` → `churn()`, the `git log` behind the repo map. Builds on the first message
+  of a session, so the window popped exactly as the user hit send.
+
+Warning for future spawns: `tokio::process::Command` exposes `creation_flags` directly on Windows,
+but `std::process::Command` needs `use std::os::windows::process::CommandExt`. Legitimately
+un-flagged sites, do not "fix" them: `reveal_in_explorer` and `open_in_terminal` (the window IS the
+feature), and the `kill`/`uname`/`sw_vers` non-Windows branches.
+
+To re-audit, list every `Command::new` and check the following ~80 lines for `creation_flags`.
+
+## 2026-08-10 — The agent window had no memory of its own workspace
+
+Reported as "why does it open the IDE's workspace, I haven't opened the IDE in a week".
+
+`lib.rs` (agent-only launch) resolved the project as `--ws` → `workspace_state.get_most_recent()`.
+That table is written by the **IDE**, so an icon launch always reopened wherever the IDE was last
+pointed. `useAgentChatStore.setProject` rebound the runtime and refreshed the lists but persisted
+nothing, so the agent window could never influence the answer. Stop opening the IDE and the row
+freezes: the window is stranded on an abandoned project with no fix that survives a restart.
+
+Fix: `agent_last_workspace` in `app_settings`, written by the store as the project is used, and
+inserted into the resolution order ahead of `workspace_state` (which stays as the first-run
+fallback). Both launch paths read it — Rust `lib.rs` and JS `adapters/window.ts`.
+
+Generalise: **two products share one database.** Before reading a table for agent-window state, ask
+which surface WRITES it. `workspace_state`, `editor_state` and `explorer_state` are IDE-owned;
+anything the agent window needs to remember belongs in its own `app_settings` key, the way
+`agent_window_bounds` already did. An empty string there means "no project", not a path — the
+launcher filters it rather than treating it as one.

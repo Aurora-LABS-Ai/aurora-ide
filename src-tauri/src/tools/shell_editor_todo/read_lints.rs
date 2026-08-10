@@ -19,6 +19,12 @@ use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 
 use super::ide_event_sink::IdeEventSink;
 
+/// Keep project checkers from flashing a console window on Windows. `tokio`'s
+/// `Command` exposes `creation_flags` directly, so no `CommandExt` import is
+/// needed (same pattern as the glob/ripgrep tool).
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 const CHECK_TIMEOUT_MS: u64 = 120_000;
 const MAX_OUTPUT_CHARS: usize = 32 * 1024;
 
@@ -87,7 +93,10 @@ impl ToolExecutor for ReadLintsTool {
                     "paths": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional file paths used to select the relevant language checkers."
+                        "description": "Optional file paths. They select the relevant language \
+                            checkers, and diagnostics referencing them are singled out in \
+                            `requestedPathDiagnostics` — the checkers themselves are project-wide, \
+                            so other files' pre-existing errors may still appear in the raw output."
                     }
                 },
                 "required": []
@@ -124,8 +133,10 @@ impl ToolExecutor for ReadLintsTool {
             .to_string());
         }
 
+        let needles = requested_path_needles(workspace_root, &paths);
         let mut checks = Vec::with_capacity(specs.len());
         let mut all_succeeded = true;
+        let mut requested_hits = 0usize;
 
         for spec in specs {
             ctx.bail_if_cancelled()?;
@@ -140,7 +151,7 @@ impl ToolExecutor for ReadLintsTool {
             match result {
                 Ok(output) => {
                     all_succeeded &= output.success;
-                    checks.push(json!({
+                    let mut check = json!({
                         "name": spec.name,
                         "command": command,
                         "cwd": cwd,
@@ -148,7 +159,18 @@ impl ToolExecutor for ReadLintsTool {
                         "exitCode": output.exit_code,
                         "stdout": truncate_output(&output.stdout),
                         "stderr": truncate_output(&output.stderr),
-                    }));
+                    });
+                    // The checkers are project-wide; when the caller named the
+                    // files they touched, single out the diagnostic lines that
+                    // reference them so "did MY change break anything?" has an
+                    // at-a-glance answer instead of a manual scan.
+                    if !needles.is_empty() && !output.success {
+                        let combined = format!("{}\n{}", output.stdout, output.stderr);
+                        let hits = diagnostics_for_requested(&combined, &needles);
+                        requested_hits += hits.len();
+                        check["requestedPathDiagnostics"] = json!(hits);
+                    }
+                    checks.push(check);
                 }
                 Err(error) => {
                     all_succeeded = false;
@@ -167,11 +189,24 @@ impl ToolExecutor for ReadLintsTool {
         let message = if all_succeeded {
             if guidance.is_some() {
                 "Available checks passed. Review the validation guidance for uncovered file types."
+                    .to_string()
             } else {
-                "All requested project checks passed."
+                "All requested project checks passed.".to_string()
+            }
+        } else if !needles.is_empty() {
+            if requested_hits == 0 {
+                "Checks reported diagnostics, but none reference the requested paths — they are \
+                 likely pre-existing issues elsewhere in the project."
+                    .to_string()
+            } else {
+                format!(
+                    "{requested_hits} diagnostic line{} reference the requested paths (see \
+                     requestedPathDiagnostics). Other output may be pre-existing.",
+                    if requested_hits == 1 { "" } else { "s" },
+                )
             }
         } else {
-            "One or more project checks failed. Review the returned diagnostics."
+            "One or more project checks failed. Review the returned diagnostics.".to_string()
         };
         Ok(json!({
             "success": all_succeeded,
@@ -422,6 +457,48 @@ fn configured_validation_command(workspace_root: &Path) -> String {
     }
 }
 
+/// Comparable forms of the caller's `paths` for matching against checker
+/// output: workspace-relative, forward slashes, lowercase, no leading `./`.
+/// Absolute paths under the workspace are relativized so they compare equal to
+/// the relative paths `tsc`/`cargo` print.
+fn requested_path_needles(workspace_root: &Path, paths: &[String]) -> Vec<String> {
+    let root = workspace_root
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_lowercase();
+    paths
+        .iter()
+        .map(|path| {
+            let mut normalized = path.replace('\\', "/").to_lowercase();
+            if !root.is_empty() && normalized.starts_with(&root) {
+                normalized = normalized[root.len()..].trim_start_matches('/').to_string();
+            }
+            normalized.trim_start_matches("./").to_string()
+        })
+        .filter(|needle| !needle.is_empty())
+        .collect()
+}
+
+/// Cap on singled-out diagnostic lines — enough to read every error in a
+/// focused change without re-duplicating a whole failing build's output.
+const MAX_REQUESTED_DIAGNOSTICS: usize = 50;
+
+/// The diagnostic lines in `output` that reference any of the requested paths.
+/// Substring match on the normalized line, so both `src/app.ts(3,1): error …`
+/// (tsc) and `src\lib.rs:10:5: error …` (cargo, Windows separators) hit.
+fn diagnostics_for_requested(output: &str, needles: &[String]) -> Vec<String> {
+    output
+        .lines()
+        .filter(|line| {
+            let normalized = line.replace('\\', "/").to_lowercase();
+            needles.iter().any(|needle| normalized.contains(needle))
+        })
+        .take(MAX_REQUESTED_DIAGNOSTICS)
+        .map(str::to_string)
+        .collect()
+}
+
 fn extension(path: &str) -> Option<String> {
     Path::new(path)
         .extension()
@@ -488,6 +565,17 @@ async fn run_checker(
         CheckCommand::Program { executable, args } => {
             let mut command = tokio::process::Command::new(executable);
             command.args(args).current_dir(cwd).kill_on_drop(true);
+
+            // Without this, every checker pops a real console window on
+            // Windows. `vanilla_javascript_checks` emits ONE spec per `.js`
+            // file (up to 100), so a workspace with no root `tsconfig.json`
+            // turned a single `read_lints` call into a burst of console
+            // windows flashing across the screen. The sibling `Shell` branch
+            // never had this bug — it routes through `execute_command`, which
+            // has always set the flag.
+            #[cfg(target_os = "windows")]
+            command.creation_flags(CREATE_NO_WINDOW);
+
             let output = tokio::time::timeout(
                 std::time::Duration::from_millis(CHECK_TIMEOUT_MS),
                 command.output(),
@@ -679,6 +767,43 @@ mod tests {
         }
 
         fs::remove_dir_all(root).expect("remove temp workspace");
+    }
+
+    /// The agent-reported gap: `tsc -b` is project-wide, so a change-scoped
+    /// question ("did MY edit break anything?") needed a manual scan through
+    /// pre-existing errors in untouched files. Requested-path diagnostics are
+    /// singled out; unrelated ones stay in the raw output but not in the cut.
+    #[test]
+    fn diagnostics_are_partitioned_by_requested_path() {
+        let root = PathBuf::from("E:/repo");
+        let needles = requested_path_needles(
+            &root,
+            &[
+                "src/hits/hits-page.tsx".into(),
+                // Absolute form must relativize to compare with checker output.
+                "E:\\repo\\src\\lib\\group.ts".into(),
+            ],
+        );
+        let output = "\
+src/hits/hits-page.tsx(12,5): error TS2345: bad argument\n\
+src/bin-card.tsx(3,1): error TS2322: pre-existing\n\
+src\\lib\\group.ts:7:9: error[E0308]: mismatched types\n\
+src/bin-library-page.tsx(9,2): error TS2551: pre-existing\n";
+
+        let hits = diagnostics_for_requested(output, &needles);
+        assert_eq!(hits.len(), 2, "{hits:?}");
+        assert!(hits[0].contains("hits-page.tsx"));
+        assert!(hits[1].contains("group.ts"));
+    }
+
+    #[test]
+    fn requested_diagnostics_are_bounded() {
+        let needles = vec!["src/app.ts".to_string()];
+        let output = "src/app.ts(1,1): error TS1: x\n".repeat(200);
+        assert_eq!(
+            diagnostics_for_requested(&output, &needles).len(),
+            MAX_REQUESTED_DIAGNOSTICS
+        );
     }
 
     #[test]

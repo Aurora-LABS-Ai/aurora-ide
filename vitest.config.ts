@@ -1,3 +1,5 @@
+import { fileURLToPath, URL } from 'node:url'
+
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
@@ -9,6 +11,13 @@ export default defineConfig({
   // tests resolve `virtual:aurora-canvas-*` against the REAL generated module —
   // the SDK export list a canvas is validated against is the one that ships.
   plugins: [react(), auroraCanvasRuntime()],
+  // Mirrors tsconfig.app.json `paths` and vite.config.ts `resolve.alias`.
+  // All three must agree or `@/…` resolves in the editor and fails at runtime.
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
   test: {
     globals: true,
     environment: 'jsdom',

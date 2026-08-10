@@ -7,7 +7,7 @@
 [![Tauri](https://img.shields.io/badge/Tauri-2.x-orange)](https://tauri.app)
 [![React](https://img.shields.io/badge/React-18-cyan)](https://react.dev)
 
-**Desktop IDE (Tauri + React) with a Rust agent runtime, tool execution, MCP, Git, semantic search, and a conversation-first Agent Window.**
+**Desktop IDE (Tauri + React) with a Rust agent runtime, tool execution, MCP, Git, a tree-sitter code index, and a conversation-first Agent Window.**
 
 </div>
 
@@ -25,7 +25,7 @@
 
 ## Overview
 
-**Aurora** is a desktop agentic code editor: a VS Code–style IDE (Monaco, explorer, terminal, Git) plus a dedicated **Agent Window** where you chat, review diffs, open Canvas artifacts, and watch the agent work. The Rust backend owns provider streaming, the agent turn loop, persistence, checkpoints, MCP, semantic search, and most native tools. State lives in SQLite under the app data directory.
+**Aurora** is a desktop agentic code editor: a VS Code–style IDE (Monaco, explorer, terminal, Git) plus a dedicated **Agent Window** where you chat, review diffs, open Canvas artifacts, and watch the agent work. The Rust backend owns provider streaming, the agent turn loop, persistence, checkpoints, MCP, the code index, and most native tools. State lives in SQLite under the app data directory.
 
 <div align="center">
 
@@ -39,7 +39,7 @@
 
 | Surface | Route / entry | Purpose |
 |---------|---------------|---------|
-| **Main IDE** | Default app window | Full editor workflow: tabs, terminal, Git, settings, semantic search, checkpoints |
+| **Main IDE** | Default app window | Full editor workflow: tabs, terminal, Git, settings, checkpoints |
 | **Agent Window** | `/agent-window` (standalone Tauri window) | Conversation-first workspace: left rail (projects + chats), center transcript, right dock (Review, Canvas, Files, Browser, Terminal) |
 
 The Agent Window has its own theme tokens (`--agw-*`), settings, and stores under `src/agent-window/`. The main IDE and Agent Window hand off files through `agent_open_in_ide` when you want to edit in Monaco.
@@ -53,7 +53,7 @@ The Agent Window has its own theme tokens (`--agw-*`), settings, and stores unde
 - **Canvas artifacts** — Agents can present versioned HTML, SVG, Markdown, or Mermaid diagrams in the right-rail Canvas (`present_artifact`, `read_artifact`).
 - **Agent Team** — Optional multi-agent runs: Lead dispatches parallel workers, monitors progress, and steers via team chat while you keep talking.
 - **MCP** — Stdio and SSE transports; auto-start servers; tool prefix `mcp_{serverId}_{toolName}`.
-- **Semantic search** — Optional ONNX hybrid search (`aurora-semantic`) alongside ripgrep-backed grep.
+- **Code index** — tree-sitter structural index (`src-tauri/src/code_index/`): definitions, usages, outlines and a `<repo_map>` orientation block, behind the `code` tool, alongside ripgrep-backed grep.
 - **Browser tools** — Native Tauri WebView windows the agent can navigate, click, evaluate, inspect, and screenshot.
 - **Speech input** — Local Qwen3-ASR transcription in Rust (CPU by default; optional CUDA build).
 - **Prompt refine** — Optional local llama.cpp pass to rewrite composer text before sending.
@@ -81,7 +81,7 @@ The agent can open real WebView windows. Element picker, computed styles, consol
 | **UI** | React 18.3, TypeScript 5.9, Vite 8, Tailwind, Monaco, Zustand 5, Framer Motion, Lucide, XTerm.js, Shiki, Mermaid |
 | **Agent UI** | `src/agent-window/` — isolated theme, 3-zone shell, Canvas, team screen, command center |
 | **Desktop** | Tauri 2, Rust 2021, rusqlite, tokio, reqwest, rmcp (MCP), tiktoken-rs, tauri-plugin-pty |
-| **AI backend** | Rust provider kernel, `agent_runtime`, context engine (legacy turn storage), Qwen3-ASR, aurora-semantic, aurora_websearch |
+| **AI backend** | Rust provider kernel, `agent_runtime`, context engine (legacy turn storage), Qwen3-ASR, `code_index` (tree-sitter), aurora_websearch |
 
 ---
 
@@ -134,7 +134,7 @@ See [DOCS/06-SPEECH-INPUT.md](DOCS/06-SPEECH-INPUT.md) for model setup and runti
 1. Open **Settings** and connect a provider (cloud API key or local LM Studio / Ollama).
 2. Open a **workspace folder** so Git, explorer, and thread state bind to a project.
 3. Start from the **main IDE** or open the **Agent Window** for conversation-first work.
-4. Optionally enable **MCP servers**, **semantic indexing**, or **Team mode** in settings.
+4. Optionally enable **MCP servers** or **Team mode** in settings.
 
 ---
 
@@ -147,7 +147,7 @@ Frontend (React/TS)          Tauri IPC          Rust backend
 ├─ Zustand stores (src/store/)             ├─ MCP manager (rmcp)
 ├─ Agent stores (src/agent-window/store/)  ├─ Context engine + SQLite
 └─ Tool bridge (TS executors)              ├─ Checkpoints, undo/redo, Git
-                                           ├─ Semantic search, browser, speech
+                                           ├─ Code index, browser, speech
                                            └─ Native tools (file, shell, grep, …)
 ```
 

@@ -329,6 +329,18 @@ pub struct ProviderModel {
     pub price_cache_miss_per_mtok: Option<f64>,
     #[serde(default)]
     pub price_output_per_mtok: Option<f64>,
+    /// USD per 1M cache-CREATION tokens.
+    ///
+    /// `None` means "bill cache writes at `price_cache_miss_per_mtok`", which
+    /// is what OpenAI-compatible gateways charge. Set it explicitly for
+    /// providers that price cache creation differently — Anthropic's native
+    /// API charges 1.25x the base input rate, so leaving this unset there
+    /// under-reports cached turns by about a quarter of their write cost.
+    ///
+    /// It is never zero by omission: cache-creation tokens were previously
+    /// dropped from the cost entirely because no column existed for them.
+    #[serde(default)]
+    pub price_cache_write_per_mtok: Option<f64>,
     /// Currency code. `None` is treated as `"USD"`. Reserved for
     /// future EUR/GBP support — today the UI always renders `$`.
     #[serde(default)]

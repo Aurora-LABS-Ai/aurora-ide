@@ -183,6 +183,61 @@ impl ProviderKind {
     }
 }
 
+/// What a stored [`crate::agent_runtime::types::ContentBlock::Thinking`] block
+/// costs the NEXT request on a given provider.
+///
+/// This exists because a thinking block is the one piece of history whose
+/// on-disk size says nothing about its wire cost. Aurora persists every
+/// reasoning block forever (the transcript renders them), but each provider
+/// does something different with it on replay — and two of the three options
+/// cost nothing at all. Counting the stored bytes as prompt text, which is
+/// what the token estimator used to do, is therefore not a small imprecision:
+/// on a chat that ran a Responses-API model and later switched providers it
+/// invented ~92k tokens of context that were never sent, and the compaction
+/// card reported a "before" size half again larger than the real request.
+///
+/// Decided from the provider **type** so it matches the wire shape the factory
+/// below will actually build — see [`reasoning_replay_for`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReasoningReplay {
+    /// The block never reaches the provider. OpenAI Chat Completions,
+    /// Fireworks, MiniMax, Ollama and custom gateways all strip it —
+    /// `reasoning_field_for` returns `None` and nothing is emitted. Costs
+    /// exactly zero, whatever the transcript holds.
+    #[default]
+    Dropped,
+    /// The reasoning TEXT rides along: `reasoning_content` (DeepSeek, GLM),
+    /// `reasoning` (OpenRouter, LM Studio), or a native Anthropic `thinking`
+    /// block. Costs its own tokens. The `signature` that accompanies it is
+    /// transport metadata — an HMAC or item id the provider verifies, never
+    /// billed as prompt text.
+    Text,
+    /// The Responses API replays an opaque encrypted reasoning item built from
+    /// `Thinking.signature` (see `super::responses`). It DOES cost tokens, but
+    /// its price is the ORIGINAL reasoning the ciphertext stands for — not the
+    /// length of the ciphertext, which base64 and block padding have inflated.
+    Opaque,
+}
+
+/// Which [`ReasoningReplay`] a provider type follows.
+///
+/// Derived from [`ProviderKind::detect`] plus the same
+/// `reasoning_field_for` table the OpenAI request builder consults, so the
+/// estimate can never disagree with what the builder emits.
+#[must_use]
+pub fn reasoning_replay_for(provider_type: &str) -> ReasoningReplay {
+    match ProviderKind::detect(provider_type) {
+        // Anthropic replays `thinking` blocks verbatim and requires it once
+        // extended thinking is on.
+        ProviderKind::Anthropic => ReasoningReplay::Text,
+        ProviderKind::OpenAIResponses | ProviderKind::Codex => ReasoningReplay::Opaque,
+        _ => match super::provider_kernel_adapter::reasoning_field_for(provider_type) {
+            Some(_) => ReasoningReplay::Text,
+            None => ReasoningReplay::Dropped,
+        },
+    }
+}
+
 /// Build the streaming API client for one provider config.
 ///
 /// The factory clones the config into the adapter — adapters retain

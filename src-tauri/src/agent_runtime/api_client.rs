@@ -200,6 +200,7 @@ mod tests {
                     timestamp: 0,
                     attached_selected_elements: None,
                     attached_prompt_chips: None,
+                    model: None,
                 },
             })
         }

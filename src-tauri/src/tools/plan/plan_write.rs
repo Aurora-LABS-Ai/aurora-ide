@@ -168,8 +168,8 @@ active and which is next."
         frontmatter.updated_at = store::now_iso();
 
         let body = render_body(overview, &frontmatter.steps, &details);
-        let (path, doc) = store::create(&workspace, frontmatter, body)
-            .map_err(ToolError::Execution)?;
+        let (path, doc) =
+            store::create(&workspace, frontmatter, body).map_err(ToolError::Execution)?;
         let path_str = path.to_string_lossy().to_string();
 
         let _ = self.sink.emit_plan_changed(&PlanChangedPayload {
@@ -186,7 +186,11 @@ active and which is next."
         result["message"] = Value::String(format!(
             "{} plan '{}' with {} step(s) at {path_str}. The Canvas is showing it. \
              Switch to Agent mode to execute, marking each step with plan_step_update.",
-            if existing.is_some() { "Revised" } else { "Wrote" },
+            if existing.is_some() {
+                "Revised"
+            } else {
+                "Wrote"
+            },
             doc.frontmatter.title,
             doc.frontmatter.steps.len()
         ));
@@ -213,8 +217,8 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     fn temp_workspace(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("aurora-planwrite-{name}-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("aurora-planwrite-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp workspace");
         dir
     }
@@ -303,7 +307,11 @@ mod tests {
             .flatten()
             .filter(|e| e.file_name().to_string_lossy().ends_with(".aurora.md"))
             .collect();
-        assert_eq!(files.len(), 1, "revision must not create a second plan file");
+        assert_eq!(
+            files.len(),
+            1,
+            "revision must not create a second plan file"
+        );
 
         std::fs::remove_dir_all(&ws).ok();
     }
@@ -343,9 +351,15 @@ mod tests {
         let parsed: Value = serde_json::from_str(&out).unwrap();
         let steps = parsed["steps"].as_array().unwrap();
 
-        assert_eq!(steps[0]["status"], "done", "finished work survives revision");
+        assert_eq!(
+            steps[0]["status"], "done",
+            "finished work survives revision"
+        );
         assert_eq!(steps[2]["status"], "pending");
-        assert_eq!(steps[2]["id"], "s3", "new step gets a fresh non-colliding id");
+        assert_eq!(
+            steps[2]["id"], "s3",
+            "new step gets a fresh non-colliding id"
+        );
         assert_eq!(parsed["cursor"]["done"], 1);
 
         std::fs::remove_dir_all(&ws).ok();
@@ -356,7 +370,9 @@ mod tests {
         let ws = temp_workspace("otherthread");
         let tool = PlanWriteTool::new(Arc::new(NoopIdeEventSink));
 
-        tool.execute(args(), &ctx(&ws, "thr_1")).await.expect("first");
+        tool.execute(args(), &ctx(&ws, "thr_1"))
+            .await
+            .expect("first");
         let out = tool
             .execute(args(), &ctx(&ws, "thr_2"))
             .await
@@ -368,7 +384,9 @@ mod tests {
             json!(false),
             "a different conversation writes its own plan"
         );
-        let files = std::fs::read_dir(store::plans_dir(&ws)).expect("dir").count();
+        let files = std::fs::read_dir(store::plans_dir(&ws))
+            .expect("dir")
+            .count();
         assert_eq!(files, 2);
 
         std::fs::remove_dir_all(&ws).ok();
@@ -383,12 +401,17 @@ mod tests {
         let mut input = args();
         input["planId"] = json!("task-templates-feature");
 
-        let out = tool.execute(input, &ctx(&ws, "thr_1")).await.expect("creates");
+        let out = tool
+            .execute(input, &ctx(&ws, "thr_1"))
+            .await
+            .expect("creates");
         let parsed: Value = serde_json::from_str(&out).unwrap();
 
         assert_eq!(parsed["planId"], "task-templates-feature");
         assert_eq!(parsed["revised"], json!(false));
-        assert!(store::load(&ws, "task-templates-feature").expect("load").is_some());
+        assert!(store::load(&ws, "task-templates-feature")
+            .expect("load")
+            .is_some());
 
         std::fs::remove_dir_all(&ws).ok();
     }

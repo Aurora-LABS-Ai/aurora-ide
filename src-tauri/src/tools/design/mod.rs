@@ -145,7 +145,10 @@ mod tests {
             .await
             .expect_err("must reject");
         let message = format!("{err:?}");
-        assert!(message.contains("visual") && message.contains("writing"), "{message}");
+        assert!(
+            message.contains("visual") && message.contains("writing"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -155,6 +158,9 @@ mod tests {
         assert_eq!(reg.len(), TOOL_NAMES.len());
         let tool = reg.get("design_guidelines").expect("registered");
         assert_eq!(tool.schema().name, "design_guidelines");
-        assert!(!tool.requires_permission(), "reading guidance is not a risk");
+        assert!(
+            !tool.requires_permission(),
+            "reading guidance is not a risk"
+        );
     }
 }

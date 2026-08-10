@@ -208,6 +208,13 @@ where
                 // `[DONE]` that follows would otherwise mark the stream as a
                 // clean finish and bury the reason.
                 if let Some(err) = parsed.error.filter(OpenAiStreamError::is_populated) {
+                    // The raw frame goes to the log — `render()` keeps only
+                    // the fields our struct modelled, and gateway error
+                    // shapes drift.
+                    crate::logging::log_error(
+                        "api.openai_compat",
+                        &format!("provider in-band error frame: {payload}"),
+                    );
                     return Err(ApiError::Provider(err.render()));
                 }
 
@@ -229,6 +236,12 @@ where
                         usage.cache_read_input_tokens = Some(hit);
                         usage.input_tokens = usage.input_tokens.saturating_sub(hit);
                     }
+                    // What the provider says this request cost. Outranks any
+                    // rate Aurora multiplies out — see `TokenUsage::cost_usd`.
+                    // A negative or non-finite value is rejected rather than
+                    // shown: it cannot be a charge, and a nonsense number in a
+                    // money field is worse than falling back to the catalog.
+                    usage.cost_usd = u.cost.filter(|c| c.is_finite() && *c >= 0.0);
                     let _ = event_sink.send(AssistantEvent::Usage(usage.clone())).await;
                 }
 
@@ -262,22 +275,46 @@ where
 
                     if let Some(tool_calls) = delta.tool_calls {
                         for tc in tool_calls {
-                            let pos = match tool_positions.get(&tc.index) {
-                                Some(&p) => p,
-                                None => {
-                                    let p = blocks.len();
-                                    blocks.push(BlockState::ToolUse {
-                                        id: tc
-                                            .id
-                                            .clone()
-                                            .unwrap_or_else(|| format!("tool_{}", tc.index)),
-                                        name: String::new(),
-                                        raw_input: String::new(),
-                                    });
-                                    tool_positions.insert(tc.index, p);
-                                    last_kind = Some(DeltaKind::Tool);
-                                    p
-                                }
+                            // A delta that carries a DIFFERENT id at an index we
+                            // already hold is a new tool call, not a
+                            // continuation of the old one — some gateways
+                            // restart the index per call instead of numbering
+                            // across the message.
+                            //
+                            // Keying on the index alone appended the second
+                            // call's arguments to the first, producing
+                            // `{"path":"config.json"}{"path":"proxy.txt"}`: two
+                            // valid objects concatenated into invalid JSON, so
+                            // BOTH calls were lost to a malformed-input error.
+                            // Found once in 3,534 recorded calls — rare, and
+                            // silent when it happens.
+                            //
+                            // Argument-only deltas carry no id, so they still
+                            // land on the block their index points at.
+                            let starts_new_call = match tool_positions.get(&tc.index) {
+                                Some(&p) => match (&tc.id, &blocks[p]) {
+                                    (Some(new_id), BlockState::ToolUse { id, .. }) => {
+                                        !new_id.is_empty() && !id.is_empty() && new_id != id
+                                    }
+                                    _ => false,
+                                },
+                                None => true,
+                            };
+                            let pos = if starts_new_call {
+                                let p = blocks.len();
+                                blocks.push(BlockState::ToolUse {
+                                    id: tc
+                                        .id
+                                        .clone()
+                                        .unwrap_or_else(|| format!("tool_{}", tc.index)),
+                                    name: String::new(),
+                                    raw_input: String::new(),
+                                });
+                                tool_positions.insert(tc.index, p);
+                                last_kind = Some(DeltaKind::Tool);
+                                p
+                            } else {
+                                tool_positions[&tc.index]
                             };
 
                             if let BlockState::ToolUse {
@@ -410,15 +447,13 @@ fn append_or_open_thinking(
     chunk: &str,
 ) {
     if matches!(last, Some(DeltaKind::Thinking)) {
-        if let Some(BlockState::Thinking { text, .. }) = blocks.last_mut() {
-            text.push_str(chunk);
-            return;
+        if let Some(block) = blocks.last_mut() {
+            if block.push_thinking(chunk) {
+                return;
+            }
         }
     }
-    blocks.push(BlockState::Thinking {
-        text: chunk.to_string(),
-        signature: None,
-    });
+    blocks.push(BlockState::new_thinking(chunk.to_string(), None));
     *last = Some(DeltaKind::Thinking);
 }
 
@@ -436,6 +471,71 @@ mod tests {
             CancellationToken::new(),
         )
         .await
+    }
+
+    /// Some gateways restart `tool_calls[].index` at 0 for each call instead
+    /// of numbering across the message. Keying only on the index appended the
+    /// second call's arguments to the first — two valid JSON objects
+    /// concatenated into invalid JSON, losing BOTH calls to a malformed-input
+    /// error. A changed `id` at a known index means a new call.
+    #[tokio::test]
+    async fn two_tool_calls_reusing_index_zero_stay_separate() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",",
+            "\"function\":{\"name\":\"file_read\",\"arguments\":\"{\\\"path\\\":\\\"a.json\\\"}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_b\",",
+            "\"function\":{\"name\":\"file_read\",\"arguments\":\"{\\\"path\\\":\\\"b.json\\\"}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let turn = drive(body).await.expect("stream completes");
+        let calls: Vec<_> = turn
+            .assistant_message
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                crate::agent_runtime::types::ContentBlock::ToolUse { id, input, .. } => {
+                    Some((id.clone(), input.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(calls.len(), 2, "two ids means two calls, got {calls:?}");
+        assert_eq!(calls[0].0, "call_a");
+        assert_eq!(calls[1].0, "call_b");
+        // Each keeps its OWN arguments — the concatenation bug produced one
+        // block whose input was the two objects glued together.
+        assert_eq!(calls[0].1["path"], "a.json");
+        assert_eq!(calls[1].1["path"], "b.json");
+    }
+
+    /// Argument-only deltas carry no id, so they must keep landing on the
+    /// block their index already points at — the normal streaming shape.
+    #[tokio::test]
+    async fn argument_deltas_without_an_id_keep_accumulating() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",",
+            "\"function\":{\"name\":\"file_read\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,",
+            "\"function\":{\"arguments\":\"\\\"a.json\\\"}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let turn = drive(body).await.expect("stream completes");
+        let calls: Vec<_> = turn
+            .assistant_message
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                crate::agent_runtime::types::ContentBlock::ToolUse { input, .. } => {
+                    Some(input.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls.len(), 1, "one call, streamed in two deltas");
+        assert_eq!(calls[0]["path"], "a.json");
     }
 
     /// THE root cause of "the agent stopped mid-task in silence".
@@ -485,7 +585,9 @@ mod tests {
             "data: {\"error\":{},\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
             "data: [DONE]\n\n",
         );
-        let usage = drive(body).await.expect("healthy stream must not be aborted");
+        let usage = drive(body)
+            .await
+            .expect("healthy stream must not be aborted");
         assert_eq!(usage.stop_reason, "stop");
     }
 
@@ -514,8 +616,11 @@ mod tests {
     #[tokio::test]
     async fn finish_reason_alone_closes_the_stream_cleanly() {
         // Providers that never send `[DONE]` still say goodbye via finish_reason.
-        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n";
-        let turn = drive(body).await.expect("finish_reason should complete the turn");
+        let body =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n";
+        let turn = drive(body)
+            .await
+            .expect("finish_reason should complete the turn");
         assert_eq!(turn.stop_reason, "stop");
     }
 

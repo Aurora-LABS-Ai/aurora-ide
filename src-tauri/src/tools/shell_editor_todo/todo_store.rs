@@ -235,8 +235,8 @@ fn write_unlocked(thread_id: &str, list: &TodoList) -> Result<(), String> {
 
     let temp = path.with_extension("json.tmp");
     {
-        let mut file = fs::File::create(&temp)
-            .map_err(|e| format!("Failed to stage todos: {e}"))?;
+        let mut file =
+            fs::File::create(&temp).map_err(|e| format!("Failed to stage todos: {e}"))?;
         file.write_all(&bytes)
             .and_then(|()| file.sync_all())
             .map_err(|e| format!("Failed to flush todos: {e}"))?;
@@ -347,13 +347,18 @@ mod tests {
 
     #[test]
     fn cursor_is_complete_only_when_nothing_is_open() {
-        assert!(list(vec![
-            item("t1", TodoStatus::Completed),
-            item("t2", TodoStatus::Cancelled)
-        ])
-        .cursor()
-        .complete);
-        assert!(!list(vec![]).cursor().complete, "an empty list is not complete");
+        assert!(
+            list(vec![
+                item("t1", TodoStatus::Completed),
+                item("t2", TodoStatus::Cancelled)
+            ])
+            .cursor()
+            .complete
+        );
+        assert!(
+            !list(vec![]).cursor().complete,
+            "an empty list is not complete"
+        );
     }
 
     #[test]
@@ -370,7 +375,10 @@ mod tests {
 
     #[test]
     fn next_id_walks_past_the_maximum_so_ids_are_never_reused() {
-        let l = list(vec![item("t1", TodoStatus::Pending), item("t7", TodoStatus::Pending)]);
+        let l = list(vec![
+            item("t1", TodoStatus::Pending),
+            item("t7", TodoStatus::Pending),
+        ]);
         assert_eq!(l.next_id(), "t8");
         assert_eq!(list(vec![]).next_id(), "t1");
     }
@@ -387,8 +395,14 @@ mod tests {
 
     #[test]
     fn parse_rejects_a_status_outside_the_set() {
-        assert!(TodoStatus::parse("done").is_err(), "plan vocabulary is not todo vocabulary");
-        assert_eq!(TodoStatus::parse("completed").unwrap(), TodoStatus::Completed);
+        assert!(
+            TodoStatus::parse("done").is_err(),
+            "plan vocabulary is not todo vocabulary"
+        );
+        assert_eq!(
+            TodoStatus::parse("completed").unwrap(),
+            TodoStatus::Completed
+        );
     }
 
     #[test]

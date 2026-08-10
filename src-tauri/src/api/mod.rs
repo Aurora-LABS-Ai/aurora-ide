@@ -26,6 +26,9 @@
 //! - [`provider_kernel_adapter`] — wire-shape JSON types, body builders,
 //!   header builders, error mapping. Re-exports the SSE frame buffer
 //!   from [`sse_shared`] for backwards compatibility.
+//! - [`aurora_image`] — validated `<aurora_image …>` marker parsing, shared
+//!   with the agent runtime. The single detector for "embedded image" vs
+//!   "text that merely mentions the marker syntax".
 //! - [`sse_shared`] — Phase 5 (Sub-E) consolidation point for the
 //!   byte-level [`sse_shared::SseFrameBuffer`] and
 //!   [`sse_shared::frame_payloads`] helpers shared by every adapter.
@@ -47,6 +50,7 @@
 //! retire `commands::provider_kernel` and merge these modules.
 
 pub mod anthropic;
+pub mod aurora_image;
 pub mod client;
 pub mod codex;
 pub mod deepseek;

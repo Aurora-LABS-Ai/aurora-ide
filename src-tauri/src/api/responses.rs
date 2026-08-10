@@ -110,6 +110,20 @@ impl StreamingApiClient for OpenAIResponsesAdapter {
         let headers = build_openai_headers(&self.config)?;
         let body = build_responses_body(&request, &self.config);
 
+        // Opt-in request tracing, same switch the Chat Completions adapter
+        // uses: `$env:AURORA_DEBUG_API="1"; pnpm tauri:dev`.
+        let debug_api = std::env::var("AURORA_DEBUG_API")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if debug_api {
+            eprintln!(
+                "[api][responses] POST {url}\nprovider_id={} model={}\nbody={}",
+                self.config.provider_id,
+                self.config.model,
+                serde_json::to_string_pretty(&body).unwrap_or_else(|_| body.to_string()),
+            );
+        }
+
         let response = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => return Err(ApiError::Cancelled),
@@ -121,8 +135,31 @@ impl StreamingApiClient for OpenAIResponsesAdapter {
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(map_status_error(status.as_u16(), body));
+            let error_body = response.text().await.unwrap_or_default();
+            // A rejected body is exactly when you need to see the body. The
+            // Chat Completions adapter has had `AURORA_DEBUG_API` for this;
+            // this one had nothing, so a 400 naming a byte offset was
+            // undiagnosable — you cannot look at column 39956 of a request you
+            // never printed.
+            //
+            // Better than a flag: servers that reject a request usually SAY
+            // where ("at line 1 column 39956"), so quote that slice of what we
+            // sent. That turns "invalid request" into the offending item.
+            let sent = serde_json::to_string(&body).unwrap_or_default();
+            if debug_api {
+                eprintln!(
+                    "[api][responses] upstream {} rejected request: {}\nsent body:\n{}",
+                    status.as_u16(),
+                    error_body,
+                    sent
+                );
+            }
+            let detail = describe_rejected_body(&sent, &error_body);
+            // `map_status_error` logs the full body+detail to aurora.log.
+            return Err(map_status_error(
+                status.as_u16(),
+                format!("{error_body}{detail}"),
+            ));
         }
 
         let bytes_stream = response
@@ -283,7 +320,16 @@ fn responses_instructions_and_input(
             }
             MessageRole::User => {
                 let text = collect_text(&message.blocks);
+                // `type` is stated explicitly on every message item. OpenAI
+                // INFERS it when absent, so this was invisible against the
+                // reference API — but the Responses shape is now reimplemented
+                // by several gateways, and a strict deserializer has to match
+                // an untagged union by its discriminator. Without it those
+                // servers reject the whole request with a byte offset and no
+                // explanation. Stating it is spec-valid everywhere and costs
+                // one field.
                 items.push(json!({
+                    "type": "message",
                     "role": "user",
                     "content": responses_user_content(&text, supports_vision),
                 }));
@@ -297,12 +343,15 @@ fn responses_instructions_and_input(
                         ContentBlock::Text { text } => {
                             if !text.is_empty() {
                                 items.push(json!({
+                                    "type": "message",
                                     "role": "assistant",
                                     "content": [{ "type": "output_text", "text": text }],
                                 }));
                             }
                         }
-                        ContentBlock::Thinking { text, signature } => {
+                        ContentBlock::Thinking {
+                            text, signature, ..
+                        } => {
                             if let Some(item) = reasoning_replay_item(text, signature.as_deref()) {
                                 items.push(item);
                             }
@@ -357,10 +406,22 @@ fn responses_instructions_and_input(
                     }
                 }
                 if !injected_text.is_empty() {
-                    trailing_parts.push(json!({ "type": "input_text", "text": injected_text }));
+                    // The injected mid-turn text can carry `<aurora_image>`
+                    // markers (composer attachments) — expand them through
+                    // the SAME splitter user messages use, so a mid-turn
+                    // image reaches the model exactly like a screenshot
+                    // does instead of shipping as base64 prose.
+                    match responses_user_content(&injected_text, supports_vision) {
+                        Value::Array(parts) => trailing_parts.extend(parts),
+                        other => trailing_parts.push(other),
+                    }
                 }
                 if !trailing_parts.is_empty() {
-                    items.push(json!({ "role": "user", "content": trailing_parts }));
+                    items.push(json!({
+                        "type": "message",
+                        "role": "user",
+                        "content": trailing_parts,
+                    }));
                 }
             }
         }
@@ -377,7 +438,7 @@ fn responses_instructions_and_input(
 /// User message text → Responses content parts, expanding
 /// `<aurora_image>` markers to `input_image` parts for vision models.
 fn responses_user_content(text: &str, supports_vision: bool) -> Value {
-    if !text.contains("<aurora_image ") {
+    if !crate::api::aurora_image::has_marker(text) {
         return json!([{ "type": "input_text", "text": text }]);
     }
     if !supports_vision {
@@ -407,7 +468,7 @@ fn responses_tool_output(content: &str, supports_vision: bool) -> (String, Vec<V
     if !supports_vision {
         return (strip_aurora_images_for_text(content), Vec::new());
     }
-    if !content.contains("<aurora_image ") {
+    if !crate::api::aurora_image::has_marker(content) {
         return (content.to_string(), Vec::new());
     }
     let mut text = String::new();
@@ -462,6 +523,220 @@ fn decode_reasoning_signature(signature: &str) -> Option<(String, String)> {
 /// A persisted Thinking block → `type: "reasoning"` input item, or
 /// `None` when the block didn't come from this adapter (no valid
 /// encoded signature) and therefore cannot be replayed.
+/// Pull a byte offset out of a serde-style rejection ("at line 1 column 39956").
+///
+/// Only line 1 is honoured: the request is serialized as one line, so a
+/// reported line above 1 means the server is describing something other than
+/// what we sent and the offset would point at the wrong place.
+fn parse_error_column(error_body: &str) -> Option<usize> {
+    let at = error_body.find("column ")?;
+    let digits: String = error_body[at + "column ".len()..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    if let Some(line_at) = error_body.find("line ") {
+        let line: String = error_body[line_at + "line ".len()..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if !line.is_empty() && line != "1" {
+            return None;
+        }
+    }
+    digits.parse().ok()
+}
+
+/// Byte spans of each top-level element of the `input` array in `sent`.
+///
+/// Walks the serialized text rather than re-serializing, so the offsets line
+/// up with the ones the server is quoting. String-aware: a brace inside a tool
+/// result's JSON payload must not be counted as structure, and file paths in
+/// this app are full of escaped backslashes.
+fn input_item_spans(sent: &str) -> Vec<(usize, usize)> {
+    let bytes = sent.as_bytes();
+    let Some(key) = sent.find("\"input\":[") else {
+        return Vec::new();
+    };
+    let mut i = key + "\"input\":[".len();
+    let mut spans = Vec::new();
+    let mut depth = 0usize;
+    let mut start = i;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == b'\\' {
+                escaped = true;
+            } else if c == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'"' => in_string = true,
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                if depth == 0 {
+                    // Closing bracket of `input` itself.
+                    if start < i {
+                        spans.push((start, i));
+                    }
+                    return spans;
+                }
+                depth -= 1;
+            }
+            b',' if depth == 0 => {
+                spans.push((start, i));
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    spans
+}
+
+/// Identify which `input` item the server's offset lands in, and describe its
+/// shape.
+///
+/// A byte window tells you what the bytes were; this tells you which ITEM the
+/// server refused and what fields it carried, which is the thing that actually
+/// points at the bug. Field VALUES are never echoed — a tool result can be
+/// megabytes and can contain file contents — only names and sizes.
+fn describe_rejected_item(sent: &str, column: usize) -> Option<String> {
+    let spans = input_item_spans(sent);
+    if spans.is_empty() {
+        return None;
+    }
+    let total = spans.len();
+    // `<= end` rather than `< end`: serde's untagged enums buffer the whole
+    // value before giving up, so the reported offset usually sits at the END
+    // of the item that failed rather than at its start.
+    let (index, (start, end)) = spans
+        .iter()
+        .enumerate()
+        .find(|(_, (s, e))| column >= *s && column <= *e)
+        .map(|(i, span)| (i, *span))?;
+
+    let text = sent.get(start..end)?.trim();
+    let parsed: Value = serde_json::from_str(text).ok()?;
+    let kind = parsed
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("(no `type` field — this is almost certainly the problem)");
+    let role = parsed
+        .get("role")
+        .and_then(Value::as_str)
+        .map(|r| format!(" role={r}"))
+        .unwrap_or_default();
+    let fields = parsed
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .map(|(k, v)| {
+                    let size = serde_json::to_string(v).map(|s| s.len()).unwrap_or(0);
+                    format!("{k} ({size} B)")
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| "(item is not an object)".to_string());
+
+    Some(format!(
+        "\n\nThe provider refused input item {} of {total} (bytes {start}-{end}):\n  \
+         type={kind}{role}\n  fields: {fields}",
+        index + 1
+    ))
+}
+
+/// Pull the most specific human-readable message out of a provider error
+/// payload (an SSE `error` event, or the `response` object of a
+/// `response.failed` event).
+///
+/// Relays differ: OpenAI puts `message` at the top level of the stream
+/// `error` event, Anthropic-style proxies nest it under `error.message`,
+/// some gateways send only a `code`, and some send a bare string under
+/// `error`. The old code read only the top-level `message` and fell back to
+/// the constant `"stream error"` — which is exactly what a real incident
+/// surfaced as, with the actual reason discarded. The last resort here is
+/// the raw payload itself, truncated: an ugly error beats a vanished one.
+fn stream_error_message(event: &Value) -> String {
+    fn non_empty(v: Option<&Value>) -> Option<&str> {
+        v.and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+    if let Some(m) = non_empty(event.get("message")) {
+        return m.to_string();
+    }
+    if let Some(err) = event.get("error") {
+        if let Some(m) = non_empty(err.get("message")) {
+            return m.to_string();
+        }
+        if let Some(m) = non_empty(Some(err)) {
+            return m.to_string();
+        }
+        if let Some(code) = non_empty(err.get("code")) {
+            return format!("provider error code: {code}");
+        }
+    }
+    if let Some(code) = non_empty(event.get("code")) {
+        return format!("provider error code: {code}");
+    }
+    // Bound the raw fallback: this string reaches the UI banner and the
+    // session history. The unbounded copy already went to the log file.
+    let raw = event.to_string();
+    let mut cut = raw.len().min(600);
+    while cut > 0 && !raw.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("provider error event: {}", &raw[..cut])
+}
+
+/// Quote the slice of the request we sent that the server pointed at.
+///
+/// Providers reject bodies with a byte offset and no content, which is useless
+/// on its own — the whole point of this is to make the next one a five-second
+/// diagnosis instead of a bisect. A window, never the whole body: a request
+/// carrying a screenshot is megabytes of base64 and dumping it would bury the
+/// answer it is supposed to reveal.
+fn describe_rejected_body(sent: &str, error_body: &str) -> String {
+    const WINDOW: usize = 220;
+    let Some(column) = parse_error_column(error_body) else {
+        return String::new();
+    };
+    if sent.is_empty() || column > sent.len() {
+        return String::new();
+    }
+    // Char-boundary safe: the body is UTF-8 and the offset is a byte count, so
+    // slicing naively can panic mid-codepoint.
+    let floor = |mut i: usize| {
+        while i > 0 && !sent.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    };
+    let start = floor(column.saturating_sub(WINDOW));
+    let end = floor((column + WINDOW).min(sent.len()));
+    // Name the ITEM first — that is what points at the bug. The raw window
+    // follows as corroboration for anything the summary cannot express.
+    let item = describe_rejected_item(sent, column).unwrap_or_default();
+    format!(
+        "\n\nAurora sent {} bytes; the provider rejected byte {column}.{item}\n\nWhat we sent \
+         around there:\n…{}…\n(set AURORA_DEBUG_API=1 to print the whole request body)",
+        sent.len(),
+        &sent[start..end],
+    )
+}
+
 fn reasoning_replay_item(text: &str, signature: Option<&str>) -> Option<Value> {
     let (id, encrypted_content) = decode_reasoning_signature(signature?)?;
     let summary: Vec<Value> = if text.is_empty() {
@@ -577,10 +852,7 @@ where
                             }
                             Some("reasoning") => {
                                 positions.insert(item_key, blocks.len());
-                                blocks.push(BlockState::Thinking {
-                                    text: String::new(),
-                                    signature: None,
-                                });
+                                blocks.push(BlockState::new_thinking(String::new(), None));
                             }
                             // "message" opens lazily on the first text
                             // delta so an empty message never leaves a
@@ -730,8 +1002,9 @@ where
                                 let pos = positions.get(&item_key).copied();
                                 match pos {
                                     Some(pos) => {
-                                        if let Some(BlockState::Thinking { text, signature }) =
-                                            blocks.get_mut(pos)
+                                        if let Some(BlockState::Thinking {
+                                            text, signature, ..
+                                        }) = blocks.get_mut(pos)
                                         {
                                             if text.is_empty() && !summary_text.is_empty() {
                                                 *text = summary_text;
@@ -746,12 +1019,12 @@ where
                                         // Reasoning item that never got an
                                         // `added` event — still persist it so
                                         // replay keeps working.
-                                        blocks.push(BlockState::Thinking {
-                                            text: summary_text,
-                                            signature: encrypted.map(|enc| {
+                                        blocks.push(BlockState::new_thinking(
+                                            summary_text,
+                                            encrypted.map(|enc| {
                                                 encode_reasoning_signature(item_id, enc)
                                             }),
-                                        });
+                                        ));
                                     }
                                 }
                             }
@@ -786,23 +1059,27 @@ where
                     }
 
                     "response.failed" => {
+                        // The full event goes to the log BEFORE any
+                        // extraction — whatever shape the relay used, the
+                        // payload survives on disk even if the message
+                        // below comes out generic.
+                        crate::logging::log_error(
+                            "api.responses",
+                            &format!("response.failed event: {event}"),
+                        );
                         let message = event
                             .get("response")
-                            .and_then(|r| r.get("error"))
-                            .and_then(|e| e.get("message"))
-                            .and_then(Value::as_str)
-                            .unwrap_or("response failed")
-                            .to_string();
+                            .map(stream_error_message)
+                            .unwrap_or_else(|| stream_error_message(&event));
                         return Err(ApiError::Provider(message));
                     }
 
                     "error" => {
-                        let message = event
-                            .get("message")
-                            .and_then(Value::as_str)
-                            .unwrap_or("stream error")
-                            .to_string();
-                        return Err(ApiError::Provider(message));
+                        crate::logging::log_error(
+                            "api.responses",
+                            &format!("provider SSE error event: {event}"),
+                        );
+                        return Err(ApiError::Provider(stream_error_message(&event)));
                     }
 
                     _ => {}
@@ -913,16 +1190,14 @@ fn append_thinking_for_item(
     delta: &str,
 ) {
     if let Some(&pos) = positions.get(key) {
-        if let Some(BlockState::Thinking { text, .. }) = blocks.get_mut(pos) {
-            text.push_str(delta);
-            return;
+        if let Some(block) = blocks.get_mut(pos) {
+            if block.push_thinking(delta) {
+                return;
+            }
         }
     }
     positions.insert(key.to_string(), blocks.len());
-    blocks.push(BlockState::Thinking {
-        text: delta.to_string(),
-        signature: None,
-    });
+    blocks.push(BlockState::new_thinking(delta.to_string(), None));
 }
 
 /// Join a done reasoning item's `summary[].text` parts (fallback when
@@ -1112,6 +1387,7 @@ mod tests {
                     ContentBlock::Thinking {
                         text: "plan".into(),
                         signature: Some(encode_reasoning_signature("rs_1", "ENC")),
+                        duration_ms: None,
                     },
                     ContentBlock::ToolUse {
                         id: "call_1".into(),
@@ -1137,6 +1413,7 @@ mod tests {
                 timestamp: 2,
                 attached_selected_elements: None,
                 attached_prompt_chips: None,
+                model: None,
             },
         ];
         let req = request(&messages, &[]);
@@ -1167,6 +1444,7 @@ mod tests {
             vec![ContentBlock::Thinking {
                 text: "anthropic thought".into(),
                 signature: Some("EqQBCkgIBRABGAI=".into()),
+                duration_ms: None,
             }],
             0,
         )];
@@ -1242,7 +1520,9 @@ mod tests {
             "thinking + text + tool_use, got {blocks:?}"
         );
         match &blocks[0] {
-            ContentBlock::Thinking { text, signature } => {
+            ContentBlock::Thinking {
+                text, signature, ..
+            } => {
                 assert_eq!(text, "thinking…");
                 let sig = signature.as_deref().expect("encrypted signature persisted");
                 let (id, enc) = decode_reasoning_signature(sig).expect("our format");
@@ -1322,5 +1602,333 @@ mod tests {
             ApiError::Provider(msg) => assert!(msg.contains("boom")),
             other => panic!("expected Provider error, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod stream_error_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// OpenAI's documented shape: `message` at the top level of the event.
+    #[test]
+    fn reads_top_level_message() {
+        let ev = json!({"type": "error", "code": "server_error", "message": "The model is overloaded"});
+        assert_eq!(stream_error_message(&ev), "The model is overloaded");
+    }
+
+    /// The shape that produced the bare "stream error" incident: a relay
+    /// nesting the detail under `error.message` (Anthropic-proxy style).
+    /// The old top-level-only extraction discarded it.
+    #[test]
+    fn reads_nested_error_message() {
+        let ev = json!({"type": "error", "error": {"message": "upstream timeout after 60s", "code": "504"}});
+        assert_eq!(stream_error_message(&ev), "upstream timeout after 60s");
+    }
+
+    /// Some gateways send `error` as a bare string.
+    #[test]
+    fn reads_bare_string_error() {
+        let ev = json!({"type": "error", "error": "quota exceeded"});
+        assert_eq!(stream_error_message(&ev), "quota exceeded");
+    }
+
+    /// Only a code, no prose — still better than a constant.
+    #[test]
+    fn falls_back_to_code() {
+        let ev = json!({"type": "error", "error": {"code": "rate_limited"}});
+        assert_eq!(
+            stream_error_message(&ev),
+            "provider error code: rate_limited"
+        );
+    }
+
+    /// Nothing recognisable → the raw event itself, never a bare constant.
+    /// This is the arm that replaces the old `unwrap_or("stream error")`.
+    #[test]
+    fn unknown_shape_carries_the_raw_event() {
+        let ev = json!({"type": "error", "detail": {"reason": "backend exploded"}});
+        let msg = stream_error_message(&ev);
+        assert!(msg.starts_with("provider error event: "));
+        assert!(msg.contains("backend exploded"));
+    }
+
+    /// `response.failed` extraction goes through the same helper, rooted at
+    /// the `response` object.
+    #[test]
+    fn response_failed_shape_resolves_via_response_object() {
+        let ev = json!({"type": "response.failed", "response": {"error": {"message": "content policy"}}});
+        let msg = ev
+            .get("response")
+            .map(stream_error_message)
+            .unwrap_or_else(|| stream_error_message(&ev));
+        assert_eq!(msg, "content policy");
+    }
+
+    /// Whitespace-only messages don't count as detail.
+    #[test]
+    fn blank_message_is_skipped() {
+        let ev = json!({"type": "error", "message": "  ", "error": {"message": "real reason"}});
+        assert_eq!(stream_error_message(&ev), "real reason");
+    }
+}
+
+#[cfg(test)]
+mod rejection_tests {
+    use super::*;
+    use crate::agent_runtime::types::ConversationMessage;
+
+    /// A provider that rejects a body with a byte offset gives us nothing to
+    /// act on unless we quote what we sent there. This is the whole point of
+    /// the diagnostic.
+    #[test]
+    fn a_rejection_quotes_the_body_at_the_reported_offset() {
+        let sent = format!("{}NEEDLE_AT_THE_OFFSET{}", "x".repeat(500), "y".repeat(500));
+        let error = "did not match any variant of untagged enum ResponseInput at line 1 column 505";
+        let detail = describe_rejected_body(&sent, error);
+        assert!(detail.contains("NEEDLE_AT_THE_OFFSET"), "got: {detail}");
+        assert!(detail.contains("rejected byte 505"));
+    }
+
+    /// A window, never the whole body: one screenshot makes the request
+    /// megabytes of base64 and dumping it buries the answer.
+    #[test]
+    fn the_quoted_window_stays_small() {
+        let sent = "z".repeat(2_000_000);
+        let detail = describe_rejected_body(&sent, "bad input at line 1 column 1000000");
+        assert!(detail.len() < 1_000, "window was {} chars", detail.len());
+    }
+
+    /// Multi-byte characters must not panic the slice.
+    #[test]
+    fn a_multibyte_body_does_not_panic() {
+        let sent = "é".repeat(500); // 1000 bytes, 500 chars
+        let detail = describe_rejected_body(&sent, "bad at line 1 column 501");
+        assert!(!detail.is_empty());
+    }
+
+    /// No offset, an offset past the end, or an offset on another line: say
+    /// nothing rather than point somewhere misleading.
+    #[test]
+    fn an_unusable_offset_adds_nothing() {
+        assert_eq!(describe_rejected_body("abc", "some other failure"), "");
+        assert_eq!(describe_rejected_body("abc", "at line 1 column 9999"), "");
+        assert_eq!(
+            describe_rejected_body("abc", "at line 4 column 2"),
+            "",
+            "an offset on another line is not describing what we sent"
+        );
+    }
+
+    #[test]
+    fn parse_error_column_reads_the_offset() {
+        assert_eq!(parse_error_column("… at line 1 column 39956"), Some(39956));
+        assert_eq!(parse_error_column("no offset here"), None);
+        assert_eq!(parse_error_column("column "), None);
+    }
+
+    /// OpenAI infers `type` on a message item; strict reimplementations of the
+    /// Responses shape match an untagged union by its discriminator and reject
+    /// the whole request without it.
+    #[test]
+    fn every_message_item_states_its_type() {
+        let messages = vec![
+            ConversationMessage::user_text("hello", 0),
+            ConversationMessage::assistant(
+                vec![ContentBlock::Text {
+                    text: "hi back".into(),
+                }],
+                1,
+            ),
+        ];
+        let request = ApiRequest {
+            model: "m",
+            messages: &messages,
+            system_prompt: None,
+            tools: &[],
+            temperature: None,
+            max_output_tokens: 1024,
+            thinking_enabled: false,
+            thinking_budget_tokens: None,
+        };
+        let (_, items) = responses_instructions_and_input(&request, false);
+        assert!(!items.is_empty());
+        for item in &items {
+            let kind = item.get("type").and_then(Value::as_str);
+            assert!(
+                kind.is_some(),
+                "every input item needs a discriminator, got {item}"
+            );
+            if item.get("role").is_some() {
+                assert_eq!(kind, Some("message"), "message items must say so: {item}");
+            }
+        }
+    }
+
+    /// A mid-turn injected message with an `<aurora_image>` marker must land
+    /// in the trailing user item as a real `input_image` part (screenshot
+    /// parity), never as base64 inside `input_text`.
+    #[test]
+    fn injected_image_marker_becomes_input_image_part() {
+        let messages = vec![ConversationMessage {
+            role: MessageRole::Tool,
+            blocks: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "lint passed".into(),
+                    is_error: None,
+                },
+                ContentBlock::Text {
+                    text: "match this mockup\n\
+                        <aurora_image media_type=\"image/png\">QUJD</aurora_image>"
+                        .into(),
+                },
+            ],
+            usage: None,
+            timestamp: 0,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            model: None,
+        }];
+        let request = ApiRequest {
+            model: "m",
+            messages: &messages,
+            system_prompt: None,
+            tools: &[],
+            temperature: None,
+            max_output_tokens: 1024,
+            thinking_enabled: false,
+            thinking_budget_tokens: None,
+        };
+
+        let (_, items) = responses_instructions_and_input(&request, true);
+        let trailing = items.last().expect("trailing user item");
+        assert_eq!(trailing["role"], "user");
+        let parts = trailing["content"].as_array().expect("content parts");
+        assert!(
+            parts.iter().any(|p| p["type"] == "input_text"
+                && p["text"].as_str().unwrap_or("").contains("match this mockup")),
+            "typed text survives as input_text"
+        );
+        assert!(
+            parts.iter().any(|p| p["type"] == "input_image"),
+            "the marker becomes input_image, got {parts:?}"
+        );
+
+        // Non-vision: placeholder, never raw base64.
+        let (_, items) = responses_instructions_and_input(&request, false);
+        let trailing = items.last().expect("trailing user item");
+        let text = trailing["content"].as_array().expect("parts")[0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(!text.contains("QUJD"), "no raw base64 for non-vision");
+    }
+}
+
+#[cfg(test)]
+mod locator_tests {
+    use super::*;
+
+    fn body(items: &[&str]) -> String {
+        format!(
+            "{{\"model\":\"m\",\"input\":[{}],\"stream\":true}}",
+            items.join(",")
+        )
+    }
+
+    #[test]
+    fn it_names_the_item_the_offset_lands_in() {
+        let sent = body(&[
+            r#"{"type":"message","role":"user","content":[]}"#,
+            r#"{"type":"function_call","call_id":"c1","name":"file_read","arguments":"{}"}"#,
+            r#"{"type":"function_call_output","call_id":"c1","output":"NEEDLE"}"#,
+        ]);
+        let column = sent.find("NEEDLE").expect("needle present");
+        let detail = describe_rejected_item(&sent, column).expect("located");
+        assert!(detail.contains("item 3 of 3"), "got: {detail}");
+        assert!(
+            detail.contains("type=function_call_output"),
+            "got: {detail}"
+        );
+        assert!(detail.contains("call_id"), "fields listed: {detail}");
+    }
+
+    /// The single most useful thing it can report: an item with no `type`,
+    /// which is exactly what a strict untagged union rejects.
+    #[test]
+    fn an_item_missing_its_type_says_so_loudly() {
+        let sent = body(&[r#"{"role":"user","content":[{"type":"input_text","text":"hi"}]}"#]);
+        let column = sent.find("input_text").expect("present");
+        let detail = describe_rejected_item(&sent, column).expect("located");
+        assert!(detail.contains("no `type` field"), "got: {detail}");
+    }
+
+    /// serde's untagged enums buffer the whole value before failing, so the
+    /// reported offset usually sits at the END of the offending item.
+    #[test]
+    fn an_offset_at_an_item_boundary_resolves_to_that_item() {
+        let sent = body(&[
+            r#"{"type":"function_call","call_id":"c1","name":"n","arguments":"{}"}"#,
+            r#"{"type":"function_call_output","call_id":"c1","output":"x"}"#,
+        ]);
+        let spans = input_item_spans(&sent);
+        assert_eq!(spans.len(), 2);
+        let detail = describe_rejected_item(&sent, spans[0].1).expect("located");
+        assert!(detail.contains("item 1 of 2"), "got: {detail}");
+    }
+
+    /// Braces and quotes inside a tool result's JSON payload are DATA. A naive
+    /// depth counter would split items in the middle of a file path — and this
+    /// app's payloads are full of escaped Windows backslashes.
+    #[test]
+    fn json_and_escapes_inside_a_tool_output_do_not_split_items() {
+        // Built with `to_string` rather than hand-escaped: the fixture is then
+        // a genuinely-escaped payload instead of one I typed and got wrong.
+        // This is the real shape — a file tool's result is JSON inside the
+        // `output` STRING, full of braces, quotes and Windows backslashes.
+        let payload = json!({
+            "fullPath": "E:\\repo\\README.md",
+            "items": [1, 2],
+        })
+        .to_string();
+        let output_item = json!({
+            "type": "function_call_output",
+            "call_id": "c1",
+            "output": payload,
+        })
+        .to_string();
+        let sent = body(&[
+            &output_item,
+            r#"{"type":"message","role":"user","content":[]}"#,
+        ]);
+        let spans = input_item_spans(&sent);
+        assert_eq!(spans.len(), 2, "payload braces must not create items");
+        let column = sent.find("README").expect("present");
+        let detail = describe_rejected_item(&sent, column).expect("located");
+        assert!(detail.contains("item 1 of 2"), "got: {detail}");
+    }
+
+    /// Field VALUES are never echoed — a tool result can carry file contents.
+    #[test]
+    fn it_reports_field_sizes_never_field_values() {
+        let secret = "SUPER_SECRET_FILE_CONTENTS";
+        let sent = body(&[&format!(
+            r#"{{"type":"function_call_output","call_id":"c1","output":"{secret}"}}"#
+        )]);
+        let column = sent.find(secret).expect("present");
+        let detail = describe_rejected_item(&sent, column).expect("located");
+        assert!(!detail.contains(secret), "must not echo values: {detail}");
+        assert!(
+            detail.contains("output ("),
+            "must report the size: {detail}"
+        );
+    }
+
+    #[test]
+    fn an_offset_outside_every_item_reports_nothing() {
+        let sent = body(&[r#"{"type":"message","role":"user","content":[]}"#]);
+        assert!(describe_rejected_item(&sent, sent.len() - 1).is_none());
+        assert!(describe_rejected_item("not json at all", 3).is_none());
     }
 }

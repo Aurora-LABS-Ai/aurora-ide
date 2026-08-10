@@ -127,7 +127,9 @@ mod tests {
 
     #[test]
     fn the_guide_refuses_the_shape_that_produced_the_wall_of_cards() {
-        assert!(guide::CANVAS_GUIDE.contains("there is no `Card` component")
-            || guide::CANVAS_GUIDE.contains("no `Card` component"));
+        assert!(
+            guide::CANVAS_GUIDE.contains("there is no `Card` component")
+                || guide::CANVAS_GUIDE.contains("no `Card` component")
+        );
     }
 }

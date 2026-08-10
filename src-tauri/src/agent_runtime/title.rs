@@ -76,21 +76,18 @@ pub fn derive_thread_title(message: &str) -> String {
 /// embedded in the user message). Without this the base64 payload — one giant
 /// "word" — would pollute the derived title. Public for reuse by the chat-list
 /// preview builder.
+///
+/// Only structurally valid markers are removed (see [`crate::api::aurora_image`]).
+/// A message that quotes the marker syntax keeps its words: the old substring
+/// scan deleted everything between the two tokens, silently eating the title.
 pub fn strip_aurora_image_blocks(s: &str) -> String {
+    use crate::api::aurora_image::find_marker;
+
     let mut out = String::with_capacity(s.len());
     let mut cursor = 0usize;
-    while let Some(rel) = s[cursor..].find("<aurora_image ") {
-        let open = cursor + rel;
-        out.push_str(&s[cursor..open]);
-        match s[open..].find("</aurora_image>") {
-            Some(close_rel) => {
-                cursor = open + close_rel + "</aurora_image>".len();
-            }
-            None => {
-                // Unterminated marker — drop the rest defensively.
-                cursor = s.len();
-            }
-        }
+    while let Some(marker) = find_marker(s, cursor) {
+        out.push_str(&s[cursor..marker.start]);
+        cursor = marker.end;
     }
     out.push_str(&s[cursor..]);
     out

@@ -124,7 +124,8 @@ fn is_executable_file(path: &Path) -> bool {
 #[cfg(not(windows))]
 fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 /// The error a caller shows when ripgrep cannot be found at all.

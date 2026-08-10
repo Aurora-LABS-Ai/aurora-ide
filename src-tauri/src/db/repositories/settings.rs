@@ -147,8 +147,8 @@ impl<'a> SettingsRepository<'a> {
                         .unwrap_or(settings.allow_outside_workspace)
                 }
                 "transcriptChapters" => {
-                    settings.transcript_chapters = serde_json::from_str(&setting.value)
-                        .unwrap_or(settings.transcript_chapters)
+                    settings.transcript_chapters =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.transcript_chapters)
                 }
                 "autoApproveTools" => {
                     settings.auto_approve_tools =

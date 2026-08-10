@@ -72,8 +72,9 @@ pub mod todo;
 pub mod todo_store;
 
 pub use ide_event_sink::{
-    FileChangeKind, FileChangedPayload, IdeEventSink, NoopIdeEventSink, PlanChangeReason, PlanChangedPayload,
-    RecordedEvent, RecordingIdeEventSink, FILE_CHANGED_EVENT, PLAN_CHANGED_EVENT,
+    FileChangeKind, FileChangedPayload, IdeEventSink, NoopIdeEventSink, PlanChangeReason,
+    PlanChangedPayload, RecordedEvent, RecordingIdeEventSink, FILE_CHANGED_EVENT,
+    PLAN_CHANGED_EVENT,
 };
 
 /// Names of every tool this bucket registers, in roster order.

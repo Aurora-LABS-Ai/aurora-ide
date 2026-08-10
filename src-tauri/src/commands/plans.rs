@@ -160,8 +160,8 @@ pub fn plan_set_step_status(request: PlanStepStatusRequest) -> Result<PlanView, 
         Ok(())
     })?;
 
-    let path = store::find_path(&workspace, &doc.frontmatter.id)?
-        .unwrap_or_else(|| PathBuf::from(""));
+    let path =
+        store::find_path(&workspace, &doc.frontmatter.id)?.unwrap_or_else(|| PathBuf::from(""));
     Ok(view(path, doc))
 }
 
@@ -186,8 +186,8 @@ pub fn plan_save_body(request: PlanBodyRequest) -> Result<PlanView, String> {
         doc.body = body.clone();
         Ok(())
     })?;
-    let path = store::find_path(&workspace, &doc.frontmatter.id)?
-        .unwrap_or_else(|| PathBuf::from(""));
+    let path =
+        store::find_path(&workspace, &doc.frontmatter.id)?.unwrap_or_else(|| PathBuf::from(""));
     Ok(view(path, doc))
 }
 
@@ -220,8 +220,8 @@ pub fn plan_set_status(request: PlanStatusRequest) -> Result<PlanView, String> {
         doc.frontmatter.status = status;
         Ok(())
     })?;
-    let path = store::find_path(&workspace, &doc.frontmatter.id)?
-        .unwrap_or_else(|| PathBuf::from(""));
+    let path =
+        store::find_path(&workspace, &doc.frontmatter.id)?.unwrap_or_else(|| PathBuf::from(""));
     Ok(view(path, doc))
 }
 
@@ -231,8 +231,8 @@ mod tests {
     use crate::plans::model::PlanStep;
 
     fn workspace(name: &str) -> String {
-        let dir = std::env::temp_dir()
-            .join(format!("aurora-plancmd-{name}-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("aurora-plancmd-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("ws");
         dir.to_string_lossy().to_string()
     }
@@ -259,9 +259,7 @@ mod tests {
         let ws = workspace("view");
         seed(&ws);
 
-        let plan = plan_get_active(ws.clone())
-            .expect("query")
-            .expect("a plan");
+        let plan = plan_get_active(ws.clone()).expect("query").expect("a plan");
 
         assert_eq!(plan.title, "API Building");
         assert_eq!(plan.overview, "Overview text.");
@@ -325,7 +323,9 @@ mod tests {
             })
             .expect("close");
         }
-        let plan = plan_get(ws.clone(), plan_id).expect("get").expect("present");
+        let plan = plan_get(ws.clone(), plan_id)
+            .expect("get")
+            .expect("present");
         assert_eq!(plan.status, PlanStatus::Done);
         assert!(plan.cursor.complete);
         std::fs::remove_dir_all(&ws).ok();
@@ -354,7 +354,12 @@ mod tests {
 
         assert_eq!(plan.status, PlanStatus::Failed);
         assert_eq!(
-            plan.steps.iter().find(|s| s.id == "s1").unwrap().note.as_deref(),
+            plan.steps
+                .iter()
+                .find(|s| s.id == "s1")
+                .unwrap()
+                .note
+                .as_deref(),
             Some("blocked")
         );
 

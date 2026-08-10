@@ -67,6 +67,18 @@ pub fn spill_oversized(dir: &Path, tool_call_id: &str, raw: String) -> String {
         return raw;
     }
 
+    // A result embedding a real `<aurora_image>` marker (browser_screenshot,
+    // image file reads) is oversized BY DESIGN — the base64 body is the image.
+    // Spilling it cuts the payload mid-base64 and drops the close tag, so the
+    // downstream leanify branch (`truncate_tool_content`) and the vision
+    // adapters can no longer recognise it: the model gets a wall of elided
+    // base64 instead of seeing the page. Leanify already keeps history tiny
+    // (body stripped, rehydrated from `src` at request build), so passing
+    // through whole costs nothing.
+    if crate::api::aurora_image::has_marker(&raw) {
+        return raw;
+    }
+
     match serde_json::from_str::<Value>(&raw) {
         Ok(Value::Object(map)) => spill_json_fields(dir, tool_call_id, map)
             .and_then(|map| serde_json::to_string(&Value::Object(map)).ok())
@@ -93,6 +105,11 @@ fn spill_json_fields(
             continue;
         };
         if text.len() <= SPILL_THRESHOLD {
+            continue;
+        }
+        // Same image-marker exemption as the top-level check — a marker inside
+        // a JSON field is escaped in `raw`, so only the parsed value shows it.
+        if crate::api::aurora_image::has_marker(text) {
             continue;
         }
         let text = text.clone();
@@ -217,6 +234,44 @@ mod tests {
         assert!(!out.contains("contentFile"), "nothing written to disk");
     }
 
+    /// The regression the agent-window model reported: a ~260 KB screenshot
+    /// result was spilled as plain text ("253577 of 261769 bytes hidden"),
+    /// cutting the `<aurora_image>` marker mid-base64 — so the leanify branch
+    /// and the vision adapters never saw an image, only elided base64. A result
+    /// embedding a valid marker must reach `truncate_tool_content` whole.
+    #[test]
+    fn a_screenshot_marker_is_never_spilled() {
+        let dir = tempfile::tempdir().unwrap();
+        // Valid base64 well past the 12 KB threshold, exactly the tool's shape.
+        let b64 = "QUJD".repeat(60_000);
+        let raw = format!(
+            "<aurora_image media_type=\"image/png\" width=\"1400\" height=\"1210\" \
+             src=\"C:\\shots\\a.png\">{b64}</aurora_image>\n\
+             Screenshot of http://localhost:5173 (1400×1210 px)"
+        );
+
+        let out = spill_oversized(dir.path(), "call-shot", raw.clone());
+        assert_eq!(out, raw, "the marker must pass through untouched");
+        assert!(
+            std::fs::read_dir(dir.path()).unwrap().next().is_none(),
+            "nothing written to disk"
+        );
+    }
+
+    /// A marker embedded in a JSON payload field is escaped in the envelope, so
+    /// the top-level check cannot see it — the per-field guard must.
+    #[test]
+    fn a_marker_inside_a_json_field_is_never_spilled() {
+        let dir = tempfile::tempdir().unwrap();
+        let b64 = "QUJD".repeat(60_000);
+        let marker =
+            format!("<aurora_image media_type=\"image/png\">{b64}</aurora_image>");
+        let raw = serde_json::json!({ "success": true, "content": marker }).to_string();
+
+        let out = spill_oversized(dir.path(), "call-json-shot", raw.clone());
+        assert_eq!(out, raw, "the field must pass through untouched");
+    }
+
     /// The exemption is narrow: shell/build output still spills, because its
     /// summary lives at the tail and the bytes are gone once the process exits.
     #[test]
@@ -229,7 +284,10 @@ mod tests {
         .to_string();
 
         let out = spill_oversized(dir.path(), "call-2", raw);
-        assert!(out.contains("stdoutFile"), "spill path recorded: {out:.200}");
+        assert!(
+            out.contains("stdoutFile"),
+            "spill path recorded: {out:.200}"
+        );
         assert!(out.contains("bytes hidden"), "elision note present");
     }
 

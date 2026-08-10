@@ -103,13 +103,54 @@ impl ToolExecutor for FileReadTool {
                 ))
             }
         };
-        let paths = match input.get("paths") {
-            Some(Value::Array(paths)) if !paths.is_empty() => Some(paths.as_slice()),
-            Some(Value::Array(_)) | Some(Value::Null) | None => None,
-            Some(_) => {
-                return Err(ToolError::InvalidInput(
-                    "`paths` must be a non-empty array of file path strings when provided".into(),
-                ))
+        // `paths` sent as a JSON-ENCODED STRING — `"[\"a.ts\", \"b.ts\"]"`
+        // instead of `["a.ts", "b.ts"]`. The value it names is an unambiguous
+        // array of file paths; it just arrived one encoding layer deep.
+        //
+        // This is a serialization artifact, not a model having a bad day:
+        // measured across this machine's transcripts it was 8 of 542 batch
+        // reads, spread over 5 different conversations and projects. Rejecting
+        // it burned a whole iteration each time, and the agent's own reaction
+        // was to abandon the batch form entirely ("the paths array approach
+        // isn't working with the tool") and fall back to one read per file —
+        // so a harness quirk was costing N-1 extra round trips per batch.
+        //
+        // Same rule as the one-element-plus-line-window coercion below: when
+        // the input has exactly one sensible reading, resolve it and serve the
+        // call. Only genuinely ambiguous or unusable input is an error.
+        let unwrapped_paths: Option<Vec<Value>> = match input.get("paths") {
+            Some(Value::String(raw)) => serde_json::from_str::<Vec<Value>>(raw)
+                .ok()
+                .filter(|arr| !arr.is_empty())
+                .filter(|arr| {
+                    arr.iter()
+                        .all(|entry| entry.as_str().is_some_and(|s| !s.trim().is_empty()))
+                }),
+            _ => None,
+        };
+        let paths: Option<&[Value]> = if let Some(arr) = unwrapped_paths.as_deref() {
+            Some(arr)
+        } else {
+            match input.get("paths") {
+                Some(Value::Array(paths)) if !paths.is_empty() => Some(paths.as_slice()),
+                Some(Value::Array(_)) | Some(Value::Null) | None => None,
+                // Name what actually arrived and the exact form that works.
+                // The old message restated the schema, which the model had
+                // already read — it gave nothing to correct toward.
+                Some(other) => {
+                    let got = match other {
+                        Value::String(_) => "a string that is not a JSON array of file paths",
+                        Value::Number(_) => "a number",
+                        Value::Bool(_) => "a boolean",
+                        Value::Object(_) => "an object",
+                        _ => "an unsupported value",
+                    };
+                    return Err(ToolError::InvalidInput(format!(
+                        "`paths` received {got}. Send it as a real JSON array of non-empty file \
+                         path strings — `\"paths\": [\"src/a.ts\", \"src/b.ts\"]` — or use \
+                         `path` for a single file."
+                    )));
+                }
             }
         };
 
@@ -148,7 +189,11 @@ impl ToolExecutor for FileReadTool {
                 .map(str::to_string),
             _ => None,
         };
-        let paths = if coerced_single.is_some() { None } else { paths };
+        let paths = if coerced_single.is_some() {
+            None
+        } else {
+            paths
+        };
         let path = path.or(coerced_single.as_deref());
 
         // An empty `paths` array is treated as an omitted optional placeholder
@@ -190,7 +235,21 @@ impl ToolExecutor for FileReadTool {
                     }
                 }
             }
-            return super::multi_file_read::read_many(input, ctx).await;
+            // Hand the parallel reader the NORMALIZED shape. It re-reads
+            // `paths` off the input it is given, so passing the original would
+            // put a coerced call straight back into the validation this arm
+            // just resolved — the fix would look applied and change nothing.
+            let delegated = match unwrapped_paths.as_ref() {
+                Some(unwrapped) => {
+                    let mut normalized = input.clone();
+                    if let Some(object) = normalized.as_object_mut() {
+                        object.insert("paths".into(), Value::Array(unwrapped.clone()));
+                    }
+                    normalized
+                }
+                None => input.clone(),
+            };
+            return super::multi_file_read::read_many(delegated, ctx).await;
         }
 
         let path = path.ok_or_else(|| {
@@ -520,6 +579,72 @@ mod tests {
         assert_eq!(schema.input_schema["properties"]["path"]["minLength"], 1);
     }
 
+    /// Measured on real transcripts: 8 of 542 batch reads arrived with `paths`
+    /// as a JSON-encoded string, across 5 conversations and projects. The
+    /// value is an unambiguous array of file paths one encoding layer deep, so
+    /// it is resolved rather than rejected — rejecting it made the agent
+    /// abandon the batch form and fall back to one read per file.
+    #[tokio::test]
+    async fn a_json_encoded_paths_string_is_unwrapped() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.ts"), "let a = 1;\n").unwrap();
+        std::fs::write(tmp.path().join("b.ts"), "let b = 2;\n").unwrap();
+
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let result = tool
+            .execute(
+                serde_json::json!({ "paths": "[\"a.ts\", \"b.ts\"]" }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("a stringified array is served, not rejected");
+        assert!(result.contains("a.ts"), "first file read: {result}");
+        assert!(result.contains("b.ts"), "second file read: {result}");
+    }
+
+    /// A string that is NOT an encoded array still fails — but the message
+    /// names what arrived and the form that works, instead of restating the
+    /// schema the model had already read.
+    #[tokio::test]
+    async fn a_non_array_paths_string_fails_with_an_actionable_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let err = tool
+            .execute(
+                serde_json::json!({ "paths": "just-one-file.ts" }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect_err("a bare string is not a batch");
+        let message = err.to_string();
+        assert!(
+            message.contains("not a JSON array"),
+            "names what arrived: {message}"
+        );
+        assert!(
+            message.contains("\"paths\""),
+            "shows the working form: {message}"
+        );
+    }
+
+    /// An encoded array with a blank entry is not unambiguous, so it is NOT
+    /// half-accepted — it falls through to the normal validation.
+    #[tokio::test]
+    async fn an_encoded_paths_array_with_a_blank_entry_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let result = tool
+            .execute(
+                serde_json::json!({ "paths": "[\"a.ts\", \"  \"]" }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "a blank entry must not be silently dropped"
+        );
+    }
+
     #[tokio::test]
     async fn reads_small_file_in_full() {
         let tmp = tempfile::tempdir().unwrap();
@@ -724,7 +849,10 @@ mod tests {
         }))
         .await;
 
-        assert_eq!(got["range"]["endLine"], 1_000, "capped at the per-call limit");
+        assert_eq!(
+            got["range"]["endLine"], 1_000,
+            "capped at the per-call limit"
+        );
         assert_eq!(got["cappedAtMaxLines"], serde_json::json!(true));
         assert_eq!(got["totalLines"], 1_200);
         let warning = got["warning"].as_str().unwrap();
@@ -778,7 +906,10 @@ mod tests {
         assert_eq!(got["range"]["endLine"], 1_000);
         assert_eq!(got["totalLines"], 2_400);
         assert_eq!(got["truncated"], serde_json::json!(true));
-        assert!(got["warning"].as_str().unwrap().contains("force_full_content"));
+        assert!(got["warning"]
+            .as_str()
+            .unwrap()
+            .contains("force_full_content"));
     }
 
     /// Every read payload carries the marker the runtime keys off, or the spill

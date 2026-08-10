@@ -246,7 +246,12 @@ impl ToolExecutor for WorkspaceTreeTool {
         let quota = fit_quota(&arena, max_nodes);
         apply_quota(&mut arena, quota);
         let returned = arena.nodes.iter().filter(|node| node.kept).count();
-        let elided_total: usize = arena.nodes.iter().filter(|n| n.kept).map(|n| n.elided).sum();
+        let elided_total: usize = arena
+            .nodes
+            .iter()
+            .filter(|n| n.kept)
+            .map(|n| n.elided)
+            .sum();
 
         let (files_read, files_skipped) = if include_file_stats {
             ctx.bail_if_cancelled()?;
@@ -837,7 +842,10 @@ mod tests {
             .map(|n| n["name"].as_str().unwrap())
             .collect();
         assert!(src_names.contains(&"app.ts"));
-        assert!(!src_names.contains(&".secret"), "nested dotfiles stay hidden");
+        assert!(
+            !src_names.contains(&".secret"),
+            "nested dotfiles stay hidden"
+        );
     }
 
     #[tokio::test]
@@ -915,7 +923,10 @@ mod tests {
         let parsed = run(json!({ "max_nodes": 100 }), tmp.path()).await;
         let total = count_nodes(&parsed["tree"]);
         assert!(total <= 100, "budget exceeded: {total}");
-        assert_eq!(parsed["stats"]["nodesReturned"].as_u64().unwrap() as usize, total);
+        assert_eq!(
+            parsed["stats"]["nodesReturned"].as_u64().unwrap() as usize,
+            total
+        );
     }
 
     /// A small tree must come back whole — no `elided`, no `truncated` — so the

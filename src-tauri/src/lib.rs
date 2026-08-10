@@ -35,6 +35,7 @@ mod agent_runtime;
 mod agent_safety;
 mod api;
 mod checkpoints;
+mod code_index;
 pub mod cli;
 mod commands;
 mod context;
@@ -43,6 +44,7 @@ mod explorer;
 mod file_cache;
 pub mod icon_pack;
 mod launch_prefs;
+mod logging;
 mod mcp;
 mod paths;
 mod plans;
@@ -107,11 +109,7 @@ impl ProductionIdeEventSink {
     /// registry is not yet managed or the directory cannot be created — the
     /// process still runs and still streams to the UI, the agent just cannot
     /// read it back.
-    fn resolve_background_log_path(
-        &self,
-        thread_id: &str,
-        process_id: &str,
-    ) -> Option<String> {
+    fn resolve_background_log_path(&self, thread_id: &str, process_id: &str) -> Option<String> {
         use tauri::Manager;
 
         let registry = self
@@ -389,6 +387,11 @@ pub fn run() {
 
 /// Run Aurora with CLI arguments (e.g., from `aurora .` command)
 pub fn run_with_args(cli_args: CliArgs) {
+    // File logging + panic hook first: anything that fails from here on —
+    // including startup itself — must leave a trace on disk in the packaged
+    // exe, where stderr goes nowhere.
+    logging::init();
+
     // Convert CLI args to open request
     let open_request: CliOpenRequest = (&cli_args).into();
 
@@ -402,8 +405,7 @@ pub fn run_with_args(cli_args: CliArgs) {
         && cli_args.command.is_none()
         && cli_args.diff.is_none();
     // The user chose the agent window as their startup surface.
-    let prefers_agent =
-        bare_launch && launch_prefs::read() == launch_prefs::LaunchSurface::Agent;
+    let prefers_agent = bare_launch && launch_prefs::read() == launch_prefs::LaunchSurface::Agent;
 
     // `agw` / `aurora --agent`, or the saved preference: open ONLY the agent
     // window (no IDE). Captured here so the `move` setup closure can act on it.
@@ -424,6 +426,59 @@ pub fn run_with_args(cli_args: CliArgs) {
     };
 
     tauri::Builder::default()
+        // Quit when the last window the user can actually SEE goes away.
+        //
+        // Tauri keeps the process alive while any window exists, and Aurora
+        // deliberately keeps hidden ones: launching straight into the agent
+        // window HIDES `main` rather than closing it, because `agent_open_in_ide`
+        // needs it alive as the sole listener (see the agent-window build block
+        // in `setup`). A standalone browser preview can be hidden too.
+        //
+        // That combination stranded the app: close the agent window and a
+        // hidden `main` kept the process running with nothing on screen and no
+        // way to reach it — the user's only exit was Task Manager. A hidden
+        // window is a live IPC target, never a way for a person to quit.
+        //
+        // Minimizing is safe: on Windows a minimized window still reports
+        // visible, so this only fires when every remaining window is genuinely
+        // hidden.
+        .on_window_event(|window, event| {
+            if !matches!(event, tauri::WindowEvent::Destroyed) {
+                return;
+            }
+            let app = window.app_handle();
+            let remaining: Vec<_> = app.webview_windows().into_values().collect();
+            // An un-queryable window cannot be shown to the user either, so a
+            // failure here counts as "not visible" rather than keeping a
+            // headless process alive on the strength of an error.
+            if remaining
+                .iter()
+                .any(|w| w.is_visible().unwrap_or(false))
+            {
+                return;
+            }
+            // CLOSE the leftovers rather than calling `app.exit`. Two reasons,
+            // both learned the hard way:
+            //
+            // 1. `exit` tears the process down while those windows still have
+            //    live HWNDs, and Chromium then fails to unregister its window
+            //    class on the way out — `Failed to unregister class
+            //    Chrome_WidgetWin_0. Error = 1412` (ERROR_CLASS_HAS_WINDOWS).
+            //    Harmless in itself, but it is the visible symptom of tearing
+            //    down out of order.
+            // 2. `exit` skips every window's close handler, and `main`'s is
+            //    where the IDE persists explorer state, open tabs and the
+            //    current thread (`useWindowClose`). Killing the process
+            //    silently drops that save.
+            //
+            // Closing each window runs its handlers, lets the webviews destroy
+            // themselves in order, and leaves Tauri to exit on its own once the
+            // last one is gone. Re-entry is safe: this fires again for each
+            // close, finds nothing visible and nothing left to close.
+            for leftover in remaining {
+                let _ = leftover.close();
+            }
+        })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
@@ -520,6 +575,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::threads::thread_duplicate,
             commands::threads::thread_copy_markdown,
             commands::threads::thread_load,
+            commands::threads::thread_usage_breakdown,
             commands::threads::thread_delete,
             commands::threads::thread_list_summaries,
             commands::threads::thread_update_usage,
@@ -532,6 +588,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::threads::thread_set_model,
             commands::threads::thread_cancel_current_turn,
             commands::project_stats::project_stats_get,
+            commands::code_index::code_index_status,
+            commands::code_index::code_index_rebuild,
             commands::plans::plan_get_active,
             commands::plans::plan_get,
             commands::plans::plan_list,
@@ -826,7 +884,7 @@ pub fn run_with_args(cli_args: CliArgs) {
                         resolved.display(),
                         err,
                     );
-                    eprintln!("[aurora] {message}");
+                    logging::log_error("db.init", &message);
                     // Try to surface this in the main window before exit. The
                     // window boots invisible now, so it must be shown first or
                     // the message would go to a window nobody can see.
@@ -1049,10 +1107,16 @@ pub fn run_with_args(cli_args: CliArgs) {
             // for the user-facing half of this contract.
             if let Some(win) = app.get_webview_window("main") {
                 if let Err(err) = services::webview_permissions::install_permission_handler(&win) {
-                    eprintln!("[aurora] failed to install webview permission handler: {err}");
+                    logging::log_error(
+                        "webview.permissions",
+                        &format!("failed to install webview permission handler: {err}"),
+                    );
                 }
                 if let Err(err) = services::webview_recovery::install_crash_recovery_handler(&win) {
-                    eprintln!("[aurora] failed to install webview crash recovery: {err}");
+                    logging::log_error(
+                        "webview.recovery",
+                        &format!("failed to install webview crash recovery: {err}"),
+                    );
                 }
             }
 
@@ -1065,21 +1129,48 @@ pub fn run_with_args(cli_args: CliArgs) {
                 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
                 // An icon launch has no usable working directory, so its project
-                // comes from the most recently opened workspace instead. This
-                // matters more than it looks: the window creates every chat with
-                // its `projectRoot` as the chat's `workspaceRoot`, and the left
-                // rail is a per-project tree keyed on that value — a null root
-                // produces a chat that persists correctly but renders nowhere.
-                // Nothing recorded yet (fresh install) → open unscoped, which
-                // the home screen handles as its no-workspace state.
+                // has to be remembered. This matters more than it looks: the
+                // window creates every chat with its `projectRoot` as the chat's
+                // `workspaceRoot`, and the left rail is a per-project tree keyed
+                // on that value — a null root produces a chat that persists
+                // correctly but renders nowhere.
+                //
+                // Resolution order, and the order is the fix:
+                //   1. `--ws` / the launch directory, when there is one.
+                //   2. `agent_last_workspace` — what THIS window was last used
+                //      on, written by `useAgentChatStore` as you switch project.
+                //   3. `workspace_state` — the IDE's table, first run only.
+                //
+                // Step 2 did not exist. The agent window had no memory of its
+                // own, so every icon launch fell through to the IDE's most
+                // recent workspace; stop opening the IDE and that row freezes,
+                // stranding the agent window on a project abandoned weeks ago
+                // with no way to change it that survives a restart.
+                //
+                // Nothing recorded anywhere (fresh install) → open unscoped,
+                // which the home screen handles as its no-workspace state.
                 let resolved_workspace = agent_workspace.clone().or_else(|| {
                     if !prefers_agent {
                         return None;
                     }
-                    app.state::<Mutex<db::Database>>()
-                        .lock()
+                    let db = app.state::<Mutex<db::Database>>();
+                    let guard = db.lock().ok()?;
+                    let remembered = guard
+                        .settings()
+                        .get_setting("agent_last_workspace")
                         .ok()
-                        .and_then(|db| db.workspace().get_most_recent().ok())
+                        .flatten()
+                        .map(|setting| setting.value)
+                        // An empty string is how the window records "no project
+                        // open"; treat it as unset rather than as a path.
+                        .filter(|value| !value.trim().is_empty());
+                    if let Some(value) = remembered {
+                        return Some(std::path::PathBuf::from(value));
+                    }
+                    guard
+                        .workspace()
+                        .get_most_recent()
+                        .ok()
                         .flatten()
                         .and_then(|state| state.workspace_path)
                         .map(std::path::PathBuf::from)
@@ -1146,15 +1237,21 @@ pub fn run_with_args(cli_args: CliArgs) {
                         if let Err(err) =
                             services::webview_permissions::install_permission_handler(&agent_win)
                         {
-                            eprintln!(
-                                "[aurora] failed to install webview permission handler (agent): {err}"
+                            logging::log_error(
+                                "webview.permissions",
+                                &format!(
+                                    "failed to install webview permission handler (agent): {err}"
+                                ),
                             );
                         }
                         if let Err(err) =
                             services::webview_recovery::install_crash_recovery_handler(&agent_win)
                         {
-                            eprintln!(
-                                "[aurora] failed to install webview crash recovery (agent): {err}"
+                            logging::log_error(
+                                "webview.recovery",
+                                &format!(
+                                    "failed to install webview crash recovery (agent): {err}"
+                                ),
                             );
                         }
                         if let Some(main_win) = app.get_webview_window("main") {
@@ -1174,7 +1271,10 @@ pub fn run_with_args(cli_args: CliArgs) {
                         }
                     }
                     Err(err) => {
-                        eprintln!("[aurora] failed to open agent window: {err}");
+                        logging::log_error(
+                            "agent_window",
+                            &format!("failed to open agent window: {err}"),
+                        );
                         if let Some(main_win) = app.get_webview_window("main") {
                             let _ = main_win.show();
                         }

@@ -36,9 +36,9 @@ use crate::agent_runtime::types::TokenUsage;
 
 use super::client::ProviderConfigSnapshot;
 use super::provider_kernel_adapter::{
-    build_anthropic_body, build_anthropic_headers, build_anthropic_url, finalize_assistant_message,
-    frame_payloads, map_reqwest_error, map_status_error, merge_usage, AnthropicStreamEvent,
-    BlockState, OpenAiStreamError, SseFrameBuffer,
+    build_anthropic_body, build_anthropic_headers, build_anthropic_url, encode_redacted_thinking,
+    finalize_assistant_message, frame_payloads, map_reqwest_error, map_status_error, merge_usage,
+    AnthropicStreamEvent, BlockState, OpenAiStreamError, SseFrameBuffer,
 };
 
 /// Anthropic / MiniMax streaming adapter.
@@ -187,6 +187,14 @@ where
                 // stream — which is exactly how this used to fall through
                 // to `_ => {}` and vanish.
                 if event.event_type == "error" {
+                    // Log the raw payload before rendering: when the error
+                    // shape doesn't match our struct, `render` has nothing
+                    // and the generic message below is all the UI gets —
+                    // the file copy is then the only record of the reason.
+                    crate::logging::log_error(
+                        "api.anthropic",
+                        &format!("provider SSE error event: {payload}"),
+                    );
                     let message = event
                         .error
                         .as_ref()
@@ -287,16 +295,45 @@ async fn handle_anthropic_event(
                 "text" => Some(BlockState::Text {
                     text: String::new(),
                 }),
-                "thinking" => Some(BlockState::Thinking {
-                    text: String::new(),
-                    signature: None,
-                }),
+                "thinking" => Some(BlockState::new_thinking(String::new(), None)),
+                // Anthropic encrypts a reasoning block when its safety systems
+                // flag the content. It is normal, intermittent, and arrives
+                // with `data` instead of `thinking`. Dropping it — which is
+                // what `_ => None` used to do — cost the whole response
+                // whenever the model emitted nothing else: no block was
+                // inserted, so every delta and the stop event that followed
+                // found nothing at their index and bailed too. The turn then
+                // ended with output tokens billed and zero blocks, and the
+                // user was told "the provider returned an empty reply". It did
+                // not; we discarded it.
+                //
+                // The payload is opaque and MUST be replayed verbatim on the
+                // next request, exactly like a signature — so it rides in the
+                // signature slot under a provider tag, the same trick the
+                // Responses adapter uses for encrypted reasoning items.
+                "redacted_thinking" => Some(BlockState::new_thinking(
+                    String::new(),
+                    meta.data.as_deref().map(encode_redacted_thinking),
+                )),
                 "tool_use" => Some(BlockState::ToolUse {
                     id: meta.id.unwrap_or_else(|| format!("tool_{index}")),
                     name: meta.name.unwrap_or_default(),
                     raw_input: String::new(),
                 }),
-                _ => None,
+                // Never silently again. An unrecognized block is a response we
+                // are throwing away, and the only thing worse than not
+                // supporting it is not knowing that we don't: this failure was
+                // invisible from inside the app and had to be reconstructed
+                // from the session JSONL. Naming it turns the next one into a
+                // one-line diagnosis.
+                other => {
+                    eprintln!(
+                        "anthropic: unsupported content block type {other:?} at index {index} \
+                         — its content will be missing from this turn. \
+                         If replies look empty, this is why."
+                    );
+                    None
+                }
             };
             if let Some(state) = new_state {
                 // Fire the streaming-tool-card hint immediately for
@@ -343,9 +380,7 @@ async fn handle_anthropic_event(
                 }
                 "thinking_delta" => {
                     if let Some(thinking) = delta.thinking {
-                        if let BlockState::Thinking { text, .. } = state {
-                            text.push_str(&thinking);
-                        }
+                        state.push_thinking(&thinking);
                         // Skip zero-length deltas. Some providers open a thinking
                         // block with an empty `"thinking":""` delta; forwarding it
                         // makes the UI open a reasoning segment with no text, which
@@ -516,7 +551,9 @@ mod tests {
         let body = "data: {\"type\":\"content_block_delta\",\"index\":0,\
                     \"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n\
                     data: {\"type\":\"message_stop\"}\n\n";
-        let turn = drive(body).await.expect("message_stop should complete the turn");
+        let turn = drive(body)
+            .await
+            .expect("message_stop should complete the turn");
         assert_eq!(turn.stop_reason, "end_turn");
     }
 
@@ -525,7 +562,8 @@ mod tests {
     /// "this reply is cut off" notice.
     #[tokio::test]
     async fn max_tokens_stop_completes_the_turn_and_is_reported_verbatim() {
-        let body = "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n\
+        let body =
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n\
                     data: {\"type\":\"message_stop\"}\n\n";
         let turn = drive(body).await.expect("a capped turn still completes");
         assert_eq!(turn.stop_reason, "max_tokens");

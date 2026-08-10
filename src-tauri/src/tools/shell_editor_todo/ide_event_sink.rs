@@ -532,7 +532,9 @@ mod tests {
         let sink = NoopIdeEventSink;
         assert!(sink.emit_editor_open("p", None, None).is_ok());
         assert!(sink.emit_read_lints(&[]).is_ok());
-        assert!(sink.emit_todo_write("thread-1", &serde_json::json!([])).is_ok());
+        assert!(sink
+            .emit_todo_write("thread-1", &serde_json::json!([]))
+            .is_ok());
     }
 
     #[test]

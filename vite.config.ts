@@ -1,3 +1,5 @@
+import { fileURLToPath, URL } from "node:url";
+
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -6,6 +8,14 @@ import { auroraCanvasRuntime } from "./vite-canvas-plugin";
 // https://vite.dev/config/
 export default defineConfig({
     plugins: [react(), auroraCanvasRuntime()],
+
+    // Mirrors tsconfig.app.json `paths` and vitest.config.ts `resolve.alias`.
+    // All three must agree or `@/…` resolves in the editor and fails at build.
+    resolve: {
+        alias: {
+            "@": fileURLToPath(new URL("./src", import.meta.url)),
+        },
+    },
 
     build: {
         // Aurora ships as a Tauri desktop bundle — chunks are loaded

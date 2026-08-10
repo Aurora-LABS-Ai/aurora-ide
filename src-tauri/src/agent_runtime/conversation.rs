@@ -52,14 +52,19 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::api_client::{ApiRequest, StreamingApiClient};
+use super::api_client::{ApiError, ApiRequest, StreamingApiClient, ToolSchema};
 use super::error::RuntimeError;
 use super::events::{AssistantEvent, TurnCompletion};
 use super::hooks::{Hook, NoopHook, ToolHookResult};
 use super::ipc::AgentEventEnvelope;
 use super::session::{RichToolResult, Session};
 use super::tool_executor::{ToolContext, ToolError, ToolRegistry};
+use super::tool_pairing::{
+    repair_tool_pairing, synthetic_tool_results, STOPPED_BEFORE_RUN, STOPPED_MID_RUN,
+    TRUNCATED_CALL,
+};
 use super::types::{ContentBlock, ConversationMessage, MessageRole, TokenUsage};
+use crate::api::ReasoningReplay;
 
 /// Configuration for one [`ConversationRuntime`] instance.
 ///
@@ -140,6 +145,15 @@ pub struct RuntimeConfig {
     /// When true, read-only file tools may resolve paths OUTSIDE the workspace
     /// (user opt-in via Settings → Agent). Writes stay workspace-bound.
     pub allow_outside_workspace: bool,
+
+    /// What this provider does with a stored reasoning block on replay, and
+    /// therefore what one costs the next request. Set from the turn's provider
+    /// type by `build_runtime_config`; see [`ReasoningReplay`].
+    ///
+    /// Defaults to [`ReasoningReplay::Dropped`] — the majority behaviour, and
+    /// the safe default for a config built without provider knowledge (it
+    /// counts nothing that might not be sent).
+    pub reasoning_replay: ReasoningReplay,
 }
 
 impl Default for RuntimeConfig {
@@ -160,8 +174,12 @@ impl Default for RuntimeConfig {
             ide_context: None,
             context_window: None,
             compaction_threshold: None,
-            compaction_summary_budget: 8192,
+            // Covers the `<analysis>` drafting pass AND the note itself — see
+            // `COMPACTION_SYSTEM_PROMPT`. Too small and the scratchpad starves
+            // the note of its last, most important sections.
+            compaction_summary_budget: 16_000,
             allow_outside_workspace: false,
+            reasoning_replay: ReasoningReplay::Dropped,
         }
     }
 }
@@ -182,6 +200,26 @@ pub struct ConversationRuntime {
     /// thread it belongs to. `None` disables spilling — results are then
     /// clamped as before, which is what tests and non-persisting callers get.
     store_dir: Option<std::path::PathBuf>,
+    /// Dedicated client + model for the summarization call, when the user
+    /// pinned a compaction model. `None` summarizes on `api_client` with the
+    /// session's own model.
+    ///
+    /// Held separately rather than swapped into `api_client` because only ONE
+    /// request in a turn is the summary — everything else must still run on
+    /// the model the user is chatting with.
+    compaction_client: Option<(Arc<dyn StreamingApiClient>, String)>,
+    /// Memoized tool-schema token count — see
+    /// [`Self::fixed_request_overhead_tokens`]. Behind an `Arc` so the runtime
+    /// stays cheap to clone and clones share the one computation.
+    tool_schema_tokens: Arc<std::sync::OnceLock<u32>>,
+    /// Memoized `<repo_map>` block for this conversation.
+    ///
+    /// Computed ONCE and reused for every turn, which is the whole point: the
+    /// block sits at the head of the first user message, so if its text changed
+    /// between turns it would invalidate the provider's cached prefix and
+    /// re-bill the entire conversation. A map that drifts slightly out of date
+    /// costs nothing — `code` is the live source, this is only orientation.
+    repo_map: Arc<std::sync::OnceLock<Option<String>>>,
 }
 
 impl std::fmt::Debug for ConversationRuntime {
@@ -206,7 +244,28 @@ impl ConversationRuntime {
             config,
             hook: Arc::new(NoopHook),
             store_dir: None,
+            compaction_client: None,
+            tool_schema_tokens: Arc::new(std::sync::OnceLock::new()),
+            repo_map: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// Run the summarization call on its own provider and model instead of the
+    /// conversation's.
+    ///
+    /// Summarizing is a mechanical read of history, so it does not need the
+    /// model doing the work — and it is routinely the single largest request a
+    /// long chat makes. Pinning it also decouples compaction from the chat
+    /// model's context window, so a conversation that outgrew a small model can
+    /// still be compacted by a long-window one.
+    #[must_use]
+    pub fn with_compaction_client(
+        mut self,
+        client: Arc<dyn StreamingApiClient>,
+        model: impl Into<String>,
+    ) -> Self {
+        self.compaction_client = Some((client, model.into()));
+        self
     }
 
     /// Point the runtime at the session store's directory so oversized tool
@@ -283,6 +342,9 @@ impl ConversationRuntime {
         session.append_message(user_message);
 
         let mut iterations: u32 = 0;
+        // One free re-issue when the provider hands back a response with no
+        // content blocks at all. See the empty-reply branch below.
+        let mut retried_empty_reply = false;
         let mut total_usage = TokenUsage::default();
         let mut assistant_messages = Vec::<ConversationMessage>::new();
         let mut tool_results = Vec::<ConversationMessage>::new();
@@ -341,7 +403,7 @@ impl ConversationRuntime {
             // history (the UI shows it); only this API view shrinks — the
             // same contract `inject_ide_context`/`trim` follow. A no-marker
             // session round-trips unchanged.
-            let compacted = apply_compaction(session.messages());
+            let compacted = self.compacted_view(session);
 
             // Optionally wrap the latest user message with the
             // IDE context block. We always work on a freshly cloned
@@ -354,6 +416,22 @@ impl ConversationRuntime {
                     None => None,
                 };
 
+            // Orientation for the workspace: what exists and roughly where.
+            // Built from the same index the `code` tool reads, so the two can
+            // never describe different codebases.
+            //
+            // Failure here is silent by design — the map is a convenience, and
+            // an unindexable workspace must not cost the user their turn. The
+            // agent still has `code`, `grep` and `workspace_tree`.
+            let owned_messages: Option<Vec<ConversationMessage>> =
+                match self.repo_map_block(session.workspace_root.as_deref()) {
+                    Some(block) => Some(inject_repo_map(
+                        owned_messages.as_deref().unwrap_or(&compacted),
+                        &block,
+                    )),
+                    None => owned_messages,
+                };
+
             // Budget-aware trim. Same API-view-only contract as
             // `inject_ide_context`: persisted session stays whole, only
             // the request body shrinks. Disabled (no-op) when
@@ -364,8 +442,27 @@ impl ConversationRuntime {
                 self.config.context_window,
                 self.config.default_max_output_tokens,
                 self.config.system_prompt.as_deref().unwrap_or(""),
+                self.config.reasoning_replay,
             );
-            let messages_for_api: &[ConversationMessage] = &trim_outcome.messages;
+
+            // Last gate before the wire: every `tool_use` must be answered and
+            // every `tool_result` earned, or the provider rejects the request
+            // with a 400 before generating a token — and keeps rejecting it,
+            // because the malformed history is on disk.
+            //
+            // Runs LAST so it also covers orphans introduced by the two views
+            // above (a compaction marker or trim cut landing between a call and
+            // its result), not just the ones already in the session. API-view
+            // only: the persisted JSONL keeps what actually happened.
+            let repair = repair_tool_pairing(trim_outcome.messages);
+            if repair.changed() {
+                eprintln!(
+                    "agent_runtime: repaired tool pairing for turn {turn_id} \
+                     ({} unanswered call(s) answered, {} orphaned result(s) dropped)",
+                    repair.synthesized, repair.dropped,
+                );
+            }
+            let messages_for_api: &[ConversationMessage] = &repair.messages;
 
             // When the trim dropped messages, append a small notice to
             // the system prompt so the model knows the early conversation
@@ -411,6 +508,20 @@ impl ConversationRuntime {
             let turn = match stream_result {
                 Ok(t) => t,
                 Err(api_err) => {
+                    // Every failed model call leaves a trace on disk. The UI
+                    // only ever shows `api_err.to_string()` — this line is
+                    // where a production incident's context survives. A
+                    // user-pressed Stop is not an error and is not logged.
+                    if !matches!(api_err, ApiError::Cancelled) {
+                        crate::logging::log_error(
+                            "agent_runtime.turn",
+                            &format!(
+                                "stream failed on turn {turn_id} (thread {}, model {model}, \
+                                 iteration {iterations}): {api_err}",
+                                session.thread_id,
+                            ),
+                        );
+                    }
                     if api_err.is_recoverable() {
                         let envelope = AgentEventEnvelope {
                             turn_id: turn_id.clone(),
@@ -435,28 +546,32 @@ impl ConversationRuntime {
             // so the ring reflects the true, compacted context size.
             let mut effective_usage = turn.usage;
             if effective_usage.input_tokens == 0 && effective_usage.output_tokens == 0 {
-                let tools_tokens = tool_schemas
-                    .iter()
-                    .map(|t| {
-                        estimate_text_tokens(&t.name)
-                            .saturating_add(estimate_text_tokens(&t.description))
-                            .saturating_add(estimate_text_tokens(&t.input_schema.to_string()))
-                    })
-                    .fold(0u32, u32::saturating_add);
+                let tools_tokens = estimate_tool_schema_tokens(&tool_schemas);
                 let input = messages_for_api
                     .iter()
-                    .map(estimate_message_tokens)
+                    .map(|m| estimate_message_tokens(m, self.config.reasoning_replay))
                     .fold(
                         estimate_text_tokens(system_prompt.unwrap_or("")),
                         u32::saturating_add,
                     )
                     .saturating_add(tools_tokens);
-                let output = estimate_message_tokens(&turn.assistant_message);
+                // The assistant message just produced IS output — its
+                // reasoning was generated and billed regardless of whether a
+                // later request will replay it, so it counts as text here.
+                let output = estimate_message_tokens(
+                    &turn.assistant_message,
+                    ReasoningReplay::Text,
+                );
                 effective_usage = TokenUsage {
                     input_tokens: input,
                     output_tokens: output,
                     cache_creation_input_tokens: None,
                     cache_read_input_tokens: None,
+                    // Marked at the source. This number drives a COST figure,
+                    // and an estimate presented as measured is worse than no
+                    // figure at all.
+                    estimated: Some(true),
+                    cost_usd: None,
                 };
                 let envelope = AgentEventEnvelope {
                     turn_id: turn_id.clone(),
@@ -467,11 +582,52 @@ impl ConversationRuntime {
                 let _ = event_sink.send(envelope).await;
             }
 
-            total_usage = sum_usage(total_usage, effective_usage);
+            let effective_usage_output = effective_usage.output_tokens;
+            total_usage = sum_usage(total_usage, effective_usage.clone());
 
-            // Append the assistant message to the session and bookkeeping.
-            session.append_message(turn.assistant_message.clone());
-            assistant_messages.push(turn.assistant_message.clone());
+            // Stamp what this request actually cost, and which model ran it,
+            // onto the message being persisted.
+            //
+            // Both matter for money. The adapter attaches whatever the provider
+            // reported, so a no-usage provider used to persist ZEROS while the
+            // live UI showed the estimate above — a reopened chat then totalled
+            // $0.00, which reads as "this was free" rather than "this was never
+            // measured". And a thread's model can change between turns, so a
+            // total that sums tokens and prices them once at whatever model is
+            // selected NOW is wrong for every call that ran under a different
+            // one; recording the model per call is what lets the total be summed
+            // as money, per model.
+            let mut assistant_message = turn.assistant_message.clone();
+            assistant_message.usage = Some(effective_usage);
+            if !model.is_empty() {
+                assistant_message.model = Some(model.clone());
+            }
+            // A message with no blocks must never enter history. It says
+            // nothing, and on the next request it serializes as an assistant
+            // turn with empty content — which Anthropic rejects outright. One
+            // dropped response would otherwise leave a landmine in the
+            // transcript that breaks every later turn in the thread.
+            //
+            // The usage is still counted above, because it was still billed.
+            let produced_nothing = assistant_message.blocks.is_empty();
+            if !produced_nothing {
+                session.append_message(assistant_message.clone());
+                assistant_messages.push(assistant_message);
+            }
+
+            // Nothing ran and nothing was written, so re-issuing the identical
+            // request is safe — and it is exactly what the user was doing by
+            // hand, several times a day, because a dropped response is
+            // transient. Once only: a second empty reply is a real condition
+            // to report, not a loop to spin in.
+            if produced_nothing && !retried_empty_reply {
+                retried_empty_reply = true;
+                eprintln!(
+                    "agent_runtime: provider returned no content blocks \
+                     (output_tokens={effective_usage_output}); retrying once"
+                );
+                continue;
+            }
 
             // ── Tool dispatch ──────────────────────────────────────
             let pending_tools = collect_tool_calls(&turn.assistant_message);
@@ -518,6 +674,7 @@ impl ConversationRuntime {
                         timestamp: now,
                         attached_selected_elements: None,
                         attached_prompt_chips: None,
+                        model: None,
                     });
                 }
 
@@ -527,40 +684,7 @@ impl ConversationRuntime {
                 // answer looked like a complete one — the user's only clue
                 // was prose that stopped mid-word. Say it out loud.
                 if is_length_stop(&stop_reason) {
-                    // Plain text: this renders in an inline notice marker, not
-                    // through the markdown pipeline, so backticks would show up
-                    // literally.
-                    const TRUNCATED_NOTICE: &str =
-                        "This reply is cut off — the model reached its output limit. Raise Max \
-                         output for this model in provider settings, or ask it to continue.";
-                    seq += 1;
-                    let _ = event_sink
-                        .send(AgentEventEnvelope {
-                            turn_id: turn_id.clone(),
-                            seq,
-                            event: AssistantEvent::Error {
-                                message: TRUNCATED_NOTICE.to_string(),
-                                recoverable: true,
-                            },
-                        })
-                        .await;
-                    // Persist it too. The event alone only reaches the window
-                    // that is open now; without a session record, reopening the
-                    // thread shows the truncated reply with no explanation for
-                    // why it stops mid-sentence. Appended AFTER the assistant
-                    // message so it reloads directly beneath it.
-                    let now = chrono::Utc::now().timestamp_millis();
-                    session.append_message(ConversationMessage {
-                        role: MessageRole::System,
-                        blocks: vec![ContentBlock::Notice {
-                            message: TRUNCATED_NOTICE.to_string(),
-                            created_at: now,
-                        }],
-                        usage: None,
-                        timestamp: now,
-                        attached_selected_elements: None,
-                        attached_prompt_chips: None,
-                    });
+                    emit_truncation_notice(session, turn_id.as_str(), &mut seq, &event_sink).await;
                 }
 
                 let envelope = AgentEventEnvelope {
@@ -574,13 +698,68 @@ impl ConversationRuntime {
                 break;
             }
 
+            // ── Truncated tool batch ───────────────────────────────
+            //
+            // A `length` stop here means the output cap cut the assistant
+            // message off *while it was emitting tool calls*. Two things are
+            // wrong with running them anyway. The call the cut landed inside
+            // may have arguments that parse but are silently incomplete (a
+            // `file_write` missing the tail of its content is the nightmare
+            // case), and every call the model meant to make after the cut is
+            // simply absent — so the batch we hold is not the batch it asked
+            // for. Fail all of them with an explanation the model can act on,
+            // and stop the turn: the cap will truncate the retry exactly the
+            // same way, so looping would only burn tokens. The user gets the
+            // notice telling them to raise Max output.
+            if is_length_stop(&turn.stop_reason) {
+                stop_reason = turn.stop_reason.clone();
+                let failed = self
+                    .fail_pending_tool_calls(
+                        &pending_tools,
+                        TRUNCATED_CALL,
+                        &turn_id,
+                        &mut seq,
+                        &event_sink,
+                    )
+                    .await;
+                session.append_message(failed.clone());
+                tool_results.push(failed);
+                emit_truncation_notice(session, turn_id.as_str(), &mut seq, &event_sink).await;
+                let _ = event_sink
+                    .send(AgentEventEnvelope {
+                        turn_id: turn_id.clone(),
+                        seq,
+                        event: AssistantEvent::MessageStop {
+                            stop_reason: stop_reason.clone(),
+                        },
+                    })
+                    .await;
+                break;
+            }
+
             // Cancel check between API call and tool execution — a
             // cancel arriving here saves us up to N tool dispatches.
+            //
+            // The assistant message carrying these `tool_use` blocks is
+            // already in the session, and the turn epilogue persists on the
+            // error path too. Returning without answering them would leave the
+            // thread permanently malformed: every later prompt rebuilds a
+            // request the provider rejects with a 400. Answer them first.
             if cancel_token.is_cancelled() {
+                let cancelled = self
+                    .fail_pending_tool_calls(
+                        &pending_tools,
+                        STOPPED_BEFORE_RUN,
+                        &turn_id,
+                        &mut seq,
+                        &event_sink,
+                    )
+                    .await;
+                session.append_message(cancelled);
                 return Err(RuntimeError::Cancelled);
             }
 
-            let mut tool_msg = self
+            let batch = self
                 .execute_tool_calls(
                     pending_tools,
                     session,
@@ -590,6 +769,18 @@ impl ConversationRuntime {
                     &mut seq,
                 )
                 .await?;
+
+            // A cancel *inside* the batch keeps whatever finished: those
+            // results are real, and the calls that never ran were answered
+            // with `STOPPED_MID_RUN`. Persist the message before unwinding so
+            // the pairing invariant holds.
+            if batch.cancelled {
+                session.append_message(batch.message.clone());
+                tool_results.push(batch.message);
+                return Err(RuntimeError::Cancelled);
+            }
+
+            let mut tool_msg = batch.message;
 
             // ── Mid-turn user message injection ─────────────────────
             //
@@ -614,13 +805,36 @@ impl ConversationRuntime {
             // on the next API call, the human sees it as a normal
             // message in the timeline.
             if let Some(queued) = session.take_queued_message() {
+                // A composer mid-turn message gets the framing preamble so
+                // the model knows it arrived while the tools above were
+                // running — "don't run pnpm" landing after the lint output
+                // is otherwise a contradiction the model has to guess at.
+                let injected_text = if queued.mid_turn {
+                    format!(
+                        "{}\n{}",
+                        crate::agent_runtime::session::MID_TURN_PREAMBLE,
+                        queued.text
+                    )
+                } else {
+                    queued.text.clone()
+                };
                 tool_msg.blocks.push(ContentBlock::Text {
-                    text: queued.text.clone(),
+                    text: injected_text,
                 });
+                // Composer pill metadata rides on the tool message itself, so
+                // a reload can re-render the injected row's chips — the same
+                // persistence channel a normal user message uses.
+                tool_msg.attached_prompt_chips = queued.chips.clone();
+                // The event carries the DISPLAY text: what the user typed,
+                // not the model copy with the resolved directive block.
+                let display = queued.display_text.unwrap_or(queued.text);
                 let envelope = AgentEventEnvelope {
                     turn_id: turn_id.clone(),
                     seq,
-                    event: AssistantEvent::QueuedMessageInjected { text: queued.text },
+                    event: AssistantEvent::QueuedMessageInjected {
+                        text: display,
+                        chips: queued.chips,
+                    },
                 };
                 seq = seq.saturating_add(1);
                 let _ = event_sink.send(envelope).await;
@@ -640,6 +854,101 @@ impl ConversationRuntime {
             assistant_messages,
             tool_results,
         })
+    }
+
+    /// The part of every request that is not the transcript: the composed
+    /// system prompt and the tool catalogue.
+    ///
+    /// Both ride on EVERY call and neither lives in the session, so a
+    /// projection that counts only messages under-reports the request it is
+    /// deciding about — on Aurora's toolset the schemas alone run to tens of
+    /// thousands of tokens.
+    /// Where the untruncated history for this session lives, when the model
+    /// could actually open it.
+    ///
+    /// Compaction is lossy but not destructive — Aurora only ever shrinks the
+    /// API view; the JSONL keeps everything. Telling the model where that file
+    /// is turns "the summary dropped the detail I need" from a dead end into a
+    /// `file_read`. Gated on `allow_outside_workspace` because the session
+    /// store sits outside the project: without it the read is refused, and
+    /// pointing the model at a path it cannot open is worse than staying quiet.
+    fn transcript_hint(&self, session: &Session) -> Option<String> {
+        if !self.config.allow_outside_workspace {
+            return None;
+        }
+        let dir = self.store_dir.as_deref()?;
+        Some(
+            dir.join(format!("{}.jsonl", session.thread_id))
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
+
+    /// The post-compaction message view this session would send right now.
+    fn compacted_view(&self, session: &Session) -> Vec<ConversationMessage> {
+        let hint = self.transcript_hint(session);
+        apply_compaction(session.messages(), hint.as_deref())
+    }
+
+    /// Memoized: the catalogue is fixed for the runtime's lifetime, and this
+    /// runs inside the tool loop. Re-serializing ~25 schemas to JSON and
+    /// tokenizing tens of thousands of characters on every iteration is pure
+    /// waste — the answer cannot change between them.
+    fn fixed_request_overhead_tokens(&self) -> u32 {
+        let schema_tokens = *self
+            .tool_schema_tokens
+            .get_or_init(|| estimate_tool_schema_tokens(&self.tools.schemas()));
+        estimate_text_tokens(self.config.system_prompt.as_deref().unwrap_or(""))
+            .saturating_add(schema_tokens)
+    }
+
+    /// Size of the request this session would produce right now — **the** one
+    /// definition of "how full is the context", shared by the compaction
+    /// trigger, `/compact`, and the number the UI shows.
+    ///
+    /// Anchored on measurement, not re-derived from disk. Aurora used to
+    /// estimate the whole transcript from scratch every time, which meant every
+    /// provider quirk it did not model — replayed reasoning, tool schemas,
+    /// tokenizer differences, cache accounting — compounded into the answer.
+    /// That is how a 180k context came to be reported as 431k.
+    ///
+    /// Instead: find the most recent request the PROVIDER measured, take its
+    /// number, and estimate only the messages appended since. The measured
+    /// anchor already contains the system prompt, the tool schemas and every
+    /// unknowable, so error can never exceed the last few messages — it cannot
+    /// accumulate across a long conversation.
+    ///
+    /// The from-scratch path survives as the fallback for the case it is
+    /// actually right for: no request has been measured yet (a fresh session,
+    /// a provider that reports no usage, or the first turn after a compaction
+    /// dropped the anchor out of the view). Only there is the fixed overhead
+    /// added by hand, because only there is it missing.
+    fn projected_request_tokens(&self, session: &Session) -> u32 {
+        let view = self.compacted_view(session);
+        let replay = self.config.reasoning_replay;
+
+        for (idx, message) in view.iter().enumerate().rev() {
+            let Some(usage) = message.usage.as_ref() else {
+                continue;
+            };
+            // Our own synthetic usage is an estimate wearing a measurement's
+            // clothes — anchoring on it would launder a guess into "measured".
+            if usage.estimated == Some(true) {
+                continue;
+            }
+            let anchor = measured_context_tokens(usage);
+            if anchor == 0 {
+                continue;
+            }
+            return view[idx + 1..]
+                .iter()
+                .map(|m| estimate_message_tokens(m, replay))
+                .fold(anchor, u32::saturating_add);
+        }
+
+        view.iter()
+            .map(|m| estimate_message_tokens(m, replay))
+            .fold(self.fixed_request_overhead_tokens(), u32::saturating_add)
     }
 
     /// Summarize older history into a persistent compaction marker when the
@@ -665,27 +974,63 @@ impl ConversationRuntime {
             return;
         }
 
-        let system_prompt = self.config.system_prompt.as_deref().unwrap_or("");
-        let system_tokens = estimate_text_tokens(system_prompt);
-
         // Projected size of the request we're about to build (after any prior
         // compaction is applied). Compare against threshold% of the window.
-        let projected = apply_compaction(session.messages())
-            .iter()
-            .map(estimate_message_tokens)
-            .fold(system_tokens, u32::saturating_add);
+        let projected = self.projected_request_tokens(session);
         let limit = (window as f32 * threshold) as u32;
         if projected < limit {
             return;
         }
 
-        let _ = self
-            .compact_now(session, turn_id, seq, event_sink, cancel_token)
-            .await;
+        // Circuit breaker. A failed compaction does not fix the overrun that
+        // called it, so without this the next turn crosses the same threshold
+        // and pays for the same doomed request again, forever — the single
+        // most expensive request in the chat, on repeat, behind a spinner.
+        let now = Utc::now().timestamp_millis();
+        if session.compaction_failures >= MAX_CONSECUTIVE_COMPACTION_FAILURES {
+            match session.compaction_retry_after {
+                Some(retry_at) if now < retry_at => return,
+                // Cooldown served: clear the strikes and allow one more try.
+                _ => {
+                    session.compaction_failures = 0;
+                    session.compaction_retry_after = None;
+                }
+            }
+        }
+
+        match self
+            .compact_inner(session, turn_id, seq, event_sink, cancel_token)
+            .await
+        {
+            CompactionOutcome::Compacted { .. } => {
+                session.compaction_failures = 0;
+                session.compaction_retry_after = None;
+            }
+            CompactionOutcome::SummaryFailed => {
+                session.compaction_failures = session.compaction_failures.saturating_add(1);
+                if session.compaction_failures >= MAX_CONSECUTIVE_COMPACTION_FAILURES {
+                    session.compaction_retry_after = Some(now + COMPACTION_FAILURE_COOLDOWN_MS);
+                    eprintln!(
+                        "agent_runtime: compaction failed {} times for thread {}; \
+                         pausing auto-compaction for {} minutes (trim still bounds the request)",
+                        session.compaction_failures,
+                        session.thread_id,
+                        COMPACTION_FAILURE_COOLDOWN_MS / 60_000,
+                    );
+                }
+            }
+            // Nothing was attempted and nothing was spent — a transcript too
+            // short to cut is not a failure, and counting it as one would use
+            // up the budget meant for real ones.
+            CompactionOutcome::NothingToDo => {}
+        }
     }
 
     /// Force a compaction pass immediately, bypassing the configured threshold.
     /// Returns the before/after token estimate when a marker was persisted.
+    ///
+    /// A manual `/compact` deliberately ignores the auto-compaction circuit
+    /// breaker: the user asked for this one, and is watching it.
     pub async fn compact_now(
         &self,
         session: &mut Session,
@@ -694,23 +1039,42 @@ impl ConversationRuntime {
         event_sink: &mpsc::Sender<AgentEventEnvelope>,
         cancel_token: &CancellationToken,
     ) -> Option<(u32, u32)> {
+        match self
+            .compact_inner(session, turn_id, seq, event_sink, cancel_token)
+            .await
+        {
+            CompactionOutcome::Compacted { before, after } => Some((before, after)),
+            _ => None,
+        }
+    }
+
+    /// The compaction pass itself. Reports WHY it produced no marker, which
+    /// [`Self::maybe_compact`]'s breaker needs: "the transcript was too short"
+    /// cost nothing and must not count against the retry budget, while "the
+    /// summarizer failed" cost a full-history request and must.
+    async fn compact_inner(
+        &self,
+        session: &mut Session,
+        turn_id: &str,
+        seq: &mut u64,
+        event_sink: &mpsc::Sender<AgentEventEnvelope>,
+        cancel_token: &CancellationToken,
+    ) -> CompactionOutcome {
         let Some(window) = self.config.context_window else {
-            return None;
+            return CompactionOutcome::NothingToDo;
         };
         if window == 0 {
-            return None;
+            return CompactionOutcome::NothingToDo;
         }
 
-        let system_prompt = self.config.system_prompt.as_deref().unwrap_or("");
-        let system_tokens = estimate_text_tokens(system_prompt);
-        let projected = apply_compaction(session.messages())
-            .iter()
-            .map(estimate_message_tokens)
-            .fold(system_tokens, u32::saturating_add);
+        let projected = self.projected_request_tokens(session);
 
         // A user-boundary cut preserving ~COMPACT_TAIL_PCT of the window
         // verbatim. `None` => transcript too short to compact safely.
-        let cut = compaction_cut(session.messages(), window)?;
+        let Some(cut) = compaction_cut(session.messages(), window, self.config.reasoning_replay)
+        else {
+            return CompactionOutcome::NothingToDo;
+        };
 
         // Signal the UI: ring → spinner, live shimmer card.
         emit_native_tool_event(event_sink, turn_id, seq, AssistantEvent::CompactionStarted).await;
@@ -718,12 +1082,16 @@ impl ConversationRuntime {
         // Summarize the head (everything older than the cut). Any prior marker
         // in the head is folded to its summary first, so we never re-feed a
         // raw marker to the summarizer.
-        let head_view = apply_compaction(&session.messages()[..cut]);
+        // No resume note on the head: this slice is being READ by the
+        // summarizer, not resumed from. "Pick up where you left off"
+        // would be an instruction aimed at the wrong request.
+        let head_view = apply_compaction(&session.messages()[..cut], None);
         let model = session.model.clone();
-        let summary = self.summarize_head(&head_view, &model, cancel_token).await;
+        let summarized = self.summarize_head(&head_view, &model, cancel_token).await;
+        let summary_usage = summarized.as_ref().map(|(_, usage)| usage.clone());
 
-        let summary = match summary {
-            Some(s) if !s.trim().is_empty() => s,
+        let summary = match summarized {
+            Some((s, _)) if !s.trim().is_empty() => s,
             _ => {
                 // Failsafe: summary unavailable — leave history intact and
                 // clear the indicator with a no-drop completion. Trim still
@@ -738,16 +1106,20 @@ impl ConversationRuntime {
                     },
                 )
                 .await;
-                return None;
+                return CompactionOutcome::SummaryFailed;
             }
         };
 
-        // After-size = system + summary + the verbatim tail kept from `cut`.
+        // After-size = the same fixed overhead the projection used (system
+        // prompt + tool schemas) + summary + the verbatim tail kept from
+        // `cut`. Both numbers must be built the same way or the card reports
+        // a drop the request never made.
         let tail_tokens = session.messages()[cut..]
             .iter()
-            .map(estimate_message_tokens)
+            .map(|m| estimate_message_tokens(m, self.config.reasoning_replay))
             .fold(0u32, u32::saturating_add);
-        let after = system_tokens
+        let after = self
+            .fixed_request_overhead_tokens()
             .saturating_add(estimate_text_tokens(&summary))
             .saturating_add(tail_tokens);
 
@@ -760,10 +1132,24 @@ impl ConversationRuntime {
                 after_tokens: after,
                 created_at: now,
             }],
-            usage: None,
+            // What the summarization request itself cost, attributed to the
+            // model that ran it. Carried on the marker because that is the
+            // only message this request produces — without it the charge
+            // exists on the bill and nowhere in Aurora.
+            usage: summary_usage,
             timestamp: now,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            // The model that ran the SUMMARY, which is not the chat model once
+            // a compaction model is pinned. The cost card groups by this field
+            // to price a mixed-model chat at each model's own rates — naming
+            // the chat model here would bill a cheap summarizer's tokens at the
+            // expensive model's rate.
+            model: self
+                .compaction_client
+                .as_ref()
+                .map(|(_, m)| m.clone())
+                .or_else(|| model.clone()),
         };
         // Insert at the boundary: `[head…][marker][tail…]`. The persisted
         // JSONL keeps the head (UI history); only the model API view drops it.
@@ -780,59 +1166,174 @@ impl ConversationRuntime {
         )
         .await;
 
-        Some((projected, after))
+        CompactionOutcome::Compacted {
+            before: projected,
+            after,
+        }
     }
 
-    /// One-shot summarization call for [`Self::maybe_compact`]. Drains the
-    /// event stream to void (the summary is never rendered) and returns the
-    /// assistant text, or `None` on empty model / error / cancel. Uses the
-    /// session's model, the dedicated compaction system prompt, and the
-    /// configured output budget.
+    /// Summarize the head, sharing the conversation's prompt cache when that
+    /// is possible.
+    ///
+    /// **This is where most of compaction's cost is decided**, and the deciding
+    /// factor is not which model runs it — it is whether the request reuses a
+    /// prefix the provider has already cached.
+    ///
+    /// The cache key is the whole prefix: model, system prompt, tools, message
+    /// prefix, and thinking config. The head IS a prefix of the conversation,
+    /// so a request that keeps the other four identical reads ~200k tokens at
+    /// the cache rate — typically a tenth of fresh input — and the compaction
+    /// instruction rides on the end, past the cached region, where it costs
+    /// almost nothing. Changing the system prompt or dropping the tools (which
+    /// is what this used to do) diverges the prefix at token zero and throws
+    /// that away: the same model, on the same history, billed in full.
+    ///
+    /// The corollary matters when picking a compaction model: a pinned model
+    /// has no cache to share, so it pays fresh input for the entire head. It is
+    /// cheaper than the chat model only if its fresh rate beats the chat
+    /// model's CACHE rate — roughly a tenth of the chat model's list price, not
+    /// merely less than it.
+    ///
+    /// Returns the note AND what producing it cost — this request carries the
+    /// whole head, so it is routinely the largest single charge in a long chat,
+    /// and it produces no assistant message to hang usage on.
     async fn summarize_head(
         &self,
         head_view: &[ConversationMessage],
         model: &Option<String>,
         cancel_token: &CancellationToken,
-    ) -> Option<String> {
-        let model = model.clone().unwrap_or_default();
+    ) -> Option<(String, TokenUsage)> {
+        // Only the conversation's own client can hit the conversation's cache.
+        if self.compaction_client.is_none() {
+            let shared = self
+                .summarize_with(head_view, model, cancel_token, true)
+                .await;
+            // Advertising the tools is what preserves the cache key, and the
+            // price of that is a model that occasionally answers with a tool
+            // call instead of the note. Rather than let a formatting accident
+            // burn a compaction attempt, fall back to the standalone shape —
+            // which cannot be misread, only re-billed.
+            if shared.as_ref().is_some_and(|(s, _)| !s.trim().is_empty()) {
+                return shared;
+            }
+            eprintln!(
+                "agent_runtime: cache-sharing summary came back empty; \
+                 retrying without the tool catalogue"
+            );
+        }
+        self.summarize_with(head_view, model, cancel_token, false)
+            .await
+    }
+
+    /// One summarization attempt.
+    ///
+    /// `share_cache` picks between the two request shapes:
+    ///
+    /// - **true** — mirror the conversation's own request exactly (its system
+    ///   prompt, its tools, its thinking config, reasoning left in place) so
+    ///   the prefix matches and the head is billed at the cache rate. The
+    ///   entire instruction moves into the trailing user message, past the
+    ///   cached region.
+    /// - **false** — the cache cannot hit, so send the smallest, most portable
+    ///   request instead: dedicated system prompt, no tools, thinking off, and
+    ///   reasoning stripped (a signature from one provider is meaningless to
+    ///   another, and this request runs with thinking disabled).
+    async fn summarize_with(
+        &self,
+        head_view: &[ConversationMessage],
+        model: &Option<String>,
+        cancel_token: &CancellationToken,
+        share_cache: bool,
+    ) -> Option<(String, TokenUsage)> {
+        // A pinned compaction model brings its own client; otherwise the
+        // summary rides the conversation's provider and model.
+        let (client, model) = match &self.compaction_client {
+            Some((client, model)) => (client.clone(), model.clone()),
+            None => (self.api_client.clone(), model.clone().unwrap_or_default()),
+        };
         if model.is_empty() {
             return None;
         }
-        let mut messages = head_view.to_vec();
+
+        // Reasoning is kept when sharing the cache — removing it would alter
+        // the prefix and cost far more than it saves — and stripped otherwise,
+        // where it is unusable weight.
+        let head = if share_cache {
+            head_view.to_vec()
+        } else {
+            strip_reasoning(head_view.to_vec())
+        };
+
+        // The head is an arbitrary slice of the conversation, so the cut can
+        // land between a tool call and its result — and the head may already
+        // contain an unanswered call from an earlier stopped turn. Either way
+        // the provider rejects this request, the summary comes back `None`,
+        // and compaction silently never happens: the context grows until the
+        // real turn starts failing too. Repair the same way the turn request
+        // does. Runs last so it sees the shape actually being sent.
+        let mut messages = repair_tool_pairing(head).messages;
+
+        // The trailing instruction. When sharing the cache it carries the
+        // whole prompt (the system slot belongs to the conversation and must
+        // not change) plus the no-tools warning that the advertised catalogue
+        // makes necessary.
+        let instruction = if share_cache {
+            format!("{COMPACTION_NO_TOOLS_PREAMBLE}\n\n{COMPACTION_SYSTEM_PROMPT}\n\n{COMPACTION_INSTRUCTION}")
+        } else {
+            COMPACTION_INSTRUCTION.to_string()
+        };
         messages.push(ConversationMessage {
             role: MessageRole::User,
-            blocks: vec![ContentBlock::Text {
-                text: COMPACTION_INSTRUCTION.to_string(),
-            }],
+            blocks: vec![ContentBlock::Text { text: instruction }],
             usage: None,
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            model: None,
         });
 
         let (tx, mut rx) = mpsc::channel::<AssistantEvent>(64);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
 
+        let schemas = if share_cache {
+            self.tools.schemas()
+        } else {
+            Vec::new()
+        };
         let request = ApiRequest {
             model: &model,
-            system_prompt: Some(COMPACTION_SYSTEM_PROMPT),
+            system_prompt: if share_cache {
+                self.config.system_prompt.as_deref()
+            } else {
+                Some(COMPACTION_SYSTEM_PROMPT)
+            },
             messages: &messages,
-            tools: &[],
+            tools: &schemas,
+            // Temperature is not part of the cache key, so a low one is free
+            // either way.
             temperature: Some(0.3),
             max_output_tokens: self.config.compaction_summary_budget,
-            thinking_enabled: false,
-            // Summarization is a mechanical call — never spend the user's
-            // reasoning budget on it.
-            thinking_budget_tokens: None,
+            // Thinking config IS part of the cache key. When sharing, it has to
+            // match the conversation's or the prefix is invalidated and the
+            // whole exercise is pointless. Standalone, it stays off —
+            // summarizing must never spend the user's reasoning budget.
+            thinking_enabled: share_cache && self.config.thinking_enabled,
+            thinking_budget_tokens: if share_cache {
+                self.config.thinking_budget_tokens
+            } else {
+                None
+            },
         };
-        let result = self
-            .api_client
-            .stream(request, tx, cancel_token.clone())
-            .await;
+        let result = client.stream(request, tx, cancel_token.clone()).await;
         let _ = drain.await;
 
         match result {
-            Ok(turn) => Some(collect_assistant_text(&turn.assistant_message)),
+            // Strip the `<analysis>` scratchpad here, at the boundary, so the
+            // drafting pass costs output tokens once and never enters context.
+            Ok(turn) => Some((
+                format_compact_summary(&collect_assistant_text(&turn.assistant_message)),
+                turn.usage,
+            )),
             Err(_) => None,
         }
     }
@@ -895,8 +1396,13 @@ impl ConversationRuntime {
         cancel_token: &CancellationToken,
         event_sink: &mpsc::Sender<AgentEventEnvelope>,
         seq: &mut u64,
-    ) -> Result<ConversationMessage, RuntimeError> {
+    ) -> Result<ToolBatchOutcome, RuntimeError> {
         let mut result_blocks = Vec::with_capacity(calls.len());
+        // Set when a tool reports `ToolError::Cancelled`. The batch is not
+        // abandoned at that point: results that already landed are real work
+        // worth keeping, and — decisively — every call in the assistant
+        // message still needs an answer or the thread is malformed for good.
+        let mut cancelled = false;
         // Repeat-failure detector, scoped to this batch's turn. See
         // `FailureLoopGuard` — a model that re-issues an identical failing
         // call needs to be told so, or it will keep re-issuing it.
@@ -1017,9 +1523,31 @@ impl ConversationRuntime {
                 };
                 self.hook.post_tool_use(&name, hook_result).await;
 
-                // A cancellation during a tool propagates immediately.
+                // A cancelled tool ends the turn, but it does not get to skip
+                // its result block — see `cancelled` above.
                 if matches!(&outcome, Err(ToolError::Cancelled)) {
-                    return Err(RuntimeError::Cancelled);
+                    cancelled = true;
+                    if !uses_frontend_lifecycle {
+                        emit_native_tool_event(
+                            event_sink,
+                            turn_id,
+                            seq,
+                            AssistantEvent::ToolExecutionResult {
+                                id: id.clone(),
+                                name,
+                                input,
+                                content: STOPPED_MID_RUN.to_string(),
+                                is_error: true,
+                            },
+                        )
+                        .await;
+                    }
+                    result_blocks.push(ContentBlock::ToolResult {
+                        tool_use_id: id,
+                        content: STOPPED_MID_RUN.to_string(),
+                        is_error: Some(true),
+                    });
+                    continue;
                 }
 
                 let (raw_content, is_error) = match outcome {
@@ -1099,17 +1627,101 @@ impl ConversationRuntime {
                     is_error,
                 });
             }
+
+            if cancelled {
+                break;
+            }
         }
 
-        Ok(ConversationMessage {
-            role: MessageRole::Tool,
-            blocks: result_blocks,
-            usage: None,
-            timestamp: Utc::now().timestamp_millis(),
-            attached_selected_elements: None,
-            attached_prompt_chips: None,
+        // Calls from batches that were never dispatched. `cursor` already
+        // points past the last batch that ran, so this is exactly the tail the
+        // cancellation cut off. They still need answers.
+        if cancelled && cursor < calls.len() {
+            let skipped = &calls[cursor..];
+            let pending = self
+                .fail_pending_tool_calls(skipped, STOPPED_BEFORE_RUN, turn_id, seq, event_sink)
+                .await;
+            result_blocks.extend(pending.blocks);
+        }
+
+        Ok(ToolBatchOutcome {
+            message: ConversationMessage {
+                role: MessageRole::Tool,
+                blocks: result_blocks,
+                usage: None,
+                timestamp: Utc::now().timestamp_millis(),
+                attached_selected_elements: None,
+                attached_prompt_chips: None,
+                model: None,
+            },
+            cancelled,
         })
     }
+
+    /// Answer a batch of tool calls that were never executed.
+    ///
+    /// Emits the start/result event pair for each (so its card resolves with
+    /// the reason instead of spinning forever) and returns the `Tool` message
+    /// that keeps the conversation well-formed. Tools that own their own
+    /// frontend lifecycle are left to it, matching `execute_tool_calls`.
+    async fn fail_pending_tool_calls(
+        &self,
+        calls: &[PendingToolCall],
+        reason: &str,
+        turn_id: &str,
+        seq: &mut u64,
+        event_sink: &mpsc::Sender<AgentEventEnvelope>,
+    ) -> ConversationMessage {
+        for call in calls {
+            let uses_frontend_lifecycle = self
+                .tools
+                .get(&call.name)
+                .is_some_and(|executor| executor.uses_frontend_lifecycle());
+            if uses_frontend_lifecycle {
+                continue;
+            }
+            // `tool_execution_start` is what guarantees the card exists — the
+            // frontend treats its `onToolCall` as idempotent precisely so a
+            // native tool can announce itself late. Skipping straight to the
+            // result would leave nothing to resolve.
+            emit_native_tool_event(
+                event_sink,
+                turn_id,
+                seq,
+                AssistantEvent::ToolExecutionStart {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    input: call.input.clone(),
+                },
+            )
+            .await;
+            emit_native_tool_event(
+                event_sink,
+                turn_id,
+                seq,
+                AssistantEvent::ToolExecutionResult {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    input: call.input.clone(),
+                    content: reason.to_string(),
+                    is_error: true,
+                },
+            )
+            .await;
+        }
+
+        let ids: Vec<String> = calls.iter().map(|call| call.id.clone()).collect();
+        synthetic_tool_results(&ids, reason)
+    }
+}
+
+/// One tool batch's worth of results, plus whether a cancellation cut it short.
+///
+/// The message is always complete — every call in it has a result block, real
+/// or synthetic — so the caller can persist it before unwinding.
+struct ToolBatchOutcome {
+    message: ConversationMessage,
+    cancelled: bool,
 }
 
 /// One pending tool call extracted from an assistant message.
@@ -1126,6 +1738,56 @@ struct PendingToolCall {
 /// OpenAI family says `length`. Both mean the reply is incomplete.
 fn is_length_stop(stop_reason: &str) -> bool {
     matches!(stop_reason, "length" | "max_tokens")
+}
+
+/// Tell the user (and the reloaded thread) that the reply was cut off by the
+/// model's output cap.
+///
+/// Fires on BOTH length-stop paths — the reply that ended mid-sentence, and the
+/// one that was cut while emitting tool calls. The second used to say nothing at
+/// all: the tool batch was executed as if the model had finished asking for it,
+/// so the only symptom was an agent that quietly did part of a job.
+async fn emit_truncation_notice(
+    session: &mut Session,
+    turn_id: &str,
+    seq: &mut u64,
+    event_sink: &mpsc::Sender<AgentEventEnvelope>,
+) {
+    // Plain text: this renders in an inline notice marker, not through the
+    // markdown pipeline, so backticks would show up literally.
+    const TRUNCATED_NOTICE: &str =
+        "This reply is cut off — the model reached its output limit. Raise Max \
+         output for this model in provider settings, or ask it to continue.";
+
+    *seq += 1;
+    let _ = event_sink
+        .send(AgentEventEnvelope {
+            turn_id: turn_id.to_string(),
+            seq: *seq,
+            event: AssistantEvent::Error {
+                message: TRUNCATED_NOTICE.to_string(),
+                recoverable: true,
+            },
+        })
+        .await;
+
+    // Persist it too. The event alone only reaches the window that is open now;
+    // without a session record, reopening the thread shows the truncated reply
+    // with no explanation for why it stops mid-sentence. Appended AFTER the
+    // assistant message so it reloads directly beneath it.
+    let now = chrono::Utc::now().timestamp_millis();
+    session.append_message(ConversationMessage {
+        role: MessageRole::System,
+        blocks: vec![ContentBlock::Notice {
+            message: TRUNCATED_NOTICE.to_string(),
+            created_at: now,
+        }],
+        usage: None,
+        timestamp: now,
+        attached_selected_elements: None,
+        attached_prompt_chips: None,
+        model: None,
+    });
 }
 
 /// Did this assistant message actually say anything to the user?
@@ -1364,6 +2026,54 @@ fn rich_persisted_tool(name: &str) -> bool {
     )
 }
 
+/// Strip the `oldContent`/`newContent` echo out of a modify-family result
+/// before it enters MODEL history. Both strings are content the model itself
+/// just sent (or read moments ago); echoing them back burned most of the 8 KiB
+/// cap per edit on pure duplication — the loudest silent context cost in the
+/// toolset. The counts and message that remain are the actual signal, and the
+/// model can always `file_read` to verify. The UI is unaffected: the live tool
+/// card gets its own untouched copy, and reload-time diffs come from the
+/// `.rich.jsonl` sidecar.
+///
+/// Returns `None` when the result carries no echo (failures, non-JSON), in
+/// which case the caller leaves the content as it was.
+fn strip_edit_content_echo(raw: &str) -> Option<String> {
+    let mut value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    let mut stripped_any = false;
+
+    let mut strip = |obj: &mut serde_json::Map<String, serde_json::Value>| {
+        for key in ["oldContent", "newContent"] {
+            if obj.remove(key).is_some() {
+                stripped_any = true;
+            }
+        }
+    };
+
+    if let serde_json::Value::Object(map) = &mut value {
+        strip(map);
+        if let Some(serde_json::Value::Array(files)) = map.get_mut("files") {
+            for entry in files.iter_mut() {
+                if let serde_json::Value::Object(file) = entry {
+                    strip(file);
+                }
+            }
+        }
+        if stripped_any {
+            // Name the elision and its recovery, so absence reads as policy
+            // rather than as a tool that forgot to report what it wrote.
+            map.insert(
+                "contentEcho".into(),
+                serde_json::Value::String(
+                    "elided from history — the edit applied as sent; file_read the path to verify"
+                        .into(),
+                ),
+            );
+        }
+    }
+
+    stripped_any.then(|| serde_json::to_string(&value).ok())?
+}
+
 /// Clamp a tool's stringified result to its per-tool cap and append a
 /// `[truncated N bytes]` marker so the model knows the tail was dropped.
 /// Operates on char boundaries (not byte boundaries) so a truncation point
@@ -1377,7 +2087,12 @@ fn truncate_tool_content(tool: &str, s: String) -> String {
     // every turn, and means a reloaded thread never shows a raw base64 blob. A
     // blind byte clamp here would instead cut through the base64 and drop the
     // closing tag → adapter can't split the image → model "sees" nothing.
-    if s.contains("<aurora_image ") {
+    //
+    // The check is a VALIDATED parse, not a substring test. Text that merely
+    // quotes the marker syntax (this project's own docs and source do) used to
+    // take this branch, so it skipped the cap below AND was handed to the
+    // provider adapter as an image — prose shipped as base64, HTTP 400.
+    if crate::api::aurora_image::has_marker(&s) {
         return leanify_aurora_images(&s);
     }
     // Reads that bounded themselves are handed to the model verbatim. They are
@@ -1388,6 +2103,14 @@ fn truncate_tool_content(tool: &str, s: String) -> String {
     if s.contains(crate::tools::file_workspace_search::EXACT_READ_MARKER) {
         return s;
     }
+    // Modify-family results drop their before/after echo from the model copy
+    // regardless of size — see `strip_edit_content_echo`. Done before the cap
+    // so the budget is never spent shrinking content the model already has.
+    let s = if rich_persisted_tool(tool) {
+        strip_edit_content_echo(&s).unwrap_or(s)
+    } else {
+        s
+    };
     let cap = result_cap_for(tool);
     if s.len() <= cap {
         return s;
@@ -1641,17 +2364,13 @@ fn truncate_tool_content_for_ui(tool_name: &str, s: String) -> String {
 /// Falls back gracefully: if there's no `<aurora_image>` block at all (e.g. an
 /// error string), the original text passes through unchanged.
 fn screenshot_ui_payload(s: &str) -> String {
-    let Some(open) = s.find("<aurora_image ") else {
+    let Some(marker) = crate::api::aurora_image::find_marker(s, 0) else {
         return s.to_string();
     };
-    let Some(header_end_rel) = s[open..].find('>') else {
-        return s.to_string();
-    };
-    let header = &s[open..open + header_end_rel];
 
-    let path = header_attr(header, "src").map(unescape_xml_attr);
-    let width = header_attr(header, "width").and_then(|v| v.parse::<u64>().ok());
-    let height = header_attr(header, "height").and_then(|v| v.parse::<u64>().ok());
+    let path = marker.src().map(|v| unescape_xml_attr(v.to_string()));
+    let width = marker.attr("width").and_then(|v| v.parse::<u64>().ok());
+    let height = marker.attr("height").and_then(|v| v.parse::<u64>().ok());
 
     // The caption after the block reads `Screenshot of <url> (WxH px)` — pull the
     // URL out of it for the card's summary line.
@@ -1682,43 +2401,23 @@ fn screenshot_ui_payload(s: &str) -> String {
 /// This is what makes the persisted history + JSONL tiny: `split_aurora_images`
 /// rehydrates the base64 from `src` at request-build time.
 fn leanify_aurora_images(s: &str) -> String {
+    use crate::api::aurora_image::{find_marker, CLOSE};
+
     let mut out = String::with_capacity(s.len());
     let mut cursor = 0usize;
-    while let Some(rel) = s[cursor..].find("<aurora_image ") {
-        let open = cursor + rel;
-        let Some(header_end_rel) = s[open..].find('>') else {
-            out.push_str(&s[cursor..]);
-            return out;
-        };
-        let header_end = open + header_end_rel + 1; // just past '>'
-        let Some(close_rel) = s[header_end..].find("</aurora_image>") else {
-            out.push_str(&s[cursor..]);
-            return out;
-        };
-        let close_start = header_end + close_rel;
-        let header = &s[open..header_end];
-        out.push_str(&s[cursor..header_end]); // text before + full header incl. '>'
-        if header.contains("src=\"") {
-            // Drop the base64 body — rehydratable from disk.
-        } else {
+    while let Some(marker) = find_marker(s, cursor) {
+        // Text before + the full header incl. '>'.
+        out.push_str(&s[cursor..marker.header_end]);
+        if marker.src().is_none() {
             // No disk copy → keep the body so the image survives.
-            out.push_str(&s[header_end..close_start]);
+            out.push_str(marker.body);
         }
-        out.push_str("</aurora_image>");
-        cursor = close_start + "</aurora_image>".len();
+        // else: drop the base64 body — rehydratable from disk.
+        out.push_str(CLOSE);
+        cursor = marker.end;
     }
     out.push_str(&s[cursor..]);
     out
-}
-
-/// Read a `name="value"` attribute out of an `<aurora_image …` header fragment.
-/// Values never contain `"` (paths are XML-escaped upstream), so a naïve scan to
-/// the next quote is sufficient.
-fn header_attr(header: &str, name: &str) -> Option<String> {
-    let needle = format!("{name}=\"");
-    let start = header.find(&needle)? + needle.len();
-    let end = header[start..].find('"')? + start;
-    Some(header[start..end].to_string())
 }
 
 /// Reverse the minimal XML-attribute escaping applied when the screenshot path
@@ -1768,11 +2467,198 @@ const COMPACT_TAIL_PCT: u32 = 30;
 /// System prompt for the summarization call. Drives an LLM summary (not a
 /// deterministic template) — fidelity over a generous budget is the whole
 /// point of compaction over plain trimming.
-const COMPACTION_SYSTEM_PROMPT: &str = "You are compacting a long coding-assistant conversation so it can continue without exceeding the model's context window. Produce a dense, faithful summary of everything below that a capable agent would need to seamlessly resume the work. You MUST preserve:\n\n- The user's overall goals and every explicit instruction or constraint still in force.\n- Decisions made and their rationale; rejected alternatives and why.\n- Files read, created, or edited — with their paths and the key contents/signatures that matter going forward.\n- Tool results that still affect the work (errors seen, command output, search findings); drop noise.\n- The current state: what is done, what is in progress, and what is left.\n- Any open questions, blockers, or pending todos.\n\nWrite in clear prose and lists. Be specific (exact names, paths, values) — do not generalize away detail the agent will need. Do not address the user; this is internal context, not a reply. Output ONLY the summary.";
+/// The summarization prompt.
+///
+/// Written in the SECOND PERSON on purpose. This is not a report about a
+/// conversation for some other reader — it is a note the model writes to
+/// itself, moments before everything it is looking at disappears. Everything
+/// it fails to write down is gone, and the user will carry on as if nothing
+/// happened. Framing it as "summarize this transcript" produced detached
+/// third-person recaps; framing it as "this is all you will have left"
+/// produces the specifics that actually let work resume.
+///
+/// The `<analysis>` block is a drafting scratchpad — a chronological pass
+/// before compression, which is where recency bias and dropped user
+/// corrections otherwise creep in. [`format_compact_summary`] strips it, so it
+/// costs output tokens but never context. It is also how this call gets
+/// chain-of-thought without extended thinking, which stays off (compaction
+/// must never spend the user's reasoning budget).
+///
+/// Section 6 — every user message — is the one that matters most and is the
+/// easiest to lose: the user's own words ARE the intent, and a paraphrase of
+/// "actually, do it the other way" is worth nothing.
+const COMPACTION_SYSTEM_PROMPT: &str = r#"You are writing the memory of this conversation.
+
+Everything above is about to be removed and replaced by exactly what you write now. Work resumes immediately afterward from your note alone, with a user who saw no interruption and expects every detail to still be known. Anything you leave out is gone for good.
+
+Write the note you would want to find.
+
+First, in <analysis> tags, work through the conversation in order. For each part, identify:
+- what the user asked for, in their words
+- what you did about it, and why
+- decisions you made, alternatives you rejected, and the reasoning
+- concrete details: file paths, function signatures, full code snippets, exact commands
+- errors you hit and how you resolved them
+- any point where the user corrected you or told you to do something differently — these matter more than anything else here
+
+Then, in <summary> tags, write the note itself under these headings:
+
+1. Primary request and intent — everything the user has asked for, in detail.
+2. Key technical context — the systems, frameworks, and constraints in play.
+3. Files and code — every file you read, created, or changed. Give the path, why it matters, and the code that will be needed again. Weight the most recent work heavily.
+4. Errors and fixes — what went wrong, what fixed it, and what the user said about it.
+5. Problem solving — what is resolved and what is still being worked out.
+6. Every user message — list all of the user's own messages (not tool results), in order. Their exact words are the requirements; do not compress them into themes.
+7. Standing instructions — preferences and constraints the user has stated that still apply.
+8. Pending tasks — what you were explicitly asked to do that is not done.
+9. Current work — precisely what you were doing immediately before this, with file names and code.
+10. Next step — the single next action, and only if it follows directly from the most recent request. Quote the relevant part of the conversation verbatim so the task cannot drift. If the work was finished, say so instead of inventing a next step.
+
+Be specific. Exact names, exact paths, exact values. A detail you generalize away is a detail you will have to rediscover.
+
+Respond with text only. Do not call tools. Do not address the user."#;
+
+/// Placed FIRST in the trailing message on the cache-sharing path.
+///
+/// Keeping the tool catalogue is what preserves the cache key, but a model
+/// handed tools will sometimes reach for one instead of answering — and this
+/// request gets a single turn, so a tool call means no note at all. Stated up
+/// front, and in terms of the consequence, because a warning buried under a
+/// thousand words of instructions is a warning the model has already scrolled
+/// past.
+const COMPACTION_NO_TOOLS_PREAMBLE: &str = "CRITICAL: answer with text only. Do NOT call any tool — not to read a file, not to check anything. You already have everything you need above, this is your only turn, and a tool call will waste it and lose the note entirely.";
 
 /// Trailing user instruction appended to the head when requesting the summary.
 const COMPACTION_INSTRUCTION: &str =
-    "Summarize the entire conversation above following your system instructions. Output ONLY the summary.";
+    "Write your handoff note for the conversation above, following your instructions: an <analysis> block, then a <summary> block. Nothing else.";
+
+/// Drop every reasoning block from a slice of history.
+///
+/// Applied to the head before it is handed to the summarizer, for three
+/// reasons that all point the same way:
+///
+/// 1. **It is not the record.** What happened is the text and the tool calls.
+///    Reasoning is how the model got there, and a note about the work does not
+///    need the deliberation behind it.
+/// 2. **It is the bulk of the payload.** Stored reasoning — the encrypted
+///    Responses-API items especially — ran to 22.7% of one real transcript.
+///    Compaction is already the single largest request a chat makes; sending
+///    it the reasoning too is paying a premium for noise.
+/// 3. **It does not travel.** A `signature` is issued by one provider and
+///    meaningless to another, and the summarization request runs with thinking
+///    OFF — yet the Anthropic converter emits `thinking` blocks regardless.
+///    Left in, a chat with reasoning history summarized on a different
+///    provider fails on every attempt.
+///
+/// Messages emptied by the strip are dropped: a reasoning-only assistant
+/// message leaves nothing behind, and providers reject empty content. Nothing
+/// carrying a tool call can be emptied this way, so pairing is untouched.
+fn strip_reasoning(messages: Vec<ConversationMessage>) -> Vec<ConversationMessage> {
+    messages
+        .into_iter()
+        .filter_map(|mut message| {
+            message
+                .blocks
+                .retain(|b| !matches!(b, ContentBlock::Thinking { .. }));
+            (!message.blocks.is_empty()).then_some(message)
+        })
+        .collect()
+}
+
+/// Reduce a raw summarization response to the note itself.
+///
+/// Drops the `<analysis>` scratchpad (it did its job improving the summary and
+/// has no value once written — keeping it would spend context on the model's
+/// own drafting) and unwraps `<summary>`. A response that used neither tag is
+/// returned trimmed: the tags are a request, not a guarantee, and a summary
+/// that arrived in the wrong shape is still worth infinitely more than
+/// discarding it and failing the compaction.
+fn format_compact_summary(raw: &str) -> String {
+    let without_analysis = match raw.find("<analysis>") {
+        Some(start) => {
+            // Where the scratchpad ends: its closing tag, or — when the model
+            // forgot to close it — the start of the summary, which is the
+            // other unambiguous boundary. Taking only the closing tag would
+            // throw away a summary that WAS written, turning a formatting slip
+            // into a failed compaction.
+            let close = raw[start..]
+                .find("</analysis>")
+                .map(|i| start + i + "</analysis>".len());
+            let summary_start = raw[start..].find("<summary>").map(|i| start + i);
+            let resume = match (close, summary_start) {
+                (Some(c), Some(s)) => Some(c.min(s)),
+                (Some(c), None) => Some(c),
+                (None, Some(s)) => Some(s),
+                // Neither: the response was cut off mid-draft and there is
+                // nothing after the scratchpad to keep.
+                (None, None) => None,
+            };
+            let mut out = String::with_capacity(raw.len());
+            out.push_str(&raw[..start]);
+            if let Some(resume) = resume {
+                out.push_str(&raw[resume..]);
+            }
+            out
+        }
+        None => raw.to_string(),
+    };
+
+    match (
+        without_analysis.find("<summary>"),
+        without_analysis.find("</summary>"),
+    ) {
+        (Some(start), Some(end)) if end > start => without_analysis
+            [start + "<summary>".len()..end]
+            .trim()
+            .to_string(),
+        // Opened but never closed — the budget ran out mid-note. Keep what
+        // was written; a truncated note still carries the early sections.
+        (Some(start), None) => without_analysis[start + "<summary>".len()..]
+            .trim()
+            .to_string(),
+        _ => without_analysis.trim().to_string(),
+    }
+}
+
+/// The block that replaces the summarized history in the model's view.
+///
+/// Two jobs beyond carrying the summary. It tells the model what it is
+/// looking at — its own note, not source material, with the verbatim tail
+/// still intact below — and it tells the model how to behave, which is the
+/// part that actually shows: the user experienced no break, so an assistant
+/// that opens with "based on the summary of our earlier conversation" has
+/// leaked an implementation detail and broken the thread. Continuity is the
+/// deliverable.
+///
+/// `transcript_hint` is a lifeline, not decoration: the full history is still
+/// on disk, so an exact snippet the note generalized away is recoverable —
+/// and only offered when the model can actually read it.
+fn compaction_preamble(summary: &str, transcript_hint: Option<&str>) -> String {
+    let mut out = String::with_capacity(summary.len() + 700);
+    out.push_str(
+        "<conversation_summary>\n\
+         This conversation is continuing from earlier work that no longer fits in context. \
+         What follows is the record of that work — it is all that remains of it. \
+         Everything after this block is preserved word for word.\n\n",
+    );
+    out.push_str(summary);
+    out.push_str("\n</conversation_summary>\n\n");
+    out.push_str(
+        "Pick up exactly where you left off. The user saw no interruption and expects you to \
+         remember all of this, so do not mention the summary, do not recap, do not re-introduce \
+         yourself, and do not ask what you were working on. Treat everything above as your own \
+         memory of the work.",
+    );
+    if let Some(path) = transcript_hint {
+        out.push_str(&format!(
+            " If you need an exact detail the note did not keep — a code snippet, an error string, \
+             something you wrote earlier — the complete history is at {path}; read it with \
+             file_read or search it with grep rather than guessing or asking the user to repeat \
+             themselves.",
+        ));
+    }
+    out
+}
 
 /// Build the model API view for a session that may carry compaction markers.
 ///
@@ -1782,7 +2668,10 @@ const COMPACTION_INSTRUCTION: &str =
 /// tail unchanged. A session with no marker round-trips unchanged. The
 /// persisted JSONL is never touched; this is an API-view transform, exactly
 /// like `inject_ide_context`/`trim_to_budget`, but summary-backed.
-fn apply_compaction(messages: &[ConversationMessage]) -> Vec<ConversationMessage> {
+fn apply_compaction(
+    messages: &[ConversationMessage],
+    transcript_hint: Option<&str>,
+) -> Vec<ConversationMessage> {
     let Some(mi) = messages.iter().rposition(|m| {
         m.blocks
             .iter()
@@ -1798,7 +2687,7 @@ fn apply_compaction(messages: &[ConversationMessage]) -> Vec<ConversationMessage
             _ => None,
         })
         .unwrap_or_default();
-    let preamble = format!("<conversation_summary>\n{summary}\n</conversation_summary>");
+    let preamble = compaction_preamble(&summary, transcript_hint);
 
     let mut out: Vec<ConversationMessage> = messages[mi + 1..].to_vec();
     match out.first_mut() {
@@ -1823,6 +2712,7 @@ fn apply_compaction(messages: &[ConversationMessage]) -> Vec<ConversationMessage
                     timestamp: messages[mi].timestamp,
                     attached_selected_elements: None,
                     attached_prompt_chips: None,
+                    model: None,
                 },
             );
         }
@@ -1836,9 +2726,16 @@ fn apply_compaction(messages: &[ConversationMessage]) -> Vec<ConversationMessage
 /// the newest user boundary that still leaves a non-empty head if even the
 /// last turn exceeds the cap. Returns `None` when no safe cut exists (fewer
 /// than two user turns) so the caller skips compaction.
-fn compaction_cut(messages: &[ConversationMessage], window: u32) -> Option<usize> {
+fn compaction_cut(
+    messages: &[ConversationMessage],
+    window: u32,
+    replay: ReasoningReplay,
+) -> Option<usize> {
     let target = (u64::from(window) * u64::from(COMPACT_TAIL_PCT) / 100) as u32;
-    let per: Vec<u32> = messages.iter().map(estimate_message_tokens).collect();
+    let per: Vec<u32> = messages
+        .iter()
+        .map(|m| estimate_message_tokens(m, replay))
+        .collect();
     let mut suffix = vec![0u32; messages.len() + 1];
     for i in (0..messages.len()).rev() {
         suffix[i] = suffix[i + 1].saturating_add(per[i]);
@@ -1905,6 +2802,7 @@ fn trim_to_budget(
     context_window: Option<u32>,
     max_output: u32,
     system_prompt: &str,
+    replay: ReasoningReplay,
 ) -> TrimOutcome {
     let Some(window) = context_window else {
         return TrimOutcome {
@@ -1929,7 +2827,10 @@ fn trim_to_budget(
     let threshold = budget.saturating_mul(TRIM_THRESHOLD_PCT) / 100;
 
     let system_tokens = estimate_text_tokens(system_prompt);
-    let per_msg_tokens: Vec<u32> = messages.iter().map(estimate_message_tokens).collect();
+    let per_msg_tokens: Vec<u32> = messages
+        .iter()
+        .map(|m| estimate_message_tokens(m, replay))
+        .collect();
     let total: u32 = per_msg_tokens
         .iter()
         .copied()
@@ -2050,27 +2951,119 @@ const IMAGE_TOKEN_ESTIMATE: u32 = 1_100;
 /// would read as hundreds of thousands of tokens and falsely trip context
 /// trimming.
 fn estimate_text_with_images(text: &str) -> u32 {
-    if !text.contains("<aurora_image ") {
-        return estimate_text_tokens(text);
-    }
+    use crate::api::aurora_image::find_marker;
+
     let mut images: u32 = 0;
     let mut stripped = String::with_capacity(text.len());
     let mut cursor = 0usize;
-    while let Some(rel) = text[cursor..].find("<aurora_image ") {
-        let open = cursor + rel;
-        stripped.push_str(&text[cursor..open]);
-        match text[open..].find("</aurora_image>") {
-            Some(close_rel) => {
-                images = images.saturating_add(1);
-                cursor = open + close_rel + "</aurora_image>".len();
-            }
-            None => {
-                cursor = text.len();
-            }
-        }
+    while let Some(marker) = find_marker(text, cursor) {
+        stripped.push_str(&text[cursor..marker.start]);
+        images = images.saturating_add(1);
+        cursor = marker.end;
+    }
+    if images == 0 {
+        return estimate_text_tokens(text);
     }
     stripped.push_str(&text[cursor..]);
     estimate_text_tokens(&stripped).saturating_add(images.saturating_mul(IMAGE_TOKEN_ESTIMATE))
+}
+
+/// Ciphertext characters per token of the reasoning an encrypted item stands
+/// for.
+///
+/// A Responses-API reasoning item is replayed as an opaque
+/// `encrypted_content` blob, and the provider bills it as the reasoning that
+/// was encrypted — so its price is a property of the PLAINTEXT, which the
+/// blob has inflated twice over: authenticated encryption adds an IV, a tag
+/// and block padding, then base64 adds another 4/3. Running tiktoken over the
+/// base64 instead (the old behaviour) charges roughly one token per two
+/// characters and lands ~2.6× high.
+///
+/// Working backwards: ~4 plaintext chars per token, ~1.4× for the envelope and
+/// base64 → ~5.5 ciphertext chars per real token. Rounded DOWN to 5, which
+/// errs slightly high on purpose: over-counting compacts a little early, while
+/// under-counting overruns the window and the provider rejects the turn.
+const ENCRYPTED_REASONING_CHARS_PER_TOKEN: usize = 5;
+
+/// Token cost of a replayed encrypted reasoning item, from its stored
+/// signature. `None`/empty (a provider that gave us no item to replay) costs
+/// nothing — there is no block to send.
+fn estimate_encrypted_reasoning_tokens(signature: Option<&str>) -> u32 {
+    let Some(sig) = signature.filter(|s| !s.is_empty()) else {
+        return 0;
+    };
+    u32::try_from(sig.len() / ENCRYPTED_REASONING_CHARS_PER_TOKEN).unwrap_or(u32::MAX)
+}
+
+/// Why a compaction pass produced (or did not produce) a marker.
+///
+/// The distinction the circuit breaker turns on: only [`Self::SummaryFailed`]
+/// spent money.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompactionOutcome {
+    /// A marker was inserted. `before`/`after` are the projected request sizes
+    /// either side of it.
+    Compacted { before: u32, after: u32 },
+    /// The summarization request ran and came back empty or errored. History
+    /// is untouched and the overrun that triggered this is still there.
+    SummaryFailed,
+    /// Compaction was disabled, or the transcript had no safe cut. No request
+    /// was made.
+    NothingToDo,
+}
+
+/// Failed compactions tolerated before auto-compaction pauses for
+/// [`COMPACTION_FAILURE_COOLDOWN_MS`].
+///
+/// Three, because the failures worth retrying are transient (a rate limit, a
+/// dropped connection) and clear in one or two turns; the ones that are not
+/// — a head too large for the summarizer's own window, a malformed history
+/// the provider rejects — will never clear, and each attempt re-sends the
+/// whole conversation.
+const MAX_CONSECUTIVE_COMPACTION_FAILURES: u32 = 3;
+
+/// How long auto-compaction stays paused after hitting the failure ceiling.
+/// Long enough that a stuck conversation stops burning money, short enough
+/// that a transient outage recovers without the user restarting anything.
+/// Manual `/compact` is never blocked by this.
+const COMPACTION_FAILURE_COOLDOWN_MS: i64 = 5 * 60 * 1000;
+
+/// How much of the context window one measured request occupied.
+///
+/// Every slice of the prompt, plus the completion — because the assistant's
+/// output is re-sent as input on the very next request, so a window that looks
+/// comfortable without it is not. The three input fields are disjoint by
+/// construction: Anthropic reports fresh, cache-write and cache-read
+/// separately, and Aurora's OpenAI adapter subtracts the cache hit out of
+/// `prompt_tokens` so the same addition holds there.
+///
+/// Missing `cache_creation_input_tokens` from this sum is not a rounding
+/// error: on a cache-writing turn it is most of the prompt.
+fn measured_context_tokens(usage: &TokenUsage) -> u32 {
+    usage
+        .input_tokens
+        .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0))
+        .saturating_add(usage.cache_read_input_tokens.unwrap_or(0))
+        .saturating_add(usage.output_tokens)
+}
+
+/// Token cost of the tool catalogue as the provider receives it.
+///
+/// Counted separately from the messages because the schemas are not part of
+/// the transcript, yet they ride on EVERY request — on Aurora's toolset they
+/// are tens of thousands of tokens. Leaving them out of the compaction
+/// projection made it under-report the request it was deciding about, in the
+/// opposite direction to the thinking-block over-count above; two errors of
+/// opposite sign meant the number could not be trusted at any size.
+fn estimate_tool_schema_tokens(schemas: &[ToolSchema]) -> u32 {
+    schemas
+        .iter()
+        .map(|t| {
+            estimate_text_tokens(&t.name)
+                .saturating_add(estimate_text_tokens(&t.description))
+                .saturating_add(estimate_text_tokens(&t.input_schema.to_string()))
+        })
+        .fold(0u32, u32::saturating_add)
 }
 
 /// Estimate the token cost of one [`ConversationMessage`].
@@ -2080,7 +3073,7 @@ fn estimate_text_with_images(text: &str) -> u32 {
 /// `context::manager::ContextManager::count_round_tokens` uses (so the
 /// trim's view of "how big is this turn" lines up with what the chat
 /// indicator displayed under the old engine).
-fn estimate_message_tokens(message: &ConversationMessage) -> u32 {
+fn estimate_message_tokens(message: &ConversationMessage, replay: ReasoningReplay) -> u32 {
     let mut total: u32 = 4; // per-message overhead
     for block in &message.blocks {
         match block {
@@ -2090,12 +3083,21 @@ fn estimate_message_tokens(message: &ConversationMessage) -> u32 {
                 // token cost.
                 total = total.saturating_add(estimate_text_with_images(text));
             }
-            ContentBlock::Thinking { text, signature } => {
-                total = total.saturating_add(estimate_text_tokens(text));
-                if let Some(sig) = signature {
-                    total = total.saturating_add(estimate_text_tokens(sig));
+            // Priced by what the PROVIDER will do with it, not by what we
+            // stored. See `ReasoningReplay` — for most providers the answer
+            // is "nothing", and the stored bytes are pure phantom context.
+            ContentBlock::Thinking {
+                text, signature, ..
+            } => match replay {
+                ReasoningReplay::Dropped => {}
+                ReasoningReplay::Text => {
+                    total = total.saturating_add(estimate_text_tokens(text));
                 }
-            }
+                ReasoningReplay::Opaque => {
+                    total = total
+                        .saturating_add(estimate_encrypted_reasoning_tokens(signature.as_deref()));
+                }
+            },
             ContentBlock::ToolUse { name, input, .. } => {
                 total = total.saturating_add(estimate_text_tokens(name));
                 let json = input.to_string();
@@ -2130,6 +3132,69 @@ fn estimate_message_tokens(message: &ConversationMessage) -> u32 {
 /// TS behaviour. If no user message is found, or the user's first
 /// block is not a `Text` block, the helper falls back to inserting a
 /// fresh leading text block.
+/// Prepend the `<repo_map>` block to the FIRST user message of the request.
+///
+/// Two decisions worth keeping:
+///
+/// 1. **Data, not instruction.** It is not part of the system prompt. The system
+///    prompt is behaviour and is identical for every project; this is facts
+///    about one workspace, so it belongs in the conversation — the same split
+///    `<ide_context>` and `<steering_context>` already observe.
+/// 2. **First message, not latest.** Anchoring it to the head means it sits
+///    inside the provider's cached prefix and is billed once. Attaching it to
+///    the newest message instead would re-send several thousand tokens on every
+///    single turn, which would cost more than the file reads it exists to avoid.
+///
+/// Same contract as [`inject_ide_context`]: the persisted session stays
+/// verbatim, only the request body carries this.
+impl ConversationRuntime {
+    /// The `<repo_map>` block for this conversation, or `None` when there is
+    /// nothing worth sending.
+    ///
+    /// Every failure path returns `None` on purpose. An index that cannot be
+    /// built (no workspace, unreadable tree, a language nobody here parses) is
+    /// a missing convenience, not a broken turn — the agent still has `code`,
+    /// `grep` and `workspace_tree`.
+    fn repo_map_block(&self, workspace_root: Option<&str>) -> Option<String> {
+        self.repo_map
+            .get_or_init(|| {
+                let root = std::path::PathBuf::from(workspace_root?);
+                let idx = crate::code_index::service().get_or_build(&root).ok()?;
+                crate::code_index::repo_map::render(
+                    &idx,
+                    crate::code_index::repo_map::budget_chars(
+                        crate::code_index::repo_map::DEFAULT_BUDGET_TOKENS,
+                    ),
+                )
+            })
+            .clone()
+    }
+}
+
+fn inject_repo_map(
+    messages: &[ConversationMessage],
+    repo_map: &str,
+) -> Vec<ConversationMessage> {
+    let mut owned = messages.to_vec();
+    let Some(idx) = owned.iter().position(|m| m.role == MessageRole::User) else {
+        return owned;
+    };
+    match owned[idx].blocks.first_mut() {
+        Some(ContentBlock::Text { text }) => {
+            *text = format!("{repo_map}\n\n{text}");
+        }
+        _ => {
+            owned[idx].blocks.insert(
+                0,
+                ContentBlock::Text {
+                    text: repo_map.to_string(),
+                },
+            );
+        }
+    }
+    owned
+}
+
 fn inject_ide_context(
     messages: &[ConversationMessage],
     ide_context: &str,
@@ -2194,6 +3259,20 @@ fn sum_usage(a: TokenUsage, b: TokenUsage) -> TokenUsage {
             b.cache_creation_input_tokens,
         ),
         cache_read_input_tokens: sum_opt(a.cache_read_input_tokens, b.cache_read_input_tokens),
+        // Sticky across the turn: if ANY request in it was an estimate, the
+        // turn's totals are approximate and must not read as measured.
+        estimated: match (a.estimated, b.estimated) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            _ => None,
+        },
+        // Money adds. `None + None` stays `None` so "the provider never priced
+        // this" is distinguishable from "the provider priced it at zero" — the
+        // first must fall back to catalog rates, the second must not.
+        cost_usd: match (a.cost_usd, b.cost_usd) {
+            (Some(x), Some(y)) => Some(x + y),
+            (Some(x), None) | (None, Some(x)) => Some(x),
+            (None, None) => None,
+        },
     }
 }
 
@@ -2249,6 +3328,68 @@ mod tests {
     use std::sync::Mutex;
     use tokio::sync::mpsc;
 
+    /// An edit result's before/after echo is content the model itself sent —
+    /// it must never reach model history, whatever its size. Counts and the
+    /// message stay; the elision names itself and the recovery.
+    #[test]
+    fn edit_results_drop_their_content_echo_from_model_history() {
+        let raw = serde_json::json!({
+            "success": true,
+            "message": "Edited 1 file (2 replacements)",
+            "path": "src/app.ts",
+            "linesAdded": 4,
+            "linesRemoved": 1,
+            "oldContent": "x".repeat(500),
+            "newContent": "y".repeat(500),
+        })
+        .to_string();
+
+        let out = truncate_tool_content("file_edit", raw);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(parsed.get("oldContent").is_none(), "echo dropped");
+        assert!(parsed.get("newContent").is_none(), "echo dropped");
+        assert_eq!(parsed["linesAdded"], 4, "signal kept");
+        assert!(
+            parsed["contentEcho"].as_str().unwrap().contains("file_read"),
+            "elision names its recovery"
+        );
+    }
+
+    /// The multi-file batch shape carries the echo per entry in `files[]`.
+    #[test]
+    fn multi_file_edit_results_drop_per_file_echo() {
+        let raw = serde_json::json!({
+            "success": true,
+            "multiFile": true,
+            "files": [
+                { "path": "a.ts", "success": true, "oldContent": "a", "newContent": "b" },
+                { "path": "b.ts", "success": true, "oldContent": "c", "newContent": "d" },
+            ],
+        })
+        .to_string();
+
+        let out = truncate_tool_content("file_edit", raw);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        for file in parsed["files"].as_array().unwrap() {
+            assert!(file.get("oldContent").is_none());
+            assert!(file.get("newContent").is_none());
+            assert!(file.get("path").is_some(), "identity kept");
+        }
+    }
+
+    /// A failure result has no echo to strip and must pass through untouched —
+    /// its corrective message is exactly what the model needs verbatim.
+    #[test]
+    fn edit_failures_are_left_alone() {
+        let raw = serde_json::json!({
+            "success": false,
+            "error": "could not find the specified text",
+            "hint": "Call file_read on this path, then retry.",
+        })
+        .to_string();
+        assert_eq!(truncate_tool_content("file_edit", raw.clone()), raw);
+    }
+
     #[test]
     fn screenshot_ui_result_omits_base64_and_emits_path_json() {
         let raw = "<aurora_image media_type=\"image/png\" width=\"800\" height=\"600\" src=\"C:\\cache\\shot-1.png\">QUJDREVGRw==</aurora_image>\nScreenshot of http://localhost:3001 (800×600 px)";
@@ -2300,6 +3441,28 @@ mod tests {
         assert!(out.contains(&b64), "inline base64 kept when there's no src");
     }
 
+    /// Prose that documents the marker syntax — `.knowledge/knowledge.md` and
+    /// this project's own source both do — must not be mistaken for a
+    /// screenshot. Before the validated parse it took the leanify branch, so it
+    /// skipped the size cap AND was handed to the provider adapter as an image.
+    #[test]
+    fn text_quoting_the_marker_syntax_is_not_a_screenshot() {
+        let prose = format!(
+            "FIX: `truncate_tool_content` returns early when `s.contains(\"<aurora_image \")`.\n\
+             {}\n\
+             The MODEL copy keeps the full `<aurora_image>` block (vision), the UI copy is lean.\n",
+            "context line\n".repeat(4_000),
+        );
+
+        // A tool whose results are clamped: the cap must still apply.
+        let out = truncate_tool_content("grep", prose.clone());
+        assert!(out.len() < prose.len(), "size cap must still apply");
+        assert!(out.contains("[truncated"), "clamp marker present");
+
+        // And the adapter must see text, not an image.
+        assert!(!crate::api::aurora_image::has_marker(&prose));
+    }
+
     #[test]
     fn persisted_edit_result_stays_valid_json_when_large() {
         let raw = serde_json::json!({
@@ -2313,15 +3476,16 @@ mod tests {
         })
         .to_string();
 
-        let compacted = truncate_tool_content("file_edit", raw.clone());
+        let compacted = truncate_tool_content("file_edit", raw);
         assert!(compacted.len() <= MAX_TOOL_RESULT_LENGTH);
         let parsed: serde_json::Value =
             serde_json::from_str(&compacted).expect("history result must stay valid JSON");
         assert_eq!(parsed["path"], "src/App.tsx");
-        assert_eq!(parsed["historyTruncated"], true);
-        assert_eq!(parsed["originalBytes"], raw.len() as u64);
-        assert!(parsed["oldContent"].as_str().unwrap().contains("truncated"));
-        assert!(parsed["newContent"].as_str().unwrap().contains("truncated"));
+        // The echo is stripped outright (see `strip_edit_content_echo`), so a
+        // large edit result never even reaches the shrink-to-fit pass.
+        assert!(parsed.get("oldContent").is_none());
+        assert!(parsed.get("newContent").is_none());
+        assert_eq!(parsed["linesAdded"], 2);
     }
 
     #[test]
@@ -2399,7 +3563,10 @@ mod tests {
         .to_string();
 
         let compacted = truncate_tool_content("workspace_tree", raw.clone());
-        assert_eq!(compacted, raw, "a default-budget tree must pass through whole");
+        assert_eq!(
+            compacted, raw,
+            "a default-budget tree must pass through whole"
+        );
         let parsed: serde_json::Value = serde_json::from_str(&compacted).unwrap();
         assert!(parsed.get("historyTruncated").is_none());
         assert_eq!(parsed["tree"].as_array().unwrap().len(), 500);
@@ -2483,6 +3650,94 @@ mod tests {
         }
     }
 
+    /// Streams an assistant message and then cancels the turn — the user
+    /// pressing Stop while the tool calls are still arriving, which is the
+    /// window that used to leave `tool_use` blocks unanswered forever.
+    struct CancelWhileStreamingApi {
+        message: Mutex<Option<ConversationMessage>>,
+    }
+
+    #[async_trait]
+    impl StreamingApiClient for CancelWhileStreamingApi {
+        async fn stream(
+            &self,
+            _request: ApiRequest<'_>,
+            _event_sink: mpsc::Sender<AssistantEvent>,
+            cancel_token: CancellationToken,
+        ) -> Result<TurnUsage, ApiError> {
+            let message = self
+                .message
+                .lock()
+                .expect("message mutex")
+                .take()
+                .expect("CancelWhileStreamingApi called twice — test bug");
+            cancel_token.cancel();
+            Ok(turn_usage(message, "tool_use"))
+        }
+    }
+
+    /// Tool that reports the turn was cancelled while it was running.
+    struct CancellingTool {
+        name: &'static str,
+    }
+
+    #[async_trait]
+    impl super::super::tool_executor::ToolExecutor for CancellingTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn schema(&self) -> super::super::api_client::ToolSchema {
+            super::super::api_client::ToolSchema {
+                name: self.name.into(),
+                description: "test canceller".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+            }
+        }
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<String, ToolError> {
+            Err(ToolError::Cancelled)
+        }
+    }
+
+    fn assistant_tool_uses(calls: &[(&str, &str)]) -> ConversationMessage {
+        ConversationMessage::assistant(
+            calls
+                .iter()
+                .map(|(id, name)| ContentBlock::ToolUse {
+                    id: (*id).into(),
+                    name: (*name).into(),
+                    input: serde_json::json!({}),
+                })
+                .collect(),
+            1_700_000_000_000,
+        )
+    }
+
+    /// Ids of every `tool_use` in the session that no `tool_result` answers.
+    /// Non-empty means the next request to any provider is a 400.
+    fn unanswered_tool_use_ids(session: &Session) -> Vec<String> {
+        let mut requested: Vec<String> = Vec::new();
+        let mut answered: Vec<String> = Vec::new();
+        for message in session.messages() {
+            for block in &message.blocks {
+                match block {
+                    ContentBlock::ToolUse { id, .. } => requested.push(id.clone()),
+                    ContentBlock::ToolResult { tool_use_id, .. } => {
+                        answered.push(tool_use_id.clone())
+                    }
+                    _ => {}
+                }
+            }
+        }
+        requested
+            .into_iter()
+            .filter(|id| !answered.contains(id))
+            .collect()
+    }
+
     fn assistant_text(text: &str) -> ConversationMessage {
         ConversationMessage::assistant(
             vec![ContentBlock::Text { text: text.into() }],
@@ -2508,6 +3763,8 @@ mod tests {
                 output_tokens: 7,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                estimated: None,
+                cost_usd: None,
             },
             stop_reason: stop_reason.into(),
             assistant_message: message,
@@ -2580,6 +3837,191 @@ mod tests {
             }
             other => panic!("expected MessageStop last, got {other:?}"),
         }
+    }
+
+    /// The reported bug, end to end: Stop pressed after the tool calls streamed
+    /// in but before any of them ran, then a new prompt. The assistant message
+    /// is already persisted; if its `tool_use` blocks go unanswered the thread
+    /// is malformed on disk and EVERY later turn dies with a provider 400.
+    #[tokio::test]
+    async fn stopping_before_the_tools_run_leaves_no_unanswered_call() {
+        let api = Arc::new(CancelWhileStreamingApi {
+            message: Mutex::new(Some(assistant_tool_uses(&[
+                ("call-1", "echo"),
+                ("call-2", "echo"),
+            ]))),
+        });
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let tools = Arc::new(ToolRegistry::new());
+        tools.register(Arc::new(RecordingTool {
+            name: "echo",
+            seen: seen.clone(),
+            response: "hi".into(),
+        }));
+
+        let runtime = ConversationRuntime::new(api, tools, RuntimeConfig::default());
+        let mut session = Session::new("t");
+        let (tx, _rx) = mpsc::channel(64);
+
+        let outcome = runtime
+            .run_turn(&mut session, user_msg("read both"), tx, CancellationToken::new())
+            .await;
+
+        assert!(matches!(outcome, Err(RuntimeError::Cancelled)));
+        assert!(
+            seen.lock().expect("seen").is_empty(),
+            "cancelling before dispatch must not run the tools"
+        );
+        assert!(
+            unanswered_tool_use_ids(&session).is_empty(),
+            "every tool_use must carry an answer or the thread is malformed: {:?}",
+            unanswered_tool_use_ids(&session),
+        );
+
+        // And the answers say why, so the model doesn't read them as real output.
+        let answers: Vec<&str> = session
+            .messages()
+            .iter()
+            .flat_map(|m| &m.blocks)
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult {
+                    content, is_error, ..
+                } => Some((content.as_str(), *is_error)),
+                _ => None,
+            })
+            .map(|(content, is_error)| {
+                assert_eq!(is_error, Some(true), "a stopped call is not a success");
+                content
+            })
+            .collect();
+        assert_eq!(answers, [STOPPED_BEFORE_RUN, STOPPED_BEFORE_RUN]);
+    }
+
+    /// Stop pressed while a tool is mid-flight. Results that already landed are
+    /// kept, the interrupted call is marked, and calls that never got dispatched
+    /// are answered too — all three kinds must appear or the pairing breaks.
+    #[tokio::test]
+    async fn stopping_during_a_tool_keeps_finished_work_and_answers_the_rest() {
+        let api = Arc::new(MockApi::new(vec![TurnScript {
+            events: vec![],
+            result: Ok(turn_usage(
+                assistant_tool_uses(&[
+                    ("call-1", "echo"),
+                    ("call-2", "stopper"),
+                    ("call-3", "echo"),
+                ]),
+                "tool_use",
+            )),
+        }]));
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let tools = Arc::new(ToolRegistry::new());
+        tools.register(Arc::new(RecordingTool {
+            name: "echo",
+            seen: seen.clone(),
+            response: "hi".into(),
+        }));
+        tools.register(Arc::new(CancellingTool { name: "stopper" }));
+
+        let runtime = ConversationRuntime::new(api, tools, RuntimeConfig::default());
+        let mut session = Session::new("t");
+        let (tx, _rx) = mpsc::channel(64);
+
+        let outcome = runtime
+            .run_turn(&mut session, user_msg("go"), tx, CancellationToken::new())
+            .await;
+
+        assert!(matches!(outcome, Err(RuntimeError::Cancelled)));
+        assert!(
+            unanswered_tool_use_ids(&session).is_empty(),
+            "unanswered after a mid-tool stop: {:?}",
+            unanswered_tool_use_ids(&session),
+        );
+
+        let answers: Vec<(String, String)> = session
+            .messages()
+            .iter()
+            .flat_map(|m| &m.blocks)
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } => Some((tool_use_id.clone(), content.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(answers.len(), 3, "one answer per call, in call order");
+        assert_eq!(answers[0], ("call-1".to_string(), "hi".to_string()));
+        assert_eq!(answers[1].1, STOPPED_MID_RUN);
+        assert_eq!(answers[2].1, STOPPED_BEFORE_RUN);
+        assert_eq!(
+            seen.lock().expect("seen").len(),
+            1,
+            "the call after the cancelled one must never dispatch"
+        );
+    }
+
+    /// A reply cut off by the output cap WHILE emitting tool calls. The
+    /// arguments that parsed may be silently incomplete and the calls after the
+    /// cut are missing entirely, so none of them are safe to run — and the user
+    /// has to be told, which on this path used to happen nowhere.
+    #[tokio::test]
+    async fn a_reply_cut_off_mid_tool_call_fails_the_batch_and_says_so() {
+        let api = Arc::new(MockApi::new(vec![TurnScript {
+            events: vec![],
+            result: Ok(turn_usage(
+                assistant_tool_uses(&[("call-1", "echo")]),
+                "length",
+            )),
+        }]));
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let tools = Arc::new(ToolRegistry::new());
+        tools.register(Arc::new(RecordingTool {
+            name: "echo",
+            seen: seen.clone(),
+            response: "hi".into(),
+        }));
+
+        let runtime = ConversationRuntime::new(api, tools, RuntimeConfig::default());
+        let mut session = Session::new("t");
+        let (tx, _rx) = mpsc::channel(64);
+
+        let summary = runtime
+            .run_turn(&mut session, user_msg("write it"), tx, CancellationToken::new())
+            .await
+            .expect("a truncated batch ends the turn, it does not fail it");
+
+        assert_eq!(summary.stop_reason, "length");
+        assert_eq!(summary.iterations, 1, "the turn stops; retrying re-truncates");
+        assert!(
+            seen.lock().expect("seen").is_empty(),
+            "a call whose arguments may be truncated must not execute"
+        );
+        assert!(unanswered_tool_use_ids(&session).is_empty());
+
+        let answered_with: Vec<&str> = session
+            .messages()
+            .iter()
+            .flat_map(|m| &m.blocks)
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(answered_with, [TRUNCATED_CALL]);
+
+        // The user is told, and the notice survives a reload.
+        assert!(
+            session
+                .messages()
+                .iter()
+                .flat_map(|m| &m.blocks)
+                .any(|b| matches!(b, ContentBlock::Notice { message, .. } if message.contains("cut off"))),
+            "the truncation notice must be persisted on this path too",
+        );
     }
 
     #[tokio::test]
@@ -2953,7 +4395,7 @@ mod tests {
             }
         });
 
-        let message = tokio::time::timeout(
+        let batch = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             runtime.execute_tool_calls(calls, &session, "turn-1", &cancel, &tx, &mut seq),
         )
@@ -2962,12 +4404,13 @@ mod tests {
         .expect("ok");
 
         waiter.await.expect("waiter");
-        assert_eq!(message.blocks.len(), 3);
+        assert!(!batch.cancelled);
+        assert_eq!(batch.message.blocks.len(), 3);
         // Order follows the model's call order, not completion order.
-        for (i, block) in message.blocks.iter().enumerate() {
+        for (i, block) in batch.message.blocks.iter().enumerate() {
             match block {
                 ContentBlock::ToolResult { tool_use_id, .. } => {
-                    assert_eq!(tool_use_id, &format!("call-{i}"));
+                    assert_eq!(*tool_use_id, format!("call-{i}"));
                 }
                 other => panic!("expected ToolResult, got {other:?}"),
             }
@@ -3016,7 +4459,7 @@ mod tests {
         let session = Session::new("t");
         let (tx, _rx) = mpsc::channel(64);
         let mut seq = 0u64;
-        let message = runtime
+        let batch = runtime
             .execute_tool_calls(
                 calls,
                 &session,
@@ -3028,7 +4471,7 @@ mod tests {
             .await
             .expect("ok");
 
-        assert_eq!(message.blocks.len(), 3);
+        assert_eq!(batch.message.blocks.len(), 3);
         assert_eq!(seen.lock().expect("seen").len(), 3);
     }
 
@@ -3214,6 +4657,8 @@ mod tests {
                         output_tokens: 1,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        estimated: None,
+                        cost_usd: None,
                     },
                     stop_reason: "tool_use".into(),
                     assistant_message: assistant_tool_use("c1", "echo", serde_json::json!({})),
@@ -3227,6 +4672,8 @@ mod tests {
                         output_tokens: 1,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        estimated: None,
+                        cost_usd: None,
                     },
                     stop_reason: "end_turn".into(),
                     assistant_message: assistant_text("done"),
@@ -3265,6 +4712,8 @@ mod tests {
                         output_tokens: 20,
                         cache_creation_input_tokens: Some(3),
                         cache_read_input_tokens: None,
+                        estimated: None,
+                        cost_usd: None,
                     },
                     stop_reason: "tool_use".into(),
                     assistant_message: assistant_tool_use(
@@ -3282,6 +4731,8 @@ mod tests {
                         output_tokens: 8,
                         cache_creation_input_tokens: Some(1),
                         cache_read_input_tokens: Some(2),
+                        estimated: None,
+                        cost_usd: None,
                     },
                     stop_reason: "end_turn".into(),
                     assistant_message: assistant_text("done"),
@@ -3309,6 +4760,97 @@ mod tests {
         assert_eq!(summary.usage.output_tokens, 28);
         assert_eq!(summary.usage.cache_creation_input_tokens, Some(4));
         assert_eq!(summary.usage.cache_read_input_tokens, Some(2));
+
+        // Each persisted call carries ITS OWN usage, not the turn total — the
+        // thread's cost is re-derived from these on reload, so they have to be
+        // per-request and complete.
+        let persisted: Vec<&TokenUsage> = session
+            .messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Assistant)
+            .filter_map(|m| m.usage.as_ref())
+            .collect();
+        assert_eq!(persisted.len(), 2, "every API call persists its usage");
+        assert_eq!(persisted[0].input_tokens, 10);
+        assert_eq!(persisted[1].input_tokens, 5);
+    }
+
+    /// Cost is per-model and the model can change between turns, so a total
+    /// summed from the transcript can only be right if each call says which
+    /// model produced it.
+    #[tokio::test]
+    async fn persisted_assistant_messages_record_the_model_that_ran_them() {
+        let api = Arc::new(MockApi::new(vec![TurnScript {
+            events: vec![],
+            result: Ok(TurnUsage {
+                usage: TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 20,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                    estimated: None,
+                    cost_usd: None,
+                },
+                stop_reason: "end_turn".into(),
+                assistant_message: assistant_text("done"),
+            }),
+        }]));
+        let runtime =
+            ConversationRuntime::new(api, Arc::new(ToolRegistry::new()), RuntimeConfig::default());
+
+        let mut session = Session::new("t");
+        session.model = Some("openai:gpt-5.6".into());
+        let (tx, _rx) = mpsc::channel(32);
+
+        runtime
+            .run_turn(&mut session, user_msg("hi"), tx, CancellationToken::new())
+            .await
+            .expect("ok");
+
+        let assistant = session
+            .messages
+            .iter()
+            .find(|m| m.role == MessageRole::Assistant)
+            .expect("assistant message");
+        assert_eq!(assistant.model.as_deref(), Some("openai:gpt-5.6"));
+    }
+
+    /// A provider that reports no usage used to persist ZEROS while the live UI
+    /// showed an estimate, so reopening the chat totalled an exact-looking
+    /// $0.00. The estimate must be persisted AND flagged, so the cost renders
+    /// as approximate rather than as free.
+    #[tokio::test]
+    async fn a_no_usage_provider_persists_a_flagged_estimate_not_zeros() {
+        let api = Arc::new(MockApi::new(vec![TurnScript {
+            events: vec![],
+            result: Ok(TurnUsage {
+                usage: TokenUsage::default(), // provider reported nothing
+                stop_reason: "end_turn".into(),
+                assistant_message: assistant_text("a reply with real content in it"),
+            }),
+        }]));
+        let runtime =
+            ConversationRuntime::new(api, Arc::new(ToolRegistry::new()), RuntimeConfig::default());
+
+        let mut session = Session::new("t");
+        let (tx, _rx) = mpsc::channel(32);
+
+        runtime
+            .run_turn(&mut session, user_msg("hi"), tx, CancellationToken::new())
+            .await
+            .expect("ok");
+
+        let usage = session
+            .messages
+            .iter()
+            .find(|m| m.role == MessageRole::Assistant)
+            .and_then(|m| m.usage.clone())
+            .expect("usage persisted");
+        assert_eq!(usage.estimated, Some(true), "flagged as an estimate");
+        assert!(
+            usage.output_tokens > 0,
+            "the estimate is persisted, not zeros"
+        );
     }
 
     /// Mock that captures the `ApiRequest` it was called with so a
@@ -3432,6 +4974,54 @@ mod tests {
         ) -> Result<TurnUsage, ApiError> {
             *self.captured.lock().expect("captured mutex") = Some(request.messages.to_vec());
             Ok(turn_usage(assistant_text("ok"), "end_turn"))
+        }
+    }
+
+    #[test]
+    fn repo_map_rides_on_the_first_user_message_not_the_latest() {
+        // Placement is the whole cost model. At the head it sits inside the
+        // provider's cached prefix and is billed once; on the newest message it
+        // would be re-sent in full every turn, costing more than the file reads
+        // it exists to avoid.
+        let msgs = vec![
+            ConversationMessage::user_text("first question", 0),
+            ConversationMessage::user_text("second question", 1),
+        ];
+        let out = inject_repo_map(&msgs, "<repo_map>
+src/
+</repo_map>");
+
+        let head = match &out[0].blocks[0] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("expected text, got {other:?}"),
+        };
+        assert!(head.starts_with("<repo_map>"), "{head}");
+        assert!(head.contains("first question"), "original text must survive");
+
+        let last = match &out[1].blocks[0] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("expected text, got {other:?}"),
+        };
+        assert!(
+            !last.contains("<repo_map>"),
+            "the latest message must stay untouched: {last}"
+        );
+    }
+
+    #[test]
+    fn repo_map_injection_leaves_the_persisted_messages_verbatim() {
+        // Same contract as inject_ide_context: the JSONL on disk holds the
+        // user's words, and only the request body carries Aurora's additions.
+        let msgs = vec![ConversationMessage::user_text("original", 0)];
+        let out = inject_repo_map(&msgs, "<repo_map>x</repo_map>");
+
+        match &msgs[0].blocks[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "original"),
+            other => panic!("expected text, got {other:?}"),
+        }
+        match &out[0].blocks[0] {
+            ContentBlock::Text { text } => assert!(text.contains("<repo_map>")),
+            other => panic!("expected text, got {other:?}"),
         }
     }
 
@@ -3757,7 +5347,7 @@ mod tests {
     #[test]
     fn trim_is_noop_when_context_window_is_none() {
         let messages = vec![user_with_text("hi", 0), assistant_with_text("ok", 1)];
-        let outcome = trim_to_budget(messages.clone(), None, 4096, "");
+        let outcome = trim_to_budget(messages.clone(), None, 4096, "", ReasoningReplay::Text);
         assert_eq!(outcome.dropped, 0);
         assert_eq!(outcome.messages, messages);
     }
@@ -3767,7 +5357,7 @@ mod tests {
         // 200k window minus 4096 reserved → ~195k budget; threshold is
         // ~146k. Two short messages don't come close.
         let messages = vec![user_with_text("hi", 0), assistant_with_text("ok", 1)];
-        let outcome = trim_to_budget(messages.clone(), Some(200_000), 4096, "system");
+        let outcome = trim_to_budget(messages.clone(), Some(200_000), 4096, "system", ReasoningReplay::Text);
         assert_eq!(outcome.dropped, 0);
         assert_eq!(outcome.messages.len(), 2);
     }
@@ -3787,7 +5377,7 @@ mod tests {
             assistant_with_text("reply", 5),
         ];
 
-        let outcome = trim_to_budget(messages, Some(1000), 100, "");
+        let outcome = trim_to_budget(messages, Some(1000), 100, "", ReasoningReplay::Text);
 
         // Should drop the first turn (user + assistant = 2 messages),
         // keep the last 2 user-anchored turns intact.
@@ -3814,7 +5404,7 @@ mod tests {
             assistant_with_text(&big, 3),
         ];
 
-        let outcome = trim_to_budget(messages.clone(), Some(1000), 100, "");
+        let outcome = trim_to_budget(messages.clone(), Some(1000), 100, "", ReasoningReplay::Text);
 
         assert_eq!(outcome.dropped, 0, "no safe cut → no-op");
         assert_eq!(outcome.messages.len(), 4);
@@ -3844,6 +5434,7 @@ mod tests {
             timestamp: 11,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            model: None,
         };
         let messages = vec![
             user_with_text(&big, 0),
@@ -3855,7 +5446,7 @@ mod tests {
             assistant_with_text("done", 15),
         ];
 
-        let outcome = trim_to_budget(messages, Some(1000), 100, "");
+        let outcome = trim_to_budget(messages, Some(1000), 100, "", ReasoningReplay::Text);
 
         // Whatever gets dropped, the first kept message MUST be a User.
         assert!(outcome.dropped > 0, "expected at least one drop");
@@ -3893,7 +5484,7 @@ mod tests {
         // budget saturates to 0; we should bail out without touching
         // the message list (let the provider surface the real error).
         let messages = vec![user_with_text("hi", 0), assistant_with_text("ok", 1)];
-        let outcome = trim_to_budget(messages.clone(), Some(1000), 5000, "");
+        let outcome = trim_to_budget(messages.clone(), Some(1000), 5000, "", ReasoningReplay::Text);
         assert_eq!(outcome.dropped, 0);
         assert_eq!(outcome.messages, messages);
     }
@@ -3918,7 +5509,7 @@ mod tests {
     fn estimate_message_tokens_includes_per_message_overhead() {
         let m = user_with_text("", 0);
         // Empty text + 4 per-message overhead.
-        assert_eq!(estimate_message_tokens(&m), 4);
+        assert_eq!(estimate_message_tokens(&m, ReasoningReplay::Text), 4);
     }
 
     #[test]
@@ -3932,7 +5523,804 @@ mod tests {
             0,
         );
         // 4 (msg) + ≥1 (name) + ≥4 (json) + 3 (tool overhead)
-        assert!(estimate_message_tokens(&m) >= 12);
+        assert!(estimate_message_tokens(&m, ReasoningReplay::Text) >= 12);
+    }
+
+    /// One assistant message carrying a Responses-API reasoning item: a short
+    /// summary plus the fat encrypted blob Aurora stores in `signature`.
+    fn assistant_with_reasoning(text: &str, signature: &str) -> ConversationMessage {
+        ConversationMessage::assistant(
+            vec![ContentBlock::Thinking {
+                text: text.into(),
+                signature: Some(signature.into()),
+                duration_ms: None,
+            }],
+            0,
+        )
+    }
+
+    /// The bug this whole policy exists for.
+    ///
+    /// A chat that ran a Responses-API model banks megabytes of encrypted
+    /// reasoning in its transcript. Switch to a provider that strips reasoning
+    /// and NONE of it is ever sent again — but the estimator used to run
+    /// tiktoken over the base64 anyway. On a real 180k-token session that
+    /// invented ~92k tokens of context, so `/compact` reported a "before" of
+    /// 431k and an "after" of 272k for a request the provider measured at 180k.
+    #[test]
+    fn dropped_reasoning_costs_nothing() {
+        let blob = "gAAAAABqdpHR1SNl885r9cogd1rJiInPBBO4WmifWtviQ2nLyXqJ".repeat(40);
+        let m = assistant_with_reasoning("brief summary", &blob);
+
+        // Per-message overhead only: neither the summary nor the blob is sent.
+        assert_eq!(estimate_message_tokens(&m, ReasoningReplay::Dropped), 4);
+    }
+
+    #[test]
+    fn text_replay_counts_the_summary_but_never_the_signature() {
+        let blob = "gAAAAABqdpHR1SNl885r9cogd1rJiInPBBO4WmifWtviQ2nLyXqJ".repeat(40);
+        let with_blob = assistant_with_reasoning("brief summary", &blob);
+        let without_blob = assistant_with_reasoning("brief summary", "");
+
+        // The signature is transport metadata — an id or an HMAC the provider
+        // verifies. It is never prompt text, so it must not move the number.
+        assert_eq!(
+            estimate_message_tokens(&with_blob, ReasoningReplay::Text),
+            estimate_message_tokens(&without_blob, ReasoningReplay::Text),
+        );
+        assert!(estimate_message_tokens(&with_blob, ReasoningReplay::Text) > 4);
+    }
+
+    #[test]
+    fn opaque_replay_prices_the_plaintext_not_the_ciphertext() {
+        let blob = "gAAAAABqdpHR1SNl885r9cogd1rJiInPBBO4WmifWtviQ2nLyXqJ".repeat(40);
+        let m = assistant_with_reasoning("brief summary", &blob);
+
+        let opaque = estimate_message_tokens(&m, ReasoningReplay::Opaque);
+        // It DOES cost something — the item is genuinely replayed.
+        assert!(opaque > 4);
+        // …but far less than tokenizing the base64, which is what made the
+        // old estimate ~2.6x high even on the provider that replays it.
+        let as_raw_text = estimate_text_tokens(&blob);
+        assert!(
+            opaque < as_raw_text / 2,
+            "opaque={opaque} should be well under raw-text {as_raw_text}",
+        );
+    }
+
+    #[test]
+    fn opaque_replay_of_a_missing_signature_costs_nothing() {
+        let m = ConversationMessage::assistant(
+            vec![ContentBlock::Thinking {
+                text: "summary".into(),
+                signature: None,
+                duration_ms: None,
+            }],
+            0,
+        );
+        // No item to replay → nothing on the wire.
+        assert_eq!(estimate_message_tokens(&m, ReasoningReplay::Opaque), 4);
+    }
+
+    /// Records the full request shape, so a test can assert on the things the
+    /// provider's cache key is actually made of.
+    #[derive(Default)]
+    struct CacheKeyRecordingApi {
+        reply: String,
+        seen: Mutex<Vec<(Option<String>, usize, bool, usize)>>,
+    }
+
+    #[async_trait]
+    impl StreamingApiClient for CacheKeyRecordingApi {
+        async fn stream(
+            &self,
+            request: ApiRequest<'_>,
+            _event_sink: mpsc::Sender<AssistantEvent>,
+            _cancel_token: CancellationToken,
+        ) -> Result<TurnUsage, ApiError> {
+            self.seen.lock().expect("seen").push((
+                request.system_prompt.map(str::to_string),
+                request.tools.len(),
+                request.thinking_enabled,
+                request.messages.len(),
+            ));
+            Ok(turn_usage(assistant_text(&self.reply), "end_turn"))
+        }
+    }
+
+    fn cache_key_api(reply: &str) -> Arc<CacheKeyRecordingApi> {
+        Arc::new(CacheKeyRecordingApi {
+            reply: reply.to_string(),
+            seen: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn one_tool_registry() -> Arc<ToolRegistry> {
+        let registry = ToolRegistry::new();
+        registry.register(Arc::new(RecordingTool {
+            name: "file_read",
+            seen: Arc::new(Mutex::new(Vec::new())),
+            response: "ok".into(),
+        }));
+        Arc::new(registry)
+    }
+
+    #[tokio::test]
+    async fn summarizing_on_the_chat_model_reuses_its_prompt_prefix() {
+        // The head is ALREADY in the provider's cache from the turns that
+        // built it — but only if this request keeps the same prefix. System
+        // prompt, tools and thinking config are all part of the cache key;
+        // changing any of them re-bills the entire history at fresh rates.
+        let chat = cache_key_api("<summary>note</summary>");
+        let runtime = ConversationRuntime::new(
+            chat.clone(),
+            one_tool_registry(),
+            RuntimeConfig {
+                system_prompt: Some("you are aurora".into()),
+                context_window: Some(4000),
+                thinking_enabled: true,
+                ..RuntimeConfig::default()
+            },
+        );
+
+        let mut session = compactable_session();
+        let (tx, _rx) = mpsc::channel(64);
+        let mut seq = 0;
+        assert!(runtime
+            .compact_now(&mut session, "turn", &mut seq, &tx, &CancellationToken::new())
+            .await
+            .is_some());
+
+        let seen = chat.seen.lock().expect("seen");
+        let (system, tools, thinking, _) = seen.first().expect("summarizer ran");
+        assert_eq!(
+            system.as_deref(),
+            Some("you are aurora"),
+            "a different system prompt diverges the prefix at token zero",
+        );
+        assert_eq!(*tools, 1, "dropping the tools invalidates the cache key");
+        assert!(*thinking, "thinking config is part of the cache key");
+    }
+
+    #[tokio::test]
+    async fn a_pinned_model_sends_the_lean_request_instead() {
+        // A pinned model has no cache to share, so there is nothing to protect
+        // and every token saved is real: dedicated prompt, no tools, no
+        // reasoning, thinking off.
+        let summarizer = cache_key_api("<summary>note</summary>");
+        let runtime = ConversationRuntime::new(
+            recording_api("chat"),
+            one_tool_registry(),
+            RuntimeConfig {
+                system_prompt: Some("you are aurora".into()),
+                context_window: Some(4000),
+                thinking_enabled: true,
+                ..RuntimeConfig::default()
+            },
+        )
+        .with_compaction_client(summarizer.clone(), "cheap:model");
+
+        let mut session = compactable_session();
+        let (tx, _rx) = mpsc::channel(64);
+        let mut seq = 0;
+        assert!(runtime
+            .compact_now(&mut session, "turn", &mut seq, &tx, &CancellationToken::new())
+            .await
+            .is_some());
+
+        let seen = summarizer.seen.lock().expect("seen");
+        let (system, tools, thinking, _) = seen.first().expect("summarizer ran");
+        assert_ne!(system.as_deref(), Some("you are aurora"));
+        assert_eq!(*tools, 0);
+        assert!(!*thinking);
+    }
+
+    #[tokio::test]
+    async fn a_tool_call_instead_of_a_note_falls_back_rather_than_failing() {
+        // Advertising tools is the price of the cache, and the model will
+        // occasionally reach for one instead of answering. That must not burn
+        // a compaction attempt — it re-bills, it does not fail.
+        let chat = cache_key_api(""); // empty text, as a tool call would leave
+        let runtime = ConversationRuntime::new(
+            chat.clone(),
+            one_tool_registry(),
+            RuntimeConfig {
+                system_prompt: Some("you are aurora".into()),
+                context_window: Some(4000),
+                ..RuntimeConfig::default()
+            },
+        );
+
+        let mut session = compactable_session();
+        let (tx, _rx) = mpsc::channel(64);
+        let mut seq = 0;
+        let _ = runtime
+            .compact_now(&mut session, "turn", &mut seq, &tx, &CancellationToken::new())
+            .await;
+
+        let seen = chat.seen.lock().expect("seen");
+        assert_eq!(seen.len(), 2, "should retry once in the standalone shape");
+        assert_eq!(seen[0].1, 1, "first attempt keeps the tools (for the cache)");
+        assert_eq!(seen[1].1, 0, "retry drops them so the note cannot be misread");
+    }
+
+    #[tokio::test]
+    async fn the_summarizer_never_sees_the_chat_model_s_reasoning() {
+        // A signature is issued by one provider and meaningless to another,
+        // and this request runs with thinking OFF — yet the Anthropic
+        // converter emits `thinking` blocks regardless. Left in, summarizing
+        // on a different provider fails on every attempt.
+        let summarizer = recording_api("a summary");
+        let runtime = ConversationRuntime::new(
+            recording_api("chat"),
+            Arc::new(ToolRegistry::new()),
+            RuntimeConfig {
+                context_window: Some(4000),
+                ..RuntimeConfig::default()
+            },
+        )
+        .with_compaction_client(summarizer.clone(), "other-provider:other-model");
+
+        let mut session = compactable_session();
+        // Reasoning carried over from the chat model, signature and all.
+        session.append_message(assistant_with_reasoning("mulling it over", "sig-from-openai"));
+        session.append_message(user_with_text("carry on", 99));
+
+        let head = strip_reasoning(session.messages().to_vec());
+        assert!(
+            !head
+                .iter()
+                .flat_map(|m| &m.blocks)
+                .any(|b| matches!(b, ContentBlock::Thinking { .. })),
+            "no reasoning block may reach the summarizer",
+        );
+        // The reasoning-only message is gone entirely — an empty content array
+        // is rejected by providers.
+        assert!(head.len() < session.messages().len());
+
+        let (tx, _rx) = mpsc::channel(64);
+        let mut seq = 0;
+        let result = runtime
+            .compact_now(&mut session, "turn", &mut seq, &tx, &CancellationToken::new())
+            .await;
+        assert!(result.is_some(), "cross-provider compaction must still succeed");
+    }
+
+    #[test]
+    fn stripping_reasoning_leaves_tool_pairing_intact() {
+        // Nothing carrying a tool call can be emptied by the strip, so the
+        // call/result pairing the provider validates is untouched.
+        let messages = vec![
+            ConversationMessage::assistant(
+                vec![
+                    ContentBlock::Thinking {
+                        text: "hmm".into(),
+                        signature: Some("sig".into()),
+                        duration_ms: None,
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call-1".into(),
+                        name: "file_read".into(),
+                        input: serde_json::json!({"path": "a.rs"}),
+                    },
+                ],
+                0,
+            ),
+            ConversationMessage {
+                role: MessageRole::Tool,
+                blocks: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-1".into(),
+                    content: "fn main() {}".into(),
+                    is_error: Some(false),
+                }],
+                usage: None,
+                timestamp: 1,
+                attached_selected_elements: None,
+                attached_prompt_chips: None,
+                model: None,
+            },
+        ];
+
+        let stripped = strip_reasoning(messages);
+        assert_eq!(stripped.len(), 2, "neither message may be dropped");
+        assert!(matches!(
+            stripped[0].blocks.as_slice(),
+            [ContentBlock::ToolUse { .. }]
+        ));
+    }
+
+    #[test]
+    fn the_drafting_scratchpad_never_reaches_context() {
+        let raw = "<analysis>\nChronological pass, 4000 tokens of it.\n</analysis>\n\n\
+                   <summary>\n1. Primary request: ship the parser.\n</summary>";
+        let out = format_compact_summary(raw);
+        assert_eq!(out, "1. Primary request: ship the parser.");
+        assert!(!out.contains("Chronological"), "analysis must be dropped");
+    }
+
+    #[test]
+    fn a_summary_cut_off_mid_note_keeps_what_was_written() {
+        // The output budget ran out. The early sections are the valuable ones
+        // — discarding them would fail the compaction over a missing tag.
+        let raw = "<analysis>draft</analysis>\n<summary>\n1. Primary request: ship it.\n2. Files";
+        let out = format_compact_summary(raw);
+        assert!(out.starts_with("1. Primary request: ship it."));
+        assert!(!out.contains("draft"));
+    }
+
+    #[test]
+    fn an_unclosed_analysis_block_does_not_swallow_the_note() {
+        // The model wrote the whole note but forgot `</analysis>`. Cutting at
+        // the missing tag would discard a perfectly good summary and fail the
+        // compaction over punctuation.
+        let raw = "<analysis>\nthinking out loud\n<summary>\n1. Ship the parser.\n</summary>";
+        let out = format_compact_summary(raw);
+        assert_eq!(out, "1. Ship the parser.");
+        assert!(!out.contains("thinking out loud"));
+    }
+
+    #[test]
+    fn a_summary_that_ignored_the_tags_is_still_used() {
+        // Tags are a request, not a guarantee. A plain-prose summary is worth
+        // far more than treating the compaction as failed.
+        let out = format_compact_summary("  We were refactoring the parser.  ");
+        assert_eq!(out, "We were refactoring the parser.");
+    }
+
+    #[test]
+    fn the_resume_note_tells_the_model_to_continue_seamlessly() {
+        let view = compaction_preamble("1. Primary request: ship it.", None);
+        assert!(view.contains("1. Primary request: ship it."));
+        // The whole point of the user-facing behaviour: no seam.
+        assert!(view.contains("do not mention the summary"));
+        assert!(view.contains("preserved word for word"));
+        // No path was offered, so none must be promised.
+        assert!(!view.contains("file_read"));
+    }
+
+    #[test]
+    fn the_resume_note_offers_the_transcript_when_it_is_readable() {
+        let view = compaction_preamble("note", Some("C:/sessions/t-1.jsonl"));
+        assert!(view.contains("C:/sessions/t-1.jsonl"));
+        assert!(view.contains("file_read"));
+    }
+
+    #[tokio::test]
+    async fn the_transcript_is_only_offered_when_the_model_could_open_it() {
+        let session = Session::new("t-hint");
+        let with_tools = |allow: bool| {
+            ConversationRuntime::new(
+                recording_api("ok"),
+                Arc::new(ToolRegistry::new()),
+                RuntimeConfig {
+                    allow_outside_workspace: allow,
+                    ..RuntimeConfig::default()
+                },
+            )
+            .with_store_dir("C:/sessions")
+        };
+        // The session store is outside the workspace: without the opt-in the
+        // read is refused, and naming a path the model cannot open is worse
+        // than saying nothing.
+        assert!(with_tools(false).transcript_hint(&session).is_none());
+        assert!(with_tools(true).transcript_hint(&session).is_some());
+    }
+
+    fn measured(input: u32, cache_write: u32, cache_read: u32, output: u32) -> TokenUsage {
+        TokenUsage {
+            input_tokens: input,
+            output_tokens: output,
+            cache_creation_input_tokens: Some(cache_write),
+            cache_read_input_tokens: Some(cache_read),
+            estimated: None,
+            cost_usd: None,
+        }
+    }
+
+    /// Returns a blockless assistant message on the first call and a normal
+    /// one afterwards — the shape a dropped `redacted_thinking` block left
+    /// behind, reproduced from two real sessions where the provider billed
+    /// output tokens and Aurora persisted nothing.
+    #[derive(Default)]
+    struct EmptyThenAnswerApi {
+        calls: Mutex<u32>,
+    }
+
+    #[async_trait]
+    impl StreamingApiClient for EmptyThenAnswerApi {
+        async fn stream(
+            &self,
+            _request: ApiRequest<'_>,
+            _event_sink: mpsc::Sender<AssistantEvent>,
+            _cancel_token: CancellationToken,
+        ) -> Result<TurnUsage, ApiError> {
+            let mut calls = self.calls.lock().expect("calls");
+            *calls += 1;
+            if *calls == 1 {
+                return Ok(turn_usage(
+                    ConversationMessage::assistant(Vec::new(), 0),
+                    "end_turn",
+                ));
+            }
+            Ok(turn_usage(assistant_text("here is the answer"), "end_turn"))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_response_with_no_blocks_is_retried_once_instead_of_surfacing() {
+        let api = Arc::new(EmptyThenAnswerApi::default());
+        let runtime = ConversationRuntime::new(
+            api.clone(),
+            Arc::new(ToolRegistry::new()),
+            RuntimeConfig::default(),
+        );
+
+        let mut session = Session::new("t-empty");
+        let (tx, _rx) = mpsc::channel(64);
+        runtime
+            .run_turn(&mut session, user_msg("hi"), tx, CancellationToken::new())
+            .await
+            .expect("turn should succeed on the retry");
+
+        assert_eq!(*api.calls.lock().expect("calls"), 2, "should re-issue once");
+
+        // The blockless response must leave NO trace in history. Serialized to
+        // Anthropic it becomes an assistant turn with empty content, which the
+        // API rejects — one dropped response would break every later turn.
+        assert!(
+            session
+                .messages()
+                .iter()
+                .all(|m| !m.blocks.is_empty()),
+            "an empty assistant message must never enter history",
+        );
+        assert!(
+            session.messages().iter().any(|m| matches!(
+                m.blocks.first(),
+                Some(ContentBlock::Text { text }) if text == "here is the answer"
+            )),
+            "the retry's answer must be kept",
+        );
+    }
+
+    /// Always blockless — the condition really is persistent.
+    #[derive(Default)]
+    struct AlwaysEmptyApi {
+        calls: Mutex<u32>,
+    }
+
+    #[async_trait]
+    impl StreamingApiClient for AlwaysEmptyApi {
+        async fn stream(
+            &self,
+            _request: ApiRequest<'_>,
+            _event_sink: mpsc::Sender<AssistantEvent>,
+            _cancel_token: CancellationToken,
+        ) -> Result<TurnUsage, ApiError> {
+            *self.calls.lock().expect("calls") += 1;
+            Ok(turn_usage(
+                ConversationMessage::assistant(Vec::new(), 0),
+                "end_turn",
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_persistently_empty_provider_is_reported_not_looped_on() {
+        let api = Arc::new(AlwaysEmptyApi::default());
+        let runtime = ConversationRuntime::new(
+            api.clone(),
+            Arc::new(ToolRegistry::new()),
+            RuntimeConfig::default(),
+        );
+
+        let mut session = Session::new("t-empty-always");
+        let (tx, _rx) = mpsc::channel(64);
+        runtime
+            .run_turn(&mut session, user_msg("hi"), tx, CancellationToken::new())
+            .await
+            .expect("turn ends cleanly");
+
+        assert_eq!(
+            *api.calls.lock().expect("calls"),
+            2,
+            "exactly one retry — a second empty reply is a condition, not a loop",
+        );
+        assert!(
+            session.messages().iter().any(|m| matches!(
+                m.blocks.first(),
+                Some(ContentBlock::Notice { .. })
+            )),
+            "the user must be told once the retry has also failed",
+        );
+    }
+
+    #[test]
+    fn a_measured_request_counts_cache_writes_and_output() {
+        // Every slice of the prompt, plus the completion that becomes input on
+        // the next request. Dropping cache-write here understated a
+        // cache-writing turn by most of its prompt.
+        assert_eq!(measured_context_tokens(&measured(10_000, 40_000, 5_000, 700)), 55_700);
+    }
+
+    /// A runtime with no tools and no system prompt, so the from-scratch
+    /// fallback is purely the message estimate and the two paths are easy to
+    /// tell apart in an assertion.
+    fn bare_runtime() -> ConversationRuntime {
+        ConversationRuntime::new(
+            recording_api("ok"),
+            Arc::new(ToolRegistry::new()),
+            RuntimeConfig {
+                context_window: Some(500_000),
+                ..RuntimeConfig::default()
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn context_size_anchors_on_the_last_measured_request() {
+        let runtime = bare_runtime();
+        let mut session = Session::new("t-anchor");
+        // A long history whose from-scratch estimate is nowhere near the
+        // measured number — this is the situation that produced the 431k
+        // report for a 180k context.
+        let big = FILLER_60.repeat(50);
+        session.append_message(user_with_text(&big, 0));
+        let mut answered = assistant_with_text("done", 1);
+        answered.usage = Some(measured(120_000, 0, 30_000, 500));
+        session.append_message(answered);
+
+        // Nothing added since the measurement → the anchor IS the answer.
+        assert_eq!(runtime.projected_request_tokens(&session), 150_500);
+
+        // One new message → anchor plus exactly that message's estimate.
+        let follow_up = user_with_text("what about the other file?", 2);
+        let delta = estimate_message_tokens(&follow_up, ReasoningReplay::Dropped);
+        session.append_message(follow_up);
+        assert_eq!(runtime.projected_request_tokens(&session), 150_500 + delta);
+    }
+
+    #[tokio::test]
+    async fn our_own_estimate_is_never_used_as_an_anchor() {
+        let runtime = bare_runtime();
+        let mut session = Session::new("t-anchor-est");
+        session.append_message(user_with_text("hello", 0));
+        let mut guessed = assistant_with_text("hi", 1);
+        // A no-usage provider's synthetic figure. Anchoring on it would
+        // launder a guess into "measured" and freeze it as ground truth.
+        guessed.usage = Some(TokenUsage {
+            input_tokens: 999_999,
+            output_tokens: 0,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            estimated: Some(true),
+            cost_usd: None,
+        });
+        session.append_message(guessed);
+
+        let projected = runtime.projected_request_tokens(&session);
+        assert!(
+            projected < 1_000,
+            "should fall back to estimating the transcript, got {projected}",
+        );
+    }
+
+    #[tokio::test]
+    async fn context_size_falls_back_to_estimation_with_no_measurement() {
+        let runtime = bare_runtime();
+        let mut session = Session::new("t-anchor-none");
+        session.append_message(user_with_text("hello", 0));
+        session.append_message(assistant_with_text("hi", 1));
+
+        let expected: u32 = session
+            .messages()
+            .iter()
+            .map(|m| estimate_message_tokens(m, ReasoningReplay::Dropped))
+            .fold(0, u32::saturating_add);
+        assert_eq!(runtime.projected_request_tokens(&session), expected);
+    }
+
+    /// Summarizer that always comes back empty — the "compaction can never
+    /// succeed for this conversation" case.
+    #[derive(Default)]
+    struct FailingSummarizer {
+        calls: Mutex<u32>,
+    }
+
+    #[async_trait]
+    impl StreamingApiClient for FailingSummarizer {
+        async fn stream(
+            &self,
+            _request: ApiRequest<'_>,
+            _event_sink: mpsc::Sender<AssistantEvent>,
+            _cancel_token: CancellationToken,
+        ) -> Result<TurnUsage, ApiError> {
+            *self.calls.lock().expect("calls") += 1;
+            Ok(turn_usage(assistant_text(""), "end_turn"))
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_compaction_stops_retrying_a_failure_that_never_clears() {
+        let summarizer = Arc::new(FailingSummarizer::default());
+        let runtime = ConversationRuntime::new(
+            recording_api("chat"),
+            Arc::new(ToolRegistry::new()),
+            RuntimeConfig {
+                // A window small enough that the seeded transcript is always
+                // over the threshold, so every attempt re-qualifies.
+                context_window: Some(1_000),
+                compaction_threshold: Some(0.5),
+                ..RuntimeConfig::default()
+            },
+        )
+        .with_compaction_client(summarizer.clone(), "summarizer:model");
+
+        let mut session = compactable_session();
+        let (tx, _rx) = mpsc::channel(64);
+        let mut seq = 0;
+
+        // Ten turns' worth of attempts. Each failed compaction re-sends the
+        // whole head, so an unbounded loop bills full price every turn.
+        for _ in 0..10 {
+            runtime
+                .maybe_compact(&mut session, "turn", &mut seq, &tx, &CancellationToken::new())
+                .await;
+        }
+
+        let calls = *summarizer.calls.lock().expect("calls");
+        assert_eq!(
+            calls, MAX_CONSECUTIVE_COMPACTION_FAILURES,
+            "breaker must stop after {MAX_CONSECUTIVE_COMPACTION_FAILURES} failures, made {calls}",
+        );
+        assert!(session.compaction_retry_after.is_some(), "cooldown must be armed");
+    }
+
+    #[tokio::test]
+    async fn a_manual_compact_is_not_blocked_by_the_breaker() {
+        let summarizer = Arc::new(FailingSummarizer::default());
+        let runtime = ConversationRuntime::new(
+            recording_api("chat"),
+            Arc::new(ToolRegistry::new()),
+            RuntimeConfig {
+                context_window: Some(1_000),
+                compaction_threshold: Some(0.5),
+                ..RuntimeConfig::default()
+            },
+        )
+        .with_compaction_client(summarizer.clone(), "summarizer:model");
+
+        let mut session = compactable_session();
+        // Already tripped and cooling down.
+        session.compaction_failures = MAX_CONSECUTIVE_COMPACTION_FAILURES;
+        session.compaction_retry_after = Some(Utc::now().timestamp_millis() + 60_000);
+
+        let (tx, _rx) = mpsc::channel(64);
+        let mut seq = 0;
+        let _ = runtime
+            .compact_now(&mut session, "turn", &mut seq, &tx, &CancellationToken::new())
+            .await;
+
+        // The user asked for this one and is watching it — it must run.
+        assert_eq!(*summarizer.calls.lock().expect("calls"), 1);
+    }
+
+    /// API mock that answers with a fixed body and records the model it was
+    /// asked for. Two of these let a test tell the chat provider apart from
+    /// the summarizer.
+    #[derive(Default)]
+    struct ModelRecordingApi {
+        reply: String,
+        models: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl StreamingApiClient for ModelRecordingApi {
+        async fn stream(
+            &self,
+            request: ApiRequest<'_>,
+            _event_sink: mpsc::Sender<AssistantEvent>,
+            _cancel_token: CancellationToken,
+        ) -> Result<TurnUsage, ApiError> {
+            self.models
+                .lock()
+                .expect("models")
+                .push(request.model.to_string());
+            Ok(turn_usage(assistant_text(&self.reply), "end_turn"))
+        }
+    }
+
+    fn recording_api(reply: &str) -> Arc<ModelRecordingApi> {
+        Arc::new(ModelRecordingApi {
+            reply: reply.to_string(),
+            models: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// A transcript long enough for `compaction_cut` to find a safe boundary:
+    /// it needs at least two user messages with a non-empty head.
+    fn compactable_session() -> Session {
+        let big = FILLER_60.repeat(20);
+        let mut session = Session::new("t-compact").with_model("chat-provider:chat-model");
+        for turn in 0..4 {
+            session.append_message(user_with_text(&big, turn * 2));
+            session.append_message(assistant_with_text(&big, turn * 2 + 1));
+        }
+        session
+    }
+
+    #[tokio::test]
+    async fn compaction_summarizes_on_the_chat_model_by_default() {
+        let chat = recording_api("a summary");
+        let runtime = ConversationRuntime::new(
+            chat.clone(),
+            Arc::new(ToolRegistry::new()),
+            RuntimeConfig {
+                context_window: Some(4000),
+                ..RuntimeConfig::default()
+            },
+        );
+
+        let mut session = compactable_session();
+        let (tx, _rx) = mpsc::channel(32);
+        let mut seq = 0;
+        let result = runtime
+            .compact_now(&mut session, "turn-1", &mut seq, &tx, &CancellationToken::new())
+            .await;
+
+        assert!(result.is_some(), "compaction should have produced a marker");
+        assert_eq!(
+            chat.models.lock().expect("models").as_slice(),
+            &["chat-provider:chat-model".to_string()],
+            "with nothing pinned the summary rides the conversation's own model",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pinned_compaction_model_runs_and_is_billed_for_the_summary() {
+        let chat = recording_api("chat reply");
+        let summarizer = recording_api("a summary");
+        let runtime = ConversationRuntime::new(
+            chat.clone(),
+            Arc::new(ToolRegistry::new()),
+            RuntimeConfig {
+                context_window: Some(4000),
+                ..RuntimeConfig::default()
+            },
+        )
+        .with_compaction_client(summarizer.clone(), "cheap-provider:cheap-model");
+
+        let mut session = compactable_session();
+        let (tx, _rx) = mpsc::channel(32);
+        let mut seq = 0;
+        let result = runtime
+            .compact_now(&mut session, "turn-1", &mut seq, &tx, &CancellationToken::new())
+            .await;
+
+        assert!(result.is_some(), "compaction should have produced a marker");
+        // The summary ran on the pinned provider…
+        assert_eq!(
+            summarizer.models.lock().expect("models").as_slice(),
+            &["cheap-provider:cheap-model".to_string()],
+        );
+        // …and the chat provider was never asked to do it.
+        assert!(
+            chat.models.lock().expect("models").is_empty(),
+            "the chat model must not run the summary once one is pinned",
+        );
+
+        // The marker carries the SUMMARIZER's model, so the cost card prices
+        // this request at the cheap model's rates rather than the chat one's.
+        let marker = session
+            .messages()
+            .iter()
+            .find(|m| {
+                m.blocks
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Compaction { .. }))
+            })
+            .expect("marker was inserted");
+        assert_eq!(marker.model.as_deref(), Some("cheap-provider:cheap-model"));
     }
 
     /// API mock that records every messages slice it sees so we can
@@ -4055,3 +6443,4 @@ mod tests {
         assert_eq!(msgs.len(), 5, "no trim → full session sent");
     }
 }
+

@@ -4,8 +4,8 @@
  * Provides access to Aurora's built-in themes: Dark, Light, High Contrast, variants, and Alvan Aurora Dark.
  * Requirement 7.4: Include at least 3 built-in themes
  */
-import { themeFileToDefinition } from "../services/theme-service";
-import type { ThemeDefinition, ThemeFile } from "../types/theme";
+import { themeFileToDefinition } from "@/apps/ide/services/theme-service";
+import type { ThemeDefinition, ThemeFile } from "@/kernel/types/theme";
 import alvanAuroraDarkTheme from "./alvan-aurora-dark.json";
 import darkNeutralTheme from "./dark-neutral.json";
 // Import theme JSON files

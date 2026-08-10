@@ -73,6 +73,13 @@ pub fn sessions_dir() -> PathBuf {
     ensure_subdir("sessions")
 }
 
+/// `<root>/code-index/` — one cached symbol index per workspace, named by the
+/// same workspace hash `checkpoints_dir` uses, plus a `.meta.json` sidecar.
+/// Disposable: deleting it costs a sub-second rebuild, never user data.
+pub fn code_index_dir() -> PathBuf {
+    ensure_subdir("code-index")
+}
+
 /// `<root>/config/` — user-facing JSON config files (e.g. mcp.json).
 pub fn config_dir() -> PathBuf {
     ensure_subdir("config")

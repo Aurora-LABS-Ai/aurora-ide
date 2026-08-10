@@ -27,7 +27,9 @@ use tauri::State;
 
 use crate::agent_runtime::types::{ContentBlock, MessageRole};
 use crate::commands::agent_v2::AgentRegistry;
-use crate::commands::usage_stats::{DayUsage, ModelUsage, ToolUsage};
+use crate::commands::usage_stats::{
+    DayUsage, ModelUsage, ProviderRequestUsage, RequestTally, ToolUsage,
+};
 
 /// Cap on the "slowest turns" list — enough to spot a pattern, short enough to
 /// read at a glance.
@@ -83,6 +85,11 @@ pub struct ProjectStats {
     pub conversations: Vec<ProjectConversation>,
     pub top_models: Vec<ModelUsage>,
     pub top_tools: Vec<ToolUsage>,
+    /// Every API request this project has sent, across all its conversations.
+    /// One call per tool step, so far larger than `total_turns`.
+    pub total_requests: u32,
+    /// Those requests grouped by provider, models nested. Descending.
+    pub requests_by_provider: Vec<ProviderRequestUsage>,
     pub longest_turns: Vec<ProjectLongTurn>,
     /// Ascending by date; days with no activity are absent.
     pub days: Vec<DayUsage>,
@@ -106,11 +113,7 @@ fn local_day(ts_ms: i64) -> Option<String> {
 /// drive-letter case), and a thread's recorded root came from whichever wrote
 /// it. Comparing raw strings silently produced empty projects.
 fn same_workspace(a: &str, b: &str) -> bool {
-    let norm = |s: &str| {
-        s.replace('\\', "/")
-            .trim_end_matches('/')
-            .to_lowercase()
-    };
+    let norm = |s: &str| s.replace('\\', "/").trim_end_matches('/').to_lowercase();
     norm(a) == norm(b)
 }
 
@@ -124,7 +127,11 @@ fn prompt_preview(blocks: &[ContentBlock]) -> String {
         })
         .unwrap_or("")
         .trim();
-    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     if line.chars().count() > PROMPT_PREVIEW_CHARS {
         let cut: String = line.chars().take(PROMPT_PREVIEW_CHARS).collect();
         format!("{}…", cut.trim_end())
@@ -149,6 +156,9 @@ pub fn project_stats_get(
 
     let mut days: HashMap<String, DayUsage> = HashMap::new();
     let mut tools: HashMap<String, u32> = HashMap::new();
+    // Same tally the Profile page uses, so "requests" means one thing across
+    // the product rather than two implementations that drift apart.
+    let mut requests = RequestTally::default();
     let mut models: HashMap<String, (u32, u64)> = HashMap::new();
     let mut conversations: Vec<ProjectConversation> = Vec::new();
     let mut longest_turns: Vec<ProjectLongTurn> = Vec::new();
@@ -180,14 +190,18 @@ pub fn project_stats_get(
         let mut turns = 0u32;
         let mut active_ms = 0i64;
         let mut thread_tokens = 0u64;
+        // Providers this conversation touched, so a chat that switched
+        // provider mid-way counts once toward each.
+        let mut providers_in_thread: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut first_ts: Option<i64> = None;
         let mut last_ts: Option<i64> = None;
 
         // Open turn: (user timestamp, prompt preview, last message timestamp).
         let mut open_turn: Option<(i64, String, i64)> = None;
         let close_turn = |turn: Option<(i64, String, i64)>,
-                              active: &mut i64,
-                              longest: &mut Vec<ProjectLongTurn>| {
+                          active: &mut i64,
+                          longest: &mut Vec<ProjectLongTurn>| {
             let Some((start, prompt, end)) = turn else {
                 return;
             };
@@ -247,6 +261,7 @@ pub fn project_stats_get(
             output_tokens += output;
             cache_read_tokens += cache_read;
             thread_tokens += input + output;
+            requests.record(message.model.as_deref(), usage, &mut providers_in_thread);
 
             if let Some(date) = local_day(message.timestamp) {
                 let day = days.entry(date.clone()).or_insert_with(|| DayUsage {
@@ -263,6 +278,7 @@ pub fn project_stats_get(
             }
         }
         close_turn(open_turn.take(), &mut active_ms, &mut longest_turns);
+        requests.finish_thread(providers_in_thread);
 
         if let Some(model) = loaded.metadata.model.as_deref() {
             if !model.is_empty() {
@@ -340,6 +356,9 @@ pub fn project_stats_get(
             .map(|dt| dt.to_rfc3339())
     };
 
+    let total_requests = requests.total();
+    let requests_by_provider = requests.into_providers();
+
     Ok(ProjectStats {
         workspace_root,
         total_conversations: conversations.len() as u32,
@@ -353,6 +372,8 @@ pub fn project_stats_get(
         conversations,
         top_models,
         top_tools,
+        total_requests,
+        requests_by_provider,
         longest_turns,
         days,
         first_activity: iso(first_activity),

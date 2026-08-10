@@ -53,6 +53,18 @@ pub enum ContentBlock {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
+        /// Wall-clock the model spent on this reasoning segment, in ms.
+        ///
+        /// Persisted because the UI shows it ("Thought · 4m 14s") and a
+        /// RELOADED turn has no other way to know: the reasoning block is
+        /// rebuilt from this struct, and nothing else in the JSONL records
+        /// when it started. Without it the same turn would show a duration
+        /// while streaming and a blank after reopening the chat.
+        ///
+        /// `Option` + `default` so sessions written before this field still
+        /// deserialize; they render no number rather than a wrong one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
     },
 
     /// Model is requesting a tool call. `input` is the raw JSON
@@ -121,7 +133,9 @@ pub enum ContentBlock {
 /// cache telemetry (Anthropic, GLM, DeepSeek). They are skipped on the
 /// wire when absent so the type stays compatible with providers that
 /// don't emit them.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+// Not `Eq`: `cost_usd` is an `f64`. Comparisons stay structural via
+// `PartialEq`, which is all any caller (and every test) needs.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TokenUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
@@ -129,6 +143,29 @@ pub struct TokenUsage {
     pub cache_creation_input_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u32>,
+    /// `Some(true)` when these counts are Aurora's own tiktoken estimate
+    /// rather than provider-reported usage.
+    ///
+    /// This drives a MONEY figure, so the distinction cannot be dropped: a
+    /// provider that reports nothing (Ollama, LM Studio, some custom
+    /// gateways) would otherwise have its cost render as an exact `$0.00`,
+    /// which is a false number rather than a missing one. Anything derived
+    /// from an estimated call must be presented as approximate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated: Option<bool>,
+    /// What the PROVIDER charged for this request, in USD, when it says so.
+    ///
+    /// This outranks any price Aurora multiplies out. A catalog rate is a
+    /// published list price; this is the number on the bill, already
+    /// reflecting gateway markup, BYOK, promos and account-level discounts.
+    /// `None` means the provider reported no cost and the request must be
+    /// priced from the model's configured rates instead.
+    ///
+    /// Kept per-request rather than per-turn so a conversation that mixes a
+    /// reporting provider with a non-reporting one can price each request
+    /// with the best source available to it, and say which was used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
 }
 
 impl TokenUsage {
@@ -202,6 +239,19 @@ pub struct ConversationMessage {
     /// Exact file and `/` pills from the composer, for transcript replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attached_prompt_chips: Option<Vec<AttachedPromptChip>>,
+    /// `"{provider_id}:{model}"` that produced this assistant message.
+    ///
+    /// Cost is per-model, and the model can be switched mid-thread, so a
+    /// thread total computed by summing TOKENS and multiplying once by
+    /// whatever model is selected now would be wrong for every call that ran
+    /// under a different one. Recording it here lets the total be summed as
+    /// MONEY, per model, from the transcript itself.
+    ///
+    /// `None` on user/tool messages and on assistant messages written before
+    /// this field existed — those are reported as unattributed rather than
+    /// priced at a model that may not have produced them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl ConversationMessage {
@@ -215,6 +265,7 @@ impl ConversationMessage {
             timestamp,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            model: None,
         }
     }
 
@@ -229,6 +280,7 @@ impl ConversationMessage {
             timestamp,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            model: None,
         }
     }
 
@@ -247,6 +299,7 @@ impl ConversationMessage {
             timestamp,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            model: None,
         }
     }
 }
@@ -273,6 +326,7 @@ mod tests {
         let block = ContentBlock::Thinking {
             text: "step 1: think".into(),
             signature: Some("sig-abc-123".into()),
+            duration_ms: Some(4_200),
         };
         let v = serde_json::to_value(&block).expect("serialize");
         let back: ContentBlock = serde_json::from_value(v).expect("deserialize");
@@ -295,6 +349,7 @@ mod tests {
         round_trip(ContentBlock::Thinking {
             text: "no sig".into(),
             signature: None,
+            duration_ms: None,
         });
     }
 
@@ -303,6 +358,7 @@ mod tests {
         let block = ContentBlock::Thinking {
             text: "no sig".into(),
             signature: None,
+            duration_ms: None,
         };
         let s = serde_json::to_string(&block).expect("serialize");
         assert!(
@@ -392,6 +448,8 @@ mod tests {
                 output_tokens: 4,
                 cache_creation_input_tokens: Some(1),
                 cache_read_input_tokens: Some(2),
+                estimated: None,
+                cost_usd: None,
             },
             999,
         );

@@ -210,11 +210,19 @@ fn session_to_db_messages_rich(
                     match block {
                         ContentBlock::Text { text } => {
                             push_with_newline(&mut content, text);
-                            push_timeline_text(&mut timeline, &message_id, "content", text);
+                            push_timeline_text(&mut timeline, &message_id, "content", text, None);
                         }
-                        ContentBlock::Thinking { text, .. } => {
+                        ContentBlock::Thinking {
+                            text, duration_ms, ..
+                        } => {
                             push_with_newline(&mut thinking, text);
-                            push_timeline_text(&mut timeline, &message_id, "thinking", text);
+                            push_timeline_text(
+                                &mut timeline,
+                                &message_id,
+                                "thinking",
+                                text,
+                                *duration_ms,
+                            );
                         }
                         ContentBlock::ToolUse { id, name, input } => {
                             let arguments =
@@ -300,6 +308,12 @@ fn session_to_db_messages_rich(
                 // Text block. Preserve it as a tiny assistant timeline segment
                 // so the frontend merges it at the exact tool→next-response
                 // boundary instead of losing it on thread reload.
+                //
+                // Display fidelity: the persisted block is the MODEL copy —
+                // the typed text plus any `<steering_context>` directive
+                // block the composer resolved from `/` commands. The row
+                // shows only the typed part; the chips (persisted on this
+                // tool message) re-render the pills that stood for the rest.
                 for (index, text) in msg
                     .blocks
                     .iter()
@@ -309,6 +323,17 @@ fn session_to_db_messages_rich(
                     })
                     .enumerate()
                 {
+                    let display = strip_steering_context(strip_mid_turn_preamble(text));
+                    let mut event = serde_json::json!({
+                        "kind": "user_injection",
+                        "id": format!("injection-{}-{index}", msg.timestamp),
+                        "text": display,
+                    });
+                    if let Some(chips) = msg.attached_prompt_chips.as_ref() {
+                        if let Ok(chips_json) = serde_json::to_value(chips) {
+                            event["chips"] = chips_json;
+                        }
+                    }
                     out.push(Message {
                         id: synthetic_message_id("injection", msg.timestamp, out.len()),
                         role: "assistant".to_string(),
@@ -318,11 +343,7 @@ fn session_to_db_messages_rich(
                         thinking: None,
                         is_thinking: Some(false),
                         tools: None,
-                        timeline: Some(serde_json::json!([{
-                            "kind": "user_injection",
-                            "id": format!("injection-{}-{index}", msg.timestamp),
-                            "text": text,
-                        }])),
+                        timeline: Some(serde_json::Value::Array(vec![event])),
                         tool_proposal: None,
                         attached_selected_elements: None,
                         attached_prompt_chips: None,
@@ -333,6 +354,47 @@ fn session_to_db_messages_rich(
     }
 
     out
+}
+
+/// Drop the runtime's mid-turn framing line from an injected message. The
+/// preamble ([`crate::agent_runtime::session::MID_TURN_PREAMBLE`]) tells the
+/// MODEL the message arrived while tools were running; the human watched it
+/// happen, so displaying it back is noise.
+fn strip_mid_turn_preamble(text: &str) -> &str {
+    let preamble = crate::agent_runtime::session::MID_TURN_PREAMBLE;
+    match text.strip_prefix(preamble) {
+        Some(rest) => rest.trim_start_matches('\n'),
+        None => text,
+    }
+}
+
+/// Cut the `<steering_context>…</steering_context>` block out of an injected
+/// mid-turn message, leaving what the user typed.
+///
+/// The composer appends that block when the user attaches `/` directives to
+/// a mid-turn send (resolved rule text, skill references, MCP nudges) — the
+/// model must see it, the human already saw it as pills. The tag pair is a
+/// contract with `useAgentWindowSend`'s mid-turn branch (`STEERING_OPEN` /
+/// `STEERING_CLOSE` there); a message without the tags passes through
+/// untouched, as does a malformed half-tagged one (showing machinery beats
+/// eating the user's words).
+fn strip_steering_context(text: &str) -> String {
+    const OPEN: &str = "<steering_context>";
+    const CLOSE: &str = "</steering_context>";
+    let (Some(start), Some(end)) = (text.find(OPEN), text.rfind(CLOSE)) else {
+        return text.to_string();
+    };
+    if end < start {
+        return text.to_string();
+    }
+    let head = text[..start].trim_end();
+    let tail = text[end + CLOSE.len()..].trim_start();
+    match (head.is_empty(), tail.is_empty()) {
+        (false, false) => format!("{head}\n\n{tail}"),
+        (false, true) => head.to_string(),
+        (true, false) => tail.to_string(),
+        (true, true) => String::new(),
+    }
 }
 
 /// Convert the canonical `Vec<ConversationMessage>` directly into the
@@ -459,11 +521,17 @@ fn push_with_newline(out: &mut String, s: &str) {
 ///
 /// Empty text is skipped: it contributes nothing to read, and an empty segment
 /// renders as a blank gap in the transcript.
+/// `duration_ms` is carried for reasoning segments only, and SUMS across a
+/// merge: two adjacent thinking blocks become one segment in the UI, so the
+/// number the UI prints has to describe the whole thing. Blocks written before
+/// the field existed carry `None` and contribute nothing, which correctly
+/// leaves a legacy segment with no number rather than a partial one.
 fn push_timeline_text(
     timeline: &mut Vec<serde_json::Value>,
     message_id: &str,
     kind: &str,
     text: &str,
+    duration_ms: Option<u64>,
 ) {
     if text.is_empty() {
         return;
@@ -472,13 +540,21 @@ fn push_timeline_text(
         if last["kind"] == kind {
             let merged = format!("{}\n{}", last["text"].as_str().unwrap_or_default(), text);
             last["text"] = serde_json::Value::String(merged);
+            if let Some(ms) = duration_ms {
+                let total = last["durationMs"].as_u64().unwrap_or(0).saturating_add(ms);
+                last["durationMs"] = serde_json::json!(total);
+            }
             return;
         }
     }
     // Index-derived id: block order on disk is fixed, so this is stable across
     // reloads and unique within the message.
     let id = format!("{message_id}-e{}", timeline.len());
-    timeline.push(serde_json::json!({ "kind": kind, "id": id, "text": text }));
+    let mut event = serde_json::json!({ "kind": kind, "id": id, "text": text });
+    if let Some(ms) = duration_ms {
+        event["durationMs"] = serde_json::json!(ms);
+    }
+    timeline.push(event);
 }
 
 fn duplicate_title(title: &str) -> String {
@@ -834,6 +910,182 @@ pub async fn thread_copy_markdown(
         .map_err(|error| format!("Failed to write chat to the clipboard: {error}"))
 }
 
+// ============================================================================
+// Cost accounting
+// ============================================================================
+
+/// Token totals for every request in a thread that ran on ONE model.
+///
+/// Grouped rather than summed flat because price is a property of the model,
+/// and a conversation can move between models freely — start on a cheap one,
+/// switch to a frontier model mid-task, switch back. Summing all tokens and
+/// pricing them once at whatever model happens to be selected now would
+/// misprice every request that ran under a different one, in either direction.
+/// The caller prices each group with ITS model and adds up the money.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsageGroup {
+    /// `"{provider_id}:{model}"`, or `None` for requests recorded before the
+    /// model was persisted per message. Those are reported separately rather
+    /// than folded into a priced group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Fresh (uncached) input tokens.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    /// API requests in this group.
+    pub requests: u32,
+    /// How many of those requests carry Aurora's own estimate rather than
+    /// provider-reported usage. Non-zero means the group's cost is
+    /// approximate and must be presented that way.
+    pub estimated_requests: u32,
+    /// Total USD the PROVIDER reported for these requests.
+    ///
+    /// `Some` means every request here came with its own price from the
+    /// provider, and that figure is used verbatim — no token arithmetic. That
+    /// is the honest ordering: a reported cost already includes gateway
+    /// markup, BYOK rates and account discounts that a published list price
+    /// cannot know about.
+    ///
+    /// Groups are SPLIT on whether cost was reported (see the grouping key),
+    /// so this is never a partial sum sitting next to tokens that also need
+    /// pricing — a group is entirely reported or entirely computed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reported_cost_usd: Option<f64>,
+}
+
+/// A thread's complete cost basis, derived from the transcript on disk.
+///
+/// Deliberately computed from the JSONL rather than accumulated in the UI:
+/// the transcript is the only record that survives a reload, a second window,
+/// or a crash mid-turn, and a frontend running total would drift from it the
+/// first time any of those happened.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadUsageBreakdown {
+    pub thread_id: String,
+    /// Every request in the thread.
+    pub by_model: Vec<ModelUsageGroup>,
+    /// Only the most recent turn (everything after the last user message).
+    pub last_turn: Vec<ModelUsageGroup>,
+    /// User messages — i.e. how many times the user asked for something.
+    pub turns: u32,
+    /// API requests across the thread. Always >= `turns`, usually far more:
+    /// one turn makes one request per tool iteration.
+    pub requests: u32,
+}
+
+/// Fold every message that carries usage into per-model token groups.
+///
+/// Keyed on the PRESENCE OF USAGE rather than on the role, because an
+/// assistant reply is not the only thing Aurora pays for: a compaction marker
+/// is a `System` message and the summarization request behind it is often the
+/// largest single request in a conversation. Anything that cost money records
+/// usage; anything that records usage is counted here.
+///
+/// A message with no usage (a turn that errored before the provider answered)
+/// is not counted as a request — `requests` sits next to a dollar figure, and
+/// a request with no measurement would imply a cost basis that does not exist.
+fn group_usage_by_model(messages: &[ConversationMessage]) -> Vec<ModelUsageGroup> {
+    let mut groups: Vec<ModelUsageGroup> = Vec::new();
+    for message in messages {
+        let Some(usage) = message.usage.as_ref() else {
+            continue;
+        };
+        // Grouped by (model, did the provider price it). Splitting on the
+        // second half is what keeps a group entirely reported or entirely
+        // computed: mixing them would leave a partial dollar sum sitting next
+        // to tokens that still need pricing, and any consumer would either
+        // double-count or drop one of the two.
+        let reported = usage.cost_usd.is_some();
+        let slot = match groups
+            .iter_mut()
+            .find(|g| g.model == message.model && g.reported_cost_usd.is_some() == reported)
+        {
+            Some(existing) => existing,
+            None => {
+                groups.push(ModelUsageGroup {
+                    model: message.model.clone(),
+                    reported_cost_usd: if reported { Some(0.0) } else { None },
+                    ..Default::default()
+                });
+                groups.last_mut().expect("just pushed")
+            }
+        };
+        if let Some(cost) = usage.cost_usd {
+            slot.reported_cost_usd = Some(slot.reported_cost_usd.unwrap_or(0.0) + cost);
+        }
+        slot.input_tokens = slot
+            .input_tokens
+            .saturating_add(u64::from(usage.input_tokens));
+        slot.output_tokens = slot
+            .output_tokens
+            .saturating_add(u64::from(usage.output_tokens));
+        slot.cache_read_tokens = slot
+            .cache_read_tokens
+            .saturating_add(u64::from(usage.cache_read_input_tokens.unwrap_or(0)));
+        slot.cache_write_tokens = slot
+            .cache_write_tokens
+            .saturating_add(u64::from(usage.cache_creation_input_tokens.unwrap_or(0)));
+        slot.requests = slot.requests.saturating_add(1);
+        if usage.estimated == Some(true) {
+            slot.estimated_requests = slot.estimated_requests.saturating_add(1);
+        }
+    }
+    groups
+}
+
+/// The slice of the transcript belonging to the most recent turn: everything
+/// after the last user message.
+///
+/// A "turn" is one user request and all the work it caused, which is exactly
+/// what the cost card labels "Last turn" — not the last API call, which is
+/// what the old snapshot showed and why a long tool-using turn under-reported
+/// its cost by an order of magnitude.
+fn last_turn_slice(messages: &[ConversationMessage]) -> &[ConversationMessage] {
+    match messages.iter().rposition(|m| m.role == MessageRole::User) {
+        Some(index) => &messages[index..],
+        // No user message: either an empty thread or a synthesized one. The
+        // whole transcript is the only honest answer.
+        None => messages,
+    }
+}
+
+/// Build a thread's cost basis from its transcript.
+fn usage_breakdown(thread_id: &str, messages: &[ConversationMessage]) -> ThreadUsageBreakdown {
+    let by_model = group_usage_by_model(messages);
+    let requests = by_model.iter().map(|g| g.requests).sum();
+    ThreadUsageBreakdown {
+        thread_id: thread_id.to_string(),
+        last_turn: group_usage_by_model(last_turn_slice(messages)),
+        by_model,
+        turns: messages
+            .iter()
+            .filter(|m| m.role == MessageRole::User)
+            .count() as u32,
+        requests,
+    }
+}
+
+/// Token totals for a thread, grouped by the model that produced them.
+///
+/// The frontend applies pricing (which lives in the settings store) and sums
+/// the resulting money. Tokens are Rust's truth, prices are the settings
+/// store's truth — neither layer guesses at the other's.
+#[tauri::command]
+pub fn thread_usage_breakdown(
+    thread_id: String,
+    registry: State<'_, Arc<AgentRegistry>>,
+) -> Result<Option<ThreadUsageBreakdown>, String> {
+    let store = store_from_state(registry.inner());
+    let loaded = store
+        .load(&thread_id)
+        .map_err(|e| format!("Failed to load thread {thread_id}: {e}"))?;
+    Ok(loaded.map(|loaded| usage_breakdown(&thread_id, loaded.session.messages())))
+}
+
 /// Read a full thread (metadata + transcript) for the chat panel.
 #[tauri::command]
 pub fn thread_load(
@@ -1084,6 +1336,7 @@ mod tests {
                 timestamp: 3,
                 attached_selected_elements: None,
                 attached_prompt_chips: None,
+                model: None,
             },
         ];
 
@@ -1103,6 +1356,7 @@ mod tests {
                     ContentBlock::Thinking {
                         text: "private reasoning".into(),
                         signature: None,
+                        duration_ms: None,
                     },
                     ContentBlock::Text {
                         text: "Here is the answer".into(),
@@ -1170,6 +1424,7 @@ mod tests {
             timestamp: ts,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            model: None,
         }
     }
 
@@ -1206,6 +1461,7 @@ mod tests {
                 ContentBlock::Thinking {
                     text: "reasoning step".into(),
                     signature: None,
+                    duration_ms: Some(7_000),
                 },
                 ContentBlock::Text {
                     text: "answer".into(),
@@ -1217,6 +1473,364 @@ mod tests {
         assert_eq!(db[0].role, "assistant");
         assert_eq!(db[0].content, "answer");
         assert_eq!(db[0].thinking.as_deref(), Some("reasoning step"));
+    }
+
+    /// The UI prints "Thought · 7s" from this field. A live turn measures its
+    /// own reasoning, so a regression here is invisible until a chat is
+    /// REOPENED — at which point the number silently disappears.
+    #[test]
+    fn reloaded_thinking_segment_carries_its_duration() {
+        let assistant = ConversationMessage::assistant(
+            vec![ContentBlock::Thinking {
+                text: "reasoning step".into(),
+                signature: None,
+                duration_ms: Some(7_000),
+            }],
+            10,
+        );
+        let db = session_to_db_messages(&[assistant]);
+        let timeline = db[0].timeline.as_ref().expect("ordered timeline");
+        let event = &timeline.as_array().expect("array")[0];
+        assert_eq!(event["kind"], "thinking");
+        assert_eq!(event["durationMs"], 7_000);
+    }
+
+    /// Adjacent reasoning blocks render as ONE segment, so the number has to
+    /// describe the whole thing rather than only its last part.
+    #[test]
+    fn merged_thinking_segments_sum_their_durations() {
+        let assistant = ConversationMessage::assistant(
+            vec![
+                ContentBlock::Thinking {
+                    text: "first".into(),
+                    signature: None,
+                    duration_ms: Some(4_000),
+                },
+                ContentBlock::Thinking {
+                    text: "second".into(),
+                    signature: None,
+                    duration_ms: Some(3_500),
+                },
+            ],
+            10,
+        );
+        let db = session_to_db_messages(&[assistant]);
+        let timeline = db[0].timeline.as_ref().expect("ordered timeline");
+        let events = timeline.as_array().expect("array");
+        assert_eq!(events.len(), 1, "adjacent thinking blocks merge");
+        assert_eq!(events[0]["durationMs"], 7_500);
+    }
+
+    // ── Cost accounting ─────────────────────────────────────────────────
+
+    /// Assistant message with usage attributed to a model.
+    fn priced(
+        model: Option<&str>,
+        input: u32,
+        output: u32,
+        cache_read: u32,
+        cache_write: u32,
+        estimated: bool,
+    ) -> ConversationMessage {
+        let mut m = ConversationMessage::assistant_with_usage(
+            vec![ContentBlock::Text { text: "x".into() }],
+            crate::agent_runtime::types::TokenUsage {
+                input_tokens: input,
+                output_tokens: output,
+                cache_read_input_tokens: Some(cache_read),
+                cache_creation_input_tokens: Some(cache_write),
+                estimated: if estimated { Some(true) } else { None },
+                cost_usd: None,
+            },
+            0,
+        );
+        m.model = model.map(str::to_string);
+        m
+    }
+
+    /// The reported bug: a turn makes one API request per tool iteration, and
+    /// the card showed only the last one. Cost has to cover the whole turn.
+    #[test]
+    fn a_turn_costs_every_request_it_made_not_just_the_last() {
+        let messages = vec![
+            user_msg("do the thing", 1),
+            priced(Some("openai:gpt-5.6"), 1_000, 500, 0, 0, false),
+            priced(Some("openai:gpt-5.6"), 2_000, 300, 0, 0, false),
+            priced(Some("openai:gpt-5.6"), 3_000, 200, 0, 0, false),
+        ];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.last_turn.len(), 1);
+        assert_eq!(out.last_turn[0].input_tokens, 6_000);
+        assert_eq!(out.last_turn[0].output_tokens, 1_000);
+        assert_eq!(out.last_turn[0].requests, 3);
+        assert_eq!(out.turns, 1);
+        assert_eq!(out.requests, 3);
+    }
+
+    /// A conversation can move between models freely, and their prices differ.
+    /// Tokens must stay in separate groups so each is priced with the model
+    /// that actually produced it — merging them would misprice both.
+    #[test]
+    fn a_model_switch_mid_conversation_keeps_the_groups_apart() {
+        let messages = vec![
+            user_msg("start cheap", 1),
+            priced(Some("openai:gpt-5.6-mini"), 1_000, 100, 0, 0, false),
+            user_msg("now think hard", 2),
+            priced(Some("anthropic:claude-opus-5"), 5_000, 4_000, 0, 0, false),
+            priced(Some("anthropic:claude-opus-5"), 6_000, 1_000, 0, 0, false),
+            user_msg("back to cheap", 3),
+            priced(Some("openai:gpt-5.6-mini"), 2_000, 200, 0, 0, false),
+        ];
+        let out = usage_breakdown("t", &messages);
+
+        assert_eq!(out.by_model.len(), 2, "one group per model");
+        let mini = out
+            .by_model
+            .iter()
+            .find(|g| g.model.as_deref() == Some("openai:gpt-5.6-mini"))
+            .expect("mini group");
+        let opus = out
+            .by_model
+            .iter()
+            .find(|g| g.model.as_deref() == Some("anthropic:claude-opus-5"))
+            .expect("opus group");
+        // Non-adjacent requests on the same model fold into ONE group.
+        assert_eq!(mini.input_tokens, 3_000);
+        assert_eq!(mini.requests, 2);
+        assert_eq!(opus.input_tokens, 11_000);
+        assert_eq!(opus.output_tokens, 5_000);
+        assert_eq!(out.turns, 3);
+        assert_eq!(out.requests, 4);
+
+        // The last turn is only the final model's work.
+        assert_eq!(out.last_turn.len(), 1);
+        assert_eq!(
+            out.last_turn[0].model.as_deref(),
+            Some("openai:gpt-5.6-mini")
+        );
+        assert_eq!(out.last_turn[0].input_tokens, 2_000);
+    }
+
+    /// Cache tokens are billed. Dropping them (as the old card did for cache
+    /// writes) understates the real spend.
+    #[test]
+    fn cache_read_and_write_tokens_are_carried_separately() {
+        let messages = vec![
+            user_msg("go", 1),
+            priced(Some("m"), 400, 100, 250_000, 12_000, false),
+        ];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.by_model[0].cache_read_tokens, 250_000);
+        assert_eq!(out.by_model[0].cache_write_tokens, 12_000);
+        assert_eq!(
+            out.by_model[0].input_tokens, 400,
+            "fresh input stays distinct from cached input"
+        );
+    }
+
+    /// Estimated requests are counted so the UI can mark the total approximate
+    /// instead of presenting a guess as a measurement.
+    #[test]
+    fn estimated_requests_are_counted_within_their_group() {
+        let messages = vec![
+            user_msg("go", 1),
+            priced(Some("ollama:llama"), 100, 50, 0, 0, true),
+            priced(Some("ollama:llama"), 200, 60, 0, 0, true),
+        ];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.by_model[0].requests, 2);
+        assert_eq!(out.by_model[0].estimated_requests, 2);
+    }
+
+    /// Requests written before the model was recorded cannot be priced against
+    /// any particular model. They get their own group so the UI can disclose
+    /// them rather than silently pricing them at today's selection.
+    #[test]
+    fn unattributed_requests_get_their_own_group() {
+        let messages = vec![
+            user_msg("go", 1),
+            priced(None, 900, 90, 0, 0, false),
+            priced(Some("openai:gpt-5.6"), 100, 10, 0, 0, false),
+        ];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.by_model.len(), 2);
+        let unknown = out
+            .by_model
+            .iter()
+            .find(|g| g.model.is_none())
+            .expect("unattributed group");
+        assert_eq!(unknown.input_tokens, 900);
+    }
+
+    /// Assistant message whose cost the PROVIDER reported.
+    fn provider_priced(model: &str, input: u32, output: u32, cost: f64) -> ConversationMessage {
+        let mut m = ConversationMessage::assistant_with_usage(
+            vec![ContentBlock::Text { text: "x".into() }],
+            crate::agent_runtime::types::TokenUsage {
+                input_tokens: input,
+                output_tokens: output,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                estimated: None,
+                cost_usd: Some(cost),
+            },
+            0,
+        );
+        m.model = Some(model.to_string());
+        m
+    }
+
+    /// A provider-reported cost is the number on the bill. It is summed
+    /// verbatim and never re-derived from tokens.
+    #[test]
+    fn provider_reported_costs_are_summed_verbatim() {
+        let messages = vec![
+            user_msg("go", 1),
+            provider_priced("gw:m", 1_000, 100, 0.0123),
+            provider_priced("gw:m", 2_000, 200, 0.0456),
+        ];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.by_model.len(), 1);
+        let reported = out.by_model[0].reported_cost_usd.expect("reported");
+        assert!((reported - 0.0579).abs() < 1e-9, "got {reported}");
+        assert_eq!(out.by_model[0].requests, 2);
+    }
+
+    /// A conversation can mix a reporting provider with a non-reporting one.
+    /// The two must NOT share a group: one is priced from its own dollars and
+    /// the other from tokens, and merging them would either double-count the
+    /// reported half or silently drop the computed half.
+    #[test]
+    fn reported_and_computed_requests_never_share_a_group() {
+        let messages = vec![
+            user_msg("go", 1),
+            provider_priced("gw:m", 1_000, 100, 0.05),
+            priced(Some("gw:m"), 3_000, 300, 0, 0, false),
+        ];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.by_model.len(), 2, "same model, split by cost source");
+
+        let reported = out
+            .by_model
+            .iter()
+            .find(|g| g.reported_cost_usd.is_some())
+            .expect("reported group");
+        let computed = out
+            .by_model
+            .iter()
+            .find(|g| g.reported_cost_usd.is_none())
+            .expect("computed group");
+
+        assert_eq!(reported.requests, 1);
+        assert_eq!(computed.requests, 1);
+        assert_eq!(
+            computed.input_tokens, 3_000,
+            "the computed group carries only its own tokens"
+        );
+        assert_eq!(out.requests, 2);
+    }
+
+    /// `cost: 0` is a claim ("this request was free"), not an absence. It must
+    /// stay reported rather than falling through to catalog pricing, which
+    /// would invent a charge the provider says it did not make.
+    #[test]
+    fn a_reported_zero_cost_is_kept_as_reported() {
+        let messages = vec![user_msg("go", 1), provider_priced("gw:m", 5_000, 500, 0.0)];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.by_model[0].reported_cost_usd, Some(0.0));
+    }
+
+    /// Compaction summarizes the whole head of a conversation — often the
+    /// largest single request in the thread — and it is a `System` message,
+    /// not an assistant reply. Counting only assistant messages hid it.
+    #[test]
+    fn a_compaction_request_is_counted_toward_the_cost() {
+        let mut marker = ConversationMessage {
+            role: MessageRole::System,
+            blocks: vec![ContentBlock::Compaction {
+                summary: "…".into(),
+                before_tokens: 100_000,
+                after_tokens: 20_000,
+                created_at: 0,
+            }],
+            usage: Some(crate::agent_runtime::types::TokenUsage {
+                input_tokens: 90_000,
+                output_tokens: 1_200,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                estimated: None,
+                cost_usd: None,
+            }),
+            timestamp: 0,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            model: Some("openai:gpt-5.6".into()),
+        };
+        marker.model = Some("openai:gpt-5.6".into());
+
+        let messages = vec![
+            user_msg("go", 1),
+            priced(Some("openai:gpt-5.6"), 1_000, 100, 0, 0, false),
+            marker,
+        ];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.by_model.len(), 1, "same model, one group");
+        assert_eq!(
+            out.by_model[0].input_tokens, 91_000,
+            "the summarization request's input is part of the bill"
+        );
+        assert_eq!(out.requests, 2);
+    }
+
+    /// A turn that died before the provider answered has no cost basis. It
+    /// must not inflate the request count, which the UI shows next to a
+    /// dollar figure.
+    #[test]
+    fn messages_without_usage_are_not_counted_as_requests() {
+        let mut no_usage = ConversationMessage::assistant(
+            vec![ContentBlock::Text {
+                text: "partial".into(),
+            }],
+            0,
+        );
+        no_usage.model = Some("openai:gpt-5.6".into());
+        let messages = vec![user_msg("go", 1), no_usage];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.requests, 0);
+        assert!(out.by_model.is_empty());
+        assert_eq!(out.turns, 1);
+    }
+
+    /// An empty thread reports zeros rather than failing — the card renders
+    /// nothing at all in that state, and a panic here would take the whole
+    /// chat load with it.
+    #[test]
+    fn an_empty_thread_reports_a_zero_breakdown() {
+        let out = usage_breakdown("t", &[]);
+        assert_eq!(out.turns, 0);
+        assert_eq!(out.requests, 0);
+        assert!(out.by_model.is_empty());
+        assert!(out.last_turn.is_empty());
+    }
+
+    /// A session written before `duration_ms` existed must render NO number,
+    /// never a zero — "measured as instant" and "never measured" are
+    /// different facts and the UI shows them differently.
+    #[test]
+    fn legacy_thinking_segment_emits_no_duration() {
+        let assistant = ConversationMessage::assistant(
+            vec![ContentBlock::Thinking {
+                text: "old reasoning".into(),
+                signature: None,
+                duration_ms: None,
+            }],
+            10,
+        );
+        let db = session_to_db_messages(&[assistant]);
+        let timeline = db[0].timeline.as_ref().expect("ordered timeline");
+        assert!(timeline.as_array().expect("array")[0]
+            .get("durationMs")
+            .is_none());
     }
 
     #[test]
@@ -1290,6 +1904,7 @@ mod tests {
                 timestamp: 2,
                 attached_selected_elements: None,
                 attached_prompt_chips: None,
+                model: None,
             },
         ];
         let db = session_to_db_messages(&messages);
@@ -1316,6 +1931,7 @@ mod tests {
             timestamp: 2,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            model: None,
         };
         let messages = vec![
             assistant_with_tool("c", "ping", serde_json::json!({}), 1),
@@ -1338,6 +1954,126 @@ mod tests {
             api.last(),
             Some(ApiMessage::User { content }) if content == "use the returned id"
         ));
+    }
+
+    /// A steered injection persists the MODEL copy (typed text + directive
+    /// block) and the composer chips. The reload row must show only the
+    /// typed part, with the chips riding on the timeline event — while the
+    /// API view keeps the full model copy.
+    #[test]
+    fn steered_injection_reloads_display_text_and_chips() {
+        use crate::agent_runtime::types::AttachedPromptChip;
+        let tool_message = ConversationMessage {
+            role: MessageRole::Tool,
+            blocks: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "c".into(),
+                    content: "pong".into(),
+                    is_error: None,
+                },
+                ContentBlock::Text {
+                    text: "check @src/app.ts\n\n<steering_context>\n<project_rules>be careful</project_rules>\n</steering_context>".into(),
+                },
+            ],
+            usage: None,
+            timestamp: 2,
+            attached_selected_elements: None,
+            attached_prompt_chips: Some(vec![AttachedPromptChip {
+                kind: "file".into(),
+                title: "app.ts".into(),
+                value: Some("src/app.ts".into()),
+                path: Some("E:/proj/src/app.ts".into()),
+            }]),
+            model: None,
+        };
+        let messages = vec![
+            assistant_with_tool("c", "ping", serde_json::json!({}), 1),
+            tool_message,
+        ];
+
+        let db = session_to_db_messages(&messages);
+        let timeline = db[1]
+            .timeline
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .expect("injection timeline");
+        assert_eq!(timeline[0]["text"], "check @src/app.ts");
+        assert_eq!(timeline[0]["chips"][0]["kind"], "file");
+        assert_eq!(timeline[0]["chips"][0]["value"], "src/app.ts");
+
+        // The model-facing view keeps the directive block verbatim.
+        let api = session_to_api_messages(&messages);
+        assert!(matches!(
+            api.last(),
+            Some(ApiMessage::User { content }) if content.contains("<steering_context>")
+        ));
+    }
+
+    /// The runtime prepends the mid-turn framing line for the model; the
+    /// reload row must show only what the user typed.
+    #[test]
+    fn injected_row_drops_the_mid_turn_preamble() {
+        let framed = format!(
+            "{}\nwait, don't run pnpm",
+            crate::agent_runtime::session::MID_TURN_PREAMBLE
+        );
+        let tool_message = ConversationMessage {
+            role: MessageRole::Tool,
+            blocks: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "c".into(),
+                    content: "pong".into(),
+                    is_error: None,
+                },
+                ContentBlock::Text { text: framed },
+            ],
+            usage: None,
+            timestamp: 2,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            model: None,
+        };
+        let messages = vec![
+            assistant_with_tool("c", "ping", serde_json::json!({}), 1),
+            tool_message,
+        ];
+        let db = session_to_db_messages(&messages);
+        let timeline = db[1]
+            .timeline
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .expect("injection timeline");
+        assert_eq!(timeline[0]["text"], "wait, don't run pnpm");
+
+        // The API view keeps the framing — that's what it exists for.
+        let api = session_to_api_messages(&messages);
+        assert!(matches!(
+            api.last(),
+            Some(ApiMessage::User { content })
+                if content.contains("while your tool calls were running")
+        ));
+    }
+
+    #[test]
+    fn strip_steering_context_variants() {
+        assert_eq!(strip_steering_context("plain note"), "plain note");
+        assert_eq!(
+            strip_steering_context("note\n\n<steering_context>\nrules\n</steering_context>"),
+            "note"
+        );
+        assert_eq!(
+            strip_steering_context("<steering_context>rules</steering_context>\n\ntail"),
+            "tail"
+        );
+        assert_eq!(
+            strip_steering_context("a\n<steering_context>x</steering_context>\nb"),
+            "a\n\nb"
+        );
+        // Malformed half-tags pass through rather than eating words.
+        assert_eq!(
+            strip_steering_context("note <steering_context> unclosed"),
+            "note <steering_context> unclosed"
+        );
     }
 
     #[test]
@@ -1427,6 +2163,7 @@ mod tests {
                 ContentBlock::Thinking {
                     text: "let me look".into(),
                     signature: None,
+                    duration_ms: None,
                 },
                 ContentBlock::Text {
                     text: "Reading the hook first.".into(),
@@ -1471,7 +2208,10 @@ mod tests {
         let tool = events.iter().find(|e| e["kind"] == "tool").expect("tool");
 
         assert_eq!(tool["id"], "c");
-        assert!(tool.get("call").is_none(), "the call is not duplicated here");
+        assert!(
+            tool.get("call").is_none(),
+            "the call is not duplicated here"
+        );
         assert!(tool.get("name").is_none(), "nor is its name");
 
         let calls = db[0].tool_calls.as_ref().expect("tool_calls");
@@ -1508,7 +2248,9 @@ mod tests {
     fn empty_text_blocks_do_not_become_blank_segments() {
         let messages = vec![ConversationMessage::assistant(
             vec![
-                ContentBlock::Text { text: String::new() },
+                ContentBlock::Text {
+                    text: String::new(),
+                },
                 ContentBlock::ToolUse {
                     id: "t1".into(),
                     name: "grep".into(),
@@ -1518,7 +2260,10 @@ mod tests {
             1,
         )];
 
-        assert_eq!(timeline_kinds(&session_to_db_messages(&messages)[0]), vec!["tool"]);
+        assert_eq!(
+            timeline_kinds(&session_to_db_messages(&messages)[0]),
+            vec!["tool"]
+        );
     }
 
     #[test]

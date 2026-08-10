@@ -1,0 +1,292 @@
+//! Browser QA tools driven by the DevTools Protocol.
+//!
+//! Everything here is a thing the BROWSER does, not a thing the page does,
+//! which is exactly why none of it can be built on script injection:
+//!
+//! | tool | why script cannot do it |
+//! |---|---|
+//! | `browser_set_viewport` | resizing the window has no device pixel ratio, no mobile flag, and disturbs the window the user is looking at |
+//! | `browser_emulate_media` | `prefers-color-scheme` / `prefers-reduced-motion` are read by the ENGINE; you cannot make CSS believe a lie from inside the page |
+//! | `browser_press_key` | a synthetic `keydown` does not move focus, so `Tab` traversal does nothing at all |
+//! | `browser_hover` | a synthetic `mouseover` fires the page's handlers but never paints CSS `:hover` |
+//! | `browser_a11y_tree` | the accessibility tree is computed by the engine and is not reachable from the DOM |
+//!
+//! In every case the script version *reports success* while verifying
+//! nothing — the worst possible outcome for a tool whose whole job is to
+//! certify that a surface behaves. See `services::browser_devtools`.
+//!
+//! ## Emulation is sticky
+//!
+//! `Emulation.*` overrides persist for the life of the browser, not the life
+//! of the call. A tool that sets a 390px viewport and never clears it leaves
+//! the user's browser stuck at phone width — so both emulation tools take an
+//! explicit `reset`, and `BrowserManager::navigate` clears them, because the
+//! overwhelmingly common intent when you go to a new page is a clean one.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use serde_json::{json, Value};
+
+use crate::agent_runtime::api_client::ToolSchema;
+use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
+use crate::services::browser_runtime::BrowserManager;
+
+use super::{ensure_agent_browser, AGENT_BROWSER_LABEL};
+
+/// Cap on how many accessibility nodes one call returns.
+///
+/// A real page yields thousands; the whole tree would blow the tool-result
+/// budget and bury the handful of rows an audit needs. Truncation NAMES
+/// itself and the recovery, per the house rule.
+const MAX_AX_NODES: usize = 400;
+
+// ---------------------------------------------------------------------------
+// Viewport
+// ---------------------------------------------------------------------------
+
+pub struct BrowserSetViewportTool {
+    manager: Arc<BrowserManager>,
+}
+impl BrowserSetViewportTool {
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
+}
+#[async_trait]
+impl ToolExecutor for BrowserSetViewportTool {
+    fn name(&self) -> &str {
+        "browser_set_viewport"
+    }
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "browser_set_viewport".into(),
+            description: "Resize the Browser panel's VIEWPORT for responsive checks, without \
+                touching the real window. Use before browser_screenshot to verify a layout at a \
+                specific width — 390 (phone), 768 (tablet), 1440 (desktop) are the usual three. \
+                Also sets device pixel ratio and the mobile flag, so media queries, `100vh`, and \
+                touch layout all behave as they would on the real device. The override STAYS \
+                until you pass reset: true or navigate. Windows only."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "width": { "type": "number", "description": "Viewport width in CSS pixels, e.g. 390." },
+                    "height": { "type": "number", "description": "Viewport height in CSS pixels. Defaults to 900." },
+                    "deviceScaleFactor": { "type": "number", "description": "Device pixel ratio. 1 = normal, 2 = retina. Defaults to 1." },
+                    "mobile": { "type": "boolean", "description": "Emulate a mobile device (touch layout, mobile viewport meta). Defaults to false." },
+                    "reset": { "type": "boolean", "description": "Clear the override and return to the real window size. Ignores every other field." }
+                },
+                "required": []
+            }),
+        }
+    }
+    fn requires_permission(&self) -> bool {
+        true
+    }
+    async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
+        ctx.bail_if_cancelled()?;
+        ensure_agent_browser(&self.manager, None).await?;
+
+        if input.get("reset").and_then(Value::as_bool) == Some(true) {
+            self.manager
+                .call_devtools(
+                    AGENT_BROWSER_LABEL,
+                    "Emulation.clearDeviceMetricsOverride",
+                    Value::Null,
+                )
+                .await
+                .map_err(ToolError::Execution)?;
+            return Ok(json!({
+                "viewport": "reset",
+                "message": "Viewport override cleared — the page renders at the real panel size again."
+            })
+            .to_string());
+        }
+
+        let width = input
+            .get("width")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| {
+                ToolError::InvalidInput(
+                    "`width` is required (in CSS pixels), or pass reset: true to clear the override"
+                        .into(),
+                )
+            })?
+            .round();
+        let height = input
+            .get("height")
+            .and_then(Value::as_f64)
+            .unwrap_or(900.0)
+            .round();
+        if !(1.0..=10_000.0).contains(&width) || !(1.0..=10_000.0).contains(&height) {
+            return Err(ToolError::InvalidInput(
+                "`width` and `height` must be between 1 and 10000 CSS pixels".into(),
+            ));
+        }
+        let scale = input
+            .get("deviceScaleFactor")
+            .and_then(Value::as_f64)
+            .unwrap_or(1.0);
+        let mobile = input
+            .get("mobile")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        self.manager
+            .call_devtools(
+                AGENT_BROWSER_LABEL,
+                "Emulation.setDeviceMetricsOverride",
+                json!({
+                    "width": width as i64,
+                    "height": height as i64,
+                    "deviceScaleFactor": scale,
+                    "mobile": mobile,
+                }),
+            )
+            .await
+            .map_err(ToolError::Execution)?;
+
+        Ok(json!({
+            "viewport": { "width": width as i64, "height": height as i64,
+                          "deviceScaleFactor": scale, "mobile": mobile },
+            "message": format!(
+                "Viewport is now {}x{} at {}x scale. This override stays until you reset it or \
+                 navigate — take your screenshot now.",
+                width as i64, height as i64, scale
+            )
+        })
+        .to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Media emulation
+// ---------------------------------------------------------------------------
+
+pub struct BrowserEmulateMediaTool {
+    manager: Arc<BrowserManager>,
+}
+impl BrowserEmulateMediaTool {
+    pub fn new(manager: Arc<BrowserManager>) -> Self {
+        Self { manager }
+    }
+}
+#[async_trait]
+impl ToolExecutor for BrowserEmulateMediaTool {
+    fn name(&self) -> &str {
+        "browser_emulate_media"
+    }
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "browser_emulate_media".into(),
+            description: "Force the Browser panel's media preferences so you can verify a page in \
+                light mode, dark mode, reduced motion, forced colours, or print layout — without \
+                changing any OS setting. The page's CSS media queries genuinely re-evaluate, so a \
+                screenshot taken after this shows the real alternate rendering. The override \
+                STAYS until you pass reset: true or navigate. Windows only."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "colorScheme": {
+                        "type": "string",
+                        "enum": ["light", "dark"],
+                        "description": "Force `prefers-color-scheme`. Omit to leave it alone."
+                    },
+                    "reducedMotion": {
+                        "type": "boolean",
+                        "description": "true forces `prefers-reduced-motion: reduce`, false forces `no-preference`."
+                    },
+                    "forcedColors": {
+                        "type": "boolean",
+                        "description": "true emulates Windows high-contrast mode (`forced-colors: active`)."
+                    },
+                    "media": {
+                        "type": "string",
+                        "enum": ["screen", "print"],
+                        "description": "Render as screen or print. Defaults to screen."
+                    },
+                    "reset": { "type": "boolean", "description": "Clear every media override. Ignores the other fields." }
+                },
+                "required": []
+            }),
+        }
+    }
+    fn requires_permission(&self) -> bool {
+        true
+    }
+    async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
+        ctx.bail_if_cancelled()?;
+        ensure_agent_browser(&self.manager, None).await?;
+
+        if input.get("reset").and_then(Value::as_bool) == Some(true) {
+            // An empty `features` array is how CDP clears them; passing no
+            // media string restores the page's own default.
+            self.manager
+                .call_devtools(
+                    AGENT_BROWSER_LABEL,
+                    "Emulation.setEmulatedMedia",
+                    json!({ "media": "", "features": [] }),
+                )
+                .await
+                .map_err(ToolError::Execution)?;
+            return Ok(json!({
+                "media": "reset",
+                "message": "Media overrides cleared — the page follows the real system preferences again."
+            })
+            .to_string());
+        }
+
+        let mut features: Vec<Value> = Vec::new();
+        if let Some(scheme) = input.get("colorScheme").and_then(Value::as_str) {
+            if !matches!(scheme, "light" | "dark") {
+                return Err(ToolError::InvalidInput(
+                    "`colorScheme` must be \"light\" or \"dark\"".into(),
+                ));
+            }
+            features.push(json!({ "name": "prefers-color-scheme", "value": scheme }));
+        }
+        if let Some(reduced) = input.get("reducedMotion").and_then(Value::as_bool) {
+            features.push(json!({
+                "name": "prefers-reduced-motion",
+                "value": if reduced { "reduce" } else { "no-preference" }
+            }));
+        }
+        if let Some(forced) = input.get("forcedColors").and_then(Value::as_bool) {
+            features.push(json!({
+                "name": "forced-colors",
+                "value": if forced { "active" } else { "none" }
+            }));
+        }
+        let media = input
+            .get("media")
+            .and_then(Value::as_str)
+            .unwrap_or("screen");
+
+        if features.is_empty() && media == "screen" {
+            return Err(ToolError::InvalidInput(
+                "nothing to emulate: set colorScheme, reducedMotion, forcedColors or media, \
+                 or pass reset: true to clear existing overrides"
+                    .into(),
+            ));
+        }
+
+        self.manager
+            .call_devtools(
+                AGENT_BROWSER_LABEL,
+                "Emulation.setEmulatedMedia",
+                json!({ "media": media, "features": features }),
+            )
+            .await
+            .map_err(ToolError::Execution)?;
+
+        Ok(json!({
+            "media": media,
+            "features": features,
+            "message": "Media preferences forced. The page's media queries have re-evaluated — \
+                        screenshot now. This stays until you reset it or navigate."
+        })
+        .to_string())
+    }
+}

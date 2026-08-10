@@ -108,9 +108,8 @@ fn read_document(path: &Path) -> Result<PlanDocument, String> {
         ));
     }
     let raw = fs::read_to_string(path).map_err(|e| format!("Failed to read plan file: {e}"))?;
-    document::parse(&raw).map_err(|e: PlanParseError| {
-        format!("{} could not be read as a plan: {e}", path.display())
-    })
+    document::parse(&raw)
+        .map_err(|e: PlanParseError| format!("{} could not be read as a plan: {e}", path.display()))
 }
 
 /// Every plan file in the workspace, newest-updated first.
@@ -398,7 +397,8 @@ mod tests {
     use crate::plans::model::{PlanStep, StepStatus};
 
     fn temp_workspace(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("aurora-plans-test-{name}-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("aurora-plans-test-{name}-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).expect("temp workspace");
         dir
     }
@@ -425,10 +425,17 @@ mod tests {
     #[test]
     fn create_then_load_round_trips_through_disk() {
         let ws = temp_workspace("roundtrip");
-        let id = seed(&ws, "API Building", PlanStatus::Active, "2026-07-28T10:00:00Z");
+        let id = seed(
+            &ws,
+            "API Building",
+            PlanStatus::Active,
+            "2026-07-28T10:00:00Z",
+        );
 
         let (path, doc) = load(&ws, &id).expect("load").expect("present");
-        assert!(path.to_string_lossy().contains("001-api-building.aurora.md"));
+        assert!(path
+            .to_string_lossy()
+            .contains("001-api-building.aurora.md"));
         assert_eq!(doc.frontmatter.title, "API Building");
         assert_eq!(doc.body, "## 1. Only step {#s1}\n\nBody.\n");
 
@@ -500,8 +507,14 @@ mod tests {
         assert_ne!(doc.frontmatter.updated_at, "2026-01-01T00:00:00Z");
         // And it is actually on disk, not just in the returned value.
         let (_, reloaded) = load(&ws, &id).expect("load").expect("present");
-        assert_eq!(reloaded.frontmatter.step("s1").unwrap().status, StepStatus::Done);
-        assert_eq!(reloaded.body, "## 1. Only step {#s1}\n\nBody.\n", "prose untouched");
+        assert_eq!(
+            reloaded.frontmatter.step("s1").unwrap().status,
+            StepStatus::Done
+        );
+        assert_eq!(
+            reloaded.body, "## 1. Only step {#s1}\n\nBody.\n",
+            "prose untouched"
+        );
 
         fs::remove_dir_all(&ws).ok();
     }
@@ -541,8 +554,11 @@ mod tests {
     fn a_corrupt_plan_file_is_skipped_not_fatal() {
         let ws = temp_workspace("corrupt");
         seed(&ws, "Good", PlanStatus::Active, "2026-07-28T10:00:00Z");
-        fs::write(plans_dir(&ws).join("999-broken.aurora.md"), "no frontmatter here")
-            .expect("write junk");
+        fs::write(
+            plans_dir(&ws).join("999-broken.aurora.md"),
+            "no frontmatter here",
+        )
+        .expect("write junk");
 
         let listed = list(&ws).expect("list");
         assert_eq!(listed.len(), 1, "the readable plan still lists");

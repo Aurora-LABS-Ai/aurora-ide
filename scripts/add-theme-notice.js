@@ -52,8 +52,8 @@ const TSX_NOTICE = `/**
  * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
  * 
  * See: DOCS/theme-dev.md for full token reference
- * See: src/types/theme.ts for TypeScript interfaces
- * See: src/services/theme-service.ts for theme utilities
+ * See: src/kernel/types/theme.ts for TypeScript interfaces
+ * See: src/apps/ide/services/theme-service.ts for theme utilities
  */
 
 `;

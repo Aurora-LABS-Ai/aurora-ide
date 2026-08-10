@@ -337,8 +337,43 @@ impl BrowserManager {
             entry.inspector_active = false;
             entry.stagewise_active = false;
         }
+        Self::clear_emulation_overrides(&window);
         self.touch_active(label);
         Ok(())
+    }
+
+    /// Drop any viewport / media emulation on a browser.
+    ///
+    /// These overrides live on the BROWSER, not on the page, so they survive
+    /// a navigation: a 390px viewport set for a responsive check would keep
+    /// applying to whatever you visit next, and the user would find their
+    /// panel stuck at phone width with nothing on screen explaining why.
+    /// Clearing on navigate matches the common intent — a caller that wants
+    /// the override kept simply re-applies it, which is cheap and explicit.
+    ///
+    /// Fire-and-forget because `navigate` is synchronous and this is cleanup:
+    /// a failure (no DevTools channel off Windows, or a webview already tearing
+    /// down) must never block or fail the navigation itself.
+    fn clear_emulation_overrides(webview: &Webview) {
+        if !crate::services::browser_devtools::devtools_available() {
+            return;
+        }
+        let handle = webview.clone();
+        tauri::async_runtime::spawn(async move {
+            for (method, params) in [
+                ("Emulation.clearDeviceMetricsOverride", Value::Null),
+                (
+                    "Emulation.setEmulatedMedia",
+                    serde_json::json!({ "media": "", "features": [] }),
+                ),
+            ] {
+                if let Err(err) =
+                    crate::services::browser_devtools::call_devtools(&handle, method, params).await
+                {
+                    eprintln!("[browser] could not clear {method} on navigate: {err}");
+                }
+            }
+        });
     }
 
     pub fn refresh(&self, label: &str) -> Result<(), String> {
@@ -471,6 +506,30 @@ impl BrowserManager {
         self.app
             .get_webview(label)
             .ok_or_else(|| self.unknown_window_error(label))
+    }
+
+    /// Send one DevTools Protocol method to a browser and return its result.
+    ///
+    /// This is the channel for everything the BROWSER does rather than
+    /// everything the PAGE does — viewport and media emulation, real pointer
+    /// and key input, the accessibility tree. Script injection cannot reach
+    /// any of it: a synthetic `mouseover` never paints `:hover` and a
+    /// synthetic `keydown` never moves focus, so a tool built that way would
+    /// report success having verified nothing.
+    ///
+    /// Errors are returned verbatim, including "not supported on this
+    /// platform", because a silent no-op here is exactly the false pass this
+    /// channel exists to avoid.
+    pub async fn call_devtools(
+        &self,
+        label: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
+        let webview = self.window(label)?;
+        crate::services::browser_devtools::call_devtools(&webview, method, params)
+            .await
+            .map_err(|err| err.to_string())
     }
 
     // -----------------------------------------------------------------
@@ -1428,36 +1487,78 @@ const BROWSER_INIT_SCRIPT: &str = r#"
     const stringify = (arg) => {
       if (arg === null || arg === undefined) return String(arg);
       if (typeof arg === 'string') return arg;
-      try { return JSON.stringify(arg); } catch (_) { return String(arg); }
-    };
-    const wrap = (level, original) => function (...args) {
+      // Errors FIRST. `JSON.stringify(new Error('boom'))` is '{}' — its own
+      // properties are non-enumerable — so the single most common way to log
+      // a failure (`console.error(err)`) used to record an empty object and
+      // throw the message and stack away. That is the one log line anyone
+      // actually needs.
+      if (arg instanceof Error) {
+        const head = (arg.name || 'Error') + ': ' + (arg.message || '');
+        const stack = typeof arg.stack === 'string'
+          ? arg.stack.split('\n').slice(1, 4).map((l) => l.trim()).join(' <- ')
+          : '';
+        return stack ? head + ' | ' + stack : head;
+      }
+      if (typeof arg === 'function') return '[function ' + (arg.name || 'anonymous') + ']';
+      if (typeof arg === 'symbol' || typeof arg === 'bigint') return String(arg);
+      // A DOM node stringifies to '{}' as well.
+      if (typeof Node !== 'undefined' && arg instanceof Node) {
+        const el = arg;
+        return '<' + (el.nodeName || 'node').toLowerCase()
+          + (el.id ? '#' + el.id : '')
+          + (el.className && typeof el.className === 'string'
+              ? '.' + el.className.trim().split(/\s+/).join('.') : '')
+          + '>';
+      }
       try {
-        ns.__logs.push({
-          ts: Date.now(),
-          level,
-          message: args.map(stringify).join(' '),
+        const seen = new WeakSet();
+        // A circular structure throws, which would fall through to
+        // '[object Object]' and lose everything; the replacer keeps the rest.
+        return JSON.stringify(arg, (_k, v) => {
+          if (typeof v === 'object' && v !== null) {
+            if (seen.has(v)) return '[circular]';
+            seen.add(v);
+          }
+          return v;
         });
+      } catch (_) { return String(arg); }
+    };
+    // ONE trim, used by every writer. The two error listeners below used to
+    // push without trimming, so a page stuck in an error loop grew this array
+    // without bound — a memory leak in the user's page, caused by our
+    // debugging aid.
+    const record = (level, message) => {
+      try {
+        ns.__logs.push({ ts: Date.now(), level, message });
         if (ns.__logs.length > MAX) ns.__logs.splice(0, ns.__logs.length - MAX);
       } catch (_) { /* never break the page */ }
+    };
+    const wrap = (level, original) => function (...args) {
+      record(level, args.map(stringify).join(' '));
       return original.apply(console, args);
     };
-    ['log', 'info', 'warn', 'error', 'debug'].forEach((level) => {
+    ['log', 'info', 'warn', 'error', 'debug', 'trace'].forEach((level) => {
       const fn = console[level];
       if (typeof fn === 'function') console[level] = wrap(level, fn);
     });
+    // `console.assert` only speaks when the assertion FAILS, and it is the
+    // one console method whose silence is the success case.
+    if (typeof console.assert === 'function') {
+      const originalAssert = console.assert;
+      console.assert = function (condition, ...args) {
+        if (!condition) record('error', '[assert] ' + args.map(stringify).join(' '));
+        return originalAssert.apply(console, [condition, ...args]);
+      };
+    }
     window.addEventListener('error', (e) => {
-      ns.__logs.push({
-        ts: Date.now(),
-        level: 'error',
-        message: '[uncaught] ' + (e.message || String(e.error || e)),
-      });
+      // Location and stack included: '[uncaught] undefined is not a function'
+      // with no file or line is barely more useful than silence.
+      const where = e.filename ? ' (' + e.filename + ':' + e.lineno + ':' + e.colno + ')' : '';
+      const detail = e.error instanceof Error ? stringify(e.error) : (e.message || String(e));
+      record('error', '[uncaught] ' + detail + where);
     });
     window.addEventListener('unhandledrejection', (e) => {
-      ns.__logs.push({
-        ts: Date.now(),
-        level: 'error',
-        message: '[unhandled-rejection] ' + stringify(e.reason),
-      });
+      record('error', '[unhandled-rejection] ' + stringify(e.reason));
     });
   }
 

@@ -53,7 +53,11 @@ pub(crate) fn workspace_of(ctx: &ToolContext) -> Result<PathBuf, ToolError> {
 /// step id silently unbinds the section from its status, and asking the model
 /// to hand-maintain `{#s3}` across a revision is a guaranteed source of that
 /// drift.
-pub(crate) fn render_body(overview: Option<&str>, steps: &[PlanStep], details: &[Option<String>]) -> String {
+pub(crate) fn render_body(
+    overview: Option<&str>,
+    steps: &[PlanStep],
+    details: &[Option<String>],
+) -> String {
     let mut out = String::new();
     if let Some(overview) = overview.map(str::trim).filter(|s| !s.is_empty()) {
         out.push_str(overview);
@@ -142,7 +146,9 @@ pub(crate) fn progress_line(doc: &PlanDocument) -> String {
 }
 
 /// Parse the `steps` argument shared by `plan_write`.
-pub(crate) fn parse_step_drafts(input: &Value) -> Result<(Vec<StepDraft>, Vec<Option<String>>), ToolError> {
+pub(crate) fn parse_step_drafts(
+    input: &Value,
+) -> Result<(Vec<StepDraft>, Vec<Option<String>>), ToolError> {
     let steps = input
         .get("steps")
         .and_then(Value::as_array)
@@ -299,7 +305,10 @@ mod tests {
         running.status = StepStatus::InProgress;
         let mut done = PlanStep::new("s1", "One");
         done.status = StepStatus::Done;
-        let state = plan_state(&doc(vec![done, running, PlanStep::new("s3", "Three")]), "p.md");
+        let state = plan_state(
+            &doc(vec![done, running, PlanStep::new("s3", "Three")]),
+            "p.md",
+        );
 
         assert_eq!(state["steps"].as_array().unwrap().len(), 3);
         assert_eq!(state["cursor"]["activeStepId"], "s2");
@@ -341,7 +350,10 @@ mod tests {
     #[test]
     fn parse_step_drafts_rejects_empty_and_malformed_input() {
         assert!(parse_step_drafts(&json!({})).is_err(), "missing steps");
-        assert!(parse_step_drafts(&json!({"steps": []})).is_err(), "empty plan");
+        assert!(
+            parse_step_drafts(&json!({"steps": []})).is_err(),
+            "empty plan"
+        );
         assert!(
             parse_step_drafts(&json!({"steps": [{"title": "  "}]})).is_err(),
             "blank title"

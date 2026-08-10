@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 20;
+pub const SCHEMA_VERSION: i32 = 21;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -229,6 +229,7 @@ fn create_provider_models_table(conn: &Connection) -> DbResult<()> {
             sort_order INTEGER NOT NULL DEFAULT 0,
             price_cache_hit_per_mtok REAL,           -- USD per 1M cached input tokens
             price_cache_miss_per_mtok REAL,          -- USD per 1M fresh input tokens
+            price_cache_write_per_mtok REAL,         -- USD per 1M cache-CREATION tokens; NULL = bill at the fresh-input rate
             price_output_per_mtok REAL,              -- USD per 1M output tokens
             price_currency TEXT,                     -- NULL → USD
             reasoning TEXT,                          -- JSON {type,levels,min,max,default} or NULL

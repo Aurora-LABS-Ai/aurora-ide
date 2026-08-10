@@ -28,6 +28,7 @@ pub mod artifacts;
 pub mod browser;
 pub mod chat;
 pub mod checkpoints;
+pub mod code_index;
 pub mod codex;
 pub mod editor_ops;
 pub mod git;
@@ -898,7 +899,12 @@ pub async fn ripgrep_search(
     if let Some(dir) = &search_dir {
         cmd.current_dir(dir);
     }
-    cmd.arg(&pattern)
+    // The pattern rides behind `-e`, never as a bare positional: a pattern that
+    // itself starts with `-` (CSS custom properties like `--color-border-…`,
+    // CLI flags in docs) is otherwise parsed by ripgrep as flags and the whole
+    // call dies with "unrecognized flag". `-e` composes with `--fixed-strings`.
+    cmd.arg("-e")
+        .arg(&pattern)
         .arg(match &search_dir {
             Some(_) => ".",
             None => path.as_str(),
@@ -3075,6 +3081,54 @@ mod tests {
 
         assert_eq!(response.returned, Some(6));
         assert_eq!(response.truncated, Some(false));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A pattern that starts with `-` used to be eaten by ripgrep as flags
+    /// ("rg: unrecognized flag --color-border-…") because it was passed as a
+    /// bare positional. `-e` makes any pattern safe — this pins the original
+    /// failing shape, in both regex and fixed-string modes.
+    #[test]
+    fn a_pattern_starting_with_dashes_is_not_parsed_as_flags() {
+        let dir = std::env::temp_dir().join("aurora-grep-dash-pattern");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        std::fs::write(
+            dir.join("tokens.css"),
+            ":root {\n  --color-border-success: #0a0;\n  --color-border-danger: #a00;\n}\n",
+        )
+        .expect("fixture file");
+
+        for (pattern, is_regex) in [
+            ("--color-border-(success|danger)", true),
+            ("--color-border-success", false),
+        ] {
+            let request = RipgrepSearchRequest {
+                case_insensitive: None,
+                context_lines: None,
+                glob: None,
+                is_regex: Some(is_regex),
+                max_results: Some(10),
+                output_mode: Some("content".to_string()),
+                path: dir.to_string_lossy().to_string(),
+                pattern: pattern.to_string(),
+                timeout_ms: Some(30_000),
+            };
+            let response = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(ripgrep_search(request))
+                .expect("search ran");
+
+            assert_eq!(response.success, true, "pattern {pattern:?} failed: {:?}", response.error);
+            let expected = if is_regex { 2 } else { 1 };
+            assert_eq!(
+                response.total_matches,
+                Some(expected),
+                "pattern {pattern:?} should match",
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

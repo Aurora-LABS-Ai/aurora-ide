@@ -121,12 +121,21 @@ pub enum AssistantEvent {
     /// bubble to the message list — visually the user's note arrives
     /// in the chat right after the tool result it rode in with.
     ///
-    /// Carries the verbatim text the user queued so the frontend doesn't
-    /// need to track the in-flight slot separately. The implicit
+    /// Carries the text the user queued so the frontend doesn't need to
+    /// track the in-flight slot separately. `text` is the DISPLAY copy —
+    /// what the user typed, without any `<steering_context>` block the
+    /// composer resolved from `/` directives (the model-facing copy with
+    /// the block lives in the session). `chips` are the composer pill
+    /// metadata (file mentions, `/` directives) so the injected row can
+    /// render the same chips a normal user bubble would. The implicit
     /// contract: this event fires AFTER the text has been appended to
     /// the tool message in the session, so the persisted conversation
     /// already reflects the injection by the time the frontend sees it.
-    QueuedMessageInjected { text: String },
+    QueuedMessageInjected {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        chips: Option<Vec<super::types::AttachedPromptChip>>,
+    },
 
     /// Stream-level error. `recoverable` tells the frontend whether a
     /// retry is sensible (e.g. transient HTTP 5xx) or whether the user
@@ -237,6 +246,8 @@ mod tests {
             output_tokens: 7,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: Some(3),
+            estimated: None,
+            cost_usd: None,
         });
         let s = serde_json::to_string(&ev).expect("serialize");
         assert!(s.contains("\"type\":\"usage\""), "wrong tag, got: {s}");
@@ -317,6 +328,7 @@ mod tests {
                 timestamp: 0,
                 attached_selected_elements: None,
                 attached_prompt_chips: None,
+                model: None,
             }],
             tool_results: Vec::new(),
         };

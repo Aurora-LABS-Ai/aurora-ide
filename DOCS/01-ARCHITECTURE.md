@@ -14,7 +14,7 @@ Aurora combines:
 - a Rust context engine for turn management and summarization
 - MCP integration
 - Git integration
-- semantic code search
+- structural code search (tree-sitter symbol index; embedding search was removed at DB migration v12)
 - local model support through LM Studio and Ollama
 
 The frontend is responsible for UI, state orchestration, and prompt/context assembly. The backend is responsible for persistence, heavy filesystem/process work, and now the full LLM provider kernel.
@@ -30,7 +30,7 @@ The frontend is responsible for UI, state orchestration, and prompt/context asse
 | Editor | Monaco | Code editing |
 | Database | SQLite via `rusqlite` | Providers, threads, themes, settings, workspace state |
 | Transport | `reqwest` | Provider HTTP and streaming |
-| Search | `aurora-semantic` | Semantic indexing and retrieval |
+| Search | `code_index` (tree-sitter) + ripgrep | Structural symbol index and text search |
 
 ## 3. Current Directory Shape
 

@@ -274,44 +274,78 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             name: "OpenAI".to_string(),
             nickname: None,
             base_url: "https://api.openai.com/v1".to_string(),
-            model: "gpt-4o".to_string(),
-            context_window: 128000,
-            max_output_tokens: 16384,
+            model: "gpt-5.6".to_string(),
+            // GPT-5.4 and up carry a ~1.05M context; the mini/nano tier
+            // stays at 400K and the 4.x rows lower still. Per-model
+            // overrides enrich from models.dev in the UI.
+            context_window: 1_050_000,
+            max_output_tokens: 128_000,
+            // Left FALSE deliberately, even though every gpt-5.x row below
+            // reasons. This preset speaks Chat Completions, whose wire shape
+            // here is `ThinkingMode::None` — it never sends a reasoning
+            // effort, so advertising a thinking control would ship a switch
+            // that does nothing. Reasoning-effort control is exactly what the
+            // "OpenAI (Responses)" preset below exists to provide.
             supports_thinking: false,
             supports_tool_stream: None,
             custom_models: Some(vec![
+                "gpt-5.6".to_string(),
+                "gpt-5.6-terra".to_string(),
+                "gpt-5.6-luna".to_string(),
+                "gpt-5.5".to_string(),
+                "gpt-5.4".to_string(),
+                "gpt-5.4-mini".to_string(),
+                "gpt-5.4-nano".to_string(),
+                "gpt-4.1".to_string(),
+                "gpt-4.1-mini".to_string(),
                 "gpt-4o".to_string(),
-                "gpt-4o-mini".to_string(),
-                "gpt-4-turbo".to_string(),
-                "gpt-3.5-turbo".to_string(),
-                "o1".to_string(),
-                "o1-mini".to_string(),
             ]),
-            model_aliases: None,
+            model_aliases: Some(HashMap::from([
+                ("gpt-5.6".to_string(), "GPT-5.6".to_string()),
+                ("gpt-5.6-terra".to_string(), "GPT-5.6 Terra".to_string()),
+                ("gpt-5.6-luna".to_string(), "GPT-5.6 Luna".to_string()),
+                ("gpt-5.5".to_string(), "GPT-5.5".to_string()),
+                ("gpt-5.4".to_string(), "GPT-5.4".to_string()),
+                ("gpt-5.4-mini".to_string(), "GPT-5.4 Mini".to_string()),
+                ("gpt-5.4-nano".to_string(), "GPT-5.4 Nano".to_string()),
+                ("gpt-4.1".to_string(), "GPT-4.1".to_string()),
+                ("gpt-4.1-mini".to_string(), "GPT-4.1 Mini".to_string()),
+                ("gpt-4o".to_string(), "GPT-4o".to_string()),
+            ])),
             provider_type: "openai".to_string(),
             default_temperature: Some(1.0),
             default_max_tokens: None,
             requires_api_key: true,
-            // OpenAI list prices (USD per 1M tokens). Cached input
-            // for the `*-mini`/o-series is a flat 50% discount per
-            // OpenAI's docs; we approximate the o1/gpt-4o cache rate
-            // at 50% of input.
+            // USD per 1M tokens as (cached input, fresh input, output),
+            // transcribed from the models.dev catalogue the UI enriches
+            // from — so a seeded row and an enriched row agree instead of
+            // the seed quietly reporting a stale rate.
             model_pricing: Some(HashMap::from([
+                ("gpt-5.6".to_string(), ModelPricing::usd(0.50, 5.0, 30.0)),
+                (
+                    "gpt-5.6-terra".to_string(),
+                    ModelPricing::usd(0.20, 2.0, 12.0),
+                ),
+                (
+                    "gpt-5.6-luna".to_string(),
+                    ModelPricing::usd(0.02, 0.20, 1.20),
+                ),
+                ("gpt-5.5".to_string(), ModelPricing::usd(0.50, 5.0, 30.0)),
+                ("gpt-5.4".to_string(), ModelPricing::usd(0.25, 2.50, 15.0)),
+                (
+                    "gpt-5.4-mini".to_string(),
+                    ModelPricing::usd(0.075, 0.75, 4.50),
+                ),
+                (
+                    "gpt-5.4-nano".to_string(),
+                    ModelPricing::usd(0.02, 0.20, 1.25),
+                ),
+                ("gpt-4.1".to_string(), ModelPricing::usd(0.50, 2.0, 8.0)),
+                (
+                    "gpt-4.1-mini".to_string(),
+                    ModelPricing::usd(0.10, 0.40, 1.60),
+                ),
                 ("gpt-4o".to_string(), ModelPricing::usd(1.25, 2.50, 10.0)),
-                (
-                    "gpt-4o-mini".to_string(),
-                    ModelPricing::usd(0.075, 0.15, 0.60),
-                ),
-                (
-                    "gpt-4-turbo".to_string(),
-                    ModelPricing::usd(5.0, 10.0, 30.0),
-                ),
-                (
-                    "gpt-3.5-turbo".to_string(),
-                    ModelPricing::usd(0.25, 0.50, 1.50),
-                ),
-                ("o1".to_string(), ModelPricing::usd(7.50, 15.0, 60.0)),
-                ("o1-mini".to_string(), ModelPricing::usd(1.50, 3.0, 12.0)),
             ])),
         },
         ProviderCatalogPreset {
@@ -324,25 +358,43 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             // reasoning persistence across tool calls), not a
             // replacement for the "openai" preset above.
             base_url: "https://api.openai.com/v1".to_string(),
-            model: "gpt-5.5".to_string(),
-            // GPT-5.x reasoning family: 400K context window, 128K max
-            // output. Per-model overrides enrich from models.dev in
-            // the UI.
-            context_window: 400_000,
+            model: "gpt-5.6".to_string(),
+            // GPT-5.4 and up carry a ~1.05M context, 128K max output. The
+            // mini/nano tier stays at 400K; per-model overrides enrich from
+            // models.dev in the UI.
+            context_window: 1_050_000,
             max_output_tokens: 128_000,
             supports_thinking: true,
             supports_tool_stream: None,
             custom_models: Some(vec![
+                "gpt-5.6".to_string(),
+                "gpt-5.6-sol".to_string(),
+                "gpt-5.6-terra".to_string(),
+                "gpt-5.6-luna".to_string(),
                 "gpt-5.5".to_string(),
+                "gpt-5.5-pro".to_string(),
+                "gpt-5.4".to_string(),
+                "gpt-5.4-pro".to_string(),
+                "gpt-5.4-mini".to_string(),
+                "gpt-5.4-nano".to_string(),
+                "gpt-5.3-codex".to_string(),
+                "gpt-5.2".to_string(),
                 "gpt-5.1".to_string(),
-                "gpt-5".to_string(),
-                "gpt-5-mini".to_string(),
             ]),
             model_aliases: Some(HashMap::from([
+                ("gpt-5.6".to_string(), "GPT-5.6".to_string()),
+                ("gpt-5.6-sol".to_string(), "GPT-5.6 Sol".to_string()),
+                ("gpt-5.6-terra".to_string(), "GPT-5.6 Terra".to_string()),
+                ("gpt-5.6-luna".to_string(), "GPT-5.6 Luna".to_string()),
                 ("gpt-5.5".to_string(), "GPT-5.5".to_string()),
+                ("gpt-5.5-pro".to_string(), "GPT-5.5 Pro".to_string()),
+                ("gpt-5.4".to_string(), "GPT-5.4".to_string()),
+                ("gpt-5.4-pro".to_string(), "GPT-5.4 Pro".to_string()),
+                ("gpt-5.4-mini".to_string(), "GPT-5.4 Mini".to_string()),
+                ("gpt-5.4-nano".to_string(), "GPT-5.4 Nano".to_string()),
+                ("gpt-5.3-codex".to_string(), "GPT-5.3 Codex".to_string()),
+                ("gpt-5.2".to_string(), "GPT-5.2".to_string()),
                 ("gpt-5.1".to_string(), "GPT-5.1".to_string()),
-                ("gpt-5".to_string(), "GPT-5".to_string()),
-                ("gpt-5-mini".to_string(), "GPT-5 Mini".to_string()),
             ])),
             provider_type: "openai-responses".to_string(),
             // Reasoning models reject `temperature` on /responses; the

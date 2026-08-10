@@ -214,11 +214,50 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [20])?;
             Ok(())
         }
+        21 => {
+            // Migration from v20 to v21: add `price_cache_write_per_mtok` to
+            // `provider_models`. Cache-CREATION tokens are billed by every
+            // provider that offers prompt caching, and Aurora priced them at
+            // zero because no column existed — so every cached conversation
+            // under-reported its real cost.
+            migration_v21(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [21])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
         ))),
     }
+}
+
+/// Migration v21: Add the nullable `price_cache_write_per_mtok` column to
+/// `provider_models` — USD per 1M cache-creation tokens.
+///
+/// Left NULL rather than back-filled. NULL means "bill cache writes at the
+/// fresh-input rate", which is what OpenAI-compatible gateways actually
+/// charge; the column exists for providers that price it differently
+/// (Anthropic native charges 1.25x base). Guessing a number per model here
+/// would put a fabricated price in front of the user, and a wrong price is
+/// worse than an explicit fallback the code documents.
+///
+/// Idempotent: guarded with a PRAGMA table_info sniff so re-running on a
+/// hand-patched DB (or one where a fresh install already created the column)
+/// is safe.
+fn migration_v21(conn: &Connection) -> DbResult<()> {
+    let existing: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(provider_models)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        rows.flatten().collect()
+    };
+    if !existing.iter().any(|c| c == "price_cache_write_per_mtok") {
+        conn.execute(
+            "ALTER TABLE provider_models ADD COLUMN price_cache_write_per_mtok REAL",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 /// Migration v20: Add the nullable `api_keys` JSON column to `llm_providers`

@@ -210,7 +210,11 @@ know where you are without re-reading the plan."
             if cursor.complete {
                 format!(
                     "Every step is closed — the plan is {}.",
-                    if cursor.failed > 0 { "failed" } else { "complete" }
+                    if cursor.failed > 0 {
+                        "failed"
+                    } else {
+                        "complete"
+                    }
                 )
             } else {
                 match (&cursor.active_step_id, &cursor.next_step_id) {
@@ -242,8 +246,8 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     fn temp_workspace(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("aurora-planstep-{name}-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("aurora-planstep-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp workspace");
         dir
     }
@@ -381,7 +385,10 @@ mod tests {
         .await
         .expect("s2");
         let out = tool
-            .execute(json!({"stepId": "s3", "status": "skipped", "note": "blocked by s2"}), &c)
+            .execute(
+                json!({"stepId": "s3", "status": "skipped", "note": "blocked by s2"}),
+                &c,
+            )
             .await
             .expect("s3");
         let parsed: Value = serde_json::from_str(&out).unwrap();
@@ -439,7 +446,10 @@ mod tests {
         let ws = temp_workspace("noplan");
         let tool = PlanStepUpdateTool::new(Arc::new(NoopIdeEventSink));
         let err = tool
-            .execute(json!({"stepId": "s1", "status": "done"}), &ctx(&ws, "thr_1"))
+            .execute(
+                json!({"stepId": "s1", "status": "done"}),
+                &ctx(&ws, "thr_1"),
+            )
             .await
             .expect_err("must fail");
         assert!(format!("{err:?}").contains("plan_write"));
@@ -499,7 +509,10 @@ mod tests {
         }
 
         let (_, after) = store::load(&ws, &plan_id).expect("load").expect("present");
-        assert_eq!(after.body, before.body, "status flips must never touch prose");
+        assert_eq!(
+            after.body, before.body,
+            "status flips must never touch prose"
+        );
 
         std::fs::remove_dir_all(&ws).ok();
     }

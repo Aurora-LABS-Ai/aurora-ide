@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::error::RuntimeError;
-use super::types::{ConversationMessage, MessageRole};
+use super::types::{AttachedPromptChip, ConversationMessage, MessageRole};
 
 /// Shared, lock-free-from-the-session-mutex slot for the mid-turn
 /// queued user message. Held both by the [`Session`] (so the
@@ -65,9 +65,36 @@ pub fn empty_queue_slot() -> QueueSlot {
 /// Not persisted: lives only on the in-memory `Session` so it cannot
 /// outlive the agent process. If the user cancels mid-stream the slot
 /// is cleared with the rest of the session.
+/// Framing line prepended to a composer-sent mid-turn injection so the model
+/// knows the message arrived WHILE its tool calls were running — without it,
+/// "wait, don't run pnpm" landing after the lint output reads as nonsense and
+/// the model has to guess whether the instruction predates the results.
+/// Stripped back out for display by `commands::threads` (the human saw their
+/// message in real time; the framing is for the model only).
+pub const MID_TURN_PREAMBLE: &str =
+    "[The user sent this while your tool calls were running — results above may predate it:]";
+
 #[derive(Debug, Clone)]
 pub struct QueuedUserMessage {
+    /// The model-facing text: what the user typed (including serialized
+    /// `@path` mentions) plus any `<steering_context>` block the composer
+    /// resolved from staged `/` directives (rules verbatim, skill
+    /// references, MCP nudges). This is what rides into history.
     pub text: String,
+    /// What the user actually typed, for UI echo. `None` means `text` IS
+    /// the typed message (no directives were attached). The injected
+    /// timeline row and the queued pill must show this, never the full
+    /// model text — the steering block is machinery, not the message.
+    pub display_text: Option<String>,
+    /// Composer pill metadata (file mentions, `/` directives) so the
+    /// injected row renders the same chips a normal user bubble would.
+    /// Persisted onto the tool message the injection rides in on.
+    pub chips: Option<Vec<AttachedPromptChip>>,
+    /// True when a person typed this into a composer mid-turn — the runtime
+    /// then prepends [`MID_TURN_PREAMBLE`] so the model knows the timing.
+    /// False for team-mailbox traffic, which carries its own framing
+    /// (`[Message from …]`) and must not claim to be the user.
+    pub mid_turn: bool,
     /// Unix epoch milliseconds when the user hit Send.
     pub queued_at_ms: i64,
 }
@@ -143,6 +170,21 @@ pub struct Session {
     /// drained to the `.rich.jsonl` sidecar right after the session
     /// persists. Not serialized into the message JSONL.
     pub rich_results: RichResultsSlot,
+    /// Consecutive failed compaction attempts, reset on success.
+    ///
+    /// Compaction sends the entire head of the conversation to a model, so it
+    /// is routinely the most expensive request a long chat makes. When it
+    /// fails it does not fix the overrun that triggered it, so the next turn
+    /// crosses the same threshold and tries again — an unbounded retry loop
+    /// that bills full price every turn and shows the user nothing but a
+    /// spinner. Lives on the session (which the registry caches across turns)
+    /// rather than the per-turn runtime, because a per-turn counter can never
+    /// see the second attempt. Process-local: never persisted, so a restart is
+    /// a deliberate clean slate.
+    pub compaction_failures: u32,
+    /// Epoch millis before which compaction must not be retried. Set when
+    /// [`Self::compaction_failures`] hits the ceiling.
+    pub compaction_retry_after: Option<i64>,
 }
 
 impl Session {
@@ -160,6 +202,8 @@ impl Session {
             model: None,
             queued_message: empty_queue_slot(),
             rich_results: empty_rich_results_slot(),
+            compaction_failures: 0,
+            compaction_retry_after: None,
         }
     }
 
@@ -483,6 +527,7 @@ mod tests {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            model: None,
         }
     }
 
@@ -494,6 +539,7 @@ mod tests {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            model: None,
         }
     }
 
@@ -523,7 +569,11 @@ mod tests {
         let mut session = Session::new("t");
         session.append_message(user_msg("only"));
         assert_eq!(session.truncate_before_user_message(7), 0);
-        assert_eq!(session.len(), 1, "an unknown ordinal must not destroy history");
+        assert_eq!(
+            session.len(),
+            1,
+            "an unknown ordinal must not destroy history"
+        );
     }
 
     /// Ordinal 0 rewinds to an empty session — retrying the very first
@@ -649,6 +699,7 @@ mod tests {
             timestamp: 1_700_000_000_000,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            model: None,
         }
     }
 

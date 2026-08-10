@@ -64,6 +64,7 @@ pub mod session_store;
 pub mod team;
 pub mod title;
 pub mod tool_executor;
+pub mod tool_pairing;
 pub mod tool_spill;
 pub mod tool_suggest;
 pub mod types;

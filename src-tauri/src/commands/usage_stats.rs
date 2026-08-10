@@ -64,6 +64,48 @@ pub struct ModelUsage {
     pub tokens: u64,
 }
 
+/// Exact API-request counts for one model.
+///
+/// A "request" is one call to the provider — NOT one thing the user asked
+/// for. An agent turn issues one request per tool iteration, so a single
+/// question that reads five files and edits two is seven-plus requests. That
+/// is the number that maps to a rate limit and to a bill, which is why it is
+/// counted rather than turns.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRequestUsage {
+    /// Model key with the provider prefix stripped (`gpt-5.6-sol`).
+    pub model: String,
+    pub requests: u32,
+    /// Requests whose counts are Aurora's estimate, not provider-reported.
+    pub estimated_requests: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+}
+
+/// Request counts for one provider, with its models nested underneath.
+///
+/// Grouped this way because that is how the question is actually asked —
+/// "how much have I sent to this provider" first, "and to which model" second.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRequestUsage {
+    /// The provider ROW id. A readable slug for built-ins, a generated UUID
+    /// for user-added providers — so the frontend resolves it to a display
+    /// name and never renders this raw.
+    pub provider_id: String,
+    pub requests: u32,
+    pub estimated_requests: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    /// Threads that used this provider at all.
+    pub threads: u32,
+    /// Descending by request count.
+    pub models: Vec<ModelRequestUsage>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageStats {
@@ -81,7 +123,133 @@ pub struct UsageStats {
     pub top_tools: Vec<ToolUsage>,
     /// Most-used models, by tokens descending, capped at 8.
     pub top_models: Vec<ModelUsage>,
+    /// Exact API-request counts, by provider, each with its models nested.
+    /// Descending by request count.
+    pub requests_by_provider: Vec<ProviderRequestUsage>,
+    /// Every API request ever sent, across all providers. The headline number
+    /// — one call per tool iteration, so it is far larger than the turn count.
+    pub total_requests: u32,
     pub longest_task: Option<LongestTask>,
+}
+
+/// Running tally of API requests, grouped by provider then model.
+///
+/// Shared by the Profile page (all threads) and the Project panel (one
+/// workspace) so the two can never disagree about what counts as a request —
+/// the numbers sit side by side in the product and a second implementation
+/// would drift the first time either was touched.
+#[derive(Default)]
+pub struct RequestTally {
+    /// provider_id -> (model_key -> counts).
+    by_provider: HashMap<String, HashMap<String, ModelRequestUsage>>,
+    threads: HashMap<String, u32>,
+    total: u32,
+}
+
+impl RequestTally {
+    /// Record one API request from a message that carried usage.
+    ///
+    /// Call this for EVERY message with usage, including the calls that
+    /// process tool results and the compaction summariser: each is a real
+    /// call against a rate limit and a bill, and excluding them would make
+    /// the count describe turns rather than requests.
+    pub fn record(
+        &mut self,
+        model_selection: Option<&str>,
+        usage: &crate::agent_runtime::types::TokenUsage,
+        seen_in_thread: &mut std::collections::HashSet<String>,
+    ) {
+        let input = u64::from(usage.input_tokens)
+            + u64::from(usage.cache_creation_input_tokens.unwrap_or(0));
+        let output = u64::from(usage.output_tokens);
+        let cache_read = u64::from(usage.cache_read_input_tokens.unwrap_or(0));
+
+        self.total = self.total.saturating_add(1);
+        let (provider_id, model_key) = split_model_selection(model_selection);
+        seen_in_thread.insert(provider_id.clone());
+        let entry = self
+            .by_provider
+            .entry(provider_id)
+            .or_default()
+            .entry(model_key.clone())
+            .or_insert_with(|| ModelRequestUsage {
+                model: model_key,
+                ..Default::default()
+            });
+        entry.requests = entry.requests.saturating_add(1);
+        if usage.estimated == Some(true) {
+            entry.estimated_requests = entry.estimated_requests.saturating_add(1);
+        }
+        entry.input_tokens += input;
+        entry.output_tokens += output;
+        entry.cache_read_tokens += cache_read;
+    }
+
+    /// Fold one finished thread's provider set into the thread counts.
+    pub fn finish_thread(&mut self, seen_in_thread: std::collections::HashSet<String>) {
+        for provider in seen_in_thread {
+            *self.threads.entry(provider).or_insert(0) += 1;
+        }
+    }
+
+    pub fn total(&self) -> u32 {
+        self.total
+    }
+
+    /// Roll models up into their providers, both sorted by request count.
+    ///
+    /// Deliberately NOT truncated: this is an accounting view, and a list that
+    /// quietly dropped its tail would make the provider totals disagree with
+    /// the models shown under them.
+    pub fn into_providers(self) -> Vec<ProviderRequestUsage> {
+        let threads = self.threads;
+        let mut out: Vec<ProviderRequestUsage> = self
+            .by_provider
+            .into_iter()
+            .map(|(provider_id, by_model)| {
+                let mut models: Vec<ModelRequestUsage> = by_model.into_values().collect();
+                models.sort_by(|a, b| {
+                    b.requests
+                        .cmp(&a.requests)
+                        .then_with(|| a.model.cmp(&b.model))
+                });
+                let thread_count = threads.get(&provider_id).copied().unwrap_or(0);
+                ProviderRequestUsage {
+                    requests: models.iter().map(|m| m.requests).sum(),
+                    estimated_requests: models.iter().map(|m| m.estimated_requests).sum(),
+                    input_tokens: models.iter().map(|m| m.input_tokens).sum(),
+                    output_tokens: models.iter().map(|m| m.output_tokens).sum(),
+                    cache_read_tokens: models.iter().map(|m| m.cache_read_tokens).sum(),
+                    provider_id,
+                    threads: thread_count,
+                    models,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            b.requests
+                .cmp(&a.requests)
+                .then_with(|| a.provider_id.cmp(&b.provider_id))
+        });
+        out
+    }
+}
+
+/// Split a `"{provider_id}:{model_key}"` selection into its two halves.
+///
+/// Only the FIRST colon separates them: a provider id never contains one, a
+/// model key can (`openai/gpt-5.6:preview`). Messages recorded before the
+/// runtime persisted a model fall into a shared unattributed bucket rather
+/// than being credited to whichever provider is configured now.
+fn split_model_selection(selection: Option<&str>) -> (String, String) {
+    let Some(raw) = selection.map(str::trim).filter(|s| !s.is_empty()) else {
+        return (String::new(), String::new());
+    };
+    match raw.find(':') {
+        Some(at) if at > 0 => (raw[..at].to_string(), raw[at + 1..].to_string()),
+        // No provider prefix — treat the whole thing as the model key.
+        _ => (String::new(), raw.to_string()),
+    }
 }
 
 /// Unix-ms → local `YYYY-MM-DD`, or `None` for zero/invalid stamps.
@@ -110,6 +278,10 @@ pub fn usage_stats_get(registry: State<'_, Arc<AgentRegistry>>) -> Result<UsageS
     let mut days: HashMap<String, DayUsage> = HashMap::new();
     let mut tools: HashMap<String, u32> = HashMap::new();
     let mut models: HashMap<String, (u32, u64)> = HashMap::new();
+    // Keyed off the per-message `model` the runtime now records, so this is
+    // EXACT per-request attribution rather than the thread-granularity
+    // approximation `top_models` still uses.
+    let mut requests = RequestTally::default();
     let mut total_messages: u64 = 0;
     let mut lifetime_input: u64 = 0;
     let mut lifetime_output: u64 = 0;
@@ -127,6 +299,11 @@ pub fn usage_stats_get(registry: State<'_, Arc<AgentRegistry>>) -> Result<UsageS
         let mut first_ts: Option<i64> = None;
         let mut last_ts: Option<i64> = None;
         let mut thread_tokens: u64 = 0;
+        // Providers this thread touched, so a chat that switched provider
+        // mid-way counts once toward each rather than once toward whichever
+        // one happened to be recorded on its metadata.
+        let mut providers_in_thread: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         for message in loaded.session.messages() {
             total_messages += 1;
@@ -156,6 +333,12 @@ pub fn usage_stats_get(registry: State<'_, Arc<AgentRegistry>>) -> Result<UsageS
             lifetime_cache_read += cache_read;
             thread_tokens += input + output;
 
+            // One message carrying usage == one API request. That deliberately
+            // includes the calls made to process tool RESULTS (an agent turn
+            // issues one per tool iteration) and the compaction summariser,
+            // because each of those is a real call against a rate limit.
+            requests.record(message.model.as_deref(), usage, &mut providers_in_thread);
+
             if let Some(date) = local_day(message.timestamp) {
                 let day = days.entry(date.clone()).or_insert_with(|| DayUsage {
                     date,
@@ -170,6 +353,8 @@ pub fn usage_stats_get(registry: State<'_, Arc<AgentRegistry>>) -> Result<UsageS
                 day.turns += 1;
             }
         }
+
+        requests.finish_thread(providers_in_thread);
 
         if let Some(model) = loaded.metadata.model.as_deref() {
             if !model.is_empty() {
@@ -216,6 +401,9 @@ pub fn usage_stats_get(registry: State<'_, Arc<AgentRegistry>>) -> Result<UsageS
     top_models.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.name.cmp(&b.name)));
     top_models.truncate(8);
 
+    let total_requests = requests.total();
+    let requests_by_provider = requests.into_providers();
+
     Ok(UsageStats {
         user_name: std::env::var("USERNAME")
             .or_else(|_| std::env::var("USER"))
@@ -228,6 +416,58 @@ pub fn usage_stats_get(registry: State<'_, Arc<AgentRegistry>>) -> Result<UsageS
         days,
         top_tools,
         top_models,
+        requests_by_provider,
+        total_requests,
         longest_task,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_selection_splits_on_its_first_colon_only() {
+        // A provider id never contains a colon; a model key can.
+        assert_eq!(
+            split_model_selection(Some("openai:gpt-5.6-sol")),
+            ("openai".into(), "gpt-5.6-sol".into())
+        );
+        assert_eq!(
+            split_model_selection(Some("gw:openai/gpt-5.6:preview")),
+            ("gw".into(), "openai/gpt-5.6:preview".into())
+        );
+        // A user-added provider's id is a UUID — it must still split cleanly.
+        assert_eq!(
+            split_model_selection(Some("6fa1043d-2c79-4867-8956-9645decd35e4:agnes-2.5-flash")),
+            (
+                "6fa1043d-2c79-4867-8956-9645decd35e4".into(),
+                "agnes-2.5-flash".into()
+            )
+        );
+    }
+
+    #[test]
+    fn a_message_with_no_model_is_unattributed_not_misattributed() {
+        // Requests recorded before the runtime persisted a model must NOT be
+        // credited to whichever provider happens to be configured now.
+        assert_eq!(split_model_selection(None), (String::new(), String::new()));
+        assert_eq!(
+            split_model_selection(Some("   ")),
+            (String::new(), String::new())
+        );
+    }
+
+    #[test]
+    fn a_bare_model_key_keeps_its_whole_name() {
+        assert_eq!(
+            split_model_selection(Some("gpt-5.6-sol")),
+            (String::new(), "gpt-5.6-sol".into())
+        );
+        // A leading colon is not a provider prefix.
+        assert_eq!(
+            split_model_selection(Some(":weird")),
+            (String::new(), ":weird".into())
+        );
+    }
 }

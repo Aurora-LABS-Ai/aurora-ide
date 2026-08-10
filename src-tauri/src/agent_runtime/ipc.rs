@@ -175,6 +175,16 @@ pub struct AgentChatRequest {
     #[serde(default)]
     pub compaction_summary_budget: Option<u32>,
 
+    /// Provider the summarization call runs on, when the user pinned one
+    /// (Settings → Agent → Compaction model). `None` summarizes on the
+    /// conversation's own provider — the prior, and still default, behaviour.
+    ///
+    /// A full config snapshot rather than a model name because the runtime
+    /// builds a second API client from it: the summarizer must be able to
+    /// reach a provider the chat is not using, with its own key and base URL.
+    #[serde(default)]
+    pub compaction_provider_config: Option<crate::api::ProviderConfigSnapshot>,
+
     /// When true, read-only file tools may read files OUTSIDE the workspace
     /// (user opt-in, Settings → Agent). `None`/`false` keeps the strict
     /// workspace boundary. Writes are never affected.
@@ -287,6 +297,7 @@ mod tests {
             attached_prompt_chips: None,
             compaction_threshold_pct: None,
             compaction_summary_budget: None,
+            compaction_provider_config: None,
             allow_outside_workspace: None,
             transcript_chapters: None,
         }
@@ -446,6 +457,7 @@ mod tests {
             attached_prompt_chips: None,
             compaction_threshold_pct: None,
             compaction_summary_budget: None,
+            compaction_provider_config: None,
             allow_outside_workspace: None,
             transcript_chapters: None,
         };
@@ -468,6 +480,8 @@ mod tests {
                 output_tokens: 9,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                estimated: None,
+                cost_usd: None,
             }),
         };
         let s = serde_json::to_string(&env).expect("serialize");

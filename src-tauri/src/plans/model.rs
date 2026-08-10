@@ -448,7 +448,10 @@ mod tests {
     fn next_step_id_walks_past_the_maximum_not_the_count() {
         // Retired ids must never be reused: s2 was deleted, so a two-step plan
         // must still mint s4 rather than colliding with the surviving s3.
-        let fm = frontmatter(vec![step("s1", StepStatus::Done), step("s3", StepStatus::Done)]);
+        let fm = frontmatter(vec![
+            step("s1", StepStatus::Done),
+            step("s3", StepStatus::Done),
+        ]);
         assert_eq!(fm.next_step_id(), "s4");
         assert_eq!(frontmatter(vec![]).next_step_id(), "s1");
     }
@@ -487,14 +490,25 @@ mod tests {
         assert_eq!(out[0].ended_at.as_deref(), Some("t1"));
         assert_eq!(out[0].paths, vec!["src/api/**".to_string()]);
         assert_eq!(out[1].status, StepStatus::InProgress);
-        assert_eq!(out[1].run_id.as_deref(), Some("run_a"), "run claim survives");
-        assert_eq!(out[2].status, StepStatus::Pending, "new steps start pending");
+        assert_eq!(
+            out[1].run_id.as_deref(),
+            Some("run_a"),
+            "run claim survives"
+        );
+        assert_eq!(
+            out[2].status,
+            StepStatus::Pending,
+            "new steps start pending"
+        );
         assert_eq!(out[2].id, "s3", "minted id must not collide");
     }
 
     #[test]
     fn reconcile_drops_steps_absent_from_the_draft() {
-        let existing = vec![step("s1", StepStatus::Done), step("s2", StepStatus::Pending)];
+        let existing = vec![
+            step("s1", StepStatus::Done),
+            step("s2", StepStatus::Pending),
+        ];
         let drafts = vec![StepDraft {
             id: Some("s1".into()),
             title: "Only survivor".into(),
@@ -512,9 +526,21 @@ mod tests {
         let out = reconcile_steps(
             &[],
             &[
-                StepDraft { id: None, title: "A".into(), paths: vec![] },
-                StepDraft { id: None, title: "B".into(), paths: vec![] },
-                StepDraft { id: None, title: "C".into(), paths: vec![] },
+                StepDraft {
+                    id: None,
+                    title: "A".into(),
+                    paths: vec![],
+                },
+                StepDraft {
+                    id: None,
+                    title: "B".into(),
+                    paths: vec![],
+                },
+                StepDraft {
+                    id: None,
+                    title: "C".into(),
+                    paths: vec![],
+                },
             ],
         );
         let ids: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();

@@ -508,7 +508,10 @@ mod tests {
         let mut context = ctx();
         context.workspace_root = Some(tmp.path().to_path_buf());
         let err = tool()
-            .execute(json!({ "command": "ls", "cwd": "does/not/exist" }), &context)
+            .execute(
+                json!({ "command": "ls", "cwd": "does/not/exist" }),
+                &context,
+            )
             .await
             .expect_err("a typo'd cwd must be named, not spawned into");
         assert!(matches!(err, ToolError::InvalidInput(_)), "{err:?}");
@@ -569,7 +572,8 @@ mod tests {
         async fn run_shell_stream(
             &self,
             _req: ShellStreamRequest,
-        ) -> Result<crate::tools::shell_editor_todo::ide_event_sink::ShellRunOutput, String> {
+        ) -> Result<crate::tools::shell_editor_todo::ide_event_sink::ShellRunOutput, String>
+        {
             Ok(
                 crate::tools::shell_editor_todo::ide_event_sink::ShellRunOutput {
                     stdout: "compiling...\n".into(),
@@ -606,11 +610,21 @@ mod tests {
         assert_eq!(parsed["timedOut"], json!(true));
         assert_eq!(parsed["timeoutMs"], json!(5_000));
         assert_eq!(parsed["exitCode"], Value::Null, "it never reported one");
-        assert_eq!(parsed["stdout"], json!("compiling...\n"), "keep partial output");
+        assert_eq!(
+            parsed["stdout"],
+            json!("compiling...\n"),
+            "keep partial output"
+        );
 
         let note = parsed["note"].as_str().unwrap_or_default();
-        assert!(note.contains("partial"), "must not read as a result: {note}");
-        assert!(note.contains("shell_spawn"), "must name the way out: {note}");
+        assert!(
+            note.contains("partial"),
+            "must not read as a result: {note}"
+        );
+        assert!(
+            note.contains("shell_spawn"),
+            "must name the way out: {note}"
+        );
     }
 
     #[tokio::test]

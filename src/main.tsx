@@ -16,8 +16,8 @@
  * Available categories: editor, sidebar, chat, terminal, statusBar, titleBar, common
  * 
  * See: DOCS/theme-dev.md for full token reference
- * See: src/types/theme.ts for TypeScript interfaces
- * See: src/services/theme-service.ts for theme utilities
+ * See: src/kernel/types/theme.ts for TypeScript interfaces
+ * See: src/apps/ide/services/theme-service.ts for theme utilities
  */
 
 import { StrictMode } from 'react'
@@ -30,14 +30,22 @@ import '@fontsource/manrope/500.css'
 import '@fontsource/manrope/600.css'
 import './index.css'
 import App from './App.tsx'
-import { disableNativeTooltips } from './lib/disable-native-tooltips'
-import { startAgentFileSync } from './services/agent-file-sync'
+import { disableNativeTooltips } from '@/kernel/lib/disable-native-tooltips'
+import { startFontProbe } from '@/kernel/lib/fonts/font-probe'
+import { startAgentFileSync } from '@/bridge/agent-file-sync'
 
 // Kill all browser-native `title=""` tooltips at the document level so
 // the OS chrome tooltip never appears on top of our themed UI. See the
 // module's docstring for rationale and trade-offs. Buttons that should
 // have hover hints can still use the themed <Tooltip /> wrapper.
 disableNativeTooltips()
+
+// Report which font families are ACTUALLY rendering, in both windows, and say
+// so again whenever that changes. Font stacks here are user-editable and
+// persisted per ORIGIN, so dev and the packaged exe can legitimately disagree —
+// this is the only surface that tells you which one you are looking at.
+// Call `auroraFonts()` in the console for an on-demand re-read.
+startFontProbe()
 
 // Subscribe to the Rust runtime's `agent_file_changed` event so every
 // agent file write reaches Monaco, the tab store, and the explorer

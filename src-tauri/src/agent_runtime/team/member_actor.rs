@@ -798,6 +798,11 @@ struct MemberEventMirror {
     // In-flight assistant message being reassembled from deltas.
     cur_text: String,
     cur_thinking: String,
+    /// Epoch ms of the first and most recent reasoning delta in the in-flight
+    /// message, so a member's reasoning block persists the same duration the
+    /// main runtime records (see `BlockState::push_thinking`). `None` until
+    /// the first delta — a message with no reasoning must persist no span.
+    cur_thinking_span: Option<(i64, i64)>,
     cur_tools: Vec<(String, String, Value)>,
     streaming_open: bool,
 }
@@ -822,6 +827,7 @@ impl MemberEventMirror {
             lines: seed,
             cur_text: String::new(),
             cur_thinking: String::new(),
+            cur_thinking_span: None,
             cur_tools: Vec::new(),
             streaming_open: false,
         }
@@ -862,6 +868,10 @@ impl MemberEventMirror {
             blocks.push(ContentBlock::Thinking {
                 text: std::mem::take(&mut self.cur_thinking),
                 signature: None,
+                duration_ms: self
+                    .cur_thinking_span
+                    .take()
+                    .map(|(start, end)| end.saturating_sub(start).max(0) as u64),
             });
         }
         if !self.cur_text.is_empty() {
@@ -880,6 +890,7 @@ impl MemberEventMirror {
                 timestamp: Utc::now().timestamp_millis(),
                 attached_selected_elements: None,
                 attached_prompt_chips: None,
+                model: None,
             };
             self.push_line(&msg);
         }
@@ -903,6 +914,11 @@ impl MemberEventMirror {
                 if !text.is_empty() {
                     self.frame("thinking", "delta", &text);
                     self.cur_thinking.push_str(&text);
+                    let now = crate::api::provider_kernel_adapter::now_unix_ms();
+                    match &mut self.cur_thinking_span {
+                        Some((_, end)) => *end = now,
+                        None => self.cur_thinking_span = Some((now, now)),
+                    }
                 }
             }
             AssistantEvent::ToolUse { id, name, input } => {
@@ -931,10 +947,11 @@ impl MemberEventMirror {
                     timestamp: Utc::now().timestamp_millis(),
                     attached_selected_elements: None,
                     attached_prompt_chips: None,
+                    model: None,
                 };
                 self.push_line(&msg);
             }
-            AssistantEvent::QueuedMessageInjected { text } => {
+            AssistantEvent::QueuedMessageInjected { text, .. } => {
                 // A mailbox message reached the model — show it in the
                 // transcript where it actually landed.
                 let msg = ConversationMessage::user_text(text, Utc::now().timestamp_millis());
@@ -1030,6 +1047,11 @@ async fn drive_member(run: &MemberRun, ctx: &Arc<MemberCtx>) -> MemberReport {
         compaction_threshold: Some(MEMBER_COMPACTION_THRESHOLD),
         compaction_summary_budget: 4096,
         allow_outside_workspace: false,
+        // Members run their own provider — price their stored reasoning by
+        // what THAT provider replays, not the lead's.
+        reasoning_replay: crate::api::reasoning_replay_for(
+            run.provider.effective_provider_type(),
+        ),
     };
     let runtime = ConversationRuntime::new(client, registry, config);
 
@@ -1196,6 +1218,11 @@ async fn pump_mailbox(
                 None => {
                     *guard = Some(crate::agent_runtime::session::QueuedUserMessage {
                         text: rendered,
+                        display_text: None,
+                        chips: None,
+                        // Mailbox traffic carries its own `[Message from …]`
+                        // framing — the user-mid-turn preamble would lie.
+                        mid_turn: false,
                         queued_at_ms: Utc::now().timestamp_millis(),
                     });
                 }

@@ -80,6 +80,11 @@ example.txt
 # the code but aren't project source.
 /tasks/
 
+# Cloned third-party repos kept locally for reference/comparison (other
+# agent harnesses, SDKs). Read-only study material — never our source, and
+# vendoring someone else's git history into ours is not the intent.
+/thirdparty/
+
 # OS files
 .DS_Store
 .DS_Store?
@@ -104,6 +109,10 @@ desktop.ini
 .env
 .env.local
 .env.*.local
+
+# OpenClaude local provider credentials / machine overrides
+.openclaude/settings.local.json
+.openclaude-profile.json
 
 # Temporary files
 *.tmp

@@ -110,8 +110,8 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     fn temp_workspace(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("aurora-planread-{name}-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("aurora-planread-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temp workspace");
         dir
     }
@@ -158,7 +158,10 @@ mod tests {
 
         assert_eq!(parsed["success"], json!(true));
         assert_eq!(parsed["hasPlan"], json!(false));
-        assert!(parsed["message"].as_str().unwrap().contains("no active plan"));
+        assert!(parsed["message"]
+            .as_str()
+            .unwrap()
+            .contains("no active plan"));
 
         std::fs::remove_dir_all(&ws).ok();
     }
@@ -168,7 +171,10 @@ mod tests {
         let ws = temp_workspace("read");
         seed(&ws).await;
 
-        let out = PlanReadTool.execute(json!({}), &ctx(&ws)).await.expect("ok");
+        let out = PlanReadTool
+            .execute(json!({}), &ctx(&ws))
+            .await
+            .expect("ok");
         let parsed: Value = serde_json::from_str(&out).unwrap();
 
         assert_eq!(parsed["hasPlan"], json!(true));
@@ -178,7 +184,10 @@ mod tests {
         let sections = parsed["sections"].as_array().unwrap();
         assert_eq!(sections[0]["stepId"], "s1");
         assert_eq!(sections[0]["content"], "Create the router.");
-        assert!(parsed["progress"].as_str().unwrap().contains("0/2 steps done"));
+        assert!(parsed["progress"]
+            .as_str()
+            .unwrap()
+            .contains("0/2 steps done"));
 
         std::fs::remove_dir_all(&ws).ok();
     }
@@ -195,7 +204,11 @@ mod tests {
         let parsed: Value = serde_json::from_str(&out).unwrap();
 
         assert!(parsed.get("sections").is_none(), "detail suppressed");
-        assert_eq!(parsed["steps"].as_array().unwrap().len(), 2, "statuses remain");
+        assert_eq!(
+            parsed["steps"].as_array().unwrap().len(),
+            2,
+            "statuses remain"
+        );
 
         std::fs::remove_dir_all(&ws).ok();
     }
@@ -213,12 +226,18 @@ mod tests {
         })
         .expect("update");
 
-        let out = PlanReadTool.execute(json!({}), &ctx(&ws)).await.expect("ok");
+        let out = PlanReadTool
+            .execute(json!({}), &ctx(&ws))
+            .await
+            .expect("ok");
         let parsed: Value = serde_json::from_str(&out).unwrap();
 
         assert_eq!(parsed["cursor"]["activeStepId"], "s2");
         assert_eq!(parsed["cursor"]["done"], 1);
-        assert!(parsed["progress"].as_str().unwrap().contains("in progress: Wire auth (s2)"));
+        assert!(parsed["progress"]
+            .as_str()
+            .unwrap()
+            .contains("in progress: Wire auth (s2)"));
 
         std::fs::remove_dir_all(&ws).ok();
     }

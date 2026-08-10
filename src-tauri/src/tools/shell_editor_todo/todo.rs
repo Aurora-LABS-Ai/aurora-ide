@@ -92,14 +92,11 @@ fn build_list(input: &[Value], existing: &TodoList) -> Result<TodoList, ToolErro
         };
         let content = field("content")?;
         let active_form = field("activeForm")?;
-        let status = TodoStatus::parse(
-            obj.get("status")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    ToolError::InvalidInput(format!("todos[{idx}].status must be a string"))
-                })?,
-        )
-        .map_err(|e| ToolError::InvalidInput(format!("todos[{idx}]: {e}")))?;
+        let status =
+            TodoStatus::parse(obj.get("status").and_then(Value::as_str).ok_or_else(|| {
+                ToolError::InvalidInput(format!("todos[{idx}].status must be a string"))
+            })?)
+            .map_err(|e| ToolError::InvalidInput(format!("todos[{idx}]: {e}")))?;
 
         let explicit = obj
             .get("id")
@@ -338,15 +335,11 @@ impl TodoTool {
                 )
             })?
             .to_string();
-        let status = TodoStatus::parse(
-            input
-                .get("status")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    ToolError::InvalidInput("`status` must be a string when op is `update`".into())
-                })?,
-        )
-        .map_err(ToolError::InvalidInput)?;
+        let status =
+            TodoStatus::parse(input.get("status").and_then(Value::as_str).ok_or_else(|| {
+                ToolError::InvalidInput("`status` must be a string when op is `update`".into())
+            })?)
+            .map_err(ToolError::InvalidInput)?;
 
         let mut demoted = Vec::new();
         let mut previous = None;
@@ -600,7 +593,10 @@ mod tests {
             .await
             .expect_err("must fail");
         let msg = format!("{err:?}");
-        assert!(msg.contains("read"), "the error points at the recovery: {msg}");
+        assert!(
+            msg.contains("read"),
+            "the error points at the recovery: {msg}"
+        );
 
         todo_store::clear(&thread).ok();
     }
@@ -678,7 +674,10 @@ mod tests {
 
         for (bad, expect) in [
             (json!([{"content":"a","status":"pending"}]), "activeForm"),
-            (json!([{"content":"a","activeForm":"a","status":"blocked"}]), "status"),
+            (
+                json!([{"content":"a","activeForm":"a","status":"blocked"}]),
+                "status",
+            ),
             (json!(["nope"]), "object"),
         ] {
             let err = tool

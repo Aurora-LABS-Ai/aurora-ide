@@ -340,7 +340,13 @@ impl AgentRegistry {
     /// slot. The slot is an `Arc<std::sync::Mutex<Option<…>>>` shared
     /// with the `Session`, so a write here is immediately visible to
     /// `session.take_queued_message()` running inside the turn.
-    pub async fn enqueue_message(&self, thread_id: &str, text: String) -> Result<(), String> {
+    pub async fn enqueue_message(
+        &self,
+        thread_id: &str,
+        text: String,
+        display_text: Option<String>,
+        chips: Option<Vec<crate::agent_runtime::types::AttachedPromptChip>>,
+    ) -> Result<(), String> {
         if text.trim().is_empty() {
             return Err("queued message text cannot be empty".to_string());
         }
@@ -350,6 +356,9 @@ impl AgentRegistry {
             .map_err(|e| format!("queue slot mutex poisoned: {e}"))?;
         *guard = Some(crate::agent_runtime::session::QueuedUserMessage {
             text,
+            display_text: display_text.filter(|t| !t.trim().is_empty()),
+            chips: chips.filter(|c| !c.is_empty()),
+            mid_turn: true,
             queued_at_ms: chrono::Utc::now().timestamp_millis(),
         });
         Ok(())
@@ -545,25 +554,29 @@ impl<E: EventEmitter> TurnDriver<E> {
         self.registry
             .register_in_flight(turn_id.clone(), cancel_token.clone());
 
-        let runtime = ConversationRuntime::new(
-            api_client,
-            Arc::new(build_per_turn_tool_registry(
-                self.registry.tools(),
-                &[],
-                turn_id.clone(),
-                self.registry.bridge_router().clone(),
-                self.emitter.clone() as Arc<dyn BridgeEmitter>,
-                cancel_token.clone(),
-                request.provider_config.supports_vision,
-                request.execution_mode,
-                request.workspace_path.as_deref(),
-                request.transcript_chapters.unwrap_or(false),
-            )),
-            build_runtime_config(&request),
-        )
-        // Oversized tool output lands beside the thread rather than being
-        // clamped away, so the model can read the part it needs back.
-        .with_store_dir(self.registry.store().dir());
+        let runtime = with_compaction_model(
+            ConversationRuntime::new(
+                api_client,
+                Arc::new(build_per_turn_tool_registry(
+                    self.registry.tools(),
+                    &[],
+                    turn_id.clone(),
+                    self.registry.bridge_router().clone(),
+                    self.emitter.clone() as Arc<dyn BridgeEmitter>,
+                    cancel_token.clone(),
+                    request.provider_config.supports_vision,
+                    request.execution_mode,
+                    request.workspace_path.as_deref(),
+                    request.transcript_chapters.unwrap_or(false),
+                )),
+                build_runtime_config(&request),
+            )
+            // Oversized tool output lands beside the thread rather than being
+            // clamped away, so the model can read the part it needs back.
+            .with_store_dir(self.registry.store().dir()),
+            &self.registry,
+            &request,
+        )?;
 
         let (event_tx, mut event_rx) = mpsc::channel::<AgentEventEnvelope>(64);
         let emitter_for_task = self.emitter.clone();
@@ -664,14 +677,18 @@ impl<E: EventEmitter> TurnDriver<E> {
 
         // 4. Construct the runtime with a fresh RuntimeConfig overlaying
         //    every per-turn override the request carries.
-        let runtime = ConversationRuntime::new(
-            api_client,
-            Arc::new(per_turn_tools),
-            build_runtime_config(&request),
-        )
-        // Oversized tool output lands beside the thread rather than being
-        // clamped away, so the model can read the part it needs back.
-        .with_store_dir(self.registry.store().dir());
+        let runtime = with_compaction_model(
+            ConversationRuntime::new(
+                api_client,
+                Arc::new(per_turn_tools),
+                build_runtime_config(&request),
+            )
+            // Oversized tool output lands beside the thread rather than being
+            // clamped away, so the model can read the part it needs back.
+            .with_store_dir(self.registry.store().dir()),
+            &self.registry,
+            &request,
+        )?;
 
         // 5. Wrap the raw user message string into a Text-block
         //    ConversationMessage. The runtime appends it to the session
@@ -898,6 +915,29 @@ impl<E: EventEmitter> TurnDriver<E> {
 /// 8192, thinking_enabled: false, default_temperature: None) come
 /// from `RuntimeConfig::default()`; this helper overlays whatever
 /// the frontend explicitly sent.
+/// Point the runtime's summarization call at the user's pinned compaction
+/// model, when there is one (Settings → Agent → Compaction model).
+///
+/// A no-op when the request carries no override, which is the default and
+/// leaves the summary running on the conversation's own model. Built through
+/// the same [`ApiFactory`] as the chat client so a pinned provider gets its own
+/// key, base URL and wire shape; a factory error surfaces here rather than
+/// half-way through a turn.
+fn with_compaction_model(
+    runtime: ConversationRuntime,
+    registry: &AgentRegistry,
+    request: &AgentChatRequest,
+) -> Result<ConversationRuntime, RuntimeError> {
+    let Some(cfg) = request.compaction_provider_config.as_ref() else {
+        return Ok(runtime);
+    };
+    let client = registry.api_factory().build(cfg)?;
+    // The marker's cost attribution reads this string, and the cost card keys
+    // its per-model grouping on the same `providerId:modelKey` shape the
+    // frontend sends for the chat model.
+    Ok(runtime.with_compaction_client(client, format!("{}:{}", cfg.provider_id, cfg.model)))
+}
+
 fn build_runtime_config(request: &AgentChatRequest) -> RuntimeConfig {
     let defaults = RuntimeConfig::default();
     RuntimeConfig {
@@ -930,6 +970,13 @@ fn build_runtime_config(request: &AgentChatRequest) -> RuntimeConfig {
             .compaction_summary_budget
             .unwrap_or(defaults.compaction_summary_budget),
         allow_outside_workspace: request.allow_outside_workspace.unwrap_or(false),
+        // Read from the SAME provider type the API factory dispatches on, so
+        // the token estimate prices a stored reasoning block exactly as the
+        // request builder will treat it: dropped, replayed as text, or
+        // replayed as an opaque encrypted item.
+        reasoning_replay: crate::api::reasoning_replay_for(
+            request.provider_config.effective_provider_type(),
+        ),
     }
 }
 
@@ -970,9 +1017,8 @@ fn build_per_turn_tool_registry(
     // Resolved once per turn: `plan_store::active` walks the plans directory,
     // and the answer cannot change mid-registry-build.
     let has_plan = workspace_has_plan(workspace_path);
-    let mode_blocked = |name: &str| {
-        !is_tool_available_this_turn(name, execution_mode, has_plan, chapters_enabled)
-    };
+    let mode_blocked =
+        |name: &str| !is_tool_available_this_turn(name, execution_mode, has_plan, chapters_enabled);
     // 1. Bridge fallback for every AllowedTool the model can see.
     for tool in tools {
         if vision_blocked(&tool.name) || is_withdrawn_tool(&tool.name) || mode_blocked(&tool.name) {
@@ -1408,8 +1454,12 @@ mod tauri_layer {
         state: State<'_, Arc<AgentRegistry>>,
         thread_id: String,
         text: String,
+        display_text: Option<String>,
+        chips: Option<Vec<crate::agent_runtime::types::AttachedPromptChip>>,
     ) -> Result<(), String> {
-        state.enqueue_message(&thread_id, text).await
+        state
+            .enqueue_message(&thread_id, text, display_text, chips)
+            .await
     }
 
     /// Cancel the queued message for `thread_id` (if any). Never fails:
@@ -1702,6 +1752,8 @@ mod tests {
                 output_tokens: 7,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
+                estimated: None,
+                cost_usd: None,
             },
             stop_reason: stop_reason.into(),
             assistant_message: message,
@@ -1750,6 +1802,7 @@ mod tests {
             attached_prompt_chips: None,
             compaction_threshold_pct: None,
             compaction_summary_budget: None,
+            compaction_provider_config: None,
             allow_outside_workspace: None,
             transcript_chapters: None,
         }
@@ -2561,6 +2614,8 @@ mod tests {
                     output_tokens: 1,
                     cache_creation_input_tokens: None,
                     cache_read_input_tokens: None,
+                    estimated: None,
+                    cost_usd: None,
                 }),
             ],
             result: Ok(turn_usage(assistant_text_msg("abc"), "end_turn")),

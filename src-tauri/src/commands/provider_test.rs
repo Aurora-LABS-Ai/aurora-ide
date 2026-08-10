@@ -194,13 +194,8 @@ pub async fn provider_test_model(
 /// same helpers the adapters use so the report cannot drift from reality.
 fn describe_route(kind: ProviderKind, config: &ProviderConfigSnapshot) -> (&'static str, String) {
     match kind {
-        ProviderKind::Anthropic => (
-            "Anthropic Messages",
-            build_anthropic_url(&config.base_url),
-        ),
-        ProviderKind::OpenAIResponses => {
-            ("Responses", build_responses_url(&config.base_url))
-        }
+        ProviderKind::Anthropic => ("Anthropic Messages", build_anthropic_url(&config.base_url)),
+        ProviderKind::OpenAIResponses => ("Responses", build_responses_url(&config.base_url)),
         ProviderKind::Codex => ("Codex", CODEX_RESPONSES_URL.to_string()),
         ProviderKind::DeepSeek | ProviderKind::OpenAICompat => {
             ("Chat Completions", build_openai_url(&config.base_url))
@@ -335,6 +330,9 @@ mod tests {
     #[test]
     fn humanize_explains_a_404_as_a_path_problem() {
         let msg = humanize(&ApiError::Provider("404 page not found".into()));
-        assert!(msg.contains("/v1"), "404 must hint at the missing path: {msg}");
+        assert!(
+            msg.contains("/v1"),
+            "404 must hint at the missing path: {msg}"
+        );
     }
 }

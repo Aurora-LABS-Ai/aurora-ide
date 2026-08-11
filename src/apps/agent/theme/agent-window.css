@@ -1194,7 +1194,7 @@
   color: var(--agw-text);
 }
 .agw-bud-value {
-  font-family: var(--agw-font-mono);
+  font-family: var(--agw-font-code);
   font-size: var(--agw-fs-md);
   color: var(--agw-accent);
   font-variant-numeric: tabular-nums;
@@ -1245,7 +1245,7 @@
   display: flex;
   justify-content: space-between;
   margin-top: 4px;
-  font-family: var(--agw-font-mono);
+  font-family: var(--agw-font-code);
   font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
 }
@@ -3724,6 +3724,45 @@
   color: var(--agw-warning);
 }
 
+/* ── Live reconnect marker (stream dropped, runtime is re-requesting) ───────
+ * `.agw-notice`'s shape and warning role, with a spinner where the notice has
+ * its warning triangle: same family, but "working on it" instead of "this went
+ * wrong". Transient — removed as soon as the retry streams, so it gets no
+ * entrance animation; a marker that slides in and then vanishes draws more
+ * attention to the hiccup than the hiccup deserves. */
+.agw-reconnect {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  align-items: center;
+  gap: 7px;
+  margin: 8px 0;
+  padding: 7px 11px;
+  border-left: 2px solid var(--agw-warning);
+  border-radius: 0 var(--agw-radius-md) var(--agw-radius-md) 0;
+  background: color-mix(in srgb, var(--agw-warning) 10%, transparent);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-md);
+  line-height: 1.45;
+}
+.agw-reconnect-spinner {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--agw-radius-pill);
+  border: 1.6px solid color-mix(in srgb, var(--agw-warning) 28%, transparent);
+  border-top-color: var(--agw-warning);
+  animation: agw-spin 0.7s linear infinite;
+}
+/* The label already says "retrying", so the spin is reinforcement, not the
+ * message — safe to stop outright rather than substitute another motion. */
+@media (prefers-reduced-motion: reduce) {
+  .agw-reconnect-spinner {
+    animation: none;
+  }
+}
+
 /* ── Docked "queued message" card (mid-turn injection, above the composer) ──
  * Mirrors `.agw-tasks` chrome so it stacks cleanly with the task panel and
  * tucks 12px behind the composer's top edge. */
@@ -5064,6 +5103,20 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
+/* Time spent under this heading, sat between the title and the rule exactly
+ * like the reasoning row's own number. Deliberately NOT the uppercase heading
+ * type it inherits from `.agw-chapter`: the title is the agent's words and the
+ * duration is the transcript measuring them, so they are different voices and
+ * must not look like one phrase. Matches `.agw-think-time`. */
+.agw-chapter-time {
+  flex: none;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-normal);
+  color: var(--agw-text-subtle);
+  letter-spacing: normal;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
 .agw-chapter-title {
   min-width: 0;
   /* A model can always write a longer title than the pane is wide; wrap it
@@ -5129,6 +5182,11 @@
 .agw-bubble-user {
   background: var(--agw-bubble-user);
   max-width: 82%;
+  /* Here rather than inline on the element: the sticky-user treatment below
+     re-reserves the bottom edge for the copy chip, and an inline `padding`
+     shorthand would outrank that rule and put the question's last line under
+     the chip. Same reason the fill lives here. */
+  padding: 9px 13px;
 }
 
 /* ── Sticky user message (opt-in) ───────────────────────────────────────
@@ -7351,7 +7409,7 @@
 
 .agw-canvas-runtime-error pre {
   margin: 0;
-  font-family: var(--agw-font-mono);
+  font-family: var(--agw-font-code);
   font-size: var(--agw-fs-micro);
   line-height: 1.5;
   white-space: pre-wrap;
@@ -7671,6 +7729,103 @@
 .agw-br-input::placeholder {
   color: var(--agw-text-subtle);
 }
+.agw-br-address:focus-within {
+  border-color: var(--agw-ring);
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* ── The halo — the agent is driving this page right now ─────────────
+ *
+ * The page is a native webview that paints ABOVE every pixel of DOM, so a ring
+ * drawn around the page area would be invisible; insetting the webview to make
+ * room for one would resize the viewport mid-action and change what the agent
+ * is measuring. The toolbar's bottom edge is the only border of the page area
+ * Aurora can still draw on, so that seam IS the halo: it lights up and casts a
+ * short glow down over the top of the page.
+ *
+ * Only ever on while a browser tool is actually running (see
+ * `tools/browser/halo.rs`). A permanent badge would be true all session and
+ * would therefore say nothing. */
+.agw-br-bar[data-agw-driving] {
+  border-bottom-color: color-mix(in srgb, var(--agw-accent) 55%, transparent);
+  box-shadow: 0 3px 12px -4px color-mix(in srgb, var(--agw-accent) 55%, transparent);
+}
+.agw-br-driving {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* Shrinkable, never growing: the address text gives up room for this, and no
+   * button in the bar may move when it appears. */
+  flex: 0 1 auto;
+  min-width: 0;
+  padding-left: 8px;
+  border-left: 1px solid var(--agw-border);
+  color: var(--agw-accent);
+}
+.agw-br-driving-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--agw-accent);
+  animation: agw-br-driving-pulse 1.4s ease-in-out infinite;
+}
+.agw-br-driving-label {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@keyframes agw-br-driving-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--agw-accent) 45%, transparent);
+  }
+  50% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--agw-accent) 0%, transparent);
+  }
+}
+/* ── Emulated screen size ────────────────────────────────────────────
+ * The webview is sized to the emulated device, so the panel around it shows.
+ * Darker than the page area so the device reads as a device sitting on a
+ * stage, not as a page that failed to fill the panel. */
+.agw-br-body[data-agw-stage] {
+  background: var(--agw-canvas);
+}
+.agw-br-frame-chip {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-hover-paint);
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* The dock tab's own cue, for when the user is looking at another tab. */
+.agw-tabpill-browser {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.agw-tabpill-browser[data-agw-driving] {
+  color: var(--agw-accent);
+  animation: agw-br-driving-pulse 1.4s ease-in-out infinite;
+}
+/* Reduced motion keeps the accent — colour is the state, the pulse only draws
+ * the eye to it — and drops the throb. */
+@media (prefers-reduced-motion: reduce) {
+  .agw-br-driving-dot,
+  .agw-tabpill-browser[data-agw-driving] {
+    animation: none;
+  }
+}
+
 /* The native webview covers this; a subtle backdrop shows while it loads or on
  * non-Tauri (web preview) where the embed never attaches. */
 .agw-br-body {
@@ -8036,6 +8191,11 @@
 .agw-settings-back {
   display: inline-flex;
   align-items: center;
+  /* Never shrink or wrap. The header title beside it is now user-typed text
+     (the search query), and without this a long query squeezed "Back to app"
+     onto two lines and grew the whole bar. */
+  flex: none;
+  white-space: nowrap;
   gap: 7px;
   height: 34px;
   padding: 0 15px 0 12px;
@@ -8056,6 +8216,10 @@
 }
 .agw-settings-head-titles {
   min-width: 0;
+  /* Shrinks before anything else in the bar — it is the only element here whose
+     content the user controls. */
+  flex: 0 1 auto;
+  overflow: hidden;
 }
 .agw-settings-head-eyebrow {
   font-size: var(--agw-fs-micro);
@@ -8069,6 +8233,29 @@
   font-weight: var(--agw-fw-strong);
   letter-spacing: -0.01em;
   color: var(--agw-text);
+  /* One line, always. This now carries the search query, and a header that
+     grows with what someone types is a header that can be typed off the
+     screen — it took the search box with it. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The settings search box.
+ *
+ * `flex: none` because it shares the bar with a title made of user input; with
+ * default shrinking, a long query collapsed the input to a sliver.
+ *
+ * NO focus ring, unlike the browser address bar it borrows `.agw-br-address`
+ * from: at the owner's request. Focus is still shown — the border brightens —
+ * because a control with no focus state at all is unusable from the keyboard,
+ * and this one is reachable by Tab from the very first element in the page. */
+.agw-br-address.agw-settings-search {
+  flex: none;
+}
+.agw-br-address.agw-settings-search:focus-within {
+  border-color: var(--agw-border-strong);
+  box-shadow: none;
 }
 .agw-settings-content {
   flex: 1;
@@ -8085,6 +8272,94 @@
   overflow: hidden;
   scrollbar-gutter: auto;
 }
+/* ── Search results in the content area ─────────────────────────────────
+ * A query replaces the open page with the matching CONTROLS, rendered from
+ * their own components so they still work — the answer to "where is the switch
+ * for X" is the switch. Each group is headed by the page it came from, because
+ * a row lifted out of its page has lost the one thing that told you where it
+ * lives; the heading is a button back to it.
+ *
+ * A section that filtered everything away marks itself `[data-hidden]`. The
+ * `:has()` rule then drops the whole result group, so a page never announces a
+ * match it is not showing. Scoped to `[data-inline]` — a destination-only
+ * result has no sections and must not be caught by it. */
+.agw-set-section[data-hidden] {
+  display: none;
+}
+.agw-settings-result {
+  margin-bottom: 26px;
+}
+.agw-settings-result[data-inline]:not(:has(.agw-set-section:not([data-hidden]))) {
+  display: none;
+}
+.agw-settings-result-head {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.agw-settings-result-head:hover,
+.agw-settings-result-head:focus-visible {
+  color: var(--agw-text);
+}
+.agw-settings-result-name {
+  flex: none;
+}
+/* "Open" stays hidden until the heading is hovered or focused: at rest the row
+   is a label, and a persistent call to action on every group would compete with
+   the controls underneath, which are the actual result. */
+.agw-settings-result-open {
+  flex: none;
+  opacity: 0;
+  letter-spacing: normal;
+  text-transform: none;
+  transition: opacity 0.12s ease;
+}
+.agw-settings-result-head:hover .agw-settings-result-open,
+.agw-settings-result-head:focus-visible .agw-settings-result-open {
+  opacity: 1;
+}
+.agw-settings-result-desc {
+  margin: 0;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+}
+.agw-settings-noresults {
+  padding: 22px 0;
+  max-width: 46ch;
+}
+.agw-settings-noresults-title {
+  color: var(--agw-text);
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  /* Echoing the query back is what makes the message an answer rather than a
+     shrug — but only two lines of it. A pasted paragraph is still recognisable
+     from its opening, and printing all of it buries the hint underneath. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.agw-settings-noresults-hint {
+  margin: 6px 0 0;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  line-height: 1.55;
+}
+
 .agw-settings-stack {
   display: flex;
   flex-direction: column;
@@ -8409,6 +8684,188 @@
   background: color-mix(in srgb, var(--agw-info) 12%, transparent);
 }
 
+/* ── Diagnostics: recent problems ─────────────────────────────────────────
+   A list, not cards. These rows sit inside an already-bordered panel, so a
+   bordered tile per entry would be a second container earning nothing —
+   alignment and one hairline do the grouping instead. Each row is one line
+   until you open it: a wall of wrapped stack traces makes ten failures
+   unscannable, and the one you want is always the one you can see the shape
+   of. Hover is a background tint only; nothing moves. */
+.agw-diag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* The list scrolls inside itself rather than growing the settings page, the
+   same bound the skill catalog uses. Fifty failures must not push "Log file"
+   and its Clear button a screen and a half below the fold — the actions that
+   belong to a list stay reachable from it. `clamp` keeps the box honest at both
+   ends: never a sliver on a short window, never taller than a screenful. */
+.agw-diag-list {
+  list-style: none;
+  max-height: clamp(300px, 52vh, 600px);
+  overflow-y: auto;
+  /* Both of these exist to stop expanding a row from moving the page.
+     `overflow-x: hidden` because a non-visible value on ONE axis makes
+     `visible` on the other compute to `auto` — so the list silently had a
+     horizontal scroller, and a row that grew past the width popped it into
+     existence, stealing 10px of height from everything below.
+     `scrollbar-gutter: stable` because the vertical track appearing was the
+     first domino: it narrows the content box, which is what pushed the header
+     row past the width in the first place. Reserved always, it never moves. */
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  /* Bleed 2px so a focus ring on the first/last row is not clipped by the
+     scroll box (same trick as .agw-skill-grid). */
+  margin: 0 -2px;
+  padding: 2px;
+}
+.agw-diag-item + .agw-diag-item {
+  border-top: 1px solid var(--agw-border);
+}
+
+.agw-diag-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--agw-radius-sm);
+  transition: background-color 0.15s cubic-bezier(0, 0, 0.2, 1);
+}
+.agw-diag-head:hover {
+  background: var(--agw-hover);
+}
+.agw-diag-head:focus-visible {
+  outline: 2px solid var(--agw-accent);
+  outline-offset: 2px;
+}
+
+/* The level never wraps or squashes — "UNPARSED" folding onto a second line
+   would change the row's height, and rows in a list must all be one height. */
+.agw-diag-head > .agw-set-pill {
+  flex: none;
+  white-space: nowrap;
+}
+.agw-diag-when {
+  flex: none;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+/* Allowed to shrink and ellipsize rather than `flex: none`. A row that cannot
+   compress is a row that overflows on a narrow pane, and the overflow is what
+   the horizontal scrollbar was reporting. */
+.agw-diag-where {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-muted);
+}
+/* The message is the only element allowed to take the leftover width, and it
+   stays on one line — the row is a scan target, not the content. */
+.agw-diag-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text);
+}
+
+.agw-diag-detail {
+  padding: 0 0 12px;
+}
+.agw-diag-detail-meta {
+  margin-bottom: 6px;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+/* No scrollbar of its own: the list is the one scroll region, and a scroller
+   inside a scroller means every wheel gesture lands somewhere you did not aim.
+   A long trace makes its own row tall; the list still moves. */
+.agw-diag-detail-body {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-canvas);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  line-height: 1.55;
+  color: var(--agw-text-muted);
+  /* Wrap rather than scroll the page: a 4 KB provider payload must not push
+     the settings surface sideways. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Empty / loading / failed-to-read. One shape for all three so the page never
+   changes layout depending on how well it is going. */
+.agw-diag-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text-subtle);
+}
+.agw-diag-state[data-tone="success"] > svg {
+  color: var(--agw-added);
+  flex: none;
+  margin-top: 1px;
+}
+.agw-diag-state[data-tone="danger"] > svg {
+  color: var(--agw-removed);
+  flex: none;
+  margin-top: 1px;
+}
+.agw-diag-state-title {
+  color: var(--agw-text);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-diag-state-body {
+  margin-top: 3px;
+  line-height: 1.45;
+  max-width: 62ch;
+}
+
+.agw-diag-note {
+  margin: 10px 0 0;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+.agw-diag-path {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  /* Selectable and breakable: the fallback when the button cannot open a
+     folder is reading the path off the screen. */
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+.agw-diag-size {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── Button ───────────────────────────────────────────────────────────── */
 .agw-set-btn {
   display: inline-flex;
@@ -8526,6 +8983,115 @@
 /* No focus glow/halo — just a crisp neutral border on focus. */
 .agw-set-input:focus {
   border-color: var(--agw-border-strong);
+}
+
+/* ── Font stack picker (Appearance → Typography) ──────────────────────────
+   Editable combobox: the input carries the full custom stack; the chevron
+   opens the bundled + installed-fonts dropdown (FontStackPicker.tsx). */
+.agw-fontpick {
+  display: flex;
+  gap: 4px;
+}
+.agw-fontpick-input {
+  flex: 1;
+}
+.agw-fontpick-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-canvas);
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+.agw-fontpick-btn:hover,
+.agw-fontpick-btn[data-open] {
+  border-color: var(--agw-border-strong);
+  color: var(--agw-text);
+}
+.agw-fontpick-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-fontpick-menu {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.agw-fontpick-search {
+  flex-shrink: 0;
+  padding: 6px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-fontpick-search .agw-set-input {
+  height: 28px;
+}
+.agw-fontpick-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 5px;
+}
+.agw-fontpick-group {
+  padding: 7px 10px 3px;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+/* Keyboard highlight mirrors hover — one look for "this row is next". */
+.agw-csel-item[data-highlight] {
+  background: var(--agw-hover-paint);
+}
+.agw-fontpick-note {
+  padding: 10px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+}
+.agw-fontpick-note[data-tone="error"] {
+  color: var(--agw-removed);
+}
+.agw-fontpick-retry {
+  margin-left: 6px;
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-accent);
+  cursor: pointer;
+}
+.agw-fontpick-retry:hover {
+  color: var(--agw-accent-hover);
+}
+.agw-fontpick-foot {
+  flex-shrink: 0;
+  padding: 5px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-fontpick-rescan {
+  width: 100%;
+  height: 26px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.agw-fontpick-rescan:hover:not(:disabled) {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-fontpick-rescan:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 /* ── Inline notice (e.g. auto-approve warning) ────────────────────────── */
@@ -9299,17 +9865,26 @@
   color: var(--agw-text-subtle);
   word-break: break-all;
 }
+/* Both of these carry text from a provider, and a provider will hand you a JSON
+   blob with no spaces in it. The URL a line above already breaks; these did not,
+   so an error ran straight out of the card and the end of the message — the part
+   naming the actual cause — was off-screen.
+   `anywhere` rather than the URL's `break-all`: this is prose with a payload
+   stuck to it, so ordinary words should stay whole and only an unbreakable run
+   should be cut. */
 .agw-prov-test-reply {
   padding-top: 6px;
   border-top: 1px solid var(--agw-border);
   font-size: var(--agw-fs-label);
   line-height: 1.45;
   color: var(--agw-text);
+  overflow-wrap: anywhere;
 }
 .agw-prov-test-line {
   font-size: var(--agw-fs-label);
   line-height: 1.45;
   color: var(--agw-text);
+  overflow-wrap: anywhere;
 }
 .agw-prov-test-line[data-tone="bad"] {
   padding-top: 6px;
@@ -13325,7 +13900,7 @@ body[data-agw-dragging] * {
 
 .agw-plan-path {
   display: block;
-  font-family: var(--agw-font-mono);
+  font-family: var(--agw-font-code);
   font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
   overflow: hidden;
@@ -13510,7 +14085,7 @@ body[data-agw-dragging] * {
 }
 
 .agw-proj-path {
-  font-family: var(--agw-font-mono);
+  font-family: var(--agw-font-code);
   font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
   overflow: hidden;

@@ -5,6 +5,7 @@ import { Loader2, X } from 'lucide-react';
 
 import { getMonacoThemeId, themeService } from '@/apps/ide/services/theme-service';
 import { useThemeStore } from '@/apps/ide/store/useThemeStore';
+import { CODE_FONT_STACK } from '@/kernel/lib/fonts/stacks';
 
 interface GitDiffModalProps {
   error?: string | null;
@@ -118,7 +119,7 @@ export const GitDiffModal: React.FC<GitDiffModalProps> = ({
               options={{
                 automaticLayout: true,
                 contextmenu: true,
-                fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace",
+                fontFamily: CODE_FONT_STACK,
                 fontSize: 13,
                 minimap: { enabled: false },
                 originalEditable: false,

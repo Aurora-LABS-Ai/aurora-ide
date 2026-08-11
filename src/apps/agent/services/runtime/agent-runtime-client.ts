@@ -192,6 +192,11 @@ export interface AgentChatRequest {
    */
   transcriptChapters: boolean | null;
   /**
+   * Whether the browser toolset is advertised this turn. `null` means an
+   * older caller and resolves to ON in Rust — see `browser_tools` in `ipc.rs`.
+   */
+  browserTools: boolean | null;
+  /**
    * Browser-inspector element chips attached to this user turn. Persisted
    * by the runtime onto the user `ConversationMessage` in the session JSONL
    * (camelCase on the wire → Rust `attached_selected_elements`). `null`/
@@ -244,7 +249,19 @@ export type AssistantEvent =
     }
   | { type: "compaction_started" }
   | { type: "compaction_completed"; before_tokens: number; after_tokens: number }
-  | { type: "error"; message: string; recoverable: boolean };
+  | { type: "error"; message: string; recoverable: boolean }
+  | {
+      /** The stream died mid-reply and the runtime is re-requesting it. What
+       *  already streamed for THIS reply must be dropped — the retry sends it
+       *  again from the first token. Scope is one model call: finished replies
+       *  and tool calls above it are committed and untouched. */
+      type: "partial_reply_discarded";
+      /** The attempt that failed, 1-based. */
+      attempt: number;
+      max_attempts: number;
+      /** Transport/provider error, for diagnostics — not user-facing copy. */
+      reason: string;
+    };
 
 /**
  * Wrapper for one streamed event. Sub-A's struct is currently
@@ -571,6 +588,8 @@ export class AgentRuntimeClient {
         typeof config.transcriptChapters === "boolean"
           ? config.transcriptChapters
           : null,
+      browserTools:
+        typeof config.browserTools === "boolean" ? config.browserTools : null,
       attachedSelectedElements:
         input.attachedSelectedElements && input.attachedSelectedElements.length > 0
           ? input.attachedSelectedElements
@@ -892,6 +911,13 @@ export class AgentRuntimeClient {
         break;
       case "compaction_completed":
         callbacks.onCompactionCompleted?.(event.before_tokens, event.after_tokens);
+        break;
+      case "partial_reply_discarded":
+        callbacks.onPartialReplyDiscarded?.({
+          attempt: event.attempt,
+          maxAttempts: event.max_attempts,
+          reason: event.reason,
+        });
         break;
       case "error":
         // Never swallow this. A recoverable notice (output cap hit, provider

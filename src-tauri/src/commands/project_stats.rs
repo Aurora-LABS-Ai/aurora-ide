@@ -10,13 +10,16 @@
 //!
 //! ## Active time vs elapsed time
 //!
-//! [`UsageStats`](super::usage_stats::UsageStats) measures a thread as
-//! `last - first`, which counts the hours between you asking something and
-//! coming back after lunch. That is fine for "longest task" but wrong for
-//! "how much time went into this project", so this module sums **per-turn**
-//! durations instead: each user message starts a turn, and the turn ends at
-//! the last message before the next one. The result is time the agent was
-//! actually working, and it is always <= the elapsed span.
+//! A thread's elapsed span (`last - first`) counts the hours between asking
+//! something and coming back after lunch — or, as the Profile page once
+//! reported, the 1484 hours since you opened a chat you still reply to. It is
+//! not time anything was working, so this module sums **per-turn** durations
+//! instead: each user message starts a turn, and the turn ends at the last
+//! message before the next one. The result is time the agent was actually
+//! working, and it is always <= the elapsed span.
+//!
+//! [`UsageStats`](super::usage_stats::UsageStats) now measures its "longest
+//! task" the same way, for the same reason.
 
 use std::collections::HashMap;
 use std::sync::Arc;

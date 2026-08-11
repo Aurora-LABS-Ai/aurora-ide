@@ -134,6 +134,9 @@ windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    # System font-family enumeration for the Appearance font pickers
+    # (commands::fonts). DirectWrite names are what Chromium/CSS matches.
+    "Win32_Graphics_DirectWrite",
 ] }
 # Direct dependency on webview2-com so we can call `ICoreWebView2::CapturePreview`
 # via Tauri's `Webview::with_webview` platform escape hatch. It was already a
@@ -144,6 +147,12 @@ webview2-com = "0.38"
 [dev-dependencies]
 # Isolated tempdirs for filesystem tests (threads JSONL, paths, writer/reader).
 tempfile = "3"
+# `test-util` is NOT part of tokio's "full", and it is what makes
+# `#[tokio::test(start_paused = true)]` available. The stream-retry tests wait
+# out a 1s/2s backoff; with a paused clock tokio auto-advances it, so the suite
+# proves the backoff without spending the seconds. Dev-only — the shipped
+# binary never links it.
+tokio = { version = "1", features = ["test-util"] }
 
 [patch.crates-io]
 # tokenizers enables esaxx-rs/cpp by default. The upstream esaxx-rs build uses

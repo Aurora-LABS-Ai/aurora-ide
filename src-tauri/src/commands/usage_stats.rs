@@ -21,7 +21,7 @@ use chrono::{Local, TimeZone};
 use serde::Serialize;
 use tauri::State;
 
-use crate::agent_runtime::types::ContentBlock;
+use crate::agent_runtime::types::{ContentBlock, MessageRole};
 use crate::commands::agent_v2::AgentRegistry;
 
 /// Aggregated token activity for one local calendar day.
@@ -44,12 +44,53 @@ pub struct ToolUsage {
     pub count: u32,
 }
 
+/// The longest single TURN ever run — one question, and everything the agent
+/// did before it needed you again.
+///
+/// This used to be a thread's whole elapsed span (`last - first`), which is not
+/// a task: replying once to a two-month-old chat reported a 1484-hour task, and
+/// the card sat next to real figures like Peak day so it read as one. What a
+/// person means by "longest task" is how long the agent ran unattended, and
+/// that is a turn — the same unit `project_stats` measures for exactly this
+/// reason.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LongestTask {
     pub thread_id: String,
     pub title: String,
     pub duration_ms: i64,
+}
+
+/// A turn in progress: when the user asked, and the last activity seen since.
+type OpenTurn = (i64, i64);
+
+/// Close a turn and keep it if it is the longest seen.
+///
+/// A turn with no activity after the question (zero or negative span) is not a
+/// task the agent ran — it is a message that was never answered.
+fn record_turn(
+    turn: Option<OpenTurn>,
+    thread_id: &str,
+    title: &str,
+    longest: &mut Option<LongestTask>,
+) {
+    let Some((start, end)) = turn else {
+        return;
+    };
+    let duration = end - start;
+    if duration <= 0 {
+        return;
+    }
+    if longest
+        .as_ref()
+        .is_none_or(|best| duration > best.duration_ms)
+    {
+        *longest = Some(LongestTask {
+            thread_id: thread_id.to_string(),
+            title: title.to_string(),
+            duration_ms: duration,
+        });
+    }
 }
 
 /// Per-model usage, attributed from each thread's `metadata.model` (the
@@ -296,8 +337,9 @@ pub fn usage_stats_get(registry: State<'_, Arc<AgentRegistry>>) -> Result<UsageS
             Ok(None) | Err(_) => continue,
         };
 
-        let mut first_ts: Option<i64> = None;
-        let mut last_ts: Option<i64> = None;
+        // The turn currently being measured: a user message opens one, the
+        // next user message closes it, and everything in between extends it.
+        let mut open_turn: Option<OpenTurn> = None;
         let mut thread_tokens: u64 = 0;
         // Providers this thread touched, so a chat that switched provider
         // mid-way counts once toward each rather than once toward whichever
@@ -308,9 +350,15 @@ pub fn usage_stats_get(registry: State<'_, Arc<AgentRegistry>>) -> Result<UsageS
         for message in loaded.session.messages() {
             total_messages += 1;
 
-            if message.timestamp > 0 {
-                first_ts = Some(first_ts.map_or(message.timestamp, |t| t.min(message.timestamp)));
-                last_ts = Some(last_ts.map_or(message.timestamp, |t| t.max(message.timestamp)));
+            if message.role == MessageRole::User {
+                record_turn(open_turn.take(), &summary.id, &summary.title, &mut longest_task);
+                if message.timestamp > 0 {
+                    open_turn = Some((message.timestamp, message.timestamp));
+                }
+            } else if let Some(turn) = open_turn.as_mut() {
+                if message.timestamp > turn.1 {
+                    turn.1 = message.timestamp;
+                }
             }
 
             for block in &message.blocks {
@@ -364,20 +412,9 @@ pub fn usage_stats_get(registry: State<'_, Arc<AgentRegistry>>) -> Result<UsageS
             }
         }
 
-        if let (Some(first), Some(last)) = (first_ts, last_ts) {
-            let duration = last - first;
-            if duration > 0
-                && longest_task
-                    .as_ref()
-                    .is_none_or(|t| duration > t.duration_ms)
-            {
-                longest_task = Some(LongestTask {
-                    thread_id: summary.id.clone(),
-                    title: summary.title.clone(),
-                    duration_ms: duration,
-                });
-            }
-        }
+        // The thread ends with a turn still open — it is the last thing that
+        // happened, and skipping it would lose the most recent long run.
+        record_turn(open_turn.take(), &summary.id, &summary.title, &mut longest_task);
     }
 
     let mut days: Vec<DayUsage> = days.into_values().collect();
@@ -425,6 +462,50 @@ pub fn usage_stats_get(registry: State<'_, Arc<AgentRegistry>>) -> Result<UsageS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const HOUR: i64 = 3_600_000;
+
+    /// Feed turns through `record_turn` the way the message loop does.
+    fn longest_of(turns: &[(i64, i64)]) -> Option<i64> {
+        let mut longest = None;
+        for turn in turns {
+            record_turn(Some(*turn), "t", "Title", &mut longest);
+        }
+        longest.map(|t| t.duration_ms)
+    }
+
+    #[test]
+    fn a_task_is_one_turn_not_the_life_of_the_chat() {
+        // The bug this replaced: a chat opened in June and replied to in August
+        // reported a 1484-hour "task". Two short turns two months apart are two
+        // short turns.
+        let june = 0;
+        let august = 62 * 24 * HOUR;
+        assert_eq!(
+            longest_of(&[(june, june + 2 * HOUR), (august, august + HOUR)]),
+            Some(2 * HOUR),
+        );
+    }
+
+    #[test]
+    fn keeps_the_longest_run_not_the_last_one() {
+        assert_eq!(longest_of(&[(0, 5 * HOUR), (HOUR, HOUR + 60_000)]), Some(5 * HOUR));
+    }
+
+    #[test]
+    fn a_question_that_was_never_answered_is_not_a_task() {
+        // Start == end means the agent did nothing after being asked, and a
+        // negative span means the timestamps are corrupt. Neither is a run.
+        assert_eq!(longest_of(&[(500, 500)]), None);
+        assert_eq!(longest_of(&[(900, 100)]), None);
+    }
+
+    #[test]
+    fn a_thread_with_no_turns_reports_nothing() {
+        let mut longest = None;
+        record_turn(None, "t", "Title", &mut longest);
+        assert!(longest.is_none());
+    }
 
     #[test]
     fn a_selection_splits_on_its_first_colon_only() {

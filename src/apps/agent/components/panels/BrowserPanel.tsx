@@ -13,12 +13,14 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
 import { useAgentSelectionStore } from "@/apps/agent/store/composer/useAgentSelectionStore";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 import { DEV_SERVERS, useAgentBrowserHistory } from "@/apps/agent/store/workspace/useAgentBrowserHistory";
+import { drivingLabel, useAgentBrowserDriving } from "@/apps/agent/store/workspace/useAgentBrowserDriving";
 import {
   activateInspector,
   createBrowserWindow,
@@ -104,6 +106,18 @@ export const BrowserPanel: React.FC = () => {
   const [suggestOpen, setSuggestOpen] = useState(false);
   const recent = useAgentBrowserHistory((s) => s.recent);
   const pushRecent = useAgentBrowserHistory((s) => s.push);
+  const driving = useAgentBrowserDriving((s) => s.driving);
+
+  /**
+   * The emulated device size, when `browser_set_viewport` has asked for one.
+   *
+   * A ref, not state: `measure()` is called from a ResizeObserver and from
+   * `resize`, both outside React's render, and reading a stale closure there
+   * would snap the webview back to full width on the next layout change.
+   * `frameTick` exists only to re-run the effect that applies a new frame.
+   */
+  const frameRef = useRef<{ width: number; height: number } | null>(null);
+  const [frame, setFrame] = useState<{ width: number; height: number } | null>(null);
 
   const measure = () => {
     const el = bodyRef.current;
@@ -118,7 +132,27 @@ export const BrowserPanel: React.FC = () => {
     // left if the outer can't be found.
     const outer = el.closest(".agw-shell-side") as HTMLElement | null;
     const left = outer ? outer.getBoundingClientRect().left : r.left;
-    return { x: left, y: r.top, width: r.width, height: r.height };
+
+    // Device frame. `Emulation.setDeviceMetricsOverride` alone only changes
+    // what the PAGE believes its viewport is — the webview stays panel-sized
+    // and the browser paints the leftover area blank, INSIDE the webview where
+    // no Aurora styling can reach. The native screenshot photographs that whole
+    // surface, so a phone check came back as a narrow layout next to a large
+    // white void that reads exactly like a broken page. Sizing the webview to
+    // the emulation is the only thing that removes it.
+    const frame = frameRef.current;
+    if (!frame) return { x: left, y: r.top, width: r.width, height: r.height };
+
+    // Never larger than the panel: a 1440px frame in a 600px panel would push
+    // the webview under the rest of the window. Capped, and `browser_status`
+    // reports the size the page actually got.
+    const width = Math.min(frame.width, r.width);
+    const height = Math.min(frame.height, r.height);
+    // Centred horizontally so it reads as a device sitting in the panel rather
+    // than as a page that failed to fill it. The inset is added to the
+    // ANIMATING outer's left, so the frame still slides with the rail.
+    const inset = Math.round((r.width - width) / 2);
+    return { x: left + inset, y: r.top, width, height };
   };
 
   useEffect(() => {
@@ -206,6 +240,51 @@ export const BrowserPanel: React.FC = () => {
       void hideBrowser(LABEL).catch(() => {});
     };
   }, []);
+
+  // `browser_set_viewport` asks the panel to render at a device size (or to go
+  // back to filling the panel). Rust cannot resize the webview itself — the
+  // bounds are derived from this component's live layout — so it emits and we
+  // re-measure.
+  useEffect(() => {
+    if (!isAuroraRuntimeAvailable()) return;
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    void listen<{ width?: number | null; height?: number | null }>(
+      "aurora:agent-browser-frame",
+      (event) => {
+        if (cancelled) return;
+        const { width, height } = event.payload ?? {};
+        const next =
+          typeof width === "number" && width > 0
+            ? { width, height: typeof height === "number" && height > 0 ? height : Infinity }
+            : null;
+        frameRef.current = next;
+        setFrame(next);
+      },
+    )
+      .then((off) => {
+        if (cancelled) off();
+        else unlisten = off;
+      })
+      .catch((err) => {
+        console.warn("[agent-window] browser-frame subscribe failed:", err);
+      });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // Resize the live webview whenever the frame changes — including back to
+  // null, which is what restores the full-panel view after `reset: true`.
+  useEffect(() => {
+    // `measure` reads refs and live layout rather than render state, so it is
+    // deliberately not a dependency.
+    const b = measure();
+    if (b) void setBrowserBounds(LABEL, b.x, b.y, b.width, b.height).catch(() => {});
+  }, [frame]);
 
   // Inspector picks → add a "Selected N" chip to the composer (IDE parity).
   useEffect(() => {
@@ -311,7 +390,10 @@ export const BrowserPanel: React.FC = () => {
 
   return (
     <div className="agw-br-root">
-      <div className="agw-br-bar">
+      {/* `data-agw-driving` lights the seam between the toolbar and the page —
+          the one edge of the page area Aurora can still draw on, since the
+          native webview paints above every pixel of DOM below it. */}
+      <div className="agw-br-bar" data-agw-driving={driving ? "true" : undefined}>
         <button type="button" className="agw-br-nav" title="Back" aria-label="Back" onClick={() => void evalBrowser(LABEL, "history.back()")}>
           <span style={{ display: "inline-flex", transform: "rotate(90deg)" }}>
             <AgentIcon name="chevron-down" size={15} />
@@ -354,6 +436,33 @@ export const BrowserPanel: React.FC = () => {
               }
             }}
           />
+          {/* Inside the address pill, not beside it: everything in this bar is
+              fixed-width except the input, so a chip anywhere else would shove
+              the Inspect button sideways every time the agent touched the page.
+              It also puts "Clicking" next to the URL being clicked. */}
+          {driving && (
+            <div className="agw-br-driving" role="status" aria-live="polite">
+              <span className="agw-br-driving-dot" aria-hidden="true" />
+              <span className="agw-br-driving-label">{drivingLabel(driving)}</span>
+            </div>
+          )}
+          {/* An emulated size is otherwise invisible — the page just looks
+              narrow — and it survives into later turns. Naming it here is what
+              stops "why is my site broken" from being the first read. */}
+          {/* A label, not a button: clearing the frame from here would leave the
+              PAGE still believing it is 390px wide while the panel went back to
+              full width — the exact mismatch this whole change exists to remove.
+              The two things that clear both are loading a URL and the agent's
+              own reset, so the tooltip points at those. */}
+          {frame && (
+            <span
+              className="agw-br-frame-chip"
+              title="Emulated screen size. Load a URL, or ask the agent to reset the viewport, to go back to the full panel."
+            >
+              {Math.round(frame.width)}
+              {Number.isFinite(frame.height) ? `×${Math.round(frame.height)}` : ""}
+            </span>
+          )}
           {suggestOpen && (suggestions.recents.length > 0 || suggestions.servers.length > 0) && (
             <div className="agw-br-suggest agw-scroll">
               {suggestions.recents.length > 0 && <div className="agw-br-sugg-head">Recent</div>}
@@ -403,8 +512,11 @@ export const BrowserPanel: React.FC = () => {
           <AgentIcon name="inspect" size={15} />
         </button>
       </div>
-      {/* The native webview floats over this region; keep it empty. */}
-      <div ref={bodyRef} className="agw-br-body" />
+      {/* The native webview floats over this region; keep it empty. Under an
+          emulated size it no longer fills the region, so the area around the
+          device frame becomes a visible stage — darkened so the device reads as
+          a device rather than as a page that failed to fill the panel. */}
+      <div ref={bodyRef} className="agw-br-body" data-agw-stage={frame ? "true" : undefined} />
     </div>
   );
 };

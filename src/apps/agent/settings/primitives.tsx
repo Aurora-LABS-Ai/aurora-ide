@@ -12,11 +12,22 @@
  *   </SettingsSection>
  */
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
+import {
+  SectionSearchContext,
+  rowSearchState,
+  textMatches,
+  useSectionSearch,
+  useSettingsQuery,
+  type SectionSearchValue,
+} from "./settings-search";
+
+/** Plain text out of a hint, which may be a node. Only strings are searchable. */
+const hintText = (hint: React.ReactNode): string => (typeof hint === "string" ? hint : "");
 
 // ── Section ────────────────────────────────────────────────────────────────
 
@@ -26,25 +37,56 @@ export const SettingsSection: React.FC<{
   icon?: AgentIconName;
   badge?: React.ReactNode;
   children: React.ReactNode;
-}> = ({ title, description, icon, badge, children }) => (
-  <section className="agw-set-section">
-    <header className="agw-set-section-head">
-      <div className="agw-set-section-title-wrap">
-        {icon && (
-          <span className="agw-set-section-ico">
-            <AgentIcon name={icon} size={17} />
-          </span>
-        )}
-        <div style={{ minWidth: 0 }}>
-          <h3 className="agw-set-section-title">{title}</h3>
-          {description && <p className="agw-set-section-desc">{description}</p>}
-        </div>
-      </div>
-      {badge && <div style={{ flexShrink: 0 }}>{badge}</div>}
-    </header>
-    <div className="agw-set-panel">{children}</div>
-  </section>
-);
+}> = ({ title, description, icon, badge, children }) => {
+  const query = useSettingsQuery();
+  const sectionMatched = query
+    ? textMatches(`${title} ${hintText(description)}`, query)
+    : false;
+
+  // Which rows matched, by key. Rows report from an effect, so this settles one
+  // commit after the query changes — hence `display:none` below rather than an
+  // early `return null`: the subtree must stay MOUNTED for rows to report at
+  // all, and unmounting them would also throw away their own state on every
+  // keystroke.
+  const [rowMatches, setRowMatches] = useState<Record<string, boolean>>({});
+  const report = useCallback((key: string, matched: boolean) => {
+    setRowMatches((prev) => (prev[key] === matched ? prev : { ...prev, [key]: matched }));
+  }, []);
+  const search = useMemo<SectionSearchValue>(
+    () => ({ sectionMatched, report }),
+    [sectionMatched, report],
+  );
+
+  const hasMatchingRow = Object.values(rowMatches).some(Boolean);
+  const hidden = !!query && !sectionMatched && !hasMatchingRow;
+
+  return (
+    <SectionSearchContext.Provider value={search}>
+      {/* `data-hidden` rather than an inline `display:none`, so the results view
+          can ask in CSS whether a page produced any visible section at all
+          (`:has(.agw-set-section:not([data-hidden]))`) and drop the heading of
+          one that produced none. Matching on an inline style string would work
+          until the first person reordered the declaration. */}
+      <section className="agw-set-section" data-hidden={hidden || undefined}>
+        <header className="agw-set-section-head">
+          <div className="agw-set-section-title-wrap">
+            {icon && (
+              <span className="agw-set-section-ico">
+                <AgentIcon name={icon} size={17} />
+              </span>
+            )}
+            <div style={{ minWidth: 0 }}>
+              <h3 className="agw-set-section-title">{title}</h3>
+              {description && <p className="agw-set-section-desc">{description}</p>}
+            </div>
+          </div>
+          {badge && <div style={{ flexShrink: 0 }}>{badge}</div>}
+        </header>
+        <div className="agw-set-panel">{children}</div>
+      </section>
+    </SectionSearchContext.Provider>
+  );
+};
 
 // ── Row ────────────────────────────────────────────────────────────────────
 
@@ -55,30 +97,77 @@ export const SettingsRow: React.FC<{
   last?: boolean;
   /** Align the control to the top (for tall controls / wrapping hints). */
   alignTop?: boolean;
+  /** Extra words this row should be findable by (synonyms, the token it sets). */
+  searchTerms?: string;
   children: React.ReactNode;
-}> = ({ label, hint, last, alignTop, children }) => (
-  <div
-    className="agw-set-row"
-    data-last={last || undefined}
-    style={alignTop ? { alignItems: "flex-start" } : undefined}
-  >
-    <div className="agw-set-row-label">
-      <div className="agw-set-row-label-text">{label}</div>
-      {hint && <div className="agw-set-row-hint">{hint}</div>}
+}> = ({ label, hint, last, alignTop, searchTerms, children }) => {
+  const query = useSettingsQuery();
+  const section = useSectionSearch();
+  const key = useId();
+
+  const haystack = `${label} ${hintText(hint)} ${searchTerms ?? ""}`;
+  const { matched, visible } = rowSearchState(haystack, query, !!section?.sectionMatched);
+
+  // Reported even when this renders nothing — a null return is still a mounted
+  // component, which is what lets a section find out it has no matches left.
+  const reportFn = section?.report;
+  useEffect(() => {
+    reportFn?.(key, matched);
+  }, [reportFn, key, matched]);
+  useEffect(() => () => reportFn?.(key, false), [reportFn, key]);
+
+  if (!visible) return null;
+
+  return (
+    <div
+      className="agw-set-row"
+      // While searching, a divider drawn for a row that is now hidden leaves a
+      // rule under nothing. `last` is a static authoring hint, so it cannot
+      // know — drop dividers entirely for a filtered view.
+      data-last={last || query ? true : undefined}
+      data-search-hit={query && matched ? true : undefined}
+      style={alignTop ? { alignItems: "flex-start" } : undefined}
+    >
+      <div className="agw-set-row-label">
+        <div className="agw-set-row-label-text">{label}</div>
+        {hint && <div className="agw-set-row-hint">{hint}</div>}
+      </div>
+      <div className="agw-set-row-control">{children}</div>
     </div>
-    <div className="agw-set-row-control">{children}</div>
-  </div>
-);
+  );
+};
 
 /** A free-form block inside a panel (custom layouts that aren't label/control). */
 export const SettingsBlock: React.FC<{
   last?: boolean;
+  /** Words this block can be found by — it has no label of its own. */
+  searchTerms?: string;
   children: React.ReactNode;
-}> = ({ last, children }) => (
-  <div className="agw-set-block" data-last={last || undefined}>
-    {children}
-  </div>
-);
+}> = ({ last, searchTerms, children }) => {
+  const query = useSettingsQuery();
+  const section = useSectionSearch();
+  const key = useId();
+
+  // A block is a custom layout with no label, so it is only findable by the
+  // terms its author gave it. Without any, it rides on its section matching —
+  // it cannot claim to be a result on its own.
+  const matched = !!query && !!searchTerms && textMatches(searchTerms, query);
+  const visible = !query || matched || !!section?.sectionMatched;
+
+  const reportFn = section?.report;
+  useEffect(() => {
+    reportFn?.(key, matched);
+  }, [reportFn, key, matched]);
+  useEffect(() => () => reportFn?.(key, false), [reportFn, key]);
+
+  if (query && !visible) return null;
+
+  return (
+    <div className="agw-set-block" data-last={last || query ? true : undefined}>
+      {children}
+    </div>
+  );
+};
 
 // ── Switch ─────────────────────────────────────────────────────────────────
 

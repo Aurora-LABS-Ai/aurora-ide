@@ -97,9 +97,11 @@ impl ToolExecutor for BrowserSetViewportTool {
                 )
                 .await
                 .map_err(ToolError::Execution)?;
+            super::state::clear_emulation();
+            self.manager.request_browser_frame(None, None);
             return Ok(json!({
                 "viewport": "reset",
-                "message": "Viewport override cleared — the page renders at the real panel size again."
+                "message": "Viewport override cleared — the page fills the whole panel again."
             })
             .to_string());
         }
@@ -147,13 +149,43 @@ impl ToolExecutor for BrowserSetViewportTool {
             .await
             .map_err(ToolError::Execution)?;
 
+        // Shrink the webview itself to the emulated size, so the page fills its
+        // own surface instead of rendering in a column with a blank band beside
+        // it. That band lives INSIDE the webview, where no Aurora styling can
+        // reach, and the native screenshot photographs the whole surface — so
+        // without this the picture is a phone layout plus a large white area
+        // that looks exactly like a broken layout. The panel's own background
+        // now shows around the frame instead, and a capture contains the device
+        // and nothing else.
+        self.manager.request_browser_frame(Some(width), Some(height));
+
+        // Recorded so every later status read and action result can say the
+        // page is being rendered narrower than the panel. Without this the
+        // override is invisible from the next turn onward — see
+        // `state::EMULATION`.
+        super::state::set_emulation(super::state::Emulation {
+            width,
+            height,
+            scale,
+            mobile,
+        });
+
         Ok(json!({
             "viewport": { "width": width as i64, "height": height as i64,
                           "deviceScaleFactor": scale, "mobile": mobile },
             "message": format!(
-                "Viewport is now {}x{} at {}x scale. This override stays until you reset it or \
-                 navigate — take your screenshot now.",
-                width as i64, height as i64, scale
+                "Viewport is now {w}x{h} at {scale}x scale, and the panel now shows a {w}px-wide \
+                 device frame rather than the page in a column with empty space beside it — so a \
+                 screenshot from here is the device and nothing else.\n\nThe frame is capped at the \
+                 panel's own size: if the panel is narrower than {w}px or shorter than {h}px, the \
+                 rest of the emulated viewport is simply below the fold — scroll to reach it, the \
+                 same as on a real device. `browser_status` reports what the page actually \
+                 got.\n\nThis override survives navigation within the \
+                 page and later turns. Clear it with `reset: true` before judging a desktop \
+                 layout, or everything you look at from here is {w}px wide.",
+                w = width as i64,
+                h = height as i64,
+                scale = scale
             )
         })
         .to_string())

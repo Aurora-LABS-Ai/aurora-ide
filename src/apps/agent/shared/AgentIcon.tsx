@@ -35,6 +35,7 @@ export type AgentIconName =
   | "chat"
   | "more"
   | "diff"
+  | "design-guidelines"
   | "file-read"
   | "file-write"
   | "file-edit"
@@ -229,6 +230,24 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <circle cx="5.2" cy="12" r="1.65" fill="currentColor" stroke="none" />
       <circle cx="12" cy="12" r="1.65" fill="currentColor" stroke="none" />
       <circle cx="18.8" cy="12" r="1.65" fill="currentColor" stroke="none" />
+    </>
+  ),
+
+  // design_guidelines / canvas_guidelines — an artboard with two layout guides
+  // running across it. Bespoke (pairs with `facet` and `refine`).
+  //
+  // It used to fall through to `diff`, so the tool that hands over the design
+  // doctrine wore a document-with-a-folded-corner — the file family's mark, on
+  // a tool that touches no file. What this tool uniquely carries is the RULES a
+  // surface is held to, so the mark is the thing you snap to: guides that run
+  // past the edges of the frame (a guide belongs to the canvas, not to the box)
+  // and sit deliberately OFF-centre, which reads as considered proportion
+  // rather than as a grid or a crop.
+  "design-guidelines": (
+    <>
+      <path d="M5 5h14v14H5z" />
+      <path d="M14 2.5v19" />
+      <path d="M2.5 9.5h19" />
     </>
   ),
 

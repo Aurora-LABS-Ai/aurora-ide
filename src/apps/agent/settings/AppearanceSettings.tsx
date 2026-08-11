@@ -19,8 +19,14 @@ import {
   useAgentThemeStore,
   type AgentTokenKey,
 } from "@/apps/agent/store/ui/useAgentThemeStore";
-import { AGENT_THEMES, DEFAULT_AGENT_THEME_ID } from "../theme/themes";
+import {
+  AGENT_THEMES,
+  DEFAULT_AGENT_THEME_ID,
+  TYPOGRAPHY_TOKEN_KEYS,
+} from "../theme/themes";
 import { toColorInputValue } from "../theme/color";
+import { AGENT_UI_FONT_STACK, CODE_FONT_STACK } from "@/kernel/lib/fonts/stacks";
+import { FontStackPicker } from "./FontStackPicker";
 import { writeClipboardText } from "@/kernel/lib/clipboard";
 import type { AgentThemeTokens } from "../types";
 import {
@@ -138,21 +144,23 @@ const REGION_GROUPS: TokenGroup[] = [
   },
 ];
 
-// "Inter Variable" and "JetBrains Mono" ship with the app; everything else
-// depends on the font being installed on the machine.
-const UI_FONT_SUGGESTIONS = [
-  '"Inter Variable", "Inter", "Segoe UI", system-ui, sans-serif',
-  // Bundled variable face, registered as plain "Geist" (theme/geist-font.ts).
-  '"Geist", "Inter Variable", "Segoe UI", system-ui, sans-serif',
-  "system-ui, -apple-system, sans-serif",
-  '"Segoe UI", system-ui, sans-serif',
-  '"Roboto", system-ui, sans-serif',
-];
-const CODE_FONT_SUGGESTIONS = [
-  '"JetBrains Mono", "Cascadia Code", Consolas, monospace',
-  '"Cascadia Code", Consolas, monospace',
-  '"Fira Code", monospace',
-  '"SF Mono", ui-monospace, monospace',
+// Faces that SHIP with Aurora (kernel/lib/fonts/bundled.ts) — always offered
+// at the top of the pickers; everything else in the dropdown comes from the
+// machine's own installed-font scan.
+//
+// MUST stay in step with `bundled.ts`. A name here that isn't imported there
+// offers a face that silently renders as a fallback, which is the failure this
+// list exists to prevent — the picker's whole promise is "these work whatever
+// is installed on your machine".
+//
+// Ordered by default first, then by how different each one is from it, so the
+// list reads as a set of real alternatives rather than an alphabetical dump.
+const BUNDLED_UI_FONTS = ["Inter Variable", "Geist", "Inter", "Manrope", "IBM Plex Sans"];
+const BUNDLED_CODE_FONTS = [
+  "JetBrains Mono",
+  "Geist Mono",
+  "Cascadia Code",
+  "Fira Code",
 ];
 
 type MessageWeight = "400" | "450" | "500";
@@ -241,6 +249,7 @@ export const AppearanceSettings: React.FC = () => {
   const setToken = useAgentThemeStore((s) => s.setToken);
   const setTokens = useAgentThemeStore((s) => s.setTokens);
   const resetCustomizations = useAgentThemeStore((s) => s.resetCustomizations);
+  const resetTypography = useAgentThemeStore((s) => s.resetTypography);
   const setTranslucentSidebar = useAgentThemeStore((s) => s.setTranslucentSidebar);
   const setContrast = useAgentThemeStore((s) => s.setContrast);
   const setReduceMotion = useAgentThemeStore((s) => s.setReduceMotion);
@@ -275,6 +284,9 @@ export const AppearanceSettings: React.FC = () => {
   );
 
   const hasOverrides = Boolean(customizations[activeThemeId]);
+  const hasTypographyOverrides = TYPOGRAPHY_TOKEN_KEYS.some(
+    (key) => customizations[activeThemeId]?.[key] !== undefined,
+  );
   const hasAppearanceChanges =
     hasOverrides ||
     contrast !== 50 ||
@@ -582,38 +594,41 @@ export const AppearanceSettings: React.FC = () => {
       </SettingsSection>
 
       {/* Typography */}
-      <SettingsSection title="Typography" icon="type" description="Interface and code typefaces.">
-        <SettingsRow label="UI font" hint="Used across the window chrome and messages.">
-          <input
-            className="agw-set-input"
-            list="agw-ui-fonts"
+      <SettingsSection
+        title="Typography"
+        icon="type"
+        description="Interface and code typefaces. The defaults — Inter Variable for the interface, JetBrains Mono for code, 15px reading text — are the shipped baseline."
+        badge={
+          hasTypographyOverrides ? (
+            <AgwButton icon="reset" onClick={resetTypography}>
+              Reset to defaults
+            </AgwButton>
+          ) : undefined
+        }
+      >
+        <SettingsRow
+          label="UI font"
+          hint="Used across the window chrome and messages. Pick an installed font, or type a custom stack."
+        >
+          <FontStackPicker
             value={tokens.fontUi}
-            onChange={(e) => setToken("fontUi", e.target.value)}
-            spellCheck={false}
-            style={{ width: 280, fontFamily: tokens.fontUi }}
-            aria-label="UI font"
+            baseStack={AGENT_UI_FONT_STACK}
+            bundled={BUNDLED_UI_FONTS}
+            onChange={(stack) => setToken("fontUi", stack)}
+            ariaLabel="UI font"
           />
-          <datalist id="agw-ui-fonts">
-            {UI_FONT_SUGGESTIONS.map((f) => (
-              <option key={f} value={f} />
-            ))}
-          </datalist>
         </SettingsRow>
-        <SettingsRow label="Code font" hint="Used for code blocks and the terminal.">
-          <input
-            className="agw-set-input"
-            list="agw-code-fonts"
+        <SettingsRow
+          label="Code font"
+          hint="Used for code blocks and the terminal. Pick an installed font, or type a custom stack."
+        >
+          <FontStackPicker
             value={tokens.fontCode}
-            onChange={(e) => setToken("fontCode", e.target.value)}
-            spellCheck={false}
-            style={{ width: 280, fontFamily: tokens.fontCode }}
-            aria-label="Code font"
+            baseStack={CODE_FONT_STACK}
+            bundled={BUNDLED_CODE_FONTS}
+            onChange={(stack) => setToken("fontCode", stack)}
+            ariaLabel="Code font"
           />
-          <datalist id="agw-code-fonts">
-            {CODE_FONT_SUGGESTIONS.map((f) => (
-              <option key={f} value={f} />
-            ))}
-          </datalist>
         </SettingsRow>
         <SettingsRow
           label="Interface text size"

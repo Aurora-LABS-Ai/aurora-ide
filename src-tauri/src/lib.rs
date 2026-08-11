@@ -497,6 +497,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::execute_command_stream,
             commands::cancel_command_stream,
             commands::get_system_info,
+            // System fonts (Settings → Appearance → Typography)
+            commands::fonts::system_font_families,
             // Shell registry (Settings → Tools → Shell)
             commands::shell_profiles::shell_profiles_get,
             commands::shell_profiles::shell_profiles_scan,
@@ -516,6 +518,11 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::stop_fs_watcher,
             commands::reveal_in_explorer,
             commands::open_in_terminal,
+            // Diagnostics (Settings → Diagnostics): read aurora.log back, and
+            // let the web layer write its own failures into it.
+            commands::diagnostics::logs_recent,
+            commands::diagnostics::logs_report,
+            commands::diagnostics::logs_clear,
             // Batch file operations (performance optimized)
             commands::read_files_batch,
             commands::invalidate_file_cache,

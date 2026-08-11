@@ -66,6 +66,29 @@ use super::tool_pairing::{
 use super::types::{ContentBlock, ConversationMessage, MessageRole, TokenUsage};
 use crate::api::ReasoningReplay;
 
+/// Attempts at one model call before the turn gives up.
+///
+/// Three, not one, because a dropped stream was the most common real
+/// failure this runtime saw and every one of them ended a turn the user
+/// then restarted by hand. Three, not more, because each attempt
+/// re-sends the whole conversation, and a failure that survives three
+/// tries is almost never one that a fourth would clear.
+///
+/// Only errors [`ApiError::is_retryable`] admits are counted here — a
+/// rejected request shape or a bad key fails once and stops.
+const MAX_STREAM_ATTEMPTS: u32 = 3;
+
+/// Base backoff before re-issuing a failed model call, doubling per
+/// attempt: 1s, then 2s, then 4s… At [`MAX_STREAM_ATTEMPTS`] = 3 only
+/// the first two are ever used, so a fully-failed call costs ~3s of
+/// waiting on top of the attempts themselves.
+///
+/// Starting at a second rather than immediately: a gateway swapping to a
+/// healthy upstream needs a moment, and an instant retry usually just
+/// buys the same error. Doubling rather than flat: if the first wait was
+/// not enough, the second almost certainly needs to be longer.
+const STREAM_RETRY_BASE_DELAY_MS: u64 = 1_000;
+
 /// Configuration for one [`ConversationRuntime`] instance.
 ///
 /// Held by value (cheap to clone) so the runtime can be re-built per
@@ -390,12 +413,9 @@ impl ConversationRuntime {
             let model = session.model.clone().unwrap_or_default();
             let tool_schemas = self.tools.schemas();
 
-            // Internal event channel: API impl pushes `AssistantEvent`
-            // onto `api_tx`; a forwarder task wraps each in an
-            // envelope and pushes it onto the caller's sink.
-            let (api_tx, api_rx) = mpsc::channel::<AssistantEvent>(64);
-
-            let forwarder = spawn_event_forwarder(turn_id.clone(), seq, api_rx, event_sink.clone());
+            // The event channel and its forwarder are built per *attempt*,
+            // down in the retry loop — a forwarder ends with the stream that
+            // feeds it, so a retry needs a fresh pair.
 
             // Apply any persisted compaction first: replace everything at
             // or older than the last compaction marker with its summary,
@@ -479,30 +499,110 @@ impl ConversationRuntime {
                 self.config.system_prompt.as_deref()
             };
 
-            let request = ApiRequest {
-                model: &model,
-                system_prompt,
-                messages: messages_for_api,
-                tools: &tool_schemas,
-                temperature: self.config.default_temperature,
-                max_output_tokens: self.config.default_max_output_tokens,
-                thinking_enabled: self.config.thinking_enabled,
-                thinking_budget_tokens: self.config.thinking_budget_tokens,
-            };
+            // ── The model call, with retry ─────────────────────────
+            //
+            // A dropped connection was the single most common real failure
+            // on this runtime, and every one of them ended the turn and
+            // waited for the user to notice and press Retry by hand. The
+            // request is rebuilt byte-identical on each attempt, so the
+            // retry re-reads the provider's prompt cache rather than paying
+            // for a fresh prompt.
+            let mut attempt: u32 = 1;
+            let stream_result = loop {
+                // Internal event channel: API impl pushes `AssistantEvent`
+                // onto `api_tx`; a forwarder task wraps each in an envelope
+                // and pushes it onto the caller's sink. Rebuilt per attempt,
+                // starting from the `seq` the previous attempt reached so
+                // the frontend's ordering stays monotonic across a retry.
+                let (api_tx, api_rx) = mpsc::channel::<AssistantEvent>(64);
+                let forwarder =
+                    spawn_event_forwarder(turn_id.clone(), seq, api_rx, event_sink.clone());
 
-            let stream_result = self
-                .api_client
-                .stream(request, api_tx, cancel_token.clone())
-                .await;
+                // Borrows only — rebuilding it per attempt costs nothing.
+                let request = ApiRequest {
+                    model: &model,
+                    system_prompt,
+                    messages: messages_for_api,
+                    tools: &tool_schemas,
+                    temperature: self.config.default_temperature,
+                    max_output_tokens: self.config.default_max_output_tokens,
+                    thinking_enabled: self.config.thinking_enabled,
+                    thinking_budget_tokens: self.config.thinking_budget_tokens,
+                };
 
-            // Drain the forwarder so we recover the final `seq`.
-            seq = match forwarder.await {
-                Ok(final_seq) => final_seq,
-                Err(join_err) => {
-                    return Err(RuntimeError::InvalidState(format!(
-                        "event forwarder task failed: {join_err}"
-                    )));
+                let result = self
+                    .api_client
+                    .stream(request, api_tx, cancel_token.clone())
+                    .await;
+
+                // Drain the forwarder so we recover the final `seq`.
+                seq = match forwarder.await {
+                    Ok(final_seq) => final_seq,
+                    Err(join_err) => {
+                        return Err(RuntimeError::InvalidState(format!(
+                            "event forwarder task failed: {join_err}"
+                        )));
+                    }
+                };
+
+                let api_err = match result {
+                    Ok(turn) => break Ok(turn),
+                    Err(err) => err,
+                };
+
+                // A Stop outranks whatever the dying stream reported. The user
+                // asked for the turn to end; showing them a network error
+                // answers a question they did not ask, and the callers key
+                // off `is_cancellation()` to stay quiet about it.
+                if cancel_token.is_cancelled() {
+                    break Err(ApiError::Cancelled);
                 }
+
+                // Out of attempts, or an error that re-issuing cannot fix.
+                // A cancel the stream itself reported lands here too —
+                // `Cancelled` is not retryable — and keeps its own identity.
+                if attempt >= MAX_STREAM_ATTEMPTS || !api_err.is_retryable() {
+                    break Err(api_err);
+                }
+
+                let delay_ms = STREAM_RETRY_BASE_DELAY_MS << (attempt - 1);
+
+                crate::logging::log_warn(
+                    "agent_runtime.turn",
+                    &format!(
+                        "stream attempt {attempt}/{MAX_STREAM_ATTEMPTS} failed on turn \
+                         {turn_id} (thread {}, model {model}, iteration {iterations}): \
+                         {api_err} — retrying in {delay_ms}ms",
+                        session.thread_id,
+                    ),
+                );
+
+                // Whatever streamed before the connection died is on screen
+                // and about to be streamed again from the top. Tell the
+                // frontend to drop it, or the reply renders twice.
+                let envelope = AgentEventEnvelope {
+                    turn_id: turn_id.clone(),
+                    seq,
+                    event: AssistantEvent::PartialReplyDiscarded {
+                        attempt,
+                        max_attempts: MAX_STREAM_ATTEMPTS,
+                        reason: api_err.to_string(),
+                    },
+                };
+                seq = seq.saturating_add(1);
+                let _ = event_sink.send(envelope).await;
+
+                // Interruptible backoff: someone who presses Stop during the
+                // wait must not sit through the rest of it.
+                let cancelled_while_waiting = tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => false,
+                    _ = cancel_token.cancelled() => true,
+                };
+                if cancelled_while_waiting {
+                    break Err(ApiError::Cancelled);
+                }
+
+                attempt = attempt.saturating_add(1);
             };
 
             let turn = match stream_result {
@@ -517,7 +617,7 @@ impl ConversationRuntime {
                             "agent_runtime.turn",
                             &format!(
                                 "stream failed on turn {turn_id} (thread {}, model {model}, \
-                                 iteration {iterations}): {api_err}",
+                                 iteration {iterations}) after {attempt} attempt(s): {api_err}",
                                 session.thread_id,
                             ),
                         );
@@ -5286,12 +5386,19 @@ src/
             .expect("ok");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn run_turn_propagates_recoverable_api_error_with_event() {
-        let api = Arc::new(MockApi::new(vec![TurnScript {
-            events: vec![],
-            result: Err(ApiError::RateLimit),
-        }]));
+        // A rate limit is retried before it is reported, so the script has to
+        // fail every attempt for the error to reach the user at all. That IS
+        // the contract: the Error event is what the user sees once retrying
+        // has been tried and failed, not the first thing that goes wrong.
+        let script = (0..MAX_STREAM_ATTEMPTS)
+            .map(|_| TurnScript {
+                events: vec![],
+                result: Err(ApiError::RateLimit),
+            })
+            .collect();
+        let api = Arc::new(MockApi::new(script));
         let tools = Arc::new(ToolRegistry::new());
         let runtime = ConversationRuntime::new(api, tools, RuntimeConfig::default());
 
@@ -5308,20 +5415,33 @@ src/
             other => panic!("expected Api(RateLimit), got {other:?}"),
         }
 
-        let envelope = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv())
-            .await
-            .expect("event timeout")
-            .expect("event present");
-        match envelope.event {
-            AssistantEvent::Error {
-                message,
-                recoverable,
-            } => {
-                assert!(recoverable, "rate-limit must be recoverable");
-                assert!(message.contains("rate"), "got message: {message}");
+        // Drain to the Error event: the retries announce themselves first.
+        let mut error_event = None;
+        let mut discards = 0_u32;
+        while let Ok(Some(envelope)) =
+            tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await
+        {
+            match envelope.event {
+                AssistantEvent::PartialReplyDiscarded { .. } => discards += 1,
+                AssistantEvent::Error {
+                    message,
+                    recoverable,
+                } => {
+                    error_event = Some((message, recoverable));
+                    break;
+                }
+                other => panic!("unexpected event before the error: {other:?}"),
             }
-            other => panic!("expected Error event, got {other:?}"),
         }
+
+        assert_eq!(
+            discards,
+            MAX_STREAM_ATTEMPTS - 1,
+            "one discard per retry, and no discard for the attempt that gave up",
+        );
+        let (message, recoverable) = error_event.expect("the error must still reach the user");
+        assert!(recoverable, "rate-limit must be recoverable");
+        assert!(message.contains("rate"), "got message: {message}");
     }
 
     // ── Budget-aware trim tests ────────────────────────────────────────
@@ -5981,6 +6101,237 @@ src/
             )),
             "the retry's answer must be kept",
         );
+    }
+
+    // ── Dropped-stream retry ────────────────────────────────────────
+
+    /// Streams a little text, then dies the way a real dropped connection
+    /// does, for the first `fail_times` calls. Mirrors the failure that
+    /// dominated `aurora.log`: partial output already on screen when the
+    /// socket goes away.
+    struct DropsThenAnswersApi {
+        calls: Mutex<u32>,
+        fail_times: u32,
+        error: ApiError,
+    }
+
+    impl DropsThenAnswersApi {
+        fn new(fail_times: u32, error: ApiError) -> Self {
+            Self {
+                calls: Mutex::new(0),
+                fail_times,
+                error,
+            }
+        }
+
+        fn call_count(&self) -> u32 {
+            *self.calls.lock().expect("calls")
+        }
+    }
+
+    #[async_trait]
+    impl StreamingApiClient for DropsThenAnswersApi {
+        async fn stream(
+            &self,
+            _request: ApiRequest<'_>,
+            event_sink: mpsc::Sender<AssistantEvent>,
+            _cancel_token: CancellationToken,
+        ) -> Result<TurnUsage, ApiError> {
+            let call = {
+                let mut calls = self.calls.lock().expect("calls");
+                *calls += 1;
+                *calls
+            };
+            if call <= self.fail_times {
+                // Some of the reply reached the screen before the drop.
+                let _ = event_sink
+                    .send(AssistantEvent::TextDelta {
+                        delta: "The project is ".into(),
+                    })
+                    .await;
+                return Err(self.error.clone());
+            }
+            Ok(turn_usage(assistant_text("here is the answer"), "end_turn"))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_dropped_stream_is_retried_without_the_user_asking() {
+        let api = Arc::new(DropsThenAnswersApi::new(
+            1,
+            ApiError::Network("stream error: error decoding response body".into()),
+        ));
+        let runtime = ConversationRuntime::new(
+            api.clone(),
+            Arc::new(ToolRegistry::new()),
+            RuntimeConfig::default(),
+        );
+
+        let mut session = Session::new("t-drop");
+        let (tx, _rx) = mpsc::channel(64);
+        runtime
+            .run_turn(&mut session, user_msg("check project"), tx, CancellationToken::new())
+            .await
+            .expect("a dropped stream must not end the turn");
+
+        assert_eq!(api.call_count(), 2, "should re-issue exactly once");
+        assert!(
+            session.messages().iter().any(|m| matches!(
+                m.blocks.first(),
+                Some(ContentBlock::Text { text }) if text == "here is the answer"
+            )),
+            "the retry's answer must be kept",
+        );
+        // The half-sentence from the failed attempt was never committed —
+        // the runtime appends only after a clean stream, and the retry must
+        // not have introduced a second copy of the reply.
+        let replies = session
+            .messages()
+            .iter()
+            .filter(|m| m.role == MessageRole::Assistant)
+            .count();
+        assert_eq!(replies, 1, "the discarded fragment must not enter history");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_frontend_is_told_to_drop_the_partial_reply_before_a_retry() {
+        let api = Arc::new(DropsThenAnswersApi::new(
+            1,
+            ApiError::Network("connection reset".into()),
+        ));
+        let runtime = ConversationRuntime::new(
+            api,
+            Arc::new(ToolRegistry::new()),
+            RuntimeConfig::default(),
+        );
+
+        let mut session = Session::new("t-discard");
+        let (tx, mut rx) = mpsc::channel(64);
+        runtime
+            .run_turn(&mut session, user_msg("check project"), tx, CancellationToken::new())
+            .await
+            .expect("turn should recover");
+
+        let mut discards = Vec::new();
+        let mut deltas_before_discard = 0_u32;
+        while let Ok(Some(envelope)) =
+            tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await
+        {
+            match envelope.event {
+                AssistantEvent::TextDelta { .. } if discards.is_empty() => {
+                    deltas_before_discard += 1;
+                }
+                AssistantEvent::PartialReplyDiscarded {
+                    attempt,
+                    max_attempts,
+                    ref reason,
+                } => discards.push((attempt, max_attempts, reason.clone())),
+                _ => {}
+            }
+        }
+
+        assert_eq!(
+            deltas_before_discard, 1,
+            "the failed attempt's text really did reach the frontend",
+        );
+        assert_eq!(discards.len(), 1, "exactly one discard, for the one retry");
+        let (attempt, max_attempts, reason) = discards.remove(0);
+        assert_eq!(attempt, 1, "the attempt that failed, 1-based");
+        assert_eq!(max_attempts, MAX_STREAM_ATTEMPTS);
+        assert!(
+            reason.contains("connection reset"),
+            "the discard must carry why, got {reason}",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retrying_stops_at_the_attempt_ceiling() {
+        let api = Arc::new(DropsThenAnswersApi::new(
+            u32::MAX,
+            ApiError::Network("connection reset".into()),
+        ));
+        let runtime = ConversationRuntime::new(
+            api.clone(),
+            Arc::new(ToolRegistry::new()),
+            RuntimeConfig::default(),
+        );
+
+        let mut session = Session::new("t-ceiling");
+        let (tx, _rx) = mpsc::channel(64);
+        let result = runtime
+            .run_turn(&mut session, user_msg("check project"), tx, CancellationToken::new())
+            .await;
+
+        assert!(result.is_err(), "a failure that never clears must surface");
+        assert_eq!(
+            api.call_count(),
+            MAX_STREAM_ATTEMPTS,
+            "the ceiling is a ceiling — no spinning",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_the_provider_rejects_is_not_retried() {
+        // The 404 from `aurora.log`: a model routed to a backend that will
+        // not take tools. Identical on every attempt, so retrying it only
+        // spends the user's time.
+        let api = Arc::new(DropsThenAnswersApi::new(
+            u32::MAX,
+            ApiError::InvalidRequest("HTTP 404: capability not supported".into()),
+        ));
+        let runtime = ConversationRuntime::new(
+            api.clone(),
+            Arc::new(ToolRegistry::new()),
+            RuntimeConfig::default(),
+        );
+
+        let mut session = Session::new("t-invalid");
+        let (tx, _rx) = mpsc::channel(64);
+        let result = runtime
+            .run_turn(&mut session, user_msg("check project"), tx, CancellationToken::new())
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(api.call_count(), 1, "a rejected request shape fails once");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_during_the_backoff_ends_the_turn_immediately() {
+        // Cancelling mid-wait must not make the user sit out the rest of it,
+        // and must report as a cancellation rather than the network error
+        // that started the backoff.
+        let api = Arc::new(DropsThenAnswersApi::new(
+            u32::MAX,
+            ApiError::Network("connection reset".into()),
+        ));
+        let runtime = ConversationRuntime::new(
+            api.clone(),
+            Arc::new(ToolRegistry::new()),
+            RuntimeConfig::default(),
+        );
+
+        let cancel = CancellationToken::new();
+        let cancel_for_task = cancel.clone();
+        tokio::spawn(async move {
+            // Long enough that the first attempt has failed and the runtime
+            // is inside the backoff; shorter than the 1s wait itself.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            cancel_for_task.cancel();
+        });
+
+        let mut session = Session::new("t-stop");
+        let (tx, _rx) = mpsc::channel(64);
+        let result = runtime
+            .run_turn(&mut session, user_msg("check project"), tx, cancel)
+            .await;
+
+        // Same shape a Stop *during* the stream produces — `is_cancellation`
+        // is what the callers check, and both routes must satisfy it.
+        match result {
+            Err(ref e) if e.is_cancellation() => {}
+            other => panic!("expected a cancellation, got {other:?}"),
+        }
+        assert_eq!(api.call_count(), 1, "the retry must never have been issued");
     }
 
     /// Always blockless — the condition really is persistent.

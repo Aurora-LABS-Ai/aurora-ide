@@ -60,6 +60,8 @@ export interface AppSettings {
    * it only takes effect on turns started after it is switched on. Default off.
    */
   transcriptChapters?: boolean;
+  /** Whether the browser toolset is advertised to the model. Defaults on. */
+  browserTools?: boolean;
   autoAcceptChanges?: boolean;
   autoApproveTools: boolean;
   autoSave: string;

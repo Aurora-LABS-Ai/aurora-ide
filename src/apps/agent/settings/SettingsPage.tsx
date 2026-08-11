@@ -7,12 +7,15 @@
  *
  * SECTION_REGISTRY is the single source of truth for what appears in the nav —
  * a section shows up only once it's actually built, so there are never empty or
- * "coming soon" tabs. New sections are added by registering them here.
+ * "coming soon" tabs. It pairs each entry of `settings-catalog.ts` (the names
+ * and searchable contents, shared with the command center) with the component
+ * that draws it; a section unregistered here cannot be reached, whatever the
+ * catalog says.
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 
-import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
+import { AgentIcon } from "../shared/AgentIcon";
 import { useAgentUiStore, type SettingsSection } from "@/apps/agent/store/ui/useAgentUiStore";
 import { ProfileSettings } from "./ProfileSettings";
 import { ProvidersSettings } from "./ProvidersSettings";
@@ -23,147 +26,80 @@ import { McpSettings } from "./McpSettings";
 import { SkillsSettings } from "./SkillsSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { PreferencesSettings } from "./PreferencesSettings";
+import { DiagnosticsSettings } from "./DiagnosticsSettings";
+import { SETTINGS_CATALOG, type SettingsCatalogEntry } from "./settings-catalog";
+import {
+  SettingsQueryContext,
+  filterSettingsSearch,
+  normalizeQuery,
+} from "./settings-search";
 
-interface SectionDef {
-  id: SettingsSection;
-  navLabel: string;
-  icon: AgentIconName;
-  group: string;
-  eyebrow: string;
-  title: string;
-  description: string;
-  /**
-   * Full-bleed sections own the whole content area (no padding, no page
-   * scroll) so they can run their own sidebar + pane layout edge-to-edge —
-   * e.g. Providers' list sidebar. Default sections keep the padded,
-   * scrolling content column.
-   */
-  fullBleed?: boolean;
-  render: () => React.ReactNode;
-}
+type SectionDef = SettingsCatalogEntry & { render: () => React.ReactNode };
 
-const SECTION_REGISTRY: SectionDef[] = [
-  {
-    id: "profile",
-    navLabel: "Profile",
-    icon: "users",
-    group: "Personal",
-    eyebrow: "Personal",
-    title: "Profile",
-    description: "Your local usage stats — tokens, streaks, longest task, most-used tools.",
-    render: () => <ProfileSettings />,
-  },
-  {
-    id: "providers",
-    navLabel: "Providers",
-    icon: "providers",
-    group: "Models",
-    eyebrow: "Models",
-    title: "Providers & Models",
-    description: "Connect providers and configure models with models.dev auto-fill.",
-    fullBleed: true,
-    render: () => <ProvidersSettings />,
-  },
-  {
-    id: "tools",
-    navLabel: "Tools",
-    icon: "shield",
-    group: "Agent",
-    eyebrow: "Agent",
-    title: "Tools & Approvals",
-    description: "What the agent may run on its own, and what needs your sign-off.",
-    render: () => <ToolsSettings />,
-  },
-  {
-    id: "execution",
-    navLabel: "Agent",
-    icon: "sliders",
-    group: "Agent",
-    eyebrow: "Agent",
-    title: "Agent",
-    description: "Global instructions, execution mode, context compaction, and chat titling — how the agent behaves everywhere.",
-    render: () => <AgentSettings />,
-  },
-  {
-    id: "team",
-    navLabel: "Team",
-    icon: "users",
-    group: "Agent",
-    eyebrow: "Agent",
-    title: "Agent Team",
-    description: "A team of agents that plans, splits your project by scope, and builds in parallel — coordinated by a lead you chat with.",
-    render: () => <TeamSettings />,
-  },
-  {
-    id: "mcp",
-    navLabel: "MCP",
-    icon: "plug",
-    group: "Agent",
-    eyebrow: "Agent",
-    title: "MCP Servers",
-    description: "Connect Model Context Protocol servers for external tools and resources.",
-    render: () => <McpSettings />,
-  },
-  {
-    id: "skills",
-    navLabel: "Skills",
-    icon: "book",
-    group: "Agent",
-    eyebrow: "Agent",
-    title: "Skills",
-    description: "Reusable coding playbooks the agent loads into context — enable per workspace.",
-    render: () => <SkillsSettings />,
-  },
-  {
-    id: "preferences",
-    navLabel: "Preferences",
-    icon: "sliders",
-    group: "Window",
-    eyebrow: "Window",
-    title: "Preferences",
-    description: "Personal window preferences — status cues, notifications, and other how-it-feels-for-me toggles.",
-    render: () => <PreferencesSettings />,
-  },
-  {
-    id: "appearance",
-    navLabel: "Appearance",
-    icon: "palette",
-    group: "Window",
-    eyebrow: "Window",
-    title: "Appearance",
-    description: "Theme the agent window — colors, fonts, contrast, and per-region controls.",
-    render: () => <AppearanceSettings />,
-  },
-];
+/** The component behind each catalog entry. A missing id simply never renders. */
+const SECTION_VIEWS: Partial<Record<SettingsSection, () => React.ReactNode>> = {
+  profile: () => <ProfileSettings />,
+  providers: () => <ProvidersSettings />,
+  tools: () => <ToolsSettings />,
+  execution: () => <AgentSettings />,
+  team: () => <TeamSettings />,
+  mcp: () => <McpSettings />,
+  skills: () => <SkillsSettings />,
+  preferences: () => <PreferencesSettings />,
+  appearance: () => <AppearanceSettings />,
+  diagnostics: () => <DiagnosticsSettings />,
+};
+
+const SECTION_REGISTRY: SectionDef[] = SETTINGS_CATALOG.flatMap((entry) => {
+  const render = SECTION_VIEWS[entry.id];
+  return render ? [{ ...entry, render }] : [];
+});
 
 export const SettingsPage: React.FC = () => {
   const active = useAgentUiStore((s) => s.settingsSection);
   const setSection = useAgentUiStore((s) => s.setSection);
   const closeSettings = useAgentUiStore((s) => s.closeSettings);
-  const [filter, setFilter] = useState("");
+  // The query lives in the store so the command center can hand one over on the
+  // way in; see `settingsQuery` there.
+  const filter = useAgentUiStore((s) => s.settingsQuery);
+  const setFilter = useAgentUiStore((s) => s.setSettingsQuery);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   // Fall back to the first registered section if the stored one isn't built yet.
   const current =
     SECTION_REGISTRY.find((s) => s.id === active) ?? SECTION_REGISTRY[0];
 
+  // The nav is NOT filtered. It is how you navigate, and a sidebar that
+  // rearranges itself while you type removes the map exactly when you are lost.
+  // Searching changes the CONTENT area instead — see the results view below.
   const groups = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    const matched = q
-      ? SECTION_REGISTRY.filter(
-          (s) =>
-            s.navLabel.toLowerCase().includes(q) ||
-            s.title.toLowerCase().includes(q) ||
-            s.description.toLowerCase().includes(q),
-        )
-      : SECTION_REGISTRY;
     const byGroup = new Map<string, SectionDef[]>();
-    for (const s of matched) {
+    for (const s of SECTION_REGISTRY) {
       const arr = byGroup.get(s.group) ?? [];
       arr.push(s);
       byGroup.set(s.group, arr);
     }
     return Array.from(byGroup, ([label, items]) => ({ label, items }));
-  }, [filter]);
+  }, []);
+
+  const query = useMemo(() => normalizeQuery(filter), [filter]);
+  const searching = query.length > 0;
+  const results = useMemo(
+    () => (searching ? filterSettingsSearch(SECTION_REGISTRY, query) : []),
+    [searching, query],
+  );
+
+  // A search that appears while this box is NOT focused came from somewhere
+  // else — the command center handing one over — and the person was already
+  // typing. Take the caret so refining is one keystroke rather than a hunt for
+  // the box. When they are typing here the box is focused by definition, so the
+  // guard makes this a no-op and never fights the caret.
+  useEffect(() => {
+    const input = searchRef.current;
+    if (!searching || !input || document.activeElement === input) return;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }, [searching]);
 
   return (
     <div className="agw-settings">
@@ -191,11 +127,6 @@ export const SettingsPage: React.FC = () => {
               ))}
             </div>
           ))}
-          {groups.length === 0 && (
-            <div style={{ padding: "10px 12px", fontSize: "var(--agw-fs-label)", color: "var(--agw-text-subtle)" }}>
-              No settings match “{filter}”.
-            </div>
-          )}
         </nav>
       </aside>
 
@@ -212,28 +143,87 @@ export const SettingsPage: React.FC = () => {
             Back to app
           </button>
           <div className="agw-settings-head-titles">
-            <div className="agw-settings-head-eyebrow">{current.eyebrow}</div>
-            <div className="agw-settings-head-title">{current.title}</div>
+            <div className="agw-settings-head-eyebrow">
+              {searching ? "Search" : current.eyebrow}
+            </div>
+            <div className="agw-settings-head-title">
+              {searching ? `Results for “${filter.trim()}”` : current.title}
+            </div>
           </div>
           <div style={{ flex: 1 }} />
-          <div className="agw-br-address" style={{ width: 190, height: 30 }}>
+          <div className="agw-br-address agw-settings-search" style={{ width: 190, height: 30 }}>
             <AgentIcon name="search" size={13} style={{ color: "var(--agw-text-subtle)" }} />
             <input
+              ref={searchRef}
               className="agw-br-input"
+              aria-label="Search settings"
               placeholder="Search settings"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setFilter("");
+              }}
               spellCheck={false}
             />
           </div>
         </header>
 
-        <div
-          className="agw-settings-content agw-scroll"
-          data-full-bleed={current.fullBleed || undefined}
-        >
-          {current.render()}
-        </div>
+        {/* One provider around BOTH branches. With no query it carries `""`,
+            which every primitive treats as "not searching" — so the normal page
+            is byte-for-byte what it was before this feature existed. */}
+        <SettingsQueryContext.Provider value={searching ? query : ""}>
+          <div
+            className="agw-settings-content agw-scroll"
+            data-full-bleed={(!searching && current.fullBleed) || undefined}
+          >
+            {!searching ? (
+              current.render()
+            ) : results.length === 0 ? (
+              <div className="agw-settings-noresults" role="status">
+                <div className="agw-settings-noresults-title">
+                  Nothing matches “{filter.trim()}”
+                </div>
+                <p className="agw-settings-noresults-hint">
+                  Try what the setting does rather than its name — “approval”,
+                  “font”, “shortcut”, “model”.
+                </p>
+              </div>
+            ) : (
+              results.map((s) => (
+                <div
+                  key={s.id}
+                  className="agw-settings-result"
+                  // Only an inline result can end up empty (every one of its
+                  // sections filtered itself away). The CSS below drops the
+                  // heading in that case, so a page never announces matches it
+                  // is not showing.
+                  data-inline={s.inlineResults || undefined}
+                >
+                  <button
+                    type="button"
+                    className="agw-settings-result-head"
+                    onClick={() => setSection(s.id)}
+                    title={`Open ${s.title}`}
+                  >
+                    <AgentIcon name={s.icon} size={13} />
+                    <span className="agw-settings-result-name">{s.navLabel}</span>
+                    <span className="agw-timeline-rule" aria-hidden="true" />
+                    <span className="agw-settings-result-open">Open</span>
+                  </button>
+                  {s.inlineResults ? (
+                    s.render()
+                  ) : (
+                    // No shared primitives on this page, so its controls cannot
+                    // be narrowed to the ones that matched. Offering the
+                    // destination is more honest than pasting the whole page
+                    // under a heading that promises a specific answer.
+                    <p className="agw-settings-result-desc">{s.description}</p>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </SettingsQueryContext.Provider>
       </div>
     </div>
   );

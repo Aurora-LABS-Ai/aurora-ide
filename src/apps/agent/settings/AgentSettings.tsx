@@ -47,6 +47,8 @@ const MODE_OPTIONS: SegmentOption<Mode>[] = [
 const GLOBAL_INSTRUCTIONS_MAX = 4000;
 
 export const AgentSettings: React.FC = () => {
+  const browserTools = useSettingsStore((s) => s.browserTools);
+  const setBrowserTools = useSettingsStore((s) => s.setBrowserTools);
   const executionMode = useSettingsStore((s) => s.agentExecutionMode);
   const setExecutionMode = useSettingsStore((s) => s.setAgentExecutionMode);
 
@@ -201,6 +203,26 @@ export const AgentSettings: React.FC = () => {
             options={modelOptions}
             onChange={setCompactionModel}
             ariaLabel="Compaction model"
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Browser control"
+        icon="browser"
+        description="The agent's embedded browser panel — open a running page, look at it, click through it, read its console."
+      >
+        <SettingsRow
+          last
+          alignTop
+          label="Give the agent the browser toolset"
+          searchTerms="browser tools toolset disable enable tokens schemas cost web preview devtools"
+          hint="Sixteen tools, and their descriptions are sent on every single request — about 2,800 tokens whether or not the turn ever opens a page. Only Anthropic gets a caching marker from Aurora, so on every other provider you pay that in full, every time. Switch it off and the whole set is unregistered: the agent is not told a browser exists, and will not offer to check one. Leave it on if you build for the web."
+        >
+          <AgwSwitch
+            checked={browserTools}
+            onChange={setBrowserTools}
+            ariaLabel="Give the agent the browser toolset"
           />
         </SettingsRow>
       </SettingsSection>

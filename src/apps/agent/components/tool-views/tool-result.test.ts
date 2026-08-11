@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { parseToolResult } from "@/apps/agent/components/tool-views/tool-result";
+import { toolStatus } from "@/apps/agent/components/tools/tool-call";
 
 describe("glob results", () => {
   it("parses matches into a path list rather than falling through to raw JSON", () => {
@@ -430,5 +431,60 @@ describe("code tool results", () => {
     expect(parsed.summary).toBe("12 groups · 1 cycle");
     expect(parsed.code).toContain("src/core");
     expect(parsed.code).toContain("cycle: src/a → src/b");
+  });
+});
+
+describe("structured failures", () => {
+  // The reported bug: a refusal rendered as a green check with its JSON body
+  // dumped into the card, because nothing above the last-resort branch claimed
+  // a `success:false` payload and `toolStatus` only looked for `[error]`.
+  const refusal = JSON.stringify({
+    success: false,
+    multiFile: true,
+    error: "Could not find that text in src/app.css, which has not been read this session.",
+    path: "src/app.css",
+    fullPath: "/proj/src/app.css",
+    hint: "Call file_read on this path, then retry the batch.",
+    needsRead: true,
+  });
+
+  it("reads as failed rather than done", () => {
+    expect(toolStatus({ id: "1", name: "file_edit", arguments: "{}", result: refusal })).toBe(
+      "failed",
+    );
+  });
+
+  it("summarises with the tool's own error instead of dumping the object", () => {
+    const parsed = parseToolResult("file_edit", {}, refusal);
+    expect(parsed.summary).toContain("Could not find that text");
+    expect(parsed.code).toContain("Call file_read on this path");
+    // The raw JSON must not reach the card.
+    expect(parsed.code).not.toContain('"needsRead"');
+  });
+
+  it("leaves a successful call alone", () => {
+    const ok = JSON.stringify({ success: true, message: "Edited 2 files" });
+    expect(toolStatus({ id: "2", name: "file_edit", arguments: "{}", result: ok })).toBe("done");
+  });
+
+  // A per-file flag inside a multi-file read is a partial result, not a failed
+  // call — marking the whole card failed would misreport 9 successful reads.
+  it("ignores a nested per-item success flag", () => {
+    const partial = JSON.stringify({
+      success: true,
+      files: [
+        { path: "a.ts", success: true, content: "x" },
+        { path: "b.ts", success: false, error: "not found" },
+      ],
+    });
+    expect(toolStatus({ id: "3", name: "multi_file_read", arguments: "{}", result: partial })).toBe(
+      "done",
+    );
+  });
+
+  it("does not guess from a truncated payload", () => {
+    expect(
+      toolStatus({ id: "4", name: "grep", arguments: "{}", result: '{"success": fal' }),
+    ).toBe("done");
   });
 });

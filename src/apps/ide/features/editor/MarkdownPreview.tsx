@@ -29,6 +29,7 @@ import mermaid from 'mermaid';
 import { Check, Copy } from 'lucide-react';
 import { useThemeStore } from '@/apps/ide/store/useThemeStore';
 import { writeClipboardText } from '@/kernel/lib/clipboard';
+import { CODE_FONT_STACK } from '@/kernel/lib/fonts/stacks';
 
 interface MarkdownPreviewProps {
   content: string;
@@ -113,7 +114,7 @@ const CopyableCodeBlock: React.FC<{
         codeTagProps={{
           style: {
             color: 'var(--aurora-common-text-primary)',
-            fontFamily: "'JetBrains Mono', monospace",
+            fontFamily: CODE_FONT_STACK,
           },
         }}
       >
@@ -229,7 +230,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
                 className={`px-1.5 py-0.5 rounded bg-input text-[13px] ${className || ''}`.trim()}
                 style={{
                   color: 'var(--aurora-common-text-primary)',
-                  fontFamily: "'JetBrains Mono', monospace",
+                  fontFamily: CODE_FONT_STACK,
                 }}
               >
                 {children}

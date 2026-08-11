@@ -11,6 +11,7 @@ import {
   setActiveExplorerIconPackId,
 } from "@/kernel/lib/icons/icon-packs";
 import type { ExplorerIconPackId } from "@/kernel/lib/icons/icon-types";
+import { cacheUiPreferences } from "@/kernel/lib/fonts/boot";
 import { resolveThinkingModelPair } from "@/kernel/lib/llm/thinking-models";
 import { databaseService } from "@/kernel/services/database";
 import {
@@ -127,10 +128,16 @@ const clampCompactionBudget = (value: number): number =>
 const applyUiPreferences = (fontFamily: string, textScale: number) => {
   if (typeof document === 'undefined') return;
   const resolvedFamily = UI_FONT_FAMILIES[fontFamily] ?? UI_FONT_FAMILIES.system;
+  const scale = clampTextScale(textScale);
   // UI scaling is intentionally disabled. Keep this hardcoded at 1.
   document.documentElement.style.setProperty('--aurora-ui-scale', '1');
-  document.documentElement.style.setProperty('--aurora-ui-text-scale', String(clampTextScale(textScale)));
+  document.documentElement.style.setProperty('--aurora-ui-text-scale', String(scale));
   document.documentElement.style.setProperty('--aurora-ui-font-family', resolvedFamily);
+  // Mirror the RESOLVED values so the next boot can apply them synchronously
+  // before first paint (kernel/lib/fonts/boot.ts) — these settings arrive over
+  // async SQLite, and applying them only here made the window visibly
+  // re-typeset itself moments after opening.
+  cacheUiPreferences(resolvedFamily, scale);
 };
 
 const normalizeSpeechRuntimePath = (value?: string | null): string => {
@@ -242,6 +249,19 @@ interface SettingsState {
    */
   transcriptChapters: boolean;
   setTranscriptChapters: (value: boolean) => void;
+  /**
+   * Whether the browser toolset is advertised to the model.
+   *
+   * Sixteen schemas, roughly 2,800 tokens, sent on EVERY request — and Aurora
+   * attaches `cache_control` for Anthropic only, so on any other provider that
+   * is paid in full on turns that never open a page. Switching it off
+   * unregisters the whole bucket: the model is not told the browser exists.
+   *
+   * Defaults ON. Removing a capability someone is mid-task with, to save
+   * tokens they did not ask to save, is the wrong default.
+   */
+  browserTools: boolean;
+  setBrowserTools: (value: boolean) => void;
   /**
    * Resolve the {@link ProviderConfig} the Lead should run on — the
    * `teamLeadModel` override when set and valid, otherwise the active chat
@@ -1076,6 +1096,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   // Chapters change what the agent is told to do, so they stay off until asked for.
   transcriptChapters: false,
+  browserTools: true,
 
   // File Changes Approval
   autoAcceptChanges: false,
@@ -1369,6 +1390,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           notifyOnTurnComplete: appSettings.notifyOnTurnComplete ?? true,
           showActivityInTitle: appSettings.showActivityInTitle ?? true,
           transcriptChapters: appSettings.transcriptChapters ?? false,
+          browserTools: appSettings.browserTools ?? true,
           autoAcceptChanges: appSettings.autoAcceptChanges ?? false,
           explorerIconPack,
           syntaxValidationEnabled: appSettings.syntaxValidationEnabled ?? true,
@@ -1469,6 +1491,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         notifyOnTurnComplete: state.notifyOnTurnComplete,
         showActivityInTitle: state.showActivityInTitle,
         transcriptChapters: state.transcriptChapters,
+        browserTools: state.browserTools,
         autoApproveTools: state.autoApproveTools,
         autoAcceptChanges: state.autoAcceptChanges,
         explorerIconPack: state.explorerIconPack,
@@ -2012,6 +2035,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setTranscriptChapters: (value: boolean) => {
     set({ transcriptChapters: value });
+    get().saveToDatabase();
+  },
+
+  setBrowserTools: (value: boolean) => {
+    set({ browserTools: value });
     get().saveToDatabase();
   },
 

@@ -147,6 +147,47 @@ export function formatToolDuration(ms: number): string {
 }
 
 /**
+ * Upper bound on a payload we'll parse just to classify it. Every structured
+ * refusal is small (an error, a path, a hint); results past this are content
+ * dumps, and parsing megabytes on each render to learn nothing is not a trade
+ * worth making. A failure larger than this degrades to the sentinel check.
+ */
+const MAX_FAILURE_SCAN = 256_000;
+
+/**
+ * Does this result say, in its own words, that the tool did not do the thing?
+ *
+ * Rust tools report failure as `{"success": false, "error": …}` — a refusal to
+ * edit an unread file, an exact-text match that found nothing, a shell command
+ * that exited non-zero. Only the sentinel prefixes used to be checked, so every
+ * one of those rendered with a green check and a "done" count. A card that
+ * claims success over its own error message is worse than no card.
+ *
+ * Strictly TOP-LEVEL. Per-item `success` flags are a different statement: one
+ * unreadable path inside a 10-file read is a partial result, not a failed call,
+ * and the multi-file view reports it per row.
+ */
+export function resultReportsFailure(result: string): boolean {
+  const trimmed = result.trimStart();
+  if (!trimmed.startsWith("{")) return false;
+  // Cheap reject before any parse — most results never mention success at all.
+  if (!trimmed.includes('"success"')) return false;
+  if (trimmed.length > MAX_FAILURE_SCAN) return false;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      !Array.isArray(parsed) &&
+      (parsed as Record<string, unknown>).success === false
+    );
+  } catch {
+    // Truncated or malformed → not a claim of failure we can stand behind.
+    return false;
+  }
+}
+
+/**
  * Infer a tool's status. `isActivelyStreaming` distinguishes a tool that is
  * genuinely in flight (turn streaming) from a stale one left "running" by a
  * previous session — the IDE treats the latter as failed.
@@ -155,5 +196,6 @@ export function toolStatus(call: ToolCall, isActivelyStreaming = false): ToolSta
   const r = call.result;
   if (r == null || r === "") return isActivelyStreaming ? "running" : "failed";
   if (/^\s*\[(error|rejected)\]/i.test(r)) return "failed";
+  if (resultReportsFailure(r)) return "failed";
   return "done";
 }

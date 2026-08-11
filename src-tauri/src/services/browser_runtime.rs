@@ -313,6 +313,47 @@ impl BrowserManager {
             .map_err(|e| format!("failed to emit agent-open-browser: {e}"))
     }
 
+    /// Ask the agent window to render its Browser panel's webview at a
+    /// specific size — a device frame — or `None` to fill the panel again.
+    ///
+    /// `Emulation.setDeviceMetricsOverride` only changes what the PAGE thinks
+    /// its viewport is; the webview stays panel-sized and the browser paints
+    /// the leftover area blank. So a phone check left the page in a narrow
+    /// column with a large white band beside and below it — inside the webview,
+    /// where no Aurora styling can reach — and the native screenshot, which
+    /// photographs the whole webview surface, captured the band as part of the
+    /// picture. Physically resizing the webview is the only thing that removes
+    /// it: the page then fills its own surface exactly, the panel's own
+    /// background shows around the frame, and a screenshot contains the device
+    /// and nothing else.
+    pub fn request_browser_frame(&self, width: Option<f64>, height: Option<f64>) {
+        let _ = self.app.emit(
+            "aurora:agent-browser-frame",
+            serde_json::json!({ "width": width, "height": height }),
+        );
+    }
+
+    /// Tell the agent window that a browser tool has started or finished
+    /// driving its Browser panel.
+    ///
+    /// This is the ONLY signal the panel has. The native webview paints above
+    /// the React DOM, so the page can change under the user with nothing on
+    /// screen saying who changed it — a click lands, a URL swaps, and it looks
+    /// identical to the page doing it by itself. The panel draws its "agent is
+    /// driving" cue from this pair of events and from nothing else, which is
+    /// why the `false` half is sent from a drop guard rather than the happy
+    /// path: an errored, cancelled or panicking tool must still turn the cue
+    /// off, or the panel lies for the rest of the session.
+    ///
+    /// Fire-and-forget: a failed emit costs a missing indicator, never a failed
+    /// tool call, so it must not surface as an error to the model.
+    pub fn signal_panel_activity(&self, tool: &str, active: bool) {
+        let _ = self.app.emit(
+            "aurora:agent-browser-activity",
+            serde_json::json!({ "tool": tool, "active": active }),
+        );
+    }
+
     pub fn navigate(&self, label: &str, url: &str) -> Result<(), String> {
         let window = self.window(label)?;
         // `WebviewWindow::navigate` exists in Tauri 2 and tells the
@@ -338,6 +379,12 @@ impl BrowserManager {
             entry.stagewise_active = false;
         }
         Self::clear_emulation_overrides(&window);
+        // The browser's overrides are gone, so Aurora's record of them and the
+        // device frame drawn for them have to go too — otherwise `browser_status`
+        // keeps reporting a 390px viewport that no longer exists, and the panel
+        // stays pinned to a phone-width frame after the user typed a new URL.
+        crate::tools::browser::state::clear_emulation();
+        self.request_browser_frame(None, None);
         self.touch_active(label);
         Ok(())
     }

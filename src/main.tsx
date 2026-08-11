@@ -22,16 +22,19 @@
 
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import '@fontsource/inter/400.css'
-import '@fontsource/inter/500.css'
-import '@fontsource/inter/600.css'
-import '@fontsource/manrope/400.css'
-import '@fontsource/manrope/500.css'
-import '@fontsource/manrope/600.css'
+// ALL bundled typefaces register here — one module, both windows. Which
+// family a surface uses is decided in kernel/lib/fonts/stacks.ts.
+import '@/kernel/lib/fonts/bundled'
 import './index.css'
 import App from './App.tsx'
 import { disableNativeTooltips } from '@/kernel/lib/disable-native-tooltips'
 import { startFontProbe } from '@/kernel/lib/fonts/font-probe'
+import { applyCachedUiPreferences, preloadBundledFonts } from '@/kernel/lib/fonts/boot'
+// Typography recorder — OFF unless switched on with `auroraTypographyDebug.on()`
+// in the console. Kept for the next time text looks like it is shifting. It runs
+// BEFORE applyCachedUiPreferences so the pre-apply state is its baseline.
+import { initTypographyDebug } from '@/kernel/lib/fonts/typography-debug'
+import { installErrorReporter } from '@/kernel/lib/diagnostics/error-reporter'
 import { startAgentFileSync } from '@/bridge/agent-file-sync'
 
 // Kill all browser-native `title=""` tooltips at the document level so
@@ -39,6 +42,12 @@ import { startAgentFileSync } from '@/bridge/agent-file-sync'
 // module's docstring for rationale and trade-offs. Buttons that should
 // have hover hints can still use the themed <Tooltip /> wrapper.
 disableNativeTooltips()
+
+// Route web-layer failures into the same aurora.log the backend writes to, so
+// Settings → Diagnostics shows a whole failure rather than its Rust half.
+// Installed here, after App.tsx has registered its own rejection filter, so an
+// expected cancellation is already marked as handled by the time we see it.
+installErrorReporter()
 
 // Report which font families are ACTUALLY rendering, in both windows, and say
 // so again whenever that changes. Font stacks here are user-editable and
@@ -56,8 +65,22 @@ void startAgentFileSync().catch((err) => {
   console.warn('[main] startAgentFileSync failed:', err)
 })
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-)
+// Typography must be settled BEFORE first paint, or the window visibly
+// re-typesets itself moments after opening:
+//   1. the IDE's persisted font/scale used to arrive over async SQLite and
+//      re-set the root variables after render — applied here synchronously
+//      from the localStorage mirror instead;
+//   2. the bundled faces register with `font-display: swap`, so the first
+//      paint used the platform fallback and swapped — preloading them (local
+//      assets, capped wait) puts the real faces under the first frame.
+initTypographyDebug() // No-op unless switched on — see the import note above.
+
+applyCachedUiPreferences()
+
+void preloadBundledFonts().then(() => {
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  )
+})

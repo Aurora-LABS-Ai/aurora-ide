@@ -11,20 +11,15 @@
  */
 
 import type { AgentTheme } from "../types";
+import { AGENT_UI_FONT_STACK, CODE_FONT_STACK } from "@/kernel/lib/fonts/stacks";
 
 const SHARED_TYPE = {
-  // "Inter Variable" is the family name @fontsource-variable registers — it is
-  // NOT interchangeable with "Inter", so it must come first or the variable
-  // axis is never used and weights snap to the nearest static again. Plain
-  // "Inter" follows for anyone who has the static face installed system-wide.
-  // Bundled by AgentThemeProvider.
-  fontUi:
-    '"Inter Variable", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif',
-  // JetBrains Mono is now BUNDLED (400 + 600) rather than hoped for, so code
-  // renders identically on every machine. The rest of the stack stays as a
-  // defensive fallback only.
-  fontCode:
-    '"JetBrains Mono", "Cascadia Code", "Cascadia Mono", Consolas, "Fira Code", ui-monospace, monospace',
+  // Families come from the kernel font module — the single place a stack is
+  // decided (see kernel/lib/fonts/stacks.ts for why "Inter Variable" leads).
+  // These seed the fontUi/fontCode THEME TOKENS, which the user can override
+  // in Appearance; the tokens, not these constants, are what CSS reads.
+  fontUi: AGENT_UI_FONT_STACK,
+  fontCode: CODE_FONT_STACK,
   // ── Interface text size ───────────────────────────────────────────────────
   // Multiplier on the whole chrome scale (--agw-fs-micro … --agw-fs-title).
   // 1 = the authored 12/13/14/15/16/17. Chrome is otherwise fixed, so without
@@ -186,3 +181,27 @@ export const AGENT_THEMES: Record<string, AgentTheme> = {
 };
 
 export const DEFAULT_AGENT_THEME_ID = agentDark.id;
+
+/**
+ * The typography subset of the token set — what "Reset typography" clears and
+ * what the persisted-state migration is allowed to prune. Derived from
+ * SHARED_TYPE minus the radius scale (radius is shape, not type).
+ */
+export const TYPOGRAPHY_TOKEN_KEYS = [
+  "fontUi",
+  "fontCode",
+  "uiTextScale",
+  "msgFontSize",
+  "msgLineHeight",
+  "msgFontWeight",
+  "msgCodeFontSize",
+  "msgUserFontSize",
+  "msgUserLineHeight",
+] as const satisfies ReadonlyArray<keyof typeof SHARED_TYPE>;
+
+/** The professional baseline: what every typography token resets to. */
+export const TYPOGRAPHY_DEFAULTS: Readonly<
+  Record<(typeof TYPOGRAPHY_TOKEN_KEYS)[number], string>
+> = Object.fromEntries(
+  TYPOGRAPHY_TOKEN_KEYS.map((key) => [key, SHARED_TYPE[key]]),
+) as Record<(typeof TYPOGRAPHY_TOKEN_KEYS)[number], string>;

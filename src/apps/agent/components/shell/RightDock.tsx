@@ -29,6 +29,7 @@ import { MemberPanel } from "@/apps/agent/components/team/MemberPanel";
 import { ChatPanel } from "@/apps/agent/components/shell/ChatPanel";
 import { StreamingDotMatrix } from "@/apps/agent/components/theme/StreamingDotMatrix";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
+import { useAgentBrowserDriving } from "@/apps/agent/store/workspace/useAgentBrowserDriving";
 import { authorColor } from "@/apps/agent/components/team/team-ui";
 import type { DockSingletonKind, DockTabInstance } from "@/apps/agent/types";
 import { DOCK_TAB_LABELS } from "@/apps/agent/types";
@@ -69,6 +70,26 @@ const ChatTabGlyph: React.FC<{ threadId: string }> = ({ threadId }) => {
   );
 };
 
+/**
+ * The Browser tab's glyph — accent and pulsing while the agent is driving the
+ * page, the static browser icon otherwise.
+ *
+ * Same reasoning as `ChatTabGlyph`: the agent can click, scroll and navigate
+ * while the user is reading Files or a diff, and the panel's own cue is
+ * unreachable behind another tab. This is the only place that says the page is
+ * moving without switching to it.
+ */
+const BrowserTabGlyph: React.FC = () => {
+  const driving = useAgentBrowserDriving((s) => s.driving);
+  return (
+    <span className="agw-tabpill-browser" data-agw-driving={driving ? "true" : undefined}>
+      <AgentIcon name="browser" size={13} />
+      {/* Colour and motion are not state cues on their own. */}
+      {driving && <span className="agw-sr-only">Agent is working in the browser</span>}
+    </span>
+  );
+};
+
 const TabPill: React.FC<{
   tab: DockTabInstance;
   active: boolean;
@@ -90,6 +111,8 @@ const TabPill: React.FC<{
         <AgentIcon name="folder" size={13} />
       ) : tab.kind === "chat" ? (
         <ChatTabGlyph threadId={tab.threadId ?? ""} />
+      ) : tab.kind === "browser" ? (
+        <BrowserTabGlyph />
       ) : (
         <AgentIcon name={SINGLETON_ICON[tab.kind]} size={13} />
       )}

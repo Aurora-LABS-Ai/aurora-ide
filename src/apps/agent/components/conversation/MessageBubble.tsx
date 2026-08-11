@@ -30,6 +30,7 @@ import { ToolGroup } from "@/apps/agent/components/tools/ToolGroup";
 import { ChapterHeading } from "@/apps/agent/components/conversation/ChapterHeading";
 import { CompactionCard } from "@/apps/agent/components/conversation/CompactionCard";
 import { NoticeCard } from "@/apps/agent/components/conversation/NoticeCard";
+import { ReconnectCard } from "@/apps/agent/components/conversation/ReconnectCard";
 import {
   buildRows,
   buildSections,
@@ -261,8 +262,9 @@ const CollapsibleBubbleBody: React.FC<{ children: React.ReactNode }> = ({
     const measure = () => {
       const lineHeight = Number.parseFloat(getComputedStyle(el).lineHeight);
       // A non-numeric `line-height: normal` has no reliable px value; fall back
-      // to the bubble's 14px × 1.55 so the estimate stays in the right range.
-      const line = Number.isFinite(lineHeight) ? lineHeight : 21.7;
+      // to the bubble's own defaults, 14px × 1.6 (`msgUserFontSize` /
+      // `msgUserLineHeight` in themes.ts), so the estimate stays in range.
+      const line = Number.isFinite(lineHeight) ? lineHeight : 22.4;
       // +1px absorbs sub-pixel rounding, which otherwise shows a chevron that
       // expands to reveal nothing.
       const next = el.scrollHeight > line * USER_BUBBLE_CLAMP_LINES + 1;
@@ -369,12 +371,15 @@ const UserBubble: React.FC<{
 
       {hasBubble && (
         <div
-          // The fill lives in CSS (`.agw-bubble-user`) rather than inline so the
-          // sticky-user treatment can composite an opaque ground under the
-          // translucent token. An inline `background` would outrank it.
+          // Fill AND padding live in CSS (`.agw-bubble-user`), not inline, so the
+          // sticky-user treatment can override them. An inline style outranks
+          // every selector: the fill was moved for that reason, and `padding`
+          // stayed behind and silently beat the pinned card's
+          // `padding-bottom: 28px` — the strip that keeps a question's last line
+          // out from under the copy chip. The chip is absolutely positioned, so
+          // losing that reserve put text directly beneath it.
           className="agw-bubble-user"
           style={{
-            padding: "9px 13px",
             borderRadius: 14,
             color: "var(--agw-text)",
             // User-tunable in Settings → Appearance → Typography; the
@@ -615,7 +620,16 @@ const AssistantTurn: React.FC<{
   // A chapter owns every row until the next chapter, and only the CURRENT one
   // stays expanded: the moment the agent names a new part of the work, the
   // previous part has finished and folds to its title.
-  const sections = useMemo(() => buildSections(rows), [rows]);
+  // The turn's end closes the LAST chapter's span. Derived from the two numbers
+  // the header already has (`workedMs` is end − start), so nothing new is
+  // threaded down. Withheld while streaming: that chapter is still being
+  // worked, and a heading is not the place for a running clock.
+  const turnEndedAt = useMemo(() => {
+    if (streaming || !startedAt || workedMs == null) return undefined;
+    const start = Date.parse(startedAt);
+    return Number.isFinite(start) ? start + workedMs : undefined;
+  }, [streaming, startedAt, workedMs]);
+  const sections = useMemo(() => buildSections(rows, turnEndedAt), [rows, turnEndedAt]);
   const activeChapterId = useMemo(() => {
     for (let i = sections.length - 1; i >= 0; i--) {
       const id = sections[i].chapter?.id;
@@ -650,7 +664,9 @@ const AssistantTurn: React.FC<{
     setChapterOverrides((prev) => ({ ...prev, [id]: { open: next, era: activeChapterId } }));
   };
 
-  const renderRow = (row: TimelineRow) => {
+  /** `index` is the row's position in the FLAT turn list — see
+   *  `renderRowWrapper` for why it is turn-wide and not chapter-local. */
+  const renderRow = (row: TimelineRow, index: number) => {
     if (row.type === "thinking") {
       return (
         <AgentThinkingBlock
@@ -685,6 +701,12 @@ const AssistantTurn: React.FC<{
       // it happened and visibly NOT part of what the model wrote.
       return <NoticeCard text={row.text} />;
     }
+    if (row.type === "reconnect") {
+      // The stream died here and is being re-requested. Sits exactly where the
+      // discarded half-reply was, and is removed when the retry starts — so a
+      // recovered connection leaves the transcript looking untouched.
+      return <ReconnectCard attempt={row.attempt} maxAttempts={row.maxAttempts} />;
+    }
     if (row.type === "compaction") {
       // Compaction fired here mid-turn — render inline so everything the
       // agent streamed AFTER it lands below the marker (and everything
@@ -701,7 +723,15 @@ const AssistantTurn: React.FC<{
     // the collapsible header only once the run reaches TOOL_GROUP_MIN, but
     // because the component type never changes, the cards stay mounted and
     // the header animates in instead of the whole row jumping at the 6th call.
-    return <ToolGroup tools={row.tools} isActivelyStreaming={streaming} />;
+    return (
+      <ToolGroup
+        tools={row.tools}
+        isActivelyStreaming={streaming}
+        // Once anything lands below this run it stops being the live edge and
+        // folds back to its summary, so the newest output stays in view.
+        isLastRow={index === rows.length - 1}
+      />
+    );
   };
 
   /**
@@ -738,7 +768,7 @@ const AssistantTurn: React.FC<{
           display:none by default, exactly like the wrapper itself, so
           toggling the spine never remounts a row. */}
       <i className="agw-row-branch" aria-hidden="true" />
-      {renderRow(row)}
+      {renderRow(row, index)}
     </div>
   );
 
@@ -777,7 +807,7 @@ const AssistantTurn: React.FC<{
         const body = section.rows.map(({ row, index }) => renderRowWrapper(row, index));
         if (!section.chapter) return body;
 
-        const { id, title, index } = section.chapter;
+        const { id, title, index, durationMs: chapterMs } = section.chapter;
         const open = isChapterOpen(id);
         const bodyId = `agw-chapter-body-${id}`;
         return (
@@ -799,6 +829,7 @@ const AssistantTurn: React.FC<{
                 title={title}
                 open={open}
                 bodyId={bodyId}
+                durationMs={chapterMs}
                 onToggle={() => toggleChapter(id)}
               />
             </div>

@@ -2,6 +2,38 @@
 
 Append 2-4 lines per mistake / broken assumption / project-specific warning.
 
+## 2026-08-11 — A precondition that cannot observe every legitimate path will refuse correct work
+- `file_edit` required a prior `file_read` of every target. The agent found its exact line with
+  `grep`, batched 3 edits, and lost the whole batch to one file it had never opened — while looking
+  at that file's matched text in the search result. The tracker only sees `file_read`/`file_write`;
+  it cannot see search hits, `code` output, an earlier diff, or the user pasting the text.
+- The test to apply: **what does the gate protect that the operation does not already protect?**
+  Exact-match + uniqueness + atomic batch means a guessed edit writes nothing. The gate added
+  nothing there — it only blocked the cases that would have succeeded. It DOES protect
+  `replace_all`, which waives uniqueness; that one stays. Everything else moved to being the
+  DIAGNOSIS for a failed match, where "you never read this file" is finally the actionable cause.
+- Related: when a refusal is common, ask whether it is protecting the user from an unanswerable
+  question or from a limitation you could remove — same shape as the 2026-08-09 `usages` entry.
+
+## 2026-08-11 — A card that renders a refusal as a green check is worse than no card
+- `toolStatus` classified failure by a leading `[error]`/`[rejected]` sentinel only, so every Rust
+  tool that reports `{"success": false}` — read refusals, failed exact-text matches, non-zero shell
+  exits — displayed a ✓, counted as "done" in the group header, AND dumped its raw JSON into the
+  body (nothing claimed the shape, so it hit `parseToolResult`'s last-resort pretty-printer).
+  The owner read a declined batch as a successful edit. Months of failed shell commands looked fine.
+- Two rules. A status inferred from a text sentinel must be re-checked whenever results gain a
+  structured shape — the sentinel was true when results were strings. And check the TOP LEVEL only:
+  a per-file `success:false` inside a 10-file read is a partial result, and marking the call failed
+  would misreport the 9 that worked.
+- Corollary: a failed card that shows its error only in a closed dropdown is barely better. State
+  the reason on the row.
+
+## 2026-08-10 — An explicit `@filename` is the scope, not a nearby document with a similar topic
+- The user pointed to `@CODE-INDEX-OUTLINE-FINDING.md`; I opened `DOCS/code-index-handoff.md` instead
+  and fixed an unrelated unfinished item. The change was valid but unauthorized and had to be reverted.
+- Resolve and read the exact attached filename before choosing work from broader project notes. A
+  topic match is not a substitute for the artifact the user named.
+
 ## 2026-08-10 — Never put the user's real project names in Aurora's own source
 - I wrote a test fixture in `code_index/store.rs` using the owner's private package name and one of
   its classes as the sample data, plus half a dozen comments naming his private repos and files.
@@ -1635,3 +1667,22 @@ which surface WRITES it. `workspace_state`, `editor_state` and `explorer_state` 
 anything the agent window needs to remember belongs in its own `app_settings` key, the way
 `agent_window_bounds` already did. An empty string there means "no project", not a path — the
 launcher filters it rather than treating it as one.
+
+## 2026-08-12 — `cargo test` writes into the PRODUCTION log, so aurora.log lies
+
+Reading `%LOCALAPPDATA%\AuroraIDE\logs\aurora.log` to find the most common error: 104 of 147 ERROR
+lines were **unit-test fixtures**, not failures. `boom`, `no key`, `slow down`, `bad` — each exactly
+13 times, one per test run. Sorting by frequency puts "upstream HTTP 503" on top; it is a string
+from `provider_kernel_adapter.rs`'s `map_status_error` test.
+
+Two causes, both still open: `logging.rs`'s own `write_entry_appends_to_log_file` asserts against
+the real `log_file()`, and the api tests call `log_error` with fixture payloads on the way through.
+Anyone diagnosing from this file must first strip fixtures or the ranking is fiction.
+
+Also live in that file, and worth knowing before you count anything:
+- **One failure writes four lines** — `api.http` → `agent_runtime.turn` → `ui.console` ×2 (the agent
+  window and `AgentRuntimeClient` both `console.error` the same rejection). Counting lines
+  quadruple-counts incidents.
+- **Cancelling a turn is logged as an ERROR.** Rust gets this right (`conversation.rs` skips
+  `ApiError::Cancelled`), but `agent-runtime-client.ts` `console.error`s every rejection including
+  "request was cancelled", and the console mirror forwards it. Pressing Stop looks like a crash.

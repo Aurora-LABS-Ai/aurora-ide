@@ -49,10 +49,31 @@ export type TimelineEvent =
    */
   | { kind: "thinking"; id: string; text: string; startedAt?: number; durationMs?: number }
   | { kind: "content"; id: string; text: string }
-  | { kind: "tool"; id: string; call: ToolCall }
+  /**
+   * `at` (epoch ms) is when this call was first seen. It exists so a `chapter`
+   * call can be timed against the NEXT one — a chapter's duration is not a
+   * property of its own call (which returns instantly), it is the span until
+   * the work it names is handed over.
+   *
+   * Live it comes from the clock; on reload from the owning message's
+   * timestamp, which the runtime already persists. So the number survives a
+   * reopened chat exactly like the reasoning duration does, with nothing extra
+   * written to disk.
+   */
+  | { kind: "tool"; id: string; call: ToolCall; at?: number }
   | { kind: "user_injection"; id: string; text: string; chips?: AttachedPromptChip[] | null }
   | { kind: "compaction"; id: string; beforeTokens: number; afterTokens: number; running: boolean }
-  | { kind: "notice"; id: string; text: string };
+  | { kind: "notice"; id: string; text: string }
+  /**
+   * The connection died mid-reply and the runtime is re-requesting it.
+   * Deliberately transient: it is removed the moment the retry streams
+   * anything, and it is never persisted — a recovered hiccup should leave no
+   * trace, because nothing actually happened to the conversation.
+   *
+   * `attempt` is the try that FAILED (1-based), so the one now running is
+   * `attempt + 1`.
+   */
+  | { kind: "reconnect"; id: string; attempt: number; maxAttempts: number };
 
 export type TimelineRow =
   | { type: "thinking"; id: string; text: string; startedAt?: number; durationMs?: number }
@@ -61,8 +82,11 @@ export type TimelineRow =
   | { type: "user_injection"; id: string; text: string; chips?: AttachedPromptChip[] | null }
   | { type: "compaction"; id: string; beforeTokens: number; afterTokens: number; running: boolean }
   | { type: "notice"; id: string; text: string }
-  /** A `chapter` call — the agent naming the part of the work it is starting. */
-  | { type: "chapter"; id: string; title: string };
+  | { type: "reconnect"; id: string; attempt: number; maxAttempts: number }
+  /** A `chapter` call — the agent naming the part of the work it is starting.
+   *  `at` is when it was announced; the span it covers is closed by the next
+   *  chapter, or by the end of the turn. */
+  | { type: "chapter"; id: string; title: string; at?: number };
 
 export interface AgwTurn {
   id: string;
@@ -253,14 +277,93 @@ export function updateCompaction(
   );
 }
 
+/**
+ * The stream died mid-reply: throw away the half of it that reached the screen
+ * and mark the gap with a live "reconnecting" row.
+ *
+ * **What gets dropped, and why exactly this much.** The runtime is about to
+ * re-request the SAME model call, which will stream that reply again from its
+ * first token — so anything already on screen from the attempt that died would
+ * render twice. That partial reply is the trailing run of `thinking` /
+ * `content` events plus any tool card whose arguments were still arriving
+ * (`result` unset — the same test {@link toolStatus} uses). Walking backwards
+ * stops at the first thing that survived: a completed tool call, a mid-turn
+ * user note, a compaction marker, a notice. Those belong to model calls that
+ * already finished and are committed to session history — a turn that
+ * inspected the project and read a file keeps both, and neither re-runs.
+ *
+ * The session on disk is already right when this is called: the runtime
+ * appends an assistant message only after a clean stream, so the fragment was
+ * never persisted. This function exists to bring the SCREEN back in line with
+ * a history that never had it.
+ */
+export function beginReconnect(
+  tl: TimelineEvent[],
+  id: string,
+  attempt: number,
+  maxAttempts: number,
+): TimelineEvent[] {
+  let end = tl.length;
+  while (end > 0) {
+    const e = tl[end - 1];
+    const isPartial =
+      e.kind === "thinking" ||
+      e.kind === "content" ||
+      // A tool whose arguments never finished streaming. The retry gets a new
+      // call id from the provider, so leaving this would strand a dead card.
+      (e.kind === "tool" && (e.call.result == null || e.call.result === "")) ||
+      // A stale marker from an earlier attempt in the same run of retries.
+      e.kind === "reconnect";
+    if (!isPartial) break;
+    end -= 1;
+  }
+  return [...tl.slice(0, end), { kind: "reconnect", id, attempt, maxAttempts }];
+}
+
+/**
+ * Take the reconnect marker away — the retry is streaming, or the turn ended.
+ *
+ * Called on the first sign of life from the new attempt, so a recovered
+ * connection reads as nothing having happened at all.
+ */
+export function clearReconnect(tl: TimelineEvent[]): TimelineEvent[] {
+  return tl.some((e) => e.kind === "reconnect")
+    ? tl.filter((e) => e.kind !== "reconnect")
+    : tl;
+}
+
+/**
+ * Re-derive the flat `content` / `thinking` string a message carries alongside
+ * its timeline.
+ *
+ * The two are appended in lockstep while streaming, so they normally agree
+ * without anyone reconstructing anything. {@link beginReconnect} is the one
+ * place that REMOVES timeline events, and a flat string cannot be un-appended
+ * — so it is rebuilt from what survived. Skip this and the discarded fragment
+ * lives on invisibly: absent from the transcript, present in Copy and in the
+ * reload fallback.
+ *
+ * Exact by construction: the appenders merge consecutive segments of a kind
+ * and store the text verbatim, so joining them returns the original string.
+ */
+export function textOf(tl: TimelineEvent[], kind: "content" | "thinking"): string {
+  let out = "";
+  for (const e of tl) if (e.kind === kind) out += e.text;
+  return out;
+}
+
 export function upsertToolEvent(tl: TimelineEvent[], call: ToolCall): TimelineEvent[] {
   const idx = tl.findIndex((e) => e.kind === "tool" && e.id === call.id);
   if (idx >= 0) {
     const next = [...tl];
-    next[idx] = { kind: "tool", id: call.id, call };
+    const prev = next[idx] as { at?: number };
+    // Keep the FIRST sighting. This runs again on every argument delta and once
+    // more when the result lands; re-stamping would move a chapter's start to
+    // the moment its own row stopped changing, and shorten every span by it.
+    next[idx] = { kind: "tool", id: call.id, call, at: prev.at ?? Date.now() };
     return next;
   }
-  return [...tl, { kind: "tool", id: call.id, call }];
+  return [...tl, { kind: "tool", id: call.id, call, at: Date.now() }];
 }
 
 // ── Reload path (synthesise a timeline from persisted fields) ─────────
@@ -294,6 +397,8 @@ function isOrderedTimeline(raw: unknown): raw is OrderedTimelineEvent[] {
 function hydrateToolEvents(
   events: OrderedTimelineEvent[],
   calls: ToolCall[],
+  /** Owning message's timestamp — the reload path's clock for tool events. */
+  at?: number,
 ): TimelineEvent[] {
   if (!events.some((e) => e.kind === "tool" && !e.call)) {
     // Checked above: every tool event carries its call, so this IS the live shape.
@@ -309,15 +414,21 @@ function hydrateToolEvents(
     const call = e.call ?? byId.get(e.id);
     // An id with no payload cannot render anything truthful, and `tool_calls`
     // is the authority on what ran — so drop it rather than show a blank card.
-    if (call) out.push({ kind: "tool", id: e.id, call });
+    if (call) out.push({ kind: "tool", id: e.id, call, at });
   }
   return out;
 }
 
 function eventsOf(m: DbMessage): TimelineEvent[] {
+  // Every event in one assistant message shares that message's clock. That is
+  // the right granularity for chapters: the agent must run tools between two
+  // chapters, and each tool round is its own message, so consecutive chapters
+  // never collapse onto a single timestamp.
+  const at = m.timestamp ? Date.parse(m.timestamp) : NaN;
+  const messageAt = Number.isFinite(at) ? at : undefined;
   const ordered = (m as { timeline?: unknown }).timeline;
   if (isOrderedTimeline(ordered)) {
-    return hydrateToolEvents(ordered, (m.tool_calls ?? []) as ToolCall[]);
+    return hydrateToolEvents(ordered, (m.tool_calls ?? []) as ToolCall[], messageAt);
   }
   // No ordered timeline (a legacy thread, or a message with no blocks): fall
   // back to the shape an assistant message with tool calls is emitted in.
@@ -325,7 +436,7 @@ function eventsOf(m: DbMessage): TimelineEvent[] {
   if (m.thinking) out.push({ kind: "thinking", id: `${m.id}-t`, text: m.thinking });
   if (m.content) out.push({ kind: "content", id: `${m.id}-c`, text: m.content });
   for (const tc of m.tool_calls ?? []) {
-    out.push({ kind: "tool", id: tc.id, call: tc });
+    out.push({ kind: "tool", id: tc.id, call: tc, at: messageAt });
   }
   return out;
 }
@@ -489,8 +600,16 @@ function chapterWasRejected(call: ToolCall): boolean {
  * of the turn, and marking it so would dangle the rail at every chapter break.
  */
 export interface TranscriptSection {
-  /** The chapter opening this span, or `null` for rows before the first one. */
-  chapter: { id: string; title: string; index: number } | null;
+  /**
+   * The chapter opening this span, or `null` for rows before the first one.
+   *
+   * `durationMs` is the wall-clock the agent spent under this heading — from
+   * its announcement to the next chapter's, or to the end of the turn for the
+   * last one. Absent when it cannot be known honestly (no clock on either end,
+   * or a still-running final chapter), and absent renders no number rather
+   * than a zero.
+   */
+  chapter: { id: string; title: string; index: number; durationMs?: number } | null;
   rows: { row: TimelineRow; index: number }[];
 }
 
@@ -506,7 +625,17 @@ export interface TranscriptSection {
  * A turn with no chapters at all yields exactly one `chapter: null` section, so
  * the caller has a single rendering path either way.
  */
-export function buildSections(rows: TimelineRow[]): TranscriptSection[] {
+export function buildSections(
+  rows: TimelineRow[],
+  /**
+   * When the turn ended (epoch ms). Closes the LAST chapter's span — without
+   * it that chapter has a start and no end, and reports no time. Omit while a
+   * turn is still streaming: the final chapter is not finished, and a number
+   * that keeps growing under a static heading reads as a stopwatch nobody
+   * asked for.
+   */
+  turnEndedAt?: number,
+): TranscriptSection[] {
   const sections: TranscriptSection[] = [];
   let current: TranscriptSection = { chapter: null, rows: [] };
 
@@ -521,6 +650,25 @@ export function buildSections(rows: TimelineRow[]): TranscriptSection[] {
     current.rows.push({ row, index });
   });
   sections.push(current);
+
+  // Close each chapter against the START of the next one — the work under a
+  // heading runs until the agent names the next piece. The last chapter closes
+  // on the turn's end when we have it.
+  const chapters = rows.filter((r): r is Extract<TimelineRow, { type: "chapter" }> =>
+    r.type === "chapter",
+  );
+  let nth = 0;
+  for (const section of sections) {
+    if (!section.chapter) continue;
+    const startedAt = chapters[nth]?.at;
+    const endedAt = chapters[nth + 1]?.at ?? turnEndedAt;
+    nth += 1;
+    if (startedAt === undefined || endedAt === undefined) continue;
+    const span = endedAt - startedAt;
+    // A negative span means the two clocks disagree (a message written out of
+    // order). Report nothing rather than a number that cannot be true.
+    if (span >= 0) section.chapter.durationMs = span;
+  }
 
   return sections;
 }
@@ -549,7 +697,7 @@ export function buildRows(events: TimelineEvent[]): TimelineRow[] {
         // lands at this same position as soon as the first characters arrive.
         if (!title) continue;
         flush();
-        rows.push({ type: "chapter", id: e.id, title });
+        rows.push({ type: "chapter", id: e.id, title, at: e.at });
         continue;
       }
       if (run.length === 0) runStart = e.id;
@@ -583,6 +731,13 @@ export function buildRows(events: TimelineEvent[]): TimelineRow[] {
         rows.push({ type: "user_injection", id: e.id, text: e.text, chips: e.chips });
       } else if (e.kind === "notice") {
         rows.push({ type: "notice", id: e.id, text: e.text });
+      } else if (e.kind === "reconnect") {
+        rows.push({
+          type: "reconnect",
+          id: e.id,
+          attempt: e.attempt,
+          maxAttempts: e.maxAttempts,
+        });
       } else if (e.kind === "compaction") {
         rows.push({
           type: "compaction",

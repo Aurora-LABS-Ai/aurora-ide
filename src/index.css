@@ -28,6 +28,12 @@
     --aurora-ui-font-family:
         "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
         Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+    /* Pre-boot fallback only — kernel/lib/fonts/boot.ts re-sets this from
+     * CODE_FONT_STACK (the single source for font stacks) before first paint.
+     * Every code/mono rule in the IDE must use this var, never a literal. */
+    --aurora-code-font-family:
+        "JetBrains Mono", "Cascadia Code", "Cascadia Mono", Consolas,
+        "Fira Code", ui-monospace, monospace;
 }
 
 /* Theme service toggles [data-theme="light"|"dark"] on <html>; align native
@@ -545,9 +551,7 @@ button:focus-visible {
     background: transparent;
     margin: 0;
     overflow-x: auto;
-    font-family:
-        "Fira Code", "JetBrains Mono", "Cascadia Code", "SF Mono", Monaco,
-        "Andale Mono", monospace;
+    font-family: var(--aurora-code-font-family);
     font-size: 12px;
     line-height: 1.6;
     tab-size: 2;
@@ -573,7 +577,7 @@ button:focus-visible {
     color: var(--aurora-common-text-primary, #d4d4d4);
     padding: 2px 6px;
     border-radius: 4px;
-    font-family: "Fira Code", "JetBrains Mono", "Cascadia Code", monospace;
+    font-family: var(--aurora-code-font-family);
     font-size: 12px;
     border: 1px solid
         color-mix(in srgb, var(--aurora-common-border) 55%, transparent);
@@ -757,7 +761,7 @@ button:focus-visible {
 .markdown-content .shiki code,
 .markdown-content [data-shiki] code {
     background: transparent !important;
-    font-family: "Fira Code", "JetBrains Mono", "Cascadia Code", monospace;
+    font-family: var(--aurora-code-font-family);
     font-size: 12px;
     line-height: 1.6;
 }

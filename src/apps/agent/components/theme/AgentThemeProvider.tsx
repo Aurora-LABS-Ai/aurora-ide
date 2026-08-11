@@ -10,29 +10,10 @@
 import React, { useMemo } from "react";
 import { useAgentThemeStore, resolveAgentTheme } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { tokensToCssVars } from "@/apps/agent/theme/tokens";
-// Dedicated fonts for the agent window, bundled offline via @fontsource (the
-// .woff2 files ship inside the app — no network fetch, no Google Fonts).
-// Registering @font-face is global, but only the agent window opts into using
-// them (the IDE keeps its own --aurora-* font stack).
-//
-// Inter is the VARIABLE cut (family: "Inter Variable", axis 100–900). The four
-// static weights this replaced only provided 400/500/600/700, so the ~16 rules
-// asking for `font-weight: 650` were silently snapping up to 700 and `550` to
-// 600 — the intended half-steps never rendered. The variable axis makes them
-// real, and is a smaller download than the four statics it replaces.
-import "@fontsource-variable/inter";
-// JetBrains Mono, bundled at the two weights the code styles actually use
-// (400 body, 600 for the shell command line). Previously it was named first in
-// `fontCode` but never shipped, so any machine without it installed silently
-// fell back to Cascadia Code. Both faces are SIL OFL 1.1 — redistribution in
-// an application is expressly permitted.
-import "@fontsource/jetbrains-mono/400.css";
-import "@fontsource/jetbrains-mono/600.css";
-// Geist (variable), registered under the plain name "Geist" that persisted
-// user font stacks ask for — see the module for why the @fontsource CSS
-// (family "Geist Variable") cannot serve those stacks. Bare side-effect
-// import: dead-code scans must count it (see lesson.md 2026-08-06).
-import "@/apps/agent/theme/geist-font";
+// Bundled typefaces (Inter Variable, JetBrains Mono, Geist, …) register once
+// for BOTH windows in kernel/lib/fonts/bundled.ts, imported from main.tsx —
+// this provider only decides which of them the agent window asks for, via the
+// fontUi/fontCode theme tokens.
 import "@/apps/agent/theme/agent-window.css";
 
 interface AgentThemeProviderProps {

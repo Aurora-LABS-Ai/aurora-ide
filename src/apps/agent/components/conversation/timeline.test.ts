@@ -4,13 +4,130 @@ import type { DbMessage } from "@/apps/agent/services/threads/thread-service";
 import {
   appendNotice,
   appendThinking,
+  beginReconnect,
   buildRows,
   buildSections,
   buildTurns,
+  clearReconnect,
+  textOf,
   turnWorkedMs,
   formatWorkedDuration,
   type TimelineEvent,
+  type TimelineRow,
 } from "@/apps/agent/components/conversation/timeline";
+
+describe("a dropped stream mid-turn", () => {
+  const toolCall = (id: string, result: string | null) => ({
+    kind: "tool" as const,
+    id,
+    call: { id, name: "file_read", arguments: "{}", result },
+  });
+
+  /** The scenario from the field: inspect → "let me read file" → read → drop. */
+  const afterTwoToolRounds: TimelineEvent[] = [
+    { kind: "content", id: "c1", text: "Let me inspect the project." },
+    toolCall("t1", "ok: 42 files"),
+    { kind: "content", id: "c2", text: "Now let me read one file." },
+    toolCall("t2", "ok: contents"),
+  ];
+
+  it("keeps every finished tool call and drops only the half-written reply", () => {
+    const withPartial: TimelineEvent[] = [
+      ...afterTwoToolRounds,
+      { kind: "content", id: "c3", text: "The project is " },
+    ];
+
+    const out = beginReconnect(withPartial, "r1", 1, 3);
+
+    expect(out.map((e) => e.kind)).toEqual([
+      "content",
+      "tool",
+      "content",
+      "tool",
+      "reconnect",
+    ]);
+    // The work that already happened must not re-run or vanish.
+    expect(out.filter((e) => e.kind === "tool")).toHaveLength(2);
+    expect(out.at(-1)).toEqual({ kind: "reconnect", id: "r1", attempt: 1, maxAttempts: 3 });
+  });
+
+  it("drops a tool card whose arguments were still streaming", () => {
+    // The retry gets a fresh call id from the provider, so a half-streamed
+    // card left behind would sit there forever next to its own replacement.
+    const out = beginReconnect(
+      [...afterTwoToolRounds, { kind: "content", id: "c3", text: "Now " }, toolCall("t3", null)],
+      "r1",
+      1,
+      3,
+    );
+    expect(out.filter((e) => e.kind === "tool").map((e) => e.id)).toEqual(["t1", "t2"]);
+    expect(out.some((e) => e.kind === "content" && e.text === "Now ")).toBe(false);
+  });
+
+  it("never eats the user's mid-turn message", () => {
+    const out = beginReconnect(
+      [
+        { kind: "user_injection", id: "u1", text: "also check the tests" },
+        { kind: "content", id: "c1", text: "Sure, I " },
+      ],
+      "r1",
+      1,
+      3,
+    );
+    expect(out.map((e) => e.kind)).toEqual(["user_injection", "reconnect"]);
+  });
+
+  it("replaces the previous marker instead of stacking one per attempt", () => {
+    const first = beginReconnect(
+      [{ kind: "content", id: "c1", text: "The project is " }],
+      "r1",
+      1,
+      3,
+    );
+    const second = beginReconnect(first, "r2", 2, 3);
+    expect(second.filter((e) => e.kind === "reconnect")).toHaveLength(1);
+    expect(second.at(-1)).toMatchObject({ id: "r2", attempt: 2 });
+  });
+
+  it("rebuilds the flat copy text so the discarded fragment cannot survive in it", () => {
+    // `content` feeds Copy and the reload fallback. A string cannot be
+    // un-appended, so it is re-derived — otherwise the dropped half-sentence
+    // is invisible in the transcript and still present everywhere else.
+    const out = beginReconnect(
+      [
+        { kind: "content", id: "c1", text: "Let me inspect." },
+        toolCall("t1", "ok"),
+        { kind: "thinking", id: "k1", text: "hmm" },
+        { kind: "content", id: "c2", text: "The project is " },
+      ],
+      "r1",
+      1,
+      3,
+    );
+    expect(textOf(out, "content")).toBe("Let me inspect.");
+    expect(textOf(out, "thinking")).toBe("");
+  });
+
+  it("leaves nothing behind once the retry streams", () => {
+    const reconnecting = beginReconnect(
+      [{ kind: "content", id: "c1", text: "The project is " }],
+      "r1",
+      1,
+      3,
+    );
+    const recovered = clearReconnect(reconnecting);
+    expect(recovered).toEqual([]);
+    // Same array back when there is nothing to clear — this runs on every
+    // text flush, and a new array each time would re-render the transcript.
+    const settled: TimelineEvent[] = [{ kind: "content", id: "c1", text: "done" }];
+    expect(clearReconnect(settled)).toBe(settled);
+  });
+
+  it("renders as its own row carrying the attempt count", () => {
+    const rows = buildRows(beginReconnect([], "r1", 2, 3));
+    expect(rows).toEqual([{ type: "reconnect", id: "r1", attempt: 2, maxAttempts: 3 }]);
+  });
+});
 
 describe("agent-window mid-turn injection reload", () => {
   it("renders the persisted injection timeline between assistant segments", () => {
@@ -516,9 +633,46 @@ describe("chapters in the transcript", () => {
       },
     ] as never);
     expect(buildRows(turn.events)).toEqual([
-      { type: "chapter", id: "c1", title: "Wire the reload" },
+      {
+        type: "chapter",
+        id: "c1",
+        title: "Wire the reload",
+        // Reload has no live clock, so the chapter takes its owning message's
+        // timestamp — that is what lets a reopened chat still show how long
+        // each chapter took.
+        at: Date.parse("2026-08-04T07:00:00.000Z"),
+      },
       { type: "content", id: "e1", text: "Done." },
     ]);
+  });
+
+  it("times each chapter from its own start to the next one's", () => {
+    const minute = 60_000;
+    const t0 = Date.parse("2026-08-04T07:00:00.000Z");
+    const rows: TimelineRow[] = [
+      { type: "chapter", id: "c1", title: "First", at: t0 },
+      { type: "content", id: "e1", text: "a" },
+      { type: "chapter", id: "c2", title: "Second", at: t0 + 2 * minute },
+      { type: "content", id: "e2", text: "b" },
+    ];
+    // The turn ended three minutes in, which is what closes the LAST chapter.
+    const sections = buildSections(rows, t0 + 3 * minute);
+    expect(sections.map((s) => s.chapter?.durationMs)).toEqual([2 * minute, minute]);
+  });
+
+  it("reports no time for a chapter it cannot measure honestly", () => {
+    const t0 = Date.parse("2026-08-04T07:00:00.000Z");
+    // Streaming turn: no end passed, so the final chapter has a start and no
+    // close. It must report nothing rather than a number that keeps growing.
+    const open = buildSections([{ type: "chapter", id: "c1", title: "Live", at: t0 }]);
+    expect(open[0].chapter?.durationMs).toBeUndefined();
+
+    // A legacy turn with no clock on the chapter at all.
+    const legacy = buildSections(
+      [{ type: "chapter", id: "c1", title: "Old" }],
+      t0 + 60_000,
+    );
+    expect(legacy[0].chapter?.durationMs).toBeUndefined();
   });
 });
 

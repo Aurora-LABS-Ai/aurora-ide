@@ -46,6 +46,27 @@ export interface AgentCallbacks extends ProviderStreamCallbacks {
    * reports can go unseen.
    */
   onRuntimeNotice?: (notice: { message: string; recoverable: boolean }) => void;
+  /**
+   * The connection died mid-reply and the runtime is re-requesting the same
+   * model call. Whatever streamed for THIS reply is about to be sent again
+   * from its first token, so the panel must drop what it has already rendered
+   * for it — otherwise the answer appears twice.
+   *
+   * Scope is one model call, never the turn: replies that already completed
+   * and tool calls that already ran are in session history and must survive.
+   *
+   * Not an error, and deliberately not routed through {@link onRuntimeNotice}:
+   * the user does not need to act, and if the retry succeeds there is nothing
+   * to report afterwards. A failure that exhausts every attempt arrives as a
+   * normal notice/error instead.
+   */
+  onPartialReplyDiscarded?: (info: {
+    /** The attempt that failed, 1-based; the one now running is `attempt + 1`. */
+    attempt: number;
+    maxAttempts: number;
+    /** Transport/provider detail. Diagnostics, not user-facing copy. */
+    reason: string;
+  }) => void;
 }
 
 export interface AgentConfig {
@@ -78,6 +99,11 @@ export interface AgentConfig {
    * switched together.
    */
   transcriptChapters?: boolean;
+  /**
+   * Advertise the browser toolset this turn. Sixteen schemas, ~2,800 tokens on
+   * every request, so it is switchable — Settings → Agent → Browser control.
+   */
+  browserTools?: boolean;
   providerConfig?: import("@/apps/agent/services/providers").ProviderConfig;
   systemPrompt?: string;
   temperature?: number;

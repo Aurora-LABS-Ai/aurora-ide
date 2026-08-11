@@ -90,7 +90,10 @@ import {
   appendNotice,
   appendThinking,
   appendUserInjection,
+  beginReconnect,
+  clearReconnect,
   nextEventId,
+  textOf,
   updateCompaction,
   upsertToolEvent,
   type TimelineEvent,
@@ -972,7 +975,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       if (pendingText.length === 0) return;
       const deltas = pendingText.splice(0, pendingText.length);
       patchMessage(assistantId, (m) => {
-        let timeline = timelineOf(m);
+        // The retry is streaming, so the "reconnecting" marker has done its
+        // job. Removed in the SAME patch that appends the recovered text, so
+        // the marker never blinks out a frame before the reply resumes.
+        let timeline = clearReconnect(timelineOf(m));
         let content = m.content || "";
         let thinking = m.thinking || "";
         let isThinking = !!m.isThinking;
@@ -991,6 +997,25 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         }
         return { ...m, content, thinking, isThinking, timeline };
       });
+    };
+    /**
+     * Throw the buffered deltas away instead of flushing them.
+     *
+     * Only for a reply the runtime has abandoned: those tokens are about to be
+     * re-sent from the start, so flushing them would render text that is then
+     * immediately truncated — one wasted frame of the duplicate we are here to
+     * prevent.
+     */
+    const dropPendingStreamText = () => {
+      if (textFlushRaf !== null) {
+        cancelAnimationFrame(textFlushRaf);
+        textFlushRaf = null;
+      }
+      if (textFlushTimer !== null) {
+        window.clearTimeout(textFlushTimer);
+        textFlushTimer = null;
+      }
+      pendingText.length = 0;
     };
     const queueStreamText = (kind: "content" | "thinking", text: string) => {
       const last = pendingText[pendingText.length - 1];
@@ -1055,7 +1080,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           ...m,
           tool_calls: calls,
           isThinking: false,
-          timeline: upsertToolEvent(timelineOf(m), next),
+          // `clearReconnect` for the case where the recovered attempt opens
+          // with a tool call instead of text — the text flush is the usual
+          // place the marker goes, and it never runs on that path.
+          timeline: upsertToolEvent(clearReconnect(timelineOf(m)), next),
         };
       });
     };
@@ -1272,6 +1300,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       // `composeAgentSystemPrompt` AND what the runtime client forwards to Rust,
       // so a turn can never have the tool without the instruction or vice versa.
       transcriptChapters: settings.transcriptChapters,
+      browserTools: settings.browserTools,
     });
 
     try {
@@ -1412,8 +1441,42 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             flushStreamText();
             patchMessage(assistantId, (m) => ({
               ...m,
-              timeline: appendNotice(timelineOf(m), message),
+              // Retrying is over — either it worked and this notice is about
+              // something else, or it ran out of attempts and THIS is the
+              // explanation. Either way a spinner promising another try would
+              // be a lie, so it goes.
+              timeline: appendNotice(clearReconnect(timelineOf(m)), message),
             }));
+          },
+          /**
+           * The connection died mid-reply; the runtime is asking for the same
+           * model call again. Drop what this attempt streamed — it is about to
+           * arrive again from the first token — and leave a live marker where
+           * it was. Recovery removes the marker on the next flush, so a healed
+           * hiccup reads as though nothing happened.
+           */
+          onPartialReplyDiscarded: ({ attempt, maxAttempts }) => {
+            dropPendingStreamText();
+            patchMessage(assistantId, (m) => {
+              const timeline = beginReconnect(
+                timelineOf(m),
+                nextEventId(),
+                attempt,
+                maxAttempts,
+              );
+              return {
+                ...m,
+                timeline,
+                // Flat mirrors of the timeline, used by Copy and as the reload
+                // fallback. They cannot be un-appended, so they are rebuilt
+                // from what survived — otherwise the discarded text is gone
+                // from the transcript but still in everything derived from it.
+                content: textOf(timeline, "content"),
+                thinking: textOf(timeline, "thinking"),
+                isThinking: false,
+              };
+            });
+            setActivity({ label: "Reconnecting…" });
           },
           onError: (error) => {
             const message =

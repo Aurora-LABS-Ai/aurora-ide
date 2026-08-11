@@ -142,6 +142,31 @@ pub enum AssistantEvent {
     /// must intervene (e.g. invalid API key).
     Error { message: String, recoverable: bool },
 
+    /// The in-flight assistant reply died mid-stream and the runtime is
+    /// re-issuing the request. Every delta already emitted for the
+    /// **current** reply — text, thinking, tool-call arguments — must be
+    /// thrown away: the retry streams that reply again from its first
+    /// token, so keeping the fragment renders the answer twice.
+    ///
+    /// Scope is one model call, never the turn. Tool calls that already
+    /// ran and replies that already completed are committed to session
+    /// history and are untouched — a turn that inspected the project and
+    /// read a file before the drop keeps both, and neither re-runs.
+    ///
+    /// The session on disk is *already* correct when this fires:
+    /// `conversation.rs` appends an assistant message only after a clean
+    /// stream, so the discarded fragment was never persisted. This event
+    /// exists purely to bring the screen back in line with a history
+    /// that never had the fragment in it.
+    PartialReplyDiscarded {
+        /// The attempt that just failed, 1-based.
+        attempt: u32,
+        /// Total attempts the runtime will make before giving up.
+        max_attempts: u32,
+        /// Why the stream died, already rendered for display.
+        reason: String,
+    },
+
     /// Context compaction has begun (auto at threshold, or manual `/compact`).
     /// UI: turn the context ring into a spinner and insert a live shimmer
     /// "compacting…" card at the current position. See `DOCS/compaction-design.md`.

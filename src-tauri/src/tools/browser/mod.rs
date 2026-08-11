@@ -67,8 +67,24 @@ use crate::services::browser_runtime::{BrowserManager, BrowserResult};
 mod a11y_tools;
 /// Viewport and media emulation.
 mod devtools_tools;
+/// The doctrine text, compiled in.
+mod guide;
+/// Telling the user when the agent is driving the panel.
+mod halo;
+/// The visible cursor that makes a click look like a click.
+mod pointer;
 /// Real pointer and keyboard input.
 mod input_tools;
+/// Where the panel is, and what an action changed.
+///
+/// `pub(crate)` for one reason: `BrowserManager::navigate` drops the browser's
+/// emulation overrides, and it has to drop Aurora's RECORD of them in the same
+/// breath. When it didn't, a navigation left `browser_status` reporting a
+/// viewport override that no longer existed and screenshots carrying a warning
+/// about it — the tools describing a state the browser had already left.
+pub(crate) mod state;
+/// What is on screen, with verified selectors.
+mod view;
 
 /// The one browser the agent drives: the agent window's right-dock panel.
 const AGENT_BROWSER_LABEL: &str = "browser-agentwin";
@@ -200,7 +216,10 @@ const PAGE_OUTLINE_JS: &str = r#"(() => {
 /// `browser_list_windows`) were removed: the agent has a single embedded
 /// right-rail browser, so there are no windows to open, close, or enumerate.
 pub const TOOL_NAMES: &[&str] = &[
+    "browser_guidelines",
+    "browser_status",
     "browser_navigate",
+    "browser_view",
     "browser_screenshot",
     "browser_get_console_logs",
     "browser_page_outline",
@@ -250,32 +269,82 @@ pub const VISION_REQUIRED_TOOLS: &[&str] = &["browser_screenshot"];
 /// `BrowserEvalTool`) were deleted along with the standalone browser
 /// window they addressed: they resolved a `label`, and there is now exactly
 /// one browser, addressed by [`AGENT_BROWSER_LABEL`].
+/// The rules the tools cannot enforce for themselves.
+///
+/// Registered inside this bucket rather than beside `design_guidelines`, so it
+/// disappears with the rest when browser tools are switched off — a guide to
+/// tools the model does not have is pure tax.
+pub struct BrowserGuidelinesTool;
+
+#[async_trait]
+impl ToolExecutor for BrowserGuidelinesTool {
+    fn name(&self) -> &str {
+        "browser_guidelines"
+    }
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "browser_guidelines".into(),
+            description: "Load the rules for driving Aurora's Browser panel. Call this BEFORE \
+your first browser tool call in a conversation.
+
+It covers the mistakes the tools cannot prevent on their own, all of which fail SILENTLY: \
+guessing a CSS selector that matches the wrong element (the click then succeeds on the wrong \
+thing), mistaking a sticky viewport override for a layout bug, re-navigating to a page already \
+on screen and losing its state, and reading a viewport-scoped answer as if it covered the whole \
+page."
+                .into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        }
+    }
+    async fn execute(&self, _input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
+        ctx.bail_if_cancelled()?;
+        Ok(guide::BROWSER_GUIDE.to_string())
+    }
+}
+
 pub fn register(reg: &mut ToolRegistry, manager: Arc<BrowserManager>) {
-    reg.register(Arc::new(BrowserNavigateTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserScreenshotTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserGetConsoleLogsTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserPageOutlineTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserInspectElementTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserClickTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserFillTool::new(manager.clone())));
-    reg.register(Arc::new(BrowserScrollTool::new(manager.clone())));
+    // First, and NOT wrapped below: it returns compiled-in text and never
+    // touches the panel, so raising the driving cue for it would be a lie in
+    // the cheap direction — the indicator flashing while nothing happens.
+    // Registration order is the advertised order and part of every request's
+    // cacheable prefix (see `tools::register_builtin_tools`), so it stays here
+    // rather than moving to the end for tidiness.
+    reg.register(Arc::new(BrowserGuidelinesTool));
+
+    // Everything that actually touches the panel goes on through `driven`,
+    // which raises the panel's "agent is driving" cue for the length of the
+    // call. See `halo` for why it is a wrapper and not sixteen call sites.
+    let driven = |tool: Arc<dyn ToolExecutor>| {
+        reg.register(halo::Driven::wrap(tool, manager.clone()));
+    };
+
+    driven(Arc::new(state::BrowserStatusTool::new(manager.clone())));
+    driven(Arc::new(view::BrowserViewTool::new(manager.clone())));
+    driven(Arc::new(BrowserNavigateTool::new(manager.clone())));
+    driven(Arc::new(BrowserScreenshotTool::new(manager.clone())));
+    driven(Arc::new(BrowserGetConsoleLogsTool::new(manager.clone())));
+    driven(Arc::new(BrowserPageOutlineTool::new(manager.clone())));
+    driven(Arc::new(BrowserInspectElementTool::new(manager.clone())));
+    driven(Arc::new(BrowserClickTool::new(manager.clone())));
+    driven(Arc::new(BrowserFillTool::new(manager.clone())));
+    driven(Arc::new(BrowserScrollTool::new(manager.clone())));
     // QA tools. Everything below drives the BROWSER rather than the page, so
     // none of it can be built on script injection — see `services::
     // browser_devtools` for why the script versions silently report success.
-    reg.register(Arc::new(devtools_tools::BrowserSetViewportTool::new(
+    driven(Arc::new(devtools_tools::BrowserSetViewportTool::new(
         manager.clone(),
     )));
-    reg.register(Arc::new(devtools_tools::BrowserEmulateMediaTool::new(
+    driven(Arc::new(devtools_tools::BrowserEmulateMediaTool::new(
         manager.clone(),
     )));
-    reg.register(Arc::new(input_tools::BrowserPressKeyTool::new(
+    driven(Arc::new(input_tools::BrowserPressKeyTool::new(
         manager.clone(),
     )));
-    reg.register(Arc::new(input_tools::BrowserHoverTool::new(
+    driven(Arc::new(input_tools::BrowserHoverTool::new(
         manager.clone(),
     )));
-    reg.register(Arc::new(a11y_tools::BrowserAccessibilityTreeTool::new(
-        manager,
+    driven(Arc::new(a11y_tools::BrowserAccessibilityTreeTool::new(
+        manager.clone(),
     )));
 }
 
@@ -317,6 +386,141 @@ async fn ensure_agent_browser(
          window is visible, then retry."
             .into(),
     ))
+}
+
+/// Do these two URLs address the same page?
+///
+/// Compared after trimming a trailing slash, because `/settings` and
+/// `/settings/` are one page to everyone except a string comparison — and
+/// treating them as different reintroduces the needless reload this exists to
+/// prevent. The fragment is kept: `#section` is a different place on an anchor
+/// page and an entirely different route under a hash router.
+fn same_page(a: &str, b: &str) -> bool {
+    let normalize = |url: &str| {
+        let url = url.trim();
+        let (head, fragment) = match url.split_once('#') {
+            Some((head, fragment)) => (head, Some(fragment)),
+            None => (url, None),
+        };
+        let head = head.strip_suffix('/').unwrap_or(head);
+        match fragment {
+            Some(fragment) => format!("{head}#{fragment}"),
+            None => head.to_string(),
+        }
+    };
+    normalize(a) == normalize(b)
+}
+
+/// Read the page once it has had a moment to react.
+///
+/// A click that triggers a route change, a fetch, or a re-render has not
+/// finished when the call returns — snapshotting immediately reports the page
+/// as it was, which is worse than not reporting it, because it looks like an
+/// answer. This is a settle pause, not a wait-for: it never blocks a turn for
+/// long, and a slow page simply shows up as still-loading in `ready_state`.
+async fn settled_state(manager: &BrowserManager) -> Value {
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    state::snapshot(manager).await
+}
+
+/// Ceiling on the settle pause an action may request.
+///
+/// Long enough for a route change or a fetch to land, short enough that a
+/// mistaken `settle_ms: 30000` cannot hold a turn hostage. A page slower than
+/// this shows up honestly as `ready_state: "loading"` rather than being waited
+/// out.
+const MAX_SETTLE_MS: u64 = 5_000;
+const DEFAULT_SETTLE_MS: u64 = 350;
+
+/// The shared tail of every acting tool: `act → settle → observe`.
+///
+/// Without this, "scroll, then look" is two tool calls and two round trips
+/// through the model — and the model has to remember to make the second one.
+/// The result of an action should already contain the state it produced, the
+/// same way qg-probe re-dumps its tree after every input.
+///
+/// `see` decides how much looking is worth it:
+/// - `"none"` — the change summary only. Cheapest, and right when you already
+///   know what the action does.
+/// - `"view"` — plus the visible elements and their verified selectors, so the
+///   next action can be chosen from this same result.
+///
+/// `{"ok":true}` on its own cannot distinguish a click that navigated, a click
+/// that threw, and a click that hit nothing. All three used to return the same
+/// string.
+async fn act_and_observe<F, Fut>(
+    manager: &BrowserManager,
+    input: &Value,
+    action: F,
+) -> Result<Value, ToolError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<Value, ToolError>>,
+{
+    let settle_ms = input
+        .get("settle_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(DEFAULT_SETTLE_MS)
+        .min(MAX_SETTLE_MS);
+    let see = input.get("see").and_then(Value::as_str).unwrap_or("none");
+
+    let before = state::snapshot(manager).await;
+    let result = action().await?;
+    tokio::time::sleep(Duration::from_millis(settle_ms)).await;
+    let after = state::snapshot(manager).await;
+
+    let mut out = serde_json::Map::new();
+    out.insert("result".into(), result);
+    out.insert(
+        "changed".into(),
+        state::change_between(&before, &after),
+    );
+    out.insert(
+        "url".into(),
+        after.get("url").cloned().unwrap_or(Value::Null),
+    );
+
+    if see == "view" {
+        let scope = input
+            .get("region")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty());
+        out.insert("view".into(), view::read(manager, scope, true).await);
+    }
+
+    Ok(Value::Object(out))
+}
+
+/// The `see` / `settle_ms` / `region` properties, identical on every acting
+/// tool so the model learns them once.
+fn observation_properties() -> Value {
+    json!({
+        "see": {
+            "type": "string",
+            "enum": ["none", "view"],
+            "description": "What to return once the page has settled. \"view\" adds the visible elements and their verified CSS selectors, so you can choose the next action from this same result instead of calling browser_view separately. Default \"none\"."
+        },
+        "settle_ms": {
+            "type": "number",
+            "description": "How long to let the page react before observing, in milliseconds. Default 350, maximum 5000. Raise it for a route change or a slow fetch; a page still loading is reported as such rather than waited out."
+        },
+        "region": {
+            "type": "string",
+            "description": "With see: \"view\", a CSS selector to scope the observation to — the panel or list you changed, rather than the whole viewport."
+        }
+    })
+}
+
+/// Merge the observation properties into a tool's own property map.
+fn with_observation(mut properties: Value) -> Value {
+    if let (Some(target), Value::Object(extra)) =
+        (properties.as_object_mut(), observation_properties())
+    {
+        for (key, value) in extra {
+            target.insert(key, value);
+        }
+    }
+    properties
 }
 
 fn unwrap_browser_result(result: BrowserResult) -> Result<Value, ToolError> {
@@ -544,6 +748,14 @@ impl ToolExecutor for BrowserScreenshotTool {
         ensure_agent_browser(&self.manager, None).await?;
         let label = AGENT_BROWSER_LABEL;
         let selector = input.get("selector").and_then(Value::as_str);
+        // Take Aurora's own cursor out of the page first. The capture
+        // photographs the real webview surface, so anything Aurora drew in
+        // there would come back looking like something the SITE rendered — in
+        // the one job where that is least acceptable.
+        let _ = self
+            .manager
+            .eval_with_result(label, &pointer::hide_expr())
+            .await;
         let result = self
             .manager
             .screenshot(label, selector)
@@ -581,8 +793,25 @@ impl ToolExecutor for BrowserScreenshotTool {
         // this block into a multimodal `image` content block so the
         // model literally sees the page. `width`/`height`/`src` are extra
         // header attributes the adapter ignores (it only reads `media_type`).
+        // Under an override the panel now draws a device FRAME sized to the
+        // emulation, so the capture is the page and nothing else — no band of
+        // blank panel to mistake for a hole in the layout. What still has to be
+        // said is that the width is not the real one: an override survives into
+        // later turns, and a desktop layout judged at 390px is judged wrong.
+        let emulation_note = match state::emulation() {
+            None => String::new(),
+            Some(e) => format!(
+                "\n\nNOTE: this is an EMULATED {w}×{h}{mobile} viewport, not the real panel size. \
+                 The image is the device frame only. The override stays until you clear it with \
+                 `browser_set_viewport {{reset: true}}` — do that before judging a desktop layout.",
+                w = e.width as i64,
+                h = e.height as i64,
+                mobile = if e.mobile { " (mobile)" } else { "" },
+            ),
+        };
+
         Ok(format!(
-            "<aurora_image media_type=\"{mt}\" width=\"{w}\" height=\"{h}\"{src}>{b64}</aurora_image>\nScreenshot of {url}{sel} ({w}×{h} px)",
+            "<aurora_image media_type=\"{mt}\" width=\"{w}\" height=\"{h}\"{src}>{b64}</aurora_image>\nScreenshot of {url}{sel} ({w}×{h} px){note}",
             mt = media_type,
             b64 = base64,
             src = src_attr,
@@ -592,6 +821,7 @@ impl ToolExecutor for BrowserScreenshotTool {
                 .unwrap_or_default(),
             w = width,
             h = height,
+            note = emulation_note,
         ))
     }
 }
@@ -618,14 +848,22 @@ impl ToolExecutor for BrowserNavigateTool {
             name: "browser_navigate".into(),
             description: "Open the Browser panel in the agent window's right dock (if it isn't \
                 already open) and load `url` in it. This is the agent's ONE browser — a single \
-                embedded panel, never a separate window — and this is the tool to start any \
-                browser task with. Use it to preview and verify running pages (dev servers, \
-                local HTML), then screenshot / click / read console on the same panel."
+                embedded panel, never a separate window.
+
+The panel PERSISTS across turns, and the user opens it themselves too. If it is already showing \
+the page you want, a navigate costs a reload: state is lost, forms clear, and a SPA route resets. \
+Check `browser_status` first, or pass `reload: false` (the default) — this tool will report \
+`already_there` and leave the page alone rather than reloading it silently. Pass `reload: true` \
+when you have changed the source and genuinely need a fresh load."
                 .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "URL to load (http:// or https://, or a local dev-server address)."}
+                    "url": {"type": "string", "description": "URL to load (http:// or https://, or a local dev-server address)."},
+                    "reload": {
+                        "type": "boolean",
+                        "description": "Reload even when the panel is already on this URL. Default false."
+                    }
                 },
                 "required": ["url"]
             }),
@@ -637,12 +875,57 @@ impl ToolExecutor for BrowserNavigateTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
         let url = require_string(&input, "url")?;
+        let force_reload = input
+            .get("reload")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        // Was it already open, and on what? Read BEFORE touching anything —
+        // afterwards there is no way to tell "I opened this" from "it was
+        // already here", and that difference is exactly what the agent kept
+        // burning a turn to rediscover.
+        let was_open = self.manager.has_window(AGENT_BROWSER_LABEL);
+        let before = if was_open {
+            state::snapshot(&self.manager).await
+        } else {
+            Value::Null
+        };
+        let already_there = before
+            .get("url")
+            .and_then(Value::as_str)
+            .is_some_and(|current| same_page(current, url));
+
+        if already_there && !force_reload {
+            // Deliberately does NOT reload. A reload here throws away scroll
+            // position, form state and SPA route — invisibly, while reporting
+            // success — for a page that was already the one asked for.
+            return Ok(json!({
+                "ok": true,
+                "url": url,
+                "already_there": true,
+                "reloaded": false,
+                "note": "The panel was already on this page, so it was left as it is. Pass `reload: true` to force a fresh load.",
+                "state": before,
+            })
+            .to_string());
+        }
+
         // Reveal + build the right-rail panel (hinting the URL), then drive it.
         ensure_agent_browser(&self.manager, Some(url)).await?;
         self.manager
             .navigate(AGENT_BROWSER_LABEL, url)
             .map_err(ToolError::Execution)?;
-        Ok(json!({ "ok": true, "url": url }).to_string())
+
+        let after = settled_state(&self.manager).await;
+        Ok(json!({
+            "ok": true,
+            "url": url,
+            "panel_was_already_open": was_open,
+            "already_there": already_there,
+            "reloaded": already_there && force_reload,
+            "state": after,
+        })
+        .to_string())
     }
 }
 
@@ -669,9 +952,9 @@ impl ToolExecutor for BrowserClickTool {
                 .into(),
             input_schema: json!({
                 "type": "object",
-                "properties": {
+                "properties": with_observation(json!({
                     "selector": {"type": "string"}
-                },
+                })),
                 "required": ["selector"]
             }),
         }
@@ -690,12 +973,28 @@ impl ToolExecutor for BrowserClickTool {
             .manager
             .wait_for(AGENT_BROWSER_LABEL, selector, Some(4_000))
             .await;
-        let result = self
+        // Draw the cursor onto the target and press, so the user watching the
+        // panel sees a click happen instead of the page silently changing. Its
+        // result is ignored on purpose: a pointer that could not be drawn must
+        // never be the reason a click does not run.
+        let _ = self
             .manager
-            .click(AGENT_BROWSER_LABEL, selector)
-            .await
-            .map_err(ToolError::Execution)?;
-        Ok(unwrap_browser_result(result)?.to_string())
+            .eval_with_result(
+                AGENT_BROWSER_LABEL,
+                &pointer::point_at_selector_expr(selector, true),
+            )
+            .await;
+        let manager = self.manager.clone();
+        let selector = selector.to_string();
+        let changed = act_and_observe(&self.manager, &input, || async move {
+            let result = manager
+                .click(AGENT_BROWSER_LABEL, &selector)
+                .await
+                .map_err(ToolError::Execution)?;
+            unwrap_browser_result(result)
+        })
+        .await?;
+        Ok(changed.to_string())
     }
 }
 
@@ -722,11 +1021,11 @@ impl ToolExecutor for BrowserFillTool {
                 .into(),
             input_schema: json!({
                 "type": "object",
-                "properties": {
+                "properties": with_observation(json!({
                     "selector": {"type": "string"},
                     "value": {"type": "string"},
                     "submit": {"type": "boolean", "default": false}
-                },
+                })),
                 "required": ["selector", "value"]
             }),
         }
@@ -746,12 +1045,29 @@ impl ToolExecutor for BrowserFillTool {
             .get("submit")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let result = self
+        // Point at the field, but no ripple: nothing is being clicked, and a
+        // press animation would show an interaction that did not happen.
+        let _ = self
             .manager
-            .fill(AGENT_BROWSER_LABEL, selector, value, submit)
-            .await
-            .map_err(ToolError::Execution)?;
-        Ok(unwrap_browser_result(result)?.to_string())
+            .eval_with_result(
+                AGENT_BROWSER_LABEL,
+                &pointer::point_at_selector_expr(selector, false),
+            )
+            .await;
+        let manager = self.manager.clone();
+        let (selector, value) = (selector.to_string(), value.to_string());
+        // `submit: true` is the case that most needs this: it can navigate, it
+        // can fail validation, and it can silently do nothing — three outcomes
+        // that returned the same string.
+        let changed = act_and_observe(&self.manager, &input, || async move {
+            let result = manager
+                .fill(AGENT_BROWSER_LABEL, &selector, &value, submit)
+                .await
+                .map_err(ToolError::Execution)?;
+            unwrap_browser_result(result)
+        })
+        .await?;
+        Ok(changed.to_string())
     }
 }
 
@@ -778,7 +1094,7 @@ impl ToolExecutor for BrowserScrollTool {
                 .into(),
             input_schema: json!({
                 "type": "object",
-                "properties": {
+                "properties": with_observation(json!({
                     "direction": {
                         "type": "string",
                         "enum": ["up", "down", "top", "bottom"],
@@ -792,7 +1108,7 @@ impl ToolExecutor for BrowserScrollTool {
                         "type": "number",
                         "description": "Pixels for relative scroll (up/down). Defaults to ~80% of the viewport height."
                     }
-                },
+                })),
                 "required": []
             }),
         }
@@ -809,13 +1125,25 @@ impl ToolExecutor for BrowserScrollTool {
             .get("amountPx")
             .or_else(|| input.get("amount_px"))
             .and_then(Value::as_i64);
-        let result = self
-            .manager
-            .scroll(AGENT_BROWSER_LABEL, direction, selector, amount)
-            .await
-            .map_err(ToolError::Execution)?;
-        let value = unwrap_browser_result(result)?;
-        Ok(json!({ "scroll": value }).to_string())
+        // Scroll is the action most often followed by "now look" — it exists
+        // precisely to change what is on screen — so it routes through the same
+        // act-settle-observe tail as click and fill.
+        let manager = self.manager.clone();
+        let (direction, selector) = (direction.map(str::to_string), selector.map(str::to_string));
+        let changed = act_and_observe(&self.manager, &input, || async move {
+            let result = manager
+                .scroll(
+                    AGENT_BROWSER_LABEL,
+                    direction.as_deref(),
+                    selector.as_deref(),
+                    amount,
+                )
+                .await
+                .map_err(ToolError::Execution)?;
+            unwrap_browser_result(result)
+        })
+        .await?;
+        Ok(changed.to_string())
     }
 }
 

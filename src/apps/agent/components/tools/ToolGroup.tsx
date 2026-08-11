@@ -6,11 +6,17 @@
  * to the individual `ToolCallCard`s (`TOOL_GROUP_MIN`, currently 3 — the agent
  * window deliberately groups earlier than the IDE's 6).
  *
- * Open-state follows the IDE EXACTLY:
- *   - while the turn is actively streaming → expanded by default (you watch the
- *     tools run), user may collapse it;
- *   - once streaming ends → collapses back to the summary (state resets when the
- *     `isActivelyStreaming` flag flips), user may expand it again.
+ * Open-state:
+ *   - while the turn is streaming AND this run is the live frontier (the last
+ *     row) → expanded, so you watch the tools run;
+ *   - as soon as anything lands BELOW it — the model resumes writing, a new
+ *     tool row starts — it collapses back to its one-line summary. A finished
+ *     run holding the viewport open pushes the live text off-screen, and the
+ *     thing you want to read is always the newest thing;
+ *   - once streaming ends → collapsed (state resets when the
+ *     `isActivelyStreaming` flag flips).
+ * An explicit click wins over all of it, in both directions, until the turn
+ * ends — auto-collapsing a group the user deliberately opened would fight them.
  * Because the agent window no longer reloads the transcript at stream end, the
  * group stays MOUNTED and framer-motion animates this collapse smoothly instead
  * of the old hard remount that made the view jump.
@@ -38,7 +44,11 @@ const ToolGroupImpl: React.FC<{
   tools: ToolCall[];
   /** The turn this group belongs to is still streaming. */
   isActivelyStreaming?: boolean;
-}> = ({ tools, isActivelyStreaming = false }) => {
+  /** This run is the last row of the turn — nothing has landed under it yet.
+   *  Defaults to true so a group rendered without turn context (tests, any
+   *  future standalone use) keeps the plain streaming behaviour. */
+  isLastRow?: boolean;
+}> = ({ tools, isActivelyStreaming = false, isLastRow = true }) => {
   const grouped = tools.length >= TOOL_GROUP_MIN;
 
   const stats = useMemo(() => {
@@ -63,13 +73,13 @@ const ToolGroupImpl: React.FC<{
 
   const mode = openState.streaming === isActivelyStreaming ? openState.mode : null;
   // Below the grouping threshold there's no header → the cards are always shown.
-  const isOpen = !grouped || (isActivelyStreaming ? mode !== "hidden" : mode === "shown");
+  // With no explicit choice on record, the run is open only while it IS the
+  // live edge; anything appearing beneath it collapses it to its summary.
+  const isOpen =
+    !grouped || (mode === null ? isActivelyStreaming && isLastRow : mode === "shown");
 
   const toggle = () =>
-    setOpenState({
-      mode: isOpen ? (isActivelyStreaming ? "hidden" : null) : "shown",
-      streaming: isActivelyStreaming,
-    });
+    setOpenState({ mode: isOpen ? "hidden" : "shown", streaming: isActivelyStreaming });
 
   return (
     <div className="agw-tool-group">
@@ -159,12 +169,15 @@ const ToolGroupImpl: React.FC<{
  * that's dozens of cards skipped per frame.
  */
 function toolGroupPropsEqual(
-  prev: { tools: ToolCall[]; isActivelyStreaming?: boolean },
-  next: { tools: ToolCall[]; isActivelyStreaming?: boolean },
+  prev: { tools: ToolCall[]; isActivelyStreaming?: boolean; isLastRow?: boolean },
+  next: { tools: ToolCall[]; isActivelyStreaming?: boolean; isLastRow?: boolean },
 ): boolean {
   if ((prev.isActivelyStreaming ?? false) !== (next.isActivelyStreaming ?? false)) {
     return false;
   }
+  // Losing the frontier is exactly what triggers the auto-collapse, so it must
+  // never be memoized away.
+  if ((prev.isLastRow ?? true) !== (next.isLastRow ?? true)) return false;
   if (prev.tools.length !== next.tools.length) return false;
   for (let i = 0; i < prev.tools.length; i++) {
     if (prev.tools[i] !== next.tools[i]) return false;

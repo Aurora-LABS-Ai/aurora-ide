@@ -11,7 +11,12 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { AgentTheme, AgentThemeTokens } from "@/apps/agent/types";
-import { AGENT_THEMES, DEFAULT_AGENT_THEME_ID } from "@/apps/agent/theme/themes";
+import {
+  AGENT_THEMES,
+  DEFAULT_AGENT_THEME_ID,
+  TYPOGRAPHY_DEFAULTS,
+  TYPOGRAPHY_TOKEN_KEYS,
+} from "@/apps/agent/theme/themes";
 import { applyContrast } from "@/apps/agent/theme/color";
 
 export type AgentTokenKey = keyof AgentThemeTokens;
@@ -68,6 +73,12 @@ interface AgentThemeState {
   setTokens: (partial: Partial<AgentThemeTokens>) => void;
   /** Drop ALL appearance customizations back to the active theme's defaults. */
   resetCustomizations: () => void;
+  /**
+   * Drop only the TYPOGRAPHY overrides (fonts + every text size/weight/leading)
+   * on the active theme, restoring the shipped professional baseline while
+   * leaving colors, radius and every other customization untouched.
+   */
+  resetTypography: () => void;
   setTranslucentSidebar: (v: boolean) => void;
   setContrast: (v: number) => void;
   setReduceMotion: (v: boolean) => void;
@@ -146,6 +157,18 @@ export const useAgentThemeStore = create<AgentThemeState>()(
           };
         }),
 
+      resetTypography: () =>
+        set((s) => {
+          const overrides = s.customizations[s.activeThemeId];
+          if (!overrides) return s;
+          const next = { ...overrides };
+          for (const key of TYPOGRAPHY_TOKEN_KEYS) delete next[key];
+          const customizations = { ...s.customizations };
+          if (Object.keys(next).length === 0) delete customizations[s.activeThemeId];
+          else customizations[s.activeThemeId] = next;
+          return { customizations };
+        }),
+
       setTranslucentSidebar: (v) => set({ translucentSidebar: v }),
       setContrast: (v) => set({ contrast: Math.max(0, Math.min(100, Math.round(v))) }),
       setReduceMotion: (v) => set({ reduceMotion: v }),
@@ -189,6 +212,37 @@ export const useAgentThemeStore = create<AgentThemeState>()(
     }),
     {
       name: "aurora-agent-window-theme",
+      version: 1,
+      // v0 → v1: prune STALE typography overrides so old snapshots stop
+      // silently overriding the shipped baseline. Two cases only, both safe:
+      //   - an override equal to a RETIRED default (the pre-variable Inter
+      //     stack) — the user never chose it, a previous default wrote it;
+      //   - an override equal to the CURRENT default — a render no-op that
+      //     would still pin the user to today's value if the default improves.
+      // Anything else is a deliberate choice and is never touched.
+      migrate: (persisted) => {
+        const state = persisted as {
+          customizations?: Record<string, Partial<AgentThemeTokens>>;
+        } | null;
+        const customizations = state?.customizations;
+        if (!customizations) return persisted;
+        const retired = new Set<string>([
+          '"Inter", "Segoe UI", system-ui, -apple-system, sans-serif',
+        ]);
+        for (const [themeId, overrides] of Object.entries(customizations)) {
+          const next = { ...overrides };
+          for (const key of TYPOGRAPHY_TOKEN_KEYS) {
+            const value = next[key];
+            if (value === undefined) continue;
+            if (value === TYPOGRAPHY_DEFAULTS[key] || retired.has(value)) {
+              delete next[key];
+            }
+          }
+          if (Object.keys(next).length === 0) delete customizations[themeId];
+          else customizations[themeId] = next;
+        }
+        return persisted;
+      },
       partialize: (s) => ({
         activeThemeId: s.activeThemeId,
         customThemes: s.customThemes,

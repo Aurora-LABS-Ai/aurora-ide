@@ -82,12 +82,15 @@ async function attachSession(session: TermSession, container: HTMLDivElement, on
     return;
   }
 
-  const dark = selectActiveAgentTheme(useAgentThemeStore.getState()).appearance !== "light";
+  const activeTheme = selectActiveAgentTheme(useAgentThemeStore.getState());
+  const dark = activeTheme.appearance !== "light";
   const term = new Terminal({
     cursorBlink: true,
     cursorStyle: "bar",
     fontSize: 12,
-    fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, "JetBrains Mono", monospace',
+    // The user's Code font (Appearance → Typography), same token every code
+    // surface reads — xterm needs the resolved string, not the CSS variable.
+    fontFamily: activeTheme.tokens.fontCode,
     lineHeight: 1.25,
     convertEol: true,
     scrollback: 10000,

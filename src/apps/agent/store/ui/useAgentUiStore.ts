@@ -25,17 +25,32 @@ export type SettingsSection =
   | "team"
   | "skills"
   | "appearance"
-  | "preferences";
+  | "preferences"
+  | "diagnostics";
 // NB: "team" already reserved here; the Team settings tab renders `TeamSettings`.
 
 interface AgentUiState {
   view: AgentView;
   settingsSection: SettingsSection;
-  /** Open the settings page, optionally jumping straight to a section. */
-  openSettings: (section?: SettingsSection) => void;
+  /**
+   * What the settings page is currently searched for. Lives here rather than
+   * inside the page so the command center can hand a query over on the way in —
+   * asking for "chapters" there lands on the Chapters switch, not on the page
+   * that happens to contain it.
+   *
+   * Never persisted: a search is a moment, and reopening settings tomorrow
+   * inside yesterday's search would look like a broken page.
+   */
+  settingsQuery: string;
+  /**
+   * Open the settings page, optionally jumping straight to a section and
+   * arriving with a search already applied.
+   */
+  openSettings: (section?: SettingsSection, query?: string) => void;
   /** Return to the conversation workspace. */
   closeSettings: () => void;
   setSection: (section: SettingsSection) => void;
+  setSettingsQuery: (query: string) => void;
 }
 
 export const useAgentUiStore = create<AgentUiState>()(
@@ -43,13 +58,19 @@ export const useAgentUiStore = create<AgentUiState>()(
     (set) => ({
       view: "chat",
       settingsSection: "preferences",
-      openSettings: (section) =>
+      settingsQuery: "",
+      openSettings: (section, query) =>
         set((s) => ({
           view: "settings",
           settingsSection: section ?? s.settingsSection,
+          settingsQuery: query ?? "",
         })),
-      closeSettings: () => set({ view: "chat" }),
-      setSection: (section) => set({ settingsSection: section }),
+      closeSettings: () => set({ view: "chat", settingsQuery: "" }),
+      // Choosing a section is choosing to look at that page, so it ends the
+      // search. Without this the nav would appear dead while results are up:
+      // the click lands, and the content area still shows the old results.
+      setSection: (section) => set({ settingsSection: section, settingsQuery: "" }),
+      setSettingsQuery: (query) => set({ settingsQuery: query }),
     }),
     {
       name: "aurora-agent-window-ui",

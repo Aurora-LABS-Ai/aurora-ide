@@ -199,6 +199,20 @@ pub struct AgentChatRequest {
     #[serde(default)]
     pub transcript_chapters: Option<bool>,
 
+    /// Whether the browser toolset is advertised this turn (user opt-in,
+    /// Settings → Agent → Browser control).
+    ///
+    /// The bucket is 16 schemas and roughly 2,800 tokens on EVERY request,
+    /// paid in full by every provider Aurora does not send `cache_control` to —
+    /// which is all of them except Anthropic. That is a standing tax on turns
+    /// that never open a browser, so it is switchable.
+    ///
+    /// `None` means an older client that does not know about the switch, and
+    /// resolves to ON: silently removing a capability someone is mid-task with
+    /// is worse than the tokens.
+    #[serde(default)]
+    pub browser_tools: Option<bool>,
+
     /// Browser-inspector element chips the user attached to this message
     /// in the composer. Persisted verbatim onto the user
     /// [`crate::agent_runtime::types::ConversationMessage`] so the chips
@@ -300,6 +314,7 @@ mod tests {
             compaction_provider_config: None,
             allow_outside_workspace: None,
             transcript_chapters: None,
+            browser_tools: None,
         }
     }
 
@@ -460,6 +475,7 @@ mod tests {
             compaction_provider_config: None,
             allow_outside_workspace: None,
             transcript_chapters: None,
+            browser_tools: None,
         };
         let s = serde_json::to_string(&req).expect("serialize");
         // Phase 2.3 contract: camelCase, no skip_serializing_if on

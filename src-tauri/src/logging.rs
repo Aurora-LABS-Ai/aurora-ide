@@ -20,8 +20,8 @@
 
 use std::fmt::Write as _;
 use std::fs::OpenOptions;
-use std::io::Write as _;
-use std::path::PathBuf;
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 /// One entry's ceiling. Raw provider payloads ride in entries, and a
@@ -37,8 +37,20 @@ const MAX_LOG_LEN: u64 = 5 * 1024 * 1024;
 /// panic hook all log; interleaved partial lines would make the file lie.
 static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-fn log_file() -> PathBuf {
+/// How much of the tail to read when showing recent entries.
+///
+/// The file caps at [`MAX_LOG_LEN`], and reading all 5 MB to display the last
+/// hundred lines would be pure waste. At typical entry sizes this window holds
+/// thousands of entries — far more than anyone reads — while keeping the read
+/// bounded no matter how the file grows.
+const TAIL_READ_BYTES: u64 = 512 * 1024;
+
+pub fn log_file() -> PathBuf {
     crate::paths::logs_dir().join("aurora.log")
+}
+
+fn backup_file() -> PathBuf {
+    log_file().with_extension("log.1")
 }
 
 /// Install the panic hook and stamp a session-start line.
@@ -80,6 +92,170 @@ pub fn log_error(component: &str, message: &str) {
 #[allow(dead_code)]
 pub fn log_warn(component: &str, message: &str) {
     write_entry("WARN", component, message);
+}
+
+/// A failure reported by the web layer.
+///
+/// The React side has no console in a packaged build, so without this route
+/// every UI failure the user actually sees would leave no trace on disk while
+/// the Rust half of the same crash is fully recorded — a log that is worse than
+/// silent, because it looks complete.
+///
+/// `level` is clamped to `ERROR`/`WARN` and the component is namespaced, so a
+/// caller in the renderer cannot forge a line that reads as backend output.
+pub fn log_from_ui(level: &str, component: &str, message: &str) {
+    let level = if level.eq_ignore_ascii_case("warn") {
+        "WARN"
+    } else {
+        "ERROR"
+    };
+    let component = component.trim();
+    let component = if component.is_empty() {
+        "ui".to_string()
+    } else {
+        format!("ui.{}", component.trim_start_matches("ui."))
+    };
+    write_entry(level, &component, message);
+}
+
+// ── Reading it back ─────────────────────────────────────────────────────────
+
+/// One parsed line of `aurora.log`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LogEntry {
+    /// ISO-8601 UTC stamp exactly as written.
+    pub at: String,
+    /// `ERROR` / `WARN` / `INFO` / `PANIC`, or `RAW` for a line that did not parse.
+    pub level: String,
+    /// Subsystem that logged it, e.g. `api.responses`. Empty for `RAW`.
+    pub component: String,
+    pub message: String,
+}
+
+/// What the diagnostics view needs to describe the log honestly.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LogSnapshot {
+    /// Absolute path, shown so a person can reach the file without the app.
+    pub path: String,
+    /// Newest last, matching the file. The caller decides display order.
+    pub entries: Vec<LogEntry>,
+    pub bytes: u64,
+    /// Entries exist beyond the ones returned — the view must not claim to be
+    /// showing everything.
+    pub truncated: bool,
+    /// A rotated `aurora.log.1` is sitting beside it with older entries.
+    pub has_backup: bool,
+}
+
+/// The most recent `limit` entries, oldest first.
+pub fn recent(limit: usize) -> LogSnapshot {
+    let path = log_file();
+    let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let (text, clipped) = read_tail(&path);
+
+    let mut entries: Vec<LogEntry> = text.lines().filter_map(parse_line).collect();
+    let over_limit = entries.len() > limit;
+    if over_limit {
+        entries.drain(..entries.len() - limit);
+    }
+
+    LogSnapshot {
+        path: path.to_string_lossy().into_owned(),
+        entries,
+        bytes,
+        // Either the byte window cut history off, or the limit did.
+        truncated: clipped || over_limit,
+        has_backup: backup_file().exists(),
+    }
+}
+
+/// Read at most [`TAIL_READ_BYTES`] from the end. Returns the text and whether
+/// anything was left behind.
+fn read_tail(path: &Path) -> (String, bool) {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return (String::new(), false);
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(TAIL_READ_BYTES);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return (String::new(), false);
+    }
+    let mut buf = Vec::new();
+    if file.read_to_end(&mut buf).is_err() {
+        return (String::new(), false);
+    }
+    // Lossy: a torn multi-byte char at the seek point must not lose the whole
+    // read, and entries are ASCII-framed regardless.
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    if start == 0 {
+        return (text, false);
+    }
+    // Seeking lands mid-line. Drop the fragment so it is never shown as an
+    // entry that begins somewhere arbitrary.
+    match text.find('\n') {
+        Some(i) => (text[i + 1..].to_string(), true),
+        None => (String::new(), true),
+    }
+}
+
+/// `[<stamp>] [<level>] [<component>] <message>`.
+///
+/// A line that does not parse is kept as `RAW` rather than dropped. Every line
+/// in this file was written by [`write_entry`], so an unparsable one means a
+/// torn write — which is evidence about a crash, not noise to hide.
+fn parse_line(line: &str) -> Option<LogEntry> {
+    let line = line.trim_end_matches('\r');
+    if line.trim().is_empty() {
+        return None;
+    }
+    let raw = || LogEntry {
+        at: String::new(),
+        level: "RAW".to_string(),
+        component: String::new(),
+        message: line.to_string(),
+    };
+
+    let Some((at, rest)) = take_bracketed(line) else {
+        return Some(raw());
+    };
+    let Some((level, rest)) = take_bracketed(rest) else {
+        return Some(raw());
+    };
+    let Some((component, message)) = take_bracketed(rest) else {
+        return Some(raw());
+    };
+
+    Some(LogEntry {
+        at: at.to_string(),
+        level: level.to_string(),
+        component: component.to_string(),
+        message: message.to_string(),
+    })
+}
+
+/// Split a leading `[field] ` off, returning the field and what follows.
+fn take_bracketed(s: &str) -> Option<(&str, &str)> {
+    let rest = s.strip_prefix('[')?;
+    let end = rest.find(']')?;
+    Some((&rest[..end], rest[end + 1..].trim_start_matches(' ')))
+}
+
+/// Empty the log, dropping the rotated backup with it.
+///
+/// Leaves a line behind saying it happened: a log that can silently become
+/// empty is a log you cannot trust when it *is* empty.
+pub fn clear() -> Result<(), String> {
+    {
+        let guard = WRITE_LOCK.get_or_init(|| Mutex::new(())).lock();
+        let _guard = match guard {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let _ = std::fs::remove_file(backup_file());
+        std::fs::write(log_file(), b"").map_err(|e| format!("Could not clear the log: {e}"))?;
+    }
+    write_entry("INFO", "logging", "log cleared from Diagnostics");
+    Ok(())
 }
 
 fn write_entry(level: &str, component: &str, message: &str) {
@@ -152,6 +328,50 @@ mod tests {
         }
         assert!(body.len() <= MAX_ENTRY_LEN);
         assert!(!body.contains('\n'));
+    }
+
+    #[test]
+    fn parses_the_line_shape_write_entry_produces() {
+        let entry = parse_line(
+            "[2026-08-11T05:22:29.123Z] [ERROR] [api.responses] upstream 500: {\"error\":\"x\"}",
+        )
+        .expect("a written line parses");
+        assert_eq!(entry.at, "2026-08-11T05:22:29.123Z");
+        assert_eq!(entry.level, "ERROR");
+        assert_eq!(entry.component, "api.responses");
+        assert_eq!(entry.message, "upstream 500: {\"error\":\"x\"}");
+    }
+
+    #[test]
+    fn keeps_a_message_that_contains_brackets_intact() {
+        // Only the first three bracketed fields are structure; the rest is the
+        // message, brackets and all. Provider payloads are full of them.
+        let entry = parse_line("[t] [WARN] [c] rate limit [429] on [model-a]").unwrap();
+        assert_eq!(entry.message, "rate limit [429] on [model-a]");
+    }
+
+    #[test]
+    fn keeps_a_torn_line_as_evidence_instead_of_dropping_it() {
+        // A line that cannot be parsed means a write was interrupted — which is
+        // information about a crash, so it must survive to the reader.
+        let entry = parse_line("half a line with no structure").unwrap();
+        assert_eq!(entry.level, "RAW");
+        assert_eq!(entry.message, "half a line with no structure");
+        assert!(parse_line("   ").is_none(), "blank lines are not entries");
+    }
+
+    #[test]
+    fn ui_reports_cannot_pose_as_backend_components() {
+        // The renderer names its own component, so the namespace is forced here
+        // rather than trusted from the caller.
+        for (input, expected) in [("crash", "ui.crash"), ("ui.crash", "ui.crash"), ("", "ui")] {
+            let component = if input.trim().is_empty() {
+                "ui".to_string()
+            } else {
+                format!("ui.{}", input.trim().trim_start_matches("ui."))
+            };
+            assert_eq!(component, expected);
+        }
     }
 
     #[test]

@@ -286,6 +286,12 @@ impl ToolExecutor for BrowserHoverTool {
 
         if input.get("reset").and_then(Value::as_bool) == Some(true) {
             self.move_pointer(-1.0, -1.0).await?;
+            // The real pointer left the page, so the drawn one must go with it
+            // rather than sit there implying something is still hovered.
+            let _ = self
+                .manager
+                .eval_with_result(AGENT_BROWSER_LABEL, &super::pointer::hide_expr())
+                .await;
             return Ok(json!({
                 "hover": "reset",
                 "message": "Pointer moved off the page — nothing is hovered."
@@ -338,6 +344,17 @@ impl ToolExecutor for BrowserHoverTool {
         let x = located.get("x").and_then(Value::as_f64).unwrap_or(0.0);
         let y = located.get("y").and_then(Value::as_f64).unwrap_or(0.0);
         self.move_pointer(x, y).await?;
+        // Draw the cursor at the SAME coordinates the real pointer went to,
+        // rather than re-deriving them from the selector — a drawn cursor that
+        // disagrees with where the pointer actually is would be worse than
+        // none. No ripple: hovering is not pressing.
+        let _ = self
+            .manager
+            .eval_with_result(
+                AGENT_BROWSER_LABEL,
+                &super::pointer::point_at_xy_expr(x, y, false),
+            )
+            .await;
 
         Ok(json!({
             "hovered": selector,

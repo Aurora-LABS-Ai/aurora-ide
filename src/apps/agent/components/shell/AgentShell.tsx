@@ -36,6 +36,7 @@ import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWor
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { useAgentFsWatch } from "@/apps/agent/hooks/window/useAgentFsWatch";
 import { useAgentBrowserOpen } from "@/apps/agent/hooks/useAgentBrowserOpen";
+import { useAgentBrowserDrivingEvents } from "@/apps/agent/hooks/useAgentBrowserDrivingEvents";
 import { subscribeToPlanChanges } from "@/apps/agent/store/artifacts/useAgentPlanStore";
 import {
   subscribeToTodoChanges,
@@ -67,6 +68,9 @@ export const AgentShell: React.FC = () => {
   useAgentFsWatch();
   // Reveal the right-rail Browser panel when a browser_* tool asks for it.
   useAgentBrowserOpen();
+  // Track when a browser_* tool is driving that panel. Lives here, not in
+  // BrowserPanel: the dock tab has to show it while another tab is on screen.
+  useAgentBrowserDrivingEvents();
 
 
   const railOpen = useAgentWorkspaceStore((s) => s.railOpen);

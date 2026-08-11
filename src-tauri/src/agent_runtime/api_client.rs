@@ -139,6 +139,40 @@ impl ApiError {
             ApiError::Network(_) | ApiError::Provider(_) | ApiError::RateLimit
         )
     }
+
+    /// Whether the runtime should re-issue the request **itself**,
+    /// without the user asking.
+    ///
+    /// Deliberately separate from [`Self::is_recoverable`]: that one
+    /// answers "tell the user a retry may help", this one answers
+    /// "spend their money retrying it right now". The two sets agree
+    /// today, and they are still not the same question — folding them
+    /// into one predicate would mean a change to how an error is
+    /// *presented* silently changes what the runtime *does*.
+    ///
+    /// Retried:
+    /// - `Network` — the connection dropped mid-stream. The most common
+    ///   real failure in `aurora.log`, and transient by definition.
+    /// - `Provider` — every 5xx maps here (see `map_status_error`). A
+    ///   gateway briefly out of healthy upstreams clears in seconds.
+    /// - `RateLimit` — clears by waiting; that is what it means.
+    ///
+    /// Not retried, and why each stays out:
+    /// - `InvalidRequest` — the request itself is wrong (a 404 for a
+    ///   model that will not accept tools). Byte-identical on every
+    ///   attempt, so N tries buy N times the same error.
+    /// - `Decode` — the bytes did not parse. Re-reading them will not
+    ///   change them.
+    /// - `Unauthorized` — a key does not become valid by waiting.
+    /// - `Cancelled` — the user pressed Stop. Retrying would be the
+    ///   opposite of what they asked for.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            ApiError::Network(_) | ApiError::Provider(_) | ApiError::RateLimit
+        )
+    }
 }
 
 /// Streaming-only API client. The runtime never calls a non-streaming

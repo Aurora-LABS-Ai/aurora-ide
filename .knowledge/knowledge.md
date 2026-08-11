@@ -1,10 +1,160 @@
 # Aurora IDE — Working Memory
 
-## 2026-08-10 (3rd) — Code-index handoff follow-up (in progress)
-- Plan: close the documented same-second stale-index window by invalidating the owning workspace
-  at the existing production `agent_file_changed` seam, then add a path-scoping regression test.
-- Keep the fingerprint for edits made outside Aurora; this hook only makes successful agent-tool
-  mutations immediately coherent without requiring the model to call `code { op: "refresh" }`.
+## 2026-08-11 — file_edit read-gate narrowed; failed tool cards stopped showing green
+Three fixes from one reported transcript (the in-window agent editing Aurora itself).
+- **The read-before-edit gate was refusing correct work.** It required every target of a
+  `file_edit` to have been opened with `file_read` this session. Observed: the model located the
+  exact line with `grep`, batched edits across 3 files, and the WHOLE batch was declined because
+  one file was never `file_read` — though the matched text came back in the search result it was
+  reading. `read_tracker` records only `file_read`/`file_write`, and it can never observe the other
+  legitimate routes (search hits, `code` output, an earlier diff, the user pasting text), so as a
+  precondition it will always refuse some correct edits. **What keeps a blind edit safe is the
+  engine, not the tracker**: `old_string` must match exactly and be unique, and the batch is atomic,
+  so a guess writes nothing. The gate now (a) stays a PRECONDITION only for `replace_all`, which
+  waives uniqueness and so can rewrite occurrences nobody has seen, and (b) becomes the DIAGNOSIS
+  for a `NotFound` on an unread file, where "you never read this" is the actionable cause. Tool
+  description updated to match. 5 new tests, incl. the reported batch shape.
+- **Every structured failure rendered as a green check.** `toolStatus` classified only by a leading
+  `[error]`/`[rejected]` sentinel, so any `{"success": false}` body — the refusal above, a failed
+  exact-text match, a non-zero shell exit — showed a ✓, counted as "done" in the group header, and
+  fell through `parseToolResult` to its last-resort branch, which dumped the raw JSON into the card.
+  New `resultReportsFailure()` (TOP-LEVEL `success` only — a per-file flag inside a multi-read is a
+  partial result, not a failed call) drives the status; `parseToolResult` now summarises with the
+  tool's own error + hint. Failures also state their reason on the collapsed row (they were
+  dropdown-only, so a failed card showed a bare name).
+- **Tool groups auto-collapse once they stop being the live edge** (`isLastRow` from MessageBubble).
+  An explicit click still wins in both directions until the turn ends.
+- `design_guidelines`/`canvas_guidelines` had no `toolIcon` mapping and fell through to `diff` — the
+  file family's folded-corner page on tools that touch no file. New bespoke `design-guidelines`
+  glyph: an artboard with two off-centre guides running past its edges.
+- **TYPOGRAPHY QUESTION IS CLOSED — the agent window does NOT re-typeset itself.** Measured live in
+  `tauri:dev` over two runs (30s and 45s, byte-identical): message text, composer and window shell
+  held 16px / 28px / 400 / Inter Variable / 260.59px rendered width from the moment they mounted to
+  the end of the recording. **Zero changes.** The only movement in the whole log was `body` — width
+  216.63 → 231.68px at **+9ms**, i.e. a face swap on the host document BEFORE React mounted and
+  before anything painted, so nothing visible. (The `Face` rows lag it: the face probe polls at
+  500ms, which is why the same swap timestamps as +512ms — do not read that as "half a second after
+  paint".) Message text is 16px rather than the 15px default because the owner set it in Settings;
+  `text scale` is 1 and `size step (md)` is `calc(15px * 1)`, both correct. The enforced-defaults
+  work from 2026-08-10 (4th) is therefore confirmed working — no stale override survived.
+- **4 fonts baked in** (all OFL-1.1, all STATIC packages so the family carries its plain name —
+  `@fontsource-variable/*` registers as "X Variable", the mismatch that made Geist render as a
+  fallback, 2026-08-08): IBM Plex Sans 400/500/600 (UI), Cascadia Code + Fira Code + Geist Mono
+  400/600 (code). Cascadia was ALREADY named in `CODE_FONT_STACK` but never shipped, so that
+  fallback only resolved on machines that happened to have it. Bundle 1.2 → **2.0 MB** (+800 KB, not
+  the ~400 KB estimated — Cascadia is 336 KB and IBM Plex 292 KB across their unicode subsets).
+  Do NOT trim those subsets: they are why non-Latin text in a reply still renders in the same face
+  instead of falling back mid-paragraph, and `unicode-range` means they are never fetched at runtime.
+  `BUNDLED_UI_FONTS`/`BUNDLED_CODE_FONTS` in AppearanceSettings.tsx must stay in step with
+  `bundled.ts` or the picker offers a face that silently renders as a fallback.
+- **`preloadBundledFonts` now follows the USER's chosen faces**, not just the shipped defaults
+  (`boot.ts::chosenFamilies`): the IDE's from the root CSS vars, the agent window's from its
+  persisted theme snapshot. Preloading a fixed default list meant that picking any other face
+  reintroduced the startup swap this module exists to prevent — and bundling more faces made that
+  far more likely. The other bundled faces are deliberately NOT preloaded (options in a picker).
+- **User bubble: an inline `padding` was silently beating the sticky-user rule.** `MessageBubble`
+  set `padding: "9px 13px"` inline, so `agent-window.css`'s
+  `[data-transcript-sticky-user] … .agw-bubble-user { padding-bottom: 28px }` never applied — and
+  that reserve is what keeps a question's last line out from under the absolutely-positioned copy
+  chip. Text rendered underneath the button. Padding moved to `.agw-bubble-user`, exactly as the
+  `background` was moved earlier for the same cascade reason; the fill's comment had recorded the
+  trap and padding was left behind anyway. **Inline styles outrank every selector — if a CSS state
+  variant needs to override a property, that property cannot live inline.**
+- **Settings search now returns CONTROLS, in the page** (the redesign the in-window agent started and
+  never landed). The nav is no longer filtered — it is the map, and rearranging it as you type
+  removes it exactly when you are lost. A query (≥2 chars) replaces the CONTENT area with the
+  matching rows, rendered from their own components so they still work: search `chapter` → the
+  Chapters row + its live switch, under a PREFERENCES heading that is a button back to the page.
+  Two levels: registry match (`searchTerms`) picks which sections MOUNT — settings pages open
+  connections and draw charts on mount, so rendering all of them per keystroke is not free — then
+  `SettingsRow`/`SettingsBlock` filter themselves via `SettingsQueryContext`/`SectionSearchContext`.
+  Rows report their own verdict from an effect even when returning null (a null return is still
+  mounted), which is how a section learns it is empty and sets `data-hidden`; a `:has()` rule then
+  drops the result heading so a page never announces a match it isn't showing.
+  **Only 5 of 11 settings pages use the shared primitives** — Agent/Team/Preferences/Appearance are
+  tagged `inlineResults: true`; Providers/Tools/MCP/Profile/Skills render as a destination instead,
+  because pasting a whole unfilterable page under a "results" heading is a worse answer than a link.
+  Converting a page to the primitives is all it takes to promote it.
+- Header layout hardening from the same work: `.agw-settings-head-title` now carries USER TEXT (the
+  query), so it is `nowrap` + ellipsis, `.agw-settings-back` is `flex: none` (a long query wrapped it
+  onto two lines and grew the bar), the search box is `flex: none` (it collapsed to a sliver), and
+  the no-results echo is line-clamped to 2. Owner's call: **no focus ring on the settings search** —
+  scoped to `.agw-settings-search` so the browser address bar keeps its own; focus still brightens
+  the border, since the control is Tab-reachable and needs some state.
+- **TEMPORARY, delete when done:** `kernel/lib/fonts/typography-debug.ts` + its one call in
+  `main.tsx`. Bottom-right panel that records text size/leading/weight/face/rendered-width from
+  BEFORE first paint (synchronous first sample, then rAF for 4s, then 300ms), logs every change with
+  a timestamp, and has a copy button. Exists because a current-value readout cannot answer "did it
+  change during startup". Reuses `font-probe.ts::readFontState()` for face resolution rather than
+  reimplementing it; pins its own font/colors so it cannot re-typeset alongside what it measures.
+- **Chapter headings now show their own wall-clock**, like the reasoning row's "Thought — 14s".
+  A chapter's duration is NOT a property of its own call (which returns instantly) — it is the span
+  until the next chapter, closed for the last one by the turn's end. Needed no backend change and no
+  new persisted field: `TimelineEvent`'s tool variant gained `at`, stamped from the clock live and
+  from the OWNING MESSAGE's timestamp on reload (each tool round is its own message, so consecutive
+  chapters never share one). `buildSections(rows, turnEndedAt?)` computes the spans; `turnEndedAt`
+  is derived in MessageBubble from `startedAt + workedMs`, and is deliberately withheld while
+  streaming so the live chapter shows no growing clock. Unmeasurable spans render nothing, never 0s.
+  `upsertToolEvent` keeps the FIRST `at` — it re-runs on every argument delta, and re-stamping would
+  shorten every span.
+- VERIFIED: 490 frontend tests (+7), 16 Rust file_edit tests, `tsc -b`, eslint clean on touched
+  files, CSS parses. **NOT runtime-verified — the Rust change needs a `tauri:dev` restart.**
+- NOT DONE, still open: the in-window agent was mid-way through making Settings search render
+  matching controls IN the page (with their real toggles) instead of narrowing the sidebar. That
+  batch is the one that got declined; `settings-search.ts` is still the filter-only version.
+
+## 2026-08-10 — Agent settings search repaired
+- Replaced the registry-only filter with a small `settings-search` helper and section-owned search terms. Queries now find settings controls rendered within a section, rather than only tab title/description text — `chapter` resolves Preferences because it indexes Transcript → Chapters.
+- Search results still narrow the navigation to owning sections; the current settings panel stays visible as an orientation point. Escape clears the query, and the input now has an accessible name plus a visible focus boundary.
+- Added 3 focused tests for section/control matching, case-insensitive metadata, and blank-query reset. Verified `tsc -b`, focused Vitest, and focused ESLint. Root `pnpm lint` remains blocked by pre-existing generated `build/` parse errors and unrelated lint findings.
+
+
+## 2026-08-10 (4th) — Typography single source of truth + installed-font pickers
+Owner's complaint "text changes size/face in real time" had two mechanisms, both fixed:
+- **IDE window re-typeset itself after open**: `applyUiPreferences` (font + `--aurora-ui-text-scale`,
+  which multiplies `body`'s 14px) only ran after the async SQLite settings load. It now mirrors its
+  RESOLVED values to localStorage (`aurora-ui-prefs`) and `main.tsx` applies the mirror synchronously
+  before first paint (`kernel/lib/fonts/boot.ts`). SQLite stays the authority.
+- **Webfont swap at startup**: every bundled face registers `font-display: swap`, so first paint used
+  Segoe UI and swapped when the woff2 landed. `main.tsx` now `document.fonts.load()`s the bundled
+  faces and waits (capped 350ms — they are local assets) before mounting React.
+- **`kernel/lib/fonts/` is now the single source**: `stacks.ts` (AGENT_UI_FONT_STACK /
+  CODE_FONT_STACK / stackWithPrimary), `bundled.ts` (ALL @fontsource imports + Geist, imported once
+  from main.tsx — AgentThemeProvider no longer imports fonts; geist-font.ts moved to
+  `kernel/lib/fonts/geist.ts`), `boot.ts` (pre-paint apply + preload). Agent tokens fontUi/fontCode
+  seed from stacks.ts; hardcoded stacks removed from GitDiffModal, CodeEditor (Monaco), Terminal,
+  MarkdownPreview, index.css (now `--aurora-code-font-family`, set at boot from CODE_FONT_STACK).
+  Agent TerminalPanel now uses the fontCode TOKEN — the Code font setting finally reaches the
+  terminal. `--agw-font-mono` was referenced by 5 rules and DEFINED NOWHERE (fell back to the UI
+  font); all now `--agw-font-code`.
+- **Appearance → Typography pickers**: `FontStackPicker` (editable combobox — custom stacks still
+  typable) lists bundled faces + installed fonts from new Rust `system_font_families` command
+  (`commands/fonts.rs`): DirectWrite enumeration (NOT GDI — Chromium matches DirectWrite names, see
+  lesson 2026-08-08), scanned ONCE, cached in `app_settings` key `system_font_families`; menu footer
+  = Rescan. Picking a family writes `"Family", <canonical fallbacks>` via `stackWithPrimary`.
+  Cargo gained windows feature `Win32_Graphics_DirectWrite`.
+- **Professional defaults are ENFORCED, not just shipped** (owner: "feels like a mess, could be my
+  misconfiguration"). The defaults were always right (Inter Variable / JetBrains Mono / 15px·1.75 —
+  verified across all 103 commits of themes.ts); the mess was STALE PERSISTED OVERRIDES beating
+  them. Three-part fix: `TYPOGRAPHY_TOKEN_KEYS`/`TYPOGRAPHY_DEFAULTS` exported from themes.ts;
+  `resetTypography()` store action + a "Reset to defaults" button on the Typography section
+  (rendered only when typography overrides exist — no dead control); persist **version 1 migration**
+  on `aurora-agent-window-theme` that prunes overrides equal to the RETIRED pre-variable Inter
+  default or to the CURRENT default (render no-ops that would pin users to today's values).
+  Deliberate custom values are never touched.
+- VERIFIED: tsc -b, eslint (all remaining findings pre-exist), 480 frontend tests (11 new), cargo
+  check, fonts tests incl. a real DirectWrite scan (Segoe UI/Arial found), `pnpm build`.
+  **NOT runtime-verified — needs `tauri:dev` restart (new Rust command) + visual check.**
+
+## 2026-08-10 (3rd) — Outline phantom-member finding fixed
+- `enclosing_container` now stops at TypeScript/TSX `statement_block`, Rust `block`, and anonymous
+  TypeScript `object_type` nodes; interface `object_type` bodies remain valid containers.
+- `outline` filters `variable` and container-less `field` rows only at presentation time, preserving
+  extraction for `definition`/`usages`. The standalone probe mirrors both changes.
+- VERIFIED: 57 production code-index tests passed (3 ignored) and all 25 probe tests passed;
+  full live app verification intentionally not run because the installed Aurora runtime was not
+  restarted.
+- The unrelated index-invalidation change from the previous turn remains fully reverted.
 
 ## 2026-08-10 (2nd) — Code index v4: monorepo fixes. **NEEDS `tauri:dev` RESTART.**
 Testing the index against a whole monorepo (not one app) found two real bugs. Both fixed.
@@ -736,3 +886,142 @@ Lesson that generalises: when the CSS scale moves, hardcoded `fontSize:` numbers
 36 of them across 14 files were stranded at the previous 11/12/13 and would have rendered a step
 below their neighbours. Sizes belong on a token; the only legitimate numeric survivor is xterm's
 `fontSize` option (`TerminalPanel.tsx`), which requires a number.
+
+## Settings search has one catalog and two front doors (2026-08-11)
+
+`settings/settings-catalog.ts` (`SETTINGS_CATALOG`, leaf, no JSX) is the only list of what settings
+exist and what controls they contain. `SettingsPage` pairs each entry with a component via
+`SECTION_VIEWS` to build `SECTION_REGISTRY`; the command center reads the same catalog through
+`lib/command/settings-commands.ts`. They were separate lists before and drifted — "chapter" found
+the Chapters switch in Settings and nothing in the command center.
+
+The query lives in `useAgentUiStore.settingsQuery` (never persisted) so `openSettings(section, query)`
+lands on the control, not the page. `setSection` clears it — otherwise the nav looks dead mid-search.
+
+Only the ONE term that matched (`matchedSearchTerm`) reaches a command item, as its subtitle.
+Feeding all of a section's `searchTerms` into the item's searchable text destroys ranking:
+`fuzzyCommandScore` falls back to subsequence matching, and against a haystack that long almost any
+typing matches almost every section.
+
+## Settings → Diagnostics: the log finally has a door (2026-08-11)
+
+`aurora.log` (`%LOCALAPPDATA%\AuroraIDE\logs\`) had existed since the panic hook with **no UI at
+all** — you had to know the path. `settings/DiagnosticsSettings.tsx` is now its home: recent
+problems newest-first, expandable detail, Copy all, **Send to agent** (fills the composer draft and
+closes to the chat — the person still presses Enter), Show in folder, Clear.
+
+The prerequisite mattered more than the page: 197 `console.error` sites went to a console a packaged
+build does not have, so the log recorded the Rust half of every failure and none of the web half.
+`kernel/lib/diagnostics/error-reporter.ts` routes `console.error` + `window.onerror` +
+unhandled rejections into the same file. **`console.warn` is deliberately NOT captured** — 113 chatty
+sites would bury the lines that matter. Guards: re-entry flag, 2s dedupe, 60/min cap that writes one
+line explaining itself before going quiet, and it skips rejections already `defaultPrevented`
+(App.tsx marks expected stream cancellations first — listener order is load-bearing).
+
+Rust: `logging.rs` gained `recent()` (tail-reads 512 KB, never the whole 5 MB), a line parser that
+keeps unparsable lines as `RAW` because a torn line is crash evidence, `log_from_ui` (forces the
+`ui.` namespace so the renderer cannot forge backend components), and `clear()`.
+Commands: `logs_recent` / `logs_report` / `logs_clear`.
+
+Settings search now matches on WORD BOUNDARIES (`textMatches`), not plain substring: searching `log`
+reached Skills before Diagnostics on the strength of "cata(log)". A prefix of a word still counts.
+
+## The only metric that has moved: the owner's confidence (2026-08-11)
+
+Alvan builds Aurora **with** Aurora, and rates his own confidence in using it inside a big,
+important project: **~1/100 on 2026-08-08** ("terrible"), **~60/100 on 2026-08-11**.
+
+Worth writing down because nothing else in this repo measures it. Tests, `tsc`, and the build were
+green through the whole period he calls terrible — green tooling never once disagreed with a 1%
+experience. Treat the missing 40 points as the roadmap, and prefer work a person would hit during a
+long, high-stakes turn on a large repo over polish on surfaces that already work.
+
+The three days in between held: the context-accounting fixes (reasoning signatures counted as prompt
+text — 92k phantom; measured rather than re-derived totals; compaction as a handoff note sharing the
+prompt cache), Aurora dropping non-empty provider replies, the Anthropic adapter still written for
+pre-4.7 Claude, the tree-sitter code index + `code` tool, and the tool fixes the in-window agent
+reported about itself. Correlation, not a verified cause.
+
+## Desktop control — designed in full, deliberately not built (2026-08-11)
+
+Giving the agent eyes and hands on a running Windows app — **the app you are building** — by porting
+QuantumHub's `qg-probe` daemon (`E:\QuantumHUB-Infrustructure\agent-studio\qg-probe`). The whole
+design conversation is written up in **`DOCS/desktop-control-plan.md`**; do not re-litigate it,
+resume there.
+
+The decisions worth knowing without opening the doc:
+
+- **Port the C# perception engine, don't rewrite it in Rust.** `windows-rs` could do IUIAutomation,
+  but UiaDump/WinInput are thousands of lines of invisible-until-it-breaks behaviour. The JSON-lines
+  daemon contract is the seam if we ever swap it.
+- **Drop WPF** — no QuantumFinder, and the halo becomes an Aurora overlay window. Takes the exe from
+  ~62 MB to an estimated 15–20 MB.
+- **31 daemon commands → 3 tools** (`computer_see`, `computer_do`, `computer_clipboard`). No app
+  launching: `shell_execute` + `pnpm dev` already starts the app.
+- **The setting is the consent** — no per-action approval. Rust takes/releases control automatically
+  around the turn, so those four commands never reach the model.
+- **Hard-gated on `supportsVision`.** Without vision the toolset is pointless: a UIA tree can't tell
+  you the padding is wrong or the chart didn't render, which is the only reason to look. The
+  settings row must say WHICH gate is closed — a toggle reading ON while nothing works is the
+  green-checkmark lie again.
+- **Screenshot is primary perception here**, inverting the source skill's "screenshots are NOT
+  perception". That also disposes of OCR entirely.
+- **Context discipline is the make-or-break**: a 1500-node dump is ~38k tokens. Newest two trees
+  whole, older stubbed (their `n` indices are stale anyway), per-tree cap pointing at `find` — in
+  the Rust result path, not the prompt.
+
+## The Browser panel's page cannot be drawn on
+
+The Browser panel hosts a **native child webview**, and a child webview paints above every pixel of
+React DOM below it. Anything you try to overlay on the page area — a halo ring, a highlight, a
+"loading" scrim — is simply invisible. Insetting the webview to make room for a border is not the
+workaround: it resizes the page viewport, which changes what `browser_view` and screenshots report
+mid-action. The **toolbar's bottom edge is the only border of the page area Aurora can draw on**,
+which is why the agent-is-driving cue is a lit seam + a chip inside the address pill rather than a
+ring. This is also why `hideAgentBrowser()` exists for every dropdown that opens over the panel.
+
+The cue itself is Rust-owned: `tools/browser/halo.rs` wraps every browser tool and emits
+`aurora:agent-browser-activity` from a **drop guard**, so an errored or cancelled tool still turns
+it off. A status indicator that can get stuck on is worse than none.
+
+**Viewport emulation resizes the webview, not just the page.** `Emulation.setDeviceMetricsOverride`
+alone left the page in a narrow column with a large blank band beside and below it — painted by the
+browser INSIDE the webview, unreachable by Aurora CSS, and photographed by the native screenshot as
+if it were part of the site. `browser_set_viewport` now also emits `aurora:agent-browser-frame`, and
+`BrowserPanel.measure()` sizes the webview to the emulated device (capped to the panel, centred).
+`BrowserManager::navigate` clears the CDP overrides, Aurora's `state::EMULATION` record, AND the
+frame together — before, a navigation left `browser_status` reporting an override that was gone.
+
+**The agent has a drawn cursor** (`tools/browser/pointer.rs`): click/fill/hover glide a pointer onto
+the target and ripple. It is appended to `document.documentElement` (the readers scan from `body`),
+is `aria-hidden`, and is removed before every screenshot — so it appears in no tool result.
+
+## A dropped stream now retries itself (2026-08-12)
+
+`aurora.log` said the most common real failure was the connection dying mid-reply — three of eight
+real incidents, across three different models, so it is the gateway and not one provider. There was
+no retry: `ApiError::is_recoverable` only ever *labelled* the error so the UI could offer a Retry
+button, and `conversation.rs` returned straight after emitting it. The user restarted every one of
+those turns by hand.
+
+`conversation.rs` now wraps the model call in a retry loop — `MAX_STREAM_ATTEMPTS` = 3, backoff
+`STREAM_RETRY_BASE_DELAY_MS << (attempt-1)` (1s, 2s), Stop interrupts the wait. What retries is
+`ApiError::is_retryable()`, kept **deliberately separate** from `is_recoverable()`: same set today,
+different questions ("tell the user a retry may help" vs "spend their money retrying now"), and
+folding them would let a presentation change silently alter runtime behaviour.
+
+The load-bearing detail: retry scope is **one model call, never the turn**. Tool calls that already
+ran and replies that already completed are in history and untouched — the assistant message is only
+appended after a clean stream, so a failed attempt was never persisted. The half-reply exists ONLY
+on screen, which is why the fix needs `AssistantEvent::PartialReplyDiscarded`: the session is
+already correct, the screen is not.
+
+The UI half is `timeline.ts` `beginReconnect()` / `clearReconnect()` plus `ReconnectCard`. The
+truncation rule is "walk back over the trailing `thinking` / `content` / unfinished-`tool` events
+and stop at the first thing that survived" — a completed tool, a mid-turn user note, a compaction
+marker. Two traps it exists to avoid: a half-streamed tool card would strand next to its
+replacement (the retry gets a NEW call id from the provider), and the flat `content`/`thinking`
+strings must be re-derived via `textOf()` because a string cannot be un-appended — skip that and the
+dropped fragment is gone from the transcript but still in Copy and the reload fallback. The marker
+is transient and never persisted; a recovered hiccup is meant to leave no trace at all.
+**Not visually verified** — reproducing it needs a real mid-stream drop.

@@ -8,8 +8,9 @@ import { fuzzyCommandScore } from "@/apps/agent/lib/command/command-search";
 import { openIdeWindow } from "@/apps/agent/adapters/open-in-ide";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
-import { useAgentUiStore, type SettingsSection } from "@/apps/agent/store/ui/useAgentUiStore";
+import { useAgentUiStore } from "@/apps/agent/store/ui/useAgentUiStore";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
+import { settingsCommands } from "@/apps/agent/lib/command/settings-commands";
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
 
 type CommandGroup = "Actions" | "Navigate" | "Settings" | "Quick switches";
@@ -24,23 +25,6 @@ interface CommandItem {
   icon: AgentIconName;
   run: () => void | Promise<void>;
 }
-
-const SETTINGS: Array<{
-  id: SettingsSection;
-  title: string;
-  keywords: string;
-  icon: AgentIconName;
-}> = [
-  { id: "profile", title: "Profile", keywords: "usage stats tokens streak", icon: "users" },
-  { id: "providers", title: "Providers & models", keywords: "api model llm", icon: "providers" },
-  { id: "tools", title: "Tools & approvals", keywords: "permissions allow deny", icon: "shield" },
-  { id: "execution", title: "Agent behavior", keywords: "instructions mode context title", icon: "facet" },
-  { id: "team", title: "Agent team", keywords: "parallel agents lead", icon: "users" },
-  { id: "mcp", title: "MCP servers", keywords: "tools protocol integrations", icon: "plug" },
-  { id: "skills", title: "Skills", keywords: "playbooks rules", icon: "book" },
-  { id: "preferences", title: "Preferences", keywords: "shortcut notifications typing", icon: "sliders" },
-  { id: "appearance", title: "Appearance", keywords: "theme color font contrast", icon: "palette" },
-];
 
 function folderName(path: string | null | undefined): string {
   if (!path) return "No project";
@@ -236,15 +220,10 @@ export const AgentCommandCenter: React.FC = () => {
       },
     ];
 
-    const settings = SETTINGS.map<CommandItem>((section) => ({
-      id: `settings:${section.id}`,
-      title: section.title,
-      subtitle: "Settings",
-      keywords: section.keywords,
-      group: "Settings",
-      icon: section.icon,
-      run: () => useAgentUiStore.getState().openSettings(section.id),
-    }));
+    // Rebuilt as you type, because a settings result carries the term it
+    // matched. Rebuilding plain objects costs nothing next to the ranking pass
+    // that already runs on every keystroke.
+    const settings = settingsCommands(query);
 
     const projects = knownProjects.map<CommandItem>((root) => ({
       id: `project:${root}`,
@@ -267,6 +246,7 @@ export const AgentCommandCenter: React.FC = () => {
     knownProjects,
     notifyOnTurnComplete,
     projectRoot,
+    query,
     railOpen,
     showActivityInTitle,
   ]);

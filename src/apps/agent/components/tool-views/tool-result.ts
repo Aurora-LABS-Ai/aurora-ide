@@ -948,6 +948,18 @@ export function parseToolResult(
     return out;
   }
 
+  // A structured failure nothing above claimed. Show the tool's own sentence —
+  // it names the file and the recovery step, which is the whole value of the
+  // card. Falling through to the JSON dump below meant a refusal rendered as a
+  // wall of braces the reader had to decode.
+  if (parsed.success === false) {
+    const error = asStr(parsed.error);
+    const hint = asStr(parsed.hint);
+    out.summary = error ?? "Failed";
+    out.code = [error, hint].filter(Boolean).join("\n\n") || null;
+    return out;
+  }
+
   // Last resort: pretty-print the object so it's at least readable.
   if (!out.edit) out.code = clean(JSON.stringify(parsed, null, 2));
   return out;

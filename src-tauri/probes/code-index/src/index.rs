@@ -296,6 +296,13 @@ impl CodeIndex {
             .symbols
             .iter()
             .filter_map(|s| {
+                // Variables stay indexed for definition/reference resolution,
+                // but they describe bindings rather than a file's structural
+                // surface. A container-less field is an anonymous inline type
+                // member, not a class/interface member.
+                if s.kind == "variable" || (s.kind == "field" && s.container.is_none()) {
+                    return None;
+                }
                 let p = self.file_path(s.file);
                 p.contains(file_substring).then_some((p, s))
             })
@@ -392,6 +399,44 @@ mod tests {
         assert!(
             idx.definitions("ghost").is_empty(),
             "gitignored file leaked into the index"
+        );
+    }
+
+    #[test]
+    fn outline_keeps_structural_members_and_hides_binding_noise() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("service.ts");
+        std::fs::write(
+            &file,
+            "export interface Options { top: boolean }\nexport class Service {\n  run(filters: { archived?: boolean }): { id: string; title: string } {\n    const local = 1;\n    return { id: String(local), title: String(filters.archived) };\n  }\n}\n",
+        )
+        .unwrap();
+        let idx = CodeIndex::build(dir.path()).unwrap();
+        let rows = idx.outline("service.ts");
+        assert!(rows
+            .iter()
+            .any(|(_, s)| s.name == "Service" && s.kind == "class"));
+        assert!(rows
+            .iter()
+            .any(|(_, s)| s.name == "run" && s.container.as_deref() == Some("Service")));
+        assert!(rows
+            .iter()
+            .any(|(_, s)| s.name == "top" && s.container.as_deref() == Some("Options")));
+        for noisy in ["local", "archived", "id", "title"] {
+            assert!(
+                !rows.iter().any(|(_, s)| s.name == noisy),
+                "{noisy} leaked into outline"
+            );
+        }
+        assert_eq!(
+            idx.definitions("local").len(),
+            1,
+            "locals stay indexed for lookup"
+        );
+        assert_eq!(
+            idx.definitions("archived").len(),
+            1,
+            "inline fields stay indexed for lookup"
         );
     }
 

@@ -113,6 +113,23 @@ fn named_child_text(node: Node<'_>, field: &str, src: &[u8]) -> Option<String> {
 fn enclosing_container(node: Node<'_>, src: &[u8], lang: Lang) -> Option<String> {
     let mut cur = node.parent();
     while let Some(n) = cur {
+        match n.kind() {
+            // Executable bodies end member scope. Without these barriers, a
+            // method-local binding walks through its function and inherits the
+            // surrounding class/impl as though it were a field.
+            "statement_block" if matches!(lang, Lang::TypeScript | Lang::Tsx) => return None,
+            "block" if lang == Lang::Rust => return None,
+            // TypeScript uses `object_type` for both an interface body and an
+            // anonymous inline type. Only the former owns real members.
+            "object_type"
+                if matches!(lang, Lang::TypeScript | Lang::Tsx)
+                    && n.parent()
+                        .is_none_or(|parent| parent.kind() != "interface_declaration") =>
+            {
+                return None;
+            }
+            _ => {}
+        }
         if lang.is_container_node(n.kind()) {
             // Rust `impl` blocks name their subject with `type:`, everything
             // else uses `name:`.
@@ -423,6 +440,30 @@ mod tests {
         );
         assert!(sym(&f, "save").exported, "method of an exported class");
         assert!(!sym(&f, "tmp").exported, "local inside that method");
+    }
+
+    #[test]
+    fn method_locals_and_inline_types_do_not_inherit_a_class_container() {
+        let f = facts(
+            Lang::TypeScript,
+            "export interface Options { top: boolean }\nexport class Service {\n  run(filters: { archived?: boolean }): { id: string; title: string } {\n    const local = 1;\n    return { id: String(local), title: String(filters.archived) };\n  }\n}\n",
+        );
+        assert_eq!(sym(&f, "run").container.as_deref(), Some("Service"));
+        assert_eq!(sym(&f, "top").container.as_deref(), Some("Options"));
+        assert_eq!(sym(&f, "local").container, None);
+        assert_eq!(sym(&f, "archived").container, None);
+        assert_eq!(sym(&f, "id").container, None);
+        assert_eq!(sym(&f, "title").container, None);
+    }
+
+    #[test]
+    fn rust_locals_do_not_inherit_an_impl_container() {
+        let f = facts(
+            Lang::Rust,
+            "struct Service;\nimpl Service { fn run() { const LOCAL: u8 = 1; take(LOCAL); } }\n",
+        );
+        assert_eq!(sym(&f, "run").container.as_deref(), Some("Service"));
+        assert_eq!(sym(&f, "LOCAL").container, None);
     }
 
     #[test]

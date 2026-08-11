@@ -41,6 +41,7 @@ import {
 } from "@/apps/ide/store/useTerminalStore";
 import { useWorkspaceStore } from "@/kernel/store/useWorkspaceStore";
 import { useThemeStore } from "@/apps/ide/store/useThemeStore";
+import { CODE_FONT_STACK } from "@/kernel/lib/fonts/stacks";
 import { isTauri } from "@/kernel/lib/ipc/tauri";
 import { MenuBarMenu, type MenuBarItem } from "@/apps/ide/app/MenuBarMenu";
 import { spawn, type IPty } from "tauri-pty";
@@ -338,8 +339,7 @@ const XTermSession: React.FC<{
           cursorBlink: true,
           cursorStyle: "block",
           fontSize: 13,
-          fontFamily:
-            '"Cascadia Code", "Cascadia Mono", Consolas, "Courier New", monospace',
+          fontFamily: CODE_FONT_STACK,
           lineHeight: 1.2,
           convertEol: true,
           scrollback: 10000,

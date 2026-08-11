@@ -29,6 +29,7 @@ import { useSettingsStore } from '@/kernel/store/useSettingsStore';
 import { useThemeStore } from '@/apps/ide/store/useThemeStore';
 import { useUiStore } from '@/apps/ide/store/useUiStore';
 import { themeService, getMonacoThemeId } from '@/apps/ide/services/theme-service';
+import { CODE_FONT_STACK } from '@/kernel/lib/fonts/stacks';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { isTauri } from '@/kernel/lib/ipc/tauri';
 import { Search, Settings, Eye, FileCode, Columns, AlertTriangle, FileWarning } from 'lucide-react';
@@ -496,7 +497,7 @@ export const CodeEditor: React.FC = () => {
               wrappingIndent: 'same',
               wrappingStrategy: activeTab.isLargeFile ? 'simple' : 'advanced',
               padding: { top: 16, bottom: 16 },
-              fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace",
+              fontFamily: CODE_FONT_STACK,
               fontLigatures: !activeTab.isLargeFile, // Disable ligatures for large files
               lineNumbers: 'on',
               renderWhitespace: activeTab.isLargeFile ? 'none' : 'selection',
@@ -567,7 +568,7 @@ export const CodeEditor: React.FC = () => {
                   wrappingIndent: 'same',
                   wrappingStrategy: 'simple',
                   padding: { top: 16, bottom: 16 },
-                  fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace",
+                  fontFamily: CODE_FONT_STACK,
                   fontLigatures: !activeTab.isLargeFile,
                   lineNumbers: 'on',
                   renderWhitespace: activeTab.isLargeFile ? 'none' : 'selection',

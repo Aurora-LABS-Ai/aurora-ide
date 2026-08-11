@@ -102,7 +102,7 @@ pub mod transcript;
 /// Raised 30 -> 31 by `canvas_guidelines`: live canvases are compiled and run,
 /// so their authoring contract is enforced by a compiler rather than by taste,
 /// and the model has to be told it before its first `kind: "react"` write.
-pub const BUILTIN_TOOL_COUNT: usize = 37;
+pub const BUILTIN_TOOL_COUNT: usize = 40;
 
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn builtin_tool_count_is_correct() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 37);
+        assert_eq!(BUILTIN_TOOL_COUNT, 40);
         assert_eq!(
             file_workspace_search::TOOL_NAMES.len()
                 + shell_editor_todo::TOOL_NAMES.len()

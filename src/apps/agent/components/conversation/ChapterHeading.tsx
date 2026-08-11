@@ -30,11 +30,13 @@
  */
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
+import { formatWorkedDuration } from "@/apps/agent/components/conversation/timeline";
 
 export function ChapterHeading({
   title,
   open,
   bodyId,
+  durationMs,
   onToggle,
 }: {
   title: string;
@@ -42,6 +44,14 @@ export function ChapterHeading({
   open: boolean;
   /** Id of the region this heading controls, for `aria-controls`. */
   bodyId: string;
+  /**
+   * Wall-clock spent under this heading. Sits between the title and the rule,
+   * in the same quiet treatment the reasoning row uses for its own number —
+   * the two are answering the same question about different spans, so reading
+   * one should teach you how to read the other. Absent renders nothing: a
+   * chapter whose span we cannot know honestly says nothing rather than "0s".
+   */
+  durationMs?: number;
   onToggle: () => void;
 }) {
   return (
@@ -63,7 +73,15 @@ export function ChapterHeading({
           style={{ transform: open ? "none" : "rotate(-90deg)" }}
         />
         <span className="agw-chapter-title">{title}</span>
-        <span className="agw-timeline-rule" aria-hidden="true" />
+        {durationMs !== undefined ? (
+          <>
+            <span className="agw-timeline-rule agw-rule-lead" aria-hidden="true" />
+            <span className="agw-chapter-time">{formatWorkedDuration(durationMs)}</span>
+            <span className="agw-timeline-rule agw-rule-tail" aria-hidden="true" />
+          </>
+        ) : (
+          <span className="agw-timeline-rule" aria-hidden="true" />
+        )}
       </button>
     </h4>
   );

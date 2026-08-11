@@ -187,6 +187,10 @@ function toolIcon(name: string): AgentIconName {
   if (lower === "shell_kill") return "process-stop";
   if (lower === "shell_list_processes") return "process-list";
   if (lower === "read_lints") return "diagnostics";
+  // Both doctrine tools — they hand over the rules for building a surface, so
+  // they share the guides mark rather than the generic file glyph.
+  if (lower === "design_guidelines" || lower === "canvas_guidelines")
+    return "design-guidelines";
   if (lower === "todo") return "checklist";
   if (lower === "auroro_websearch" || lower === "auroro_web_search") return "search";
   if (lower === "ask_question") return "help";
@@ -633,7 +637,11 @@ const StandardToolCallCard: React.FC<{
   );
 
   const summary = useMemo(() => {
-    if (status !== "done") return ""; // running and failure detail live in the dropdown
+    if (status === "running") return ""; // the shimmer line speaks for a live call
+    // A failure states its reason on the row. It used to be dropdown-only, so a
+    // failed call collapsed to a bare name with no hint of what went wrong —
+    // and once the turn ended it collapsed by default, hiding the error behind
+    // a click nobody knew to make.
     return parsed.summary || "";
   }, [status, parsed.summary]);
 
@@ -884,8 +892,13 @@ const StandardToolCallCard: React.FC<{
                 ? "Running…"
                 : activity.label}
           </span>
-        ) : status === "failed" ? null : parsed.stat &&
-          (parsed.stat.added > 0 || parsed.stat.removed > 0) ? (
+        ) : status === "failed" ? (
+          summary && (
+            <span className="agw-tool-summary" style={{ color: "var(--agw-text-muted)" }}>
+              {summary}
+            </span>
+          )
+        ) : parsed.stat && (parsed.stat.added > 0 || parsed.stat.removed > 0) ? (
           <span className="agw-tool-summary" style={{ display: "inline-flex", gap: 8 }}>
             {parsed.stat.removed > 0 && (
               <span style={{ color: "var(--agw-removed)" }}>−{parsed.stat.removed}</span>

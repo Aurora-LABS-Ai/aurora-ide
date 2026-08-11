@@ -568,6 +568,7 @@ impl<E: EventEmitter> TurnDriver<E> {
                     request.execution_mode,
                     request.workspace_path.as_deref(),
                     request.transcript_chapters.unwrap_or(false),
+                    request.browser_tools.unwrap_or(true),
                 )),
                 build_runtime_config(&request),
             )
@@ -673,6 +674,7 @@ impl<E: EventEmitter> TurnDriver<E> {
             request.execution_mode,
             request.workspace_path.as_deref(),
             request.transcript_chapters.unwrap_or(false),
+            request.browser_tools.unwrap_or(true),
         );
 
         // 4. Construct the runtime with a fresh RuntimeConfig overlaying
@@ -1009,6 +1011,7 @@ fn build_per_turn_tool_registry(
     execution_mode: AgentExecutionMode,
     workspace_path: Option<&str>,
     chapters_enabled: bool,
+    browser_enabled: bool,
 ) -> ToolRegistry {
     let registry = ToolRegistry::new();
     let vision_blocked = |name: &str| {
@@ -1017,8 +1020,9 @@ fn build_per_turn_tool_registry(
     // Resolved once per turn: `plan_store::active` walks the plans directory,
     // and the answer cannot change mid-registry-build.
     let has_plan = workspace_has_plan(workspace_path);
-    let mode_blocked =
-        |name: &str| !is_tool_available_this_turn(name, execution_mode, has_plan, chapters_enabled);
+    let mode_blocked = |name: &str| {
+        !is_tool_available_this_turn(name, execution_mode, has_plan, chapters_enabled, browser_enabled)
+    };
     // 1. Bridge fallback for every AllowedTool the model can see.
     for tool in tools {
         if vision_blocked(&tool.name) || is_withdrawn_tool(&tool.name) || mode_blocked(&tool.name) {
@@ -1107,6 +1111,7 @@ fn is_tool_available_this_turn(
     execution_mode: AgentExecutionMode,
     has_plan: bool,
     chapters_enabled: bool,
+    browser_enabled: bool,
 ) -> bool {
     let planning = execution_mode == AgentExecutionMode::Plan;
     if planning && is_plan_mutating_tool(name) {
@@ -1124,6 +1129,11 @@ fn is_tool_available_this_turn(
         // read, so the model is never told to announce chapters without the tool
         // to do it — or handed the tool with nothing telling it when to call.
         "chapter" => chapters_enabled,
+        // The whole browser bucket rides one switch. 16 schemas, ~2,800
+        // tokens on every request, and only Anthropic gets a `cache_control`
+        // marker from Aurora — so on every other provider that is paid in
+        // full on turns that never open a page.
+        _ if name.starts_with("browser_") => browser_enabled,
         _ => true,
     }
 }
@@ -1492,6 +1502,42 @@ pub use tauri_layer::*;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_browser_bucket_rides_one_switch() {
+        // 16 schemas, ~2,800 tokens on every request, and Aurora sends
+        // `cache_control` to Anthropic only — so on every other provider that
+        // is paid in full on turns that never open a page. The whole bucket
+        // goes together: half a toolset is worse than none, because the model
+        // is told it can drive a browser it cannot see.
+        for name in [
+            "browser_guidelines",
+            "browser_status",
+            "browser_view",
+            "browser_navigate",
+            "browser_screenshot",
+            "browser_click",
+        ] {
+            assert!(
+                is_tool_available_this_turn(name, AgentExecutionMode::Agent, false, false, true),
+                "{name} must be offered when browser tools are on"
+            );
+            assert!(
+                !is_tool_available_this_turn(name, AgentExecutionMode::Agent, false, false, false),
+                "{name} must be withheld when browser tools are off"
+            );
+        }
+    }
+
+    #[test]
+    fn switching_the_browser_off_leaves_every_other_tool_alone() {
+        for name in ["file_read", "shell_execute", "code", "design_guidelines"] {
+            assert!(
+                is_tool_available_this_turn(name, AgentExecutionMode::Agent, false, false, false),
+                "{name} is not a browser tool and must survive the switch"
+            );
+        }
+    }
+
     use super::*;
     use crate::agent_runtime::api_client::{ApiError, ApiRequest, ToolSchema, TurnUsage};
     use crate::agent_runtime::events::AssistantEvent;
@@ -1805,6 +1851,7 @@ mod tests {
             compaction_provider_config: None,
             allow_outside_workspace: None,
             transcript_chapters: None,
+            browser_tools: None,
         }
     }
 
@@ -1830,6 +1877,7 @@ mod tests {
             AgentExecutionMode::Plan,
             None,
             false,
+            true,
         );
 
         for name in PLAN_MUTATING_TOOLS {
@@ -1858,11 +1906,11 @@ mod tests {
         // model a plan existed when none did.
         for name in ["plan_read", "plan_step_update"] {
             assert!(
-                !is_tool_available_this_turn(name, AgentExecutionMode::Agent, false, false),
+                !is_tool_available_this_turn(name, AgentExecutionMode::Agent, false, false, true),
                 "{name} was offered with no plan in the project"
             );
             assert!(
-                is_tool_available_this_turn(name, AgentExecutionMode::Agent, true, false),
+                is_tool_available_this_turn(name, AgentExecutionMode::Agent, true, false, true),
                 "{name} was withheld from a project that has a plan"
             );
         }
@@ -1875,10 +1923,10 @@ mod tests {
             AgentExecutionMode::Plan,
             false,
             false
-        ));
+        , true));
         for mode in [AgentExecutionMode::Agent, AgentExecutionMode::Team] {
             assert!(
-                !is_tool_available_this_turn("plan_write", mode, true, false),
+                !is_tool_available_this_turn("plan_write", mode, true, false, true),
                 "execution mode could rewrite the plan the user approved"
             );
         }
@@ -1890,7 +1938,7 @@ mod tests {
         // the phase being executed. Neither suppresses the other.
         for has_plan in [false, true] {
             assert!(
-                is_tool_available_this_turn("todo", AgentExecutionMode::Agent, has_plan, false),
+                is_tool_available_this_turn("todo", AgentExecutionMode::Agent, has_plan, false, true),
                 "todo withheld (has_plan={has_plan})"
             );
         }
@@ -1908,11 +1956,11 @@ mod tests {
             AgentExecutionMode::Team,
         ] {
             assert!(
-                !is_tool_available_this_turn("chapter", mode, false, false),
+                !is_tool_available_this_turn("chapter", mode, false, false, true),
                 "chapter was advertised with the preference off ({mode:?})"
             );
             assert!(
-                is_tool_available_this_turn("chapter", mode, false, true),
+                is_tool_available_this_turn("chapter", mode, false, true, true),
                 "chapter was withheld with the preference on ({mode:?})"
             );
         }
@@ -1922,7 +1970,7 @@ mod tests {
     fn the_chapter_gate_leaves_every_other_tool_alone() {
         for name in ["file_read", "todo", "shell_execute", "grep"] {
             assert!(
-                is_tool_available_this_turn(name, AgentExecutionMode::Agent, false, false),
+                is_tool_available_this_turn(name, AgentExecutionMode::Agent, false, false, true),
                 "{name} was caught by the chapter gate"
             );
         }
@@ -1949,6 +1997,7 @@ mod tests {
             AgentExecutionMode::Agent,
             Some(&ws.to_string_lossy()),
             false,
+            true,
         );
         assert!(registry.get("plan_step_update").is_some());
 
@@ -1998,6 +2047,7 @@ mod tests {
             AgentExecutionMode::Plan,
             None,
             false,
+            true,
         );
         let tool = registry
             .get("shell_execute")

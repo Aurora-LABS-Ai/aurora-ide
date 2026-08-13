@@ -1,0 +1,339 @@
+/* Project switcher trigger (rail header). A quiet, full-width control that
+ * highlights on hover / while its menu is open. */
+
+/* Left-rail chat row. Rounded hover + selected (NOT a square block) — the
+ * background fills a pill, matching modern chat rails. Styling lives in CSS so
+ * :hover wins; the active row opts in via `data-active`. */
+.agw-rail-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-md);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-rail-item:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-rail-item[data-active="true"] {
+  background: var(--agw-state-selected);
+  color: var(--agw-text);
+}
+.agw-rail-item:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* Chat title — fills the row, truncates; leaves room for the hover pin. */
+.agw-rail-item-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+}
+.agw-rail-item-label {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Inline rename — the row's label swaps to this input (F2 / double-click /
+ * context menu). Sized to the label so the row doesn't jump. */
+.agw-rail-rename {
+  width: 100%;
+  min-width: 0;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid var(--agw-accent);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-canvas);
+  color: var(--agw-text);
+  font: inherit;
+  font-size: inherit;
+  outline: none;
+}
+/* Rail context menu — full member of the composer popover family: same glass
+ * chrome as .agw-menu, same composer-surface tint as the model selector (see
+ * the family rule), with the model-menu's row anatomy so the whole set of
+ * popovers reads as ONE system. */
+.agw-rail-menu {
+  padding: 6px;
+  /* Sized by its own longest label — never by a number held in JS.
+   *
+   * Every row is `white-space: nowrap`, so a pinned width can only ever be
+   * right for the labels that existed when the number was picked: at 228px,
+   * "Open in integrated terminal" overran the panel and painted through both
+   * rounded edges. And because every size token multiplies by
+   * --agw-ui-text-scale (Appearance -> Typography), ANY fixed width overflows
+   * as soon as someone scales the interface up. Content sizing is the only
+   * form of this menu that cannot clip.
+   *
+   * RailMenu measures the rendered box to keep it on screen, so the width
+   * lives here and nowhere else. */
+  width: max-content;
+  min-width: 228px;
+  max-width: min(340px, calc(100vw - 16px));
+  /* Same reasoning vertically: a menu longer than the viewport scrolls inside
+   * itself instead of running off the bottom edge. */
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+}
+.agw-rail-menu-separator {
+  height: 1px;
+  margin: 3px 8px;
+  background: var(--agw-border);
+}
+.agw-rail-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  /* `ui` is the token for controls and list rows — which is what a menu row is,
+   * and what the tree rows this menu opens over already use. It was `body`
+   * (16px, the window default for PROSE): the one-step-larger text made the
+   * menu read louder than the panel it acts on, and it is what pushed the
+   * longest labels past the old fixed width in the first place. */
+  font-size: var(--agw-fs-ui);
+  text-align: left;
+  white-space: nowrap;
+}
+/* Last-resort truncation. The menu grows to fit its labels, so this only ever
+ * engages past `max-width` — a very long chat title, or a large text scale. It
+ * matters that it ellipsizes rather than overflowing: `nowrap` text with no
+ * bound does not clip, it paints outside the panel. */
+.agw-rail-menu-item > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-rail-menu-item svg {
+  flex-shrink: 0;
+  color: var(--agw-text-subtle);
+}
+.agw-rail-menu-item[data-danger],
+.agw-rail-menu-item[data-danger]:hover,
+.agw-rail-menu-item[data-danger] svg {
+  color: var(--agw-removed);
+}
+.agw-rail-action-notice {
+  position: absolute;
+  z-index: 20;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-md);
+  background: color-mix(in srgb, var(--agw-surface-elevated) 92%, transparent);
+  box-shadow: var(--agw-shadow-pop);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  line-height: 1.35;
+  pointer-events: none;
+  backdrop-filter: blur(12px) saturate(1.1);
+}
+.agw-rail-action-notice svg {
+  flex: 0 0 auto;
+  color: var(--agw-added);
+}
+.agw-rail-action-notice[data-tone="error"] {
+  border-color: color-mix(in srgb, var(--agw-removed) 38%, var(--agw-border));
+}
+.agw-rail-action-notice[data-tone="error"] svg {
+  color: var(--agw-removed);
+}
+/* Pinned rows carry a project subtitle and stand a little taller. */
+.agw-rail-item-sub {
+  min-width: 0;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-rail-item[data-sub] {
+  height: auto;
+  min-height: 44px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+/* Leading glyph slot — a fixed lane at the row's head where the chat icon, the
+ * streaming spinner, and the "done" dot all render IN PLACE, so the title never
+ * shifts as a row moves between idle / working / finished states. */
+.agw-rail-item-glyph {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--agw-text-subtle);
+}
+.agw-rail-item:hover .agw-rail-item-glyph,
+.agw-rail-item[data-active="true"] .agw-rail-item-glyph {
+  color: var(--agw-text-muted);
+}
+/* Trailing action lane — the always-on team badge plus the hover-in pin /
+ * archive controls share one reserved cluster so they can never overlap each
+ * other or reflow the title. The controls already hold their layout space
+ * (opacity toggles, not display), so hovering reveals them without any shift. */
+.agw-rail-item-actions {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: -4px;
+}
+.agw-rail-item-actions .agw-rail-pin {
+  margin-right: 0;
+}
+/* Per-row pin affordance — hidden until row hover; pinned rows keep it shown. */
+.agw-rail-pin {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-right: -4px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-rail-item:hover .agw-rail-pin {
+  opacity: 1;
+}
+.agw-rail-pin:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-rail-pin:focus-visible {
+  opacity: 1;
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* A pinned chat shows a filled accent tack that stays visible. */
+.agw-rail-pin[data-on] {
+  opacity: 1;
+  color: var(--agw-accent);
+}
+.agw-rail-pin[data-on] svg {
+  fill: var(--agw-accent);
+}
+/* Project rows reuse the pin affordance; reveal it on the PROJECT row hover. */
+.agw-rail-project-pin {
+  margin-right: 0;
+}
+.agw-rail-project:hover .agw-rail-project-pin {
+  opacity: 1;
+}
+
+/* "Has team work" badge — a passive team-icon marker on any chat / project that
+ * has ever dispatched a team run. Unlike the hover-only pin, it stays visible so
+ * past team activity reads at a glance. Informational (no action of its own; a
+ * click just falls through to opening the row). */
+.agw-rail-team-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--agw-radius-sm);
+  color: var(--agw-accent);
+  background: color-mix(in srgb, var(--agw-accent) 13%, transparent);
+}
+/* On a project row it trails the flex:1 title button; nudge it off the edge. */
+.agw-rail-project-team {
+  margin-left: 0;
+}
+/* Project-row status cluster — the always-on team badge + the running spinner +
+ * the done dot in one spaced lane so they can't clip / overlap each other (they
+ * used to sit as flush siblings with no gap). */
+.agw-rail-project-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+
+/* Permanent-delete affordance in the Archived section — red on hover. */
+.agw-rail-del:hover {
+  background: color-mix(in srgb, var(--agw-removed) 20%, transparent);
+  color: var(--agw-removed);
+}
+
+/* Count badge on the "Archived" section header (mirrors a project's chevron row). */
+.agw-rail-archive-count {
+  margin-left: auto;
+  margin-right: 6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-control-muted);
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+}
+
+/* Background-turn spinner — a small accent ring shown on the working chat / its
+ * project while a turn streams in the background (or foreground). */
+.agw-rail-spin {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--agw-accent) 28%, transparent);
+  border-top-color: var(--agw-accent);
+  animation: agw-rail-spin 0.7s linear infinite;
+}
+/* Background-turn "done" dot — the settled counterpart to the spinner. Shown on
+ * a chat / project whose turn FINISHED while the user was looking elsewhere;
+ * cleared the moment that chat is opened. Sized to sit in the spinner's slot. */
+.agw-rail-done-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  margin: 0 2px;
+  border-radius: 50%;
+  background: var(--agw-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--agw-accent) 22%, transparent);
+  animation: agw-done-pop 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes agw-done-pop {
+  from {
+    transform: scale(0);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+

@@ -1,0 +1,364 @@
+/* ── Confirmation dialog (AgentConfirm) ───────────────────────────────── */
+.agw-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 13500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: var(--agw-overlay);
+  backdrop-filter: var(--agw-modal-blur);
+  -webkit-backdrop-filter: var(--agw-modal-blur);
+}
+.agw-confirm-dialog {
+  width: 360px;
+  max-width: 92vw;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 18px 14px;
+  border-radius: var(--agw-radius-lg, 14px);
+  border: 1px solid var(--agw-border-strong);
+  background: var(--agw-surface-elevated, var(--agw-surface));
+  box-shadow: 0 18px 50px color-mix(in srgb, #000 45%, transparent);
+}
+.agw-confirm-title {
+  font-size: var(--agw-fs-body);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-confirm-msg {
+  font-size: var(--agw-fs-ui);
+  line-height: 1.5;
+  color: var(--agw-text-muted);
+}
+.agw-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.agw-confirm-btn {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.agw-confirm-btn:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-confirm-btn:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-confirm-primary {
+  border-color: transparent;
+  background: var(--agw-accent);
+  color: var(--agw-on-accent);
+}
+.agw-confirm-primary:hover {
+  background: var(--agw-accent-hover);
+}
+.agw-confirm-danger {
+  background: var(--agw-removed);
+  color: #fff;
+}
+.agw-confirm-danger:hover {
+  background: color-mix(in srgb, var(--agw-removed) 88%, #000);
+}
+
+/* ── Microphone consent (AgentMicPermissionModal) ─────────────────────────
+ * The agent window's own mic gate — replaces the raw WebView permission prompt
+ * (which is suppressed natively). Purpose-built, centered, with an accent mic
+ * badge; reads as part of the agent window, not the IDE. */
+.agw-mic-perm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 13600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: var(--agw-overlay);
+  backdrop-filter: var(--agw-modal-blur);
+  -webkit-backdrop-filter: var(--agw-modal-blur);
+}
+.agw-mic-perm-dialog {
+  width: 380px;
+  max-width: 92vw;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  padding: 22px 22px 16px;
+  border-radius: var(--agw-radius-lg, 14px);
+  border: 1px solid var(--agw-border-strong);
+  background: var(--agw-surface-elevated, var(--agw-surface));
+  box-shadow: 0 20px 56px color-mix(in srgb, #000 48%, transparent);
+  animation: agw-mic-perm-rise 0.18s ease-out;
+}
+@keyframes agw-mic-perm-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.agw-mic-perm-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--agw-radius-md);
+  color: var(--agw-accent);
+  background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--agw-accent) 30%, transparent);
+  margin-bottom: 2px;
+}
+.agw-mic-perm-title {
+  font-size: var(--agw-fs-title);
+  font-weight: var(--agw-fw-strong);
+  color: var(--agw-text);
+}
+.agw-mic-perm-msg {
+  font-size: var(--agw-fs-ui);
+  line-height: 1.55;
+  color: var(--agw-text-muted);
+  max-width: 320px;
+}
+.agw-mic-perm-remember {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.agw-mic-perm-remember input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--agw-accent);
+  cursor: pointer;
+}
+.agw-mic-perm-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+  width: 100%;
+}
+.agw-mic-perm-btn {
+  height: 32px;
+  padding: 0 16px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease, filter 0.12s ease;
+}
+.agw-mic-perm-btn:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-mic-perm-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-mic-perm-primary {
+  border-color: transparent;
+  background: var(--agw-accent);
+  color: var(--agw-on-accent);
+}
+.agw-mic-perm-primary:hover {
+  background: var(--agw-accent-hover);
+}
+.agw-img-dialog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 92vw;
+  max-height: 92vh;
+}
+.agw-img-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  overflow: auto;
+}
+.agw-img-canvas {
+  max-width: 88vw;
+  max-height: 78vh;
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-surface);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+  touch-action: none;
+}
+.agw-img-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 8px 12px;
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-surface-elevated);
+  border: 1px solid var(--agw-border-strong);
+}
+.agw-img-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.agw-img-tool {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+}
+.agw-img-tool:hover:not(:disabled) {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-img-tool[data-active] {
+  background: var(--agw-surface);
+  color: var(--agw-text);
+  border-color: var(--agw-accent);
+}
+.agw-img-tool:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.agw-img-done {
+  height: 28px;
+  padding: 0 16px;
+  border: none;
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-accent);
+  color: var(--agw-on-accent);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-strong);
+  cursor: pointer;
+}
+.agw-img-swatches {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.agw-img-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px var(--agw-border-strong);
+}
+.agw-img-swatch[data-active] {
+  border-color: var(--agw-text);
+}
+.agw-img-close {
+  position: absolute;
+  top: -14px;
+  right: -14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: 50%;
+  background: var(--agw-surface-elevated);
+  color: var(--agw-text);
+  cursor: pointer;
+}
+.agw-img-close:hover {
+  background: var(--agw-hover-paint);
+}
+
+/* Inspector element chips persisted on a user turn — rendered INSIDE the
+   user bubble (header row above the text) so they read as part of the
+   message. Reuses the composer's `.agw-sel-chip` styling for parity. */
+.agw-bubble-selected {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-start;
+}
+
+/* ── Long user message — clamped to its opening lines, chevron reveals the rest ──
+ * A pasted spec shouldn't hand the reader a wall to scroll past before they can
+ * see what the agent did with it. Deliberately NOT the injection's inline
+ * scroller: this bubble is the thing the reader most often wants in FULL, and a
+ * nested scroll area inside a right-aligned bubble competes with the
+ * transcript's own scrolling. Clamp + expand keeps one scroll surface. */
+.agw-bubble-body {
+  min-width: 0;
+}
+.agw-bubble-body[data-collapsed] {
+  /* Six lines at the bubble's ACTUAL leading — must track the user-tunable
+   * line-height token or the clamp cuts mid-line when it's customized. */
+  max-height: calc(1em * var(--agw-msg-user-line-height, 1.6) * 6);
+  overflow: hidden;
+  /* Fades the cut line so the clamp reads as "continues" rather than "ends". */
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+}
+.agw-bubble-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  /* 24px tall including the negative-space padding — a comfortable pointer and
+     touch target across the full bubble width, not just the glyph. */
+  margin-top: 2px;
+  padding: 4px 0 2px;
+  border: none;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.agw-bubble-more:hover {
+  color: var(--agw-text);
+  background: color-mix(in srgb, var(--agw-hover-paint) 55%, transparent);
+}
+.agw-bubble-more:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-bubble-more svg {
+  transition: transform 0.16s ease;
+}
+.agw-bubble-more[data-expanded] svg {
+  transform: rotate(180deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-bubble-more,
+  .agw-bubble-more svg {
+    transition: none;
+  }
+}
+

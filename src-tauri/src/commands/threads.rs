@@ -1135,16 +1135,34 @@ pub fn thread_delete(
 /// project are returned (legacy unscoped threads are omitted) — this
 /// powers the agent window's project-scoped chat list. Omit it (the
 /// IDE's global history) to get every thread.
+/// Async + `spawn_blocking`: listing walks every session file on disk, and
+/// synchronous commands run on the main thread (Tauri v2), where a large
+/// store froze the whole app into "Not Responding" during boot.
 #[tauri::command]
-pub fn thread_list_summaries(
+pub async fn thread_list_summaries(
     workspace_root: Option<String>,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<Vec<ThreadSummary>, String> {
     let store = store_from_state(registry.inner());
-    let entries = store
-        .list_summaries_filtered(workspace_root.as_deref())
-        .map_err(|e| format!("Failed to list threads: {e}"))?;
-    Ok(entries.into_iter().map(build_thread_summary).collect())
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        let entries = store
+            .list_summaries_filtered(workspace_root.as_deref())
+            .map_err(|e| format!("Failed to list threads: {e}"))?;
+        // A slow listing is exactly what the boot-time "Not Responding"
+        // freeze looked like before this ran off the main thread — keep a
+        // trace so a regression names itself in the log.
+        let elapsed_ms = started.elapsed().as_millis();
+        if elapsed_ms > 300 {
+            crate::logging::log_warn(
+                "threads.list",
+                &format!("thread_list_summaries scanned {} threads in {elapsed_ms}ms (expected <300ms; this is the boot chat-list path)", entries.len()),
+            );
+        }
+        Ok(entries.into_iter().map(build_thread_summary).collect())
+    })
+    .await
+    .map_err(|e| format!("Thread listing task failed: {e}"))?
 }
 
 /// Update the user-facing title without touching message history.

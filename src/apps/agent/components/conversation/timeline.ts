@@ -555,6 +555,24 @@ function isSilentToolCall(call: ToolCall): boolean {
 }
 
 /**
+ * True when an assistant text block says nothing a reader could act on.
+ *
+ * Whitespace was the original case: models routinely separate batched tool
+ * calls with a bare `"\n"`. But filler is not always blank — a single Opus
+ * thread emitted fifteen text blocks whose entire content was `"..."`, one
+ * between each pair of tool cards, and the transcript wore a column of stray
+ * dots down its left edge.
+ *
+ * Kept deliberately narrow: only whitespace and the characters filler is
+ * actually made of. A block with ANY word, digit or punctuation beyond these is
+ * speech and renders as written — dropping real text because it looked short is
+ * far worse than showing a row of dots.
+ */
+function isSilentContent(text: string): boolean {
+  return text.replace(/[\s.…\-–—_*]/g, "") === "";
+}
+
+/**
  * `chapter` is not a tool card — it is the agent naming the part of the work it
  * is starting, and it renders as a heading at the exact point it was called.
  *
@@ -717,7 +735,13 @@ export function buildRows(events: TimelineEvent[]): TimelineRow[] {
       // Skipped WITHOUT flushing, exactly like a silent tool call: the
       // whitespace also has nothing to render, so emitting a row for it would
       // add an empty markdown block between every pair of cards.
-      if (e.kind === "content" && e.text.trim() === "") continue;
+      //
+      // `isSilentContent`, not `trim() === ""`, because the filler is not always
+      // whitespace: one Opus thread emitted FIFTEEN text blocks whose entire
+      // content was "..." between its tool calls, and each one rendered as a
+      // stray row of dots down the transcript. A block of nothing but dots,
+      // dashes or ellipses is the same non-event as a blank line.
+      if (e.kind === "content" && isSilentContent(e.text)) continue;
       flush();
       if (e.kind === "thinking") {
         rows.push({

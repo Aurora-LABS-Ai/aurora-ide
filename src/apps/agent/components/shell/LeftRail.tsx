@@ -662,7 +662,7 @@ export const LeftRail: React.FC = () => {
           onSelect: () => {
             // Session before tab, so the Terminal panel's first-show
             // auto-shell effect doesn't race a second session into being.
-            useAgentTerminalStore.getState().createSession("powershell", root);
+            useAgentTerminalStore.getState().createSession("pwsh", root);
             useAgentWorkspaceStore.getState().openTab("terminal");
           },
         },

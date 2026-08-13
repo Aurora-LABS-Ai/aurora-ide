@@ -143,6 +143,15 @@ pub fn logs_dir() -> PathBuf {
     ensure_subdir("logs")
 }
 
+/// `<root>/reports/` — faults the agent reported via `report_aurora_issue`.
+///
+/// Deliberately under Aurora's own root and not in the open workspace: these
+/// describe Aurora, not the user's project, and a file written into whatever
+/// repository happened to be open gets committed by accident.
+pub fn reports_dir() -> PathBuf {
+    ensure_subdir("reports")
+}
+
 fn ensure_subdir(name: &str) -> PathBuf {
     let dir = root().join(name);
     ensure(&dir);

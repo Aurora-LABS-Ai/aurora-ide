@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 
-use super::resolve_path_for_read;
+use super::resolve_path_for_read_with_spill;
 
 /// Chosen to match the TS executor (`MAX_FILE_SIZE = 500 * 1024`).
 const MAX_FILE_SIZE: usize = 500 * 1024;
@@ -226,10 +226,11 @@ impl ToolExecutor for FileReadTool {
             // the agent looked at it, then delegate to the parallel reader.
             for entry in arr {
                 if let Some(p) = entry.as_str() {
-                    if let Ok(resolved) = resolve_path_for_read(
+                    if let Ok(resolved) = resolve_path_for_read_with_spill(
                         p,
                         ctx.workspace_root.as_deref(),
                         ctx.allow_outside_workspace,
+                        ctx.spill_dir.as_deref(),
                     ) {
                         super::read_tracker::record(&ctx.thread_id, &resolved.to_string_lossy());
                     }
@@ -266,10 +267,11 @@ impl ToolExecutor for FileReadTool {
             }
         })?;
 
-        let resolved = match resolve_path_for_read(
+        let resolved = match resolve_path_for_read_with_spill(
             path,
             ctx.workspace_root.as_deref(),
             ctx.allow_outside_workspace,
+            ctx.spill_dir.as_deref(),
         ) {
             Ok(resolved) => resolved,
             Err(ToolError::Execution(err)) => {
@@ -566,6 +568,7 @@ mod tests {
             thread_id: "s".into(),
             workspace_root: workspace,
             cancel_token: CancellationToken::new(),
+            spill_dir: None,
         }
     }
 

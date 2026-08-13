@@ -46,14 +46,71 @@ export function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+/**
+ * Longest edge, and quality, for anything handed to the model.
+ *
+ * Deliberately the same numbers as the Rust capture path
+ * (`SCREENSHOT_MAX_EDGE` / `SCREENSHOT_JPEG_QUALITY` in `browser_runtime.rs`):
+ * a screenshot the agent took and a screenshot you pasted should arrive as the
+ * same kind of object, and providers charge by tile, so pixels past this bound
+ * cost upload bandwidth on every later turn and buy nothing.
+ */
+const MODEL_IMAGE_MAX_EDGE = 1024;
+const MODEL_IMAGE_QUALITY = 0.85;
+
+/**
+ * Fit an image inside {@link MODEL_IMAGE_MAX_EDGE} and re-encode it as JPEG.
+ *
+ * Falls back to the original bytes when the blob can't be decoded (an SVG with
+ * no intrinsic size, a corrupt paste) — sending the image we were handed beats
+ * sending nothing, and the model still gets a valid attachment.
+ */
+async function toModelImage(blob: Blob): Promise<{ base64: string; mediaType: string }> {
+  const original = async () => ({
+    base64: bytesToBase64(new Uint8Array(await blob.arrayBuffer())),
+    mediaType: blob.type || "image/png",
+  });
+  try {
+    const bitmap = await createImageBitmap(blob);
+    const scale = Math.min(1, MODEL_IMAGE_MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return await original();
+    // JPEG carries no alpha: without a painted ground, every transparent pixel
+    // encodes as black and a UI screenshot with rounded corners gets a bruise.
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+    const parts = dataUrlToParts(canvas.toDataURL("image/jpeg", MODEL_IMAGE_QUALITY));
+    return parts.base64 ? parts : await original();
+  } catch {
+    return await original();
+  }
+}
+
+/** Re-point a display name at the format we actually encoded. */
+const asJpegName = (name: string, mediaType: string): string =>
+  mediaType === "image/jpeg" ? name.replace(/\.[^./\\]+$/, "") + ".jpg" : name;
+
 /** Read an image file from disk (absolute path) into an attachment. */
 export async function imageFileToAttachment(path: string): Promise<ImageAttachment> {
   const bytes = await readFile(path);
+  const type = IMAGE_EXT_TO_MIME[extOf(path)] ?? "image/png";
+  // `slice()` gives a plain ArrayBuffer view, which `Blob` accepts regardless of
+  // whether the read returned a shared buffer.
+  const { base64, mediaType } = await toModelImage(
+    new Blob([bytes.slice().buffer as ArrayBuffer], { type }),
+  );
   return {
     id: genId(),
-    name: basenameOf(path),
-    mediaType: IMAGE_EXT_TO_MIME[extOf(path)] ?? "image/png",
-    base64: bytesToBase64(bytes),
+    name: asJpegName(basenameOf(path), mediaType),
+    mediaType,
+    base64,
   };
 }
 
@@ -62,13 +119,16 @@ export async function blobToAttachment(
   blob: Blob,
   name = "pasted-image.png",
 ): Promise<ImageAttachment> {
-  const buf = new Uint8Array(await blob.arrayBuffer());
-  return {
-    id: genId(),
-    name,
-    mediaType: blob.type || "image/png",
-    base64: bytesToBase64(buf),
-  };
+  const { base64, mediaType } = await toModelImage(blob);
+  return { id: genId(), name: asJpegName(name, mediaType), mediaType, base64 };
+}
+
+/** Normalize an annotator's `data:` URL the same way a paste or drop is. */
+export async function dataUrlToAttachmentParts(
+  dataUrl: string,
+): Promise<{ base64: string; mediaType: string }> {
+  const res = await fetch(dataUrl);
+  return toModelImage(await res.blob());
 }
 
 /** Convert a `data:` URL (annotator output) into base64 + media type. */

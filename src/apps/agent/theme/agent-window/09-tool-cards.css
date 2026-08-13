@@ -1,0 +1,893 @@
+/* Status sign (running spinner / done check / failed ✕) — just the colored
+ * glyph, NO disc/wrapper behind it. The box only centers the icon. */
+.agw-tool-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  transition: color 0.3s ease;
+}
+.agw-tool-dot-done {
+  /* Softened toward muted — a full-saturation check on every settled row makes
+   * the transcript read as a status board. Failure keeps full strength. */
+  color: color-mix(in srgb, var(--agw-added) 62%, var(--agw-text-muted));
+}
+.agw-tool-dot-failed {
+  color: var(--agw-removed);
+}
+.agw-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: var(--agw-radius-pill);
+  border: 1.6px solid color-mix(in srgb, var(--agw-accent) 28%, transparent);
+  border-top-color: var(--agw-accent);
+  animation: agw-spin 0.7s linear infinite;
+}
+@keyframes agw-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* File / folder chip in the tool header. */
+.agw-tool-targets {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 65%;
+  flex-wrap: nowrap;
+  gap: 5px;
+  min-width: 0;
+  max-width: 65%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+  touch-action: pan-y;
+  cursor: inherit;
+}
+.agw-tool-targets[data-multi="true"] {
+  cursor: grab;
+}
+.agw-tool-targets::-webkit-scrollbar {
+  display: none;
+}
+.agw-tool-targets[data-dragging="true"] {
+  cursor: grabbing;
+}
+.agw-tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 220px;
+  min-width: 0;
+  padding: 1px 6px;
+  border-radius: var(--agw-radius-sm);
+  border: 1px solid var(--agw-border);
+  background: var(--agw-chip-surface);
+  color: var(--agw-chip-text);
+  font-size: var(--agw-fs-label);
+  flex: 0 0 auto;
+}
+.agw-tool-chip svg {
+  flex-shrink: 0;
+  color: var(--agw-text-subtle);
+}
+/* Material file/folder icon (shared IDE icon set) — must be size-clamped or the
+ * raw SVG renders at its natural (huge) size. */
+.agw-file-ico {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  object-fit: contain;
+  /* Take the candy out of the Material file icons — recognisable hue, less
+   * saturation, so the accent colour stays the loudest thing in the window. */
+  filter: saturate(0.8);
+}
+.agw-pill-ico {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+/* Inline `/` command pill — reuses .agw-pill-inline (accent = skill). Rule and
+   MCP keep a distinct tint so the three directive kinds stay scannable. */
+.agw-pill-cmd-ico {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.agw-pill-cmd[data-cmd-kind="rule"] {
+  background: color-mix(in srgb, var(--agw-text-subtle) 20%, transparent);
+  color: var(--agw-text-muted);
+}
+.agw-pill-cmd[data-cmd-kind="mcp"] {
+  background: color-mix(in srgb, var(--agw-added, var(--agw-accent)) 16%, transparent);
+  color: var(--agw-added, var(--agw-accent));
+}
+/* Inline `@terminal` pill — a fourth attachment kind, same form as the others.
+   Its tint is the code font's own neutral rather than a hue: a terminal is not
+   a directive to obey or a file to open, it is a place output came from, and a
+   fifth colour on this row would make the strip read as a legend. */
+.agw-pill-term {
+  background: color-mix(in srgb, var(--agw-text) 10%, transparent);
+  color: var(--agw-text-muted);
+  font-family: var(--agw-font-code);
+}
+.agw-pill-term > span:last-child {
+  font-size: var(--agw-fs-micro);
+}
+/* Inline inspector-pick pill — same form as the `@` file and `/` directive
+   pills so all three attachment kinds read as one object type. The tag keeps
+   the code font (it IS markup) and the element's text stays muted, so the pill
+   scans as "<td> · its label" rather than one undifferentiated string. */
+.agw-pill-sel .agw-sel-tag {
+  font-family: var(--agw-font-code);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-pill-sel .agw-sel-text {
+  max-width: 15ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--agw-accent) 72%, var(--agw-text-muted));
+  font-weight: var(--agw-fw-medium);
+}
+/* Which shell a command ran in — collapsed Run Command row. The text is the
+ * canonical id ("bash", "pwsh", "cmd"); the dot's tint groups the family
+ * (POSIX green, PowerShell blue, cmd amber) so a transcript mixing shells
+ * scans at a glance. The resolved id from the result wins over the requested
+ * arg — after a substitution the badge names what actually ran. */
+.agw-shell-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: var(--agw-radius-sm);
+  border: 1px solid var(--agw-border);
+  background: var(--agw-chip-surface);
+  color: var(--agw-chip-text);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro, 10px);
+  line-height: 1.6;
+}
+.agw-shell-badge-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--agw-text-subtle);
+  flex-shrink: 0;
+}
+.agw-shell-badge[data-shell-family="posix"] .agw-shell-badge-dot {
+  background: var(--agw-added);
+}
+.agw-shell-badge[data-shell-family="powershell"] .agw-shell-badge-dot {
+  background: var(--agw-info);
+}
+.agw-shell-badge[data-shell-family="cmd"] .agw-shell-badge-dot {
+  background: var(--agw-warning);
+}
+
+/* Selectable chip variant — switches the active file in the expanded result. */
+.agw-tool-chip-btn {
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.agw-tool-chip-btn:hover {
+  border-color: var(--agw-accent);
+  color: var(--agw-text);
+  background: var(--agw-surface);
+}
+.agw-tool-chip-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* Per-file diff counts inside a chip (multi-file edits): −removed +added. */
+.agw-chip-stat {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro, 10px);
+}
+.agw-chip-stat-del {
+  color: var(--agw-removed);
+}
+.agw-chip-stat-add {
+  color: var(--agw-added);
+}
+/* "+N" chip closing an overflowing file strip. */
+.agw-tool-chip-more {
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-muted);
+  flex: 0 0 auto;
+}
+/* Portaled list of every file in an overflowing result. */
+.agw-chip-overflow {
+  padding: 4px;
+}
+.agw-chip-overflow-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: none;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.agw-chip-overflow-item:hover {
+  background: var(--agw-surface);
+}
+.agw-chip-overflow-item[data-active] {
+  background: color-mix(in srgb, var(--agw-accent) 12%, transparent);
+}
+.agw-chip-overflow-item:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+.agw-chip-overflow-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Quiet elapsed-time label on a settled tool row.
+ * UI face + tabular numerals (not mono) — mono metadata on every row is
+ * terminal energy; tabular figures keep counts steady without it. */
+.agw-tool-time {
+  font-size: var(--agw-fs-label);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Status / summary text (e.g. "+12  -3", "In Progress", error reason). */
+.agw-tool-summary {
+  font-size: var(--agw-fs-label);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* Expanded detail — indented under the row with a quiet left rail (no box). */
+.agw-tool-body {
+  margin: 2px 0 4px 8px;
+  padding: 4px 0 2px 13px;
+  border-left: 1px solid var(--agw-border);
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agw-tool-args {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.agw-tool-arg {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  padding: 1px 6px;
+  border-radius: var(--agw-radius-sm);
+  border: 1px solid var(--agw-border);
+  background: var(--agw-surface);
+  color: var(--agw-text-muted);
+}
+.agw-tool-result,
+.agw-diff {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow: auto;
+  font-size: var(--agw-fs-ui);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: var(--agw-radius-sm);
+  /* Code fill, NOT --agw-surface. This paints file/tool CODE output, which is
+   * what Appearance → "Code & chips → Code fill" governs. It also keeps a bare
+   * single-file read the same colour as the framed rich views (.agw-rv), which
+   * already use --agw-code-surface — otherwise two reads sitting next to each
+   * other in one transcript render in two different greys. */
+  background: var(--agw-code-surface);
+  color: var(--agw-text-muted);
+}
+/* Live write preview while a file tool runs — a few lines, auto-scrolled. */
+.agw-tool-stream {
+  max-height: 168px;
+}
+
+/* Screenshot result — a bordered thumbnail; click opens the full-size modal. */
+.agw-tool-shot {
+  display: flex;
+}
+.agw-tool-shot-btn {
+  display: block;
+  padding: 0;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-surface);
+  cursor: zoom-in;
+  overflow: hidden;
+  max-width: 100%;
+  line-height: 0;
+  transition: border-color 0.12s ease;
+}
+.agw-tool-shot-btn:hover {
+  border-color: var(--agw-accent);
+}
+.agw-tool-shot-img {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  max-height: 320px;
+  object-fit: contain;
+  /* Letterbox fill behind a `contain`-fitted shot — matches the button frame. */
+  background: var(--agw-surface);
+}
+.agw-diff-added {
+  background: var(--agw-added-surface);
+  color: var(--agw-text);
+}
+.agw-diff-removed {
+  background: var(--agw-removed-surface);
+  color: var(--agw-text);
+}
+
+.agw-tool-chip[data-selected="true"] {
+  border-color: color-mix(in srgb, var(--agw-accent) 62%, var(--agw-border));
+  background: color-mix(in srgb, var(--agw-accent) 12%, var(--agw-chip-surface));
+  color: var(--agw-text);
+}
+/* Body of a framed (.agw-rv) file/diff result. The FRAME owns the surface — the
+ * same contract as .agw-rv-body — so the code inside must stay transparent.
+ * Painting its own fill here stacked two greys separated by an inset, which is
+ * what made a multi-file read look like a different component than a single
+ * read of the same file. */
+.agw-multi-read {
+  min-width: 0;
+}
+.agw-multi-read .agw-tool-result {
+  max-height: 240px;
+  margin: 0;
+  border-radius: 0;
+  background: transparent;
+}
+/* Same contract for the diff body: the frame already supplies border, radius
+   and surface, so a nested bordered box would read as a double frame. */
+.agw-multi-read .agw-diffview {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.agw-multi-read .agw-tree-meta {
+  margin-left: auto;
+}
+.agw-multi-read-error {
+  padding: 10px;
+  color: var(--agw-removed);
+  font-size: var(--agw-fs-label);
+}
+
+/* Grouped tool run (≥6 calls) — the expanded cards live in a fixed-height "lock
+ * area" that scrolls internally, so a 10-file edit doesn't grow the message. */
+.agw-tool-group-body {
+  max-height: 400px;
+  overflow-y: auto;
+  padding-bottom: 16px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--agw-scroll-thumb) transparent;
+}
+
+/* ── Bottom scroll fade ────────────────────────────────────────────────────
+ * Every scrollable tool-dropdown body fades its bottom edge so overflowing
+ * content reads as "more below" instead of a hard cut. It is SCROLL-AWARE: the
+ * fade is only present while there's more to scroll and retracts to nothing at
+ * the very bottom — driven by `animation-timeline: scroll(self)`, so content
+ * that fits (a short command / small output) shows NO fade at all. On engines
+ * without scroll-driven animations the rule simply no-ops (no fade, no break). */
+.agw-tool-group-body,
+.agw-rv-body,
+.agw-tool-result,
+.agw-diff,
+.agw-diffview,
+.agw-tool-stream,
+.agw-injection > span,
+.agw-notice > span,
+.agw-shell-command code {
+  animation-name: agw-scroll-fade-b;
+  animation-duration: auto; /* span the full scroll range (scroll-driven) */
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+  animation-timeline: scroll(self block);
+}
+@keyframes agw-scroll-fade-b {
+  0%,
+  88% {
+    -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+    mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+  }
+  100% {
+    -webkit-mask-image: linear-gradient(to bottom, #000 100%, transparent);
+    mask-image: linear-gradient(to bottom, #000 100%, transparent);
+  }
+}
+
+/* ── Rich tool-result views (tree / multi-file / grep / shell / list) ──
+ * Shared bordered panel: header (title · path · stats) over a scroll body.
+ * These are the agent window's isolated re-creations of the IDE result views. */
+.agw-rv {
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-code-surface);
+  overflow: hidden;
+}
+.agw-rv-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--agw-border);
+  min-width: 0;
+}
+.agw-rv-title {
+  font-size: var(--agw-fs-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--agw-text-muted);
+  white-space: nowrap;
+}
+/* Filename variant — real file names must keep their exact casing
+ * (`layout.tsx`, never `LAYOUT.TSX`), in the code font. */
+.agw-rv-title-file {
+  font-size: var(--agw-fs-label);
+  font-family: var(--agw-font-code);
+  color: var(--agw-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+/* Reply-suggestion drum — one visible NAKED text option above the composer;
+ * wheel-over rotates the set like an iOS picker wheel: the centered row is
+ * active, neighbors straddle the drum's edges (clipped mid-row) and dissolve
+ * through the vertical mask — the slot-reel look. No pill chrome. */
+.agw-suggest-drum {
+  position: relative;
+  height: 64px;
+  max-width: 768px; /* tracks the transcript/composer column */
+  margin: 0 auto 4px;
+  perspective: 340px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black 34%,
+    black 66%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black 34%,
+    black 66%,
+    transparent 100%
+  );
+  animation: agw-pop-in 0.14s ease;
+}
+.agw-suggest-item {
+  position: absolute;
+  left: 8px;
+  right: 64px;
+  top: calc(50% - 12px);
+  height: 24px;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transform-origin: center;
+  backface-visibility: hidden;
+  transition: transform 0.18s ease, opacity 0.18s ease, color 0.12s ease;
+}
+.agw-suggest-item[data-active]:hover {
+  color: var(--agw-text);
+}
+.agw-suggest-item[data-active]:active {
+  color: var(--agw-accent);
+}
+.agw-suggest-item:focus-visible {
+  outline: none;
+  border-radius: var(--agw-radius-sm);
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* Quiet position marker — signals there's more to roll. */
+.agw-suggest-count {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  pointer-events: none;
+}
+
+/* Quiet footer note when a persisted diff/read was clamped by history
+ * compaction — replaces the old fake "−[truncated…]/+[truncated…]" diff rows. */
+.agw-rv-trunc-note {
+  padding: 5px 10px;
+  border-top: 1px solid var(--agw-border);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+.agw-rv-path {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.agw-rv-stats {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.agw-rv-warn {
+  color: var(--agw-removed);
+}
+.agw-rv-body {
+  max-height: 280px;
+  overflow: auto;
+  padding: 4px 0;
+}
+.agw-rv-badge {
+  padding: 1px 6px;
+  border-radius: var(--agw-radius-sm);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.agw-rv-badge-ok {
+  color: var(--agw-added);
+  background: var(--agw-added-surface);
+  border: 1px solid color-mix(in srgb, var(--agw-added) 35%, transparent);
+}
+.agw-rv-badge-bad {
+  color: var(--agw-removed);
+  background: var(--agw-removed-surface);
+  border: 1px solid color-mix(in srgb, var(--agw-removed) 35%, transparent);
+}
+.agw-rv-exit {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  padding: 1px 6px;
+  border-radius: var(--agw-radius-sm);
+  border: 1px solid var(--agw-border);
+  background: var(--agw-surface);
+}
+
+/* Tree / file-list rows (shared by WorkspaceTree, MultiFile, FileList). */
+.agw-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px 2px 0;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+}
+.agw-tree-row[data-dir="true"] {
+  cursor: pointer;
+}
+.agw-tree-row:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-tree-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--agw-text-subtle);
+}
+
+.agw-tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-tree-name-dir {
+  color: var(--agw-text);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-tree-meta {
+  margin-left: auto;
+  padding-left: 8px;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* "The map is partial, and here is how to get the rest." Sits under the tree
+   rather than in the header because it is a footnote about the whole result,
+   not a statistic — and because a reader should reach it after seeing what IS
+   there, not before. Quiet on purpose: it explains, it does not warn. */
+.agw-tree-note {
+  margin: 0;
+  padding: 8px 10px;
+  border-top: 1px solid var(--agw-border);
+  font-size: var(--agw-fs-micro);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+}
+
+/* Grep — file group with line/content hits. */
+.agw-grep-file {
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-grep-file:last-child {
+  border-bottom: none;
+}
+.agw-grep-file-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  background: var(--agw-surface);
+}
+.agw-grep-file-name {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-grep-file-count {
+  margin-left: auto;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+.agw-grep-hit {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 1px 10px;
+}
+.agw-grep-hit:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-grep-line {
+  width: 36px;
+  flex-shrink: 0;
+  text-align: right;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.agw-grep-code {
+  margin: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: pre;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+}
+
+/* Shell — one focused command row + output. Cwd stays available as a tooltip. */
+.agw-shell-command {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  /* Separated by a hairline ONLY — no fill. This is the same device
+   * `.agw-rv-head` uses, so a shell card reads as the identical component as a
+   * file-read card: one frame surface top-to-bottom, rows divided by rules.
+   * The `$` sigil (accent) and the bold command text carry the emphasis, so a
+   * background band isn't needed to set this row apart. */
+  border-bottom: 1px solid var(--agw-border);
+  background: transparent;
+  color: var(--agw-accent);
+}
+.agw-shell-command code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.5;
+  color: var(--agw-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* A long command must NOT balloon the card vertically — cap to ~3 lines and
+   * scroll inside instead (the output area below has its own cap). */
+  max-height: 54px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--agw-scroll-thumb) transparent;
+}
+.agw-shell-trim {
+  padding: 3px 10px;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-removed);
+  border-bottom: 1px solid var(--agw-border);
+  background: var(--agw-removed-surface);
+}
+/* `.agw-rv-body` adds `4px 0` for the ROW-style views (grep, file list, tree).
+ * Shell output is a single <pre> that owns its own inset, so that padding would
+ * stack on top and leave the card taller than an equivalent file read. */
+.agw-rv-body:has(> .agw-shell-out) {
+  padding: 0;
+}
+/* Metrics deliberately mirror `.agw-tool-result` (the file-read body) so shell
+ * output and file content are the same size, rhythm and inset — the two card
+ * types differ only in what they contain, never in how they're dressed. */
+.agw-shell-out {
+  margin: 0;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-ui);
+  line-height: 1.5;
+  color: var(--agw-text-muted);
+}
+
+/* ── Live command output (ShellStreamView) ────────────────────────────
+ * Same body metrics as the settled view above, so output does not re-flow
+ * when the process exits — it simply stops moving and gains an exit code. */
+.agw-shell-live {
+  color: var(--agw-accent);
+  border-color: color-mix(in srgb, var(--agw-accent) 34%, transparent);
+  background: color-mix(in srgb, var(--agw-accent) 12%, transparent);
+}
+.agw-shell-waiting {
+  padding: 8px 10px;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text-subtle);
+}
+
+/* ── Unified diff view (DiffView) ─────────────────────────────────────
+ * Dual line-number gutters · red removed / green added · folded context.
+ * Shared by the inline tool-card body and the Review panel. */
+.agw-diffview {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  line-height: 1.55;
+  overflow: auto;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-code-surface);
+}
+.agw-dl {
+  display: flex;
+  align-items: flex-start;
+  white-space: pre;
+}
+.agw-dl-no {
+  flex: 0 0 auto;
+  width: 40px;
+  padding: 0 7px;
+  text-align: right;
+  color: var(--agw-text-subtle);
+  opacity: 0.65;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+.agw-dl-sign {
+  flex: 0 0 auto;
+  width: 15px;
+  text-align: center;
+  user-select: none;
+  color: var(--agw-text-subtle);
+}
+.agw-dl-code {
+  flex: 1;
+  min-width: 0;
+  padding-right: 10px;
+  color: var(--agw-text-muted);
+}
+.agw-dl-ctx {
+  /* default muted; nothing extra */
+}
+.agw-dl-add {
+  background: var(--agw-added-surface);
+}
+.agw-dl-add .agw-dl-code,
+.agw-dl-add .agw-dl-sign {
+  color: var(--agw-added);
+}
+.agw-dl-del {
+  background: var(--agw-removed-surface);
+}
+.agw-dl-del .agw-dl-code,
+.agw-dl-del .agw-dl-sign {
+  color: var(--agw-removed);
+}
+.agw-dl-gap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 12px;
+  background: var(--agw-surface);
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  user-select: none;
+}
+
+/* Split (side-by-side) layout: old | new, each a [gutter, code] pair. */
+.agw-diffview-split .agw-ds {
+  display: grid;
+  grid-template-columns: 40px 1fr 40px 1fr;
+  white-space: pre;
+}
+.agw-ds .agw-dl-no {
+  flex: none;
+}
+.agw-ds .agw-dl-code {
+  overflow: hidden;
+  padding-left: 6px;
+}
+/* Vertical seam between the two sides. */
+.agw-ds > .agw-dl-no:nth-child(3) {
+  border-left: 1px solid var(--agw-border);
+}
+.agw-ds-del {
+  background: var(--agw-removed-surface);
+  color: var(--agw-removed);
+}
+.agw-ds-add {
+  background: var(--agw-added-surface);
+  color: var(--agw-added);
+}
+.agw-ds-ctx {
+  color: var(--agw-text-muted);
+}
+/* Empty filler half of an unbalanced change row — faint hatch, no number. */
+.agw-ds-empty {
+  background: color-mix(in srgb, var(--agw-text) 3%, transparent);
+}
+.agw-dl-gap-split {
+  grid-column: 1 / -1;
+}
+.agw-diff-empty {
+  padding: 10px 12px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-code-surface);
+}
+

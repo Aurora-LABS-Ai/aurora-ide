@@ -1,0 +1,528 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Skills settings — "workspace loadout"
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Hero: capacity meter + master switch ────────────────────────────────── */
+.agw-skill-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-set-r-card, 14px);
+  box-shadow: var(--agw-set-shadow);
+  background:
+    radial-gradient(
+      120% 140% at 0% 0%,
+      color-mix(in srgb, var(--agw-added) 9%, transparent) 0%,
+      transparent 55%
+    ),
+    var(--agw-surface);
+  transition: opacity 0.18s ease;
+}
+.agw-skill-hero[data-off] {
+  opacity: 0.62;
+  background: var(--agw-surface);
+}
+.agw-skill-hero-main {
+  min-width: 0;
+}
+.agw-skill-hero-eyebrow {
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+.agw-skill-hero-count {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 6px;
+}
+.agw-skill-hero-count b {
+  font-size: 34px;
+  font-weight: var(--agw-fw-strong);
+  line-height: 1;
+  color: var(--agw-added);
+  font-variant-numeric: tabular-nums;
+}
+.agw-skill-hero-count b[data-full] {
+  color: var(--agw-warning);
+}
+.agw-skill-hero-count span {
+  font-size: var(--agw-fs-title);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-subtle);
+}
+.agw-skill-hero-label {
+  margin-top: 3px;
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text-subtle);
+}
+.agw-skill-meter {
+  position: relative;
+  margin-top: 12px;
+  width: min(280px, 52vw);
+  height: 6px;
+  border-radius: var(--agw-radius-pill);
+  background: color-mix(in srgb, var(--agw-text) 9%, transparent);
+  overflow: hidden;
+}
+.agw-skill-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-added);
+  transition: width 0.28s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.agw-skill-meter[data-full] > span {
+  background: var(--agw-warning);
+}
+.agw-skill-hero-side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.agw-skill-hero-state {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-subtle);
+}
+
+/* ── Equipped strip ──────────────────────────────────────────────────────── */
+.agw-skill-equipped {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.agw-skill-equipped-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.agw-skill-equipped-head > span:first-child {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-display);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--agw-text);
+}
+.agw-skill-equipped-hint {
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-skill-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.agw-skill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 9px 0 10px;
+  border-radius: var(--agw-radius-pill);
+  border: 1px solid color-mix(in srgb, var(--agw-added) 38%, transparent);
+  background: color-mix(in srgb, var(--agw-added) 12%, transparent);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.agw-skill-chip:hover {
+  background: color-mix(in srgb, var(--agw-added) 18%, transparent);
+  border-color: color-mix(in srgb, var(--agw-added) 55%, transparent);
+}
+.agw-skill-chip > svg:first-child {
+  color: var(--agw-added);
+}
+.agw-skill-chip > svg:last-child {
+  color: var(--agw-text-subtle);
+}
+.agw-skill-chip:hover > svg:last-child {
+  color: var(--agw-text);
+}
+.agw-skill-chip-name {
+  max-width: 200px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Catalog ─────────────────────────────────────────────────────────────── */
+/* Framed via `.agw-set-panel` (border/radius/shadow/bg); this adds the inner
+   layout + padding. */
+.agw-skill-catalog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+}
+.agw-skill-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.agw-skill-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agw-skill-search-input.agw-set-input {
+  flex: 1;
+  min-width: 0;
+}
+.agw-skill-count {
+  flex-shrink: 0;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Card grid. */
+.agw-skill-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  gap: 10px;
+  max-height: clamp(300px, 52vh, 600px);
+  overflow-y: auto;
+  margin: 0 -2px;
+  padding: 2px;
+}
+
+/* Skill card — whole card is the equip toggle. */
+.agw-skill-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 13px 14px;
+  text-align: left;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-surface);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+/* Hover reads through colour only — no translateY lift. A card that jumps on
+ * hover makes a dense grid feel unstable as the pointer crosses it. */
+.agw-skill-card:hover:not([data-disabled]) {
+  border-color: color-mix(in srgb, var(--agw-text) 20%, transparent);
+  background: var(--agw-hover-paint);
+}
+.agw-skill-card[data-on] {
+  border-color: color-mix(in srgb, var(--agw-added) 48%, transparent);
+  background: color-mix(in srgb, var(--agw-added) 8%, var(--agw-surface));
+}
+.agw-skill-card[data-on]:hover:not([data-disabled]) {
+  border-color: color-mix(in srgb, var(--agw-added) 65%, transparent);
+  background: color-mix(in srgb, var(--agw-added) 12%, var(--agw-surface));
+}
+.agw-skill-card[data-disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+/* The equip control, stretched behind the whole card so clicking anywhere on
+ * the card still equips it. The card stopped being a `<button>` when the
+ * delete control arrived — a button cannot contain a button. Everything the
+ * user reads paints above this layer; only the delete button takes clicks. */
+.agw-skill-card-hit {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  padding: 0;
+  border: none;
+  border-radius: inherit;
+  background: none;
+  cursor: inherit;
+}
+.agw-skill-card-hit:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+/* The hit layer deliberately sits OVER the card's content, and nothing needs
+ * lifting above it except the delete button (see below).
+ *
+ * The first attempt did lift everything, with
+ * `.agw-skill-card > :not(.agw-skill-card-hit) { position: relative }` — which
+ * carries two class selectors, so it outranked `.agw-skill-card-check`'s own
+ * rule and replaced its `position: absolute` with `relative`. The equipped tick
+ * lost its corner, fell into the flow, and pushed the card's contents down.
+ * Nothing has to be lifted: the button paints nothing (no fill, no border), so
+ * the title and description read through it exactly as before, and every press
+ * on the card landing on the equip control is the intended behaviour. */
+.agw-skill-card-check {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--agw-radius-pill);
+  border: 1px solid var(--agw-border);
+  color: transparent;
+  background: color-mix(in srgb, var(--agw-text) 5%, transparent);
+}
+.agw-skill-card[data-on] .agw-skill-card-check {
+  color: #fff;
+  border-color: transparent;
+  background: var(--agw-added);
+}
+.agw-skill-card-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+.agw-skill-card-name {
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.3;
+  color: var(--agw-text);
+  padding-right: 22px;
+}
+.agw-skill-card-desc {
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text-subtle);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.agw-skill-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+/* Delete — the one control in the card that is not "equip".
+ *
+ * Lives in the footer so it never competes with the equipped check at the top
+ * right, and is quiet at rest (subtle, no fill) because a grid of red trash
+ * icons reads as a warning the page is not making. It turns red on hover and
+ * focus. Deliberately NOT hover-revealed: a control that only exists under a
+ * pointer does not exist for touch or the keyboard.
+ *
+ * Lifted above the equip hit layer, which covers the whole card — this is the
+ * one control inside it that must take its own clicks. */
+.agw-skill-card-del {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.agw-skill-card-del:hover {
+  color: var(--agw-removed);
+  background: color-mix(in srgb, var(--agw-removed) 13%, transparent);
+}
+.agw-skill-card-del:focus-visible {
+  outline: none;
+  color: var(--agw-removed);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agw-removed) 55%, transparent);
+}
+.agw-skill-id {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 1px 6px;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  background: color-mix(in srgb, var(--agw-text) 5%, transparent);
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-skill-trig {
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+/* Empty state. */
+.agw-skill-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 34px 16px;
+  text-align: center;
+  color: var(--agw-text-subtle);
+}
+.agw-skill-empty svg {
+  opacity: 0.5;
+}
+.agw-skill-empty p {
+  margin: 0;
+  font-size: var(--agw-fs-ui);
+}
+
+/* Source footnote. */
+.agw-skill-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-skill-foot-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+  word-break: break-all;
+}
+.agw-skill-foot-row svg {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Agent settings (global instructions + mode + team)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Global instructions textarea. */
+.agw-set-textarea {
+  width: 100%;
+  min-height: 124px;
+  resize: vertical;
+  padding: 11px 12px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-surface);
+  color: var(--agw-text);
+  font-family: inherit;
+  font-size: var(--agw-fs-ui);
+  line-height: 1.55;
+}
+.agw-set-textarea::placeholder {
+  color: var(--agw-text-subtle);
+}
+.agw-set-textarea:focus {
+  outline: none;
+  border-color: var(--agw-border-strong);
+}
+.agw-agent-ginfo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 9px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.4;
+  color: var(--agw-text-subtle);
+}
+.agw-agent-gcount {
+  flex-shrink: 0;
+  font-family: var(--agw-font-code);
+  font-variant-numeric: tabular-nums;
+}
+.agw-agent-gcount[data-low] {
+  color: var(--agw-warning);
+}
+
+/* Team-size stepper. */
+.agw-agent-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-surface);
+}
+.agw-agent-stepper[data-disabled] {
+  opacity: 0.5;
+}
+.agw-agent-stepper-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--agw-radius-pill);
+  background: transparent;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-title);
+  line-height: 1;
+  cursor: pointer;
+}
+.agw-agent-stepper-btn:hover:not(:disabled) {
+  background: var(--agw-hover-paint);
+}
+.agw-agent-stepper-btn:disabled {
+  color: var(--agw-text-subtle);
+  cursor: not-allowed;
+}
+.agw-agent-stepper-val {
+  min-width: 78px;
+  text-align: center;
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Team model select (extends .agw-csel). */
+.agw-agent-modelsel {
+  width: 240px;
+  max-width: 100%;
+}
+.agw-agent-modelsel .agw-csel-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.agw-agent-modelsel-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-agent-modelsel-itemlabel {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-agent-modelsel-meta {
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+

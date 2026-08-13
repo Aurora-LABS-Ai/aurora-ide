@@ -1,0 +1,372 @@
+/* ── Profile page: local usage stats ──────────────────────────────────────
+   Stat tiles + a token-activity bar chart + most-used-tools bars. Reuses the
+   settings tile card; everything themed with --agw-* only. */
+.agw-profile-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+  gap: 14px;
+}
+.agw-profile-tile {
+  gap: 4px;
+  align-items: flex-start;
+}
+.agw-profile-tile-value {
+  font-size: 22px;
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: -0.02em;
+  color: var(--agw-text);
+  font-variant-numeric: tabular-nums;
+}
+.agw-profile-tile-label {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+.agw-profile-chart-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+/* Contribution heatmap (Daily view) — GitHub-style weeks×days grid. */
+.agw-heatmap-wrap {
+  padding: 16px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-set-r-inner);
+  background: var(--agw-canvas);
+  overflow-x: auto;
+}
+.agw-heatmap-grid {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+.agw-heatmap-days {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 1px 0;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  flex-shrink: 0;
+}
+/* Cells STRETCH to fill the card width — the grid owns its container instead
+   of floating as a small centered block. */
+.agw-heatmap {
+  display: flex;
+  gap: 3px;
+  width: 100%;
+}
+.agw-heatmap-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+.agw-heatmap-cell {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  /* Hexagon cells — Aurora's own mark, not GitHub's squares or dots. */
+  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
+  background: color-mix(in srgb, var(--agw-text) 7%, transparent);
+  transition: transform 0.12s ease, filter 0.12s ease;
+}
+.agw-heatmap-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 10px;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+.agw-heatmap-legend .agw-heatmap-cell {
+  width: 11px;
+  height: 11px;
+  aspect-ratio: auto;
+}
+.agw-heatmap-cell[data-future] {
+  background: transparent;
+}
+/* Soft radial fills + a blur glow that grows with intensity — lit gems, not
+   flat pixels. drop-shadow follows the clip-path shape (box-shadow can't). */
+.agw-heatmap-cell[data-level="1"] {
+  background: radial-gradient(
+    circle at 35% 30%,
+    color-mix(in srgb, var(--agw-accent) 40%, transparent),
+    color-mix(in srgb, var(--agw-accent) 22%, transparent)
+  );
+}
+.agw-heatmap-cell[data-level="2"] {
+  background: radial-gradient(
+    circle at 35% 30%,
+    color-mix(in srgb, var(--agw-accent) 64%, transparent),
+    color-mix(in srgb, var(--agw-accent) 42%, transparent)
+  );
+  filter: drop-shadow(0 0 2px color-mix(in srgb, var(--agw-accent) 30%, transparent));
+}
+.agw-heatmap-cell[data-level="3"] {
+  background: radial-gradient(
+    circle at 35% 30%,
+    color-mix(in srgb, var(--agw-accent) 88%, white 6%),
+    color-mix(in srgb, var(--agw-accent) 68%, transparent)
+  );
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--agw-accent) 45%, transparent));
+}
+.agw-heatmap-cell[data-level="4"] {
+  background: radial-gradient(
+    circle at 35% 30%,
+    color-mix(in srgb, var(--agw-accent) 82%, white 18%),
+    var(--agw-accent)
+  );
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--agw-accent) 60%, transparent));
+}
+.agw-heatmap-cell:not([data-future]):hover {
+  /* Outline can't follow clip-path — pop with scale + brightness instead. */
+  transform: scale(1.3);
+  filter: brightness(1.35);
+}
+.agw-heatmap-months {
+  display: flex;
+  gap: 3px;
+  width: 100%;
+  margin-top: 6px;
+}
+.agw-heatmap-months span {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  overflow: visible;
+  white-space: nowrap;
+}
+/* Premium activity infographic (ActivityChart.tsx) */
+.agw-achart-wrap {
+  padding: 16px 14px 10px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-set-r-inner);
+  background: var(--agw-canvas);
+}
+.agw-achart {
+  display: block;
+  width: 100%;
+  height: 220px;
+  cursor: crosshair;
+}
+.agw-achart-x {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  padding: 0 2px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+
+/* Identity head + share action */
+.agw-profile-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.agw-profile-avatar {
+  width: 44px;
+  height: 44px;
+  font-size: 18px;
+  border-radius: var(--agw-radius-lg);
+}
+.agw-profile-head-titles {
+  flex: 1;
+  min-width: 0;
+}
+.agw-profile-name {
+  font-size: var(--agw-fs-title);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: -0.01em;
+  color: var(--agw-text);
+}
+.agw-profile-sub {
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+/* Hovered-bar readout above the chart — reserved height, no layout jump. */
+.agw-profile-readout {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-height: 20px;
+  margin-bottom: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.agw-profile-readout-date {
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-profile-readout-val {
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-accent);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-profile-readout-turns,
+.agw-profile-readout-hint {
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-profile-chart-empty {
+  align-self: center;
+  width: 100%;
+  text-align: center;
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text-subtle);
+}
+.agw-profile-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* ── Requests by provider (Profile) ──────────────────────────────────
+ * A provider row that expands to its models. Reuses the tool-row bar idiom
+ * so the page keeps one visual grammar, but the NAME column can shrink —
+ * a provider name is arbitrary user text and must never size the row. */
+.agw-profile-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agw-profile-provider {
+  border-radius: var(--agw-radius-sm);
+}
+.agw-profile-provider-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 8px;
+  border: none;
+  background: transparent;
+  border-radius: var(--agw-radius-sm);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition: background-color 0.14s ease;
+}
+.agw-profile-provider-head:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-profile-provider-head:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-profile-provider-name {
+  /* `min-width: 0` is what lets it truncate instead of pushing the count
+   * out of the row — the flex default is `auto`, which refuses to shrink. */
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-profile-provider-meta {
+  flex: none;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+.agw-profile-provider-count {
+  flex: none;
+  min-width: 56px;
+  text-align: right;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text);
+}
+.agw-profile-provider-models {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* Indented to the parent's chevron so the nesting reads structurally. */
+  padding: 4px 8px 10px 30px;
+}
+.agw-profile-provider-model {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.agw-profile-provider-model-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--agw-fs-label);
+  font-family: var(--agw-font-code);
+  color: var(--agw-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-profile-provider-model-track {
+  flex: 0 0 120px;
+  height: 6px;
+  border-radius: var(--agw-radius-pill);
+  background: color-mix(in srgb, var(--agw-text) 8%, transparent);
+  overflow: hidden;
+}
+.agw-profile-provider-model-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--agw-radius-pill);
+  background: color-mix(in srgb, var(--agw-accent) 62%, transparent);
+}
+.agw-profile-provider-model-count {
+  flex: none;
+  min-width: 56px;
+  text-align: right;
+  font-size: var(--agw-fs-label);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-muted);
+}
+
+.agw-profile-tool {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.agw-profile-tool-name {
+  width: 180px;
+  flex-shrink: 0;
+  font-size: var(--agw-fs-ui);
+  font-family: var(--agw-font-code);
+  color: var(--agw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-profile-tool-track {
+  flex: 1;
+  height: 8px;
+  border-radius: var(--agw-radius-pill);
+  background: color-mix(in srgb, var(--agw-text) 8%, transparent);
+  overflow: hidden;
+}
+.agw-profile-tool-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--agw-radius-pill);
+  background: color-mix(in srgb, var(--agw-accent) 72%, transparent);
+}
+.agw-profile-tool-count {
+  width: 48px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: var(--agw-fs-ui);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-muted);
+}
+

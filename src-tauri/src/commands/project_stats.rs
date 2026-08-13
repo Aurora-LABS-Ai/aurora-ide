@@ -144,8 +144,14 @@ fn prompt_preview(blocks: &[ContentBlock]) -> String {
 }
 
 /// Aggregate every conversation that ran in `workspace_root`.
+///
+/// Async + `spawn_blocking`: this fully deserializes every session JSONL in
+/// the store (the workspace filter can only be applied after each load), and
+/// synchronous commands run on the main thread (Tauri v2) — on a mature
+/// install that froze the whole app into "Not Responding" while the Project
+/// panel loaded.
 #[tauri::command]
-pub fn project_stats_get(
+pub async fn project_stats_get(
     registry: State<'_, Arc<AgentRegistry>>,
     workspace_root: String,
 ) -> Result<ProjectStats, String> {
@@ -153,6 +159,26 @@ pub fn project_stats_get(
         return Err("No project selected.".to_string());
     }
     let store = registry.store().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        let stats = compute_project_stats(&store, workspace_root);
+        let elapsed_ms = started.elapsed().as_millis();
+        if elapsed_ms > 1_000 {
+            crate::logging::log_warn(
+                "project_stats",
+                &format!("project_stats_get full-scanned the session store in {elapsed_ms}ms — it deserializes every JSONL, so this grows with history size"),
+            );
+        }
+        stats
+    })
+    .await
+    .map_err(|e| format!("Project stats task failed: {e}"))?
+}
+
+fn compute_project_stats(
+    store: &crate::agent_runtime::session_store::SessionStore,
+    workspace_root: String,
+) -> Result<ProjectStats, String> {
     let summaries = store
         .list_summaries()
         .map_err(|e| format!("Failed to list conversations: {e}"))?;

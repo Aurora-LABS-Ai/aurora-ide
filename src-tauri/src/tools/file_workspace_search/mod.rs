@@ -168,7 +168,48 @@ pub(crate) fn resolve_path_for_read(
     workspace_root: Option<&Path>,
     allow_outside: bool,
 ) -> Result<PathBuf, ToolError> {
+    resolve_path_for_read_with_spill(path, workspace_root, allow_outside, None)
+}
+
+/// True when `path` lands inside `dir`, comparing them normalized.
+///
+/// Textual, because the spill file may have been created moments ago and
+/// canonicalizing is not needed to answer "is this under a directory we
+/// ourselves wrote". `..` is rejected outright rather than resolved, so no
+/// spelling of the prefix can walk back out of it.
+fn is_inside(path: &Path, dir: &Path) -> bool {
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return false;
+    }
+    let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
+    let (candidate, prefix) = (norm(path), norm(dir));
+    let prefix = prefix.trim_end_matches('/').to_string();
+    candidate.starts_with(&format!("{prefix}/"))
+}
+
+/// As [`resolve_path_for_read`], plus this thread's tool-results directory.
+///
+/// A path inside `spill_dir` resolves even when `allow_outside` is false. That
+/// directory contains only what THIS agent's own tools just produced —
+/// `tool_spill` writes oversized stdout there and tells the model to open it
+/// with `file_read`. Refusing it made that instruction a dead end in the
+/// default configuration: the file lives under `%LOCALAPPDATA%`, so the
+/// boundary check rejected the very path Aurora had just handed over.
+pub(crate) fn resolve_path_for_read_with_spill(
+    path: &str,
+    workspace_root: Option<&Path>,
+    allow_outside: bool,
+    spill_dir: Option<&Path>,
+) -> Result<PathBuf, ToolError> {
     let raw = Path::new(path);
+    if let Some(dir) = spill_dir {
+        if is_inside(raw, dir) {
+            return Ok(raw.to_path_buf());
+        }
+    }
     let Some(root) = workspace_root else {
         return Ok(raw.to_path_buf());
     };
@@ -600,5 +641,80 @@ mod tests {
         std::fs::create_dir_all(&workspace).unwrap();
         let result = resolve_path_for_create("../escape.txt", Some(&workspace));
         assert!(matches!(result, Err(ToolError::PolicyViolation(_))));
+    }
+
+    /// The case that was broken: `tool_spill` writes oversized output under
+    /// `%LOCALAPPDATA%` and tells the model to open it with `file_read`, but
+    /// the boundary check refused it whenever `allow_outside_workspace` was
+    /// false — which is the default. The agent was pointed at its own output
+    /// and could not reach it.
+    #[test]
+    fn a_spilled_result_is_readable_without_outside_workspace_access() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let spill = tmp.path().join("sessions").join("t1.tool-results");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&spill).unwrap();
+        let spilled = spill.join("out-3f2a91c8.txt");
+        std::fs::write(&spilled, "full build log").unwrap();
+
+        // Without the spill directory this is exactly the refusal.
+        assert!(matches!(
+            resolve_path_for_read(&spilled.to_string_lossy(), Some(&workspace), false),
+            Err(_)
+        ));
+
+        // With it, the same path resolves — and `allow_outside` is still false.
+        let resolved = resolve_path_for_read_with_spill(
+            &spilled.to_string_lossy(),
+            Some(&workspace),
+            false,
+            Some(&spill),
+        )
+        .expect("a spilled result must be readable");
+        assert_eq!(resolved, spilled);
+    }
+
+    #[test]
+    fn the_spill_exemption_does_not_open_the_rest_of_the_disk() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let spill = tmp.path().join("sessions").join("t1.tool-results");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&spill).unwrap();
+
+        // A sibling of the spill directory is not in it.
+        let sibling = tmp.path().join("sessions").join("t1.jsonl");
+        assert!(resolve_path_for_read_with_spill(
+            &sibling.to_string_lossy(),
+            Some(&workspace),
+            false,
+            Some(&spill),
+        )
+        .is_err());
+
+        // Nor is anything reached by walking back out of it.
+        let escape = spill.join("..").join("..").join("secrets.txt");
+        assert!(resolve_path_for_read_with_spill(
+            &escape.to_string_lossy(),
+            Some(&workspace),
+            false,
+            Some(&spill),
+        )
+        .is_err());
+
+        // And a prefix that merely LOOKS like the directory is not it either.
+        let lookalike = tmp
+            .path()
+            .join("sessions")
+            .join("t1.tool-results-elsewhere")
+            .join("x.txt");
+        assert!(resolve_path_for_read_with_spill(
+            &lookalike.to_string_lossy(),
+            Some(&workspace),
+            false,
+            Some(&spill),
+        )
+        .is_err());
     }
 }

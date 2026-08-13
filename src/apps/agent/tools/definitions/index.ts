@@ -24,6 +24,7 @@ import { questionTools } from "./question-tools";
 import { searchTools } from "./search-tools";
 import { shellTools } from "./shell-tools";
 import { skillTools } from "./skill-tools";
+import { terminalTools } from "./terminal-tools";
 import { teamTools } from "./team-tools";
 import { todoTools } from "./todo-tools";
 import { workspaceTools } from "./workspace-tools";
@@ -49,6 +50,7 @@ export * from './editor-tools';
 export * from './search-tools';
 
 export * from './skill-tools';
+export * from './terminal-tools';
 
 export * from './team-tools';
 
@@ -67,6 +69,7 @@ export const allTools: ToolDefinition[] = [
   ...editorTools,
   ...searchTools,
   ...skillTools,
+  ...terminalTools,
   ...teamTools,
   ...questionTools,
   ...todoTools,
@@ -108,6 +111,11 @@ export const toolCategories = {
     name: 'Skills',
     description: 'Discovery tools for the Aurora skill catalog.',
     tools: skillTools,
+  },
+  terminal: {
+    name: 'Terminal',
+    description: "Read the user's own terminals inside Aurora's right rail.",
+    tools: terminalTools,
   },
   team: {
     name: 'Agent Team',

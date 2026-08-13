@@ -306,12 +306,35 @@ fn local_day(ts_ms: i64) -> Option<String> {
 
 /// Scan every stored session and aggregate profile stats.
 ///
-/// Linear in total message count; a few hundred threads scan in the low
-/// tens of milliseconds since each JSONL is a straight line-parse. Threads
-/// that fail to parse are skipped rather than failing the whole page.
+/// Async + `spawn_blocking`: this fully deserializes every session JSONL —
+/// hundreds of MB on a mature install — and synchronous commands run on the
+/// main thread (Tauri v2), which showed up as the whole app going
+/// "Not Responding" while the Profile page loaded. Threads that fail to
+/// parse are skipped rather than failing the whole page.
 #[tauri::command]
-pub fn usage_stats_get(registry: State<'_, Arc<AgentRegistry>>) -> Result<UsageStats, String> {
+pub async fn usage_stats_get(
+    registry: State<'_, Arc<AgentRegistry>>,
+) -> Result<UsageStats, String> {
     let store = registry.store().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        let stats = compute_usage_stats(&store);
+        let elapsed_ms = started.elapsed().as_millis();
+        if elapsed_ms > 1_000 {
+            crate::logging::log_warn(
+                "usage_stats",
+                &format!("usage_stats_get full-scanned the session store in {elapsed_ms}ms — it deserializes every JSONL, so this grows with history size"),
+            );
+        }
+        stats
+    })
+    .await
+    .map_err(|e| format!("Usage stats task failed: {e}"))?
+}
+
+fn compute_usage_stats(
+    store: &crate::agent_runtime::session_store::SessionStore,
+) -> Result<UsageStats, String> {
     let summaries = store
         .list_summaries()
         .map_err(|e| format!("Failed to list threads: {e}"))?;

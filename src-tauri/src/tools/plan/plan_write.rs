@@ -231,6 +231,7 @@ mod tests {
             thread_id: session.into(),
             workspace_root: Some(workspace.clone()),
             cancel_token: CancellationToken::new(),
+            spill_dir: None,
         }
     }
 

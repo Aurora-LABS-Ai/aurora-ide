@@ -9,7 +9,7 @@ use crate::launch_prefs::{self, LaunchSurface};
 // ============================================================
 
 /// Get all app settings
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_app_settings(db: State<'_, Mutex<Database>>) -> Result<AppSettings, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.settings()
@@ -18,7 +18,7 @@ pub fn get_app_settings(db: State<'_, Mutex<Database>>) -> Result<AppSettings, S
 }
 
 /// Save all app settings
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_app_settings(
     settings: AppSettings,
     db: State<'_, Mutex<Database>>,
@@ -44,7 +44,7 @@ pub fn get_global_skills_path() -> Result<Option<String>, String> {
 }
 
 /// Get a single setting by key
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_setting(key: String, db: State<'_, Mutex<Database>>) -> Result<Option<String>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     let setting = db
@@ -55,7 +55,7 @@ pub fn get_setting(key: String, db: State<'_, Mutex<Database>>) -> Result<Option
 }
 
 /// Set a single setting
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_setting(
     key: String,
     value: String,
@@ -72,7 +72,7 @@ pub fn set_setting(
 // ============================================================
 
 /// Get all LLM providers
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_all_providers(db: State<'_, Mutex<Database>>) -> Result<Vec<LLMProvider>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.settings()
@@ -81,7 +81,7 @@ pub fn get_all_providers(db: State<'_, Mutex<Database>>) -> Result<Vec<LLMProvid
 }
 
 /// Get a single provider by ID
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_provider(
     id: String,
     db: State<'_, Mutex<Database>>,
@@ -93,7 +93,7 @@ pub fn get_provider(
 }
 
 /// Save or update a provider
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_provider(provider: LLMProvider, db: State<'_, Mutex<Database>>) -> Result<(), String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.settings()
@@ -102,7 +102,7 @@ pub fn save_provider(provider: LLMProvider, db: State<'_, Mutex<Database>>) -> R
 }
 
 /// Delete a provider
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_provider(id: String, db: State<'_, Mutex<Database>>) -> Result<(), String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.settings()
@@ -111,7 +111,7 @@ pub fn delete_provider(id: String, db: State<'_, Mutex<Database>>) -> Result<(),
 }
 
 /// Check if any providers exist
-#[tauri::command]
+#[tauri::command(async)]
 pub fn has_providers(db: State<'_, Mutex<Database>>) -> Result<bool, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.settings()
@@ -120,7 +120,7 @@ pub fn has_providers(db: State<'_, Mutex<Database>>) -> Result<bool, String> {
 }
 
 /// Save multiple providers at once
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_all_providers(
     providers: Vec<LLMProvider>,
     db: State<'_, Mutex<Database>>,
@@ -144,7 +144,7 @@ pub fn save_all_providers(
 // commands expose the [`ModelsRepository`] surface to the frontend.
 
 /// List every provider_model row across every provider.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_provider_models(db: State<'_, Mutex<Database>>) -> Result<Vec<ProviderModel>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.models()
@@ -153,7 +153,7 @@ pub fn list_provider_models(db: State<'_, Mutex<Database>>) -> Result<Vec<Provid
 }
 
 /// List models for one provider.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_provider_models_for(
     provider_id: String,
     db: State<'_, Mutex<Database>>,
@@ -165,7 +165,7 @@ pub fn list_provider_models_for(
 }
 
 /// Insert-or-update a single provider_model row.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn upsert_provider_model(
     model: ProviderModel,
     db: State<'_, Mutex<Database>>,
@@ -177,7 +177,7 @@ pub fn upsert_provider_model(
 }
 
 /// Delete one provider_model row by `(provider_id, model_key)`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_provider_model(
     provider_id: String,
     model_key: String,
@@ -193,7 +193,7 @@ pub fn delete_provider_model(
 /// used by the unified Providers hub when the user finishes editing
 /// a provider's model roster or accepts a Discover Local Servers
 /// result.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn replace_provider_models(
     provider_id: String,
     models: Vec<ProviderModel>,
@@ -210,7 +210,7 @@ pub fn replace_provider_models(
 // ============================================================
 
 /// Get all tool settings
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_all_tool_settings(db: State<'_, Mutex<Database>>) -> Result<Vec<ToolSetting>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.settings()
@@ -219,7 +219,7 @@ pub fn get_all_tool_settings(db: State<'_, Mutex<Database>>) -> Result<Vec<ToolS
 }
 
 /// Set tool approval mode
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_tool_approval(
     tool_name: String,
     approval_mode: String,
@@ -232,7 +232,7 @@ pub fn set_tool_approval(
 }
 
 /// Save all tool settings at once
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_all_tool_settings(
     settings: Vec<(String, String)>,
     db: State<'_, Mutex<Database>>,

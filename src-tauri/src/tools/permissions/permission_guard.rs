@@ -169,6 +169,7 @@ mod tests {
             thread_id: "sess".into(),
             workspace_root: None,
             cancel_token: CancellationToken::new(),
+            spill_dir: None,
         }
     }
 

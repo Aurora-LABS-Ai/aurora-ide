@@ -1,0 +1,214 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Appearance settings
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Success variant for the inline notice (import applied, copied, …). */
+.agw-set-notice[data-tone="success"] {
+  border: 1px solid color-mix(in srgb, var(--agw-added) 32%, transparent);
+  background: color-mix(in srgb, var(--agw-added) 11%, transparent);
+}
+
+/* ── Preset theme cards ──────────────────────────────────────────────────── */
+.agw-appr-presets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 10px;
+}
+.agw-appr-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 11px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-surface);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.agw-appr-card:hover {
+  background: var(--agw-hover-paint);
+  border-color: var(--agw-border-strong);
+}
+.agw-appr-card[data-active] {
+  border-color: color-mix(in srgb, var(--agw-accent) 60%, transparent);
+  background: color-mix(in srgb, var(--agw-accent) 9%, transparent);
+}
+.agw-appr-card-preview {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  width: 56px;
+  height: 30px;
+  border-radius: var(--agw-radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--agw-border);
+  flex-shrink: 0;
+}
+.agw-appr-card-preview > span {
+  display: block;
+  height: 100%;
+}
+.agw-appr-card-name {
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-appr-card-check {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  color: var(--agw-accent);
+  display: inline-flex;
+}
+
+/* ── JSON drop zone ──────────────────────────────────────────────────────── */
+.agw-appr-drop {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 14px 16px;
+  border: 1px dashed var(--agw-border-strong);
+  border-radius: var(--agw-radius-md);
+  background: color-mix(in srgb, var(--agw-canvas) 50%, transparent);
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-ui);
+  line-height: 1.45;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.agw-appr-drop:hover {
+  color: var(--agw-text);
+  border-color: var(--agw-text-subtle);
+}
+.agw-appr-drop[data-over] {
+  border-color: color-mix(in srgb, var(--agw-accent) 70%, transparent);
+  background: color-mix(in srgb, var(--agw-accent) 10%, transparent);
+  color: var(--agw-text);
+}
+.agw-appr-drop strong {
+  color: var(--agw-text);
+  font-weight: var(--agw-fw-medium);
+}
+
+/* ── Color row (swatch + hex) ────────────────────────────────────────────── */
+.agw-appr-color {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.agw-appr-swatch {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--agw-radius-sm);
+  border: 1px solid var(--agw-border-strong);
+  overflow: hidden;
+  cursor: pointer;
+  flex-shrink: 0;
+  /* checkerboard so alpha colors read correctly */
+  background-image:
+    linear-gradient(45deg, var(--agw-border) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--agw-border) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--agw-border) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--agw-border) 75%);
+  background-size: 10px 10px;
+  background-position: 0 0, 0 5px, 5px -5px, -5px 0;
+}
+.agw-appr-swatch-fill {
+  position: absolute;
+  inset: 0;
+}
+.agw-appr-swatch input[type="color"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  border: none;
+  padding: 0;
+}
+.agw-appr-hex {
+  width: 156px;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-ui);
+}
+
+/* ── Range / contrast slider ─────────────────────────────────────────────── */
+.agw-appr-range-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.agw-appr-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 200px;
+  height: 4px;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-control-muted);
+  cursor: pointer;
+}
+.agw-appr-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--agw-accent);
+  border: 2px solid var(--agw-surface);
+  cursor: pointer;
+}
+.agw-appr-range::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--agw-accent);
+  border: 2px solid var(--agw-surface);
+  cursor: pointer;
+}
+.agw-appr-range-val {
+  min-width: 24px;
+  font-size: var(--agw-fs-ui);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-muted);
+  text-align: right;
+}
+
+/* ── Translucent rail & dock (opt-in) ────────────────────────────────────── */
+/* Derive the frosted paint FROM the user's own rail/dock colours (not from
+ * --agw-surface) so enabling this keeps whatever they picked in Appearance and
+ * only adds transparency. Writing to the *-paint aliases — never the tokens —
+ * is what makes that possible without a var() self-reference cycle. */
+.agw-root[data-translucent] {
+  --agw-rail-paint: color-mix(in srgb, var(--agw-rail) 55%, transparent);
+  --agw-dock-paint: color-mix(in srgb, var(--agw-dock) 55%, transparent);
+}
+.agw-root[data-translucent] .agw-settings-nav,
+.agw-root[data-translucent] .agw-titlebar,
+.agw-root[data-translucent] .agw-canvas,
+.agw-root[data-translucent] .agw-prov-side,
+/* The sticky Projects header: its fill is rail paint, which this mode makes
+ * 55% transparent — without the blur, rows scrolling beneath it read straight
+ * through the label. With it, they frost out like under every other
+ * translucent surface, so the pinned header stays legible glass. */
+.agw-root[data-translucent] .agw-rail-section {
+  backdrop-filter: blur(16px) saturate(1.3);
+  -webkit-backdrop-filter: blur(16px) saturate(1.3);
+}
+
+/* ── Reduce motion (opt-in) ──────────────────────────────────────────────── */
+.agw-root[data-reduce-motion] *,
+.agw-root[data-reduce-motion] *::before,
+.agw-root[data-reduce-motion] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+

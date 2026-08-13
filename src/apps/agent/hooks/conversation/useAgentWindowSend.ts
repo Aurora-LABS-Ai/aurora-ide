@@ -32,6 +32,7 @@ import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   resolveModelRequestKnobs,
+  resolveTemperature,
   withProviderDefaults,
 } from "@/apps/agent/services/runtime/model-request-config";
 import { classifyError } from "@/apps/agent/lib/error-classifier";
@@ -1279,7 +1280,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       // Pin tools to THIS turn's project (not the global store) so a turn keeps
       // operating on its own directory even after the user switches projects.
       workspacePath: projectRoot,
-      temperature: llmConfig.defaultTemperature ?? 1.0,
+      // Model → provider → Aurora's default. Set per model in Settings →
+      // Providers; stripped in the Rust adapter for models that reject
+      // sampling, so a value on a Claude 5 row costs nothing.
+      temperature: resolveTemperature(activeModel, llmConfig.defaultTemperature),
       maxTokens:
         llmConfig.defaultMaxTokens ?? llmConfig.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
       // Agentic by design: no artificial tool-call cap — the runtime stops when

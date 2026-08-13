@@ -118,7 +118,13 @@ export const AgentTaskPanel: React.FC = () => {
     <div className="agw-crail-panel">
       <div className="agw-tasks-head">
         <span className="agw-tasks-toggle" data-static>
-          <span className="agw-tasks-title">{heading}</span>
+          {/* The card is a fixed width, so a long heading ends in an ellipsis
+              and a long row clamps at two lines. Both keep the full text
+              reachable on hover — the element's own text is untouched, so a
+              screen reader still gets all of it. */}
+          <span className="agw-tasks-title" title={heading}>
+            {heading}
+          </span>
           <span className="agw-tasks-count">
             {done}/{total}
           </span>
@@ -144,7 +150,9 @@ export const AgentTaskPanel: React.FC = () => {
             return (
               <li key={task.id} className="agw-task-row" data-status={state}>
                 <StatusIcon state={state} />
-                <span className="agw-task-label">{label}</span>
+                <span className="agw-task-label" title={label}>
+                  {label}
+                </span>
                 {/* The glyphs are the visual signal; this is the same
                     information for a screen reader, which cannot see a
                     spinner or a tick. */}

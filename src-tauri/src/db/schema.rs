@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 21;
+pub const SCHEMA_VERSION: i32 = 22;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -234,6 +234,8 @@ fn create_provider_models_table(conn: &Connection) -> DbResult<()> {
             price_currency TEXT,                     -- NULL → USD
             reasoning TEXT,                          -- JSON {type,levels,min,max,default} or NULL
             extra_body TEXT,                         -- JSON object of extra request-body fields, merged verbatim, or NULL
+            temperature REAL,                        -- NULL → inherit the provider default, then Aurora's
+
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(provider_id, model_key),

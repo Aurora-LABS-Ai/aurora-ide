@@ -8,7 +8,7 @@ use crate::db::{CustomTheme, Database};
 // ============================================================
 
 /// Get all custom themes
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_custom_themes(db: State<'_, Mutex<Database>>) -> Result<Vec<CustomTheme>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.themes()
@@ -17,7 +17,7 @@ pub fn get_custom_themes(db: State<'_, Mutex<Database>>) -> Result<Vec<CustomThe
 }
 
 /// Save a custom theme
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_custom_theme(theme: CustomTheme, db: State<'_, Mutex<Database>>) -> Result<(), String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.themes()
@@ -26,7 +26,7 @@ pub fn save_custom_theme(theme: CustomTheme, db: State<'_, Mutex<Database>>) -> 
 }
 
 /// Delete a custom theme
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_custom_theme(id: String, db: State<'_, Mutex<Database>>) -> Result<(), String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.themes()
@@ -35,7 +35,7 @@ pub fn delete_custom_theme(id: String, db: State<'_, Mutex<Database>>) -> Result
 }
 
 /// Set active theme ID preference
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_active_theme_id(theme_id: String, db: State<'_, Mutex<Database>>) -> Result<(), String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.settings()
@@ -44,7 +44,7 @@ pub fn set_active_theme_id(theme_id: String, db: State<'_, Mutex<Database>>) -> 
 }
 
 /// Get active theme ID preference
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_active_theme_id(db: State<'_, Mutex<Database>>) -> Result<Option<String>, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     let setting = db

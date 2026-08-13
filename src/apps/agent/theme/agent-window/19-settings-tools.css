@@ -1,0 +1,403 @@
+/* ── Inline notice (e.g. auto-approve warning) ────────────────────────── */
+.agw-set-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 13px;
+  border-radius: var(--agw-radius-md);
+  font-size: var(--agw-fs-ui);
+  line-height: 1.45;
+  color: var(--agw-text);
+}
+.agw-set-notice[data-tone="warning"] {
+  border: 1px solid color-mix(in srgb, var(--agw-warning) 30%, transparent);
+  background: color-mix(in srgb, var(--agw-warning) 11%, transparent);
+}
+
+/* ── Shell registry (Settings → Tools › Shells) ─────────────────────────── */
+/* Lives inside a `.agw-set-group`, the same collapsible shell as the per-tool
+   approval groups. Rows are separated by dividers rather than nested cards: a
+   shell is a list entry, not a contained object. */
+.agw-shell-panel {
+  border-top: 1px solid var(--agw-border);
+}
+.agw-shell-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--agw-border);
+  background: color-mix(in srgb, var(--agw-canvas) 50%, transparent);
+}
+
+.agw-shell-add {
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-shell-add-label {
+  display: block;
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-shell-add-hint {
+  margin-top: 3px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text-subtle);
+}
+.agw-shell-add-hint code {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+}
+.agw-shell-add-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.agw-shell-add-row .agw-set-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.agw-shell-add-error {
+  margin: 10px 18px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-removed);
+}
+.agw-shell-add .agw-shell-add-error {
+  margin: 10px 0 0;
+}
+
+.agw-shell-warn {
+  margin: 0;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--agw-border);
+  background: color-mix(in srgb, var(--agw-warning) 11%, transparent);
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text);
+}
+.agw-shell-empty {
+  padding: 22px 18px;
+  font-size: var(--agw-fs-ui);
+  line-height: 1.5;
+  color: var(--agw-text-muted);
+}
+.agw-shell-empty-hint {
+  margin-top: 5px;
+  max-width: 56ch;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+
+/* The rows are the only variable-length part of the group, so they carry the
+   cap — matching how an expanded tool card bounds its result body. Roughly
+   four rows; `overflow: auto` means no scrollbar appears until it is needed,
+   so the common short list still reads as one continuous panel. */
+.agw-shell-list {
+  max-height: 360px;
+  overflow-y: auto;
+}
+.agw-shell-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--agw-border);
+  transition: opacity 0.12s ease;
+}
+.agw-shell-list > .agw-shell-row:last-child {
+  border-bottom: none;
+}
+.agw-shell-row[data-busy] {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.agw-shell-row-main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.agw-shell-row-control {
+  flex-shrink: 0;
+  /* Optically centre the switch against the first text line. */
+  padding-top: 2px;
+}
+.agw-shell-row-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.agw-shell-name {
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-shell-tag {
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+.agw-shell-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-shell-path {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--agw-font-code);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-shell-detail {
+  margin-top: 6px;
+  max-width: 62ch;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-muted);
+}
+.agw-shell-detail[data-state="failed"] {
+  color: var(--agw-removed);
+}
+
+/* Row actions stay visible but quiet, then come forward on hover or keyboard
+   focus — hover alone would hide them from touch and keyboard users. */
+.agw-shell-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+  opacity: 0.55;
+  transition: opacity 0.12s ease;
+}
+.agw-shell-row:hover .agw-shell-actions,
+.agw-shell-row:focus-within .agw-shell-actions {
+  opacity: 1;
+}
+.agw-shell-actions:empty {
+  display: none;
+}
+.agw-shell-action {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.agw-shell-action:hover {
+  color: var(--agw-text);
+}
+.agw-shell-action:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: 2px;
+  border-radius: var(--agw-radius-sm);
+}
+.agw-shell-action[data-tone="danger"] {
+  color: var(--agw-removed);
+}
+
+.agw-shell-foot {
+  padding: 12px 18px;
+  border-top: 1px solid var(--agw-border);
+  background: color-mix(in srgb, var(--agw-canvas) 50%, transparent);
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+}
+.agw-shell-foot strong {
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+
+/* ── Tools layout: wide container + tile grid + category card grid ──────── */
+.agw-set-wide {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+/* Defaults / guardrails — compact toggle tiles. */
+.agw-set-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(272px, 1fr));
+  gap: 14px;
+}
+.agw-set-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-set-r-card);
+  background: var(--agw-surface);
+  box-shadow: var(--agw-set-shadow);
+}
+.agw-set-tile-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.agw-set-tile-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: var(--agw-radius-md);
+  border: 1px solid var(--agw-border);
+  background: var(--agw-surface-elevated);
+  color: var(--agw-text-muted);
+}
+.agw-set-tile-label {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: -0.01em;
+  color: var(--agw-text);
+}
+.agw-set-tile-hint {
+  font-size: var(--agw-fs-ui);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+}
+
+.agw-set-foot-btn {
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-surface);
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  outline: none;
+}
+.agw-set-foot-btn:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+  border-color: var(--agw-border-strong);
+}
+
+/* ── Per-tool: collapsible group panels ───────────────────────────────── */
+.agw-set-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.agw-set-group {
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-set-r-card);
+  background: var(--agw-surface);
+  overflow: hidden;
+  box-shadow: var(--agw-set-shadow);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.agw-set-group[data-open] {
+  border-color: var(--agw-border-strong);
+}
+.agw-set-group-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 15px 18px;
+  border: none;
+  background: transparent;
+  color: var(--agw-text);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+  outline: none;
+}
+.agw-set-group-head:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-set-group-chev {
+  display: inline-flex;
+  color: var(--agw-text-subtle);
+  transition: transform 0.18s ease;
+}
+.agw-set-group-chev[data-open] {
+  transform: rotate(180deg);
+}
+.agw-set-group-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: var(--agw-radius-md);
+  border: 1px solid var(--agw-border);
+  background: var(--agw-surface-elevated);
+  color: var(--agw-text-muted);
+}
+.agw-set-group-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--agw-fs-body);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: -0.01em;
+  color: var(--agw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-set-group-meta {
+  flex-shrink: 0;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-set-group-body {
+  border-top: 1px solid var(--agw-border);
+  padding: 6px 0;
+}
+.agw-set-trow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 18px 11px 62px;
+}
+.agw-set-trow-name {
+  min-width: 0;
+  font-size: var(--agw-fs-md);
+  color: var(--agw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-set-group-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 14px 18px 14px 62px;
+  border-top: 1px solid var(--agw-border);
+  background: color-mix(in srgb, var(--agw-canvas) 40%, transparent);
+}
+.agw-set-group-foot-label {
+  margin-right: 4px;
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+

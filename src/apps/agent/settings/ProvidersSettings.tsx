@@ -25,6 +25,7 @@ import { ModelTestButton } from "./ModelTestButton";
 import { AtlasCloudUsageCard } from "./AtlasCloudUsageCard";
 import { CodexUsageCard } from "./CodexUsageCard";
 import { AgwButton, AgwPill, AgwSegmented, AgwSwitch, AgwTextInput } from "./primitives";
+import { DEFAULT_TEMPERATURE } from "@/apps/agent/services/runtime/model-request-config";
 
 function hasAnyKey(p: LLMProvider): boolean {
   if (p.apiKey.trim().length > 0) return true;
@@ -472,11 +473,13 @@ const AddModelRow: React.FC<{ providerId: string; providerType?: string }> = ({
 
 // ── Model row ────────────────────────────────────────────────────────────────
 
-const ModelRow: React.FC<{ model: LLMModel; active: boolean; onActivate: () => void }> = ({
-  model,
-  active,
-  onActivate,
-}) => {
+const ModelRow: React.FC<{
+  model: LLMModel;
+  active: boolean;
+  onActivate: () => void;
+  /** The provider's own default, shown as what an empty Temperature inherits. */
+  providerTemperature?: number;
+}> = ({ model, active, onActivate, providerTemperature }) => {
   const updateModel = useSettingsStore((s) => s.updateModel);
   const deleteModel = useSettingsStore((s) => s.deleteModel);
   const [editing, setEditing] = useState(false);
@@ -574,6 +577,30 @@ const ModelRow: React.FC<{ model: LLMModel; active: boolean; onActivate: () => v
               placeholder="inherit"
               onChange={(e) =>
                 updateModel(model.id, { maxOutputTokens: e.target.value ? Number(e.target.value) : undefined })
+              }
+            />
+          </label>
+          {/* Temperature is a property of the MODEL, not of the app: one key
+              addresses a model that wants 0.2 and another that rejects the
+              parameter outright. Empty inherits — the provider's default, then
+              Aurora's 0.8 — so an untouched install behaves as it always did.
+              Claude 5 and newer reject sampling, and so does any model while
+              reasoning is on; the Rust adapter drops the field there, which is
+              why this says "ignored" rather than pretending to be universal. */}
+          <label className="agw-prov-edit-field">
+            <span>Temperature</span>
+            <AgwTextInput
+              type="number"
+              step="0.1"
+              min="0"
+              max="2"
+              value={model.temperature ?? ""}
+              placeholder={`inherit · ${providerTemperature ?? DEFAULT_TEMPERATURE}`}
+              title="0 is deterministic, 1 is the API default. Ignored by models that reject sampling (Claude 5 and newer) and whenever reasoning is on."
+              onChange={(e) =>
+                updateModel(model.id, {
+                  temperature: e.target.value === "" ? undefined : Number(e.target.value),
+                })
               }
             />
           </label>
@@ -977,6 +1004,7 @@ const ProviderDetail: React.FC<{
               model={m}
               active={selectedModel === `${provider.id}:${m.modelKey}`}
               onActivate={() => setSelectedModel(`${provider.id}:${m.modelKey}`)}
+              providerTemperature={provider.defaultTemperature}
             />
           ))
         )}

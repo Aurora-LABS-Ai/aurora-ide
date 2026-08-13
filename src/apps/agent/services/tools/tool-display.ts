@@ -33,6 +33,11 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   // agent's working checklist, "Plan" is the Plan-mode document in the Canvas.
   // Without these entries the fallback title-cased them into "Todo" and
   // "Plan Step Update", which read as internal names.
+  // The user's own terminals in the right rail — named for what the reader
+  // sees happening, never for the tool. "Terminal Read" would be the internal
+  // name wearing title case.
+  terminal_list: "Open Terminals",
+  terminal_read: "Read Terminal",
   todo: "Task List",
   // Only ever seen when the call was REJECTED — an accepted `chapter` renders as
   // a heading in the transcript, not a tool card. The label has to make sense in

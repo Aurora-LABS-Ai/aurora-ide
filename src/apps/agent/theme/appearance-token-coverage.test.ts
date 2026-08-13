@@ -6,10 +6,17 @@ import {
   useAgentThemeStore,
 } from "@/apps/agent/store/ui/useAgentThemeStore";
 // @ts-expect-error The app intentionally omits Node typings; Vitest itself runs in Node.
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 const cwd = (globalThis as unknown as { process: { cwd: () => string } }).process.cwd();
-const css = readFileSync(`${cwd}/src/apps/agent/theme/agent-window.css`, "utf8");
+// agent-window.css is an @import manifest; the rules live in the partials.
+// Sorted directory order == numeric-prefix order == cascade order.
+const partialsDir = `${cwd}/src/apps/agent/theme/agent-window`;
+const css = (readdirSync(partialsDir) as string[])
+  .filter((name) => name.endsWith(".css"))
+  .sort()
+  .map((name) => readFileSync(`${partialsDir}/${name}`, "utf8"))
+  .join("\n");
 const messageBubble = readFileSync(
   `${cwd}/src/apps/agent/components/conversation/MessageBubble.tsx`,
   "utf8",
@@ -17,6 +24,19 @@ const messageBubble = readFileSync(
 const renderedSources = `${css}\n${messageBubble}`;
 
 describe("agent appearance token coverage", () => {
+  it("imports every partial from the manifest, in cascade order", () => {
+    // A partial on disk that the manifest skips would pass the rule checks
+    // below (they read the directory) while never loading in the app.
+    const manifest = readFileSync(`${cwd}/src/apps/agent/theme/agent-window.css`, "utf8");
+    const imported = [...manifest.matchAll(/@import "\.\/agent-window\/([^"]+)";/g)].map(
+      (m) => m[1],
+    );
+    const onDisk = (readdirSync(partialsDir) as string[])
+      .filter((name) => name.endsWith(".css"))
+      .sort();
+    expect(imported).toEqual(onDisk);
+  });
+
   it("wires every theme token to a rendered consumer", () => {
     for (const token of AGENT_TOKEN_KEYS) {
       const cssName = token.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`);
@@ -49,6 +69,30 @@ describe("agent appearance token coverage", () => {
     expect(css).not.toMatch(
       /\.agw-skeleton span\s*\{[^}]*var\(--agw-surface-elevated\)/s,
     );
+  });
+
+  it("lets the right-click menu be sized by its own labels, never by a fixed width", () => {
+    const railMenu = css.match(/\.agw-rail-menu\s*\{([^}]*)\}/s)?.[1] ?? "";
+    expect(railMenu, ".agw-rail-menu rule not found").not.toEqual("");
+    // The rows are `white-space: nowrap`, so a pinned width clips its longest
+    // label — and since every size token multiplies by --agw-ui-text-scale,
+    // it clips for a scaled-up interface even when today's labels fit.
+    expect(railMenu).toMatch(/width:\s*max-content/);
+    expect(railMenu).not.toMatch(/^\s*width:\s*\d/m);
+    // Past max-width the label must ellipsize; unbounded nowrap text does not
+    // clip, it paints outside the panel.
+    expect(css).toMatch(/\.agw-rail-menu-item > span\s*\{[^}]*text-overflow:\s*ellipsis/s);
+    // A menu row is a list row, not prose.
+    expect(css).toMatch(/\.agw-rail-menu-item\s*\{[^}]*font-size:\s*var\(--agw-fs-ui\)/s);
+
+    const component = readFileSync(
+      `${cwd}/src/apps/agent/components/shell/RailMenu.tsx`,
+      "utf8",
+    );
+    // The component clamps from the measured box. A second copy of the
+    // geometry here is what drifted from the CSS in the first place.
+    expect(component).toContain("offsetWidth");
+    expect(component).not.toMatch(/width:\s*RAIL_MENU_WIDTH/);
   });
 
   it("reset restores every preference owned by Appearance", () => {

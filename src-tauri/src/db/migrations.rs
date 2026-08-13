@@ -225,6 +225,17 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [21])?;
             Ok(())
         }
+        22 => {
+            // Migration from v21 to v22: add `temperature` to `provider_models`.
+            // Temperature was a single hidden app setting nothing could edit,
+            // while the Agent page told the user it was "a model setting, set it
+            // on the model itself" — a control that did not exist. NULL keeps
+            // the old behaviour exactly: inherit the provider default.
+            migration_v22(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [22])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -245,6 +256,25 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
 /// Idempotent: guarded with a PRAGMA table_info sniff so re-running on a
 /// hand-patched DB (or one where a fresh install already created the column)
 /// is safe.
+/// Migration v22: Add the nullable `temperature` column to `provider_models`.
+///
+/// Per-model, because that is where the setting belongs and where the UI
+/// already claimed it lived. NULL means "inherit" — the provider's
+/// `default_temperature`, then Aurora's own default — so an existing install
+/// behaves identically until the user sets a value. Idempotent, same PRAGMA
+/// sniff as its neighbours.
+fn migration_v22(conn: &Connection) -> DbResult<()> {
+    let existing: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(provider_models)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        rows.flatten().collect()
+    };
+    if !existing.iter().any(|c| c == "temperature") {
+        conn.execute("ALTER TABLE provider_models ADD COLUMN temperature REAL", [])?;
+    }
+    Ok(())
+}
+
 fn migration_v21(conn: &Connection) -> DbResult<()> {
     let existing: Vec<String> = {
         let mut stmt = conn.prepare("PRAGMA table_info(provider_models)")?;

@@ -108,6 +108,25 @@ function cmdPill(chip: CommandPromptChip, key: React.Key): React.ReactNode {
   );
 }
 
+/** The chip for an `@terminal` mention, anchored at its `@terminal:<id>` token. */
+function terminalPill(chip: AttachedPromptChip, key: React.Key): React.ReactNode {
+  return (
+    <span
+      key={key}
+      className="agw-pill-inline agw-pill-term"
+      title={`terminal · ${chip.title}`}
+    >
+      <span className="agw-pill-cmd-ico">
+        <AgentIcon name="terminal" size={11} />
+      </span>
+      <span>{chip.title}</span>
+    </span>
+  );
+}
+
+/** The token an `@terminal` pill serializes as — the session id, not its name. */
+const terminalToken = (chip: AttachedPromptChip) => `@terminal:${chip.value ?? ""}`;
+
 /** The `/title` token a command pill serializes as in the sent text. */
 const commandToken = (chip: AttachedPromptChip) => `/${chip.title}`;
 
@@ -134,12 +153,17 @@ function renderUserText(
     render: (key: React.Key) => React.ReactNode;
   }> = [];
   for (const chip of promptChips) {
-    if (isPathChip(chip) && chip.value) {
+    if (chip.kind === "terminal" && chip.value) {
+      candidates.push({
+        marker: terminalToken(chip),
+        render: (key) => terminalPill(chip, key),
+      });
+    } else if (isPathChip(chip) && chip.value) {
       candidates.push({
         marker: `@${chip.value}`,
         render: (key) => filePill(chip, key),
       });
-    } else if (!isPathChip(chip) && chip.title) {
+    } else if (!isPathChip(chip) && chip.kind !== "terminal" && chip.title) {
       const command = chip as CommandPromptChip;
       candidates.push({
         marker: commandToken(chip),
@@ -312,8 +336,8 @@ const CollapsibleBubbleBody: React.FC<{ children: React.ReactNode }> = ({
   );
 };
 
-/** Right-aligned user turn. Renders any embedded images above the text; an
- *  image click opens the full-size preview modal. */
+/** Right-aligned user turn. Attached images render INSIDE the card, above the
+ *  text; an image click opens the full-size preview modal. */
 const UserBubble: React.FC<{
   content: string;
   showActions: boolean;
@@ -326,7 +350,8 @@ const UserBubble: React.FC<{
   const chips = selectedElements ?? [];
   const exactChips = promptChips ?? [];
   const exactCommands = exactChips.filter(
-    (chip): chip is CommandPromptChip => !isPathChip(chip),
+    (chip): chip is CommandPromptChip =>
+      !isPathChip(chip) && chip.kind !== "terminal",
   );
   const exactKeys = new Set(exactCommands.map((chip) => `${chip.kind}:${chip.title}`));
   // Command pills whose `/title` token is in the text render INLINE at that
@@ -343,32 +368,17 @@ const UserBubble: React.FC<{
         !inlineKeys.has(`${chip.kind}:${chip.title}`),
     ),
   ];
-  const hasBubble = text.length > 0 || chips.length > 0 || cmdChips.length > 0;
+  // Text-ish content: what the clamp measures and what the "show more" chevron
+  // is about. Images are deliberately NOT counted — they sit outside the
+  // clamped body (see below).
+  const hasText = text.length > 0 || chips.length > 0 || cmdChips.length > 0;
+  const hasBubble = hasText || images.length > 0;
 
   return (
     <div
       className="agw-msg"
       style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}
     >
-      {images.length > 0 && (
-        <div className="agw-bubble-images">
-          {images.map((img, i) => {
-            const src = attachmentDataUrl(img);
-            return (
-              <button
-                key={i}
-                type="button"
-                className="agw-bubble-image"
-                title="View image"
-                onClick={() => setPreview(src)}
-              >
-                <img src={src} alt="" draggable={false} />
-              </button>
-            );
-          })}
-        </div>
-      )}
-
       {hasBubble && (
         <div
           // Fill AND padding live in CSS (`.agw-bubble-user`), not inline, so the
@@ -389,65 +399,111 @@ const UserBubble: React.FC<{
             border: "1px solid var(--agw-border)",
           }}
         >
-          <CollapsibleBubbleBody>
-            {cmdChips.length > 0 && (
-              <div
-                className="agw-bubble-selected"
-                style={{ marginBottom: text || chips.length > 0 ? 7 : 0 }}
-              >
-                {cmdChips.map((c, i) => (
-                  <span
-                    key={`${c.kind}-${c.title}-${i}`}
-                    className="agw-pill-inline agw-pill-cmd"
-                    data-cmd-kind={c.kind}
-                    title={`${c.kind} · ${c.title}`}
+          {/*
+            INSIDE the card, and above the clamped body.
+
+            Inside, because the attachment belongs to the question: while the
+            sticky-user preference is on, the card is pinned, widened to the
+            full column and capped at 34vh — and an image row parked outside it
+            got none of that. It stayed hugging the right at 82% over a
+            full-width band (a stray panel beside the question it belongs to),
+            it escaped the height cap so a couple of 220px thumbnails made a
+            pinned header that ate the viewport, and on an image-only message
+            there was no card at all, so the absolutely-positioned copy chip
+            landed on the picture. One parent fixes all three, and it matches
+            the reference: `DOCS/visual-studies/antigravity/13-user-bubble-image.png`.
+
+            Above the body rather than in it, because `CollapsibleBubbleBody`
+            clamps its children to six LINES — measured off line-height. An
+            image inside that measures as content and would be cut by a clamp
+            meant for prose.
+          */}
+          {images.length > 0 && (
+            <div className="agw-bubble-images">
+              {images.map((img, i) => {
+                const src = attachmentDataUrl(img);
+                return (
+                  <button
+                    key={i}
+                    type="button"
+                    className="agw-bubble-image"
+                    title="View image"
+                    onClick={() => setPreview(src)}
                   >
-                    <span className="agw-pill-cmd-ico">
-                      <AgentIcon name={COMMAND_CHIP_ICON[c.kind]} size={11} />
-                    </span>
-                    <span>{c.title}</span>
-                  </span>
-                ))}
-              </div>
-            )}
+                    <img src={src} alt="" draggable={false} />
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
-            {chips.length > 0 && (
-              <div
-                className="agw-bubble-selected"
-                style={{ marginBottom: text ? 7 : 0 }}
-              >
-                {chips.map((el) => {
-                  const elText = (el.text ?? "").trim();
-                  const tip = [
-                    `selector: ${el.selector}`,
-                    `tag: <${el.tagName}>`,
-                    el.url ? `url: ${el.url}` : null,
-                  ]
-                    .filter(Boolean)
-                    .join("\n");
-                  return (
-                    <span key={el.index} className="agw-sel-chip" title={tip}>
-                      <AgentIcon name="inspect" size={11} />
-                      <span className="agw-sel-tag">{`<${el.tagName}>`}</span>
-                      {elText && (
-                        <span className="agw-sel-text">{elText.slice(0, 24)}</span>
-                      )}
+          {hasText && (
+            <CollapsibleBubbleBody>
+              {cmdChips.length > 0 && (
+                <div
+                  className="agw-bubble-selected"
+                  style={{ marginBottom: text || chips.length > 0 ? 7 : 0 }}
+                >
+                  {cmdChips.map((c, i) => (
+                    <span
+                      key={`${c.kind}-${c.title}-${i}`}
+                      className="agw-pill-inline agw-pill-cmd"
+                      data-cmd-kind={c.kind}
+                      title={`${c.kind} · ${c.title}`}
+                    >
+                      <span className="agw-pill-cmd-ico">
+                        <AgentIcon name={COMMAND_CHIP_ICON[c.kind]} size={11} />
+                      </span>
+                      <span>{c.title}</span>
                     </span>
-                  );
-                })}
-              </div>
-            )}
+                  ))}
+                </div>
+              )}
 
-            {text && (
-              <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                {renderUserText(text, exactChips)}
-              </div>
-            )}
-          </CollapsibleBubbleBody>
+              {chips.length > 0 && (
+                <div
+                  className="agw-bubble-selected"
+                  style={{ marginBottom: text ? 7 : 0 }}
+                >
+                  {chips.map((el) => {
+                    const elText = (el.text ?? "").trim();
+                    const tip = [
+                      `selector: ${el.selector}`,
+                      `tag: <${el.tagName}>`,
+                      el.url ? `url: ${el.url}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join("\n");
+                    return (
+                      <span key={el.index} className="agw-sel-chip" title={tip}>
+                        <AgentIcon name="inspect" size={11} />
+                        <span className="agw-sel-tag">{`<${el.tagName}>`}</span>
+                        {elText && (
+                          <span className="agw-sel-text">{elText.slice(0, 24)}</span>
+                        )}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+
+              {text && (
+                <div
+                  // Named so the pinned-bubble rules can reserve the copy chip's
+                  // footprint at the end of THIS text, rather than as a strip
+                  // under the whole message. See 11-transcript-bubbles.css.
+                  className="agw-bubble-text"
+                  style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+                >
+                  {renderUserText(text, exactChips)}
+                </div>
+              )}
+            </CollapsibleBubbleBody>
+          )}
         </div>
       )}
 
-      {showActions && (hasBubble || images.length > 0) && (
+      {showActions && hasBubble && (
         <div className="agw-msg-actions" style={{ marginTop: 4 }}>
           <CopyAction text={text} />
         </div>
@@ -481,7 +537,8 @@ const InjectionNote: React.FC<{
   const [preview, setPreview] = useState<string | null>(null);
   const allChips = chips ?? [];
   const commandChips = allChips.filter(
-    (chip): chip is CommandPromptChip => !isPathChip(chip),
+    (chip): chip is CommandPromptChip =>
+      !isPathChip(chip) && chip.kind !== "terminal",
   );
   const inlineKeys = new Set(
     commandChipsInline(bodyText, commandChips).map((chip) => `${chip.kind}:${chip.title}`),

@@ -47,14 +47,14 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use super::error::RuntimeError;
 use super::session::{RichToolResult, Session};
-use super::types::{ContentBlock, MessageRole};
+use super::types::{ContentBlock, ConversationMessage, MessageRole};
 
 // ============================================================================
 // Metadata sidecar
@@ -393,24 +393,20 @@ impl SessionStore {
             .load_metadata(thread_id)
             .unwrap_or_else(|_| SessionMetadata::new(thread_id));
 
-        // Stream the JSONL just enough to count messages and pull the
-        // last user message as preview. A full Session::load_from_path
-        // would deserialize every block — overkill for the chat list.
-        let session = Session::load_from_path(thread_id.to_string(), jsonl_path).ok();
-        let (message_count, preview) = match session {
-            Some(s) => {
-                let count = s.messages().len();
-                let preview = s
-                    .messages()
-                    .iter()
-                    .rev()
-                    .find(|m| matches!(m.role, MessageRole::User))
-                    .map(|m| collect_text_preview(&m.blocks, 120))
-                    .unwrap_or_default();
-                (count, preview)
-            }
-            None => (0, String::new()),
-        };
+        // Stream the JSONL: count non-empty lines and remember the raw text
+        // of the last line that starts a user message. Only that ONE line is
+        // deserialized. This function used to call `Session::load_from_path`,
+        // which builds every content block of every message — listing a
+        // 193 MB store took multiple seconds and, run from a synchronous
+        // command (main thread on Tauri v2/Windows), froze every window into
+        // "Not Responding" at boot.
+        //
+        // The `{"role":"user"` prefix test is sound because `role` is the
+        // first field of `ConversationMessage` and serde_json writes struct
+        // fields in declaration order with no whitespace. A candidate line is
+        // still verified by a real typed parse before use, so a false match
+        // can only cost one extra parse, never a wrong preview.
+        let (message_count, preview) = Self::scan_jsonl(jsonl_path).unwrap_or((0, String::new()));
 
         Ok(SessionSummary {
             id: thread_id.to_string(),
@@ -424,6 +420,36 @@ impl SessionStore {
             created_at: meta.created_at,
             updated_at: meta.updated_at,
         })
+    }
+
+    /// Line-scan a session JSONL for `(message_count, preview)` without
+    /// deserializing message bodies. See the caller for why.
+    ///
+    /// Any I/O failure degrades to the caller's `(0, "")` fallback — same
+    /// behavior the old full-load path had for unreadable files — so a bad
+    /// file can never make its thread disappear from the list.
+    fn scan_jsonl(jsonl_path: &Path) -> io::Result<(usize, String)> {
+        let file = fs::File::open(jsonl_path)?;
+        let reader = BufReader::new(file);
+        let mut message_count = 0usize;
+        let mut last_user_line: Option<String> = None;
+        for line_res in reader.lines() {
+            let line = line_res?;
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            message_count += 1;
+            if trimmed.starts_with(r#"{"role":"user""#) {
+                last_user_line = Some(line);
+            }
+        }
+        let preview = last_user_line
+            .and_then(|line| serde_json::from_str::<ConversationMessage>(&line).ok())
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .map(|m| collect_text_preview(&m.blocks, 120))
+            .unwrap_or_default();
+        Ok((message_count, preview))
     }
 
     // ----------------------------------------------------------------

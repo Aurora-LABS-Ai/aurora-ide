@@ -121,6 +121,15 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   aurora_skill_load: 'low',        // Read-only SKILL.md fetch
 
   // ============================================
+  // USER'S TERMINALS (right rail) - AUTO-APPROVED
+  // ============================================
+  // Read-only: they observe output that already exists on screen. Neither can
+  // run a command or type into a live shell — that is `shell_execute`, which
+  // keeps its own risk level.
+  terminal_list: 'low',            // Which terminals the user has open
+  terminal_read: 'low',            // One terminal's existing output
+
+  // ============================================
   // INTERACTIVE PROMPT - AUTO-APPROVED (UI is the consent)
   // ============================================
   ask_question: 'low',             // Renders a prompt; user answers in the UI

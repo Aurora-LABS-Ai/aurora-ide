@@ -452,6 +452,19 @@ impl ConversationRuntime {
                     None => owned_messages,
                 };
 
+            // The live checklist, re-read from the store on EVERY request so a
+            // mid-turn update is reflected on the very next iteration. This is
+            // what keeps the model from having to remember its own list — or
+            // call `op: "read"` to recover it after a compaction.
+            let owned_messages: Option<Vec<ConversationMessage>> =
+                match task_reminder_block(&session.thread_id) {
+                    Some(reminder) => Some(inject_task_reminder(
+                        owned_messages.as_deref().unwrap_or(&compacted),
+                        &reminder,
+                    )),
+                    None => owned_messages,
+                };
+
             // Budget-aware trim. Same API-view-only contract as
             // `inject_ide_context`: persisted session stays whole, only
             // the request body shrinks. Disabled (no-op) when
@@ -658,10 +671,8 @@ impl ConversationRuntime {
                 // The assistant message just produced IS output — its
                 // reasoning was generated and billed regardless of whether a
                 // later request will replay it, so it counts as text here.
-                let output = estimate_message_tokens(
-                    &turn.assistant_message,
-                    ReasoningReplay::Text,
-                );
+                let output =
+                    estimate_message_tokens(&turn.assistant_message, ReasoningReplay::Text);
                 effective_usage = TokenUsage {
                     input_tokens: input,
                     output_tokens: output,
@@ -1576,6 +1587,12 @@ impl ConversationRuntime {
                         .as_ref()
                         .map(std::path::PathBuf::from),
                     allow_outside_workspace: self.config.allow_outside_workspace,
+                    // The very directory `spill_tool_output` writes to, so a
+                    // spilled result's path is readable by the agent that just
+                    // produced it — see `ToolContext::spill_dir`.
+                    spill_dir: self.store_dir.as_deref().map(|root| {
+                        super::session_store::tool_results_dir_in(root, &session.thread_id)
+                    }),
                     cancel_token: cancel_token.clone(),
                 };
                 async move {
@@ -2707,8 +2724,7 @@ fn format_compact_summary(raw: &str) -> String {
         without_analysis.find("<summary>"),
         without_analysis.find("</summary>"),
     ) {
-        (Some(start), Some(end)) if end > start => without_analysis
-            [start + "<summary>".len()..end]
+        (Some(start), Some(end)) if end > start => without_analysis[start + "<summary>".len()..end]
             .trim()
             .to_string(),
         // Opened but never closed — the budget ran out mid-note. Keep what
@@ -3271,10 +3287,7 @@ impl ConversationRuntime {
     }
 }
 
-fn inject_repo_map(
-    messages: &[ConversationMessage],
-    repo_map: &str,
-) -> Vec<ConversationMessage> {
+fn inject_repo_map(messages: &[ConversationMessage], repo_map: &str) -> Vec<ConversationMessage> {
     let mut owned = messages.to_vec();
     let Some(idx) = owned.iter().position(|m| m.role == MessageRole::User) else {
         return owned;
@@ -3315,6 +3328,94 @@ fn inject_ide_context(
             owned[idx]
                 .blocks
                 .insert(0, ContentBlock::Text { text: wrapped });
+        }
+    }
+    owned
+}
+
+/// Render the live checklist as an `<aurora_task_reminder>` block, or `None`
+/// when this conversation is not tracking any tasks.
+///
+/// Read from the STORE on every request rather than remembered, so the block
+/// is the same truth the user's checklist panel is drawing. The model
+/// therefore never has to call `op: "read"` to find out where it stands, and a
+/// list that scrolled out of its context — or was written before a compaction
+/// — is still in front of it.
+fn task_reminder_block(thread_id: &str) -> Option<String> {
+    // A failure here is a missing convenience, never a broken turn: the `todo`
+    // tool's own results still carry the list.
+    let list = crate::tools::shell_editor_todo::todo_store::read(thread_id).ok()?;
+    if list.items.is_empty() {
+        return None;
+    }
+
+    use crate::tools::shell_editor_todo::todo_store::TodoStatus;
+
+    let cursor = list.cursor();
+    let mut out = String::from("<aurora_task_reminder>\n");
+    out.push_str(
+        "This is your checklist for this conversation, as it stands right now. The user is \
+watching it live, so keep it current with the `todo` tool — close a task the moment it is done, \
+and close one and start the next in a SINGLE call.\n",
+    );
+    for item in &list.items {
+        let mark = match item.status {
+            TodoStatus::Completed => "x",
+            TodoStatus::InProgress => ">",
+            TodoStatus::Cancelled => "-",
+            TodoStatus::Pending => " ",
+        };
+        out.push_str(&format!(
+            "- [{mark}] {} {} ({})\n",
+            item.id,
+            item.content,
+            item.status.as_str()
+        ));
+    }
+    out.push_str(&format!(
+        "{} closed of {}. ",
+        cursor.completed + cursor.cancelled,
+        cursor.total
+    ));
+    out.push_str(&match (&cursor.active_id, &cursor.next_id) {
+        _ if cursor.complete => "Every task is closed.".to_string(),
+        (Some(active), _) => format!("Now working on {active}."),
+        (None, Some(next)) => {
+            format!("Nothing is in progress — mark {next} in_progress when you start it.")
+        }
+        (None, None) => "Nothing left to start.".to_string(),
+    });
+    out.push_str("\n</aurora_task_reminder>");
+    Some(out)
+}
+
+/// Attach the checklist to the LATEST user message.
+///
+/// Deliberately the opposite placement from [`inject_repo_map`], for the
+/// opposite reason. The repo map is static, so it rides at the head where the
+/// provider caches it once. This list changes every few tool calls; putting it
+/// at the head would rewrite the cached prefix on each turn and re-bill the
+/// whole conversation. Appended at the end, it costs its own ~15 tokens per
+/// task and invalidates nothing.
+///
+/// Same contract as [`inject_ide_context`]: the persisted session stays
+/// verbatim, only the request body carries this.
+fn inject_task_reminder(
+    messages: &[ConversationMessage],
+    reminder: &str,
+) -> Vec<ConversationMessage> {
+    let mut owned = messages.to_vec();
+    let Some(idx) = owned.iter().rposition(|m| m.role == MessageRole::User) else {
+        return owned;
+    };
+    match owned[idx].blocks.last_mut() {
+        Some(ContentBlock::Text { text }) => {
+            *text = format!("{text}\n\n{reminder}");
+        }
+        _ => {
+            owned[idx].blocks.push(ContentBlock::Text {
+                text: reminder.to_string(),
+            });
         }
     }
     owned
@@ -3450,7 +3551,10 @@ mod tests {
         assert!(parsed.get("newContent").is_none(), "echo dropped");
         assert_eq!(parsed["linesAdded"], 4, "signal kept");
         assert!(
-            parsed["contentEcho"].as_str().unwrap().contains("file_read"),
+            parsed["contentEcho"]
+                .as_str()
+                .unwrap()
+                .contains("file_read"),
             "elision names its recovery"
         );
     }
@@ -3965,7 +4069,12 @@ mod tests {
         let (tx, _rx) = mpsc::channel(64);
 
         let outcome = runtime
-            .run_turn(&mut session, user_msg("read both"), tx, CancellationToken::new())
+            .run_turn(
+                &mut session,
+                user_msg("read both"),
+                tx,
+                CancellationToken::new(),
+            )
             .await;
 
         assert!(matches!(outcome, Err(RuntimeError::Cancelled)));
@@ -4090,12 +4199,20 @@ mod tests {
         let (tx, _rx) = mpsc::channel(64);
 
         let summary = runtime
-            .run_turn(&mut session, user_msg("write it"), tx, CancellationToken::new())
+            .run_turn(
+                &mut session,
+                user_msg("write it"),
+                tx,
+                CancellationToken::new(),
+            )
             .await
             .expect("a truncated batch ends the turn, it does not fail it");
 
         assert_eq!(summary.stop_reason, "length");
-        assert_eq!(summary.iterations, 1, "the turn stops; retrying re-truncates");
+        assert_eq!(
+            summary.iterations, 1,
+            "the turn stops; retrying re-truncates"
+        );
         assert!(
             seen.lock().expect("seen").is_empty(),
             "a call whose arguments may be truncated must not execute"
@@ -4115,11 +4232,9 @@ mod tests {
 
         // The user is told, and the notice survives a reload.
         assert!(
-            session
-                .messages()
-                .iter()
-                .flat_map(|m| &m.blocks)
-                .any(|b| matches!(b, ContentBlock::Notice { message, .. } if message.contains("cut off"))),
+            session.messages().iter().flat_map(|m| &m.blocks).any(
+                |b| matches!(b, ContentBlock::Notice { message, .. } if message.contains("cut off"))
+            ),
             "the truncation notice must be persisted on this path too",
         );
     }
@@ -5078,6 +5193,90 @@ mod tests {
     }
 
     #[test]
+    fn the_task_reminder_rides_on_the_latest_user_message() {
+        // The opposite placement from the repo map, for the opposite reason:
+        // this list changes every few tool calls, so at the head it would
+        // rewrite the cached prefix and re-bill the whole conversation.
+        let msgs = vec![
+            ConversationMessage::user_text("first question", 0),
+            ConversationMessage::user_text("second question", 1),
+        ];
+        let out = inject_task_reminder(
+            &msgs,
+            "<aurora_task_reminder>\n- [ ] t1 Do it (pending)\n</aurora_task_reminder>",
+        );
+
+        let head = match &out[0].blocks[0] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("expected text, got {other:?}"),
+        };
+        assert!(
+            !head.contains("aurora_task_reminder"),
+            "older messages stay untouched, or the cached prefix moves: {head}"
+        );
+
+        let last = match &out[1].blocks[0] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("expected text, got {other:?}"),
+        };
+        assert!(last.starts_with("second question"), "{last}");
+        assert!(last.contains("<aurora_task_reminder>"), "{last}");
+    }
+
+    #[test]
+    fn the_task_reminder_states_every_status_and_where_the_agent_is() {
+        use crate::tools::shell_editor_todo::todo_store::{self, TodoItem, TodoList, TodoStatus};
+
+        let thread = format!("reminder-test-{}", std::process::id());
+        assert!(
+            task_reminder_block(&thread).is_none(),
+            "no list means no block — an empty reminder is pure cost"
+        );
+
+        let mut list = TodoList::default();
+        for (id, content, status) in [
+            ("t1", "Read the code", TodoStatus::Completed),
+            ("t2", "Fix the bug", TodoStatus::InProgress),
+            ("t3", "Run the tests", TodoStatus::Pending),
+            ("t4", "Update the docs", TodoStatus::Cancelled),
+        ] {
+            list.items.push(TodoItem {
+                id: id.into(),
+                content: content.into(),
+                active_form: content.into(),
+                status,
+            });
+        }
+        todo_store::write(&thread, &list).expect("write");
+
+        let block = task_reminder_block(&thread).expect("a tracked list produces a block");
+        assert!(block.starts_with("<aurora_task_reminder>"));
+        assert!(block.ends_with("</aurora_task_reminder>"));
+        // Every task, with its status readable both as a mark and as a word.
+        assert!(
+            block.contains("- [x] t1 Read the code (completed)"),
+            "{block}"
+        );
+        assert!(
+            block.contains("- [>] t2 Fix the bug (in_progress)"),
+            "{block}"
+        );
+        assert!(
+            block.contains("- [ ] t3 Run the tests (pending)"),
+            "{block}"
+        );
+        assert!(
+            block.contains("- [-] t4 Update the docs (cancelled)"),
+            "{block}"
+        );
+        // Cancelled counts as closed, exactly like the user's checklist counts.
+        assert!(block.contains("2 closed of 4"), "{block}");
+        assert!(block.contains("Now working on t2."), "{block}");
+
+        todo_store::clear(&thread).ok();
+    }
+
+    #[test]
     fn repo_map_rides_on_the_first_user_message_not_the_latest() {
         // Placement is the whole cost model. At the head it sits inside the
         // provider's cached prefix and is billed once; on the newest message it
@@ -5087,16 +5286,22 @@ mod tests {
             ConversationMessage::user_text("first question", 0),
             ConversationMessage::user_text("second question", 1),
         ];
-        let out = inject_repo_map(&msgs, "<repo_map>
+        let out = inject_repo_map(
+            &msgs,
+            "<repo_map>
 src/
-</repo_map>");
+</repo_map>",
+        );
 
         let head = match &out[0].blocks[0] {
             ContentBlock::Text { text } => text.clone(),
             other => panic!("expected text, got {other:?}"),
         };
         assert!(head.starts_with("<repo_map>"), "{head}");
-        assert!(head.contains("first question"), "original text must survive");
+        assert!(
+            head.contains("first question"),
+            "original text must survive"
+        );
 
         let last = match &out[1].blocks[0] {
             ContentBlock::Text { text } => text.clone(),
@@ -5477,7 +5682,13 @@ src/
         // 200k window minus 4096 reserved → ~195k budget; threshold is
         // ~146k. Two short messages don't come close.
         let messages = vec![user_with_text("hi", 0), assistant_with_text("ok", 1)];
-        let outcome = trim_to_budget(messages.clone(), Some(200_000), 4096, "system", ReasoningReplay::Text);
+        let outcome = trim_to_budget(
+            messages.clone(),
+            Some(200_000),
+            4096,
+            "system",
+            ReasoningReplay::Text,
+        );
         assert_eq!(outcome.dropped, 0);
         assert_eq!(outcome.messages.len(), 2);
     }
@@ -5604,7 +5815,13 @@ src/
         // budget saturates to 0; we should bail out without touching
         // the message list (let the provider surface the real error).
         let messages = vec![user_with_text("hi", 0), assistant_with_text("ok", 1)];
-        let outcome = trim_to_budget(messages.clone(), Some(1000), 5000, "", ReasoningReplay::Text);
+        let outcome = trim_to_budget(
+            messages.clone(),
+            Some(1000),
+            5000,
+            "",
+            ReasoningReplay::Text,
+        );
         assert_eq!(outcome.dropped, 0);
         assert_eq!(outcome.messages, messages);
     }
@@ -5787,7 +6004,13 @@ src/
         let (tx, _rx) = mpsc::channel(64);
         let mut seq = 0;
         assert!(runtime
-            .compact_now(&mut session, "turn", &mut seq, &tx, &CancellationToken::new())
+            .compact_now(
+                &mut session,
+                "turn",
+                &mut seq,
+                &tx,
+                &CancellationToken::new()
+            )
             .await
             .is_some());
 
@@ -5824,7 +6047,13 @@ src/
         let (tx, _rx) = mpsc::channel(64);
         let mut seq = 0;
         assert!(runtime
-            .compact_now(&mut session, "turn", &mut seq, &tx, &CancellationToken::new())
+            .compact_now(
+                &mut session,
+                "turn",
+                &mut seq,
+                &tx,
+                &CancellationToken::new()
+            )
             .await
             .is_some());
 
@@ -5855,13 +6084,25 @@ src/
         let (tx, _rx) = mpsc::channel(64);
         let mut seq = 0;
         let _ = runtime
-            .compact_now(&mut session, "turn", &mut seq, &tx, &CancellationToken::new())
+            .compact_now(
+                &mut session,
+                "turn",
+                &mut seq,
+                &tx,
+                &CancellationToken::new(),
+            )
             .await;
 
         let seen = chat.seen.lock().expect("seen");
         assert_eq!(seen.len(), 2, "should retry once in the standalone shape");
-        assert_eq!(seen[0].1, 1, "first attempt keeps the tools (for the cache)");
-        assert_eq!(seen[1].1, 0, "retry drops them so the note cannot be misread");
+        assert_eq!(
+            seen[0].1, 1,
+            "first attempt keeps the tools (for the cache)"
+        );
+        assert_eq!(
+            seen[1].1, 0,
+            "retry drops them so the note cannot be misread"
+        );
     }
 
     #[tokio::test]
@@ -5883,7 +6124,10 @@ src/
 
         let mut session = compactable_session();
         // Reasoning carried over from the chat model, signature and all.
-        session.append_message(assistant_with_reasoning("mulling it over", "sig-from-openai"));
+        session.append_message(assistant_with_reasoning(
+            "mulling it over",
+            "sig-from-openai",
+        ));
         session.append_message(user_with_text("carry on", 99));
 
         let head = strip_reasoning(session.messages().to_vec());
@@ -5901,9 +6145,18 @@ src/
         let (tx, _rx) = mpsc::channel(64);
         let mut seq = 0;
         let result = runtime
-            .compact_now(&mut session, "turn", &mut seq, &tx, &CancellationToken::new())
+            .compact_now(
+                &mut session,
+                "turn",
+                &mut seq,
+                &tx,
+                &CancellationToken::new(),
+            )
             .await;
-        assert!(result.is_some(), "cross-provider compaction must still succeed");
+        assert!(
+            result.is_some(),
+            "cross-provider compaction must still succeed"
+        );
     }
 
     #[test]
@@ -6088,10 +6341,7 @@ src/
         // Anthropic it becomes an assistant turn with empty content, which the
         // API rejects — one dropped response would break every later turn.
         assert!(
-            session
-                .messages()
-                .iter()
-                .all(|m| !m.blocks.is_empty()),
+            session.messages().iter().all(|m| !m.blocks.is_empty()),
             "an empty assistant message must never enter history",
         );
         assert!(
@@ -6170,7 +6420,12 @@ src/
         let mut session = Session::new("t-drop");
         let (tx, _rx) = mpsc::channel(64);
         runtime
-            .run_turn(&mut session, user_msg("check project"), tx, CancellationToken::new())
+            .run_turn(
+                &mut session,
+                user_msg("check project"),
+                tx,
+                CancellationToken::new(),
+            )
             .await
             .expect("a dropped stream must not end the turn");
 
@@ -6199,16 +6454,18 @@ src/
             1,
             ApiError::Network("connection reset".into()),
         ));
-        let runtime = ConversationRuntime::new(
-            api,
-            Arc::new(ToolRegistry::new()),
-            RuntimeConfig::default(),
-        );
+        let runtime =
+            ConversationRuntime::new(api, Arc::new(ToolRegistry::new()), RuntimeConfig::default());
 
         let mut session = Session::new("t-discard");
         let (tx, mut rx) = mpsc::channel(64);
         runtime
-            .run_turn(&mut session, user_msg("check project"), tx, CancellationToken::new())
+            .run_turn(
+                &mut session,
+                user_msg("check project"),
+                tx,
+                CancellationToken::new(),
+            )
             .await
             .expect("turn should recover");
 
@@ -6259,7 +6516,12 @@ src/
         let mut session = Session::new("t-ceiling");
         let (tx, _rx) = mpsc::channel(64);
         let result = runtime
-            .run_turn(&mut session, user_msg("check project"), tx, CancellationToken::new())
+            .run_turn(
+                &mut session,
+                user_msg("check project"),
+                tx,
+                CancellationToken::new(),
+            )
             .await;
 
         assert!(result.is_err(), "a failure that never clears must surface");
@@ -6288,7 +6550,12 @@ src/
         let mut session = Session::new("t-invalid");
         let (tx, _rx) = mpsc::channel(64);
         let result = runtime
-            .run_turn(&mut session, user_msg("check project"), tx, CancellationToken::new())
+            .run_turn(
+                &mut session,
+                user_msg("check project"),
+                tx,
+                CancellationToken::new(),
+            )
             .await;
 
         assert!(result.is_err());
@@ -6378,10 +6645,10 @@ src/
             "exactly one retry — a second empty reply is a condition, not a loop",
         );
         assert!(
-            session.messages().iter().any(|m| matches!(
-                m.blocks.first(),
-                Some(ContentBlock::Notice { .. })
-            )),
+            session
+                .messages()
+                .iter()
+                .any(|m| matches!(m.blocks.first(), Some(ContentBlock::Notice { .. }))),
             "the user must be told once the retry has also failed",
         );
     }
@@ -6391,7 +6658,10 @@ src/
         // Every slice of the prompt, plus the completion that becomes input on
         // the next request. Dropping cache-write here understated a
         // cache-writing turn by most of its prompt.
-        assert_eq!(measured_context_tokens(&measured(10_000, 40_000, 5_000, 700)), 55_700);
+        assert_eq!(
+            measured_context_tokens(&measured(10_000, 40_000, 5_000, 700)),
+            55_700
+        );
     }
 
     /// A runtime with no tools and no system prompt, so the from-scratch
@@ -6515,7 +6785,13 @@ src/
         // whole head, so an unbounded loop bills full price every turn.
         for _ in 0..10 {
             runtime
-                .maybe_compact(&mut session, "turn", &mut seq, &tx, &CancellationToken::new())
+                .maybe_compact(
+                    &mut session,
+                    "turn",
+                    &mut seq,
+                    &tx,
+                    &CancellationToken::new(),
+                )
                 .await;
         }
 
@@ -6524,7 +6800,10 @@ src/
             calls, MAX_CONSECUTIVE_COMPACTION_FAILURES,
             "breaker must stop after {MAX_CONSECUTIVE_COMPACTION_FAILURES} failures, made {calls}",
         );
-        assert!(session.compaction_retry_after.is_some(), "cooldown must be armed");
+        assert!(
+            session.compaction_retry_after.is_some(),
+            "cooldown must be armed"
+        );
     }
 
     #[tokio::test]
@@ -6549,7 +6828,13 @@ src/
         let (tx, _rx) = mpsc::channel(64);
         let mut seq = 0;
         let _ = runtime
-            .compact_now(&mut session, "turn", &mut seq, &tx, &CancellationToken::new())
+            .compact_now(
+                &mut session,
+                "turn",
+                &mut seq,
+                &tx,
+                &CancellationToken::new(),
+            )
             .await;
 
         // The user asked for this one and is watching it — it must run.
@@ -6616,7 +6901,13 @@ src/
         let (tx, _rx) = mpsc::channel(32);
         let mut seq = 0;
         let result = runtime
-            .compact_now(&mut session, "turn-1", &mut seq, &tx, &CancellationToken::new())
+            .compact_now(
+                &mut session,
+                "turn-1",
+                &mut seq,
+                &tx,
+                &CancellationToken::new(),
+            )
             .await;
 
         assert!(result.is_some(), "compaction should have produced a marker");
@@ -6645,7 +6936,13 @@ src/
         let (tx, _rx) = mpsc::channel(32);
         let mut seq = 0;
         let result = runtime
-            .compact_now(&mut session, "turn-1", &mut seq, &tx, &CancellationToken::new())
+            .compact_now(
+                &mut session,
+                "turn-1",
+                &mut seq,
+                &tx,
+                &CancellationToken::new(),
+            )
             .await;
 
         assert!(result.is_some(), "compaction should have produced a marker");
@@ -6794,4 +7091,3 @@ src/
         assert_eq!(msgs.len(), 5, "no trim → full session sent");
     }
 }
-

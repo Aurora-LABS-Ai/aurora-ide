@@ -69,6 +69,23 @@ pub struct ToolContext {
     /// When true, read-only file tools may resolve paths OUTSIDE the workspace
     /// (the user opted in via Settings → Agent). Writes stay workspace-bound.
     pub allow_outside_workspace: bool,
+    /// This thread's `…/<thread_id>.tool-results` directory, when the runtime
+    /// has a session store.
+    ///
+    /// Reads inside it are permitted even with `allow_outside_workspace`
+    /// false. That directory holds nothing but output THIS agent just
+    /// produced: when a command prints more than fits in context,
+    /// [`crate::agent_runtime::tool_spill`] writes the full text there and
+    /// hands the model a head+tail preview plus the path, telling it to open
+    /// the rest with `file_read`.
+    ///
+    /// Without this the instruction was a dead end in the default
+    /// configuration — the file sits under `%LOCALAPPDATA%`, so the boundary
+    /// check refused it and the agent was pointed at output it could not
+    /// reach. The setting exists to keep the agent out of the user's wider
+    /// filesystem; it was never meant to hide the agent's own spilled stdout
+    /// from it.
+    pub spill_dir: Option<PathBuf>,
     pub cancel_token: CancellationToken,
 }
 
@@ -570,6 +587,7 @@ mod tests {
             thread_id: "s-1".into(),
             workspace_root: None,
             allow_outside_workspace: false,
+            spill_dir: None,
             cancel_token: CancellationToken::new(),
         }
     }

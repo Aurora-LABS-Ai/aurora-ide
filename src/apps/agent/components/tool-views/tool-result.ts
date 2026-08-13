@@ -835,6 +835,46 @@ export function parseToolResult(
     }
   }
 
+  // The user's terminals. Both render like every other tool: a plain summary on
+  // the row, the real content in the dropdown — never a raw JSON dump.
+  if (name === "terminal_list") {
+    const terminals = Array.isArray(parsed.terminals) ? parsed.terminals : [];
+    out.summary =
+      terminals.length === 0
+        ? "No terminal open"
+        : `${terminals.length} open`;
+    if (terminals.length > 0) {
+      out.code = terminals
+        .map(rec)
+        .filter((t): t is Record<string, unknown> => Boolean(t))
+        .map((t) => {
+          const title = asStr(t.title) ?? asStr(t.id) ?? "terminal";
+          const where = asStr(t.cwd) ?? "";
+          const state = t.running === false ? " (exited)" : "";
+          return where ? `${title}${state}  ${where}` : `${title}${state}`;
+        })
+        .join("\n");
+    }
+    return out;
+  }
+
+  if (name === "terminal_read") {
+    if (parsed.success === false) {
+      out.summary = asStr(parsed.error) ?? "Terminal not found";
+      return out;
+    }
+    const title = asStr(parsed.title) ?? asStr(args.id) ?? "terminal";
+    const lines = asNum(parsed.totalLines);
+    // Says WHICH terminal and how much came back — the two things a reader
+    // wants without expanding. The scope is named in words, not as the enum.
+    const scope = parsed.scope === "all" ? "full scrollback" : "last command";
+    out.summary =
+      lines === undefined ? `${title} — ${scope}` : `${title} — ${scope}, ${lines} lines`;
+    const text = asStr(parsed.text);
+    if (text) out.code = text;
+    return out;
+  }
+
   // `code` — one tool, five questions, so the row has to say WHICH answer came
   // back. Without this it fell through to the generic "Done", which tells the
   // reader nothing and makes an expanded card show only the arguments.

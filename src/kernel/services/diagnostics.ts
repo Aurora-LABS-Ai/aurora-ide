@@ -66,6 +66,32 @@ export async function clearLogs(): Promise<void> {
   await invoke("logs_clear");
 }
 
+/**
+ * What the AGENT has reported about Aurora, via the `report_aurora_issue` tool.
+ *
+ * A different kind of record from the log: the log is what Aurora noticed about
+ * itself, this is what the agent noticed while trying to use it.
+ */
+export interface AuroraIssueReport {
+  path: string;
+  /** False = nothing has ever been reported, which is not the same as empty. */
+  exists: boolean;
+  /** Raw markdown, oldest entry first — the file is append-only. */
+  content: string;
+}
+
+const NO_ISSUES: AuroraIssueReport = { path: "", exists: false, content: "" };
+
+export async function readAuroraIssues(): Promise<AuroraIssueReport> {
+  if (!isTauri()) return NO_ISSUES;
+  return await invoke<AuroraIssueReport>("aurora_issues_read");
+}
+
+export async function clearAuroraIssues(): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("aurora_issues_clear");
+}
+
 /** Record a web-layer failure into the same file the backend writes to. */
 export async function reportToLog(
   level: "error" | "warn",

@@ -2,6 +2,124 @@
 
 Append 2-4 lines per mistake / broken assumption / project-specific warning.
 
+## 2026-08-13 (3rd) — How long a request took to FAIL tells you what failed
+- I diagnosed a provider HTTP 500 as our request shape (5 screenshots ≈ 4.7 MB per turn, three
+  consecutive `user` messages) and was wrong on both counts: replayed against the live endpoint,
+  4.73 MB returned 200 in 2.0s and every message shape returned 200. The log said each attempt
+  burned **~11 seconds** before the 500 — a shape rejection is instant, so the gateway had accepted
+  the request and its own upstream failed. Six failures across 3.5 minutes, then it recovered.
+- Read the failure LATENCY before theorising about the payload. And "a new session works" can mean
+  "the outage passed", not "the old session is malformed".
+
+## 2026-08-13 (2nd) — Raising an element to put something behind it buries that element's siblings
+- To make the composer picker read as being behind the input I gave `.agw-composer-surface`
+  `z-index: 1`. That put the input box above every sibling with `z-index: auto` — including the
+  rail's popovers, so "Background processes" opened behind the composer. `.agw-crail-chips` is
+  TRANSFORMED, which makes the whole chip cluster a stacking context at the default level, so its
+  `z-index: 50` popover never competed with the box at all.
+- Rule: to change relative depth, move the ONE element that should be lower (`z-index: -1` on the
+  picker), never raise the shared one. Raising is a change against every sibling at once.
+- Corollary worth remembering: `transform`, `filter`, `backdrop-filter` and `will-change` all create
+  stacking contexts, so a child's z-index can be trapped by a parent that looks purely cosmetic.
+
+## 2026-08-13 — Images are charged per TILE, so resolution below the step buys nothing
+- Measured on the live provider: 1400×1521 and 1024×1113 of the same capture both cost 1280 prompt
+  tokens; 768 cost 914; 512 cost 562. And JPEG q85 costs exactly what PNG costs at the same size,
+  at a fifth of the bytes. So the lever for payload is ENCODING, not resolution — dropping
+  resolution inside a tile step loses detail for free.
+- The floor is legibility, not tokens: at 512 the model did not say "I can't read that", it answered
+  with invented labels ("Chorus", "Delay", tempo "128"). A screenshot too small doesn't lose
+  information, it manufactures it.
+- For scale: 1,000 chars of prose ≈ 230 tokens; one 1400px screenshot ≈ 1,000. An image is cheap for
+  what it carries, but it is not 50 tokens.
+
+## 2026-08-13 — A unit test must never write to the user's real data file
+- The first `report_aurora_issue` tests called `execute()`, which appends to
+  `%LOCALAPPDATA%\AuroraIDE\reports\aurora-issues.md` — so `cargo test` planted fake bug reports in
+  the surface the feature exists to show, where they read as real ones.
+- Fix: the append takes a path (`append_entry(path, thread, report)`); tests pass a temp file, and
+  `execute()` is tested only for the validation paths that never touch disk.
+
+## 2026-08-13 — `min-width` + `max-width` on a popover is a range, not a measure
+- Any floating panel sized that way is sized by its longest string, so it changes width whenever the
+  content changes — and this window's panels hold agent-written text, which changes constantly. If a
+  panel is something you keep open while working, give it ONE width and make the text wrap or clamp.
+- Same class of bug as the sticky-user one below: a container that never actually committed to a size.
+
+## 2026-08-13 — A state variant only reaches its own DOM children
+- When a preference re-shapes a container (sticky-user pins the card, widens it to full column, caps
+  it at 34vh), anything that LOOKS like part of that container must actually be INSIDE it. The
+  attached-image row was a sibling that merely copied the card's measure, so every one of those
+  three transforms skipped it and it read as a stray panel. Symptom to recognise: an element that
+  duplicates its neighbour's `max-width`/alignment is usually a child in the wrong place.
+- Second half of the same trap: a conditional that gates the container on the WRONG content.
+  `hasBubble` counted text and chips but not images, so an image-only question rendered no card —
+  and the copy chip, absolutely positioned against the card, fell onto the image instead.
+
+## 2026-08-12 (5th) — An async function's "already done it" guard must claim the slot BEFORE its first await
+- `attachSession` returned early if `runtime.get(session.id)` existed, but wrote that entry at the
+  END, after `await getShellSpawnConfig(...)`. Any second call during that await saw an empty slot
+  and built a SECOND xterm into the same container. React 18 double-mounts effects in dev, so this
+  fired constantly: two `.xterm` trees in one `.agw-term-surface`
+  (`xterm-dom-renderer-owner-5` and `-6`), two cursors — one at the top of the pane, one at the
+  bottom — and the keyboard bound to whichever instance held the live PTY. Typing landed in the
+  invisible one, so the terminal read as frozen. Fix: `runtime.set` immediately after `term.open`,
+  before any await; `pty` is filled in later. The entry EXISTING is the lock.
+- pwsh appearing to work while bash/zsh/cmd did not was luck about which of the two instances got
+  focus. It sent me hunting for differences between shells for three rounds. **When one symptom has
+  a per-case pass/fail pattern, check for a race before theorising about the cases.**
+- The user reported "it renders twice, the typing indicator shows at the bottom too" FOUR times and
+  I treated it as a rendering artifact each time, because I had already decided the cause was fonts,
+  then HMR. He finally sent two `document.querySelector` paths that named both instances. A user
+  describing the DOM is reporting a fact; a screenshot I interpret is a guess. Take the fact.
+
+## 2026-08-12 (4th) — "Make it work like X" is about the BEHAVIOUR, not about copying X's layout
+- Asked to make Aurora's todo match Claude Code's, I drew the full checklist into the transcript
+  card. Aurora already HAS the checklist — the header indicator's dropdown, live, one hover away —
+  so the inline copy said the same thing twice, and the owner's reply was "then what's the point of
+  our top task tracker dropdown?". Reverted within the session.
+- The parts that actually needed matching were invisible ones: batched status updates and the
+  `<aurora_task_reminder>` context injection. The visible part Claude Code has and Aurora lacked was
+  ANNOUNCEMENT — so the fix was to make the existing dropdown flash open for 3.5s on a change, not
+  to add a second surface. Before adding a surface, ask what the existing one is already for.
+- knowledge.md recorded "Header TaskIndicator is its only home" and TaskIndicator.tsx's module doc
+  lists the three previous places the checklist was evicted from. I read neither before building.
+  Check whether a decision already exists before re-litigating it with code.
+
+## 2026-08-12 (3rd) — A popover width held in JS is a latent overflow, because every size token scales
+- `RailMenu` pinned `width: 228px` inline while `.agw-rail-menu-item` was `white-space: nowrap` with no
+  `text-overflow`, so "Open in integrated terminal" painted THROUGH both rounded edges. Unbounded nowrap
+  text does not clip — it escapes the panel. The row was also `--agw-fs-body` (16px, the PROSE default)
+  where a menu row is a list row (`--agw-fs-ui`), which is what pushed it over the width.
+- The general rule: every `--agw-fs-*` multiplies by `--agw-ui-text-scale`, so ANY fixed px width on a
+  text container is only correct at scale 1.0 with today's labels. Size popovers with
+  `width: max-content` + `min/max-width`, and let the component MEASURE (`offsetWidth`, in a layout
+  effect) rather than re-deriving geometry CSS already owns. Use `offsetWidth`, not
+  `getBoundingClientRect()` — the `agw-pop-in` entrance applies `scale(0.98)` and skews a live rect.
+- The correct in-repo precedent was already there: `.agw-chip-overflow-name`
+  (`flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis`). Check the popover family before
+  inventing; the other four (`crail-pop`, `addmenu`, `taskpop`, `model-menu`) were all already sound.
+
+## 2026-08-12 (2nd) — CSS-rewriting scripts: comments must be atomic tokens, and prove a no-op roundtrip first
+- A dead-rule prune script split selector lists on commas without skipping `/* */` spans; a comma
+  INSIDE a comment sheared it, leaving 6 files with unbalanced `/*`. Same script also missed
+  `@supports` (only recursed `@media`), silently keeping a dead selector alive inside it.
+- Fix pattern that worked: tokenize comments as standalone nodes so rule preludes can never
+  contain them, recurse every conditional at-rule, and before the real run assert the script
+  reproduces every file byte-identical with an empty kill-list. Also: `sed -i` on a JS file ate
+  `\b` in a regex (`\b` → `b`) — edit scripts with the editor, not sed.
+- Dead-CSS scans against TSX lie without cleanup: doc comments mention `agw-` and `--agw-*`
+  (false-alive via prefix), `var(--agw-fs-md)` embeds `agw-fs-md` (token noise). Strip var refs
+  and comment lines first; verify each candidate repo-wide with a `(?![A-Za-z0-9_-])` boundary.
+
+## 2026-08-12 — vitest's default worker pool is broken on this machine; use `--pool=vmThreads`
+- Every test file — including a fresh `expect(1).toBe(1)` probe — failed with "No test suite found"
+  under the default `forks` pool AND under `threads` (vitest 4.0.16, Node v22.22.3, Windows).
+  `--pool=vmThreads` runs everything green (535 tests). Reproduced on a pristine HEAD tree, so it
+  is the environment, not any code change; `pnpm install` was already in sync and did not fix it.
+- Do not read "No test suite found" as a broken test file before running the trivial-probe check;
+  an hour of bisecting your own diff finds nothing because the diff is innocent.
+
 ## 2026-08-11 — A precondition that cannot observe every legitimate path will refuse correct work
 - `file_edit` required a prior `file_read` of every target. The agent found its exact line with
   `grep`, batched 3 edits, and lost the whole batch to one file it had never opened — while looking

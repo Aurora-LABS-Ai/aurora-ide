@@ -45,13 +45,20 @@ export type AgentIconName =
   | "code-index"
   | "process-stop"
   | "process-list"
+  | "terminal-watch"
+  | "shell-output"
   | "diagnostics"
   | "task-list"
   | "checklist"
+  | "skill-search"
   | "browser-click"
   | "browser-fill"
   | "browser-scroll"
   | "browser-screenshot"
+  | "browser-navigate"
+  | "browser-key"
+  | "browser-viewport"
+  | "browser-outline"
   | "layers"
   | "send"
   | "mic"
@@ -351,6 +358,44 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     </>
   ),
 
+  /**
+   * The user's own terminal, being read.
+   *
+   * A pane with a prompt caret inside it, and the caret sits BEHIND a magnifier
+   * lens rather than beside one: the act is looking at a shell somebody else is
+   * driving, not running something. Deliberately distinct from `terminal`
+   * (`shell_execute`) so the transcript never blurs "the agent ran this" with
+   * "the agent read what you ran".
+   */
+  "terminal-watch": (
+    <>
+      <rect x="2.5" y="4" width="19" height="16" rx="2.5" />
+      <path d="M6.5 9.5l2.5 2-2.5 2" />
+      <path d="M11.5 13.5h3" />
+      <circle cx="16.5" cy="15" r="3.6" />
+      <path d="M19.2 17.6L21.5 20" />
+    </>
+  ),
+
+  /**
+   * Shell output collected from a process the agent started (`shell_read_output`).
+   *
+   * Deliberately NOT a terminal frame: the other two shell marks are about the
+   * box (the agent runs a command / watches one of yours), and this one is about
+   * what came OUT of it — printed lines and the pull to their end, which is
+   * literally what the tool does. It also had to survive at 14px next to the
+   * frame glyphs without reading as a third rectangle.
+   */
+  "shell-output": (
+    <>
+      <path d="M3.75 6h15.5" />
+      <path d="M3.75 11h15.5" />
+      <path d="M3.75 16h7.5" />
+      <path d="M16.5 13v6.5" />
+      <path d="M13.6 17l2.9 2.9 2.9-2.9" />
+    </>
+  ),
+
   "process-list": (
     <>
       <circle cx="5" cy="6.5" r="1" fill="currentColor" stroke="none" opacity="0.7" />
@@ -369,6 +414,25 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <path d="M9 12h6" />
       <path d="M9 15h3" />
       <path d="M14.2 17l1.4 1.4 3-3" />
+    </>
+  ),
+
+  /**
+   * Searching the skill catalog (`aurora_skill_search`).
+   *
+   * The book is the skill mark everywhere else in this window — the `/` picker,
+   * the transcript chip, Settings → Skills — so finding one is that same book
+   * under a magnifier, exactly the relationship `terminal` → `terminal-watch`
+   * already carries. The spine is dropped so the lens has room; at 14px a
+   * second vertical line beside the circle turned into mush.
+   */
+  "skill-search": (
+    <>
+      <path d="M4.75 4.5h8a2 2 0 0 1 2 2v4.4" />
+      <path d="M4.75 4.5A1.5 1.5 0 0 0 3.25 6v13a1.5 1.5 0 0 1 1.5-1.5h6" />
+      <path d="M7.25 8.5h4.5" />
+      <circle cx="16.6" cy="15.1" r="3.7" />
+      <path d="M19.3 17.8l2.2 2.2" />
     </>
   ),
 
@@ -438,6 +502,53 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <circle cx="12" cy="13" r="3.2" />
       <circle cx="12" cy="13" r="0.9" fill="currentColor" stroke="none" opacity="0.7" />
       <circle cx="18.2" cy="10.6" r="0.7" fill="currentColor" stroke="none" opacity="0.4" />
+    </>
+  ),
+
+  /* The browser tools that act on the PAGE (click, fill, scroll, screenshot)
+   * carry their own act above. These four are the ones that act on the BROWSER
+   * — where it goes, what it types, how big it is, what it is built from — so
+   * they share the chrome bar of a window frame and differ inside it. Eleven
+   * browser tools reading as one generic globe made the transcript say
+   * "something happened in the browser" and nothing more. */
+
+  "browser-navigate": (
+    <>
+      <rect x="2.75" y="4.75" width="18.5" height="14.5" rx="2.5" />
+      <path d="M2.75 9h18.5" />
+      <path d="M8 14.5h6.5" />
+      <path d="M12.4 12.1l2.4 2.4-2.4 2.4" />
+    </>
+  ),
+
+  "browser-key": (
+    <>
+      <rect x="2.5" y="6.25" width="19" height="11.5" rx="2.4" />
+      <circle cx="7" cy="10.6" r="0.85" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="10.6" r="0.85" fill="currentColor" stroke="none" />
+      <circle cx="17" cy="10.6" r="0.85" fill="currentColor" stroke="none" />
+      <path d="M8 14.4h8" />
+    </>
+  ),
+
+  // Viewport — a desktop frame with a phone standing beside it: the tool sets
+  // the device metrics, and two sizes side by side is what that means.
+  "browser-viewport": (
+    <>
+      <rect x="2.5" y="5.5" width="12.5" height="12.5" rx="2.2" />
+      <path d="M2.5 9h12.5" />
+      <rect x="16.75" y="9.5" width="4.75" height="10.5" rx="1.6" />
+    </>
+  ),
+
+  // Page structure — the outline / accessibility tree: an indented list read
+  // out of the page rather than drawn on it.
+  "browser-outline": (
+    <>
+      <rect x="2.75" y="4.75" width="18.5" height="14.5" rx="2.5" />
+      <path d="M2.75 9h18.5" />
+      <path d="M6.25 12.3h5" />
+      <path d="M9.25 15.6h6.5" />
     </>
   ),
 

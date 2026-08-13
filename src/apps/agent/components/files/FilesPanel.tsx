@@ -259,7 +259,7 @@ export const FilesPanel: React.FC = () => {
           // quiet, so the dock reveals exactly the shell just created.
           useAgentTerminalStore
             .getState()
-            .createSession("powershell", isDir ? path : parentDirOf(path));
+            .createSession("pwsh", isDir ? path : parentDirOf(path));
           useAgentWorkspaceStore.getState().openTab("terminal");
         },
       },

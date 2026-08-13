@@ -12,15 +12,20 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence } from "framer-motion";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { StreamingDotMatrix } from "@/apps/agent/components/theme/StreamingDotMatrix";
 import { openFileDialog } from "@/kernel/lib/ipc/tauri";
 import { FileIcon } from "@/kernel/ui/FileIcons";
 import { resolveExplorerIcon } from "@/kernel/lib/icons/icon-registry";
+import {
+  listTerminalSessions,
+  type TerminalSessionSummary,
+} from "@/apps/agent/services/terminal/terminal-sessions";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { ModelSelector } from "@/apps/agent/components/composer/ModelSelector";
+import { ComposerMenu } from "@/apps/agent/components/composer/ComposerMenu";
 import { ComposerRail } from "@/apps/agent/components/composer-rail/ComposerRail";
 import {
   invalidateFileIndex,
@@ -60,7 +65,7 @@ import {
 import {
   basenameOf,
   blobToAttachment,
-  dataUrlToParts,
+  dataUrlToAttachmentParts,
   imageFileToAttachment,
   isImagePath,
 } from "@/apps/agent/lib/render/image-utils";
@@ -127,6 +132,10 @@ function commandIconSvg(kind: PromptCommandKind): string {
 }
 
 /** The `inspect` glyph, for the imperatively-built inline selection pill. */
+/** The `@terminal` pill's mark: a prompt caret and a cursor bar in a frame. */
+const TERMINAL_PILL_ICON_SVG =
+  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M7.5 10l2.5 2-2.5 2"/><path d="M13 14h3.5"/></svg>';
+
 const INSPECT_ICON_SVG =
   '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.4 6.1l3.5 3.5"/><path d="M16.1 4.4a1.9 1.9 0 0 1 2.7 0l0.8 0.8a1.9 1.9 0 0 1 0 2.7L8.2 18.9l-4.2 1 1-4.2z"/></svg>';
 
@@ -197,6 +206,14 @@ function serializeEditor(root: HTMLElement, forSend = false): string {
       if (forSend && el.dataset.cmdTitle) out += `/${el.dataset.cmdTitle}`;
       return;
     }
+    if (el.dataset.term) {
+      // Inline `@terminal` pill. Serializes to the session id so the model can
+      // hand it straight to `terminal_read` — a POINTER, not a paste. The
+      // terminal's output can be tens of thousands of lines and changes while
+      // the turn runs; the id stays true and the tool fetches what is needed.
+      if (forSend) out += `@terminal:${el.dataset.term}`;
+      return;
+    }
     if (el.dataset.sel) return; // inline inspector pick — threaded via the selection store
     if (el.dataset.rel) {
       out += `@${el.dataset.rel}`;
@@ -215,12 +232,28 @@ function serializeEditor(root: HTMLElement, forSend = false): string {
   return out;
 }
 
-/** True for the three inline pill kinds: `@` file, `/` directive, inspector pick. */
+/** True for the four inline pill kinds: `@` file, `@terminal`, `/` directive, inspector pick. */
 function isPill(node: ChildNode | null): node is HTMLElement {
   if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
   const el = node as HTMLElement;
-  return !!(el.dataset.rel || el.dataset.cmd || el.dataset.sel);
+  return !!(el.dataset.rel || el.dataset.cmd || el.dataset.sel || el.dataset.term);
 }
+
+/**
+ * Pills that make the editor worth SENDING — each one carries a reference the
+ * model receives even with no prose around it.
+ */
+const SENDABLE_PILLS = "[data-rel],[data-term]";
+/**
+ * Pills that are VISIBLE in the editor. A `/` directive shows but sends nothing
+ * of its own, so it hides the placeholder without making the input sendable.
+ *
+ * Both selectors exist because these two questions were previously asked with
+ * inline `querySelector` calls listing pill kinds by hand — and adding the
+ * `@terminal` pill missed them, so picking a terminal left the placeholder
+ * painted straight over the chip.
+ */
+const VISIBLE_PILLS = "[data-rel],[data-term],[data-cmd]";
 
 /**
  * Delete the pill immediately before a collapsed caret. Returns whether one was
@@ -324,12 +357,12 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   const resyncComposer = useCallback(() => {
     const el = editorRef.current;
     if (!el) return;
-    const hasFilePill = !!el.querySelector("[data-rel]");
-    const hasCmdPill = !!el.querySelector("[data-cmd]");
+    const hasSendablePill = !!el.querySelector(SENDABLE_PILLS);
+    const hasVisiblePill = !!el.querySelector(VISIBLE_PILLS);
     const text = serializeEditor(el);
     const trimmed = text.trim();
-    setIsEmpty(!hasFilePill && trimmed === "");
-    setBlank(!hasFilePill && !hasCmdPill && trimmed === "");
+    setIsEmpty(!hasSendablePill && trimmed === "");
+    setBlank(!hasVisiblePill && trimmed === "");
     setCharLen(text.length);
     if (value !== undefined) {
       lastEmittedRef.current = text;
@@ -441,6 +474,29 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     [mention, fileIndex],
   );
 
+  /**
+   * Open terminals offered by the same `@` menu as files.
+   *
+   * Matched on the word "terminal" as well as each session's own title, so
+   * both `@terminal` and `@pwsh` find them — the user thinks of it either as
+   * "a terminal" or as the tab they named. Listed above files because when
+   * the query matches a terminal it is almost never a file the user meant.
+   */
+  const terminalResults = useMemo(() => {
+    if (!mention) return [];
+    const query = mention.query.trim().toLowerCase();
+    const sessions = listTerminalSessions();
+    if (!query) return sessions.slice(0, 5);
+    return sessions
+      .filter(
+        (session) =>
+          session.title.toLowerCase().includes(query) ||
+          session.shell.toLowerCase().includes(query) ||
+          "terminal".startsWith(query),
+      )
+      .slice(0, 5);
+  }, [mention]);
+
   // ── /-command state (skills · rules · MCP — never files) ────────────
   const [slash, setSlash] = useState<{ query: string } | null>(null);
   const [commandIndex, setCommandIndex] = useState<PromptCommand[]>([]);
@@ -467,15 +523,15 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   const syncEmpty = () => {
     const el = editorRef.current;
     if (!el) return;
-    // A file `@`-pill counts as content; a `/` command pill does NOT (it
-    // serializes to nothing — it needs an accompanying message to send).
+    // A file or terminal pill counts as content; a `/` command pill does NOT
+    // (it serializes to nothing — it needs an accompanying message to send).
     // Inspector picks behave like `/` pills, and are checked at the render
     // site straight off the store (see the placeholder).
-    const hasFilePill = !!el.querySelector("[data-rel]");
-    const hasCmdPill = !!el.querySelector("[data-cmd]");
+    const hasSendablePill = !!el.querySelector(SENDABLE_PILLS);
+    const hasVisiblePill = !!el.querySelector(VISIBLE_PILLS);
     const text = serializeEditor(el).trim();
-    setIsEmpty(!hasFilePill && text === "");
-    setBlank(!hasFilePill && !hasCmdPill && text === "");
+    setIsEmpty(!hasSendablePill && text === "");
+    setBlank(!hasVisiblePill && text === "");
   };
 
   // The pickers re-run on every keyup and click — including the keyup of the
@@ -609,6 +665,60 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     // event fired by the typing-assist's own mutation (applying or undoing
     // an autocorrect) is not the user editing.
     if (!typing.isProgrammaticEdit()) refine.onUserEdit();
+  };
+
+  /**
+   * Insert an `@terminal` pill for one open session.
+   *
+   * Same anatomy as the file pill — replace the typed `@query`, drop in a
+   * non-editable span, leave the caret after a trailing space — because it is
+   * the same gesture and the caret rules (backspace deletes the widget whole)
+   * are shared by `isPill`.
+   */
+  const insertTerminalPill = (session: TerminalSessionSummary) => {
+    const el = editorRef.current;
+    const s = window.getSelection();
+    if (!el || !s || s.rangeCount === 0) return;
+    const node = s.anchorNode;
+    if (!node || node.nodeType !== Node.TEXT_NODE || !el.contains(node)) return;
+    const offset = s.anchorOffset;
+    const before = (node.textContent ?? "").slice(0, offset);
+    const m = before.match(MENTION_RE);
+    if (!m) return;
+    const at = offset - (m[2].length + 1);
+
+    const range = document.createRange();
+    range.setStart(node, at);
+    range.setEnd(node, offset);
+    range.deleteContents();
+
+    const pill = document.createElement("span");
+    pill.className = "agw-pill-inline agw-pill-term";
+    pill.contentEditable = "false";
+    pill.dataset.term = session.id;
+    pill.dataset.termTitle = session.title;
+    pill.title = session.cwd ? `${session.title} — ${session.cwd}` : session.title;
+    const ico = document.createElement("span");
+    ico.className = "agw-pill-cmd-ico";
+    ico.innerHTML = TERMINAL_PILL_ICON_SVG;
+    pill.appendChild(ico);
+    const label = document.createElement("span");
+    label.textContent = session.title;
+    pill.appendChild(label);
+
+    const space = document.createTextNode(" ");
+    range.insertNode(space);
+    range.insertNode(pill);
+
+    const after = document.createRange();
+    after.setStartAfter(space);
+    after.collapse(true);
+    s.removeAllRanges();
+    s.addRange(after);
+
+    setMention(null);
+    handleInput();
+    el.focus();
   };
 
   const insertPill = (f: MentionFile) => {
@@ -961,6 +1071,13 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     // directory just burns a failed tool call. One line names what it is and
     // what was wanted, appended once no matter how many folders came in — the
     // user sees exactly what the model was told, because it is the same text.
+    const terminalChips: AttachedPromptChip[] = Array.from(
+      el.querySelectorAll<HTMLElement>("[data-term]"),
+    ).map((pill) => ({
+      kind: "terminal" as const,
+      title: pill.dataset.termTitle ?? "terminal",
+      value: pill.dataset.term ?? "",
+    }));
     const folders = fileChips.filter((chip) => chip.kind === "folder");
     const outgoing =
       folders.length === 0
@@ -968,7 +1085,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
         : `${text}\n\n(${folders.length === 1 ? "Folder" : "Folders"} dragged in by the user: ` +
           `${folders.map((chip) => chip.value).join(", ")} — look inside ` +
           `${folders.length === 1 ? "it" : "them"}.)`;
-    onSubmit(outgoing, fileChips);
+    onSubmit(outgoing, [...fileChips, ...terminalChips]);
     el.innerHTML = "";
     lastEmittedRef.current = "";
     setIsEmpty(true);
@@ -1101,14 +1218,25 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     >
       {/* @-mention file picker — floats above the input. */}
       <AnimatePresence>
-        {mention && results.length > 0 && (
-          <motion.div
-            className="agw-menu agw-mention"
-            initial={{ opacity: 0, y: 6, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 6, scale: 0.98 }}
-            transition={{ type: "spring", stiffness: 460, damping: 32, mass: 0.7 }}
-          >
+        {mention && (results.length > 0 || terminalResults.length > 0) && (
+          <ComposerMenu resetKey={mention.query}>
+            {terminalResults.map((session) => (
+              <button
+                key={`term-${session.id}`}
+                type="button"
+                className="agw-mention-item"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  insertTerminalPill(session);
+                }}
+              >
+                <AgentIcon name="terminal" size={13} className="agw-file-ico" />
+                <span className="agw-mention-name">{session.title}</span>
+                <span className="agw-mention-path">
+                  {session.running ? session.cwd ?? session.shell : "exited"}
+                </span>
+              </button>
+            ))}
             {results.map((f, i) => (
               <button
                 key={f.path}
@@ -1130,20 +1258,14 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
                 <span className="agw-mention-path">{f.rel}</span>
               </button>
             ))}
-          </motion.div>
+          </ComposerMenu>
         )}
       </AnimatePresence>
 
       {/* /-command picker (skills · rules · MCP) — floats above the input. */}
       <AnimatePresence>
         {slash && commandResults.length > 0 && (
-          <motion.div
-            className="agw-menu agw-mention"
-            initial={{ opacity: 0, y: 6, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 6, scale: 0.98 }}
-            transition={{ type: "spring", stiffness: 460, damping: 32, mass: 0.7 }}
-          >
+          <ComposerMenu resetKey={slash.query}>
             {commandResults.map((c, i) => (
               <button
                 key={c.key}
@@ -1170,7 +1292,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
                 <span className="agw-mention-path">{c.subtitle}</span>
               </button>
             ))}
-          </motion.div>
+          </ComposerMenu>
         )}
       </AnimatePresence>
 
@@ -1443,8 +1565,12 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
         onClose={() => setAnnotateId(null)}
         onSave={(dataUrl) => {
           if (!annotateId) return;
-          const { base64, mediaType } = dataUrlToParts(dataUrl);
-          if (base64) updateImage(annotateId, { base64, mediaType });
+          // Annotating re-flattens the picture, so it goes back through the same
+          // bound + JPEG encode a paste does — otherwise drawing one arrow on a
+          // staged image silently restored the full-size PNG.
+          void dataUrlToAttachmentParts(dataUrl).then(({ base64, mediaType }) => {
+            if (base64) updateImage(annotateId, { base64, mediaType });
+          });
         }}
       />
 

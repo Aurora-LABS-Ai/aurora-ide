@@ -60,6 +60,7 @@ pub mod browser;
 pub mod canvas;
 pub mod code_intel;
 pub mod design;
+pub mod diagnostics;
 pub mod file_workspace_search;
 pub mod permissions;
 pub mod plan;
@@ -102,7 +103,11 @@ pub mod transcript;
 /// Raised 30 -> 31 by `canvas_guidelines`: live canvases are compiled and run,
 /// so their authoring contract is enforced by a compiler rather than by taste,
 /// and the model has to be told it before its first `kind: "react"` write.
-pub const BUILTIN_TOOL_COUNT: usize = 40;
+/// Raised 40 -> 41 by `report_aurora_issue`: the agent reporting a fault in
+/// Aurora used to be a paragraph of standing instructions asking it to remember
+/// and mention things at the end of a turn, which fired almost never. A tool
+/// call happens at the moment of noticing and lands on disk.
+pub const BUILTIN_TOOL_COUNT: usize = 41;
 
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
@@ -151,6 +156,7 @@ pub fn register_builtin_tools(
     canvas::register(&mut staging);
     transcript::register(&mut staging);
     code_intel::register(&mut staging);
+    diagnostics::register(&mut staging);
     if let Some(manager) = browser_manager {
         browser::register(&mut staging, manager);
     }
@@ -225,11 +231,12 @@ mod tests {
             + canvas::TOOL_NAMES.len()
             + transcript::TOOL_NAMES.len()
             + code_intel::TOOL_NAMES.len()
+            + diagnostics::TOOL_NAMES.len()
     }
 
     #[test]
     fn builtin_tool_count_is_correct() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 40);
+        assert_eq!(BUILTIN_TOOL_COUNT, 41);
         assert_eq!(
             file_workspace_search::TOOL_NAMES.len()
                 + shell_editor_todo::TOOL_NAMES.len()
@@ -238,6 +245,7 @@ mod tests {
                 + canvas::TOOL_NAMES.len()
                 + transcript::TOOL_NAMES.len()
                 + code_intel::TOOL_NAMES.len()
+                + diagnostics::TOOL_NAMES.len()
                 + browser::TOOL_NAMES.len(),
             BUILTIN_TOOL_COUNT
         );

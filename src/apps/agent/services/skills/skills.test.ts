@@ -9,16 +9,19 @@ type MockDirectoryEntry = {
 };
 
 const {
+  deletePathMock,
   readDirectoryMock,
   readFileContentMock,
   getGlobalSkillsPathMock,
 } = vi.hoisted(() => ({
+  deletePathMock: vi.fn<(path: string) => Promise<void>>(async () => {}),
   readDirectoryMock: vi.fn<(path: string) => Promise<MockDirectoryEntry[]>>(async () => []),
   readFileContentMock: vi.fn<(path: string) => Promise<string>>(async () => ""),
   getGlobalSkillsPathMock: vi.fn<() => Promise<string>>(async () => "C:/Users/test/.agent/skills"),
 }));
 
 vi.mock("@/kernel/lib/ipc/tauri", () => ({
+  deletePath: deletePathMock,
   getGlobalSkillsPath: getGlobalSkillsPathMock,
   readDirectory: readDirectoryMock,
   readFileContent: readFileContentMock,
@@ -26,14 +29,17 @@ vi.mock("@/kernel/lib/ipc/tauri", () => ({
 
 import { composeAgentSystemPrompt } from "@/apps/agent/services/runtime/agent-prompt";
 import {
+  deleteSkillFromDisk,
   extractPreviewLines,
   findSkillById,
   loadAllSkillCandidates,
   loadWorkspaceSkills,
   MAX_ENABLED_SKILLS,
   parseSkillDocument,
+  resolveSkillDeleteTarget,
   resolveSkillsForPrompt,
   searchSkillCandidates,
+  type SkillDefinition,
 } from "@/apps/agent/services/skills/skills";
 
 beforeEach(() => {
@@ -41,6 +47,24 @@ beforeEach(() => {
   readDirectoryMock.mockImplementation(async () => []);
   readFileContentMock.mockReset();
   readFileContentMock.mockImplementation(async () => "");
+  deletePathMock.mockReset();
+  deletePathMock.mockImplementation(async () => {});
+});
+
+const WORKSPACE = "E:/repo";
+const GLOBAL_SKILLS = "C:/Users/test/.agent/skills";
+const DELETE_ROOTS = { globalSkillsPath: GLOBAL_SKILLS, workspacePath: WORKSPACE };
+
+const skillFixture = (overrides: Partial<SkillDefinition>): SkillDefinition => ({
+  content: "Body.",
+  description: "A skill.",
+  id: "fixture",
+  name: "Fixture",
+  previewLines: ["Body."],
+  source: "workspace",
+  storageKey: "workspace:fixture",
+  triggers: [],
+  ...overrides,
 });
 
 /**
@@ -110,6 +134,121 @@ const TS_SKILL = {
   description: "Apply type-safe, idiomatic TypeScript patterns.",
   triggers: ["typescript", "typing"],
 };
+
+describe("skill deletion", () => {
+  it("removes the whole skill folder, not just its markdown", () => {
+    // A folder skill carries references/, scripts and assets beside skill.md.
+    // Deleting the file alone would take the card away and leave the skill.
+    const target = resolveSkillDeleteTarget(
+      skillFixture({
+        sourceDir: `${WORKSPACE}/.aurora/skills/review`,
+        sourcePath: `${WORKSPACE}/.aurora/skills/review/SKILL.md`,
+      }),
+      DELETE_ROOTS,
+    );
+    expect(target).toEqual({
+      kind: "folder",
+      path: `${WORKSPACE}/.aurora/skills/review`,
+    });
+  });
+
+  it("removes a loose markdown skill as a file", () => {
+    const target = resolveSkillDeleteTarget(
+      skillFixture({ sourcePath: `${WORKSPACE}/.agents/skills/quick.md` }),
+      DELETE_ROOTS,
+    );
+    expect(target).toEqual({
+      kind: "file",
+      path: `${WORKSPACE}/.agents/skills/quick.md`,
+    });
+  });
+
+  it("resolves global skills against the global root", () => {
+    const target = resolveSkillDeleteTarget(
+      skillFixture({
+        source: "global",
+        sourceDir: `${GLOBAL_SKILLS}/surface`,
+        sourcePath: `${GLOBAL_SKILLS}/surface/SKILL.md`,
+      }),
+      DELETE_ROOTS,
+    );
+    expect(target?.path).toBe(`${GLOBAL_SKILLS}/surface`);
+  });
+
+  it("refuses anything that is not provably inside a skills root", () => {
+    // This is `remove_dir_all` on the user's own files with no undo, so the
+    // target is re-derived rather than trusted.
+    const cases: SkillDefinition[] = [
+      // Outside every root.
+      skillFixture({ sourcePath: "E:/repo/src/index.ts" }),
+      // Traversal that `startsWith` alone would wave through.
+      skillFixture({
+        sourceDir: `${WORKSPACE}/.aurora/skills/../../..`,
+        sourcePath: `${WORKSPACE}/.aurora/skills/../../../SKILL.md`,
+      }),
+      // The skills root itself is never one skill's deletion.
+      skillFixture({
+        sourceDir: `${WORKSPACE}/.aurora/skills`,
+        sourcePath: `${WORKSPACE}/.aurora/skills/SKILL.md`,
+      }),
+      // A global skill judged against a workspace root, and vice versa.
+      skillFixture({ source: "global", sourcePath: `${WORKSPACE}/.aurora/skills/x.md` }),
+      skillFixture({ sourcePath: `${GLOBAL_SKILLS}/x.md` }),
+      // Nothing on disk to remove.
+      skillFixture({ source: "builtin", sourcePath: undefined }),
+      skillFixture({ sourcePath: undefined }),
+    ];
+    for (const skill of cases) {
+      expect(resolveSkillDeleteTarget(skill, DELETE_ROOTS)).toBeNull();
+    }
+  });
+
+  it("refuses when the roots are unknown", () => {
+    const skill = skillFixture({ sourcePath: `${WORKSPACE}/.aurora/skills/quick.md` });
+    expect(resolveSkillDeleteTarget(skill, { workspacePath: null })).toBeNull();
+    expect(resolveSkillDeleteTarget(skill)).toBeNull();
+  });
+
+  it("matches roots case- and separator-insensitively (Windows)", () => {
+    const target = resolveSkillDeleteTarget(
+      skillFixture({
+        sourceDir: `E:\\Repo\\.aurora\\skills\\Review`,
+        sourcePath: `E:\\Repo\\.aurora\\skills\\Review\\SKILL.md`,
+      }),
+      DELETE_ROOTS,
+    );
+    // The path handed to the filesystem stays verbatim; only the check normalizes.
+    expect(target).toEqual({ kind: "folder", path: "E:\\Repo\\.aurora\\skills\\Review" });
+  });
+
+  it("deletes through the resolver and never past it", async () => {
+    const deletable = skillFixture({
+      sourceDir: `${WORKSPACE}/.aurora/skills/review`,
+      sourcePath: `${WORKSPACE}/.aurora/skills/review/SKILL.md`,
+    });
+    await expect(deleteSkillFromDisk(deletable, DELETE_ROOTS)).resolves.toEqual({
+      kind: "folder",
+      path: `${WORKSPACE}/.aurora/skills/review`,
+    });
+    expect(deletePathMock).toHaveBeenCalledWith(`${WORKSPACE}/.aurora/skills/review`);
+
+    deletePathMock.mockClear();
+    await expect(
+      deleteSkillFromDisk(skillFixture({ sourcePath: "E:/repo/src/index.ts" }), DELETE_ROOTS),
+    ).rejects.toThrow(/can't be deleted from here/);
+    expect(deletePathMock).not.toHaveBeenCalled();
+  });
+
+  it("records the folder a discovered skill came from", async () => {
+    stubWorkspaceSkills([TS_SKILL]);
+    const [skill] = await loadWorkspaceSkills(WORKSPACE);
+    expect(skill.sourceDir).toBe(`${WORKSPACE}/.aurora/skills/typescript`);
+    expect(resolveSkillDeleteTarget(skill, DELETE_ROOTS)).toEqual({
+      kind: "folder",
+      path: `${WORKSPACE}/.aurora/skills/typescript`,
+    });
+  });
+});
 
 describe("skills", () => {
   it("parses markdown skill frontmatter and captures preview lines", () => {

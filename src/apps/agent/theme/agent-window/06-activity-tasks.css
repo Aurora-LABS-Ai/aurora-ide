@@ -1,0 +1,702 @@
+/* Header activity narrator — the streaming title line. Each new phase / tool
+ * remounts the span (keyed) so it cross-fades softly instead of snapping. */
+.agw-activity-title {
+  animation: agw-activity-fade 0.22s ease;
+}
+@keyframes agw-activity-fade {
+  from {
+    opacity: 0;
+    transform: translateY(1px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-activity-title {
+    animation: none;
+  }
+}
+
+/* Header completion flash — a transient "‹title› finished" pill in the
+ * conversation header when a turn ends; auto-dismisses. Click to open the chat
+ * that finished. */
+.agw-done-flash {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  max-width: 260px;
+  padding: 0 10px 0 8px;
+  border-radius: var(--agw-radius-pill);
+  border: 1px solid color-mix(in srgb, var(--agw-accent) 40%, var(--agw-border));
+  background: color-mix(in srgb, var(--agw-accent) 12%, var(--agw-canvas));
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  cursor: pointer;
+}
+.agw-done-flash:hover {
+  background: color-mix(in srgb, var(--agw-accent) 18%, var(--agw-canvas));
+}
+.agw-done-flash > svg {
+  color: var(--agw-accent);
+}
+.agw-done-flash-label {
+  font-weight: var(--agw-fw-medium);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-done-flash-sub {
+  color: var(--agw-text-subtle);
+}
+
+/* Streaming dot-matrix — staggered pulse for the nine dots in the chat-title
+ * slot while a turn streams (see StreamingDotMatrix.tsx). */
+@keyframes agw-dot-matrix {
+  0%,
+  100% {
+    opacity: 0.24;
+    transform: scale(0.78);
+    filter: brightness(0.92);
+  }
+  35% {
+    opacity: 0.55;
+    transform: scale(0.92);
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.18);
+    filter: brightness(1.18);
+  }
+  65% {
+    opacity: 0.62;
+    transform: scale(0.96);
+    filter: brightness(1.02);
+  }
+}
+
+@keyframes agw-rail-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-rail-spin {
+    animation-duration: 1.6s;
+  }
+}
+
+/* ── Composer mic (speech-to-text) ────────────────────────────────────
+ * Fixed-size live waveform strip shown while recording. The canvas also gets
+ * explicit inline dimensions so it can never balloon to its 300×150 default.
+ * The mic button turns danger-red (becomes a Stop) while recording. */
+/* Recording visualizer — an "aurora" shimmer bar. A light sweeps through a
+   slim accent track continuously (so it reads as actively listening), and the
+   whole bar brightens, swells, and glows in response to the live mic level fed
+   in as `--level` (0..1) by useAgentSpeech. */
+.agw-mic-wave {
+  --level: 0;
+  flex: 0 0 auto;
+  width: 104px;
+  height: 14px;
+  border-radius: var(--agw-radius-pill);
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--agw-accent) 14%, transparent),
+    color-mix(in srgb, var(--agw-accent) calc(30% + var(--level) * 42%), transparent),
+    color-mix(in srgb, var(--agw-accent) 14%, transparent)
+  );
+  box-shadow: 0 0 calc(2px + var(--level) * 11px)
+    color-mix(in srgb, var(--agw-accent) calc(18% + var(--level) * 46%), transparent);
+  transform: scaleY(calc(1 + var(--level) * 0.5));
+  transition: transform 0.12s ease-out, box-shadow 0.12s ease-out;
+}
+.agw-mic-wave::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--agw-accent) 42%, #ffffff) 42%,
+    #ffffff 50%,
+    color-mix(in srgb, var(--agw-accent) 42%, #ffffff) 58%,
+    transparent
+  );
+  filter: blur(1.5px);
+  opacity: calc(0.45 + var(--level) * 0.55);
+  transform: translateX(-60%);
+  animation: agw-mic-sweep 1.7s linear infinite;
+  mix-blend-mode: screen;
+}
+@keyframes agw-mic-sweep {
+  to {
+    transform: translateX(160%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-mic-wave::before {
+    animation-duration: 3.4s;
+  }
+}
+.agw-icon-btn[data-recording] {
+  color: var(--agw-removed);
+  background: color-mix(in srgb, var(--agw-removed) 14%, transparent);
+}
+
+/* ── Docked task panel (todo_write checklist) ─────────────────────────
+ * Sits above the composer, width-matched to it (max-w-3xl). Collapsible head
+ * doubles as a live summary; rows show per-task status. */
+/* The task panel tucks its bottom ~12px BEHIND the composer's top edge, so it
+   reads as growing out from behind the composer (the composer carries `z-10` and
+   paints over the overlap). It's also NARROWER than the composer (inset ~24px on
+   each side) so its sides clear the composer's rounded corners — the tuck has no
+   corner clash. Only the top corners are rounded; the bottom is hidden. */
+.agw-tasks {
+  width: calc(100% - 48px); /* 24px inset each side — clears the composer corners */
+  max-width: 45rem; /* composer is 48rem (max-w-3xl) → ~24px inset when wide */
+  margin: 0 auto -12px; /* tuck 12px behind the composer's top edge */
+  padding-bottom: 12px; /* the tucked strip the composer paints over */
+  border: 1px solid var(--agw-border-strong);
+  border-bottom: none; /* hidden behind the composer */
+  border-radius: var(--agw-radius-lg) var(--agw-radius-lg) 0 0;
+  background: var(--agw-surface);
+  overflow: hidden;
+}
+/* ── Background processes (shell_spawn) ───────────────────────────────────
+ * The same card as the checklist above it. `.agw-tasks` supplies the width
+ * inset, tuck, border and radius; `.agw-tasks-head` the header; and each
+ * process is an `.agw-task-row` with the checklist's own status glyphs. The
+ * dock reads as one surface rather than a pile of unrelated panels.
+ *
+ * The one thing a checklist item does not have is output, so a process row
+ * unfolds: click it and what it has printed appears beneath the row. */
+.agw-bgtask-item {
+  display: flex;
+  flex-direction: column;
+}
+/* A settled process is history, not status — recede so a live one leads. */
+.agw-bgtask-item[data-status="stopped"] .agw-task-row,
+.agw-bgtask-item[data-status="exited"] .agw-task-row {
+  opacity: 0.72;
+}
+/* The row's own hit area: everything except the trailing button. */
+.agw-bgtask-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+}
+.agw-bgtask-open:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+  border-radius: var(--agw-radius-sm);
+}
+.agw-bgtask-state {
+  flex: 0 0 auto;
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+  background: var(--agw-control-muted);
+  padding: 1px 7px;
+  border-radius: var(--agw-radius-pill);
+}
+.agw-bgtask-item[data-status="running"] .agw-bgtask-state {
+  color: var(--agw-accent);
+}
+/* A non-zero exit is the one ending worth colouring — the run is over either
+   way, but this is the one you may need to act on. */
+.agw-bgtask-state[data-fail] {
+  color: var(--agw-danger, #e5484d);
+}
+/* Stop / dismiss — sized to the row, not to a card header. */
+.agw-bgtask-stop,
+.agw-bgtask-x {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: none;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  outline: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.agw-bgtask-stop:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--agw-removed) 16%, transparent);
+  color: var(--agw-removed);
+}
+.agw-bgtask-x:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-bgtask-stop:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.agw-bgtask-stop:focus-visible,
+.agw-bgtask-x:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+/* The unfolded output carries no surface of its own.
+ *
+ * The card has two layers and only two: the header band, and the content well
+ * the rows sit in. A row title is text in that well — clicking it reveals more
+ * text underneath. Giving the output its own fill made it a third panel inside
+ * the second, which is what made one process look like a stack of boxes. */
+.agw-bgtask-body {
+  margin: 0;
+  background: none;
+}
+
+.agw-bgtask-log {
+  max-height: 200px;
+  overflow: auto;
+}
+/* Aligned under the title, not under the card: 8px row inset + 16px glyph +
+   10px gap is where the title's own text starts, so the output reads as
+   belonging to that row rather than to the panel. */
+.agw-bgtask-log .agw-shell-out {
+  padding: 0 10px 6px 34px;
+}
+.agw-bgtask-note {
+  margin: 0;
+  padding: 0 10px 6px 34px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+
+.agw-tasks-head {
+  display: flex;
+  align-items: stretch;
+}
+.agw-tasks-toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 12px;
+  border: none;
+  /* Transparent: the card's own surface IS the header band, and the content
+     well below is what recedes from it. Hover still lifts. */
+  background: transparent;
+  color: var(--agw-text);
+  cursor: pointer;
+  text-align: left;
+  outline: none;
+}
+.agw-tasks-toggle:hover {
+  background: var(--agw-hover-paint);
+}
+/* Dismiss (X) — removes the list for this thread; separate from the toggle so
+   it never trips the expand/collapse. */
+.agw-tasks-x {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  border: none;
+  background: transparent;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  outline: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.agw-tasks-x:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-tasks-toggle:focus-visible,
+.agw-tasks-x:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+.agw-tasks-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-tasks-count {
+  flex: 0 0 auto;
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+  background: var(--agw-control-muted);
+  padding: 1px 7px;
+  border-radius: var(--agw-radius-pill);
+}
+.agw-tasks-chev {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--agw-text-muted);
+  transition: transform 0.18s ease;
+}
+.agw-tasks-chev[data-collapsed] {
+  transform: rotate(-90deg);
+}
+/* The content well. The card's own tint belongs to the header band; without a
+   recess here the whole card was one flat colour from title to last row, and a
+   panel with no depth reads as a placeholder. */
+.agw-tasks-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: color-mix(in srgb, var(--agw-code-surface) 60%, transparent);
+  border-top: 1px solid var(--agw-border);
+}
+.agw-task-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: var(--agw-radius-md);
+  font-size: var(--agw-fs-ui);
+  line-height: 1.45;
+  color: var(--agw-text);
+}
+.agw-task-row[data-status="in_progress"] {
+  background: var(--agw-hover-paint);
+}
+.agw-task-row[data-status="completed"] .agw-task-label {
+  color: var(--agw-text-subtle);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--agw-text-subtle) 45%, transparent);
+}
+.agw-task-row[data-status="cancelled"] .agw-task-label {
+  color: var(--agw-text-subtle);
+  text-decoration: line-through;
+}
+.agw-task-row[data-status="pending"] .agw-task-label {
+  color: var(--agw-text-muted);
+}
+.agw-task-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.agw-task-ico {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+}
+.agw-task-ico-done {
+  color: var(--agw-added);
+  background: color-mix(in srgb, var(--agw-added) 18%, transparent);
+}
+.agw-task-ico-cancel {
+  color: var(--agw-removed);
+  background: color-mix(in srgb, var(--agw-removed) 16%, transparent);
+}
+.agw-task-ico-pending {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--agw-border-strong);
+}
+/* Paused: the task the agent was on when the turn ended. It is neither running
+   (no spinner) nor finished (no tick), so it gets its own SHAPE — the pending
+   ring with a held centre — rather than a recoloured copy of either. */
+.agw-task-ico-paused {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--agw-border-strong);
+  position: relative;
+}
+.agw-task-ico-paused::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--agw-text-subtle);
+}
+.agw-task-row[data-status="paused"] {
+  background: var(--agw-hover-paint);
+}
+.agw-task-row[data-status="paused"] .agw-task-label {
+  color: var(--agw-text-muted);
+}
+/* A process you stopped on purpose is not a failure. Red belongs to a non-zero
+   exit; a deliberate stop is simply over. */
+.agw-task-ico-stopped {
+  color: var(--agw-text-subtle);
+  background: var(--agw-control-muted);
+}
+.agw-task-spin {
+  margin: 1px; /* visually align the 13px ring within the 16px icon column */
+}
+
+/* Available to any surface whose state is carried by a glyph. Clipped rather
+   than `display:none` so assistive technology still reads it. */
+.agw-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Task indicator (header) + checklist card ─────────────────────────
+ * Sits immediately left of the context ring: the two "how is this turn going"
+ * readouts, together. Glyph + `closed/total`, opening the checklist itself.
+ *
+ * Deliberately quieter than a button and louder than plain text: it is a
+ * readout you glance at, but unlike the context ring it IS clickable (click
+ * pins the card open), so it gets a real hover/press response rather than the
+ * ring's `cursor: help`.
+ *
+ * Height matches the header's 28px icon buttons so the row stays on one
+ * baseline no matter which of its tenants are present. */
+.agw-taskind-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+.agw-taskind {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 7px;
+  border: none;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  outline: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.agw-taskind:hover,
+.agw-taskind[data-open] {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-taskind:active {
+  /* A press must be felt, and hover-paint alone reads as "still hovering" on
+     a control the pointer is already over. */
+  background: color-mix(in srgb, var(--agw-text) 12%, transparent);
+}
+.agw-taskind:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-taskind-count {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  font-variant-numeric: tabular-nums; /* the ratio must not jitter as it ticks */
+  letter-spacing: 0.1px;
+}
+/* Running — the glyph is replaced by the SAME spinner the checklist rows use
+   for the active task, so the header and the card agree at a glance. This only
+   ever renders while the conversation is actually streaming (see
+   `TaskIndicator`): a spinner must never claim work that has stopped. */
+.agw-taskind-spin {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+.agw-taskind[data-state="running"] {
+  color: var(--agw-text);
+}
+/* Paused — a task left open by a turn that ended. Held, never spinning, and
+   marked in the warning role so it is distinguishable from idle without
+   relying on colour alone (the card below spells out "Paused — …"). */
+.agw-taskind[data-state="paused"] .agw-taskind-count {
+  color: var(--agw-warning);
+}
+/* Done — the ending state. A quiet, earned confirmation, not a celebration. */
+.agw-taskind[data-state="done"] {
+  color: var(--agw-added);
+}
+
+/* The checklist card. Surface, border and shadow come from the shared
+   `.agw-menu` popover family — this only sets its measure. */
+.agw-taskpop {
+  /* ONE width, always. It was `min-width: 260px` + `max-width: 28rem`, which is
+     not a measure — it is a range the content picks from, so the card was as
+     wide as its longest task title and changed width every time the agent
+     wrote a new one. A readout you keep open while working cannot re-measure
+     itself under you; a long title is the panel's problem to wrap, not the
+     window's problem to make room for. */
+  width: min(320px, calc(100vw - 24px));
+  border-radius: var(--agw-radius-md);
+  overflow: hidden;
+}
+/* Rows wrap now that the card cannot widen. Two lines is the practical ceiling
+   for a task title; past that the list stops being scannable, so it clamps and
+   the full text stays available on hover. */
+.agw-taskpop .agw-task-label {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+/* A row is no longer always one line, so a centred glyph would drift to the
+   middle of a two-line title instead of marking its start. */
+.agw-taskpop .agw-task-row {
+  align-items: flex-start;
+}
+.agw-taskpop .agw-task-ico,
+.agw-taskpop .agw-task-spin {
+  margin-top: 1px;
+}
+
+/* ── Context ring (header) + hover card ───────────────────────────────
+ * Compact gauge before the Settings button; "% used" with a clean popover. */
+.agw-ctx-ring {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--agw-radius-md);
+  cursor: help;
+  outline: none;
+  transition: background 0.12s ease;
+}
+.agw-ctx-ring:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-ctx-ring:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* Surface, border and shadow come from the shared popover-family rule above —
+ * this only sets what makes the context card its own thing (tighter radius,
+ * its own entry animation). Do NOT re-declare `background` here; that is what
+ * previously broke it away from the model menu's glass. */
+.agw-ctx-card {
+  min-width: 210px;
+  /* The card is its own object and sizes to its OWN budget, never to whatever
+   * string happens to land in it. Without this a single long value — a custom
+   * provider's UUID, say — stretched the whole card across the window. Same
+   * rule as the project switcher: derive width from the container's content
+   * budget, not from one arbitrary item. */
+  max-width: 300px;
+  padding: 10px 11px;
+  border-radius: var(--agw-radius-md);
+  animation: agw-ctx-pop 0.12s ease-out;
+}
+@keyframes agw-ctx-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+.agw-ctx-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--agw-text-subtle);
+}
+.agw-ctx-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--agw-fs-ui);
+}
+.agw-ctx-label {
+  color: var(--agw-text-muted);
+}
+.agw-ctx-val {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-ctx-bar {
+  height: 5px;
+  margin: 6px 0 4px;
+  border-radius: var(--agw-radius-pill);
+  overflow: hidden;
+  background: color-mix(in srgb, var(--agw-text) 12%, transparent);
+}
+.agw-ctx-bar-fill {
+  height: 100%;
+  border-radius: var(--agw-radius-pill);
+  transition: width 0.5s ease;
+}
+.agw-ctx-sub {
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+}
+.agw-ctx-divider {
+  height: 1px;
+  margin: 8px 0;
+  background: var(--agw-border);
+}
+.agw-ctx-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  /* Without a gap the label and value TOUCH the moment either grows —
+   * "13 requests not priced" ran straight into the model name with no space
+   * between them and read as one corrupted string. */
+  gap: 10px;
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+  margin-top: 2px;
+}
+/* The label yields before the number does: a money value is never worth
+ * truncating, and the name beside it always is. */
+.agw-ctx-line > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-ctx-line > span:last-child {
+  flex: none;
+}
+/* A full-width note rather than a label/value pair — for anything that is a
+ * sentence, not a measurement. Wraps instead of stretching the card. */
+.agw-ctx-note {
+  margin-top: 6px;
+  font-size: var(--agw-fs-micro);
+  line-height: 1.45;
+  color: var(--agw-text-subtle);
+  overflow-wrap: anywhere;
+}
+.agw-ctx-note strong {
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-warning);
+}
+

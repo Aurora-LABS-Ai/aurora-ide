@@ -1,0 +1,423 @@
+/* ── Providers page: full-bleed sidebar + detail ──────────────────────────
+   The providers section owns the whole settings content area (fullBleed in
+   SettingsPage): a real edge-to-edge sidebar listing providers — same rail
+   language as the settings nav — and a scrolling detail pane showing the
+   selected provider's connection + models. Replaced the old floating
+   master–detail cards (whose styles are gone). */
+.agw-prov-page {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.agw-prov-side {
+  display: flex;
+  flex-direction: column;
+  width: 248px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--agw-border);
+  background: var(--agw-rail-paint);
+}
+.agw-prov-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 16px 10px;
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+.agw-prov-side-count {
+  font-weight: var(--agw-fw-medium);
+}
+.agw-prov-side-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+.agw-prov-main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.agw-prov-main-inner {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 28px 36px 56px;
+}
+/* Small windows: two fixed rails (settings nav + provider list) eat most of
+   the width, so slim the provider rail and the detail padding to keep the
+   form and model rows comfortable near the 820px window minimum. */
+@media (max-width: 1080px) {
+  .agw-prov-side {
+    width: 204px;
+  }
+  .agw-prov-main-inner {
+    padding: 22px 20px 44px;
+  }
+}
+/* The pane scrolls as a whole page now — lift the old viewport-derived caps
+   so the detail card and its models list take their natural height. */
+.agw-prov-page .agw-prov-detail {
+  max-height: none;
+}
+.agw-prov-page .agw-prov-models {
+  overflow-y: visible;
+}
+.agw-prov-page .agw-prov-detail-empty {
+  min-height: 320px;
+}
+.agw-prov-models-hint {
+  margin: -4px 0 10px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+}
+.agw-prov-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+  outline: none;
+}
+.agw-prov-item + .agw-prov-item {
+  margin-top: 2px;
+}
+.agw-prov-item:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-prov-item[data-active] {
+  background: var(--agw-state-selected);
+}
+/* Pressed (after [data-active] so selecting an already-active row still
+   acknowledges the click with a deeper shade). */
+.agw-prov-item:active {
+  background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 12%);
+}
+.agw-prov-item:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-prov-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.agw-prov-item-name {
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-prov-item-sub {
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-prov-status-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--agw-text-subtle);
+}
+.agw-prov-status-dot[data-tone="ready"] {
+  background: var(--agw-added);
+}
+.agw-prov-status-dot[data-tone="off"] {
+  background: var(--agw-warning);
+}
+.agw-prov-status-dot[data-tone="error"] {
+  background: var(--agw-removed);
+}
+.agw-prov-status-dot[data-tone="busy"] {
+  background: var(--agw-warning);
+}
+.agw-prov-list-foot {
+  padding: 10px;
+  border-top: 1px solid var(--agw-border);
+}
+
+/* Remove-provider control (detail footer). */
+.agw-prov-detail-danger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-prov-remove-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+  background: transparent;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-sm);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.agw-prov-remove-btn:hover {
+  color: var(--agw-danger, #e5484d);
+  border-color: var(--agw-danger, #e5484d);
+}
+.agw-prov-remove-btn[data-confirm] {
+  color: #fff;
+  background: var(--agw-danger, #e5484d);
+  border-color: var(--agw-danger, #e5484d);
+}
+.agw-prov-list-foot .agw-set-btn {
+  width: 100%;
+  justify-content: center;
+}
+.agw-prov-avatar-sm {
+  width: 26px;
+  height: 26px;
+  font-size: var(--agw-fs-ui);
+  border-radius: var(--agw-radius-md);
+}
+
+.agw-prov-detail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* Bounded to the viewport, but the pane itself does NOT scroll — only the
+     model list inside it does (header + connection stay pinned). Content-driven
+     height up to the cap, so a short list keeps the pane short (no dead space). */
+  max-height: calc(100dvh - 250px);
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-set-r-card);
+  background: var(--agw-surface);
+  padding: 18px;
+}
+.agw-prov-detail-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-md);
+}
+/* Fixed regions in the detail pane — only the models list scrolls. */
+.agw-prov-detail-head,
+.agw-prov-conn,
+.agw-prov-models-head,
+.agw-prov-addwrap {
+  flex-shrink: 0;
+}
+.agw-prov-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-prov-detail-titles {
+  flex: 1;
+  min-width: 0;
+}
+.agw-prov-detail-name {
+  font-size: var(--agw-fs-title);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: -0.01em;
+  color: var(--agw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-prov-detail-sub {
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-prov-models-count {
+  margin-left: 4px;
+  color: var(--agw-text-subtle);
+  font-weight: var(--agw-fw-medium);
+}
+
+/* Custom select (replaces native <select>) */
+.agw-csel {
+  position: relative;
+  min-width: 0;
+}
+.agw-csel-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-canvas);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  cursor: pointer;
+  white-space: nowrap;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+.agw-csel-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.agw-csel-trigger:hover {
+  border-color: var(--agw-border-strong);
+}
+.agw-csel-trigger[data-open] {
+  border-color: var(--agw-accent);
+}
+.agw-csel-trigger:active {
+  border-color: var(--agw-border-strong);
+  background: color-mix(in srgb, var(--agw-canvas) 92%, var(--agw-text) 8%);
+}
+.agw-csel-trigger:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-csel-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-csel-popover {
+  overflow-y: auto;
+  padding: 5px;
+  scrollbar-gutter: stable;
+}
+
+.agw-csel-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-csel-item:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-csel-item:active {
+  background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 12%);
+  color: var(--agw-text);
+}
+.agw-csel-item:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-csel-item[data-active] {
+  color: var(--agw-text);
+}
+.agw-csel-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-csel-meta {
+  flex-shrink: 0;
+  margin-left: 8px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+
+/* ── Composer reasoning picker ────────────────────────────────────────── */
+/* ── Shared composer pill ────────────────────────────────────────────────
+ * ONE token set for both composer pills — the model selector trigger AND the
+ * reasoning effort pill — so they are guaranteed to read identically. Edit
+ * here once and both change. Borderless chip with a hover fill (Codex-style). */
+.agw-composer-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--agw-radius-pill);
+  background: transparent;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-composer-pill:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-composer-pill:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* Active while its popover is open — reads as connected to the menu, tinted
+   FROM the composer surface so the pill stays in the composer's color family. */
+.agw-composer-pill[data-open] {
+  background: color-mix(in srgb, var(--agw-text) 7%, var(--agw-composer-surface));
+}
+
+/* Composer family: the model selector, the reasoning picker, and the @ / /
+ * pickers are all part of the COMPOSER, so their popovers read from the SAME
+ * `--agw-composer-surface` as the input box (not the separate elevated surface).
+ * Editing the composer color in Appearance now moves the whole family together
+ * — one cohesive, "premium" input cluster instead of a two-tone split.
+ * Translucent (glass) like every popover; blur comes from .agw-menu /
+ * .agw-mention, so this rule only re-tints the family. */
+/* NB: `.agw-rail-menu` is deliberately NOT in this list. It is the left-rail
+ * right-click menu — it has nothing to do with the composer, and including it
+ * meant editing "Composer → Input fill" recoloured a rail context menu while
+ * "Shared surfaces → Elevated surface" (which the Appearance hint promises
+ * covers popover menus) did nothing to it. It now follows the popover family
+ * like every other non-composer menu. */
+.agw-model-menu,
+.agw-bud-pop,
+.agw-mention,
+.agw-dock-card {
+  /* Matches the popover family's 95% tint — see the note on `.agw-menu`.
+     The docked cards belong here too: they are attached to the composer and
+     read as part of it, so they take the composer's surface rather than the
+     transcript's. */
+  background: color-mix(in srgb, var(--agw-composer-surface) 95%, transparent);
+}
+@supports not (backdrop-filter: blur(1px)) {
+  .agw-model-menu,
+  .agw-bud-pop,
+  .agw-mention,
+  .agw-dock-card {
+    background: var(--agw-composer-surface);
+  }
+}
+

@@ -4,7 +4,7 @@ use tauri::State;
 use crate::db::{Database, EditorState, ExplorerState, WorkspaceState};
 
 /// Save workspace state
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_workspace_state(
     state: WorkspaceState,
     db: State<'_, Mutex<Database>>,
@@ -16,7 +16,7 @@ pub fn save_workspace_state(
 }
 
 /// Get workspace state by path
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_workspace_state(
     workspace_path: Option<String>,
     db: State<'_, Mutex<Database>>,
@@ -35,7 +35,7 @@ pub fn get_workspace_state(
 }
 
 /// Get recently opened workspaces ordered by last_opened_at desc
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_recent_workspaces(
     limit: Option<usize>,
     db: State<'_, Mutex<Database>>,
@@ -56,7 +56,7 @@ pub fn list_recent_workspaces(
 }
 
 /// Save editor state for a file
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_editor_state(state: EditorState, db: State<'_, Mutex<Database>>) -> Result<(), String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     db.editor()
@@ -65,7 +65,7 @@ pub fn save_editor_state(state: EditorState, db: State<'_, Mutex<Database>>) -> 
 }
 
 /// Get editor state for a file
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_editor_state(
     file_path: String,
     db: State<'_, Mutex<Database>>,
@@ -77,7 +77,7 @@ pub fn get_editor_state(
 }
 
 /// Save explorer state for a workspace
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_explorer_state(
     state: ExplorerState,
     db: State<'_, Mutex<Database>>,
@@ -89,7 +89,7 @@ pub fn save_explorer_state(
 }
 
 /// Get explorer state for a workspace
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_explorer_state(
     workspace_path: String,
     db: State<'_, Mutex<Database>>,

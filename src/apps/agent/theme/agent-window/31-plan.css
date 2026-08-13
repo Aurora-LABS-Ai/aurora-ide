@@ -1,0 +1,481 @@
+/* ==========================================================================
+   Plan Canvas
+   --------------------------------------------------------------------------
+   Steps are a list with a status rail, NOT cards: twelve equal-weight boxes
+   would flatten the hierarchy and hide the one thing the user came to read.
+   Brightness is spent on the running step and withheld from everything else,
+   which is how the panel answers "where is the work" at a glance.
+
+   Every state carries an icon AND a word (see PlanCanvas.tsx), so nothing here
+   relies on colour alone.
+   ========================================================================== */
+
+.agw-canvas-plan-wrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.agw-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 20px 24px;
+}
+
+/* --- Header ------------------------------------------------------------- */
+
+.agw-plan-head {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agw-plan-headline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agw-plan-title {
+  margin: 0;
+  font-size: var(--agw-fs-title);
+  font-weight: var(--agw-fw-strong);
+  color: var(--agw-text);
+  letter-spacing: -0.014em;
+}
+
+.agw-plan-count {
+  flex: none;
+  font-size: var(--agw-fs-label);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-muted);
+}
+
+.agw-plan-meter {
+  height: 3px;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-border);
+  overflow: hidden;
+}
+
+.agw-plan-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--agw-accent);
+  transition: width 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agw-plan-now {
+  margin: 0;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+}
+
+.agw-plan-overview {
+  font-size: var(--agw-fs-md);
+  color: var(--agw-text-muted);
+}
+
+/* --- Steps -------------------------------------------------------------- */
+
+.agw-plan-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agw-plan-step {
+  position: relative;
+  border-radius: var(--agw-radius-md);
+  /* The rail: a hairline that the running step turns into an accent edge. */
+  box-shadow: inset 2px 0 0 transparent;
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+
+.agw-plan-step[data-state="running"] {
+  background: var(--agw-surface-elevated);
+  box-shadow: inset 2px 0 0 var(--agw-accent);
+}
+
+.agw-plan-step-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+}
+
+.agw-plan-step-head:hover {
+  background: var(--agw-hover);
+}
+
+.agw-plan-step-head:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: -2px;
+}
+
+.agw-plan-step-index {
+  flex: none;
+  min-width: 14px;
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+}
+
+.agw-plan-step-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The running step is the only bright title in the list. */
+.agw-plan-step[data-state="running"] .agw-plan-step-title {
+  color: var(--agw-text);
+  font-weight: var(--agw-fw-strong);
+}
+
+.agw-plan-step[data-state="done"] .agw-plan-step-title,
+.agw-plan-step[data-state="skipped"] .agw-plan-step-title {
+  color: var(--agw-text-subtle);
+}
+
+.agw-plan-step-state {
+  flex: none;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+.agw-plan-step[data-state="running"] .agw-plan-step-state {
+  color: var(--agw-accent);
+}
+
+.agw-plan-step[data-state="paused"] .agw-plan-step-state {
+  color: var(--agw-warning);
+}
+
+.agw-plan-step[data-state="failed"] .agw-plan-step-state {
+  color: var(--agw-danger);
+}
+
+.agw-plan-step-chevron {
+  flex: none;
+  color: var(--agw-text-subtle);
+  transition: transform 160ms ease;
+}
+
+.agw-plan-step[data-open] .agw-plan-step-chevron {
+  transform: rotate(180deg);
+}
+
+/* --- Status markers ----------------------------------------------------- */
+
+.agw-plan-marker {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid var(--agw-border-strong);
+  color: var(--agw-text-subtle);
+}
+
+.agw-plan-marker-done {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--agw-added) 18%, transparent);
+  color: var(--agw-added);
+}
+
+.agw-plan-marker-failed {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--agw-danger) 18%, transparent);
+  color: var(--agw-danger);
+}
+
+.agw-plan-marker-skipped {
+  border-style: dashed;
+}
+
+.agw-plan-marker-paused {
+  border-color: var(--agw-warning);
+  /* A half-filled ring: started, not finished, nothing driving it. */
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--agw-warning) 45%, transparent) 50%,
+    transparent 50%
+  );
+}
+
+/* The spinner is the ONLY animated state, and it only renders when a run is
+   genuinely streaming — see resolvePlanStepState. */
+.agw-plan-marker-running {
+  border-color: color-mix(in srgb, var(--agw-accent) 28%, transparent);
+  border-top-color: var(--agw-accent);
+  animation: agw-plan-spin 720ms linear infinite;
+}
+
+@keyframes agw-plan-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agw-plan-marker-running {
+    animation: none;
+    border-color: var(--agw-accent);
+    background: color-mix(in srgb, var(--agw-accent) 35%, transparent);
+  }
+
+  .agw-plan-meter-fill,
+  .agw-plan-step,
+  .agw-plan-step-chevron {
+    transition: none;
+  }
+}
+
+/* --- Inline help, notes, body ------------------------------------------- */
+
+.agw-plan-step-help,
+.agw-plan-step-note {
+  margin: -2px 0 6px;
+  padding: 0 10px 0 34px;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+.agw-plan-step-help {
+  color: var(--agw-warning);
+}
+
+.agw-plan-step-body {
+  padding: 0 10px 12px 34px;
+  font-size: var(--agw-fs-md);
+  color: var(--agw-text-muted);
+}
+
+.agw-plan-step-empty {
+  margin: 0;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+.agw-plan-step-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.agw-plan-step-action {
+  padding: 4px 10px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: transparent;
+  font: inherit;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.agw-plan-step-action:hover:not(:disabled) {
+  background: var(--agw-hover);
+  color: var(--agw-text);
+}
+
+.agw-plan-step-action:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: 1px;
+}
+
+.agw-plan-step-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* --- Footer ------------------------------------------------------------- */
+
+.agw-plan-foot {
+  padding-top: 4px;
+  border-top: 1px solid var(--agw-border);
+}
+
+.agw-plan-path {
+  display: block;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+/* Plan progress beat — the `plan_step_update` card.
+   A status flip is one moment in a run, not a result worth unfolding, so it
+   renders as a single quiet line that opens the Canvas for the full picture. */
+.agw-plan-beat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  font: inherit;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agw-plan-beat:hover {
+  background: var(--agw-hover);
+}
+
+.agw-plan-beat:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: -2px;
+}
+
+.agw-plan-beat-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--agw-border-strong);
+}
+
+.agw-plan-beat[data-step-status="in_progress"] .agw-plan-beat-dot {
+  background: var(--agw-accent);
+}
+
+.agw-plan-beat[data-step-status="done"] .agw-plan-beat-dot {
+  background: var(--agw-added);
+}
+
+.agw-plan-beat[data-step-status="failed"] .agw-plan-beat-dot {
+  background: var(--agw-danger);
+}
+
+.agw-plan-beat-verb {
+  flex: none;
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+}
+
+.agw-plan-beat-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agw-plan-beat-count {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Checklist beat (`todo`) — the same quiet one-line rhythm as the plan beat,
+   minus the affordances. The plan beat opens the Canvas; this one has nowhere
+   to go, because the full checklist is one hover away in the header. Making it
+   look clickable would be a dead control. */
+.agw-task-beat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 5px 10px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  text-align: left;
+}
+/* One line per change. A card names only what MOVED — the checklist itself
+ * lives in the header indicator, which is live and one hover away. Drawing the
+ * whole list here too would say the same thing twice, and age badly: a card
+ * records a moment, the header shows the present.
+ *
+ * There can be several lines because one `update` call can carry several
+ * changes ("Finished A", "Started B"). */
+.agw-task-beat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.agw-task-beat-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--agw-border-strong);
+}
+
+/* Laying out the list is the one beat that starts something, so it carries the
+   accent; a status flip is progress within it and stays quiet. */
+.agw-task-beat[data-task-op="set"] .agw-task-beat-dot {
+  background: var(--agw-accent);
+}
+
+.agw-task-beat-verb {
+  flex: none;
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+}
+
+.agw-task-beat-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agw-task-beat-count {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* "Worked 4m" in the assistant turn footer.
+   Information, not an action: it sits at the lowest contrast in the row so it
+   never competes with Copy or Retry, and uses tabular figures so a ticking
+   live counter doesn't jitter the buttons beside it. */
+.agw-msg-worked {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 2px;
+  padding: 0 2px;
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+  white-space: nowrap;
+  user-select: none;
+}
+

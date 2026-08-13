@@ -24,24 +24,63 @@ import { isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
 // it already accounts for the platform. Branching on it here is what led to a
 // hardcoded Windows Git path in the first place.
 import { getShellSpawnConfig, type ShellProfile } from "@/apps/agent/adapters/shell-config";
+import {
+  getShellProfiles,
+  type ShellProfile as ShellProfileEntry,
+} from "@/apps/agent/services/workspace/shell-profiles";
+import {
+  disposeTerminalSession,
+  terminalRuntime as runtime,
+} from "@/apps/agent/services/terminal/terminal-sessions";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentTerminalStore, type TermSession } from "@/apps/agent/store/ui/useAgentTerminalStore";
 import { selectActiveAgentTheme, useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
-
-interface PtyRuntime {
-  pty: IPty;
-  term: Terminal;
-  fit: FitAddon;
-}
-
-/** Live PTY + xterm per session id — persists across tab/session switches. */
-const runtime = new Map<string, PtyRuntime>();
 
 function cssVar(name: string, fallback: string): string {
   if (typeof document === "undefined") return fallback;
   const root = (document.querySelector(".agw-root") as HTMLElement | null) ?? document.documentElement;
   const v = getComputedStyle(root).getPropertyValue(name).trim();
   return v || fallback;
+}
+
+/**
+ * Families that carry the Nerd Font symbol block, tried in order after the
+ * user's own code font.
+ *
+ * `Symbols Nerd Font Mono` is last and is the one that matters most: it is the
+ * symbols-only face people install precisely so their regular font keeps
+ * rendering the text. The rest are the patched monospace faces that ship with
+ * a Nerd Font install and are common on Windows.
+ */
+const NERD_FONT_FALLBACKS = [
+  "CaskaydiaCove Nerd Font Mono",
+  "CaskaydiaCove NF",
+  "JetBrainsMono Nerd Font Mono",
+  "JetBrainsMono NF",
+  "MesloLGS NF",
+  "FiraCode Nerd Font Mono",
+  "Hack Nerd Font Mono",
+  "Symbols Nerd Font Mono",
+] as const;
+
+/** Append the Nerd Font families to a font stack, skipping any already named. */
+function withNerdFontFallbacks(stack: string | undefined): string {
+  // A theme snapshot can reach here without a code font — a custom theme, or
+  // typography overrides pruned by the persist migration. Passing `undefined`
+  // to xterm was harmless before this function existed; throwing on it inside
+  // the Terminal constructor is not, because that kills the whole attach and
+  // renders as an empty pane.
+  const base = stack?.trim();
+  const present = new Set(
+    (base ?? "")
+      .split(",")
+      .map((family) => family.trim().replace(/^["']|["']$/g, "").toLowerCase())
+      .filter(Boolean),
+  );
+  const extra = NERD_FONT_FALLBACKS.filter((family) => !present.has(family.toLowerCase())).map(
+    (family) => `"${family}"`,
+  );
+  return [...(base ? [base] : []), ...extra, "monospace"].join(", ");
 }
 
 function xtermTheme(dark: boolean): ITheme {
@@ -70,12 +109,27 @@ function xtermTheme(dark: boolean): ITheme {
   };
 }
 
+/**
+ * Remove any xterm DOM tree in `container` that is not `keep`.
+ *
+ * Heals a container that already has two terminals stacked in it — which is
+ * what the reservation below now prevents, but a session created before that
+ * fix (or by any future path that races) would otherwise stay broken until the
+ * window reloads.
+ */
+function dropStrayTerminals(container: HTMLDivElement, keep: HTMLElement | undefined): void {
+  for (const child of Array.from(container.children)) {
+    if (child !== keep && child.classList.contains("xterm")) child.remove();
+  }
+}
+
 async function attachSession(session: TermSession, container: HTMLDivElement, onExit: () => void) {
   const existing = runtime.get(session.id);
   if (existing) {
     const el = existing.term.element;
     if (el && el.parentElement !== container) container.appendChild(el);
     else if (!el) existing.term.open(container);
+    dropStrayTerminals(container, existing.term.element ?? undefined);
     requestAnimationFrame(() => {
       try { existing.fit.fit(); } catch { /* container not laid out yet */ }
     });
@@ -89,8 +143,18 @@ async function attachSession(session: TermSession, container: HTMLDivElement, on
     cursorStyle: "bar",
     fontSize: 12,
     // The user's Code font (Appearance → Typography), same token every code
-    // surface reads — xterm needs the resolved string, not the CSS variable.
-    fontFamily: activeTheme.tokens.fontCode,
+    // surface reads — xterm needs the resolved string, not the CSS variable —
+    // followed by Nerd Font fallbacks.
+    //
+    // A real shell prompt is not just text. Prompt themes (oh-my-posh,
+    // starship, powerlevel10k) draw with Private Use Area glyphs: powerline
+    // separators, a git branch mark, language icons. None of the bundled code
+    // faces carry that block, so every one of them rendered as a tofu box and
+    // the prompt looked corrupted. Browsers fall back PER GLYPH, so naming the
+    // common Nerd Font families after the user's choice keeps their font for
+    // the text and borrows only the symbols — from whichever of these they
+    // actually have installed.
+    fontFamily: withNerdFontFallbacks(activeTheme.tokens.fontCode),
     lineHeight: 1.25,
     convertEol: true,
     scrollback: 10000,
@@ -101,7 +165,25 @@ async function attachSession(session: TermSession, container: HTMLDivElement, on
   term.loadAddon(fit);
   term.loadAddon(new WebLinksAddon());
   term.open(container);
+  dropStrayTerminals(container, term.element ?? undefined);
   try { fit.fit(); } catch { /* ignore */ }
+
+  // CLAIM THE SLOT NOW — synchronously, before the first `await` below.
+  //
+  // This function is `async` and the only guard against building a second
+  // terminal for a session is `runtime.get(session.id)` at the top. That map
+  // used to be written at the very END, after awaiting the shell registry, so
+  // any second call arriving during that await saw an empty slot and built a
+  // whole second xterm into the SAME container. React 18 mounts effects twice
+  // in development, which is exactly such a second call.
+  //
+  // The result was two stacked terminals — `xterm-dom-renderer-owner-5` and
+  // `-6` inside one `.agw-term-surface` — with two cursors (one at the top,
+  // one at the bottom of the pane) and the keyboard wired to whichever
+  // instance held the live PTY, so typing landed in the invisible one and the
+  // terminal read as frozen. `pty` is filled in below; the entry existing at
+  // all is what makes a concurrent call take the re-attach path instead.
+  runtime.set(session.id, { pty: undefined as unknown as IPty, term, fit });
 
   const cols = term.cols || 80;
   const rows = term.rows || 24;
@@ -136,34 +218,51 @@ async function attachSession(session: TermSession, container: HTMLDivElement, on
     return;
   }
 
-  pty.onData((d) => term.write(d));
-  term.onData((d) => pty.write(d));
-  term.onResize(({ cols: c, rows: r }) => {
-    try { pty.resize(c, r); } catch { /* exited */ }
-  });
+  // Exit is wired FIRST, before the data pumps. A shell that dies on its own
+  // command line dies in milliseconds — if this is registered after them, the
+  // event can land before anyone is listening and the session just sits there
+  // eating keystrokes with nothing on screen and no reason given. That is
+  // exactly how a `cmd.exe` launched with PowerShell's `-Command` flag
+  // presented: a black pane that swallowed everything typed into it.
+  const startedAt = Date.now();
   pty.onExit(({ exitCode }) => {
-    try { term.writeln(`\r\n\x1b[33m[process exited: ${exitCode}]\x1b[0m`); } catch { /* disposed */ }
+    const instant = Date.now() - startedAt < 1500;
+    try {
+      if (instant) {
+        // Dying this fast is a failure to LAUNCH, not a session that ended, so
+        // it names what was run — the command line is the whole diagnosis.
+        term.writeln(
+          `\r\n\x1b[31m${session.profile} exited immediately (code ${exitCode}).\x1b[0m\r\n` +
+            `\x1b[90m${cfg.exe} ${cfg.args.join(" ")}\x1b[0m\r\n` +
+            `\x1b[90mThe shell could not start with these arguments. Check Settings → Tools → Shells.\x1b[0m`,
+        );
+      } else {
+        term.writeln(`\r\n\x1b[33m[process exited: ${exitCode}]\x1b[0m`);
+      }
+    } catch { /* disposed */ }
     onExit();
   });
 
-  runtime.set(session.id, { pty, term, fit });
-}
-
-/** Kill a session's shell + xterm and drop it from the runtime map. */
-// eslint-disable-next-line react-refresh/only-export-components -- co-located PTY lifecycle helper
-export function disposeTerminalSession(id: string): void {
-  const rt = runtime.get(id);
-  if (!rt) return;
-  try { rt.pty?.kill(); } catch { /* already dead */ }
-  try { rt.term.dispose(); } catch { /* already disposed */ }
-  runtime.delete(id);
-}
-
-// Reap every live shell when the window unloads.
-if (typeof window !== "undefined") {
-  window.addEventListener("beforeunload", () => {
-    for (const id of Array.from(runtime.keys())) disposeTerminalSession(id);
+  pty.onData((d) => term.write(d));
+  term.onData((d) => {
+    pty.write(d);
+    // Enter — remember where this command's output begins, so
+    // `readTerminalSession(id, { scope: "last_command" })` can answer without
+    // parsing prompts or injecting markers into the user's shell. Aurora owns
+    // the PTY, so the keystroke IS the boundary.
+    if (d.includes("\r")) {
+      const entry = runtime.get(session.id);
+      if (entry) {
+        const buffer = term.buffer.active;
+        entry.lastCommandLine = buffer.baseY + buffer.cursorY;
+      }
+    }
   });
+  term.onResize(({ cols: c, rows: r }) => {
+    try { pty.resize(c, r); } catch { /* exited */ }
+  });
+
+  runtime.set(session.id, { pty, term, fit });
 }
 
 const TerminalView: React.FC<{ session: TermSession }> = ({ session }) => {
@@ -175,8 +274,24 @@ const TerminalView: React.FC<{ session: TermSession }> = ({ session }) => {
     const container = containerRef.current;
     if (!container || !isAuroraRuntimeAvailable()) return;
     let cancelled = false;
-    void attachSession(session, container, () => {
+    attachSession(session, container, () => {
       if (!cancelled) setRunning(session.id, false);
+    }).catch((error: unknown) => {
+      // Never let this fail silently. `attachSession` builds the xterm, asks
+      // the registry for a shell and spawns it; a throw anywhere in there used
+      // to reject into `void` and leave a blank black pane with no cursor, no
+      // prompt and no reason — indistinguishable from a shell that started and
+      // printed nothing. Same rule as the tool cards: a failure that renders as
+      // "nothing happened" is worse than no feature.
+      console.error("[terminal] failed to attach session:", error);
+      if (cancelled) return;
+      setRunning(session.id, false);
+      const message = error instanceof Error ? error.message : String(error);
+      container.textContent = "";
+      const note = document.createElement("div");
+      note.className = "agw-term-fail";
+      note.textContent = `This terminal could not start: ${message}`;
+      container.appendChild(note);
     });
 
     const ro = new ResizeObserver(() => {
@@ -214,7 +329,26 @@ const TerminalView: React.FC<{ session: TermSession }> = ({ session }) => {
 
 const NewTermMenu: React.FC<{ onPick: (p: ShellProfile) => void }> = ({ onPick }) => {
   const [open, setOpen] = useState(false);
+  const [shells, setShells] = useState<ShellProfileEntry[]>([]);
+  const [loading, setLoading] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+
+  // Read when the menu OPENS, not on mount and not in an effect: the registry
+  // is on disk and can change while the window is up (a scan, a manual add), so
+  // a list captured at startup goes stale — and `react-hooks/set-state-in-effect`
+  // rejects loading it from an effect anyway. Opening is an event; this belongs
+  // in the handler for it.
+  const openMenu = () => {
+    setOpen(true);
+    setLoading(true);
+    void getShellProfiles()
+      .then((registry) =>
+        setShells(registry.profiles.filter((p) => p.enabled && p.health.state !== "failed")),
+      )
+      .catch(() => setShells([]))
+      .finally(() => setLoading(false));
+  };
+
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
@@ -231,30 +365,36 @@ const NewTermMenu: React.FC<{ onPick: (p: ShellProfile) => void }> = ({ onPick }
         title="New terminal"
         aria-label="New terminal"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => (open ? setOpen(false) : openMenu())}
       >
         <AgentIcon name="plus" size={15} />
       </button>
       {open && (
         <div className="agw-addmenu" role="menu">
-          <button
-            type="button"
-            role="menuitem"
-            className="agw-addmenu-item"
-            onClick={() => { onPick("powershell"); setOpen(false); }}
-          >
-            <AgentIcon name="terminal" size={14} />
-            <span className="agw-addmenu-label">PowerShell</span>
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="agw-addmenu-item"
-            onClick={() => { onPick("bash"); setOpen(false); }}
-          >
-            <AgentIcon name="terminal" size={14} />
-            <span className="agw-addmenu-label">bash</span>
-          </button>
+          {/* Every shell the registry actually found, not two hardcoded names.
+              Settings → Tools › Shells already scans for these and knows their
+              real paths and versions; the picker offering a fixed pair was the
+              only reason an installed PowerShell 7 could not be opened here. */}
+          {shells.length === 0 ? (
+            <div className="agw-addmenu-empty">
+              {loading ? "Looking for shells…" : "No shells found — scan in Settings → Tools."}
+            </div>
+          ) : (
+            shells.map((shell) => (
+              <button
+                key={shell.id}
+                type="button"
+                role="menuitem"
+                className="agw-addmenu-item"
+                title={shell.exe || shell.path}
+                onClick={() => { onPick(shell.kind); setOpen(false); }}
+              >
+                <AgentIcon name="terminal" size={14} />
+                <span className="agw-addmenu-label">{shell.label}</span>
+                {shell.version && <span className="agw-addmenu-meta">{shell.version}</span>}
+              </button>
+            ))
+          )}
         </div>
       )}
     </div>
@@ -268,21 +408,68 @@ export const TerminalPanel: React.FC = () => {
   const removeSession = useAgentTerminalStore((s) => s.removeSession);
   const setActive = useAgentTerminalStore((s) => s.setActive);
 
-  // Open one shell automatically the first time the tab is shown.
+  // Open one shell the FIRST time the tab is shown, and only then.
+  //
+  // This used to key on `sessions.length`, so closing the last terminal
+  // immediately spawned a replacement — the empty state below was unreachable
+  // and "close" did not close. Reopening the Terminal tab with sessions still
+  // running must not add one either, which is why the check reads the store
+  // rather than depending on the rendered list.
+  const autoOpened = useRef(false);
   useEffect(() => {
-    if (sessions.length === 0) createSession("powershell");
-  }, [sessions.length, createSession]);
+    if (autoOpened.current) return;
+    autoOpened.current = true;
+    if (useAgentTerminalStore.getState().sessions.length === 0) createSession();
+  }, [createSession]);
 
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0] ?? null;
+  const stripRef = useRef<HTMLDivElement>(null);
   const closeOne = (id: string) => {
     disposeTerminalSession(id);
     removeSession(id);
   };
 
+  /**
+   * A vertical wheel over the tab strip scrolls it sideways.
+   *
+   * Bound natively with `{ passive: false }`, not via React's `onWheel`: React
+   * registers `wheel` at the root as PASSIVE, so `preventDefault()` there is a
+   * silent no-op (see .knowledge/lesson.md, 2026-07-25). `preventDefault` is
+   * only called when the strip can actually take the scroll, so at either end
+   * the gesture still passes through instead of dying under the pointer.
+   */
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey) return; // zoom, not scroll
+      const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      if (delta === 0) return;
+      const max = strip.scrollWidth - strip.clientWidth;
+      if (max <= 0) return;
+      const next = Math.min(max, Math.max(0, strip.scrollLeft + delta));
+      if (next === strip.scrollLeft) return;
+      event.preventDefault();
+      strip.scrollLeft = next;
+    };
+    strip.addEventListener("wheel", onWheel, { passive: false });
+    return () => strip.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // Keep the selected terminal in view — switching with the keyboard or opening
+  // a new one past the edge must not leave the active pill off screen.
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (!strip || !active) return;
+    strip
+      .querySelector<HTMLElement>('[data-active] .agw-term-pill-main')
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [active]);
+
   return (
     <div className="agw-term-root">
       <div className="agw-term-bar">
-        <div className="agw-term-sessions agw-scroll">
+        <div className="agw-term-sessions agw-scroll" ref={stripRef}>
           {sessions.map((s) => (
             <div key={s.id} className="agw-term-pill" data-active={s.id === active?.id || undefined}>
               <button
@@ -311,9 +498,25 @@ export const TerminalPanel: React.FC = () => {
       {active ? (
         <TerminalView key={active.id} session={active} />
       ) : (
-        <div className="agw-files-empty">
-          <AgentIcon name="terminal" size={22} style={{ color: "var(--agw-text-subtle)" }} />
-          <div style={{ fontSize: "var(--agw-fs-ui)", color: "var(--agw-text-muted)", fontWeight: "var(--agw-fw-medium)" }}>No terminal open</div>
+        /* Closing the last session lands here rather than silently spawning a
+           replacement. Same anatomy as the Canvas empty state — icon, what is
+           true, what to do about it — and one action, because an empty state
+           that only states a fact makes the reader go hunting for the control. */
+        <div className="agw-term-empty">
+          <AgentIcon name="terminal" size={24} />
+          <strong>No terminal open</strong>
+          <span>
+            Terminals start in this chat&apos;s project folder and keep running while you
+            work elsewhere in the window.
+          </span>
+          <button
+            type="button"
+            className="agw-term-empty-cta"
+            onClick={() => createSession()}
+          >
+            <AgentIcon name="plus" size={13} />
+            New terminal
+          </button>
         </div>
       )}
     </div>

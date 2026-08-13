@@ -1,0 +1,410 @@
+/* ── Diagnostics: recent problems ─────────────────────────────────────────
+   A list, not cards. These rows sit inside an already-bordered panel, so a
+   bordered tile per entry would be a second container earning nothing —
+   alignment and one hairline do the grouping instead. Each row is one line
+   until you open it: a wall of wrapped stack traces makes ten failures
+   unscannable, and the one you want is always the one you can see the shape
+   of. Hover is a background tint only; nothing moves. */
+.agw-diag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* The list scrolls inside itself rather than growing the settings page, the
+   same bound the skill catalog uses. Fifty failures must not push "Log file"
+   and its Clear button a screen and a half below the fold — the actions that
+   belong to a list stay reachable from it. `clamp` keeps the box honest at both
+   ends: never a sliver on a short window, never taller than a screenful. */
+.agw-diag-list {
+  list-style: none;
+  max-height: clamp(300px, 52vh, 600px);
+  overflow-y: auto;
+  /* Both of these exist to stop expanding a row from moving the page.
+     `overflow-x: hidden` because a non-visible value on ONE axis makes
+     `visible` on the other compute to `auto` — so the list silently had a
+     horizontal scroller, and a row that grew past the width popped it into
+     existence, stealing 10px of height from everything below.
+     `scrollbar-gutter: stable` because the vertical track appearing was the
+     first domino: it narrows the content box, which is what pushed the header
+     row past the width in the first place. Reserved always, it never moves. */
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  /* Bleed 2px so a focus ring on the first/last row is not clipped by the
+     scroll box (same trick as .agw-skill-grid). */
+  margin: 0 -2px;
+  padding: 2px;
+}
+.agw-diag-item + .agw-diag-item {
+  border-top: 1px solid var(--agw-border);
+}
+
+.agw-diag-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--agw-radius-sm);
+  transition: background-color 0.15s cubic-bezier(0, 0, 0.2, 1);
+}
+.agw-diag-head:hover {
+  background: var(--agw-hover);
+}
+.agw-diag-head:focus-visible {
+  outline: 2px solid var(--agw-accent);
+  outline-offset: 2px;
+}
+
+/* The level never wraps or squashes — "UNPARSED" folding onto a second line
+   would change the row's height, and rows in a list must all be one height. */
+.agw-diag-head > .agw-set-pill {
+  flex: none;
+  white-space: nowrap;
+}
+.agw-diag-when {
+  flex: none;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+/* Allowed to shrink and ellipsize rather than `flex: none`. A row that cannot
+   compress is a row that overflows on a narrow pane, and the overflow is what
+   the horizontal scrollbar was reporting. */
+.agw-diag-where {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-muted);
+}
+/* The message is the only element allowed to take the leftover width, and it
+   stays on one line — the row is a scan target, not the content. */
+.agw-diag-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text);
+}
+
+.agw-diag-detail {
+  padding: 0 0 12px;
+}
+.agw-diag-detail-meta {
+  margin-bottom: 6px;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+/* No scrollbar of its own: the list is the one scroll region, and a scroller
+   inside a scroller means every wheel gesture lands somewhere you did not aim.
+   A long trace makes its own row tall; the list still moves. */
+.agw-diag-detail-body {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-canvas);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  line-height: 1.55;
+  color: var(--agw-text-muted);
+  /* Wrap rather than scroll the page: a 4 KB provider payload must not push
+     the settings surface sideways. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Empty / loading / failed-to-read. One shape for all three so the page never
+   changes layout depending on how well it is going. */
+.agw-diag-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text-subtle);
+}
+.agw-diag-state[data-tone="success"] > svg {
+  color: var(--agw-added);
+  flex: none;
+  margin-top: 1px;
+}
+.agw-diag-state[data-tone="danger"] > svg {
+  color: var(--agw-removed);
+  flex: none;
+  margin-top: 1px;
+}
+.agw-diag-state-title {
+  color: var(--agw-text);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-diag-state-body {
+  margin-top: 3px;
+  line-height: 1.45;
+  max-width: 62ch;
+}
+
+.agw-diag-note {
+  margin: 10px 0 0;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+.agw-diag-path {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  /* Selectable and breakable: the fallback when the button cannot open a
+     folder is reading the path off the screen. */
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+.agw-diag-size {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Button ───────────────────────────────────────────────────────────── */
+.agw-set-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  /* 30px = THE settings control row height (inputs and selects are 30px;
+     the segmented control's outer track is 24 + 2×3 padding = 30). One
+     height per row family is a large part of what reads as "engineered". */
+  height: 30px;
+  padding: 0 16px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-surface);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+  box-shadow: var(--agw-set-shadow-soft);
+  outline: none;
+  /* A button label never breaks inside its fixed-height pill; in tight flex
+     rows the surrounding layout wraps or shrinks instead. */
+  white-space: nowrap;
+}
+.agw-set-btn:hover {
+  background: var(--agw-hover-paint);
+  border-color: var(--agw-border-strong);
+}
+/* Pressed: a real physical step past hover, per variant. Without these,
+   clicking gave zero feedback until the state change landed — the single
+   biggest "decoration, not a control" tell. */
+.agw-set-btn:active:not(:disabled) {
+  background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 12%);
+  border-color: var(--agw-border-strong);
+}
+.agw-set-btn[data-variant="primary"] {
+  background: var(--agw-accent);
+  border-color: var(--agw-accent);
+  color: var(--agw-on-accent);
+}
+.agw-set-btn[data-variant="primary"]:hover {
+  background: var(--agw-accent-hover);
+  border-color: var(--agw-accent-hover);
+}
+.agw-set-btn[data-variant="primary"]:active:not(:disabled) {
+  background: color-mix(in srgb, var(--agw-accent-hover) 86%, #000 14%);
+  border-color: color-mix(in srgb, var(--agw-accent-hover) 86%, #000 14%);
+}
+.agw-set-btn[data-variant="danger"] {
+  color: var(--agw-removed);
+  border-color: color-mix(in srgb, var(--agw-removed) 40%, transparent);
+}
+.agw-set-btn[data-variant="danger"]:hover {
+  background: color-mix(in srgb, var(--agw-removed) 12%, transparent);
+}
+.agw-set-btn[data-variant="danger"]:active:not(:disabled) {
+  background: color-mix(in srgb, var(--agw-removed) 20%, transparent);
+  border-color: color-mix(in srgb, var(--agw-removed) 55%, transparent);
+}
+.agw-set-btn[data-variant="success"] {
+  color: var(--agw-added);
+  border-color: color-mix(in srgb, var(--agw-added) 42%, transparent);
+}
+.agw-set-btn[data-variant="success"]:hover {
+  background: color-mix(in srgb, var(--agw-added) 12%, transparent);
+  border-color: color-mix(in srgb, var(--agw-added) 58%, transparent);
+}
+.agw-set-btn[data-variant="success"]:active:not(:disabled) {
+  background: color-mix(in srgb, var(--agw-added) 20%, transparent);
+  border-color: color-mix(in srgb, var(--agw-added) 66%, transparent);
+}
+.agw-set-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.agw-set-btn:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+/* ── Text input ───────────────────────────────────────────────────────── */
+/* Settings rows whose control is a horizontal cluster (input + browse button,
+ * pill + action). Plain CSS rather than Tailwind utilities — this module is
+ * `--agw-*` / plain-CSS only (see agent-window/README.md). */
+.agw-set-field-row {
+  display: flex;
+  gap: 6px;
+  width: 320px;
+}
+.agw-set-inline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agw-set-input {
+  height: 30px;
+  width: 100%;
+  /* Inputs are flex items in several rows (API key + reveal button, add-model
+     row); without this their intrinsic width blocks the row from shrinking
+     and pushes trailing buttons out of the card. */
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-canvas);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-family: var(--agw-font-ui);
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+.agw-set-input::placeholder {
+  color: var(--agw-text-subtle);
+}
+/* No focus glow/halo — just a crisp neutral border on focus. */
+.agw-set-input:focus {
+  border-color: var(--agw-border-strong);
+}
+
+/* ── Font stack picker (Appearance → Typography) ──────────────────────────
+   Editable combobox: the input carries the full custom stack; the chevron
+   opens the bundled + installed-fonts dropdown (FontStackPicker.tsx). */
+.agw-fontpick {
+  display: flex;
+  gap: 4px;
+}
+.agw-fontpick-input {
+  flex: 1;
+}
+.agw-fontpick-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-canvas);
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+.agw-fontpick-btn:hover,
+.agw-fontpick-btn[data-open] {
+  border-color: var(--agw-border-strong);
+  color: var(--agw-text);
+}
+.agw-fontpick-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-fontpick-menu {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.agw-fontpick-search {
+  flex-shrink: 0;
+  padding: 6px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-fontpick-search .agw-set-input {
+  height: 28px;
+}
+.agw-fontpick-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 5px;
+}
+.agw-fontpick-group {
+  padding: 7px 10px 3px;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+/* Keyboard highlight mirrors hover — one look for "this row is next". */
+.agw-csel-item[data-highlight] {
+  background: var(--agw-hover-paint);
+}
+.agw-fontpick-note {
+  padding: 10px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+}
+.agw-fontpick-note[data-tone="error"] {
+  color: var(--agw-removed);
+}
+.agw-fontpick-retry {
+  margin-left: 6px;
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-accent);
+  cursor: pointer;
+}
+.agw-fontpick-retry:hover {
+  color: var(--agw-accent-hover);
+}
+.agw-fontpick-foot {
+  flex-shrink: 0;
+  padding: 5px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-fontpick-rescan {
+  width: 100%;
+  height: 26px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.agw-fontpick-rescan:hover:not(:disabled) {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-fontpick-rescan:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+

@@ -39,3 +39,49 @@ pub async fn logs_report(level: String, component: String, message: String) {
 pub async fn logs_clear() -> Result<(), String> {
     logging::clear()
 }
+
+/// The `report_aurora_issue` file, as Settings → Diagnostics needs it.
+///
+/// `exists` is separate from an empty `content` on purpose: "the agent has
+/// never reported anything" and "the file is there but empty" are different
+/// states, and only the first should read as a clean slate.
+#[derive(serde::Serialize)]
+pub struct IssueReport {
+    pub path: String,
+    pub exists: bool,
+    pub content: String,
+}
+
+/// Read back what the agent has reported about Aurora itself.
+#[tauri::command]
+pub async fn aurora_issues_read() -> Result<IssueReport, String> {
+    let path = crate::tools::diagnostics::issues_path();
+    let exists = path.is_file();
+    let content = if exists {
+        std::fs::read_to_string(&path).map_err(|err| {
+            format!("could not read {}: {err}", path.display())
+        })?
+    } else {
+        String::new()
+    };
+    Ok(IssueReport {
+        path: path.to_string_lossy().to_string(),
+        exists,
+        content,
+    })
+}
+
+/// Delete the reported-issues file.
+///
+/// Removed rather than truncated, so the page returns to "nothing reported yet"
+/// instead of showing an empty file that reads as a bug of its own. The tool
+/// recreates it on the next report.
+#[tauri::command]
+pub async fn aurora_issues_clear() -> Result<(), String> {
+    let path = crate::tools::diagnostics::issues_path();
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("could not clear {}: {err}", path.display())),
+    }
+}

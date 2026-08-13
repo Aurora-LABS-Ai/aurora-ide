@@ -523,6 +523,9 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::diagnostics::logs_recent,
             commands::diagnostics::logs_report,
             commands::diagnostics::logs_clear,
+            // Faults the AGENT reported about Aurora, via `report_aurora_issue`.
+            commands::diagnostics::aurora_issues_read,
+            commands::diagnostics::aurora_issues_clear,
             // Batch file operations (performance optimized)
             commands::read_files_batch,
             commands::invalidate_file_cache,

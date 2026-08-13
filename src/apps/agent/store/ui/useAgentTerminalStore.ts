@@ -14,7 +14,15 @@
 
 import { create } from "zustand";
 
-export type ShellProfile = "powershell" | "bash";
+/**
+ * Re-exported from the adapter that resolves it, so the store and the spawner
+ * can never disagree about which shells exist. This file used to declare its
+ * own `"powershell" | "bash"`, which is what capped the terminal at two shells
+ * while the registry knew about five.
+ */
+export type { ShellProfile } from "@/apps/agent/adapters/shell-config";
+
+import type { ShellProfile } from "@/apps/agent/adapters/shell-config";
 
 export interface TermSession {
   id: string;
@@ -59,9 +67,15 @@ export const useAgentTerminalStore = create<AgentTerminalState>((set, get) => ({
   sessions: [],
   activeId: null,
 
-  createSession: (profile = "powershell", cwd) => {
+  // `pwsh` — PowerShell 7 — not `powershell`, which is Windows PowerShell 5.1.
+  // Rust substitutes the other one when only it is installed
+  // (`related_kinds`), so this asks for the better shell and still works on a
+  // machine that has only the older one.
+  createSession: (profile = "pwsh", cwd) => {
     const id = nextId();
-    const shell = profile === "bash" ? "bash" : "pwsh";
+    // The kind IS the name — "pwsh 2", "zsh · api". Deriving it from a
+    // two-value guess is what let a session labelled `pwsh` be 5.1.
+    const shell = profile;
     const folder = cwd ? folderName(cwd) : "";
     // A directory-pinned session is named by WHERE it is ("pwsh · api"), a
     // plain one by which shell it is ("pwsh 2") — the folder is the fact that

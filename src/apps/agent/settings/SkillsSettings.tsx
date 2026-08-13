@@ -25,6 +25,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import {
+  deleteSkillFromDisk,
   getBuiltinSkills,
   getResolvedGlobalSkillsPath,
   getSkillToggleScopeKey,
@@ -33,10 +34,12 @@ import {
   loadGlobalSkills,
   loadWorkspaceSkills,
   MAX_ENABLED_SKILLS,
+  resolveSkillDeleteTarget,
   WORKSPACE_SKILL_FOLDERS,
   type SkillDefinition,
   type SkillSource,
 } from "@/apps/agent/services/skills/skills";
+import { AgentConfirm } from "@/apps/agent/components/modals/AgentConfirm";
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
 import { AgwButton, AgwSegmented, AgwSwitch, AgwTextInput } from "./primitives";
 
@@ -78,24 +81,36 @@ const matchesSource = (skill: SkillDefinition, filter: SourceFilter): boolean =>
 
 // ── Skill card (whole card is the equip toggle) ──────────────────────────────
 
+/**
+ * The card is a container, not a button — the equip control is a stretched
+ * button behind the content, so the whole card stays one click to equip while
+ * the delete button can sit above it. (A `<button>` cannot contain a
+ * `<button>`, which is what the card used to be.)
+ */
 const SkillCard: React.FC<{
   skill: SkillDefinition;
   enabled: boolean;
   disabled: boolean;
   onToggle: (skill: SkillDefinition, next: boolean) => void;
-}> = ({ skill, enabled, disabled, onToggle }) => {
+  onDelete?: (skill: SkillDefinition) => void;
+}> = ({ skill, enabled, disabled, onToggle, onDelete }) => {
   const meta = SOURCE_META[skill.source];
+  const equipLabel = enabled ? `Unequip ${skill.name}` : `Equip ${skill.name}`;
   return (
-    <button
-      type="button"
+    <div
       className="agw-skill-card"
       data-on={enabled || undefined}
       data-disabled={disabled || undefined}
-      aria-pressed={enabled}
-      disabled={disabled}
-      onClick={() => onToggle(skill, !enabled)}
-      title={enabled ? `Unequip ${skill.name}` : `Equip ${skill.name}`}
     >
+      <button
+        type="button"
+        className="agw-skill-card-hit"
+        aria-pressed={enabled}
+        aria-label={equipLabel}
+        disabled={disabled}
+        onClick={() => onToggle(skill, !enabled)}
+        title={equipLabel}
+      />
       <span className="agw-skill-card-check" aria-hidden={!enabled}>
         {enabled && <AgentIcon name="check" size={12} />}
       </span>
@@ -115,8 +130,21 @@ const SkillCard: React.FC<{
             {skill.triggers.length === 1 ? "" : "s"}
           </span>
         )}
+        {onDelete && (
+          <button
+            type="button"
+            className="agw-skill-card-del"
+            // Quiet at rest, red on hover/focus — always present rather than
+            // hover-revealed, so it exists for touch and keyboard too.
+            aria-label={`Delete ${skill.name} from disk`}
+            title={`Delete ${skill.name} from disk`}
+            onClick={() => onDelete(skill)}
+          >
+            <AgentIcon name="trash" size={13} />
+          </button>
+        )}
       </span>
-    </button>
+    </div>
   );
 };
 
@@ -128,6 +156,7 @@ export const SkillsSettings: React.FC = () => {
   const skillsEnabled = useSettingsStore((s) => s.skillsEnabled);
   const setSkillEnabled = useSettingsStore((s) => s.setSkillEnabled);
   const setSkillsEnabled = useSettingsStore((s) => s.setSkillsEnabled);
+  const removeSkillToggle = useSettingsStore((s) => s.removeSkillToggle);
 
   const scopeKey = useMemo(
     () => getSkillToggleScopeKey(projectRoot),
@@ -145,6 +174,12 @@ export const SkillsSettings: React.FC = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [capWarning, setCapWarning] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<SkillDefinition | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteNotice, setDeleteNotice] = useState<{
+    text: string;
+    tone: "success" | "warning";
+  } | null>(null);
 
   const builtinSkills = useMemo(() => getBuiltinSkills(), []);
 
@@ -201,6 +236,70 @@ export const SkillsSettings: React.FC = () => {
       return;
     }
     setCapWarning(null);
+  };
+
+  // Where a skill is allowed to live for deletion to be offered at all.
+  const deleteRoots = useMemo(
+    () => ({ globalSkillsPath, workspacePath: projectRoot }),
+    [globalSkillsPath, projectRoot],
+  );
+  const pendingTarget = useMemo(
+    () => (pendingDelete ? resolveSkillDeleteTarget(pendingDelete, deleteRoots) : null),
+    [pendingDelete, deleteRoots],
+  );
+
+  // Names the exact path and what "delete" reaches, because this is
+  // `remove_dir_all` on the user's own files with no recycle bin behind it.
+  const deleteMessage = useMemo(() => {
+    if (!pendingDelete) return "";
+    const equipped = isSkillEnabled(pendingDelete, workspaceToggles, true);
+    const scope = pendingTarget
+      ? pendingTarget.kind === "folder"
+        ? `Permanently deletes ${pendingTarget.path} and everything inside it.`
+        : `Permanently deletes ${pendingTarget.path}.`
+      : "Permanently deletes this skill from disk.";
+    return `${scope} This can't be undone.${
+      equipped ? " It leaves your loadout at the same time." : ""
+    }`;
+  }, [pendingDelete, pendingTarget, workspaceToggles]);
+
+  const handleDeleteConfirmed = async () => {
+    const skill = pendingDelete;
+    if (!skill || isDeleting) return;
+
+    if (!pendingTarget) {
+      setPendingDelete(null);
+      setDeleteNotice({
+        tone: "warning",
+        text: `"${skill.name}" isn't stored in this project's or your global skills folder, so Aurora won't delete it from here.`,
+      });
+      return;
+    }
+
+    setIsDeleting(true);
+    try {
+      const target = await deleteSkillFromDisk(skill, deleteRoots);
+      // The toggle outlives the files. Left behind, it keeps counting against
+      // the loadout cap in every project that had this skill equipped, with no
+      // card left to unequip.
+      removeSkillToggle(skill.storageKey);
+      setPendingDelete(null);
+      setCapWarning(null);
+      setDeleteNotice({
+        tone: "success",
+        text: `Deleted "${skill.name}". Removed ${target.path} from disk.`,
+      });
+      await loadSkills();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setPendingDelete(null);
+      setDeleteNotice({
+        tone: "warning",
+        text: `Couldn't delete "${skill.name}": ${detail} Close anything using those files and try again.`,
+      });
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
@@ -263,6 +362,12 @@ export const SkillsSettings: React.FC = () => {
       {capWarning && (
         <div className="agw-set-notice" data-tone="warning">
           {capWarning}
+        </div>
+      )}
+
+      {deleteNotice && (
+        <div className="agw-set-notice" data-tone={deleteNotice.tone} role="status">
+          {deleteNotice.text}
         </div>
       )}
 
@@ -383,6 +488,10 @@ export const SkillsSettings: React.FC = () => {
             <div className="agw-skill-grid agw-scroll">
               {visibleSkills.map((skill) => {
                 const enabled = isSkillEnabled(skill, workspaceToggles, true);
+                // No delete control unless there is provably something of this
+                // skill's own on disk to remove.
+                const deletable =
+                  resolveSkillDeleteTarget(skill, deleteRoots) !== null;
                 return (
                   <SkillCard
                     key={skill.storageKey}
@@ -390,6 +499,7 @@ export const SkillsSettings: React.FC = () => {
                     enabled={enabled}
                     disabled={!skillsEnabled || (capReached && !enabled)}
                     onToggle={handleToggle}
+                    onDelete={deletable ? setPendingDelete : undefined}
                   />
                 );
               })}
@@ -413,6 +523,19 @@ export const SkillsSettings: React.FC = () => {
           </div>
         </div>
       </section>
+
+      <AgentConfirm
+        open={pendingDelete !== null}
+        title={pendingDelete ? `Delete "${pendingDelete.name}"?` : ""}
+        message={deleteMessage}
+        confirmLabel={isDeleting ? "Deleting…" : "Delete from disk"}
+        cancelLabel="Cancel"
+        destructive
+        onConfirm={() => void handleDeleteConfirmed()}
+        onCancel={() => {
+          if (!isDeleting) setPendingDelete(null);
+        }}
+      />
     </div>
   );
 };

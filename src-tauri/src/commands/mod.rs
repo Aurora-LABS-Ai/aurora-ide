@@ -30,6 +30,9 @@ pub mod chat;
 pub mod checkpoints;
 pub mod code_index;
 pub mod codex;
+/// Test-only: fails the build if a main-thread command waits on the database.
+#[cfg(test)]
+mod command_thread_safety;
 pub mod diagnostics;
 pub mod editor_ops;
 pub mod fonts;

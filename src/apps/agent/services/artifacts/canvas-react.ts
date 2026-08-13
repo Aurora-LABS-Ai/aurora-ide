@@ -274,7 +274,13 @@ export const buildCanvasDocument = (
 <style>
 :root{${variables}}
 html,body{margin:0;background:var(--agw-conversation,#111);color:var(--agw-text,#ededed)}
-body{font-family:var(--agw-font-ui,system-ui,sans-serif);font-size:13px;line-height:1.55;-webkit-font-smoothing:antialiased}
+/* Smoothing AUTO, not antialiased — the frame renders inside the agent window
+   and must rasterize like it. On Windows \`antialiased\` drops Chromium from
+   subpixel to grayscale AA (see the rationale on .agw-root in 01-root.css), so
+   canvas text came out thinner than the transcript beside it. Weight synthesis
+   is off for the same family-consistency reason: a bundled face missing 600
+   renders its nearest real weight instead of a smeared fake bold. */
+body{font-family:var(--agw-font-ui,system-ui,sans-serif);font-size:13px;line-height:1.55;-webkit-font-smoothing:auto;font-synthesis-weight:none}
 *,*::before,*::after{box-sizing:border-box}
 #root{padding:20px}
 

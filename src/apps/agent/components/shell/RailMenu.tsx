@@ -10,7 +10,7 @@
  * clip it; closes on outside press, Escape, scroll, resize, or after any pick.
  */
 
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
@@ -37,8 +37,8 @@ export interface RailMenuState {
   anchor?: HTMLElement | null;
 }
 
-const RAIL_MENU_WIDTH = 228;
-const RAIL_MENU_ROW = 34;
+/** Breathing room kept between the menu and every window edge. */
+const EDGE_GUTTER = 8;
 
 export const RailMenu: React.FC<{ menu: RailMenuState; onClose: () => void }> = ({
   menu,
@@ -98,13 +98,30 @@ export const RailMenu: React.FC<{ menu: RailMenuState; onClose: () => void }> = 
     };
   }, [anchor, onClose]);
 
-  const separatorCount = menu.items.reduce(
-    (count, item) => count + (item.separatorBefore ? 1 : 0),
-    0,
-  );
-  const height = menu.items.length * RAIL_MENU_ROW + separatorCount * 7 + 12;
-  const left = Math.max(8, Math.min(menu.x, window.innerWidth - RAIL_MENU_WIDTH - 8));
-  const top = Math.max(8, Math.min(menu.y, window.innerHeight - height - 8));
+  /**
+   * Keep the menu inside the window, measured rather than estimated.
+   *
+   * This used to clamp against a hard-coded 228px width and a per-row height
+   * recomputed here in JS — two copies of geometry that CSS actually owns, and
+   * both wrong the moment a label got longer or the user changed the interface
+   * text scale. The menu now sizes itself to its own labels (`.agw-rail-menu`),
+   * so its box is only knowable after layout.
+   *
+   * `useLayoutEffect` runs before paint, so the pre-clamp position at the raw
+   * press point is never shown. `offsetWidth`/`offsetHeight` are layout values,
+   * deliberately not `getBoundingClientRect()` — the entrance animation applies
+   * `scale(0.98)`, which would shrink a rect reading mid-flight and drift the
+   * clamp by a few pixels.
+   */
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!el) return;
+    const maxLeft = window.innerWidth - el.offsetWidth - EDGE_GUTTER;
+    const maxTop = window.innerHeight - el.offsetHeight - EDGE_GUTTER;
+    el.style.left = `${Math.max(EDGE_GUTTER, Math.min(menu.x, maxLeft))}px`;
+    el.style.top = `${Math.max(EDGE_GUTTER, Math.min(menu.y, maxTop))}px`;
+  }, [menu]);
+
   const portalTarget =
     (document.querySelector(".agw-root") as HTMLElement | null) ?? document.body;
 
@@ -113,7 +130,7 @@ export const RailMenu: React.FC<{ menu: RailMenuState; onClose: () => void }> = 
       ref={menuRef}
       className="agw-menu agw-rail-menu"
       role="menu"
-      style={{ position: "fixed", left, top, width: RAIL_MENU_WIDTH, zIndex: 1000 }}
+      style={{ position: "fixed", left: menu.x, top: menu.y, zIndex: 1000 }}
     >
       {menu.items.map((item) => (
         <React.Fragment key={item.label}>
@@ -123,6 +140,9 @@ export const RailMenu: React.FC<{ menu: RailMenuState; onClose: () => void }> = 
             role="menuitem"
             className="agw-menu-item agw-rail-menu-item"
             data-danger={item.danger || undefined}
+            // Only visible in the case the label had to be truncated, which is
+            // exactly when the row can no longer speak for itself.
+            title={item.label}
             onClick={() => {
               onClose();
               item.onSelect();

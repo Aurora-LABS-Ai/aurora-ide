@@ -355,6 +355,16 @@ pub struct ProviderModel {
     /// `None` means no extra fields.
     #[serde(default)]
     pub extra_body: Option<serde_json::Value>,
+    /// Sampling temperature for this model. `None` inherits the provider's
+    /// `default_temperature`, then Aurora's own default.
+    ///
+    /// Set here rather than globally because it is a property of the model: the
+    /// same key addresses one model that wants 0.2 and another that rejects the
+    /// parameter outright. Models that reject sampling (Claude 5 and newer —
+    /// see `anthropic_surface`) have it stripped from the request whatever this
+    /// says, so a value left here is inert rather than a 400.
+    #[serde(default)]
+    pub temperature: Option<f64>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]

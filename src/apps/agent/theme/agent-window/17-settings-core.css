@@ -1,0 +1,652 @@
+/* ===========================================================================
+   SETTINGS PAGE — full-surface view (Codex-style: left nav + content).
+   All tokens are --agw-*; this surface is native to the agent window.
+   =========================================================================== */
+
+.agw-settings {
+  /* ── Settings runs ONE STEP BELOW app chrome ─────────────────────────────
+   * Not a leftover, a decision. Settings is a dense CONFIGURATION surface —
+   * a 19-row provider list, seven model cards each carrying an id, a context
+   * window, two prices and three or more chips — not a reading surface. At
+   * the app's 12/13/14/15/16/17 a form label and a chat message weigh the
+   * same, and the page reads bloated: rows stop scanning as a list and start
+   * competing for attention one by one.
+   *
+   * These are also the sizes this surface was actually authored at. When the
+   * chrome scale moved up a step to match the reference's reading tier, the
+   * transcript was redesigned around it and settings simply inherited an
+   * increase it was never drawn for.
+   *
+   * Re-DECLARED rather than derived through a multiplier: a var() inside a
+   * custom property is substituted where that property is DECLARED, so a
+   * `--agw-density` set down here could never reach tokens declared up on
+   * .agw-root. The user's Interface text size still multiplies through,
+   * because it is read here, on this element. */
+  --agw-fs-micro: calc(11px * var(--agw-ui-text-scale, 1));
+  --agw-fs-label: calc(12px * var(--agw-ui-text-scale, 1));
+  --agw-fs-ui: calc(13px * var(--agw-ui-text-scale, 1));
+  --agw-fs-md: calc(14px * var(--agw-ui-text-scale, 1));
+  --agw-fs-body: calc(15px * var(--agw-ui-text-scale, 1));
+  --agw-fs-title: calc(16px * var(--agw-ui-text-scale, 1));
+
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  background: var(--agw-canvas);
+
+  /* Premium, heavyweight design language — real depth, generous padding.
+     Deliberately NOT the IDE's tight hairline look. Scoped here so the whole
+     settings surface stays consistent and independently tunable.
+
+     The RADII no longer fork. These were free numbers (16 / 12) against the
+     window's 12 / 8 / 6, so a settings card and a chat card rounded differently
+     with nothing to explain the difference — the "almost aligned" noise the
+     type scale exists to prevent. They are now aliases onto the one scale, so
+     there is a single source of truth AND this block is still the one place to
+     re-tune settings if it should read heavier again. The heavier feel comes
+     from padding and surface contrast, which is where it belongs. */
+  --agw-set-r-card: var(--agw-radius-lg);
+  --agw-set-r-inner: var(--agw-radius-sm);
+  /* Cards sit FLAT — defined by border + surface contrast, not a drop shadow
+     (a heavy shadow made them look like they float above the page). */
+  --agw-set-shadow: none;
+  --agw-set-shadow-soft: none;
+}
+
+/* ── Left nav ─────────────────────────────────────────────────────────── */
+.agw-settings-nav {
+  display: flex;
+  flex-direction: column;
+  width: 232px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--agw-border);
+  background: var(--agw-rail-paint);
+
+  /* Dedicated, independently-themeable knobs for the settings nav selection.
+     They default to the neutral look of the chat rail's selected row, but are
+     SEPARATE variables on purpose — a future theme can recolor the settings nav
+     without touching the chat rail (and vice-versa). Never an accent/blue fill. */
+  --agw-set-nav-hover-bg: var(--agw-hover-paint);
+  --agw-set-nav-active-bg: var(--agw-state-selected);
+  --agw-set-nav-active-fg: var(--agw-text);
+}
+.agw-settings-nav-head {
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-settings-nav-eyebrow {
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+.agw-settings-nav-title {
+  margin-top: 2px;
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-strong);
+  color: var(--agw-text);
+}
+.agw-settings-nav-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+.agw-settings-nav-group + .agw-settings-nav-group {
+  margin-top: 14px;
+}
+.agw-settings-nav-group-label {
+  padding: 0 8px 6px;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+.agw-settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-settings-nav-item + .agw-settings-nav-item {
+  margin-top: 2px;
+}
+.agw-settings-nav-item:hover {
+  color: var(--agw-text);
+  background: var(--agw-set-nav-hover-bg);
+}
+.agw-settings-nav-item:active {
+  color: var(--agw-text);
+  background: color-mix(in srgb, var(--agw-set-nav-hover-bg) 88%, var(--agw-text) 12%);
+}
+.agw-settings-nav-item[data-active] {
+  color: var(--agw-set-nav-active-fg);
+  font-weight: var(--agw-fw-strong);
+  background: var(--agw-set-nav-active-bg);
+}
+.agw-settings-nav-item:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+/* ── Main ─────────────────────────────────────────────────────────────── */
+.agw-settings-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  /* Two-layer shell: the nav is FRAME tier (rail), the whole main column —
+   * header + content — is the recessed SHEET tier. Without this the content
+   * sat on the frame colour: cards lost their contrast and the sheet-coloured
+   * header read as a dark band on a lighter body (inverted depth). */
+  background: var(--agw-conversation);
+}
+.agw-settings-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 64px;
+  flex-shrink: 0;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--agw-border);
+  background: var(--agw-conversation);
+}
+.agw-settings-back {
+  display: inline-flex;
+  align-items: center;
+  /* Never shrink or wrap. The header title beside it is now user-typed text
+     (the search query), and without this a long query squeezed "Back to app"
+     onto two lines and grew the whole bar. */
+  flex: none;
+  white-space: nowrap;
+  gap: 7px;
+  height: 34px;
+  padding: 0 15px 0 12px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-surface);
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  box-shadow: var(--agw-set-shadow-soft);
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.agw-settings-back:hover {
+  color: var(--agw-text);
+  background: var(--agw-hover-paint);
+  border-color: var(--agw-border-strong);
+}
+.agw-settings-head-titles {
+  min-width: 0;
+  /* Shrinks before anything else in the bar — it is the only element here whose
+     content the user controls. */
+  flex: 0 1 auto;
+  overflow: hidden;
+}
+.agw-settings-head-eyebrow {
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+.agw-settings-head-title {
+  font-size: var(--agw-fs-title);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: -0.01em;
+  color: var(--agw-text);
+  /* One line, always. This now carries the search query, and a header that
+     grows with what someone types is a header that can be typed off the
+     screen — it took the search box with it. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The settings search box.
+ *
+ * `flex: none` because it shares the bar with a title made of user input; with
+ * default shrinking, a long query collapsed the input to a sliver.
+ *
+ * NO focus ring, unlike the browser address bar it borrows `.agw-br-address`
+ * from: at the owner's request. Focus is still shown — the border brightens —
+ * because a control with no focus state at all is unusable from the keyboard,
+ * and this one is reachable by Tab from the very first element in the page. */
+.agw-br-address.agw-settings-search {
+  flex: none;
+}
+.agw-br-address.agw-settings-search:focus-within {
+  border-color: var(--agw-border-strong);
+  box-shadow: none;
+}
+.agw-settings-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 34px 40px 56px;
+  scrollbar-gutter: stable;
+}
+/* Full-bleed sections (SettingsPage `fullBleed`) own the whole content area
+   with their own sidebar + internal scrolling — e.g. Providers. */
+.agw-settings-content[data-full-bleed] {
+  display: flex;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+/* ── Search results in the content area ─────────────────────────────────
+ * A query replaces the open page with the matching CONTROLS, rendered from
+ * their own components so they still work — the answer to "where is the switch
+ * for X" is the switch. Each group is headed by the page it came from, because
+ * a row lifted out of its page has lost the one thing that told you where it
+ * lives; the heading is a button back to it.
+ *
+ * A section that filtered everything away marks itself `[data-hidden]`. The
+ * `:has()` rule then drops the whole result group, so a page never announces a
+ * match it is not showing. Scoped to `[data-inline]` — a destination-only
+ * result has no sections and must not be caught by it. */
+.agw-set-section[data-hidden] {
+  display: none;
+}
+.agw-settings-result {
+  margin-bottom: 26px;
+}
+.agw-settings-result[data-inline]:not(:has(.agw-set-section:not([data-hidden]))) {
+  display: none;
+}
+.agw-settings-result-head {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.agw-settings-result-head:hover,
+.agw-settings-result-head:focus-visible {
+  color: var(--agw-text);
+}
+.agw-settings-result-name {
+  flex: none;
+}
+/* "Open" stays hidden until the heading is hovered or focused: at rest the row
+   is a label, and a persistent call to action on every group would compete with
+   the controls underneath, which are the actual result. */
+.agw-settings-result-open {
+  flex: none;
+  opacity: 0;
+  letter-spacing: normal;
+  text-transform: none;
+  transition: opacity 0.12s ease;
+}
+.agw-settings-result-head:hover .agw-settings-result-open,
+.agw-settings-result-head:focus-visible .agw-settings-result-open {
+  opacity: 1;
+}
+.agw-settings-result-desc {
+  margin: 0;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+}
+.agw-settings-noresults {
+  padding: 22px 0;
+  max-width: 46ch;
+}
+.agw-settings-noresults-title {
+  color: var(--agw-text);
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  /* Echoing the query back is what makes the message an answer rather than a
+     shrug — but only two lines of it. A pasted paragraph is still recognisable
+     from its opening, and printing all of it buries the hint underneath. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.agw-settings-noresults-hint {
+  margin: 6px 0 0;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  line-height: 1.55;
+}
+
+/* ── Section + panel ──────────────────────────────────────────────────── */
+.agw-set-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.agw-set-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.agw-set-section-title-wrap {
+  display: flex;
+  /* Top-align so the naked glyph sits on the TITLE line, not floating between
+     the title and its description. */
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+/* Naked section glyph — no wrapper box (borderless), just the icon, centred on
+   the title's first line. One change → every settings section, every page. */
+.agw-set-section-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--agw-text-muted);
+}
+.agw-set-section-title {
+  font-size: var(--agw-fs-title);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: -0.01em;
+  color: var(--agw-text);
+}
+.agw-set-section-desc {
+  margin-top: 2px;
+  font-size: var(--agw-fs-ui);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+}
+.agw-set-panel {
+  overflow: hidden;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-set-r-card);
+  background: var(--agw-surface);
+  box-shadow: var(--agw-set-shadow);
+}
+
+/* ── Row ──────────────────────────────────────────────────────────────── */
+.agw-set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-set-row[data-last] {
+  border-bottom: none;
+}
+.agw-set-row-label {
+  min-width: 0;
+  max-width: 60%;
+}
+.agw-set-row-label-text {
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.35;
+  color: var(--agw-text);
+}
+.agw-set-row-hint {
+  margin-top: 3px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text-subtle);
+}
+.agw-set-row-hint code {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+}
+.agw-set-row-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+.agw-set-block {
+  padding: 13px 15px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-set-block[data-last] {
+  border-bottom: none;
+}
+
+/* ── Code index card ──────────────────────────────────────────────────────
+   Four numbers in a row. Whitespace and alignment do the grouping — no inner
+   cards, because a bordered tile inside an already-bordered panel is a second
+   container earning nothing. The numerals are the only large type; the labels
+   stay quiet so the row reads as one object rather than four. */
+.agw-cidx-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+.agw-cidx-stat {
+  min-width: 0;
+}
+.agw-cidx-stat-value {
+  font-size: 21px;
+  font-weight: 500;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: var(--agw-text);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.agw-cidx-stat-label {
+  margin-top: 3px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.4;
+  color: var(--agw-text-subtle);
+}
+/* Below ~520px the four columns stop fitting their numerals. */
+@media (max-width: 560px) {
+  .agw-cidx-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.agw-cidx-empty,
+.agw-cidx-note,
+.agw-cidx-error {
+  margin: 0;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+}
+.agw-cidx-error {
+  color: var(--agw-removed);
+}
+
+/* ── Switch ───────────────────────────────────────────────────────────── */
+.agw-switch {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-control-muted);
+  cursor: pointer;
+  transition: background 0.18s ease;
+  outline: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 8%, transparent);
+}
+.agw-switch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-text);
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 35%, transparent);
+  transition:
+    transform 0.18s cubic-bezier(0.34, 1.4, 0.6, 1),
+    width 0.12s cubic-bezier(0.34, 1.4, 0.6, 1),
+    background 0.18s ease;
+}
+.agw-switch[data-on] .agw-switch-knob {
+  transform: translateX(18px);
+  background: var(--agw-on-accent);
+}
+/* Held down: the knob stretches toward where it's about to go (the iOS
+   switch press), then the spring transition above carries the release.
+   The stretched knob keeps its outer edge: 3px inset + 14px travel + 22px
+   knob = the same 39px right edge as the resting on-state. */
+.agw-switch:not([data-disabled]):active .agw-switch-knob {
+  width: 22px;
+}
+.agw-switch[data-on]:not([data-disabled]):active .agw-switch-knob {
+  transform: translateX(14px);
+}
+.agw-switch[data-on][data-tone="accent"] {
+  background: var(--agw-accent);
+}
+.agw-switch[data-on][data-tone="success"] {
+  background: var(--agw-added);
+}
+.agw-switch[data-on][data-tone="danger"] {
+  background: var(--agw-removed);
+}
+.agw-switch[data-disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.agw-switch:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+/* ── Segmented control ────────────────────────────────────────────────── */
+.agw-seg {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-canvas);
+  /* Overflow-proof by construction: hug the buttons (an explicit width
+     beats a flex/grid parent's stretch, which used to spread the pills
+     apart), never exceed the container, and let the buttons ellipsize
+     instead of wrapping into the fixed-height pill. */
+  width: fit-content;
+  max-width: 100%;
+}
+.agw-seg-btn {
+  height: 24px;
+  padding: 0 14px;
+  border: none;
+  border-radius: var(--agw-radius-pill);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  /* box-shadow rides the same curve so the active pill's shadow fades in
+     with its background instead of popping on a frame. */
+  transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
+  outline: none;
+  /* Labels stay on one line; when space runs out the buttons shrink and
+     ellipsize inside their pill instead of clipping outside it. */
+  white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-seg-btn:hover {
+  color: var(--agw-text);
+  background: color-mix(in srgb, var(--agw-hover-paint) 55%, transparent);
+}
+.agw-seg-btn:active {
+  color: var(--agw-text);
+  background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 8%);
+}
+.agw-seg-btn:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-seg-btn[data-active] {
+  background: var(--agw-state-selected);
+  color: var(--agw-text);
+  box-shadow: 0 1px 3px color-mix(in srgb, #000 28%, transparent);
+}
+.agw-seg-btn[data-active][data-tone="success"] {
+  color: var(--agw-added);
+}
+.agw-seg-btn[data-active][data-tone="warning"] {
+  color: var(--agw-warning);
+}
+.agw-seg-btn[data-active][data-tone="danger"] {
+  color: var(--agw-removed);
+}
+/* The active pill's own shadow would otherwise override the focus ring
+   (equal specificity, later in the file) — layer both. */
+.agw-seg-btn[data-active]:focus-visible {
+  box-shadow:
+    0 1px 3px color-mix(in srgb, #000 28%, transparent),
+    0 0 0 2px var(--agw-ring);
+}
+
+/* ── Pill ─────────────────────────────────────────────────────────────── */
+.agw-set-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--agw-text-muted);
+}
+.agw-set-pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.agw-set-pill[data-tone="success"] {
+  color: var(--agw-added);
+  border-color: color-mix(in srgb, var(--agw-added) 32%, transparent);
+  background: color-mix(in srgb, var(--agw-added) 12%, transparent);
+}
+.agw-set-pill[data-tone="warning"] {
+  color: var(--agw-warning);
+  border-color: color-mix(in srgb, var(--agw-warning) 32%, transparent);
+  background: color-mix(in srgb, var(--agw-warning) 12%, transparent);
+}
+.agw-set-pill[data-tone="danger"] {
+  color: var(--agw-removed);
+  border-color: color-mix(in srgb, var(--agw-removed) 32%, transparent);
+  background: color-mix(in srgb, var(--agw-removed) 12%, transparent);
+}
+.agw-set-pill[data-tone="info"] {
+  color: var(--agw-info);
+  border-color: color-mix(in srgb, var(--agw-info) 32%, transparent);
+  background: color-mix(in srgb, var(--agw-info) 12%, transparent);
+}
+

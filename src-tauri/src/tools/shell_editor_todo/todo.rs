@@ -171,10 +171,13 @@ selected with `op`.
 `op: \"set\"` — lay out the task list. Send `todos`, the complete list. Each call replaces it, but \
 ids carry forward by `content`, so an item keeps its identity across calls.
 
-`op: \"update\"` — the one you will use most. Send `id` and `status` to change a single task \
-without resending the others. Mark a task in_progress BEFORE starting it and completed as soon as \
-it is done. Use `cancelled` for work that turned out to be unnecessary — never mark something \
-completed that is not.
+`op: \"update\"` — the one you will use most. Send `updates`, an array of `{id, status}`, and \
+change any number of tasks in ONE call. Closing one task and starting the next is a single call: \
+`updates: [{id: \"t2\", status: \"completed\"}, {id: \"t3\", status: \"in_progress\"}]` — never two. \
+For a single task you may send `id` and `status` directly instead. Mark a task in_progress BEFORE \
+starting it and completed as soon as it is done. Use `cancelled` for work that turned out to be \
+unnecessary — never mark something completed that is not. The whole batch applies together or not \
+at all, so an unknown id changes nothing.
 
 `op: \"read\"` — recover the list from disk. Call this whenever you are unsure where you stand: \
 resuming an old conversation, after a compaction, or before choosing what to work on next. It reads \
@@ -182,7 +185,7 @@ from disk, so it is right even when the list has left your context. Never re-inv
 from memory; read it.
 
 Exactly one task may be in_progress at a time, and starting a new one does not close the previous \
-one, so close it first.
+one — so close it in the SAME `updates` array that starts the next.
 
 Skip this entirely for small, single-step requests — a checklist for a one-line change is noise.
 
@@ -230,14 +233,32 @@ know where you are."
                             "required": ["content", "activeForm", "status"]
                         }
                     },
+                    "updates": {
+                        "type": "array",
+                        "description": "op=update. Every status change to apply together, e.g. close one task and start the next in one call.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Task id from a previous set or read, e.g. 't2'."
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "completed", "cancelled"]
+                                }
+                            },
+                            "required": ["id", "status"]
+                        }
+                    },
                     "id": {
                         "type": "string",
-                        "description": "op=update only. Task id from a previous set or read, e.g. 't2'."
+                        "description": "op=update, single-task form. Task id from a previous set or read, e.g. 't2'. Use `updates` to change more than one."
                     },
                     "status": {
                         "type": "string",
                         "enum": ["pending", "in_progress", "completed", "cancelled"],
-                        "description": "op=update only. The task's new status."
+                        "description": "op=update, single-task form. The task's new status."
                     }
                 },
                 "required": ["op"]
@@ -324,56 +345,76 @@ impl TodoTool {
     }
 
     async fn update(&self, input: &Value, ctx: &ToolContext) -> Result<String, ToolError> {
-        let id = input
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                ToolError::InvalidInput(
-                    "`id` must be a non-empty string when op is `update`".into(),
-                )
-            })?
-            .to_string();
-        let status =
-            TodoStatus::parse(input.get("status").and_then(Value::as_str).ok_or_else(|| {
-                ToolError::InvalidInput("`status` must be a string when op is `update`".into())
-            })?)
-            .map_err(ToolError::InvalidInput)?;
+        let changes = parse_updates(input)?;
 
         let mut demoted = Vec::new();
-        let mut previous = None;
+        let mut applied: Vec<Value> = Vec::new();
         let list = todo_store::update(&ctx.thread_id, |list| {
-            let item = list.item_mut(&id).ok_or_else(|| {
-                format!(
-                    "No task `{id}` in this conversation. Call todo with op `read` for the ids."
-                )
-            })?;
-            previous = Some(item.status);
-            item.status = status;
+            // Resolve EVERY id before writing anything: a batch that half-lands
+            // leaves the checklist in a state the model did not ask for and
+            // cannot see. Same rule as the file_edit batch.
+            if let Some(missing) = changes
+                .iter()
+                .map(|(id, _)| id)
+                .find(|id| list.item(id).is_none())
+            {
+                return Err(format!(
+                    "No task `{missing}` in this conversation — nothing was changed. Call todo with op `read` for the ids."
+                ));
+            }
+            for (id, status) in &changes {
+                let item = list
+                    .item_mut(id)
+                    .expect("ids were all resolved before this loop");
+                let previous = item.status;
+                item.status = *status;
+                applied.push(json!({
+                    "id": id,
+                    "status": status.as_str(),
+                    "previousStatus": previous.as_str(),
+                }));
+            }
+            // Once, after the whole batch — clamping per item would demote a
+            // task the very next change was about to close anyway.
             demoted = list.clamp_single_in_progress();
             Ok(())
         })
         .map_err(ToolError::Execution)?;
         self.publish(&ctx.thread_id, &list)?;
 
+        // Name every change, in the order asked. "Marked X completed and Y
+        // in_progress" is the whole point of the batch form.
+        let summary = changes
+            .iter()
+            .map(|(id, status)| format!("{} as {}", titled(&list, id), status.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        // The single-item form keeps its flat `id`/`status`/`title` fields: the
+        // transcript card reads them, and most calls are still one item.
+        let single = changes.len() == 1;
         let mut result = json!({
             "success": true,
             "op": "update",
-            "id": id,
-            "title": list.item(&id).map(|i| i.content.clone()),
-            "status": status.as_str(),
-            "previousStatus": previous.map(TodoStatus::as_str).unwrap_or("unknown"),
+            "updates": applied,
             "items": list.items,
             "cursor": list.cursor(),
             "progress": todo_store::progress_line(&list),
-            "message": format!(
-                "Marked {} as {}. {}",
-                titled(&list, &id),
-                status.as_str(),
-                whats_next(&list)
-            ),
+            "message": format!("Marked {summary}. {}", whats_next(&list)),
         });
+        if single {
+            let (id, status) = &changes[0];
+            result["id"] = Value::String(id.clone());
+            result["status"] = Value::String(status.as_str().to_string());
+            result["title"] = list
+                .item(id)
+                .map(|i| Value::String(i.content.clone()))
+                .unwrap_or(Value::Null);
+            result["previousStatus"] = applied
+                .first()
+                .and_then(|a| a.get("previousStatus").cloned())
+                .unwrap_or(Value::Null);
+        }
         if !demoted.is_empty() {
             result["warning"] = Value::String(format!(
                 "Only one task may be in_progress at a time, so {} was reset to pending.",
@@ -382,6 +423,66 @@ impl TodoTool {
         }
         Ok(result.to_string())
     }
+}
+
+/// Read the changes out of an `op: "update"` call.
+///
+/// Two accepted forms, because closing one task and starting the next is the
+/// commonest thing that happens to a checklist and it used to cost two model
+/// round trips — a whole request against the full conversation to write one
+/// word of status:
+///   * `updates: [{ id, status }, …]` — any number, applied together
+///   * `id` + `status` — the single-item form, unchanged
+///
+/// An empty `updates` array alongside a valid `id` is treated as the model
+/// filling in a schema field it did not need; an empty array on its own is an
+/// error, never a silent no-op.
+fn parse_updates(input: &Value) -> Result<Vec<(String, TodoStatus)>, ToolError> {
+    let entries = input.get("updates").and_then(Value::as_array);
+
+    if let Some(entries) = entries.filter(|e| !e.is_empty()) {
+        let mut out = Vec::with_capacity(entries.len());
+        for (idx, entry) in entries.iter().enumerate() {
+            let obj = entry.as_object().ok_or_else(|| {
+                ToolError::InvalidInput(format!("updates[{idx}] must be an object"))
+            })?;
+            let id = obj
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    ToolError::InvalidInput(format!(
+                        "updates[{idx}].id must be a non-empty string"
+                    ))
+                })?
+                .to_string();
+            let status = TodoStatus::parse(obj.get("status").and_then(Value::as_str).ok_or_else(
+                || ToolError::InvalidInput(format!("updates[{idx}].status must be a string")),
+            )?)
+            .map_err(|e| ToolError::InvalidInput(format!("updates[{idx}]: {e}")))?;
+            out.push((id, status));
+        }
+        return Ok(out);
+    }
+
+    let id = input
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            ToolError::InvalidInput(
+                "op `update` needs either `updates` (an array of {id, status}) or a single `id` + `status`."
+                    .into(),
+            )
+        })?
+        .to_string();
+    let status = TodoStatus::parse(input.get("status").and_then(Value::as_str).ok_or_else(
+        || ToolError::InvalidInput("`status` must be a string when op is `update`".into()),
+    )?)
+    .map_err(ToolError::InvalidInput)?;
+    Ok(vec![(id, status)])
 }
 
 #[cfg(test)]
@@ -400,6 +501,7 @@ mod tests {
             thread_id: session.into(),
             workspace_root: None,
             cancel_token: CancellationToken::new(),
+            spill_dir: None,
         }
     }
 
@@ -576,6 +678,90 @@ mod tests {
         // The message names the task, not just its id — this is read by a human
         // as well as by the model.
         assert!(parsed["message"].as_str().unwrap().contains("Step 1"));
+
+        todo_store::clear(&thread).ok();
+    }
+
+    #[tokio::test]
+    async fn one_call_closes_a_task_and_starts_the_next() {
+        // The whole reason `updates` exists. This transition used to cost two
+        // model round trips, each re-sending the entire conversation.
+        let thread = thread();
+        seed(&tool(), &thread).await;
+
+        let out = tool()
+            .execute(
+                json!({"op": "update", "updates": [
+                    {"id": "t1", "status": "completed"},
+                    {"id": "t2", "status": "in_progress"},
+                ]}),
+                &ctx(&thread),
+            )
+            .await
+            .expect("batch update");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+
+        let items = parsed["items"].as_array().unwrap();
+        assert_eq!(items[0]["status"], "completed");
+        assert_eq!(items[1]["status"], "in_progress");
+        // t1 closing must NOT read as the clamp demoting it.
+        assert!(parsed.get("warning").is_none(), "{parsed}");
+        assert_eq!(parsed["cursor"]["activeId"], "t2");
+        let message = parsed["message"].as_str().unwrap();
+        assert!(message.contains("Step 1") && message.contains("Step 2"), "{message}");
+
+        todo_store::clear(&thread).ok();
+    }
+
+    #[tokio::test]
+    async fn a_batch_with_one_bad_id_changes_nothing() {
+        let thread = thread();
+        seed(&tool(), &thread).await;
+
+        let err = tool()
+            .execute(
+                json!({"op": "update", "updates": [
+                    {"id": "t1", "status": "completed"},
+                    {"id": "t99", "status": "in_progress"},
+                ]}),
+                &ctx(&thread),
+            )
+            .await
+            .expect_err("must fail");
+        assert!(format!("{err:?}").contains("nothing was changed"));
+
+        // t1 must still be exactly as it was.
+        let after = todo_store::read(&thread).unwrap();
+        assert_eq!(after.item("t1").unwrap().status, TodoStatus::InProgress);
+
+        todo_store::clear(&thread).ok();
+    }
+
+    #[tokio::test]
+    async fn an_empty_updates_array_falls_back_to_the_single_form() {
+        // Models fill in schema fields they did not need. An empty array next
+        // to a valid id is a placeholder, not a request to change nothing.
+        let thread = thread();
+        seed(&tool(), &thread).await;
+
+        let out = tool()
+            .execute(
+                json!({"op": "update", "updates": [], "id": "t1", "status": "completed"}),
+                &ctx(&thread),
+            )
+            .await
+            .expect("update");
+        assert_eq!(
+            serde_json::from_str::<Value>(&out).unwrap()["status"],
+            "completed"
+        );
+
+        // On its own it is an error, never a silent no-op.
+        let err = tool()
+            .execute(json!({"op": "update", "updates": []}), &ctx(&thread))
+            .await
+            .expect_err("must fail");
+        assert!(format!("{err:?}").contains("updates"));
 
         todo_store::clear(&thread).ok();
     }

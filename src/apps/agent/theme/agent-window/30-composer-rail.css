@@ -1,0 +1,124 @@
+/* ── Composer rail ──────────────────────────────────────────────────────────
+ * The strip under the composer (see ComposerRail). Left slot = the disclaimer
+ * or a transient mic/refine notice; right = one chip per ambient system, each
+ * opening its panel UPWARD as a shared `.agw-menu` popover.
+ *
+ * The height is deliberately fixed. This replaced a stack of docked cards that
+ * mounted above the composer and shoved the transcript down every time a
+ * process spawned or a checklist arrived; a rail whose height changed with its
+ * contents would just reintroduce that jump one level lower. `min-height` is
+ * set from the chip's own height so an empty rail and a full one measure the
+ * same, and the notice is centred in it either way. */
+.agw-crail {
+  position: relative; /* the chips are taken out of flow — see below */
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  margin-top: 8px;
+}
+/* The notice is centred against the FULL width of the strip, and the chip
+   cluster floats over its right end rather than sharing the row.
+   In flow, the cluster stole width from the notice, so the disclaimer shifted
+   left by half the chip width whenever a process started — text that moves
+   because something unrelated appeared is exactly the kind of small
+   instability that makes a surface feel unfinished. The symmetric padding is
+   what keeps the centring honest AND stops a long notice from running under
+   the chips. */
+.agw-crail-notice {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0 84px;
+  text-align: center;
+  font-size: var(--agw-fs-micro);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-crail-chips {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.agw-crail-chipwrap {
+  position: relative;
+  display: inline-flex;
+}
+
+/* The chip. Quiet by default — it is ambient information, and the composer next
+   to it must stay the loudest thing on this edge of the window. The attention
+   dot, not weight or colour, is what makes one chip out-rank the others. */
+.agw-crail-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 7px;
+  border: none;
+  border-radius: var(--agw-radius-pill);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  cursor: pointer;
+  outline: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.agw-crail-chip:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text-muted);
+}
+.agw-crail-chip[data-open] {
+  background: var(--agw-state-quiet);
+  color: var(--agw-text);
+}
+.agw-crail-chip:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-crail-chip-readout {
+  font-variant-numeric: tabular-nums; /* a ticking count must not reflow the chip */
+}
+.agw-crail-chip-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--agw-accent);
+  animation: agw-team-pulse 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-crail-chip-dot { animation: none; }
+}
+
+/* The popover. Right-anchored to its chip and opening upward, because the rail
+   sits at the bottom of the window — there is no room below it. */
+.agw-crail-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 50;
+  width: 380px;
+  max-width: min(420px, calc(100vw - 32px));
+  transform-origin: bottom right;
+  overflow: hidden;
+}
+/* Panel bodies inside a popover: the popover IS the open state, so the panel
+   drops its own card surface and its collapse control (see the `popover`
+   variant in AgentTaskPanel / BackgroundTaskDock). */
+.agw-crail-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.agw-crail-panel .agw-tasks-toggle[data-static] {
+  cursor: default;
+}
+.agw-crail-panel-body {
+  max-height: 320px;
+  overflow-y: auto;
+}
+

@@ -1,0 +1,560 @@
+/* ── Chapter (the agent naming the part of the work it is starting) ─────
+ * A `chapter` tool call, rendered where it was emitted.
+ *
+ * NOT set as bigger, bolder prose. A reply is already full of bold sentences and
+ * markdown headings the model wrote itself — anything typed like prose, only
+ * heavier, is indistinguishable from them at a glance, and a section marker you
+ * have to READ to recognise has failed at the one job it has. So a chapter
+ * changes type ROLE instead of type weight: it is a section LABEL, in the same
+ * uppercase-with-tracking register this window already uses for structure (the
+ * turn label, rail sections, reasoning header), followed by a rule that runs to
+ * the edge. Label-plus-rule is also exactly the tool group header's form, so a
+ * named boundary in the timeline looks like one wherever it appears.
+ *
+ * Reusing `.agw-timeline-rule` rather than a second gradient: same idiom, same
+ * token, one place to change it. Its `flex: 1` fills whatever the title leaves,
+ * with an 18px minimum, so a title too long for one line wraps and the rule
+ * simply gets shorter.
+ *
+ * Full text strength, not the subtle grey those other labels use — this one is
+ * meant to be the thing your eye lands on when skimming a long turn, and the
+ * uppercase register at label size already keeps it from shouting over the reply.
+ *
+ * The air belongs ABOVE it (a chapter opens what follows) and lives in padding,
+ * not margin, so the spine's line runs continuously through the break instead of
+ * being cut by a collapsed gap. The first row of a turn drops it — there is
+ * nothing above to separate from. Boxing it was never an option: a card would
+ * make the one element that stands outside the content read as content. */
+.agw-chapter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 2px;
+  padding-top: 14px;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.35;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+/* Time spent under this heading, sat between the title and the rule exactly
+ * like the reasoning row's own number. Deliberately NOT the uppercase heading
+ * type it inherits from `.agw-chapter`: the title is the agent's words and the
+ * duration is the transcript measuring them, so they are different voices and
+ * must not look like one phrase. Matches `.agw-think-time`. */
+.agw-chapter-time {
+  flex: none;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-normal);
+  color: var(--agw-text-subtle);
+  letter-spacing: normal;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+.agw-chapter-title {
+  min-width: 0;
+  /* A model can always write a longer title than the pane is wide; wrap it
+   * rather than clip a heading the user is meant to read. */
+  overflow-wrap: anywhere;
+  transition: color 0.12s ease;
+}
+.agw-row:first-child .agw-chapter {
+  padding-top: 0;
+}
+
+/* ── Chapter as a disclosure ────────────────────────────────────────────
+ * The heading owns every row until the next chapter and can fold them away.
+ * The button fills the heading and inherits its type wholesale, so the control
+ * is the title itself rather than a widget parked beside it — the whole line,
+ * rule included, is the hit area. */
+.agw-chapter-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+}
+/* Colour-only hover, matching every other quiet control in this window — the
+ * title is already at text strength, so the subtle chevron is what brightens. */
+.agw-chapter-toggle:hover .agw-chapter-chev {
+  color: var(--agw-text-muted);
+}
+.agw-chapter-toggle:focus-visible {
+  border-radius: var(--agw-radius-sm);
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-chapter-chev {
+  color: var(--agw-text-subtle);
+  transition: transform 0.15s ease, color 0.12s ease;
+}
+/* The rows under a chapter. Restates the message column's own gap because the
+ * body is a new flex context between it and the rows. */
+.agw-chapter-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-chapter-chev {
+    transition: none;
+  }
+}
+
+/* The user bubble's fill and measure. In CSS, not inline on the element, so the
+   sticky-user treatment below can composite an opaque ground underneath it and
+   widen it to the full column. Values are the ones that were inline. */
+.agw-bubble-user {
+  background: var(--agw-bubble-user);
+  max-width: 82%;
+  /* Here rather than inline on the element: the sticky-user treatment below
+     re-reserves the bottom edge for the copy chip, and an inline `padding`
+     shorthand would outrank that rule and put the question's last line under
+     the chip. Same reason the fill lives here. */
+  padding: 9px 13px;
+}
+
+/* ── Sticky user message (opt-in) ───────────────────────────────────────
+ * Settings → Preferences → Transcript. Pins each user turn to the top of the
+ * transcript while its reply scrolls underneath, so the question stays on screen
+ * through a long answer instead of scrolling away.
+ *
+ * Everything hangs off `[data-transcript-sticky-user]` on the root: with the
+ * preference off not one declaration applies and the transcript is byte-for-byte
+ * today's look. `[data-uturn]` is the existing per-turn wrapper ConversationPane
+ * already stamps on user turns only — no new element, no remount.
+ *
+ * Shape is taken from the reference implementation (Antigravity), measured from
+ * `DOCS/visual-studies/antigravity/10-user-bubble-sticky.png`. Three details in
+ * that frame are the whole difference between "pinned" and "broken", and a first
+ * pass here got all three wrong:
+ *
+ *   1. ONLY THE BUBBLE IS OPAQUE. There is no full-width band. Painting the row
+ *      leaves a wide slab beside a right-aligned bubble, which reads as a
+ *      rendering fault. `--agw-bubble-user` is translucent (`#ffffff0f`), so the
+ *      opacity comes from compositing it over `--agw-conversation` here.
+ *   2. THE FADE IS ON THE SCROLLING CONTENT, NOT UNDER THE BUBBLE. In the
+ *      reference the reply dissolves as it approaches the top edge, everywhere
+ *      across the column — that is what makes the pin read as deliberate. A
+ *      gradient drawn under the bubble in the sheet colour is invisible against
+ *      the sheet and buys nothing.
+ *   3. THE ACTION ROW DOES NOT PIN. Theirs is hover-only; ours is always-on, and
+ *      a `Copy` floating over a scrolling reply is exactly the loose part that
+ *      makes the whole thing look unfinished.
+ *   4. THE PINNED BUBBLE SPANS THE FULL MEASURE. At rest ours is right-aligned
+ *      and capped at 82%, which is correct for a chat turn — but pinned, a
+ *      right-hugging card hovers over the right half of a left-aligned reply with
+ *      a dead void beside it, and reads as a stray panel rather than a header.
+ *      The reference bubble is full-width, so pinning it produces a band that
+ *      lines up exactly with the column it heads. Only the pinned state widens;
+ *      scrolled back into the flow the bubble is its normal 82% again.
+ *
+ * The swap between turns is free: sibling stickies at the same `top` all pin, and
+ * the later one in DOM order paints over the earlier, so a new question replaces
+ * the previous one rather than stacking beside it.
+ *
+ * Known, accepted: the newest turn runs `.agw-turn-enter`, whose keyframes hold a
+ * `transform` for 260ms, and a transform makes the element a containing block. So
+ * that one turn does not pin until the animation lands on `transform: none` — and
+ * it is the bottom-most turn, with nothing scrolling beneath it yet, so there is
+ * nothing to see. */
+.agw-root[data-transcript-sticky-user] [data-uturn] {
+  position: sticky;
+  /* Flush to the scroller, with the breathing room carried as PADDING on the
+     wrapper rather than as a `top` offset. A `top: 10px` inset leaves a 10px
+     window above the card that the reply scrolls through — the card looks
+     correct and the line above it visibly leaks past. Padding closes it: the
+     inset is now part of the pinned element and is painted with it. */
+  top: 0;
+  /* This padding IS the whole gap above the pinned card: nothing else offsets
+     it once pinned (no `top` inset, no scroll-padding on the scroller), so 4px
+     is the entire budget available without taking space from the 48px header.
+     Do NOT take it to 0 — see the note above: the inset is what is painted
+     with the card, and at 0 the card reads as glued to the top of the pane. */
+  padding-top: 4px;
+  /* Safe only because the pinned bubble is full measure (4): band and card are
+     the same width, so this reads as the card's own inset, not as a slab beside
+     a narrower bubble. Invisible when the turn is in normal flow — it is the
+     sheet colour. */
+  background: var(--agw-conversation);
+  /* Above the dissolve (2) and the reply; below the composer dock. */
+  z-index: 2;
+}
+
+/* (1) The opaque ground + lift. `background-image` paints the translucent token
+   over the `background-color` ground, so the resulting colour is identical to
+   the unpinned bubble against the sheet — this changes opacity, never hue. */
+.agw-root[data-transcript-sticky-user] [data-uturn] .agw-bubble-user {
+  background-color: var(--agw-conversation);
+  background-image: linear-gradient(var(--agw-bubble-user), var(--agw-bubble-user));
+  /* (4) Full measure while pinned — see note 4 above. The parent's
+     `align-items: flex-end` stops mattering once the child fills the row. */
+  max-width: 100%;
+  width: 100%;
+  /* Deliberately NO shadow. Measured on the reference: the pinned card is flat,
+     carrying only its existing hairline border. A full-width opaque card already
+     reads as "above" the content it covers; a shadow on top of that is the
+     tell-tale of a floating widget, which is the thing this must not look like. */
+}
+
+/* (3) The action row moves INSIDE the card while pinned.
+ *
+ * An earlier pass hid it outright, which was right at the time — the wrapper was
+ * transparent then, so a `Copy` pinned over a scrolling reply was a loose part
+ * with nothing behind it. Hiding it was still a loss: `Copy` is the only action
+ * Aurora offers on a user turn (there is no revert/rewind to sit beside it), and
+ * losing it on every pinned question to buy tidiness is a bad trade.
+ *
+ * So it is re-parented visually into the card's bottom-right, the same corner the
+ * reference uses. `.agw-msg` is the bubble's own flex column, so anchoring to it
+ * puts the button inside the card's footprint and keeps it there while the card's
+ * body scrolls — the action does not scroll away from the thing it acts on.
+ *
+ * It carries the card's own fill rather than sitting bare: with a scrollable body
+ * the last visible line can pass beneath it, and the reference's version of this
+ * (bare glyphs straight over live text behind a fade) is the one detail of theirs
+ * that reads as unfinished. A small opaque chip costs nothing and never collides. */
+.agw-root[data-transcript-sticky-user] [data-uturn] .agw-msg {
+  position: relative;
+}
+.agw-root[data-transcript-sticky-user] [data-uturn] .agw-msg-actions {
+  position: absolute;
+  right: 6px;
+  bottom: 5px;
+  z-index: 1;
+  margin-top: 0;
+  padding: 2px;
+  border-radius: var(--agw-radius-sm);
+  background-color: var(--agw-conversation);
+  background-image: linear-gradient(var(--agw-bubble-user), var(--agw-bubble-user));
+}
+
+/* Glyph only in the corner — the word would be a second label for something the
+ * icon already says, inside a card whose whole job is to stay out of the way.
+ * The button keeps `title="Copy"`, so hiding the span costs no accessible name
+ * (it falls through to the title) and the copied state still reads: the glyph
+ * itself swaps to a check. Scoped to the pinned card — the row below an unpinned
+ * message keeps its label, which is where there is room for it. */
+.agw-root[data-transcript-sticky-user] [data-uturn] .agw-msg-action > span {
+  display: none;
+}
+
+/* Overflow safety. The TEXT inside is already clamped to 6 lines by
+ * `CollapsibleBubbleBody`, so a prose question's resting height is bounded
+ * (~160px) — but the reader can expand it, an expanded 40-line paste pinned to
+ * the top would eat the viewport and bury the reply it is supposed to be
+ * heading, and attached images sit above that clamp (they are pictures, not
+ * lines) so a few 220px thumbnails clear it on their own. Cap it and
+ * let the overflow scroll INSIDE the card: the question stays fully readable,
+ * and it can never grow past a third of the screen no matter what was pasted.
+ *
+ * NO `overscroll-behavior: contain` here, and that is the point of this note.
+ * `overflow-y: auto` makes this a scroll container even when the content fits,
+ * and `contain` stops a scroll container from chaining to its parent — so with
+ * both set, putting the pointer over the pinned question froze the transcript:
+ * the wheel went to a card with nothing to scroll, and was then forbidden from
+ * passing the gesture on. Default chaining is correct here. The card scrolls
+ * only when it actually overflows, and hands the wheel back at its ends. */
+.agw-root[data-transcript-sticky-user] [data-uturn] .agw-bubble-user {
+  max-height: 34vh;
+  overflow-y: auto;
+}
+
+/* Room for the action chip (3), reserved in the TEXT FLOW rather than as a
+ * strip under the whole message.
+ *
+ * `padding-bottom: 28px` was the first answer and it was the wrong shape: the
+ * chip is a ~17px square in ONE corner, but the padding held an empty band
+ * across the full width of every pinned question, whether or not its last line
+ * came anywhere near that corner. Most questions are two or three lines that
+ * end mid-line, so the card just looked inflated — dead space with nothing in
+ * it but the chip floating at the far right.
+ *
+ * An inline-block at the end of the text costs nothing when the last line ends
+ * early (it simply sits in space the line was not using), and when the last
+ * line DOES run to the edge it wraps — taking the chip's corner with it and
+ * adding height only in the one case that actually needs it. The width is the
+ * chip's intrusion into the text column: it sits 6px from the border and is
+ * ~17px wide against 13px of padding, so it reaches ~10px in; 18px clears it
+ * with a gap. Height stays 1px so it can never grow a line box on its own. */
+.agw-root[data-transcript-sticky-user] [data-uturn] .agw-bubble-text::after {
+  content: "";
+  display: inline-block;
+  width: 18px;
+  height: 1px;
+}
+
+/* A question made only of command chips, or only of an attached image, has no
+ * text run to carry the spacer, so it keeps the fixed reserve — there is no last
+ * line for the chip to clear. (Image-only is the case that used to have no card
+ * at all, which put the chip straight onto the picture.) */
+.agw-root[data-transcript-sticky-user]
+  [data-uturn]
+  .agw-bubble-user:not(:has(.agw-bubble-text)) {
+  padding-bottom: 28px;
+}
+
+/* (2) The dissolve, directly beneath the pinned card.
+ *
+ * It has to hang off the turn (`top: 100%`), not off the top of the scroller: a
+ * strip pinned at the scroller's top edge sits ENTIRELY BEHIND a ~90px card and
+ * contributes nothing — that was the first attempt, and it is why the reply
+ * appeared to be guillotined by a hard edge. Measured on the reference: ~30px,
+ * strong at the card's edge, gone by the next line of the reply.
+ *
+ * `position: sticky` already makes the wrapper a containing block, so this needs
+ * no extra positioning context. */
+.agw-root[data-transcript-sticky-user] [data-uturn]::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  top: 100%;
+  height: 30px;
+  background: linear-gradient(
+    to bottom,
+    var(--agw-conversation),
+    transparent
+  );
+  pointer-events: none;
+}
+
+/* The spacer, and it is load-bearing rather than cosmetic.
+ *
+ * A pinned question can only travel to the top of the viewport if there is a
+ * viewport's worth of scrollable content beneath it. Without this, the newest
+ * exchange is already at the end of the scroll range and the question simply
+ * sits wherever it was appended — the pin never engages, which is exactly how
+ * this read before sectioning. Measured on the reference: they reserve the same
+ * space, which is why a freshly-sent question sits at the top with the answer
+ * growing into empty room below it.
+ *
+ * `min-height` only, so a long exchange is unaffected — it applies to the short
+ * ones, which are the only ones that need it. */
+.agw-root[data-transcript-sticky-user] .agw-section:last-child {
+  min-height: calc(100vh - 300px);
+}
+
+/* ── Transcript spine (opt-in) ──────────────────────────────────────────
+ * Settings → Preferences → Transcript. Draws one continuous hairline down the
+ * turn with a marker per row, so a long turn reads as a single thread of work
+ * instead of a stack of unrelated cards.
+ *
+ * Everything here hangs off `[data-transcript-spine]` on the root, so with the
+ * preference off not one declaration applies and the transcript is byte-for-byte
+ * today's look. `.agw-row` itself stays unstyled by default: the wrapper exists
+ * on every row either way, which is what lets the toggle re-style the transcript
+ * without remounting anything inside it. */
+.agw-root[data-transcript-spine] .agw-msg-assistant {
+  padding-left: 20px;
+}
+.agw-root[data-transcript-spine] .agw-row {
+  position: relative;
+}
+/* The branch box. Zero-cost when the spine is off, and out of flow when it is
+   on, so a row's own layout is identical either way. */
+.agw-row-branch {
+  display: none;
+}
+
+/* The line. Runs from this row's marker down to the NEXT row's marker; the
+   last row is exempt so nothing dangles below the turn.
+
+   `-18px` is the 10px inter-row gap PLUS the 8px lead-in every row's segment
+   starts with. At the old `-10px` a segment stopped dead on the next row's top
+   edge while that row's own segment didn't begin until 8px lower — so the rail
+   carried an 8px break at every single boundary and read as a dashed line
+   rather than a thread. */
+.agw-root[data-transcript-spine] .agw-row:not([data-last])::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: -18px;
+  left: -13px;
+  width: 1px;
+  background: var(--agw-border);
+}
+/* No special case for a chapter: its own segment starts at the same 8px as
+   every other row's, so the rail runs continuously THROUGH the break it opens
+   with and the chapter's lower marker simply sits on the line. */
+
+/* ── The branch ─────────────────────────────────────────────────────────
+ * A quarter-turn that leaves the rail at this row's marker and arrives
+ * horizontally at the row's own content edge, so a marker reads as belonging
+ * to its row instead of floating in the gutter beside it.
+ *
+ * Geometry, in the row's own coordinates (x=0 is the content edge, the rail
+ * occupies x=-13…-12):
+ *   left  -13px  the left border lands exactly ON the rail, not beside it
+ *   width  13px  the bottom border therefore terminates exactly AT x=0
+ *   top     8px  1px of straight left border before the arc, which falls
+ *                inside the marker (y=6…11) so the two read as one stroke
+ *   radius  6px  arc from (-13,9) to (-7,15), then a 7px straight run in
+ *
+ * Only `border-left` + `border-bottom` are painted, so the box draws an L with
+ * a rounded corner and nothing else. */
+.agw-root[data-transcript-spine] .agw-row-branch {
+  display: block;
+  position: absolute;
+  top: 8px;
+  left: -13px;
+  width: 13px;
+  height: 7px;
+  border-left: 1px solid var(--agw-border);
+  border-bottom: 1px solid var(--agw-border);
+  border-bottom-left-radius: 6px;
+  pointer-events: none;
+}
+/* Follows the chapter marker down past the break it opens with. */
+.agw-root[data-transcript-spine] .agw-row[data-row="chapter"] > .agw-row-branch {
+  top: 21px;
+}
+.agw-root[data-transcript-spine]
+  .agw-row[data-row="chapter"]:first-child
+  > .agw-row-branch {
+  top: 8px;
+}
+/* The marker, painted after the line so the line passes cleanly behind it. */
+.agw-root[data-transcript-spine] .agw-row::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: -15px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--agw-border-strong);
+}
+/* A compaction or notice row is the runtime speaking, not the agent — it already
+   reads as an interruption, so its marker steps back rather than competing. */
+.agw-root[data-transcript-spine] .agw-row[data-row="compaction"]::after,
+.agw-root[data-transcript-spine] .agw-row[data-row="notice"]::after {
+  background: var(--agw-border);
+}
+/* A chapter is the one row that OPENS a section rather than being a step inside
+   one, so its marker is filled at text strength while the rest stay hairline —
+   and it sits level with the label, below the break the chapter opens with. */
+.agw-root[data-transcript-spine] .agw-row[data-row="chapter"]::after {
+  top: 19px; /* 14px break + centre of the label's line */
+  background: var(--agw-text-subtle);
+}
+.agw-root[data-transcript-spine] .agw-row[data-row="chapter"]:first-child::after {
+  top: 6px;
+}
+/* A tools row is not ONE step — it is every call the model made between two
+   pieces of text, each rendered as its own card. One marker above the run left
+   ten calls sharing a single dot at the top, so the thread read as if it had
+   stalled up there while the work was moving down the list. The marker moves onto
+   the calls instead: one per card, at the height of that card's own first line. */
+.agw-root[data-transcript-spine] .agw-row[data-row="tools"]::after {
+  display: none;
+}
+/* …and the row's single branch goes with it — each card grows its own below. */
+.agw-root[data-transcript-spine] .agw-row[data-row="tools"] > .agw-row-branch {
+  display: none;
+}
+.agw-root[data-transcript-spine] .agw-tool-step {
+  position: relative;
+}
+.agw-root[data-transcript-spine] .agw-tool-step::after {
+  content: "";
+  position: absolute;
+  top: 13px; /* first line of the card, whichever card shape it is */
+  left: -15px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--agw-border-strong);
+}
+/* A card's branch. `::before` is free here (the step only spends `::after` on
+   its marker), so this needs no extra element. Same geometry as a row's,
+   offset to sit under the card's own marker. */
+.agw-root[data-transcript-spine] .agw-tool-step::before {
+  content: "";
+  position: absolute;
+  top: 15px;
+  left: -13px;
+  width: 13px;
+  height: 7px;
+  border-left: 1px solid var(--agw-border);
+  border-bottom: 1px solid var(--agw-border);
+  border-bottom-left-radius: 6px;
+  pointer-events: none;
+}
+/* A run of six or more collapses behind one "N calls" header and its cards live
+   in a bounded internal scroller. There the run genuinely IS one step — and a
+   marker inside a scroll box would be clipped by it and drift as it scrolled —
+   so the row keeps its single marker and the calls give theirs up. */
+.agw-root[data-transcript-spine] .agw-row[data-row="tools"]:has(.agw-tool-group-body)::after {
+  display: block;
+}
+.agw-root[data-transcript-spine]
+  .agw-row[data-row="tools"]:has(.agw-tool-group-body)
+  > .agw-row-branch {
+  display: block;
+}
+.agw-root[data-transcript-spine] .agw-tool-group-body .agw-tool-step::after {
+  content: none;
+}
+/* A branch inside the scroller would be clipped by it and drift as it scrolls,
+   exactly as its marker would — so the cards give theirs up too and the run's
+   single branch above speaks for all of them. */
+.agw-root[data-transcript-spine] .agw-tool-group-body .agw-tool-step::before {
+  content: none;
+}
+
+/* The live marker — where the work is RIGHT NOW.
+ *
+ * Two cases, and both mean the same thing to the reader: the call that is still
+ * running, and (for text and reasoning) the last row of a streaming turn.
+ *
+ * Same left→right sheen as the streaming turn label above it, on the same 2.5s
+ * cadence and the same keyframes, so "still working" is ONE motion vocabulary in
+ * this window rather than two that nearly match. Only one marker moves at a time:
+ * a whole column of pulsing dots would say the turn is live — already obvious
+ * from the label — while saying nothing about where it is.
+ *
+ * Last in the block so it outranks the marker colours above, which carry the
+ * same specificity.
+ *
+ * The running call's marker is `.agw-tool-step::after` (the card itself has no
+ * pseudo-element with content, so styling `.agw-tool-card::after` paints
+ * nothing) — the step wrapper is matched via `:has()` on the card's status. */
+.agw-root[data-transcript-spine]
+  .agw-tool-step:has(.agw-tool-card[data-status="running"])::after,
+.agw-root[data-transcript-spine] .agw-row[data-live]:not([data-row="tools"])::after,
+.agw-root[data-transcript-spine]
+  .agw-row[data-live][data-row="tools"]:has(.agw-tool-group-body)::after {
+  background: linear-gradient(
+    90deg,
+    var(--agw-border-strong) 0%,
+    var(--agw-border-strong) 28%,
+    var(--agw-text) 50%,
+    var(--agw-border-strong) 72%,
+    var(--agw-border-strong) 100%
+  );
+  background-size: 200% 100%;
+  animation: agw-shimmer 2.5s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Motion off, state kept: the live marker holds at full text strength instead
+     of sweeping, so it is still the one dot that stands out. */
+  .agw-root[data-transcript-spine]
+    .agw-tool-step:has(.agw-tool-card[data-status="running"])::after,
+  .agw-root[data-transcript-spine] .agw-row[data-live]:not([data-row="tools"])::after,
+  .agw-root[data-transcript-spine]
+    .agw-row[data-live][data-row="tools"]:has(.agw-tool-group-body)::after {
+    background: var(--agw-text);
+    animation: none;
+  }
+}
+

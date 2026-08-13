@@ -11,7 +11,7 @@ use super::state::ExplorerStateHandle;
 use super::types::ExplorerSnapshot;
 
 /// Open a workspace and build the explorer tree in Rust.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn explorer_open_workspace(
     app: AppHandle,
     path: String,
@@ -108,7 +108,7 @@ pub fn explorer_collapse_all(
 }
 
 /// Persist the current Rust-owned explorer state to the database.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn explorer_save_state(
     db: State<'_, Mutex<Database>>,
     explorer_state: State<'_, ExplorerStateHandle>,

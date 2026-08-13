@@ -349,6 +349,7 @@ mod tests {
             workspace_root: None,
             allow_outside_workspace: false,
             cancel_token: CancellationToken::new(),
+            spill_dir: None,
         }
     }
 

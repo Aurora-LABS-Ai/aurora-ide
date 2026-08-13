@@ -1,0 +1,315 @@
+/* ── Composer: drag-drop + image attachments ──────────────────────────
+ * Files land here from TWO transports that share one visual language: the OS
+ * file manager (Tauri drag-drop) and this window's own Files panel (pointer
+ * drag). Images (vision models only) become attachment cards; other files
+ * become @path pills. */
+/* The armed state is a SHINE, not an outline: two comets of accent light
+   travel the composer's border while a faint bloom pools beneath it. A static
+   ring read as "selected input"; a moving light reads as the surface being
+   alive and waiting. No dashes, no overlay text.
+
+   Anchored to `.agw-composer-surface` (the actual rounded input box), NOT the
+   `.agw-composer` wrapper — the wrapper also contains the disclaimer line
+   below the box, so a wrapper-anchored effect drew the wrong shape around the
+   wrong corners. `border-radius: inherit` tracks the surface exactly,
+   including its square-top `connectedTop` variant. */
+
+/* Registered so the conic angle itself is animatable — animating a plain
+   custom property would snap instead of sweep. */
+@property --agw-drop-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+/* Ambient underlight. The surface has no z-index of its own, so the
+   negative-z pseudo paints behind its background inside the wrapper's
+   stacking context: only the spill past the edges shows, biased downward so
+   the top stays dark. Deliberately quiet — the traveling shine carries the
+   state; this only keeps the box from floating on pure black. */
+.agw-composer-drop .agw-composer-surface::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: -1;
+  box-shadow:
+    0 8px 26px -8px color-mix(in srgb, var(--agw-accent) 11%, transparent),
+    0 16px 56px -10px color-mix(in srgb, var(--agw-accent) 5%, transparent);
+  animation: agw-drop-arm 200ms ease-out both;
+}
+
+/* The shine itself: a conic gradient masked down to a 1.5px border band
+   (the two-layer mask + `exclude` punches out the middle), swept by rotating
+   the registered angle. Two symmetric comets, each with a dim tail and a hot
+   head brightened toward white from the theme accent — every theme shines in
+   its own color. The band overlays the surface's real border, so it needs a
+   positive z-index; at 1.5px it can never cover content. */
+.agw-composer-drop .agw-composer-surface::after {
+  content: "";
+  position: absolute;
+  inset: -1.5px;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 6;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--agw-drop-angle),
+    transparent 0deg,
+    color-mix(in srgb, var(--agw-accent) 45%, transparent) 55deg,
+    color-mix(in srgb, var(--agw-accent) 80%, white) 80deg,
+    transparent 110deg,
+    transparent 180deg,
+    color-mix(in srgb, var(--agw-accent) 45%, transparent) 235deg,
+    color-mix(in srgb, var(--agw-accent) 80%, white) 260deg,
+    transparent 290deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation:
+    agw-drop-arm 200ms ease-out both,
+    agw-drop-beam 3.2s linear infinite;
+}
+
+/* Entrance: the light fades up, confirming the window noticed the drag at
+   all — the moment users previously had no signal for. */
+@keyframes agw-drop-arm {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes agw-drop-beam {
+  to {
+    --agw-drop-angle: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* No sweep — the comets hold still as a partial edge light. */
+  .agw-composer-drop .agw-composer-surface::before,
+  .agw-composer-drop .agw-composer-surface::after {
+    animation: none;
+  }
+}
+
+/* The dragged file, in hand.
+ *
+ * Two layers: `-pos` is moved per-frame with a raw `transform` write from the
+ * store subscription (see AgentDragGhost.tsx), so it owns NOTHING except
+ * position; the pill inside owns the pickup animation and resting tilt, which
+ * would otherwise be clobbered by every pointer sample. Both must stay
+ * pointer-events:none — the drag coordinator hit-tests with elementFromPoint
+ * and would otherwise find this. */
+.agw-drag-ghost-pos {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 1200;
+  pointer-events: none;
+  will-change: transform;
+}
+/* Deliberately shaped like the `@` pill it becomes (accent tint, 13px icon,
+ * same radius) so the drag reads as carrying one object. The lift — slight
+ * scale-up from under the finger, a small resting tilt, just-shy-of-solid
+ * opacity — is what says "picked up, not yet placed". */
+.agw-drag-ghost {
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 280px;
+  padding: 3px 8px;
+  border-radius: var(--agw-radius-sm);
+  border: 1px solid color-mix(in srgb, var(--agw-accent) 38%, transparent);
+  background: color-mix(in srgb, var(--agw-accent) 16%, var(--agw-surface-elevated));
+  box-shadow: var(--agw-shadow-pop);
+  color: var(--agw-accent);
+  font-family: var(--agw-font-ui);
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.45;
+  opacity: 0.95;
+  transform: rotate(1.5deg);
+  transform-origin: 20% 20%;
+  animation: agw-ghost-pickup 140ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes agw-ghost-pickup {
+  from {
+    opacity: 0;
+    transform: scale(0.88) rotate(0deg);
+  }
+  to {
+    opacity: 0.95;
+    transform: scale(1) rotate(1.5deg);
+  }
+}
+.agw-drag-ghost-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* While something is in hand, the whole window shows a closed hand — rows,
+ * panels, and zones must not flicker their own cursors mid-carry. */
+body[data-agw-dragging],
+body[data-agw-dragging] * {
+  cursor: grabbing !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agw-drag-ghost {
+    animation: none;
+  }
+}
+
+/* The row a drag started from — dimmed so the origin of the ghost is obvious. */
+.agw-tree-row[data-dragging] {
+  opacity: 0.45;
+}
+
+.agw-attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 2px;
+}
+.agw-attach-card {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--agw-radius-md);
+  overflow: hidden;
+  border: 1px solid var(--agw-border-strong);
+  background: var(--agw-surface-elevated);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.agw-attach-card:hover {
+  border-color: var(--agw-accent);
+}
+.agw-attach-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.agw-attach-x {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: color-mix(in srgb, #000 55%, transparent);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.agw-attach-card:hover .agw-attach-x {
+  opacity: 1;
+}
+.agw-attach-warn {
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-warning, var(--agw-removed));
+  padding: 4px 2px;
+}
+
+/* User-bubble images (rendered from `<aurora_image>` markers).
+ *
+ * This row lives INSIDE the user card (MessageBubble::UserBubble) — it used to
+ * sit above it as a sibling, which is why it carried a `max-width: 82%` and a
+ * right-hug of its own: it had to imitate the card it was standing next to.
+ * Inside, both are wrong. The card already sets the measure, and copying it
+ * here re-inflicts the 82% while the card is pinned at full width. Left-aligned
+ * for the same reason the text below it is: they are the same column now. */
+.agw-bubble-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+/* Image-only question: nothing follows, so the gap would be dead space between
+   the picture and the card's own bottom padding. */
+.agw-bubble-images:last-child {
+  margin-bottom: 0;
+}
+/* A FIXED tile, not a scaled-down picture.
+ *
+ * This was `max-width: 220px` on the `img` — a ceiling, so every attachment
+ * came out a different size and shape, and a wide screenshot took the full 220
+ * as a thin letterbox strip that set the width of everything around it. A
+ * ceiling also cannot answer "how big is an attachment here?", which is the
+ * question a message with one screenshot in it is asking.
+ *
+ * So the tile is one size regardless of what was pasted, and the image is
+ * cropped INTO it. It is a marker meaning "a picture came with this", the same
+ * job the reference gives it (`13-user-bubble-image.png`, ~76px square there
+ * too) — nobody reads a screenshot at thumbnail size. Reading it is what the
+ * click is for: it opens the full-size preview (`AgentImageModal`).
+ *
+ * Cropped from the TOP rather than the middle: attachments here are
+ * overwhelmingly screenshots, and the top of a screenshot carries the title bar
+ * and heading that make it recognisable. A centre crop of a tall page is a
+ * patch of body text that identifies nothing. */
+.agw-bubble-image {
+  flex: 0 0 auto;
+  width: 76px;
+  height: 76px;
+  padding: 0;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  overflow: hidden;
+  background: var(--agw-surface-elevated);
+  cursor: zoom-in;
+  line-height: 0;
+  /* Colour only, per the house hover language — the tile never moves. */
+  transition: border-color 0.15s cubic-bezier(0, 0, 0.2, 1);
+}
+.agw-bubble-image:hover {
+  border-color: var(--agw-border-strong);
+}
+/* Focus stays inside the tile's own border rather than adding a ring around it,
+   which is how the rest of this window marks a focused control. */
+.agw-bubble-image:focus-visible {
+  outline: none;
+  border-color: var(--agw-ring);
+}
+.agw-bubble-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center top;
+}
+
+/* ── Image modal (preview + annotate) ─────────────────────────────────── */
+.agw-img-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 13000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: var(--agw-overlay);
+  backdrop-filter: var(--agw-modal-blur);
+  -webkit-backdrop-filter: var(--agw-modal-blur);
+}
+

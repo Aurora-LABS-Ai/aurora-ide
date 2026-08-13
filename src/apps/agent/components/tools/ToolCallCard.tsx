@@ -160,6 +160,22 @@ function toolIcon(name: string): AgentIconName {
   if (lower === "browser_scroll") return "browser-scroll";
   if (lower === "browser_screenshot") return "browser-screenshot";
   if (lower === "browser_get_console_logs") return "terminal";
+  // Acts on the browser rather than on the page. Without these, every one of
+  // them fell to the generic globe below — eleven different acts, one mark.
+  if (lower === "browser_navigate") return "browser-navigate";
+  if (lower === "browser_press_key") return "browser-key";
+  if (lower === "browser_set_viewport") return "browser-viewport";
+  if (lower === "browser_page_outline" || lower === "browser_a11y_tree")
+    return "browser-outline";
+  // Reuses, not new marks: the app already owns a glyph for each of these acts,
+  // and a second one for the same idea is how a set stops reading as a set.
+  // Doctrine, not an act on a page — same mark as the design/canvas guidelines.
+  if (lower === "browser_guidelines") return "design-guidelines";
+  if (lower === "browser_inspect_element") return "inspect";
+  if (lower === "browser_view") return "eye";
+  if (lower === "browser_emulate_media") return "contrast";
+  // `browser_hover` and `browser_status` keep the globe on purpose: neither has
+  // an act distinct enough to earn a mark of its own.
   if (lower.startsWith("browser_")) return "browser";
   // Dedicated per-action file glyphs (read / write / edit / move / delete),
   // each distinct so a glance at the card header tells you what happened.
@@ -184,14 +200,36 @@ function toolIcon(name: string): AgentIconName {
   if (lower === "code") return "code-index";
   if (lower === "folder_create") return "files";
   if (lower === "shell_execute" || lower === "shell_spawn") return "terminal";
+  // The user's terminals get their own mark: `terminal` is the agent RUNNING a
+  // command, these two are it LOOKING at a shell the user is driving. Same
+  // family, different act — the window glyph reads as a pane being observed.
+  if (lower === "terminal_list" || lower === "terminal_read") return "terminal-watch";
   if (lower === "shell_kill") return "process-stop";
   if (lower === "shell_list_processes") return "process-list";
+  if (lower === "shell_read_output") return "shell-output";
   if (lower === "read_lints") return "diagnostics";
+  // Reporting a fault in Aurora itself — the alert mark, not the diagnostics
+  // one: `read_lints` inspects the user's code, this one is about the tool.
+  if (lower === "report_aurora_issue") return "alert";
   // Both doctrine tools — they hand over the rules for building a surface, so
   // they share the guides mark rather than the generic file glyph.
+  // (`browser_guidelines` is the third, matched earlier — it has to be caught
+  // before the `browser_` prefix rule claims it.)
   if (lower === "design_guidelines" || lower === "canvas_guidelines")
     return "design-guidelines";
   if (lower === "todo") return "checklist";
+  // The plan. `plan_write` and `plan_step_update` never reach here (they have
+  // their own cards); reading it is the one that does, and it takes the task
+  // family's mark rather than `checklist`, which belongs to the todo list.
+  if (lower === "plan_read") return "task-list";
+  // Skills. `book` is the skill mark app-wide (the `/` picker, the message
+  // chip, Settings → Skills), so loading one shows the book and finding one
+  // shows the book under a lens.
+  if (lower === "aurora_skill_load") return "book";
+  if (lower === "aurora_skill_search") return "skill-search";
+  // Artifacts live in the Canvas, and `panel-right` is what opens it everywhere
+  // else in the window — the dock tab, the rail, the command centre.
+  if (lower === "read_artifact" || lower === "present_artifact") return "panel-right";
   if (lower === "auroro_websearch" || lower === "auroro_web_search") return "search";
   if (lower === "ask_question") return "help";
   if (FILE_MODIFY_TOOLS.has(lower)) return "file-edit";
@@ -1217,16 +1255,64 @@ const TodoBeatCard: React.FC<{
       (typeof args.id === "string" ? args.id : "task");
   }
 
+  // What CHANGED — never the whole list. The full checklist has one home, the
+  // header indicator, which is live and one hover away; drawing it again in
+  // every card would say the same thing twice and age badly, since a card is a
+  // record of a moment and the header is the current state.
+  //
+  // One line per change, because `updates` can now carry several: "Finished A"
+  // then "Started B" is one call, and a single line could only name one of
+  // them.
+  const changes: Array<{ key: string; verb: string; title: string }> = [];
+  if (status === "running") {
+    // In flight. The result carries what actually changed, and until it lands
+    // naming a task would be a guess — so say what is happening, not to what.
+    changes.push({ key: "running", verb: "Updating", title: "tasks" });
+  } else if (op === "set") {
+    changes.push({ key: "set", verb, title });
+  } else {
+    const applied = Array.isArray(result.updates)
+      ? (result.updates as Array<Record<string, unknown>>)
+      : [];
+    const items = Array.isArray(result.items)
+      ? (result.items as Array<Record<string, unknown>>)
+      : [];
+    const titleOf = (id: unknown): string => {
+      const match = items.find((item) => item.id === id);
+      return typeof match?.content === "string" ? match.content : String(id ?? "task");
+    };
+    if (applied.length > 0) {
+      for (const change of applied) {
+        const changeStatus = typeof change.status === "string" ? change.status : "";
+        changes.push({
+          key: String(change.id),
+          verb: TODO_STATUS_WORD[changeStatus] ?? "Updated",
+          title: titleOf(change.id),
+        });
+      }
+    } else {
+      // Single-item form, or a result from before `updates` existed.
+      changes.push({ key: "single", verb, title });
+    }
+  }
+
   return (
     <div className="agw-task-beat" data-status={status} data-task-op={op || undefined}>
-      <span className="agw-task-beat-dot" aria-hidden />
-      <span className="agw-task-beat-verb">{verb}</span>
-      <span className="agw-task-beat-title">{title}</span>
-      {done !== undefined && total !== undefined && (
-        <span className="agw-task-beat-count">
-          {done}/{total}
-        </span>
-      )}
+      {changes.map((change, index) => (
+        <div className="agw-task-beat-head" key={change.key}>
+          <span className="agw-task-beat-dot" aria-hidden />
+          <span className="agw-task-beat-verb">{change.verb}</span>
+          <span className="agw-task-beat-title">{change.title}</span>
+          {/* The count is the state AFTER the whole call, so it belongs to the
+            * last line only — repeating it per line would show the same
+            * number beside changes it does not describe yet. */}
+          {index === changes.length - 1 && done !== undefined && total !== undefined && (
+            <span className="agw-task-beat-count">
+              {done}/{total}
+            </span>
+          )}
+        </div>
+      ))}
     </div>
   );
 };

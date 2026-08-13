@@ -118,7 +118,26 @@ const ToolGroupImpl: React.FC<{
               {stats.totalMs >= 1000 && ` · ${formatToolDuration(stats.totalMs)}`}
             </span>
             {stats.failed > 0 && (
-              <span className="agw-tool-group-badge">{stats.failed} failed</span>
+              /*
+               * The same red × the failed row below wears, not a filled badge.
+               *
+               * It was a bordered, tinted, uppercase "1 FAILED" pill — the
+               * loudest object in a collapsed run, louder than the failure it
+               * was reporting, and it did not match anything else in the
+               * transcript. One call out of three not landing is a fact worth
+               * a glyph, not an alarm.
+               *
+               * The count only appears from two upwards: at one it would
+               * restate what the single × already says, and the row underneath
+               * carries the reason.
+               */
+              <span className="agw-tool-group-badge">
+                <AgentIcon name="close" size={12} strokeWidth={2.6} />
+                {stats.failed > 1 && stats.failed}
+                {/* The glyph is the visual signal; this is the same fact for a
+                    screen reader, which cannot see a red cross. */}
+                <span className="agw-sr-only">{stats.failed} failed</span>
+              </span>
             )}
             <span className="agw-timeline-rule" aria-hidden="true" />
           </motion.button>

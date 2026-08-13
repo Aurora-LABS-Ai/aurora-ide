@@ -217,6 +217,11 @@ export interface DbProviderModel {
   priceCacheWritePerMtok: number | null;
   /** Currency ISO code. `null` is treated as `"USD"` by the UI. */
   priceCurrency: string | null;
+  /**
+   * Sampling temperature for this model (v22+). `null` inherits the provider's
+   * `defaultTemperature`, then Aurora's own default.
+   */
+  temperature: number | null;
   /** Reasoning capability + chosen default (models.dev, v17+). */
   reasoning: ModelReasoning | null;
   /** Extra request-body fields merged verbatim at send time (v18+). */

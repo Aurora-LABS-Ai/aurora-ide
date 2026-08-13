@@ -1,0 +1,376 @@
+/* ── MCP Servers ──────────────────────────────────────────────────────── */
+/* Header tools (Refresh / Add) + stat strip. Deliberately neutral — no accent. */
+.agw-mcp-headtools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.agw-mcp-stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 2px 4px;
+}
+.agw-mcp-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-mcp-stat-sep {
+  width: 1px;
+  height: 11px;
+  background: var(--agw-border);
+}
+
+/* Stacked card list. */
+.agw-mcp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.agw-mcp-card {
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-set-r-card);
+  background: var(--agw-surface);
+  overflow: hidden;
+  transition: border-color 0.12s ease;
+}
+.agw-mcp-card[data-open] {
+  border-color: var(--agw-border-strong);
+}
+.agw-mcp-card[data-draft] {
+  border-color: color-mix(in srgb, var(--agw-added) 38%, var(--agw-border));
+}
+
+.agw-mcp-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+}
+.agw-mcp-card-head-static {
+  cursor: default;
+}
+/* The big left zone is the expand toggle; actions on the right stop propagation. */
+.agw-mcp-card-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--agw-text);
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+}
+.agw-mcp-card-ico {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: var(--agw-radius-md);
+  border: 1px solid var(--agw-border);
+  background: var(--agw-surface-elevated);
+  color: var(--agw-text-muted);
+}
+.agw-mcp-card-ico[data-draft] {
+  color: var(--agw-added);
+  border-color: color-mix(in srgb, var(--agw-added) 32%, transparent);
+  background: color-mix(in srgb, var(--agw-added) 10%, transparent);
+}
+/* Status LED on the icon badge corner. */
+.agw-mcp-card-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--agw-text-subtle);
+  flex-shrink: 0;
+}
+.agw-mcp-card-ico .agw-mcp-card-dot {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  border: 2px solid var(--agw-surface);
+}
+.agw-mcp-card-dot[data-tone="ready"] {
+  background: var(--agw-added);
+}
+.agw-mcp-card-dot[data-tone="off"] {
+  background: var(--agw-text-subtle);
+}
+.agw-mcp-card-dot[data-tone="error"] {
+  background: var(--agw-removed);
+}
+.agw-mcp-card-dot[data-tone="busy"] {
+  background: var(--agw-warning);
+  animation: agw-mcp-pulse 1.1s ease-in-out infinite;
+}
+@keyframes agw-mcp-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.agw-mcp-card-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.agw-mcp-card-name {
+  font-size: var(--agw-fs-body);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: -0.01em;
+  color: var(--agw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-mcp-card-sub {
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-mcp-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.agw-prov-icon-btn[data-on] {
+  color: var(--agw-text);
+  border-color: var(--agw-border-strong);
+  background: var(--agw-hover-paint);
+}
+.agw-mcp-chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.18s ease;
+  outline: none;
+}
+.agw-mcp-chev:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-mcp-chev[data-open] {
+  transform: rotate(180deg);
+}
+
+.agw-mcp-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px 16px 16px;
+  border-top: 1px solid var(--agw-border);
+  margin-top: -1px;
+}
+.agw-mcp-card-head + .agw-mcp-card-body,
+.agw-mcp-card-head-static + .agw-mcp-card-body {
+  padding-top: 16px;
+}
+.agw-mcp-card-body > .agw-set-notice > span {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Form layout (add + edit share these). */
+.agw-mcp-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.agw-mcp-grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  align-items: end;
+}
+.agw-mcp-modeseg {
+  flex-shrink: 0;
+}
+
+/* Read-only fields. */
+.agw-mcp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.agw-mcp-field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.04em;
+  color: var(--agw-text-subtle);
+}
+.agw-mcp-code {
+  padding: 9px 11px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-canvas);
+  color: var(--agw-text-muted);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  line-height: 1.6;
+  word-break: break-all;
+}
+.agw-mcp-muted {
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text-subtle);
+}
+.agw-mcp-count {
+  color: var(--agw-text-subtle);
+  font-weight: var(--agw-fw-medium);
+}
+
+/* Multiline input — matches agw-set-input, flat, no focus halo. */
+.agw-mcp-textarea {
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 10px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-canvas);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-family: var(--agw-font-code);
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+.agw-mcp-textarea::placeholder {
+  color: var(--agw-text-subtle);
+}
+.agw-mcp-textarea:focus {
+  border-color: var(--agw-border-strong);
+}
+.agw-mcp-textarea-tall {
+  min-height: 180px;
+}
+
+/* Switch + label pairs. */
+.agw-mcp-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+}
+.agw-mcp-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text-muted);
+  cursor: pointer;
+}
+.agw-mcp-flag-row {
+  width: 100%;
+}
+.agw-mcp-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.agw-mcp-eye {
+  width: 22px;
+  height: 22px;
+}
+
+/* Tool / resource chips (monospace, quiet). */
+.agw-mcp-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.agw-mcp-tool {
+  padding: 2px 9px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-canvas);
+  color: var(--agw-text-muted);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  cursor: help;
+}
+
+/* Empty state. */
+.agw-mcp-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 20px;
+  border: 1px dashed var(--agw-border);
+  border-radius: var(--agw-set-r-card);
+  text-align: center;
+}
+.agw-mcp-empty-title {
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-strong);
+  color: var(--agw-text);
+}
+.agw-mcp-empty-sub {
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text-subtle);
+  margin-bottom: 4px;
+}
+
+/* Config-path copy strip. */
+.agw-mcp-path {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  outline: none;
+}
+.agw-mcp-path:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text-muted);
+  border-color: var(--agw-border-strong);
+}
+.agw-mcp-path-text {
+  font-family: var(--agw-font-code);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-mcp-path-copied {
+  color: var(--agw-added);
+  font-weight: var(--agw-fw-medium);
+}
+

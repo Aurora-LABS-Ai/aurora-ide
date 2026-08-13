@@ -106,7 +106,8 @@ export interface AttachedCommandChip {
 /** Exact inline composer pills persisted with a user turn for transcript replay. */
 export interface AttachedPromptChip {
   /** `folder` is a path chip like `file`, not a directive — see MessageBubble. */
-  kind: "file" | "folder" | "skill" | "rule" | "mcp";
+  /** `terminal` carries a live terminal session id in `value`. */
+  kind: "file" | "folder" | "skill" | "rule" | "mcp" | "terminal";
   title: string;
   /** Serialized file reference (`rel` for @ picker, absolute for OS picks). */
   value?: string | null;

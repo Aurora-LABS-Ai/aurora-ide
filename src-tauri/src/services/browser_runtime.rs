@@ -969,7 +969,9 @@ impl BrowserManager {
     ///      `foreignObject` SVG renderer below. The fallback is also
     ///      what runs on macOS/Linux until those backends are wired in.
     ///
-    /// Returns `{ ok, base64, mediaType: "image/png", width, height,
+    /// Both paths capture PNG and both are re-encoded by
+    /// [`Self::finalize_screenshot`], so this returns
+    /// `{ ok, base64, mediaType: "image/jpeg", width, height,
     /// capturePath: "native"|"svg" }`.
     pub async fn screenshot(
         &self,
@@ -1084,21 +1086,22 @@ impl BrowserManager {
         Ok(self.finalize_svg_result(result))
     }
 
-    /// Bound a captured PNG for delivery: decode → downscale to
-    /// [`SCREENSHOT_MAX_WIDTH`] → re-encode PNG, base64 it for the model's
+    /// Bound a capture for delivery: decode → fit inside
+    /// [`SCREENSHOT_MAX_EDGE`] → re-encode JPEG, base64 it for the model's
     /// vision block, and save a copy to the app cache dir so the tool card can
     /// render the image via the asset protocol (a `path`, never megabytes of
-    /// base64, is what lands in the thread store).
+    /// base64, is what lands in the thread store). One artefact serves both:
+    /// the card shows exactly the pixels the model was given.
     fn finalize_screenshot(&self, bytes: Vec<u8>, capture_path: &str) -> BrowserResult {
         use base64::Engine;
-        let (png, width, height) = downscale_png(bytes);
-        let base64 = base64::engine::general_purpose::STANDARD.encode(&png);
-        let path = self.save_screenshot(&png);
+        let (jpeg, width, height) = encode_screenshot(bytes);
+        let base64 = base64::engine::general_purpose::STANDARD.encode(&jpeg);
+        let path = self.save_screenshot(&jpeg);
         BrowserResult {
             ok: true,
             value: Some(json!({
                 "base64": base64,
-                "mediaType": "image/png",
+                "mediaType": "image/jpeg",
                 "width": width,
                 "height": height,
                 "capturePath": capture_path,
@@ -1130,7 +1133,7 @@ impl BrowserManager {
         self.finalize_screenshot(bytes, "svg")
     }
 
-    /// Persist a screenshot PNG under `<app_cache>/aurora-screenshots/` and
+    /// Persist a screenshot under `<app_cache>/aurora-screenshots/` and
     /// return its absolute path (loadable by the frontend via `convertFileSrc`).
     /// Best-effort — returns `None` on any IO failure so the screenshot still
     /// works (the card just falls back to its caption). Prunes stale files first
@@ -1144,42 +1147,64 @@ impl BrowserManager {
             .join("aurora-screenshots");
         std::fs::create_dir_all(&dir).ok()?;
         prune_old_screenshots(&dir);
-        let file = dir.join(format!("shot-{}.png", Uuid::new_v4()));
+        // `.jpg` because that is what `encode_screenshot` writes. Older threads
+        // still reference `.png` files here; nothing reads the extension, both
+        // are served by the asset protocol, and the `media_type` recorded in
+        // each `<aurora_image>` marker is what the request builder trusts.
+        let file = dir.join(format!("shot-{}.jpg", Uuid::new_v4()));
         std::fs::write(&file, bytes).ok()?;
         Some(file.to_string_lossy().to_string())
     }
 }
 
-/// Longest edge a saved/model screenshot is allowed before downscaling. Keeps
-/// the base64 the model receives (and the on-disk PNG) bounded so a hi-DPI
-/// full-page capture can't blow up the context window.
-const SCREENSHOT_MAX_WIDTH: u32 = 1400;
+/// Longest edge a saved/model screenshot is allowed. Applies to BOTH axes — a
+/// full-page capture is tall, not wide, so bounding the width alone left the
+/// expensive dimension unbounded.
+const SCREENSHOT_MAX_EDGE: u32 = 1024;
 
-/// Decode a PNG, downscale it to at most [`SCREENSHOT_MAX_WIDTH`] wide
-/// (preserving aspect ratio), and re-encode as PNG. Returns
-/// `(png_bytes, width, height)`. On any decode/encode failure the original
-/// bytes are returned with `(0, 0)` dimensions so the caller still has an image.
-fn downscale_png(bytes: Vec<u8>) -> (Vec<u8>, u32, u32) {
-    let Ok(img) = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png) else {
+/// JPEG quality for the encoded capture. 85 is the measured knee: at 1024px it
+/// held every small UI label a PNG of the same capture held, at roughly a fifth
+/// of the bytes — and those bytes are re-sent on every subsequent turn, since
+/// history keeps a path and rehydrates the file into each request.
+const SCREENSHOT_JPEG_QUALITY: u8 = 85;
+
+/// Decode a capture, fit it inside [`SCREENSHOT_MAX_EDGE`] square (aspect
+/// preserved, never upscaled), and re-encode as JPEG. Returns
+/// `(jpeg_bytes, width, height)`. On any decode/encode failure the original
+/// bytes are returned with `(0, 0)` dimensions so the caller still has an image
+/// — a screenshot that degrades to "the original PNG" is still a screenshot.
+///
+/// Format-agnostic on input: both capture paths produce PNG today, and reading
+/// by content rather than by assumption means neither has to announce itself.
+fn encode_screenshot(bytes: Vec<u8>) -> (Vec<u8>, u32, u32) {
+    let Ok(img) = image::load_from_memory(&bytes) else {
         return (bytes, 0, 0);
     };
     let (w, h) = (img.width(), img.height());
-    let img = if w > SCREENSHOT_MAX_WIDTH {
-        let nh = ((h as f64) * (SCREENSHOT_MAX_WIDTH as f64) / (w as f64)).round() as u32;
+    // `resize` fits WITHIN the box and keeps the aspect ratio, so passing the
+    // bound on both axes is what makes it a longest-edge cap.
+    let img = if w > SCREENSHOT_MAX_EDGE || h > SCREENSHOT_MAX_EDGE {
         img.resize(
-            SCREENSHOT_MAX_WIDTH,
-            nh.max(1),
-            image::imageops::FilterType::Triangle,
+            SCREENSHOT_MAX_EDGE,
+            SCREENSHOT_MAX_EDGE,
+            image::imageops::FilterType::Lanczos3,
         )
     } else {
         img
     };
     let (ow, oh) = (img.width(), img.height());
+    // JPEG has no alpha channel; `to_rgb8` composites away a channel the
+    // encoder would otherwise reject outright.
+    let rgb = img.to_rgb8();
     let mut out = Vec::new();
-    if img
-        .write_to(&mut IoCursor::new(&mut out), image::ImageFormat::Png)
-        .is_ok()
-    {
+    let mut cursor = IoCursor::new(&mut out);
+    let encoded = image::codecs::jpeg::JpegEncoder::new_with_quality(
+        &mut cursor,
+        SCREENSHOT_JPEG_QUALITY,
+    )
+    .encode_image(&rgb)
+    .is_ok();
+    if encoded {
         (out, ow, oh)
     } else {
         (bytes, w, h)
@@ -1933,3 +1958,74 @@ const STAGEWISE_DEACTIVATE_SCRIPT: &str = r#"
   ns.__stagewise = null;
 })();
 "#;
+
+#[cfg(test)]
+mod screenshot_encoding_tests {
+    use super::{encode_screenshot, SCREENSHOT_MAX_EDGE};
+    use std::io::Cursor;
+
+    /// Build a PNG of the given size to feed the encoder.
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbaImage::from_fn(w, h, |x, y| {
+            image::Rgba([(x % 256) as u8, (y % 256) as u8, 128, 255])
+        });
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
+            .expect("encode fixture");
+        out
+    }
+
+    /// The cap is on the LONGEST edge, not on the width — a full-page capture is
+    /// tall, and bounding width alone left the expensive axis free.
+    #[test]
+    fn tall_capture_is_bounded_by_its_height() {
+        let (bytes, w, h) = encode_screenshot(png(1400, 2800));
+        assert_eq!(h, SCREENSHOT_MAX_EDGE, "long edge is the bound");
+        assert_eq!(w, SCREENSHOT_MAX_EDGE / 2, "aspect ratio held");
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn wide_capture_is_bounded_by_its_width() {
+        let (_, w, h) = encode_screenshot(png(3000, 1000));
+        assert_eq!(w, SCREENSHOT_MAX_EDGE);
+        assert!(h < SCREENSHOT_MAX_EDGE);
+    }
+
+    /// An element capture is already small; upscaling it would invent detail and
+    /// cost bytes for pixels that were never rendered.
+    #[test]
+    fn small_capture_is_never_upscaled() {
+        let (_, w, h) = encode_screenshot(png(320, 200));
+        assert_eq!((w, h), (320, 200));
+    }
+
+    /// Everything the model receives is JPEG — `\xFF\xD8\xFF` is the SOI marker.
+    #[test]
+    fn output_is_always_jpeg() {
+        let (bytes, ..) = encode_screenshot(png(1200, 800));
+        assert_eq!(&bytes[..3], &[0xFF, 0xD8, 0xFF], "JPEG magic bytes");
+    }
+
+    /// The reported dimensions have to describe the bytes actually returned —
+    /// they are written into the `<aurora_image>` header, and the UI sizes the
+    /// card from them.
+    #[test]
+    fn reported_dimensions_match_the_encoded_image() {
+        let (bytes, w, h) = encode_screenshot(png(1400, 1500));
+        let decoded = image::load_from_memory(&bytes).expect("output decodes");
+        assert_eq!((decoded.width(), decoded.height()), (w, h));
+        assert_eq!(h, SCREENSHOT_MAX_EDGE);
+    }
+
+    /// A capture we cannot decode still has to come back as an image rather than
+    /// as nothing — the caller has no other copy.
+    #[test]
+    fn undecodable_bytes_pass_through() {
+        let junk = b"not an image at all".to_vec();
+        let (bytes, w, h) = encode_screenshot(junk.clone());
+        assert_eq!(bytes, junk);
+        assert_eq!((w, h), (0, 0));
+    }
+}

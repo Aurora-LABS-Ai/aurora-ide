@@ -21,6 +21,40 @@ import type { ProviderConfig } from "@/kernel/services/providers/types";
 export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 
 /**
+ * Fallback sampling temperature when neither the model nor the provider sets
+ * one. Set it per model in Settings → Providers → the model's own panel.
+ *
+ * 0.8, not 1.0: the old hard-coded 1.0 was the API's own default for chat, and
+ * this is not chat — it is a tool-calling loop over a codebase, where the
+ * cheapest win is less variance in edits and arguments.
+ *
+ * And not 0 either, which is the tempting other end: at 0 a model that has just
+ * seen a tool result it cannot use will re-issue the identical call, because
+ * nothing in the sampler can break the tie. A stuck loop costs far more than a
+ * little variance.
+ *
+ * Inert on models that reject sampling — Claude 5 and newer 400 on
+ * `temperature`, so the Rust adapter strips it there whatever this says.
+ */
+export const DEFAULT_TEMPERATURE = 0.8;
+
+/**
+ * The temperature a turn should send: the model's own value, else the
+ * provider's default, else {@link DEFAULT_TEMPERATURE}.
+ *
+ * `0` is a legitimate setting, so this checks for a number rather than
+ * truthiness — `??` on a `0` temperature would silently promote it to 0.8.
+ */
+export function resolveTemperature(
+  model: LLMModel | null | undefined,
+  providerDefault: number | undefined,
+): number {
+  if (typeof model?.temperature === "number") return model.temperature;
+  if (typeof providerDefault === "number") return providerDefault;
+  return DEFAULT_TEMPERATURE;
+}
+
+/**
  * Fill in the fields the runtime treats as required. Shared so the
  * connection test sends the same normalized config a turn sends.
  */

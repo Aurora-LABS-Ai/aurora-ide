@@ -123,6 +123,7 @@ mod tests {
             thread_id: "s".into(),
             workspace_root: None,
             cancel_token: CancellationToken::new(),
+            spill_dir: None,
         }
     }
 

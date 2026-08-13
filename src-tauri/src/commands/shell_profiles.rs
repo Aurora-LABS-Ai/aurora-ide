@@ -82,7 +82,7 @@ pub struct InteractiveShell {
 /// `requested` takes a kind id (`"bash"`, `"pwsh"`) or a profile id; omit it for
 /// the derived fallback. Returns `None` only when nothing usable is registered,
 /// which the caller reports rather than silently substituting a guess.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn shell_interactive_config(requested: Option<String>) -> Option<InteractiveShell> {
     let resolved = crate::shell::resolve_interactive(requested.as_deref())?;
     Some(InteractiveShell {
@@ -96,9 +96,29 @@ pub fn shell_interactive_config(requested: Option<String>) -> Option<Interactive
     })
 }
 
-/// Current registry contents.
-#[tauri::command]
+/// Current registry contents — from memory, not from the database.
+///
+/// The registry is loaded from the database ONCE at startup and re-installed
+/// on every write (see the module note), so the in-process copy is already the
+/// current answer. Reading it here means asking "which shells do I have" never
+/// queues behind whatever else is using the database — a chat being saved, a
+/// settings write, a usage-stats pass.
+///
+/// That queue is what froze the app. This is called every time the terminal's
+/// shell picker opens, it used to be a plain `#[tauri::command]` (Tauri runs
+/// those on the MAIN thread), and `db.lock()` blocks until the database is
+/// free. Main thread waiting = no repaint, and the window's close button stops
+/// working. `(async)` alone would have fixed the freeze; not touching the
+/// database at all also makes it instant.
+///
+/// The database read stays as a fallback for the window that exists before the
+/// startup load finishes, and is safe there precisely because of `(async)`.
+#[tauri::command(async)]
 pub fn shell_profiles_get(db: State<'_, Mutex<Database>>) -> Result<ShellProfiles, String> {
+    let in_memory = crate::shell::snapshot();
+    if !in_memory.profiles.is_empty() {
+        return Ok(in_memory);
+    }
     with_db(&db, |db| Ok(load(db)))
 }
 
@@ -193,7 +213,7 @@ pub async fn shell_profiles_add(
 
 /// Remove a profile. Scanned profiles come back on the next scan; manual ones
 /// do not, which is what makes removal meaningful.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn shell_profiles_remove(
     id: String,
     db: State<'_, Mutex<Database>>,
@@ -206,7 +226,7 @@ pub fn shell_profiles_remove(
 }
 
 /// Enable or disable a profile for agent and terminal use.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn shell_profiles_set_enabled(
     id: String,
     enabled: bool,

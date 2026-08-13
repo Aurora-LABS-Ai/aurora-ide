@@ -1,5 +1,222 @@
 # Aurora IDE — Working Memory
 
+## 2026-08-13 (4th) — Temperature is per-model now; the "..." rows were the provider
+- **Temperature moved to the model row** (schema **v22**, `provider_models.temperature`, NULL =
+  inherit). Chain is model → provider `defaultTemperature` → `DEFAULT_TEMPERATURE` **0.8**, resolved
+  once in `model-request-config.ts::resolveTemperature` (a function, not `??`, so an explicit `0`
+  survives). It was previously a hidden `app_settings.temperature` no UI could edit, hard-coded to
+  1.0 at the send site, while Settings → Agent claimed it was a model setting. Field lives in the
+  model's expanded panel in Providers; Claude 5+ reject sampling so Rust strips it there regardless.
+- **The stray `...` rows between tool cards are the PROVIDER, not us.** Reproduced with
+  `scripts/probe-provider.mjs` (new): it drives Aurora's loop shape at any endpoint with no system
+  prompt and no Aurora in the path — a6api/claude-opus-5 emitted `text("...")` before the tool call
+  on 3 of 8 turns; real Anthropic on the same build never does. `timeline.ts::isSilentContent` now
+  drops dot/dash-only text without splitting the tool run.
+
+## 2026-08-13 (3rd) — Composer picker depth, screenshots at 1024/JPEG, `report_aurora_issue`
+- **The `@` / `/` picker** is one component now (`ComposerMenu.tsx`) and opens from BEHIND the
+  composer: `z-index: -1` on `.agw-mention` + an 18px rise (larger than the 6px gap, so the box
+  occludes the start), the panel's shadow casts UP only, and the input casts DOWN onto it via
+  `:has()`. It shook because `.agw-menu`'s `agw-pop-in` keyframe and a Framer spring animated the
+  same element — a running CSS animation outranks inline styles, then hands back mid-flight. One
+  owner now; height is measured and eased so re-filtering never leaps.
+- **Screenshots: longest edge 1024, JPEG q85, both axes** (`SCREENSHOT_MAX_EDGE`,
+  `encode_screenshot`). Measured on the user's own provider: a 1400px capture and a 1024px one cost
+  the SAME tokens (charged per tile, not per pixel), and JPEG q85 costs the same as PNG at a fifth
+  of the bytes — 1151 KB → 109 KB per capture, re-sent on every turn. Pasted/dropped/annotated
+  images go through the same bound in `image-utils.ts::toModelImage`. Old `.png` threads still
+  rehydrate: the marker carries its own `media_type`.
+- **`report_aurora_issue`** (new `tools/diagnostics/` bucket, roster 40 → 41): append-only, one
+  `report` string, stamped by Aurora with time + thread id, written to
+  `<root>/reports/aurora-issues.md`. Rendered as expandable entries in Settings → Diagnostics
+  ("Reported by the agent"). It replaces a paragraph of standing instructions that asked the model
+  to remember faults and mention them "at the end of the task" — a moment the model cannot detect,
+  across a span compaction is free to erase.
+
+## 2026-08-13 — Attached images moved INSIDE the user card
+- The image row was a SIBLING above `.agw-bubble-user`, carrying its own `max-width: 82%` and
+  right-hug to imitate the card beside it. Under the sticky-user preference the card pins, widens to
+  full column and caps at 34vh — the row got none of it: a right-hugging thumbnail over a full-width
+  band, no height cap (a few 220px tiles = a pinned header eating the viewport), and on an
+  image-only message no card rendered at all, so the copy chip landed on the picture. Now a child of
+  the card, above `CollapsibleBubbleBody` (which clamps by LINE-height and would cut an image).
+  Matches the reference: `DOCS/visual-studies/antigravity/13-user-bubble-image.png`.
+- The thumbnail is a **fixed 76px tile** (`object-fit: cover`, cropped from the top because these are
+  nearly always screenshots), not a `max-width` ceiling. A ceiling gave every attachment a different
+  size and let a wide screenshot render as a full-width letterbox strip. It is a marker; the click
+  opens `AgentImageModal` for actually reading it. Do NOT use a percentage inside `min()` for the
+  cap — it does not resolve against a shrink-to-fit box and silently removes the constraint.
+- **Tool-group header: the failure mark is a red ×, not a pill.** `1 FAILED` was bordered, tinted
+  and uppercase — the brightest object in the quietest row. Now the same glyph the failed row wears,
+  with the count only from 2 upwards.
+- tsc 0, eslint clean, 552 tests. NOT runtime-verified in `tauri:dev` yet.
+
+## 2026-08-13 (2nd) — Header task card: one width, and a calmer self-reveal
+- `.agw-taskpop` had `min-width: 260px` + `max-width: 28rem` — a range, not a measure, so the card
+  was as wide as its longest task title and re-measured every time the agent wrote one. Now
+  `width: min(320px, 100vw - 24px)`; rows clamp to 2 lines, the heading ellipses, both keep the full
+  text on `title`.
+- The card now animates its own resize (framer `layout`) instead of jumping when a row lands, and
+  the AGENT-DRIVEN reveal gets its own slower curve (260ms ease-out) while hover/click keep the
+  house tween — it is the one popover here that opens with nobody touching it, and at menu speed
+  that reads as a flicker. `place()` also stops handing back a new position for scrolls that never
+  moved the header (it is on a capturing `scroll` listener, so that was every transcript frame).
+- tsc 0, eslint clean, 552 tests. NOT runtime-verified in `tauri:dev` yet.
+
+## 2026-08-12 (8th) — Terminal: real shells, and the agent can read them
+- **The agent can now read the USER's terminals.** Two frontend tools (`terminal_list`,
+  `terminal_read`, both auto-approved read-only) over the xterm buffers, which are in the window,
+  not in Rust. Session registry moved out of `TerminalPanel.tsx` into
+  `services/terminal/terminal-sessions.ts` — a tools module importing a React component to reach a
+  Map is the wrong shape. `scope: "last_command"` works with NO shell integration: Aurora owns the
+  PTY, so the Enter keystroke in `term.onData` marks the buffer line where that command's output
+  starts. Head+tail (40/40) because a compiler puts the real error at the top and the summary at the
+  bottom; the elision is stated inline as `… N lines hidden …`. Read-only by design — no
+  `terminal_write`; typing into a live shell is a different trust level and `shell_execute` exists.
+- **The terminal was never running the user's shell.** It asked for kind `powershell`, which
+  resolves to Windows PowerShell 5.1 once the scan registers it (the Rust comment even says the
+  argument historically meant pwsh 7). It also overwrote the user's `prompt` function and ran bash
+  with `--noprofile --norc`. All removed: `pwsh` is the default, the PowerShell prompt is installed
+  only when the profile left the stock one, POSIX shells get `-i` and their own rc. `cmd` was
+  launched with PowerShell's `-Command` (it fails the `isPosix` test) and died instantly.
+- Nerd Font families are appended after the user's code font so prompt themes (oh-my-posh) render
+  their glyphs; browsers fall back per glyph, so the user's font still draws the text.
+- **32 commands were answered on the MAIN thread while waiting on the database** — the freeze where
+  X stops working. Found by a new test (`commands/command_thread_safety.rs`) that reads the real
+  source and fails on the shape; it also proves itself against the known-bad snippet.
+  `shell_profiles_get` additionally now reads the in-memory registry, so it never queues at all.
+
+## 2026-08-12 (7th) — Skills can be deleted from disk; `todo` costs one round trip per item
+- **Delete on every skill card** (Settings → Skills). Deleting a FOLDER skill removes the whole
+  folder, not just `skill.md` — `references/`, scripts and assets live beside it, so removing the
+  markdown alone would clear the card and leave the skill on disk. New `SkillDefinition.sourceDir`
+  records the folder form; `resolveSkillDeleteTarget` re-derives the target from the skill roots and
+  refuses anything not strictly inside `<project>/.aurora/skills`, `<project>/.agents/skills` or the
+  global path (also refuses `..`, and the root itself). It is `remove_dir_all` with no recycle bin,
+  so the confirm names the exact path. `removeSkillToggle` purges the toggle from EVERY workspace —
+  a global skill can be equipped in several, and a stale `true` would keep eating the 10-cap with no
+  card left to unequip. The card became a `<div>` + stretched equip button (a button can't nest one).
+- **`todo` now matches Claude Code's, in all three places it differed** (owner's ask). The measured
+  problem: session `3d410c6f…` had 35 todo calls, each its own assistant message with ONE `tool_use`
+  block and its own ~255k-token input pass, because `op:"update"` took a single `id`+`status` and the
+  description prescribed exactly that. Never a batching limit — msg#206 of that same session carries
+  3 tool_use blocks.
+  1. `update` takes `updates: [{id,status}]`, applied atomically (one bad id changes nothing); the
+     single `id`+`status` form still works, and an empty `updates` beside a valid `id` is read as a
+     placeholder, not a no-op. Closing one task and starting the next is now ONE call.
+  2. **`<aurora_task_reminder>`** — `task_reminder_block`/`inject_task_reminder` in conversation.rs
+     re-read the store on EVERY request and append the live checklist to the LATEST user message.
+     Deliberately the opposite placement from `inject_repo_map`, for the opposite reason: the map is
+     static so it rides at the head inside the cached prefix, while this list changes every few calls
+     and at the head would rewrite that prefix and re-bill the conversation. The model no longer
+     needs `op:"read"` to know where it stands, and survives compaction.
+  3. **The header TaskIndicator FLASHES OPEN for 3.5s whenever the agent changes the list**, then
+     collapses. Driven by a `useAgentTaskStore.subscribe` callback, not an effect watching `tasks` —
+     a render-time comparison cannot tell a real change from a mount, a thread switch or reopening
+     an old thread. Escape/click-away dismiss it; a hover or pin outlives the timer (`open` is an
+     OR). The transcript card names only what CHANGED (one line per entry in `updates`, "Updating
+     tasks" while in flight).
+- **DO NOT draw the checklist in the transcript.** I did, and it was wrong: the header dropdown is
+  the list's ONE home (it is live; a card is a record of a moment), so an inline copy says the same
+  thing twice and ages badly. Reverted the same session. This is the fourth time the checklist has
+  tried to move into the transcript — the module doc on TaskIndicator.tsx records the first three.
+- `ide_context` is NOT IDE-only despite the name: in the agent window it carries base context, auto
+  rules, selection, `/` rule blocks, the MCP summary, the skill catalog/references and team policy.
+  It is load-bearing; the name is legacy.
+
+## 2026-08-12 (6th) — right-click menu overflow fixed; split audited clean
+- The CSS split/prune was AUDITED and is sound: 1098 → 1028 classes, all 70 removed classes verified
+  unreferenced across ts/tsx/rs/html, manifest ↔ partials agree, `pnpm build` green. The reported bug
+  was NOT a split regression — see lesson.md (3rd) for the fixed-width-popover cause and fix.
+- **OPEN, owner's call: `.agw-tree-row` / `-caret` / `-name` are defined TWICE** — `09-tool-cards.css`
+  (transcript trees: workspace_tree, MultiFile, FileList) and `14-dock-files.css` (the Files panel).
+  14 loads later, so the Files-panel rules win for BOTH: tool-card tree rows render at 26px/`fs-ui`
+  instead of the intended auto-height/`fs-label`. Pre-existing (the split preserved order byte for
+  byte), not a regression. Fixing it means scoping one set, which visibly re-densifies transcript
+  tool cards — a design change, so it needs a probe first, not a silent edit.
+
+## 2026-08-12 (5th) — freeze fix + font pass runtime-verified on the real store
+- User confirmed the boot freeze is gone. His log (example.txt) shows the new WARNs firing:
+  `thread_list_summaries` streams 569 threads in ~455ms off the main thread; usage-stats full
+  scan ~1.1s in the background. Both healthy — but the log exposed the frontend calling the
+  thread listing 4× and usage stats 2× simultaneously at boot (dedupe candidate), and the
+  300ms warn threshold is slightly tight for a 569-thread store.
+- Fonts: PrintWindow capture of the live agent window, zoomed 3× — headings (fw 700) and strong
+  (600) render with clean uniform stems, no synthetic-bold smearing. `font-synthesis-weight:
+  none` confirmed working. Caveat: compositor capture can strip ClearType fringing, so
+  subpixel-vs-grayscale can't be proven from pixels; canvas sandbox + IDE window text still
+  need a human glance (same properties applied, surfaces weren't open).
+
+## 2026-08-12 (4th) — boot "(Not Responding)" fixed: sync commands full-parsed 193MB of sessions on the main thread
+User's app froze ~5s at boot (window "Not Responding", then normal). Cause chain, verified on disk:
+- `thread_list_summaries` (chat rail, called at boot) is/was a SYNC `#[tauri::command]` — Tauri v2
+  runs sync commands ON THE MAIN THREAD, so its cost blocks the message pump of every window.
+- `SessionStore::summarize_thread` full-deserialized every message block of every thread via
+  `Session::load_from_path` just to get a count + 120-char preview — its own comment said streaming
+  was the plan, then didn't. This machine: 569 JSONL / 193 MB → seconds of parse per listing.
+- Fix (three files): `summarize_thread` now line-scans (count = non-empty lines; preview = last
+  line starting `{"role":"user"` — sound because `role` is ConversationMessage's first field and
+  serde_json keeps declaration order — typed-verified before use). `thread_list_summaries`,
+  `usage_stats_get`, `project_stats_get` are now async + `spawn_blocking` (the stats pair
+  legitimately full-loads every session; it just must never do it on the main thread).
+- Slow-path WARNs added (threads.list >300ms, usage/project stats >1s) so a regression names
+  itself in the log instead of reappearing as a mystery freeze.
+- VERIFIED: cargo check + 1220 lib tests green (incl. `message_count_and_preview_come_from_jsonl`
+  covering the new scan). Not yet runtime-verified against the real 193MB store.
+
+## 2026-08-12 (3rd) — dead-class prune: 72 orphaned agw- classes deleted (−683 lines)
+Phase 3 of the `split-css` branch, after the split + font pass below. 1,097 → 1,025 classes.
+- **Verification was the work.** The naive "class not in TSX" scan lies twice: comments write
+  `--agw-*`/"agw-" (marks everything alive via prefix match), and `--agw-fs-md` var refs contain
+  `agw-fs-md` (drowns the token set). Clean pass = strip `--agw-` refs + comment lines, keep
+  template prefixes (`agw-foo-${x}` → prefix `agw-foo-`), then per-candidate repo-wide rg with
+  `(?![A-Za-z0-9_-])` boundary across ts/tsx/rust/html. Classes are never built dynamically in
+  this codebase (only VAR names are — tokens.ts); that's what makes static analysis sound here.
+- Families removed: old model/mode picker (menu items, avatars), reasoning picker
+  (pill/menu/items — replaced UI), profile chart/rows/collapse, provider add-menu +
+  prov-layout/list, set-card grid (per-tool settings cards), cmd-chips, br-inspect toolbar,
+  attach pills, bare `.agw-pill` (only `-inline/-ico/-sel` variants live), resize-handle,
+  team-bubble, think-pulse, tree-icon, proj-chips, settings-stack/nav-foot, bgtask-cmd.
+- Prune script v1 sheared comments (comma inside a comment split the selector list mid-comment
+  → unbalanced `/*`). v2 tokenizes comments as standalone nodes so preludes can't contain them,
+  recurses @media/@supports/@container, and passed a byte-identical no-op roundtrip before the
+  real run. Orphaned family comments + 3 stale cross-references cleaned by hand afterwards.
+  No orphan keyframes (agw-pulse was never defined; the one flagged, agw-drop-beam, is used on
+  a continuation line single-line greps miss).
+- VERIFIED: full `pnpm build` + 535 tests / 61 files (`--pool=vmThreads`). Still NOT
+  runtime-verified — same caveat as phase 2; needs eyes on both windows in `tauri:dev`.
+
+## 2026-08-12 (2nd) — agent-window.css split into 32 partials; font-rendering pass
+Branch `split-css`. Two phases, deliberately separate so phase 1 stays provable:
+- **Phase 1 — the god file is gone, bytes unchanged.** `agent-window.css` (14,310 lines) is now an
+  @import MANIFEST over `theme/agent-window/01-root.css … 32-project-stats.css`, cut at verified
+  top-level boundaries by a throwaway comment/string-aware script (not by hand, not by codemod).
+  ORDER IS LOAD-BEARING — numeric prefixes = cascade order; the manifest header says so. Proof:
+  the split partials re-concatenate byte-identical to the original, AND a full `pnpm build` from
+  both states emitted the same content-hashed `index-*.css`. `appearance-token-coverage.test.ts`
+  now reads the partials dir (sorted = cascade order) and gained a test pinning manifest ↔
+  directory agreement — a partial on disk that the manifest skips would otherwise pass every rule
+  check while never loading in the app.
+- **Phase 2 — font rendering unified (deliberate pixel changes, NOT byte-identical).** Audit found
+  exactly two sites contradicting the documented `.agw-root` rationale ("antialiased on Windows =
+  grayscale AA, thinner washed-out stems"): the IDE `body` (index.css) and the canvas sandbox body
+  (canvas-react.ts). Both now `-webkit-font-smoothing: auto` — the canvas one mattered most, it
+  renders INSIDE the agent window and its text rasterized visibly thinner than the transcript
+  beside it. All three roots (agw-root / IDE body / canvas body) also gained
+  `font-synthesis-weight: none`: `--agw-fw-display` is 700 and of the bundled UI faces only Inter
+  Variable has a real 700 — IBM Plex Sans stops at 600, so picking it produced smeared fake-bold.
+  Italic synthesis deliberately stays ON (no bundled face ships italics; an upright `em` would
+  erase emphasis). Weight audit was otherwise clean: 177/178 agent font-weight declarations ride
+  tokens; markdown `strong` is fw-strong(600), a real weight everywhere.
+- Decision reaffirmed for the record: NO Tailwind migration of the agent window, and no 10k-LOC
+  CSS cut exists — only 82/1097 agw- classes are even candidates for dead code. 03-composer.css
+  line ~150 documents the doctrine in-file ("Composer rows own their layout HERE, not via
+  Tailwind utilities in the JSX").
+- VERIFIED: 535 frontend tests / 61 files, `tsc -b`, `pnpm build`, lints clean, canvas +
+  token-coverage suites re-run after the phase-2 edits. **NOT runtime-verified** — the smoothing
+  and synthesis changes need eyes on both windows in `tauri:dev`. Tests ran with
+  `--pool=vmThreads`; the default pool is broken on this machine (see lesson.md 2026-08-12).
+
 ## 2026-08-11 — file_edit read-gate narrowed; failed tool cards stopped showing green
 Three fixes from one reported transcript (the in-window agent editing Aurora itself).
 - **The read-before-edit gate was refusing correct work.** It required every target of a

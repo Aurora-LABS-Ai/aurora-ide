@@ -1,0 +1,646 @@
+/* ── Right dock — dynamic tab strip (browser-style pills) ──────────────
+ * Codex §12.7: open surfaces are closeable pills; + opens Files/Browser/
+ * Terminal; Expand widens. Themed with --agw-* only. */
+.agw-tabstrip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 44px;
+  padding: 0 6px 0 8px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-tabstrip-scroll {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  /* Hide the horizontal scrollbar track but keep wheel/drag scroll. */
+  scrollbar-width: none;
+}
+.agw-tabstrip-scroll::-webkit-scrollbar {
+  height: 0;
+}
+/* Overflow signifier. With the scrollbar hidden, nothing otherwise says tabs
+ * exist past the edge — a tab cut flat at the boundary reads as the last one.
+ * The fade is set only on the side that actually has more (see
+ * `useTabStripScroll`), so it disappears the moment you reach either end
+ * instead of implying content that isn't there. */
+.agw-tabstrip-scroll[data-overflow="end"] {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
+}
+.agw-tabstrip-scroll[data-overflow="start"] {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 22px);
+  mask-image: linear-gradient(to right, transparent, #000 22px);
+}
+.agw-tabstrip-scroll[data-overflow="both"] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 22px,
+    #000 calc(100% - 22px),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 22px,
+    #000 calc(100% - 22px),
+    transparent
+  );
+}
+
+/* A tab pill: title button + close affordance, fused into one rounded chip. */
+.agw-tabpill {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding-right: 3px;
+  border-radius: var(--agw-radius-sm);
+  /* Quiet derived fill so resting tabs read as buttons on any dock colour;
+   * hover and the active pill step up from here. */
+  background: var(--agw-state-quiet);
+  color: var(--agw-text-muted);
+  flex-shrink: 0;
+  max-width: 200px;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.agw-tabpill:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-tabpill[data-active] {
+  background: var(--agw-state-selected);
+  color: var(--agw-text);
+}
+.agw-tabpill-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 4px 0 10px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  outline: none;
+}
+.agw-tabpill[data-active] .agw-tabpill-main {
+  font-weight: var(--agw-fw-strong);
+}
+.agw-tabpill-main:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  border-radius: var(--agw-radius-sm);
+}
+.agw-tabpill-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Team-member tab: the member's identity color as a small dot (same color as
+ * their name chip in the group chat), sized to sit where a tab icon would. */
+.agw-tabpill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.agw-tabpill-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.agw-tabpill:hover .agw-tabpill-close,
+.agw-tabpill[data-active] .agw-tabpill-close {
+  opacity: 1;
+}
+.agw-tabpill-close:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+
+.agw-canvas {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--agw-dock-paint);
+}
+
+.agw-canvas-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 7px;
+  flex-shrink: 0;
+  min-height: 52px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--agw-border);
+}
+
+.agw-canvas-field {
+  display: flex;
+  min-width: 110px;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+}
+
+.agw-canvas-field .agw-csel-trigger {
+  height: 28px;
+  padding: 0 8px;
+  background: var(--agw-surface-elevated);
+}
+
+.agw-canvas-mode button:focus-visible,
+.agw-canvas-refresh:focus-visible,
+.agw-canvas-retry:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+.agw-canvas-version {
+  max-width: 78px;
+  min-width: 70px;
+}
+
+.agw-canvas-mode {
+  display: inline-flex;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-surface);
+}
+
+.agw-canvas-mode button {
+  padding: 0 9px;
+  border: 0;
+  border-radius: calc(var(--agw-radius-sm) - 2px);
+  outline: none;
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+}
+
+.agw-canvas-mode button[data-active] {
+  background: var(--agw-state-selected);
+  color: var(--agw-text);
+}
+
+.agw-canvas-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  outline: none;
+  background: transparent;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+}
+
+.agw-canvas-refresh:hover,
+.agw-canvas-retry:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+
+.agw-canvas-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 10px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--agw-border);
+  color: var(--agw-text-subtle);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+}
+
+.agw-canvas-error {
+  flex-shrink: 0;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--agw-border);
+  background: var(--agw-removed-surface);
+  color: var(--agw-removed);
+  font-size: var(--agw-fs-label);
+  line-height: 1.4;
+}
+
+.agw-canvas-meta span:first-child {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--agw-text);
+  font-family: var(--agw-font-ui);
+  font-weight: var(--agw-fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agw-canvas-body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--agw-conversation);
+}
+
+.agw-diagram-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--agw-conversation);
+  background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--agw-text-subtle) 24%, transparent) 1px,
+    transparent 1px
+  );
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.agw-diagram-stage[data-dragging] {
+  cursor: grabbing;
+}
+
+/* The artwork box. Only PANNING rides the transform — zoom changes the box's
+ * width/height (see `CanvasDiagram`), because `will-change: transform` makes
+ * this a composited layer whose bitmap the GPU would otherwise stretch, turning
+ * a zoomed-in diagram into an unreadable smear. Resizing the layer forces a
+ * re-raster, so the SVG stays vector-sharp at every zoom level. */
+.agw-diagram-artwork {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.agw-diagram-artwork svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.agw-diagram-state,
+.agw-diagram-error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: min(440px, calc(100% - 40px));
+  transform: translate(-50%, -50%);
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-ui);
+}
+
+.agw-diagram-error {
+  align-items: flex-start;
+  width: min(440px, calc(100% - 40px));
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--agw-removed) 44%, var(--agw-border));
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-surface-elevated);
+  color: var(--agw-removed);
+  box-shadow: var(--agw-shadow-pop);
+}
+
+.agw-diagram-error > div {
+  min-width: 0;
+}
+
+.agw-diagram-error strong {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+}
+
+.agw-diagram-error pre {
+  max-height: 160px;
+  margin: 0;
+  overflow: auto;
+  color: var(--agw-text-muted);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.agw-diagram-controls {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 3px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-popover-surface);
+  box-shadow: var(--agw-shadow-pop);
+}
+
+.agw-diagram-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: var(--agw-radius-sm);
+  outline: none;
+  background: transparent;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+}
+
+.agw-diagram-controls button:hover:not(:disabled) {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+
+.agw-diagram-controls button:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+
+.agw-diagram-controls button:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+/* The zoom readout is a BUTTON (click = actual size), so it inherits the
+ * controls' shared button states; qualified with the parent so its width and
+ * type win over the 26px button base. */
+.agw-diagram-controls .agw-diagram-zoom {
+  width: 48px;
+  color: var(--agw-text-muted);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.agw-diagram-control-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--agw-border);
+}
+
+.agw-diagram-hint {
+  position: absolute;
+  right: 12px;
+  bottom: 14px;
+  z-index: 2;
+  padding: 4px 7px;
+  border-radius: var(--agw-radius-sm);
+  background: color-mix(in srgb, var(--agw-conversation) 86%, transparent);
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  pointer-events: none;
+}
+
+@media (max-width: 560px) {
+  .agw-diagram-hint {
+    display: none;
+  }
+}
+
+.agw-canvas-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: white;
+}
+
+/* A live canvas paints its own themed background, so it must NOT inherit the
+   white sheet html/svg artifacts sit on — those are authored as documents and
+   assume a page. */
+.agw-canvas-react {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.agw-canvas-react > .agw-canvas-frame {
+  flex: 1;
+  min-height: 0;
+  background: var(--agw-conversation);
+}
+
+/* Compile failures own the panel; a runtime crash is a strip under a canvas
+   that already rendered something, so it stays out of the way of the part that
+   still works. */
+.agw-canvas-runtime-error {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 8px;
+  max-height: 30%;
+  padding: 10px 14px;
+  border-top: 1px solid var(--agw-border-strong);
+  background: var(--agw-surface);
+  color: var(--agw-text-muted);
+  overflow: auto;
+}
+
+.agw-canvas-runtime-error pre {
+  margin: 0;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agw-canvas-markdown {
+  width: 100%;
+  overflow: auto;
+  padding: 22px 24px 48px;
+}
+
+.agw-canvas-body > .agw-tool-result {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  overflow: auto;
+  padding: 18px;
+}
+
+.agw-canvas-empty {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  padding: 28px;
+  color: var(--agw-text-subtle);
+  text-align: center;
+}
+
+.agw-canvas-empty strong {
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+}
+
+.agw-canvas-empty span {
+  max-width: 280px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+}
+
+.agw-canvas-retry {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  outline: none;
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+}
+
+.agw-canvas-spin {
+  animation: agw-spin 0.9s linear infinite;
+}
+
+/* The + dropdown (Files / Browser / Terminal). */
+.agw-addmenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  /* Wide enough for a shell name AND its version on one line — the terminal
+     picker lists both, and at 184px the two collided. */
+  min-width: 244px;
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 5px;
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-popover-surface);
+  border: 1px solid var(--agw-border);
+  box-shadow: var(--agw-shadow-pop);
+  animation: agw-pop-in 0.13s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes agw-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.agw-addmenu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 32px;
+  padding: 0 9px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+  outline: none;
+}
+.agw-addmenu-item:hover:not(:disabled) {
+  background: var(--agw-hover-paint);
+}
+.agw-addmenu-item:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+.agw-addmenu-item:disabled {
+  color: var(--agw-text-subtle);
+  cursor: default;
+  opacity: 0.55;
+}
+.agw-addmenu-label {
+  flex: 1;
+  min-width: 0;
+  /* Rows are a fixed 32px, so a label that wraps does not grow the row — it
+     spills over its neighbours. "Windows PowerShell" and "Command Prompt" are
+     both long enough to do it. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Trailing detail on a menu row — a shell's version beside its name. Quiet,
+   tabular, and never competing with the label for the row's width. */
+.agw-addmenu-meta {
+  flex: none;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-body);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+  white-space: nowrap;
+}
+.agw-addmenu-empty {
+  padding: 9px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-addmenu-kbd {
+  flex-shrink: 0;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  letter-spacing: 0.02em;
+}
+

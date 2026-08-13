@@ -1,0 +1,397 @@
+/* Tool-call row. Deliberately UN-boxed (no border/background) so it reads as an
+ * inline timeline entry like the IDE's ToolItem — the rich result panel inside
+ * the expanded body carries the visual weight, not the row itself. */
+.agw-tool-card,
+.agw-tool-group {
+  width: 100%;
+  /* Calm fade-in only — NO translate pop (the pop read as cheap/cartoonish).
+   * The node mounts once (stable key) so it plays a single time. */
+  animation: agw-row-in 0.28s ease;
+}
+
+@keyframes agw-row-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Shimmer sweep for live labels (running tool / generating reasoning). Premium
+ * "alive" cue — a gradient slides across the text instead of a bouncing dot. */
+.agw-shimmer {
+  /* Symmetric gradient (text-subtle at BOTH ends, one text highlight in the
+   * middle) on a 200% canvas that TILES (default background-repeat). The
+   * highlight is the moving sheen; the solid text-subtle flanks are the resting
+   * colour. Because both ends match and the pattern repeats, a fresh sweep flows
+   * in from the left exactly as the previous one exits the right — no hard reset. */
+  background: linear-gradient(
+    90deg,
+    var(--agw-text-subtle) 0%,
+    var(--agw-text-subtle) 28%,
+    var(--agw-text) 50%,
+    var(--agw-text-subtle) 72%,
+    var(--agw-text-subtle) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: agw-shimmer 2.5s linear infinite;
+}
+@keyframes agw-shimmer {
+  /* Scroll DECREASING position by exactly ONE period (200% → 0%, which are the
+   * same point mod the 200% tile) so the loop is seamless AND shows a single
+   * sweep per cycle. Decreasing position moves the sheen left → right; it exits
+   * the right edge as the next sweep enters from the left — no pop, no reversal. */
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+
+/* ── Context compaction marker (inline, DOCS/compaction-design.md) ──────────
+ * A centered divider that stays exactly where compaction fired. The messages
+ * above and below remain visible — only the model's context shrank. Running →
+ * the label shimmers left→right (reusing the tool-card sweep); done → it greys
+ * out and shows the before→after drop. The summary is never shown. */
+.agw-compaction {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin: 4px 0;
+  user-select: none;
+}
+.agw-compaction-line {
+  flex: 1;
+  height: 1px;
+  background: var(--agw-border);
+}
+.agw-compaction-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--agw-fs-ui);
+  line-height: 1;
+  color: var(--agw-text-muted);
+  white-space: nowrap;
+}
+.agw-compaction-chip svg {
+  opacity: 0.85;
+}
+.agw-compaction-running .agw-compaction-chip > span {
+  background: linear-gradient(
+    90deg,
+    var(--agw-text-subtle) 20%,
+    var(--agw-text) 50%,
+    var(--agw-text-subtle) 80%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: agw-shimmer 30s linear infinite;
+}
+
+/* ── Settings range control (compaction threshold / budget) ─────────────── */
+.agw-agent-range {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 220px;
+}
+.agw-set-range {
+  flex: 1;
+  height: 4px;
+  cursor: pointer;
+  accent-color: var(--agw-accent);
+}
+.agw-set-range:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--agw-ring);
+  border-radius: var(--agw-radius-sm);
+}
+
+/* ── Mid-turn user injection (inline note in the transcript) ────────────── */
+.agw-injection {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 8px 0;
+  padding: 7px 11px;
+  border-left: 2px solid var(--agw-accent);
+  border-radius: 0 var(--agw-radius-md) var(--agw-radius-md) 0;
+  background: color-mix(in srgb, var(--agw-accent) 8%, transparent);
+  color: var(--agw-text);
+  /* A mid-turn note IS a user message — its size follows the same token as
+   * the user bubble, on its own compact leading. */
+  font-size: var(--agw-msg-user-font-size, var(--agw-fs-ui));
+  line-height: var(--agw-msg-user-line-height, 1.6);
+}
+/* The text scrolls inside the marker, the marker never grows. A mid-turn note
+ * can be a pasted spec or a stack trace; letting it run full height buries the
+ * agent's own output below it. Capped at ~9 lines, then it scrolls in place —
+ * `flex: 1` so the scrollbar sits at a stable right edge instead of hugging a
+ * short first line, and `overscroll-behavior` so reaching the end doesn't hand
+ * the gesture to the transcript and yank the reader away. */
+.agw-injection > span {
+  min-width: 0;
+  flex: 1 1 auto;
+  max-height: calc(1.45em * 9);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.agw-injection svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--agw-accent);
+}
+
+/* ── Inline runtime notice (output limit hit, stream dropped, …) ────────────
+ * Same shape as `.agw-injection` so the transcript keeps ONE vocabulary for
+ * "this is not the model talking", switched to the warning role. The icon
+ * carries the state too — tint alone would fail for anyone who can't
+ * distinguish it from the accent-tinted user note directly above. */
+.agw-notice {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 8px 0;
+  padding: 7px 11px;
+  border-left: 2px solid var(--agw-warning);
+  border-radius: 0 var(--agw-radius-md) var(--agw-radius-md) 0;
+  background: color-mix(in srgb, var(--agw-warning) 10%, transparent);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-md);
+  line-height: 1.45;
+}
+/* Capped and scrollable for the same reason the injection marker is: a
+ * provider error body can be long, and letting it run full height buries the
+ * agent's own output underneath it. */
+.agw-notice > span {
+  min-width: 0;
+  flex: 1 1 auto;
+  max-height: calc(1.45em * 6);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+}
+.agw-notice svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--agw-warning);
+}
+
+/* ── Live reconnect marker (stream dropped, runtime is re-requesting) ───────
+ * `.agw-notice`'s shape and warning role, with a spinner where the notice has
+ * its warning triangle: same family, but "working on it" instead of "this went
+ * wrong". Transient — removed as soon as the retry streams, so it gets no
+ * entrance animation; a marker that slides in and then vanishes draws more
+ * attention to the hiccup than the hiccup deserves. */
+.agw-reconnect {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  align-items: center;
+  gap: 7px;
+  margin: 8px 0;
+  padding: 7px 11px;
+  border-left: 2px solid var(--agw-warning);
+  border-radius: 0 var(--agw-radius-md) var(--agw-radius-md) 0;
+  background: color-mix(in srgb, var(--agw-warning) 10%, transparent);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-md);
+  line-height: 1.45;
+}
+.agw-reconnect-spinner {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--agw-radius-pill);
+  border: 1.6px solid color-mix(in srgb, var(--agw-warning) 28%, transparent);
+  border-top-color: var(--agw-warning);
+  animation: agw-spin 0.7s linear infinite;
+}
+/* The label already says "retrying", so the spin is reinforcement, not the
+ * message — safe to stop outright rather than substitute another motion. */
+@media (prefers-reduced-motion: reduce) {
+  .agw-reconnect-spinner {
+    animation: none;
+  }
+}
+
+/* ── Docked "queued message" card (mid-turn injection, above the composer) ──
+ * Mirrors `.agw-tasks` chrome so it stacks cleanly with the task panel and
+ * tucks 12px behind the composer's top edge. */
+.agw-queued {
+  width: calc(100% - 48px);
+  max-width: 45rem;
+  margin: 0 auto -12px;
+  padding-bottom: 12px;
+  border: 1px solid var(--agw-border-strong);
+  border-bottom: none;
+  border-radius: var(--agw-radius-lg) var(--agw-radius-lg) 0 0;
+  background: var(--agw-surface);
+  overflow: hidden;
+}
+.agw-queued-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 8px 9px 13px;
+}
+.agw-queued-head > svg {
+  flex-shrink: 0;
+  color: var(--agw-accent);
+}
+.agw-queued-label {
+  flex-shrink: 0;
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--agw-accent);
+}
+.agw-queued-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--agw-fs-md);
+  color: var(--agw-text);
+}
+
+/* NOTE: no blanket prefers-reduced-motion kill here. It zeroed out every
+   transition under .agw-root (chevron rotate, hovers) and, together with the
+   former <MotionConfig reducedMotion="user">, made the tool-card / reasoning
+   dropdowns snap open instantly instead of gliding. The IDE chat animates these
+   unconditionally, so the agent window matches it. */
+.agw-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  font-size: var(--agw-fs-ui);
+  text-align: left;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-tool-head:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-tool-head:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+
+.agw-canvas-launch {
+  display: grid;
+  grid-template-columns: 16px 18px minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: 9px;
+  width: min(100%, 520px);
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--agw-accent) 24%, var(--agw-border));
+  border-radius: var(--agw-radius-md);
+  outline: none;
+  background: var(--agw-surface);
+  color: var(--agw-text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease;
+}
+.agw-canvas-launch:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--agw-accent) 58%, var(--agw-border));
+  background: var(--agw-hover-paint);
+}
+.agw-canvas-launch:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+.agw-canvas-launch:disabled {
+  cursor: default;
+}
+.agw-canvas-launch-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--agw-added);
+}
+.agw-canvas-launch[data-status="failed"] .agw-canvas-launch-status,
+.agw-canvas-launch[data-status="failed"] .agw-canvas-launch-kicker {
+  color: var(--agw-removed);
+}
+.agw-canvas-launch-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--agw-accent);
+}
+.agw-canvas-launch-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.agw-canvas-launch-kicker {
+  color: var(--agw-accent);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-strong);
+  line-height: 1.1;
+}
+.agw-canvas-launch-title {
+  overflow: hidden;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-canvas-launch-version {
+  padding: 2px 6px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-chip-surface);
+  color: var(--agw-text-muted);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-canvas-launch-open {
+  color: var(--agw-text-subtle);
+}
+
+@media (max-width: 520px) {
+  .agw-canvas-launch {
+    grid-template-columns: 16px 18px minmax(0, 1fr) auto;
+    gap: 7px;
+  }
+  .agw-canvas-launch-open {
+    display: none;
+  }
+}
+

@@ -1,0 +1,403 @@
+/* ── Assistant markdown ─────────────────────────────────────────────
+ * Scoped under `.agw-md` so react-markdown's default element tree is styled
+ * without per-element inline styles. Colour is all `--agw-*`. */
+.agw-md {
+  /* Body sits one step DIMMER than headings/strong (mixed toward the canvas so
+   * it adapts to any theme). This two-tone hierarchy is what makes long answers
+   * read layered instead of a flat wall of one brightness. */
+  color: color-mix(in srgb, var(--agw-text) 90%, var(--agw-canvas));
+  /* The reference's reading tier, measured from its chat renderer (NOT from
+   * its `body` default, which is 16/24 and styles nothing): reply text is 15px
+   * on 1.75 leading — smaller glyphs, noticeably airier lines, ~26px per line
+   * against our old 24px. Its font family is deliberately not copied.
+   * User-tunable in Settings → Appearance → Typography; the fallbacks below
+   * are those defaults. */
+  font-size: var(--agw-msg-font-size, var(--agw-fs-md));
+  line-height: var(--agw-msg-line-height, 1.75);
+  font-weight: var(--agw-msg-font-weight, 400);
+  /* Inter dynamic-metrics tracking at 15px. */
+  letter-spacing: -0.009em;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.agw-md > :first-child {
+  margin-top: 0;
+}
+.agw-md > :last-child {
+  margin-bottom: 0;
+}
+.agw-md p {
+  margin: 0 0 10px;
+}
+.agw-md h1,
+.agw-md h2,
+.agw-md h3,
+.agw-md h4 {
+  /* Full text colour (body is dimmed) + tighter tracking at display sizes +
+   * more air above — headings anchor sections instead of crowding them. */
+  margin: 22px 0 9px;
+  font-weight: var(--agw-fw-strong);
+  line-height: 1.3;
+  letter-spacing: -0.014em;
+  color: var(--agw-text);
+}
+.agw-md h1 {
+  font-size: var(--agw-fs-h1);
+  letter-spacing: -0.017em;
+}
+.agw-md h2 {
+  font-size: var(--agw-fs-h2);
+}
+.agw-md h3 {
+  font-size: var(--agw-fs-h3);
+}
+.agw-md h4 {
+  font-size: var(--agw-fs-h4);
+}
+.agw-md ul,
+.agw-md ol {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+.agw-md li {
+  margin: 3px 0;
+}
+.agw-md li > ul,
+.agw-md li > ol {
+  margin: 3px 0;
+}
+.agw-md a {
+  color: var(--agw-accent);
+  text-decoration: none;
+}
+.agw-md a:hover {
+  text-decoration: underline;
+}
+.agw-md strong {
+  font-weight: var(--agw-fw-strong);
+  color: var(--agw-text);
+}
+.agw-md em {
+  font-style: italic;
+}
+.agw-md hr {
+  border: none;
+  /* Faded + airier — a section breath, not a harsh full-width cut. */
+  border-top: 1px solid color-mix(in srgb, var(--agw-border) 70%, transparent);
+  margin: 20px 0;
+}
+.agw-md blockquote {
+  margin: 0 0 10px;
+  padding: 2px 12px;
+  border-left: 2px solid var(--agw-border-strong);
+  color: var(--agw-text-muted);
+}
+/* Inline code (themed chip; block code is handled by .agw-codeblock).
+ * FLAT tinted chip, no border — a bordered box on every identifier reads as a
+ * row of buttons and is the single heaviest source of transcript noise. The
+ * tint derives from the text colour so it holds in any theme, and the colour
+ * inherits so chips sit inside the sentence (dim in body, bright in bold). */
+.agw-md .agw-code-inline {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-code);
+  padding: 1px 5px;
+  border-radius: var(--agw-radius-sm);
+  background: color-mix(in srgb, var(--agw-text) 7%, transparent);
+  color: inherit;
+}
+/* Inside headings the chip chrome drops entirely — mono face alone carries the
+ * distinction; a padded box inside a heading breaks its optical line. */
+.agw-md h1 .agw-code-inline,
+.agw-md h2 .agw-code-inline,
+.agw-md h3 .agw-code-inline,
+.agw-md h4 .agw-code-inline {
+  background: none;
+  padding: 0;
+}
+/* Fenced code block — themed wrapper around Shiki output, with hover copy. */
+.agw-codeblock {
+  position: relative;
+  margin: 0 0 12px;
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-code-surface);
+  border: 1px solid var(--agw-code-border);
+  overflow: hidden;
+}
+/* Header strip — language tag left, always-visible copy right. Gives the block
+ * a labeled structure instead of a naked box with a hover-only affordance. */
+.agw-codeblock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 4px 14px;
+  border-bottom: 1px solid var(--agw-code-border);
+  background: color-mix(in srgb, var(--agw-text) 3%, transparent);
+}
+.agw-codeblock-lang {
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  letter-spacing: 0.02em;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.agw-codeblock-pre {
+  margin: 0;
+  padding: 13px 16px;
+  overflow-x: auto;
+  font-family: var(--agw-font-code);
+  /* Absolute, and its own setting (Appearance → Typography → Code block text
+   * size). A block is a surface, not a phrase, so it does not ride the prose
+   * size the way an inline chip does. 13px mono next to 15px sans is the
+   * conventional pairing — mono carries a larger x-height, so matching the
+   * numbers would make code out-shout the sentence around it. */
+  font-size: var(--agw-msg-code-font-size, 13px);
+  line-height: 1.6;
+}
+.agw-codeblock-pre code {
+  font-family: var(--agw-font-code);
+  background: transparent;
+  white-space: pre;
+}
+/* Syntax highlighting OFF — neutralise the inline colours Shiki sets on its
+ * token spans (CSS !important beats non-important inline styles) so fenced
+ * blocks render in a single foreground colour. */
+.agw-md.agw-syntax-off .agw-codeblock-pre code span,
+.agw-md.agw-syntax-off .agw-codeblock-pre code,
+.agw-md.agw-syntax-off .shiki span {
+  color: var(--agw-text) !important;
+}
+/* Shiki injects an inline background on its <pre>; force transparent so the
+ * agw wrapper surface shows through (no double / mismatched code background). */
+.agw-codeblock-pre pre,
+.agw-codeblock-pre.shiki,
+.agw-codeblock-pre .shiki {
+  background: transparent !important;
+  margin: 0;
+}
+/* Copy — lives in the header strip, always visible (quiet until hovered). */
+.agw-code-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.agw-code-copy:hover {
+  color: var(--agw-text);
+  background: var(--agw-hover-paint);
+}
+.agw-md table {
+  border-collapse: collapse;
+  margin: 0 0 12px;
+  font-size: var(--agw-fs-md);
+  /* Fill Streamdown's full-width table wrapper. `display:block` shrank the
+   * table to its content width, leaving the wrapper's bordered right side empty
+   * (the "phantom extra column"); a real `display:table` + width:100% makes the
+   * columns distribute across the box so there's no dead strip. */
+  display: table;
+  width: 100%;
+  table-layout: auto;
+}
+.agw-md th,
+.agw-md td {
+  border: 1px solid var(--agw-border);
+  padding: 6px 10px;
+  text-align: left;
+  /* Wrap long cell content instead of overflowing the clipped wrapper. */
+  overflow-wrap: anywhere;
+}
+.agw-md th {
+  background: var(--agw-surface);
+  font-weight: var(--agw-fw-medium);
+}
+
+/* ── Thinking / reasoning block ─────────────────────────────────────
+ * Mirrors the IDE chat's ThinkingBlock: a quiet toggle over a left-railed body. */
+.agw-think-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 2px 4px 2px 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
+}
+.agw-think-label {
+  flex-shrink: 0;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-timeline-rule {
+  height: 1px;
+  min-width: 18px;
+  flex: 1;
+  margin-left: 3px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--agw-border-strong) 72%, transparent),
+    color-mix(in srgb, var(--agw-border) 34%, transparent) 58%,
+    transparent
+  );
+  opacity: 0.64;
+  pointer-events: none;
+  transition: opacity 0.14s ease;
+}
+.agw-think-toggle:hover .agw-timeline-rule,
+.agw-tool-group-head:hover .agw-timeline-rule {
+  opacity: 0.94;
+}
+/* ── Reasoning duration, riding the rule ─────────────────────────────
+ * "Thought ──── 4m 14s ─────────────". The number sits ON the line at a
+ * FIXED offset from the label, not at the rule's midpoint: a centred number
+ * moves with the available width, so it lands somewhere different in the
+ * dock than in the full window and never forms a column. Anchored, every
+ * reasoning block in a turn puts its duration at the same x.
+ *
+ * `lead` therefore must NOT flex — it is the offset. `tail` takes the
+ * `flex: 1` the single-piece rule had and keeps the fade to the edge, so a
+ * row with a duration and a row without end identically. */
+.agw-timeline-rule.agw-rule-lead {
+  flex: 0 0 28px;
+  width: 28px;
+  min-width: 0;
+  /* Holds its tone across the whole stub instead of fading — this segment's
+   * job is to carry the eye from the label onto the number, and 28px of a
+   * gradient that starts fading immediately reads as a smudge. */
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--agw-border-strong) 72%, transparent),
+    color-mix(in srgb, var(--agw-border-strong) 58%, transparent)
+  );
+}
+.agw-timeline-rule.agw-rule-tail {
+  /* The number supplies the gap on this side (its own `gap: 6px` from the
+   * flex row), so no extra left margin — otherwise the tail sits 3px further
+   * from the number than the lead does from the label and the asymmetry is
+   * visible at this scale. */
+  margin-left: 0;
+}
+.agw-think-time {
+  flex: none;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-subtle);
+  /* Tabular figures: the live clock re-renders every second, and
+   * proportional digits make the row twitch as the number changes. */
+  font-variant-numeric: tabular-nums;
+}
+.agw-think-toggle:focus-visible,
+.agw-tool-group-head:focus-visible {
+  border-radius: var(--agw-radius-sm);
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+.agw-think-rail {
+  position: relative;
+  margin-top: 4px;
+  padding-left: 12px;
+  border-left: 1px solid var(--agw-border-strong);
+}
+.agw-think-body {
+  max-height: 280px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.agw-think-pre {
+  margin: 0;
+  font-size: var(--agw-fs-ui);
+  line-height: 1.55;
+  color: var(--agw-text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Grouped tool calls ─────────────────────────────────────────────
+ * The collapsible "N calls · M done" header for a run of >= TOOL_GROUP_MIN. */
+.agw-tool-group {
+  width: 100%;
+}
+.agw-tool-group-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  padding: 3px 4px 3px 0;
+  border: none;
+  background: transparent;
+  font-size: var(--agw-fs-ui);
+  cursor: pointer;
+  outline: none;
+}
+.agw-tool-group-head:hover span {
+  color: var(--agw-text);
+}
+/* Failure mark in a collapsed run's header. Deliberately NOT a pill: it used to
+   carry a tinted fill, a border and an uppercase "FAILED", which made the
+   quietest row in the transcript its brightest object. Now it is the same red ×
+   as the row it summarises, so the header reads as a smaller copy of what is
+   underneath it rather than as a separate warning. Colour is doing the work —
+   the shape (a cross among ticks) carries it too, so it never depends on hue
+   alone. */
+.agw-tool-group-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  color: var(--agw-removed);
+  font-size: var(--agw-fs-label);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Initial streaming skeleton (before any token / tool arrives). */
+.agw-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 360px;
+  opacity: 0.3;
+}
+.agw-skeleton span {
+  display: block;
+  height: 10px;
+  border-radius: var(--agw-radius-sm);
+  /* Bars sit just above the surface — built from the theme's text-subtle token
+   * (#727272 in the dark theme), not white. Low alpha + the container opacity
+   * above keep them a quiet placeholder rather than a bright block. */
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--agw-text-subtle) 40%, transparent) 0%,
+    color-mix(in srgb, var(--agw-text) 14%, var(--agw-text-subtle) 86%) 50%,
+    color-mix(in srgb, var(--agw-text-subtle) 40%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  /* Match the tool-call "Running…" sweep: highlight travels left → right. */
+  background-position: 200% center;
+  animation: agw-skeleton-sweep 1.6s linear infinite;
+}
+.agw-skeleton span:first-child {
+  width: 75%;
+}
+.agw-skeleton span:last-child {
+  width: 50%;
+}
+
+@keyframes agw-skeleton-sweep {
+  from {
+    background-position: 200% center;
+  }
+  to {
+    background-position: -200% center;
+  }
+}
+

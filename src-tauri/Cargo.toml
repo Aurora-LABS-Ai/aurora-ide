@@ -106,7 +106,7 @@ anyhow = "1"
 # Screenshot post-processing (decode → downscale → re-encode PNG). PNG-only to
 # keep the dependency surface + compile time small; used by browser_runtime to
 # bound the size of agent browser screenshots before they reach the model.
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # Codex (ChatGPT) provider — PKCE code-challenge hashing + verifier entropy
 sha2 = "0.10"

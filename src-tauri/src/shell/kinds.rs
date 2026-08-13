@@ -113,7 +113,13 @@ impl ShellKind {
     #[must_use]
     pub const fn interactive_args(self) -> &'static [&'static str] {
         match self {
-            ShellKind::Bash => &["--noprofile", "--norc", "-i"],
+            // `-i` only. `--noprofile --norc` was here so Aurora could impose
+            // its own `PROMPT_COMMAND`, which meant an interactive Git Bash
+            // started with none of the user's aliases, functions, completions
+            // or prompt — the opposite of what a terminal is for. A PTY session
+            // is the user's shell; the agent's non-interactive `command_args`
+            // path is the one that must stay hermetic.
+            ShellKind::Bash => &["-i"],
             ShellKind::Sh | ShellKind::Zsh => &["-i"],
             ShellKind::Pwsh | ShellKind::PowerShell => &["-NoLogo", "-NoExit"],
             ShellKind::Cmd => &[],

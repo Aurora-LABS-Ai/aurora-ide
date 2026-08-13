@@ -512,6 +512,9 @@ describe("todo rows in the transcript", () => {
     });
 
   it("shows set and update — a checklist that moves must leave a trace", () => {
+    // Each card names only what CHANGED, so every one carries its own news.
+    // The list itself is not repeated here: it has one home, the header
+    // indicator, which is live rather than a record of a moment.
     const rows = buildRows([todoCall("a", "set"), todoCall("b", "update")]);
     expect(rows).toHaveLength(1);
     expect(rows[0].type === "tools" && rows[0].tools).toHaveLength(2);
@@ -710,6 +713,34 @@ describe("agent-window whitespace between batched tool calls", () => {
       { kind: "content", id: "c", text: "Real prose." },
     ]);
     expect(rows).toEqual([{ type: "content", id: "c", text: "Real prose." }]);
+  });
+
+  /**
+   * Real thread `300e570b`: fifteen text blocks of exactly "..." between the
+   * tool calls, one per gap, each rendering as a stray row of dots.
+   */
+  it("renders no row for a content segment that is only filler dots", () => {
+    const rows = buildRows([
+      { kind: "tool", id: "t1", call: { id: "t1", name: "file_read", arguments: "{}" } },
+      { kind: "content", id: "d1", text: "..." },
+      { kind: "tool", id: "t2", call: { id: "t2", name: "file_write", arguments: "{}" } },
+      { kind: "content", id: "d2", text: "…" },
+      { kind: "tool", id: "t3", call: { id: "t3", name: "grep", arguments: "{}" } },
+    ]);
+    // Not just dropped — the run must stay ONE group, exactly like whitespace.
+    expect(rows.map((r) => r.type)).toEqual(["tools"]);
+    const tools = rows[0];
+    if (tools.type !== "tools") throw new Error("expected a tools row");
+    expect(tools.tools.map((t) => t.id)).toEqual(["t1", "t2", "t3"]);
+  });
+
+  /** The filter must never eat something a reader could act on. */
+  it("keeps a short real sentence that merely contains dots", () => {
+    const rows = buildRows([
+      { kind: "content", id: "c1", text: "Done." },
+      { kind: "content", id: "c2", text: "...and the tests pass." },
+    ]);
+    expect(rows.map((r) => r.type)).toEqual(["content", "content"]);
   });
 
   it("still splits a run when the model actually says something", () => {

@@ -20,8 +20,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
 import {
+  clearAuroraIssues,
   clearLogs,
+  readAuroraIssues,
   readRecentLogs,
+  type AuroraIssueReport,
   type LogEntry,
   type LogSnapshot,
 } from "@/kernel/services/diagnostics";
@@ -67,6 +70,58 @@ const toneOf = (level: string): PillTone => {
 /** `RAW` is a torn line, not a level — say what it means where it is shown. */
 const levelLabel = (level: string): string => (level === "RAW" ? "UNPARSED" : level);
 
+/** One `report_aurora_issue` entry, split out of the append-only markdown. */
+interface IssueEntry {
+  /** `2026-08-13 07:41:02Z · thread \`abc\`` — the stamp Aurora wrote. */
+  heading: string;
+  /** First non-empty body line; what the row shows collapsed. */
+  summary: string;
+  body: string;
+}
+
+/**
+ * Split the issues file into entries.
+ *
+ * The file is append-only markdown where Aurora writes every `## ` heading
+ * itself, so splitting on that is reading its own format rather than guessing
+ * at the model's. Anything before the first heading (a hand-edit, a stray
+ * newline) is ignored rather than shown as a headless entry.
+ */
+function parseIssues(content: string): IssueEntry[] {
+  const entries: IssueEntry[] = [];
+  const lines = content.split(/\r?\n/);
+  let heading: string | null = null;
+  let body: string[] = [];
+
+  const flush = () => {
+    if (heading === null) return;
+    const text = body.join("\n").trim();
+    entries.push({
+      heading,
+      summary: text.split("\n").find((line) => line.trim().length > 0)?.trim() ?? "(empty report)",
+      body: text,
+    });
+  };
+
+  for (const line of lines) {
+    if (line.startsWith("## ")) {
+      flush();
+      heading = line.slice(3).trim();
+      body = [];
+    } else if (heading !== null) {
+      body.push(line);
+    }
+  }
+  flush();
+  return entries;
+}
+
+/** `2026-08-13 07:41:02Z · thread `abc`` → the two halves, for the row. */
+function splitHeading(heading: string): { when: string; thread: string } {
+  const [when, thread] = heading.split("·").map((part) => part.trim());
+  return { when: when || heading, thread: (thread ?? "").replace(/^thread\s*/, "").replace(/`/g, "") };
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -102,6 +157,9 @@ export const DiagnosticsSettings: React.FC = () => {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [issues, setIssues] = useState<AuroraIssueReport | null>(null);
+  const [issueOpen, setIssueOpen] = useState<string | null>(null);
+  const [confirmClearIssues, setConfirmClearIssues] = useState(false);
   const copiedTimer = useRef<number | null>(null);
   useEffect(
     () => () => {
@@ -123,9 +181,26 @@ export const DiagnosticsSettings: React.FC = () => {
     }
   }, []);
 
+  // Read separately from the log: the two are different records, and a failure
+  // to read one must not blank the other.
+  const loadIssues = useCallback(async () => {
+    try {
+      setIssues(await readAuroraIssues());
+    } catch (error) {
+      setIssues({
+        path: "",
+        exists: false,
+        content: `Could not read the reported issues: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      });
+    }
+  }, []);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadIssues();
+  }, [load, loadIssues]);
 
   // Newest first: the thing that just broke is what you came for.
   const problems = useMemo(() => {
@@ -178,6 +253,26 @@ export const DiagnosticsSettings: React.FC = () => {
   const doClear = () => {
     setConfirmClear(false);
     void clearLogs().then(load);
+  };
+
+  // Newest first, same as the log: the file is append-only, so the newest entry
+  // is the last one written.
+  const issueEntries = useMemo(
+    () => parseIssues(issues?.content ?? "").reverse(),
+    [issues],
+  );
+
+  const showIssuesFile = () => {
+    if (!issues?.path) return;
+    void auroraInvoke("reveal_in_explorer", { path: issues.path }).catch(() => {
+      setReadError("Could not open the folder. The path above still works.");
+    });
+  };
+
+  const doClearIssues = () => {
+    setConfirmClearIssues(false);
+    setIssueOpen(null);
+    void clearAuroraIssues().then(loadIssues);
   };
 
   const count = problems.length;
@@ -337,6 +432,128 @@ export const DiagnosticsSettings: React.FC = () => {
           </AgwButton>
         </SettingsRow>
       </SettingsSection>
+
+      {/* What the AGENT reported, which is not what Aurora noticed about
+          itself: the log is Aurora's own account of a failure, these are the
+          faults the agent hit while trying to use it — wrong tool output, a
+          path that does not exist, a success that changed nothing. Written by
+          the `report_aurora_issue` tool the moment it happens, because an
+          observation held until the end of a turn is one compaction away from
+          being lost. */}
+      <SettingsSection
+        title="Reported by the agent"
+        icon="alert"
+        description="Faults the agent hit in Aurora itself and recorded as they happened. Each one names what it called, what came back, and what it expected."
+        badge={
+          issueEntries.length > 0 ? (
+            <AgwPill tone="warning">
+              {issueEntries.length} {issueEntries.length === 1 ? "report" : "reports"}
+            </AgwPill>
+          ) : (
+            <AgwPill tone="success">None</AgwPill>
+          )
+        }
+      >
+        <SettingsBlock searchTerms="agent report aurora issue bug feedback tool wrong">
+          {issueEntries.length === 0 ? (
+            <div className="agw-diag-state" data-tone="success" role="status">
+              <AgentIcon name="check" size={16} />
+              <div>
+                <div className="agw-diag-state-title">Nothing reported.</div>
+                <div className="agw-diag-state-body">
+                  The agent records a report here the moment Aurora behaves incorrectly — and
+                  is told not to report its own mistakes, so anything that appears is worth
+                  reading.
+                </div>
+              </div>
+            </div>
+          ) : (
+            <ol className="agw-diag-list agw-scroll">
+              {issueEntries.map((entry, index) => {
+                const id = `${entry.heading}:${index}`;
+                const open = issueOpen === id;
+                const { when, thread } = splitHeading(entry.heading);
+                return (
+                  <li key={id} className="agw-diag-item" data-open={open || undefined}>
+                    <button
+                      type="button"
+                      className="agw-diag-head"
+                      aria-expanded={open}
+                      onClick={() => setIssueOpen(open ? null : id)}
+                    >
+                      <span className="agw-diag-when">{when}</span>
+                      <span className="agw-diag-msg">{entry.summary}</span>
+                      <AgentIcon
+                        name="chevron-down"
+                        size={13}
+                        style={{
+                          flexShrink: 0,
+                          transform: open ? "rotate(180deg)" : "none",
+                          transition: "transform 0.16s cubic-bezier(0, 0, 0.2, 1)",
+                        }}
+                      />
+                    </button>
+                    {open && (
+                      <div className="agw-diag-detail">
+                        <div className="agw-diag-detail-meta">
+                          {when}
+                          {thread ? ` · conversation ${thread}` : ""}
+                        </div>
+                        {/* Rendered as written. The agent authors this text and
+                            the file is append-only, so what is shown is exactly
+                            what was recorded — reformatting it would put words
+                            in its mouth. */}
+                        <pre className="agw-diag-detail-body">{entry.body}</pre>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </SettingsBlock>
+
+        <SettingsRow
+          alignTop
+          label="Location"
+          searchTerms="path folder reveal aurora-issues.md reports"
+          hint={
+            <code className="agw-diag-path">
+              {issues?.path || "Nothing written yet — the file is created on the first report."}
+            </code>
+          }
+        >
+          <AgwButton icon="folder" onClick={showIssuesFile} disabled={!issues?.exists}>
+            Show in folder
+          </AgwButton>
+        </SettingsRow>
+
+        <SettingsRow
+          last
+          label="Clear reports"
+          searchTerms="delete reset wipe agent reports issues"
+          hint="Deletes the file. The agent recreates it the next time it reports something."
+        >
+          <AgwButton
+            variant="danger"
+            icon="trash"
+            onClick={() => setConfirmClearIssues(true)}
+            disabled={!issues?.exists}
+          >
+            Clear
+          </AgwButton>
+        </SettingsRow>
+      </SettingsSection>
+
+      <AgentConfirm
+        open={confirmClearIssues}
+        destructive
+        title="Clear the agent's reports?"
+        message="Every fault the agent recorded about Aurora is deleted. This cannot be undone, and these are the ones nobody else was watching for."
+        confirmLabel="Clear reports"
+        onConfirm={doClearIssues}
+        onCancel={() => setConfirmClearIssues(false)}
+      />
 
       <AgentConfirm
         open={confirmClear}

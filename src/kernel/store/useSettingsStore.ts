@@ -285,6 +285,16 @@ interface SettingsState {
    */
   removeProvider: (id: string) => void;
   /**
+   * Forget a skill's toggle in EVERY workspace.
+   *
+   * Called when a skill is deleted from disk. Toggles are bucketed per project,
+   * and a global skill can be equipped in several of them, so clearing only the
+   * open project would leave `true` entries pointing at a skill that no longer
+   * exists — each one still counting against that project's loadout cap with no
+   * card left to unequip.
+   */
+  removeSkillToggle: (storageKey: string) => void;
+  /**
    * Preset provider ids the user removed. Internal bookkeeping only (no UI) —
    * it stops a removed built-in from silently re-seeding on the next launch.
    */
@@ -554,6 +564,16 @@ export interface LLMModel {
    * fields we don't model structurally. (v18+)
    */
   extraBody?: Record<string, unknown>;
+  /**
+   * Sampling temperature for this model. `undefined` inherits — the provider's
+   * `defaultTemperature`, then {@link DEFAULT_TEMPERATURE}.
+   *
+   * Per-model because that is what it is: one key can address a model that
+   * wants 0.2 and another that rejects the parameter outright. Models that
+   * reject sampling (Claude 5+) have it stripped in the Rust adapter whatever
+   * is set here, so a stale value is inert rather than a 400. (v22+)
+   */
+  temperature?: number;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -821,6 +841,7 @@ function dbToModel(row: DbProviderModel): LLMModel {
     priceCurrency: row.priceCurrency ?? undefined,
     reasoning: row.reasoning ?? undefined,
     extraBody: row.extraBody ?? undefined,
+    temperature: row.temperature ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -847,6 +868,7 @@ function modelToDb(model: LLMModel): DbProviderModel {
     priceCurrency: model.priceCurrency ?? null,
     reasoning: model.reasoning ?? null,
     extraBody: model.extraBody ?? null,
+    temperature: model.temperature ?? null,
     createdAt: model.createdAt || now,
     updatedAt: now,
   };
@@ -1751,6 +1773,27 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       databaseService.deleteProvider(id).catch(console.error);
       get().saveToDatabase();
     }
+  },
+
+  removeSkillToggle: (storageKey: string) => {
+    const state = get();
+    let changed = false;
+    const nextToggles: Record<string, Record<string, boolean>> = {};
+
+    for (const [scopeKey, scopeToggles] of Object.entries(state.skillToggles ?? {})) {
+      if (!(storageKey in scopeToggles)) {
+        nextToggles[scopeKey] = scopeToggles;
+        continue;
+      }
+      const rest = { ...scopeToggles };
+      delete rest[storageKey];
+      nextToggles[scopeKey] = rest;
+      changed = true;
+    }
+
+    if (!changed) return;
+    set({ skillToggles: nextToggles });
+    get().saveToDatabase();
   },
 
   removeProvider: (id: string) => {

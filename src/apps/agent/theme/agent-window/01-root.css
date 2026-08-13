@@ -1,0 +1,408 @@
+/*
+ * Agent Window — base scoped styles.
+ *
+ * Everything here is namespaced under `.agw-root` and reads ONLY `--agw-*`
+ * custom properties (applied inline by AgentThemeProvider). This guarantees the
+ * agent window's look is fully isolated from the IDE's global theme.
+ */
+
+.agw-root {
+  /* ── Component (role) tokens ─────────────────────────────────────────────
+   * Tier-3 aliases over the themeable Tier-2 tokens. Components reference these
+   * by ROLE so a whole family retheme in one place. Editing the Tier-2 token
+   * below moves every member of the role together.
+   *
+   * --agw-popover-surface: base fill for GENERIC floating popovers (model
+   *   selector, + dropdown, browser suggestions, the context tooltip). The
+   *   composer's own @/ pickers are a separate sub-role tinted from
+   *   --agw-composer-surface and intentionally do NOT use this.
+   *
+   * --agw-modal-blur: the backdrop-filter applied behind EVERY full-window modal
+   *   (command center, confirmation dialog, image preview, mic permission). This
+   *   is what makes a modal read as "on top of a backdrop" — so a scrim is
+   *   present by default even when --agw-overlay (the tint) is set transparent.
+   *   The overlay token still tints on top of this blur. */
+  /* One elevation STEP above the frame, not three: at the raw elevated fill
+   * (#2e2e2e on a #161616 rail) a popover was the brightest thing on screen
+   * and read as a detached slab floating over the app. Mixing it back toward
+   * the rail keeps a visible lift while the panel still clearly belongs to
+   * the surface it opened from. Derived, so every theme keeps the ratio. */
+  --agw-popover-surface: color-mix(
+    in srgb,
+    var(--agw-surface-elevated) 55%,
+    var(--agw-rail)
+  );
+  --agw-modal-blur: blur(8px) saturate(0.85);
+
+  /* Selected/active fill for rows, tabs and nav items. DERIVED from the text
+   * colour (not an absolute surface token) so it stays visible on ANY
+   * background combination the user picks in Appearance — absolute fills can
+   * be tuned to coincide with a panel colour and make selection invisible.
+   * Same 9% text-mix precedent as .agw-model-item.
+   * --agw-state-quiet is the resting tier of the same idea: quiet raised
+   * controls (rail search, Team button, inactive tabs) that must stay
+   * distinguishable from whatever panel colour they sit on. */
+  --agw-state-selected: color-mix(in srgb, var(--agw-text) 9%, transparent);
+  --agw-state-quiet: color-mix(in srgb, var(--agw-text) 5%, transparent);
+
+  /* The PAINT aliases for the frame. Everything that fills the rail/dock tier
+   * must use these, never --agw-rail / --agw-dock directly: the translucent
+   * option re-derives the paint from the user's chosen colour instead of
+   * replacing the token. Redeclaring the token itself (what this used to do)
+   * silently threw away whatever the user picked in Appearance → Window frame
+   * the moment they enabled Translucent sidebar. */
+  --agw-rail-paint: var(--agw-rail);
+  --agw-dock-paint: var(--agw-dock);
+
+  /* The PAINT alias for hover fills. EVERY hover in this file uses this, never
+   * --agw-hover directly, so a surface that needs a different hover strength
+   * can re-point the alias once and have all its rows follow.
+   *
+   * Why that's needed: --agw-hover is a flat overlay (4% white by default).
+   * Perceived lift tracks the RATIO to the base, not the absolute delta, so the
+   * same 4% reads as roughly +42% on the rail (#161616) but only +18% on a
+   * popover (#2e2e2e) — the brighter the surface, the weaker it looks. The
+   * popover family compensates below. */
+  --agw-hover-paint: var(--agw-hover);
+
+  /* ── Chrome type scale ───────────────────────────────────────────────────
+   * Six sizes for the window's CHROME (12/13/14/15/16/17). The half-pixel
+   * one-off sizes that grew organically collapsed onto this scale —
+   * near-duplicate sizes read as visual noise ("almost aligned"), a fixed
+   * scale reads as intent. New styles MUST pick from these tokens; raw px
+   * sizes are reserved for display text (>17px).
+   *
+   * Reference parity: its chrome is overwhelmingly 14px with 12px for the
+   * secondary tier (523 / 491 uses respectively across its renderer), on a
+   * 16px window default. This scale carries both of those and the steps
+   * between, so chrome sits a tier below the reading text rather than the
+   * whole window shrinking to 14px.
+   *
+   * Every tier multiplies by --agw-ui-text-scale (Appearance → Typography →
+   * Interface text size). It is a smooth multiplier, NOT rounded per step:
+   * rounding to whole px collapses `md` and `body` onto the same 14px at 90%,
+   * which destroys a tier. Ratios stay exact instead. */
+  --agw-fs-micro: calc(12px * var(--agw-ui-text-scale, 1));  /* badges, eyebrows, code metadata      */
+  --agw-fs-label: calc(13px * var(--agw-ui-text-scale, 1));  /* section labels, sublines, chips      */
+  --agw-fs-ui: calc(14px * var(--agw-ui-text-scale, 1));     /* controls, inputs, list rows          */
+  --agw-fs-md: calc(15px * var(--agw-ui-text-scale, 1));     /* emphasized UI, headers, empty states */
+  --agw-fs-body: calc(16px * var(--agw-ui-text-scale, 1));   /* window default                       */
+  --agw-fs-title: calc(17px * var(--agw-ui-text-scale, 1));  /* pane titles                          */
+
+  /* ── Weight scale ────────────────────────────────────────────────────────
+   * FOUR roles. Every `font-weight` in this file resolves through one of them,
+   * so the window's overall "loudness" is four numbers, not 151 decisions.
+   *
+   * `medium` is the DEFAULT for chrome — names, labels, values, list rows,
+   * controls. It used to be 600: 122 of 151 weight declarations were ≥600 and
+   * exactly one was 400, which removes the emphasis channel entirely (nothing
+   * can stand out when everything is already bold) and thickens stems at label
+   * sizes until the text reads dense instead of crafted.
+   *
+   * `strong` is reserved for things that must out-rank their neighbours: pane
+   * titles, the active tab/nav row, prose headings and `<strong>`. `display`
+   * is for non-reading marks only — wordmark, avatars, hero numerals. */
+  --agw-fw-body: 400;
+  --agw-fw-medium: 500;
+  --agw-fw-strong: 600;
+  --agw-fw-display: 700;
+
+  /* ── Prose tier ──────────────────────────────────────────────────────────
+   * RATIOS, not pixels — these are `em`, resolved against whatever the reply
+   * text is currently set to (15px by default, 13–18px via Appearance). That
+   * is the reference's own scheme, and it fixes a real defect: with fixed px
+   * headings, dragging "Message text size" to 18px left h3 (17px) SMALLER
+   * than the body it was supposed to head.
+   *
+   * Ratios are the reference's: 1.5 / 1.25 / 1 / 0.875 → 22.5 / 18.75 / 15 /
+   * 13.1px at the 15px default. An h3 deliberately equals body and an h4 sits
+   * below it — at that depth a heading is a bold lead-in, and weight alone
+   * carries it.
+   *
+   * INLINE code is 0.8em, so a chip sits inside its sentence and scales with
+   * whatever encloses it — 12px in body copy, 18px inside an h1, no separate
+   * per-heading tokens to keep in sync. FENCED blocks are deliberately NOT
+   * relative: a code block is its own surface, not part of a sentence, so it
+   * carries an absolute size (--agw-msg-code-font-size, tunable in Appearance).
+   * The reference splits them the same way — `0.8em` inline, a hard `12px` on
+   * `pre code`. Ours starts a step above that; 12px mono read cramped beside
+   * 15px sans. */
+  --agw-fs-h1: 1.5em;
+  --agw-fs-h2: 1.25em;
+  --agw-fs-h3: 1em;
+  --agw-fs-h4: 0.875em;
+  --agw-fs-code: 0.8em; /* inline code chips */
+
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--agw-canvas);
+  color: var(--agw-text);
+  font-family: var(--agw-font-ui);
+  font-size: var(--agw-fs-body);
+  line-height: 1.55;
+  /* Tracking is applied where the SIZE earns it, not globally.
+   *
+   * This used to be -0.006em on the root, which every 11–13px control, chip and
+   * label inherited. Inter's dynamic metrics do want tighter tracking as type
+   * grows — but the inverse is what matters here: at chrome sizes, negative
+   * tracking closes the counters, and combined with a semibold stem it is
+   * exactly what made this window read cramped next to apps that leave small
+   * text alone. The prose tier (--agw-md, 15px) and headings keep their own
+   * negative values below, where the size makes them correct. */
+  letter-spacing: normal;
+  /* NOT `-webkit-font-smoothing: antialiased`.
+   *
+   * That is a macOS habit. On Windows it switches Chromium from subpixel (RGB)
+   * rendering to grayscale, which drops roughly a third of the horizontal
+   * resolution used to draw a stem — every glyph comes out thinner, lower in
+   * contrast and slightly soft. Next to an app that left the default alone,
+   * the same font at the same size reads washed out and blurry.
+   *
+   * `text-rendering: optimizeLegibility` is dropped for the same reason: in
+   * Chromium it changes kerning/ligature handling with no legibility win at UI
+   * sizes, and its metric shifts are a known source of subtle reflow. */
+  -webkit-font-smoothing: auto;
+  text-rendering: auto;
+  /* Never synthesize bold. `--agw-fw-display` is 700, and of the bundled UI
+   * faces only Inter Variable carries a real 700 — IBM Plex Sans stops at 600,
+   * so without this the browser fakes the weight by smearing stems, the classic
+   * "cheap fonts" render. Nearest real weight (600) is the honest fallback.
+   * Italic synthesis stays allowed: no bundled face ships italics, and an
+   * upright `em` would silently erase emphasis from transcript prose. */
+  font-synthesis-weight: none;
+  /* The app shell sets `body { user-select: none }` globally (index.css) for a
+   * native feel — which also killed selection in this window. Re-enable it here
+   * so transcript text is copyable; interactive controls opt back out below. */
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.agw-root *,
+.agw-root *::before,
+.agw-root *::after {
+  box-sizing: border-box;
+}
+
+/* Form controls don't inherit font by default — without this, every button /
+   input / select renders in the browser's default font (Times/Arial) and the
+   text looks off. Force the agent window's UI font everywhere. */
+.agw-root button,
+.agw-root input,
+.agw-root select,
+.agw-root textarea {
+  font-family: inherit;
+  font-feature-settings: inherit;
+}
+
+/* Controls should never be selectable (selecting a button label feels broken). */
+.agw-root button,
+.agw-icon-btn,
+.agw-menu-item,
+.agw-suggestion,
+.agw-tool-head,
+.agw-rail-item {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.agw-root code,
+.agw-root pre,
+.agw-code {
+  font-family: var(--agw-font-code);
+  /* Mono must not inherit the UI font's negative tracking. */
+  letter-spacing: normal;
+}
+
+/* ── Scrollbars: reclaim the whole subtree from the IDE ─────────────────────
+ * `src/index.css` styles `*` and `::-webkit-scrollbar-*` from the IDE's
+ * `--aurora-common-*` palette. Without a blanket counter-rule, ANY scroll
+ * container in this window that forgot to opt into `.agw-scroll` silently
+ * renders IDE-coloured bars and ignores the Appearance "Scrollbar" tokens.
+ * Scoping to `.agw-root *` fixes that for every current AND future container.
+ *
+ * Deliberately placed FIRST: `.agw-root *` is (0,1,0), the same specificity as
+ * a single class, so later rules like `.agw-jumprail { scrollbar-width: none }`
+ * still win and can hide their bars. Never move this below them. */
+.agw-root,
+.agw-root * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--agw-scroll-thumb) transparent;
+}
+.agw-root *::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.agw-root *::-webkit-scrollbar-track {
+  background: transparent;
+}
+.agw-root *::-webkit-scrollbar-thumb {
+  background: var(--agw-scroll-thumb);
+  border-radius: var(--agw-radius-md);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.agw-root *::-webkit-scrollbar-thumb:hover {
+  background: var(--agw-scroll-thumb-hover);
+  background-clip: content-box;
+}
+.agw-root *::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Jump rail — vertical strip of per-user-message pins on the right edge of the
+ * conversation. Each pin is a short dash that widens + tints on hover/active. */
+/* "Jump to latest" — a floating return-to-bottom pill.
+ *
+ * Centred rather than right-aligned so it never lands on the jump rail, and
+ * elevated like a popover (not a card): it sits ABOVE the transcript rather
+ * than in it, so it earns a real shadow and a solid — not translucent —
+ * background. Text scrolling underneath must never show through a control the
+ * reader is trying to read. */
+.agw-jumplatest {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--agw-border);
+  border-radius: 999px;
+  background: var(--agw-surface-elevated);
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 28%);
+  transition:
+    color 0.12s ease,
+    border-color 0.12s ease,
+    transform 0.12s ease;
+  animation: agw-jumplatest-in 0.16s ease-out both;
+}
+.agw-jumplatest:hover {
+  color: var(--agw-text);
+  border-color: var(--agw-border-strong);
+}
+.agw-jumplatest:active {
+  /* Keep the centring transform — a bare scale() would drop translateX and
+   * throw the pill to the right on every press. */
+  transform: translateX(-50%) scale(0.97);
+}
+.agw-jumplatest:focus-visible {
+  outline: none;
+  box-shadow:
+    0 6px 18px rgb(0 0 0 / 28%),
+    0 0 0 2px var(--agw-ring);
+}
+.agw-jumplatest-label {
+  white-space: nowrap;
+}
+/* Live dot — only while a turn is streaming below the fold. Paired with a
+ * distinct aria-label, so it is never the sole carrier of that state. */
+.agw-jumplatest-live {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--agw-accent);
+  animation: agw-jumplatest-pulse 1.6s ease-in-out infinite;
+}
+@keyframes agw-jumplatest-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+@keyframes agw-jumplatest-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-jumplatest {
+    animation: none;
+  }
+  .agw-jumplatest-live {
+    animation: none;
+  }
+}
+
+.agw-jumprail {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 7px;
+  padding: 6px 4px;
+  max-height: 70%;
+  overflow: hidden auto;
+  scrollbar-width: none;
+  z-index: 4;
+  opacity: 0.5;
+  transition: opacity 0.12s ease;
+}
+.agw-jumprail::-webkit-scrollbar {
+  display: none;
+}
+.agw-jumprail:hover {
+  opacity: 1;
+}
+.agw-jumprail-pin {
+  /* width is driven inline by the dock magnification (JumpRail.tsx); the
+   * transition turns the per-frame width updates into a smooth glide. */
+  height: 3px;
+  border: none;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-border-strong);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: width 0.12s ease, background 0.12s ease;
+}
+.agw-jumprail-pin[data-hot="true"] {
+  background: var(--agw-accent);
+}
+.agw-jumprail-pin:hover {
+  background: var(--agw-accent);
+}
+
+/* Scoped, themed scrollbars (opt in with `.agw-scroll`). */
+.agw-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--agw-scroll-thumb) transparent;
+}
+.agw-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.agw-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.agw-scroll::-webkit-scrollbar-thumb {
+  background: var(--agw-scroll-thumb);
+  border-radius: var(--agw-radius-md);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.agw-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--agw-scroll-thumb-hover);
+  background-clip: content-box;
+}

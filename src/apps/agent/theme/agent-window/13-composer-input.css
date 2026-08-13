@@ -1,0 +1,564 @@
+/* ── Composer send button ─────────────────────────────────────────────
+ * Circular disc; fills with accent when there's something to send. Tactile
+ * press (scale-down on :active) — NOT a hover lift. */
+/* Primary action disc.
+ *
+ * Deliberately LARGER than the 28px `.agw-icon-btn` siblings sitting beside it
+ * (attach, reasoning, mic). At matching sizes the action row read as five
+ * equal-weight icons with no primary — the single biggest reason this control
+ * felt cheap next to peer apps. Size IS the hierarchy here.
+ *
+ * State colours live in CSS, not inline on the element, so :hover / :active /
+ * :focus-visible can actually apply — previously every colour was an inline
+ * style, which made hover impossible to express and left the button feeling
+ * inert on pointer-over. */
+.agw-send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  width: 34px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--agw-radius-pill);
+  outline: none;
+  /* The disc is CONSTANT — the same muted fill whether empty or typed, it never
+   * changes. Only the icon reacts (dim when empty → lit when there's text, see
+   * below). */
+  background: var(--agw-state-selected);
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  transition: opacity 0.14s ease, color 0.2s ease,
+    transform 0.14s cubic-bezier(0.2, 0, 0, 1);
+}
+.agw-send:hover:not(:disabled) {
+  /* Slight dim only — no scale. The lift (scale 1.04) read as a jitter/shake on
+   * the round disc, so hover is now a still, calm dim of the max-contrast fill. */
+  opacity: 0.88;
+}
+.agw-send:focus-visible {
+  /* Gap ring in the COMPOSER fill (what the disc actually sits on), then the
+   * focus colour — so the ring reads as separated rather than fused. */
+  box-shadow: 0 0 0 2px var(--agw-composer-surface), 0 0 0 4px var(--agw-ring);
+}
+.agw-send:not(:disabled):active {
+  /* 0.9 was a cartoonish squash; premium micro-interactions stay under ~6%. */
+  transform: scale(0.94);
+}
+
+/* Streaming stop button. At rest: no disc — just the pulsing dot-matrix (the
+ * "working" signal, same as the titlebar). On hover: a frosted-glass disc
+ * (translucent + backdrop blur, like the model-selector surface) fades in with
+ * a dark stop square, so the click target reads unmistakably as Stop. The two
+ * layers CROSS-FADE (stacked + opacity), never a hard swap. */
+.agw-send-stream {
+  position: relative;
+  /* At rest the matrix floats free — no disc, no rim, no blur (override the
+   * base glass). The frosted disc only materialises on hover. */
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  color: var(--agw-conversation);
+  transition: background 0.22s ease, box-shadow 0.22s ease,
+    -webkit-backdrop-filter 0.22s ease, backdrop-filter 0.22s ease;
+}
+.agw-send-stream .agw-send-stream-matrix,
+.agw-send-stream .agw-send-stream-stop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.2s ease;
+}
+.agw-send-stream .agw-send-stream-matrix {
+  opacity: 1;
+}
+.agw-send-stream .agw-send-stream-stop {
+  opacity: 0;
+}
+.agw-send-stream:hover:not(:disabled) {
+  /* No disc — on hover the matrix cross-fades out and only the red stop square
+   * shows (transparent background, no rim). */
+  background: transparent;
+  box-shadow: none;
+  color: var(--agw-removed);
+  opacity: 1;
+}
+.agw-send-stream:hover .agw-send-stream-matrix {
+  opacity: 0;
+}
+.agw-send-stream:hover .agw-send-stream-stop {
+  opacity: 1;
+}
+/* Nothing to send yet → the icon is "off" (dim). The disc is already the muted
+ * fill from the base rule, so it doesn't change; only the cursor differs. */
+.agw-send:disabled {
+  cursor: not-allowed;
+}
+
+/* Text present → the send arrow lights up: the ON-ACCENT colour (the
+ * high-contrast glyph colour, not the mid-luminance accent which reads muddy on
+ * thin strokes) plus a soft glow, so typing visibly switches the icon on. The
+ * DISC does nothing. Scoped to the send arrow (not the streaming stop button).
+ * Transitions so it eases on. */
+.agw-send:not(.agw-send-stream) svg {
+  transition: filter 0.2s ease;
+}
+.agw-send:not(.agw-send-stream):not(:disabled) {
+  color: var(--agw-on-accent);
+}
+.agw-send:not(.agw-send-stream):not(:disabled) svg {
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--agw-on-accent) 55%, transparent))
+    drop-shadow(0 0 9px color-mix(in srgb, var(--agw-on-accent) 30%, transparent));
+}
+
+/* ── @ and / picker ────────────────────────────────────────────────────
+ * Floats just above the composer; shares the `.agw-menu` surface. Structure
+ * and motion live in `ComposerMenu.tsx` — read its header before changing
+ * anything here, the two halves are one mechanism. */
+.agw-mention {
+  position: absolute;
+  left: 0;
+  right: 0;
+  /* Close enough to read as the input's own list, still its own object — the
+     6px gap is the whole separation. */
+  bottom: calc(100% + 6px);
+  /* BEHIND the input, not over it — this is what lets the panel slide out from
+     under the box's top edge while the overlap stays occluded, and it is why
+     the entrance offset can exceed the 6px gap.
+     NEGATIVE, so the input box keeps its own default level: everything else
+     anchored to the composer (rail popovers, the model menu) is ordered by DOM
+     position at that level, and raising the box instead would bury all of it.
+     Safe because `.agw-composer` has no background of its own to hide behind,
+     and the whole cluster still sits above the transcript. */
+  z-index: -1;
+  /* The PANEL clips and takes a measured height (set by ComposerMenu); the row
+     list inside it is what scrolls. Height is on the panel rather than a
+     max-height on the rows because the panel hangs from its BOTTOM edge: a row
+     count that changes on every keystroke moved its top edge instantly, which
+     is what read as jumping. */
+  overflow: hidden;
+  padding: 6px;
+  transform-origin: bottom center;
+  /* Same glass as .agw-menu — the @ / / picker is a popover of the composer
+     family (its tint comes from the composer-family rule below). */
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  backdrop-filter: blur(24px) saturate(140%);
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-lg);
+  /* Cast UPWARD ONLY. `--agw-shadow-pop` is a downward drop shadow, so the
+     picker laid a dark band across the composer's top edge — and the object
+     that casts the shadow is the one the eye puts in front. Now nothing falls
+     on the input; the panel only lifts itself off the transcript behind it,
+     and the composer casts DOWN onto the panel instead (rule below). */
+  box-shadow: 0 -10px 30px -16px
+    color-mix(in srgb, var(--agw-overlay) 65%, transparent);
+  /* ENTRANCE IS OWNED BY THE COMPONENT, NOT BY CSS. `.agw-menu` sets
+     `agw-pop-in`, and a running CSS animation outranks the inline styles the
+     motion layer writes — so the panel played the keyframe for 120ms and then
+     snapped to wherever the JS animation had already travelled. That handoff
+     was the jolt. One owner; this family opts out. */
+  animation: none;
+  transition: height 0.15s cubic-bezier(0, 0, 0.2, 1);
+}
+/* The input box is the front object: the picker paints under it (`z-index: -1`
+   above), and while one is open the box casts a short shadow down onto it. Two
+   cues, one story — without the cast shadow the panel sits at the same depth.
+   Scoped with `:has()` so the composer is unchanged when nothing is open.
+ *
+ * DO NOT give this a positive z-index to achieve the same thing. It looks
+ * equivalent and is not: `.agw-crail-chips` is transformed, which makes the
+ * whole rail-chip cluster a stacking context at the default level, so a
+ * positive z-index here lifts the input box above every rail popover
+ * (background processes, tasks) and they vanish behind it. The picker moving
+ * DOWN is safe; the box moving UP is not. */
+.agw-composer-surface {
+  transition: box-shadow 0.17s cubic-bezier(0, 0, 0.2, 1);
+}
+.agw-composer:has(.agw-mention) .agw-composer-surface {
+  box-shadow: 0 -7px 18px -8px color-mix(in srgb, var(--agw-overlay) 80%, transparent);
+}
+
+.agw-mention-list {
+  max-height: 256px;
+  overflow-y: auto;
+  /* A picker is a small list over a long transcript; without this, reaching the
+     end of it scrolls the conversation behind it. */
+  overscroll-behavior: contain;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-mention {
+    transition: none;
+  }
+}
+.agw-mention-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text);
+  cursor: pointer;
+  text-align: left;
+  outline: none;
+}
+.agw-mention-item[data-active],
+.agw-mention-item:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-mention-name {
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  flex-shrink: 0;
+}
+.agw-mention-path {
+  margin-left: auto;
+  min-width: 0;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Attachment pills (referenced files) ──────────────────────────────── */
+.agw-attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 9px 11px 2px;
+}
+
+.agw-attach-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: var(--agw-radius-pill);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.agw-attach-x:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+
+/* Composer contenteditable input. Grows with content up to a cap; pills live
+ * inline in the text flow. `white-space: pre-wrap` so Shift+Enter newlines and
+ * pasted line breaks render. No focus halo — deliberate. */
+.agw-ce {
+  /* ▶ Resting text-area height. The placeholder stays pinned at the top; raising
+     this grows the composer DOWNWARD (the bottom bar moves down), not from the
+     top. Grows further with content up to max-height. */
+  min-height: 44px;
+  max-height: 200px;
+  overflow-y: auto;
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-body);
+  line-height: 1.55;
+}
+.agw-ce-placeholder {
+  position: absolute;
+  top: 16px;
+  left: 12px;
+  right: 12px;
+  pointer-events: none;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-body);
+  line-height: 1.55;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Editor top padding follows the layout:
+   - selector at BOTTOM (default) → comfortable 16px, placeholder near the top
+     (Codex-style, no empty reserved strip);
+   - selector at TOP → the band above already provides spacing, so a small 4px.
+   ▶ Change the 16px to move the resting placeholder up/down. */
+.agw-ce-wrap {
+  position: relative;
+  padding: 16px 12px 8px;
+}
+.agw-ce-wrap[data-top-selector] {
+  padding-top: 4px;
+}
+.agw-ce-wrap[data-top-selector] .agw-ce-placeholder {
+  top: 4px;
+}
+/* Inline typing-assist ghost text — the gray remainder / predicted next word
+   shown at the caret. Non-editable, muted, and never selectable so it reads as
+   a suggestion (press → to accept). Skipped by the editor serializer, so it is
+   never part of the sent message. */
+.agw-ghost {
+  color: var(--agw-text-subtle);
+  opacity: 0.72;
+  pointer-events: none;
+  user-select: none;
+  white-space: pre;
+  /* Appear smoothly instead of popping in. Only fires when the ghost shows
+     (on a typing pause), so it never flickers per keystroke. */
+  animation: agw-ghost-in 150ms ease-out;
+}
+@keyframes agw-ghost-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 0.72;
+  }
+}
+/* Accept indicator — a small arrow in the user's accent colour, no label.
+   Visual only: skipped by serialization, never inserted or sent. */
+.agw-ghost-accept {
+  margin-left: 6px;
+  color: var(--agw-accent);
+  font-weight: var(--agw-fw-strong);
+  font-size: var(--agw-fs-ui);
+}
+
+/* Composer top band — only rendered when the model selector is top-positioned
+   (mode now lives inside the picker, so nothing else needs reserving). Sized by
+   its own padding + the selector pill; no fixed reserve. */
+/* Inline file pill — sits in the sentence right where `@` was typed. */
+.agw-pill-inline {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  gap: 3px;
+  padding: 1px 7px;
+  margin: 0 1px;
+  border-radius: var(--agw-radius-sm);
+  background: color-mix(in srgb, var(--agw-accent) 15%, transparent);
+  color: var(--agw-accent);
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.45;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}
+
+/* ── Interactive question prompt (`ask_question`) ─────────────────────
+ * Docked above the composer; "rises" in on appear. Header (title + count +
+ * collapse), a scrolling body of question blocks, and a Skip/Continue footer.
+ * Aligned to the composer's max width so it reads as part of the input zone. */
+.agw-qp {
+  /* Rises from behind the composer exactly like the task panel (`.agw-tasks`):
+   * NARROWER than the composer (24px inset each side) so its sides clear the
+   * composer's rounded corners, and tucked ~12px BEHIND the composer's top edge
+   * (the composer carries `z-10` and paints over the overlap). Only the top
+   * corners are rounded; the tucked bottom strip is hidden. This keeps the
+   * composer's roundness intact instead of squaring it off. */
+  width: calc(100% - 48px);
+  max-width: 45rem;
+  margin: 0 auto; /* centered; the composer tuck (-12px) lives on the motion wrapper */
+  padding-bottom: 12px; /* the tucked strip the composer paints over */
+  /* Part of the composer stack (it tucks behind the composer), so it tracks the
+   * composer's own surface token — softened toward the conversation so the seam
+   * reads as a natural divider rather than a second solid block. */
+  background: color-mix(in srgb, var(--agw-composer-surface) 58%, var(--agw-conversation));
+  border: 1px solid var(--agw-border-strong);
+  border-bottom: none; /* hidden behind the composer */
+  border-radius: var(--agw-radius-lg) var(--agw-radius-lg) 0 0;
+  overflow: hidden;
+  /* Open/close is a HEIGHT glide driven by Framer (AnimatePresence) in
+   * QuestionPrompt — same pattern as the task panel / rail sections. No CSS
+   * entrance here. */
+}
+
+.agw-qp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px 9px 14px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-qp-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-qp-title svg {
+  color: var(--agw-text-muted);
+}
+.agw-qp-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.agw-qp-count {
+  font-size: var(--agw-fs-label);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+  padding-right: 2px;
+}
+
+.agw-qp-body {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 2px 14px 6px;
+}
+.agw-qp-q {
+  padding: 10px 0;
+}
+.agw-qp-q + .agw-qp-q {
+  border-top: 1px solid var(--agw-border);
+}
+.agw-qp-prompt {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-bottom: 7px;
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.45;
+  color: var(--agw-text);
+}
+.agw-qp-num {
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.agw-qp-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.agw-qp-opt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 9px;
+  border-radius: var(--agw-radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-md);
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.agw-qp-opt:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-qp-opt:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-qp-opt.is-selected {
+  border-color: color-mix(in srgb, var(--agw-accent) 50%, transparent);
+  background: color-mix(in srgb, var(--agw-accent) 12%, transparent);
+  color: var(--agw-text);
+}
+.agw-qp-letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 19px;
+  height: 19px;
+  border-radius: var(--agw-radius-sm);
+  border: 1px solid var(--agw-border);
+  background: color-mix(in srgb, var(--agw-text) 5%, transparent);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1;
+  color: var(--agw-text-subtle);
+  flex-shrink: 0;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.agw-qp-opt.is-selected .agw-qp-letter {
+  border-color: var(--agw-accent);
+  background: var(--agw-accent);
+  color: var(--agw-on-accent);
+}
+.agw-qp-opt-label {
+  flex: 1;
+  min-width: 0;
+}
+.agw-qp-opt-check {
+  margin-left: auto;
+  color: var(--agw-accent);
+  flex-shrink: 0;
+}
+
+.agw-qp-other {
+  margin: 4px 0 2px 29px;
+  height: 33px;
+  width: calc(100% - 29px);
+  padding: 0 11px;
+  border-radius: var(--agw-radius-md);
+  border: 1px solid var(--agw-border);
+  background: var(--agw-surface);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-md);
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+.agw-qp-other::placeholder {
+  color: var(--agw-text-subtle);
+}
+/* Match the app-wide text-input convention (.agw-set-input): a crisp neutral
+ * border on focus, NO ring/halo (rings are for keyboard-focused buttons only). */
+.agw-qp-other:focus {
+  border-color: var(--agw-border-strong);
+}
+
+/* Header actions — the old full-width footer bar is gone; Skip (✕) and Continue
+ * (✓) are compact icon buttons in the head (reusing .agw-icon-btn). */
+.agw-qp-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 4px 2px;
+  background: var(--agw-border);
+}
+/* Continue — the primary action, tinted accent so it reads as "submit". */
+.agw-qp-go {
+  color: var(--agw-accent);
+}
+.agw-qp-go:hover {
+  color: var(--agw-on-accent);
+  background: var(--agw-accent);
+}
+
+/* ── Turn entrance ────────────────────────────────────────────────────
+ * Applied (by ConversationPane) to the NEWEST transcript turn only, so each
+ * turn settles in once as it arrives. A tiny 4px rise — quieter than the
+ * tool-card glide — because a whole turn is a larger object to move. */
+.agw-turn-enter {
+  animation: agw-turn-in 0.26s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes agw-turn-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+

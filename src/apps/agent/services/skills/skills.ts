@@ -1,4 +1,9 @@
-import { getGlobalSkillsPath, readDirectory, readFileContent } from "@/kernel/lib/ipc/tauri";
+import {
+  deletePath,
+  getGlobalSkillsPath,
+  readDirectory,
+  readFileContent,
+} from "@/kernel/lib/ipc/tauri";
 
 export type SkillSource = 'builtin' | 'workspace' | 'global';
 
@@ -15,6 +20,16 @@ export interface SkillDefinition {
   previewLines: string[];
   source: SkillSource;
   sourcePath?: string;
+  /**
+   * The skill's own folder, when it is stored as `<root>/<skill>/skill.md`
+   * rather than as a loose `<root>/<skill>.md`.
+   *
+   * This is what makes deletion honest. A folder skill routinely carries far
+   * more than its `skill.md` — `references/`, scripts, sample assets — so
+   * removing the markdown alone would take the card off screen and leave the
+   * bulk of the skill on disk.
+   */
+  sourceDir?: string;
   storageKey: string;
   triggers: string[];
 }
@@ -54,6 +69,8 @@ interface ParsedFrontmatter {
 }
 
 interface SkillFileCandidate {
+  /** Set only for the `<root>/<skill>/skill.md` form. */
+  containerDir?: string;
   fallbackId: string;
   filePath: string;
 }
@@ -229,7 +246,12 @@ function parseFrontmatter(document: string): ParsedFrontmatter {
 
 export function parseSkillDocument(
   document: string,
-  options: { fallbackId: string; source: SkillSource; sourcePath?: string }
+  options: {
+    fallbackId: string;
+    source: SkillSource;
+    sourceDir?: string;
+    sourcePath?: string;
+  }
 ): SkillDefinition | null {
   const { metadata, body } = parseFrontmatter(document);
   const name = typeof metadata.name === "string" ? metadata.name.trim() : options.fallbackId;
@@ -260,6 +282,7 @@ export function parseSkillDocument(
     previewLines: extractPreviewLines(content),
     source: options.source,
     sourcePath: options.sourcePath,
+    sourceDir: options.sourceDir,
     storageKey: createStorageKey(options.source, options.sourcePath, options.fallbackId),
   };
 }
@@ -275,6 +298,7 @@ async function discoverSkillFiles(rootPath: string): Promise<SkillFileCandidate[
         const skillFile = folderEntries.find((item) => item.is_file && isSkillMarkdownFile(item.name));
         if (skillFile) {
           skillFiles.push({
+            containerDir: entry.path,
             fallbackId: entry.name,
             filePath: skillFile.path,
           });
@@ -313,6 +337,7 @@ async function loadSkillsFromRoot(
           return parseSkillDocument(document, {
             fallbackId: skillFile.fallbackId,
             source,
+            sourceDir: skillFile.containerDir,
             sourcePath: skillFile.filePath,
           });
         } catch (error) {
@@ -378,6 +403,103 @@ export async function loadGlobalSkills(globalSkillsPath?: string | null): Promis
 
 export function getBuiltinSkills(): SkillDefinition[] {
   return [...BUILTIN_SKILLS];
+}
+
+// ── Deletion ─────────────────────────────────────────────────────────────────
+
+export interface SkillDeleteTarget {
+  /** `folder` means the skill's own directory and everything inside it. */
+  kind: "file" | "folder";
+  /** What will actually be removed from disk. */
+  path: string;
+}
+
+/**
+ * True when `target` sits STRICTLY inside `root`.
+ *
+ * Strictly, because a target equal to the skills root would mean deleting the
+ * whole library, and no single skill's deletion is ever allowed to mean that.
+ */
+const isInsideRoot = (target: string, root: string): boolean => {
+  const normalizedRoot = normalizeStoragePath(root).replace(/\/+$/, "");
+  const normalizedTarget = normalizeStoragePath(target).replace(/\/+$/, "");
+  if (!normalizedRoot || !normalizedTarget) {
+    return false;
+  }
+  return normalizedTarget.startsWith(`${normalizedRoot}/`);
+};
+
+/** A `..` anywhere in the path can walk out of a root that `startsWith` says it is inside. */
+const hasParentTraversal = (path: string): boolean =>
+  normalizeStoragePath(path).split("/").includes("..");
+
+/**
+ * Work out what deleting a skill removes — and refuse if it isn't a skill.
+ *
+ * Deletion here is `remove_dir_all` on a user's own directory with no recycle
+ * bin behind it, so the target is re-derived from the skill roots rather than
+ * trusted from the record: the answer must be provably inside
+ * `<project>/.aurora/skills`, `<project>/.agents/skills`, or the global skills
+ * folder. Returns null when the skill is built in (nothing on disk to remove),
+ * carries no path, or resolves anywhere else.
+ */
+export function resolveSkillDeleteTarget(
+  skill: SkillDefinition,
+  options?: {
+    globalSkillsPath?: string | null;
+    workspacePath?: string | null;
+  },
+): SkillDeleteTarget | null {
+  if (skill.source === "builtin" || !skill.sourcePath) {
+    return null;
+  }
+
+  const roots =
+    skill.source === "workspace"
+      ? options?.workspacePath
+        ? WORKSPACE_SKILL_FOLDERS.map((folder) =>
+            joinWorkspaceSubpath(options.workspacePath as string, folder),
+          )
+        : []
+      : options?.globalSkillsPath
+        ? [options.globalSkillsPath]
+        : [];
+
+  // The folder form owns everything beside its skill.md — references, scripts,
+  // sample assets. Removing only the markdown would empty the card and leave
+  // the skill on disk.
+  const path = skill.sourceDir ?? skill.sourcePath;
+  const kind: SkillDeleteTarget["kind"] = skill.sourceDir ? "folder" : "file";
+
+  if (hasParentTraversal(path)) {
+    return null;
+  }
+  if (!roots.some((root) => isInsideRoot(path, root))) {
+    return null;
+  }
+  return { kind, path };
+}
+
+/**
+ * Remove a skill from disk. Resolves the target through
+ * {@link resolveSkillDeleteTarget} first and throws if it cannot be vouched
+ * for, so a caller can never pass an arbitrary path through this door.
+ */
+export async function deleteSkillFromDisk(
+  skill: SkillDefinition,
+  options?: {
+    globalSkillsPath?: string | null;
+    workspacePath?: string | null;
+  },
+): Promise<SkillDeleteTarget> {
+  const target = resolveSkillDeleteTarget(skill, options);
+  if (!target) {
+    throw new Error(
+      `"${skill.name}" can't be deleted from here — it isn't stored in this project's or your global skills folder.`,
+    );
+  }
+  await deletePath(target.path);
+  return target;
 }
 
 /**

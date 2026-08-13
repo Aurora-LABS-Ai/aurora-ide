@@ -24,7 +24,18 @@
 
 import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
 
-export type ShellProfile = "powershell" | "bash";
+/**
+ * Which shell a terminal session runs.
+ *
+ * These are the registry's own kind ids (`src-tauri/src/shell/kinds.rs`), so
+ * anything Settings → Tools › Shells lists can be opened here. It used to be
+ * `"powershell" | "bash"` — two literals — which is why the terminal could only
+ * ever open Windows PowerShell 5.1 or Git Bash, however many shells the scan
+ * had found. `"powershell"` in particular meant PowerShell 7 back when 5.1 was
+ * not registered; once the scan started finding 5.1 the same request silently
+ * began resolving to it.
+ */
+export type ShellProfile = "pwsh" | "powershell" | "bash" | "zsh" | "sh" | "cmd";
 
 /** Shape returned by the Rust `shell_interactive_config` command. */
 interface InteractiveShell {
@@ -43,10 +54,28 @@ export interface ShellSpawnConfig {
   env?: Record<string, string | undefined>;
 }
 
-/** PowerShell init: a compact, color-aware prompt (path | pwshN | OK/ERR). */
+/**
+ * PowerShell init: a compact, color-aware prompt (path | pwshN | OK/ERR) —
+ * installed ONLY if the user's own profile did not define one.
+ *
+ * This runs after `$PROFILE`, so defining `prompt` unconditionally overwrote
+ * whatever the user had set — oh-my-posh, starship, a hand-written theme — and
+ * every Aurora terminal looked like Aurora rather than like their shell. A
+ * terminal emulator hosts a shell; it does not impersonate one.
+ *
+ * The test is the stock definition: PowerShell's built-in prompt is the one
+ * containing `PS $($executionContext...`. If that is what is installed, nobody
+ * has expressed a preference and Aurora's is an improvement on it. If it is
+ * anything else, it is the user's and we leave it alone.
+ */
 function buildPowerShellInitCommand(): string {
   return [
-    "$global:AuroraPromptVersion='1'",
+    "$global:AuroraPromptVersion='2'",
+    "$global:AuroraStockPrompt=$false",
+    "try{",
+    "  $__p=(Get-Command prompt -ErrorAction SilentlyContinue).Definition",
+    "  $global:AuroraStockPrompt = [string]::IsNullOrWhiteSpace($__p) -or $__p -match 'executionContext\\.SessionState\\.Path\\.CurrentLocation'",
+    "} catch { $global:AuroraStockPrompt=$true }",
     "function global:Aurora-ShortPath([string]$p,[int]$maxLen){",
     "  if(-not $p){ return '' }",
     "  if($maxLen -lt 20){ return (Split-Path -Leaf $p) }",
@@ -59,6 +88,7 @@ function buildPowerShellInitCommand(): string {
     "  $tail = ($parts | Select-Object -Last 2) -join '\\'",
     "  return ($drive + '\\' + $head + '\\...\\' + $tail).TrimEnd('\\')",
     "}",
+    "if($global:AuroraStockPrompt){",
     "function global:prompt{",
     "  $w=80; try{ $w=$Host.UI.RawUI.WindowSize.Width } catch {}",
     "  if($w -lt 40){ return '> ' }",
@@ -73,32 +103,9 @@ function buildPowerShellInitCommand(): string {
     "  $sc= if($ok -eq 'OK'){ $g } else { $r }",
     '  return "${c}${short}${x} ${d}|${x} ${y}pwsh${ver}${x} ${d}|${x} ${sc}${ok}${x}`n> "',
     "}",
+    "}",
     "try{ Set-PSReadLineOption -BellStyle None -ErrorAction SilentlyContinue } catch {}",
   ].join("; ");
-}
-
-/** Bash env: a matching color-aware PROMPT_COMMAND prompt. */
-function buildBashEnv(): Record<string, string | undefined> {
-  const promptCommand = [
-    "__aurora_last=$?;",
-    'if [ -z "$COLUMNS" ]; then __aurora_cols=80; else __aurora_cols=$COLUMNS; fi;',
-    'if [ "$__aurora_cols" -lt 40 ]; then __aurora_min=1; else __aurora_min=0; fi;',
-    "if command -v tput >/dev/null 2>&1; then __aurora_colors=$(tput colors 2>/dev/null || echo 0); else __aurora_colors=0; fi;",
-    'if [ "$TERM" = "dumb" ] || [ -z "$TERM" ] || [ "$__aurora_colors" -lt 8 ]; then __aurora_color=0; else __aurora_color=1; fi;',
-    'if [ "$__aurora_min" -eq 1 ]; then PS1="> "; else ',
-    '  if [ "$__aurora_color" -eq 1 ]; then ',
-    "    __a_c='\\[\\033[36m\\]'; __a_y='\\[\\033[33m\\]'; __a_g='\\[\\033[32m\\]'; __a_r='\\[\\033[31m\\]'; __a_d='\\[\\033[90m\\]'; __a_x='\\[\\033[0m\\]';",
-    "  else __a_c=''; __a_y=''; __a_g=''; __a_r=''; __a_d=''; __a_x=''; fi;",
-    '  if [ "$__aurora_last" -eq 0 ]; then __a_s="${__a_g}OK${__a_x}"; else __a_s="${__a_r}ERR${__a_x}"; fi;',
-    '  PS1="${__a_c}\\w${__a_x} ${__a_d}|${__a_x} ${__a_y}bash${BASH_VERSINFO[0]}${__a_x} ${__a_d}|${__a_x} ${__a_s}\\n> ";',
-    "fi",
-  ].join(" ");
-
-  return {
-    TERM: "xterm-256color",
-    PROMPT_DIRTRIM: "3",
-    PROMPT_COMMAND: promptCommand,
-  };
 }
 
 /**
@@ -128,7 +135,29 @@ export async function getShellSpawnConfig(
   const env: Record<string, string | undefined> = Object.fromEntries(resolved.env);
 
   if (resolved.isPosix) {
-    return { exe: resolved.exe, args: resolved.args, env: { ...env, ...buildBashEnv() } };
+    // No prompt injection. bash and zsh read their own rc files, so the user's
+    // PS1 is already there — overwriting it with `PROMPT_COMMAND` was the same
+    // costume the PowerShell prompt wore. TERM is not decoration: without it a
+    // shell cannot know it is talking to an xterm.
+    return {
+      exe: resolved.exe,
+      args: resolved.args,
+      env: { TERM: "xterm-256color", ...env },
+    };
+  }
+
+  // `cmd.exe` takes NO initialisation. It was falling into the PowerShell
+  // branch below purely because `isPosix` is false for it, so every Command
+  // Prompt session was launched as
+  //   cmd.exe -Command "$global:AuroraPromptVersion='2'; function global:prompt{…}"
+  // which cmd cannot parse — it printed its usage error and exited instantly,
+  // leaving a terminal that swallowed every keystroke.
+  if (resolved.kind === "cmd") {
+    return {
+      exe: resolved.exe,
+      args: resolved.args,
+      env: Object.keys(env).length > 0 ? env : undefined,
+    };
   }
 
   // PowerShell kinds: `interactive_args` ends before `-Command` precisely so

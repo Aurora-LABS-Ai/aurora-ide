@@ -124,6 +124,7 @@ mod tests {
             thread_id: "thr_1".into(),
             workspace_root: Some(workspace.clone()),
             cancel_token: CancellationToken::new(),
+            spill_dir: None,
         }
     }
 

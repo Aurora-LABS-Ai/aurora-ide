@@ -1,0 +1,425 @@
+/* ── Providers & Models ───────────────────────────────────────────────── */
+.agw-prov-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: var(--agw-radius-md);
+  border: 1px solid var(--agw-border);
+  background: var(--agw-surface-elevated);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-display);
+}
+.agw-prov-conn {
+  display: grid;
+  /* Two columns with room, ONE column when the pane gets narrow — fields
+     (and the 3-option API type control) take the full row instead of
+     squeezing until their content clips. */
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  gap: 12px 14px;
+  margin-bottom: 18px;
+}
+.agw-prov-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.agw-prov-edit-field > span {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.04em;
+  color: var(--agw-text-subtle);
+}
+.agw-prov-key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agw-prov-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-prov-icon-btn:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-prov-models-head {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+  margin-bottom: 10px;
+}
+.agw-prov-empty {
+  padding: 20px 14px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-ui);
+  text-align: center;
+}
+.agw-prov-reason {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-prov-models {
+  /* One bordered list with divided rows (no gaps, no per-row cards). THIS is the
+     scroll region: it takes the remaining height under the connection block and
+     scrolls internally, so expanding a row's config scrolls here — never the
+     pane or the page. Content-sized (basis auto) so a short list keeps its
+     natural height (no dead space); shrinks + scrolls only once the pane hits
+     its cap. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-set-r-inner);
+  background: var(--agw-canvas);
+}
+.agw-prov-model {
+  padding: 11px 13px;
+}
+.agw-prov-model + .agw-prov-model {
+  border-top: 1px solid var(--agw-border);
+}
+.agw-prov-model[data-active] {
+  background: color-mix(in srgb, var(--agw-added) 8%, transparent);
+}
+/* The list container has `overflow: visible` on the provider page, so a row's
+   background isn't clipped by the container's rounded corners. Round the first
+   and last rows to match (inner radius minus the container's 1px border) so the
+   active fill follows the corner instead of poking a square edge past it. */
+.agw-prov-model:first-child {
+  border-top-left-radius: calc(var(--agw-set-r-inner) - 1px);
+  border-top-right-radius: calc(var(--agw-set-r-inner) - 1px);
+}
+.agw-prov-model:last-child {
+  border-bottom-left-radius: calc(var(--agw-set-r-inner) - 1px);
+  border-bottom-right-radius: calc(var(--agw-set-r-inner) - 1px);
+}
+.agw-prov-model-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.agw-prov-model-main {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--agw-text);
+  cursor: pointer;
+  padding: 0;
+  outline: none;
+}
+.agw-prov-model-radio {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid var(--agw-border-strong);
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.agw-prov-model-radio[data-on] {
+  border-color: var(--agw-added);
+  background:
+    radial-gradient(circle at center, var(--agw-added) 0 4px, transparent 5px);
+}
+.agw-prov-model-name {
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-prov-model-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.agw-prov-model-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 9px;
+  margin-top: 7px;
+}
+/* Why a Retry didn't run. Sits directly above the composer, at the bottom
+ * of the transcript, so it lands near the click that caused it. */
+.agw-retry-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--agw-removed) 34%, transparent);
+  border-radius: var(--agw-radius-md);
+  background: color-mix(in srgb, var(--agw-removed) 10%, transparent);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+}
+.agw-retry-error-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+}
+.agw-retry-error-close:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+
+/* ── Per-model connection test ─────────────────────────────────────────
+ * The button lives in the model row's action cluster and inherits
+ * .agw-prov-icon-btn, so it shares the sliders/close geometry exactly.
+ * Only the verdict colour is added on top. */
+.agw-prov-test {
+  position: relative;
+  display: inline-flex;
+}
+.agw-prov-test-btn[data-state="running"] {
+  color: var(--agw-text);
+  /* Breathing, not spinning: the row is dense and a spinner next to two
+   * static icons pulls far more attention than the wait deserves. */
+  animation: agw-prov-test-pulse 1.1s ease-in-out infinite;
+}
+.agw-prov-test-btn[data-state="pass"] {
+  color: var(--agw-added);
+  border-color: color-mix(in srgb, var(--agw-added) 34%, transparent);
+}
+.agw-prov-test-btn[data-state="fail"] {
+  color: var(--agw-removed);
+  border-color: color-mix(in srgb, var(--agw-removed) 34%, transparent);
+}
+.agw-prov-test-btn:disabled {
+  cursor: progress;
+}
+@keyframes agw-prov-test-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* Result panel. Right-aligned so it never runs off the settings sheet,
+ * and pointer-events:none so it cannot swallow a click meant for the
+ * row underneath — it is a readout, not a surface to interact with. */
+.agw-prov-test-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: max-content;
+  max-width: 340px;
+  padding: 9px 11px;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--agw-popover-surface) 95%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(112%);
+  backdrop-filter: blur(14px) saturate(112%);
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-lg);
+  box-shadow: var(--agw-shadow-pop);
+  animation: agw-pop-in 0.12s cubic-bezier(0.2, 0.9, 0.3, 1);
+  text-align: left;
+  white-space: normal;
+}
+
+/* The route line answers the question that matters most here: which wire
+ * shape did this configuration actually resolve to? */
+.agw-prov-test-route {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agw-prov-test-shape {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-prov-test-url {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  word-break: break-all;
+}
+/* Both of these carry text from a provider, and a provider will hand you a JSON
+   blob with no spaces in it. The URL a line above already breaks; these did not,
+   so an error ran straight out of the card and the end of the message — the part
+   naming the actual cause — was off-screen.
+   `anywhere` rather than the URL's `break-all`: this is prose with a payload
+   stuck to it, so ordinary words should stay whole and only an unbreakable run
+   should be cut. */
+.agw-prov-test-reply {
+  padding-top: 6px;
+  border-top: 1px solid var(--agw-border);
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text);
+  overflow-wrap: anywhere;
+}
+.agw-prov-test-line {
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text);
+  overflow-wrap: anywhere;
+}
+.agw-prov-test-line[data-tone="bad"] {
+  padding-top: 6px;
+  border-top: 1px solid var(--agw-border);
+  color: var(--agw-removed);
+}
+.agw-prov-test-meta {
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agw-prov-test-btn[data-state="running"] {
+    animation: none;
+    opacity: 0.7;
+  }
+  .agw-prov-test-pop {
+    animation: none;
+  }
+}
+
+.agw-prov-key {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+}
+/* Inline metadata (ctx, price) — plain muted text with a leading separator dot,
+   NOT a bordered chip, so the row reads as a sentence of facts. */
+.agw-prov-meta-dot {
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-prov-meta-dot::before {
+  content: "·";
+  margin-right: 9px;
+  color: var(--agw-text-subtle);
+}
+.agw-prov-chip {
+  padding: 1px 7px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+}
+.agw-prov-edit {
+  display: grid;
+  /* Same collapse rule as .agw-prov-conn: one column when narrow so the
+     per-model config never squeezes its fields into clipping. */
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  gap: 12px 14px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-prov-edit-toggles {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.agw-prov-cap {
+  height: 28px;
+  padding: 0 13px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  outline: none;
+  /* Whole pills wrap to the next line (see -toggles); the label itself
+     never breaks inside its fixed-height pill. */
+  white-space: nowrap;
+}
+.agw-prov-cap[data-on] {
+  color: var(--agw-accent);
+  border-color: color-mix(in srgb, var(--agw-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--agw-accent) 12%, transparent);
+}
+
+.agw-prov-addwrap {
+  margin-top: 14px;
+}
+.agw-prov-addrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* When the pane is too narrow for input + Add side by side, the button
+     wraps below the field instead of hanging outside the card. */
+  flex-wrap: wrap;
+}
+.agw-prov-add-field {
+  display: flex;
+  /* 200px wrap threshold: shrink to here first, then push Add to its own
+     line. min-width 0 lets the inner input give up its intrinsic width. */
+  flex: 1 1 200px;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  height: 38px;
+  padding-left: 12px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-set-r-inner);
+  background: var(--agw-canvas);
+}
+.agw-prov-add-note {
+  margin-top: 8px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-warning);
+}
+.agw-prov-add-input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  border: none;
+  background: transparent;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-family: var(--agw-font-ui);
+  outline: none;
+}
+.agw-prov-add-input::placeholder {
+  color: var(--agw-text-subtle);
+}
+

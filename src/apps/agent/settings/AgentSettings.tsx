@@ -122,7 +122,7 @@ export const AgentSettings: React.FC = () => {
       <SettingsSection
         icon="sliders"
         title="Execution mode"
-        description="How the agent acts on your requests. Reasoning, temperature, and context window are model settings — set them on the model itself, under Providers."
+        description="How the agent acts on your requests. Reasoning, temperature, and context window belong to the model — open a model under Providers to set them."
       >
         <SettingsRow
           label="Mode"

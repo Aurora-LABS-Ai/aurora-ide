@@ -66,8 +66,17 @@ body {
     color: var(--aurora-common-text-primary, var(--aurora-editor-foreground, #d4d4d4));
     font-family: var(--aurora-ui-font-family);
     font-size: calc(14px * var(--aurora-ui-text-scale));
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
+    /* AUTO, not `antialiased` — aligned with the agent window (rationale on
+     * .agw-root in apps/agent/theme/agent-window/01-root.css): on Windows,
+     * `antialiased` switches Chromium from subpixel (RGB) to grayscale AA,
+     * rendering every stem thinner and lower-contrast. The two windows share
+     * fonts and should rasterize them identically. */
+    -webkit-font-smoothing: auto;
+    /* Never synthesize bold: bundled static faces ship 400/500/600, and a
+     * requested weight they lack should render at the nearest real weight,
+     * not as a smeared synthetic. Italic synthesis stays allowed — no bundled
+     * face ships italics, and losing emphasis entirely would be worse. */
+    font-synthesis-weight: none;
     /* Disable default context menu */
     -webkit-user-select: none;
     user-select: none;

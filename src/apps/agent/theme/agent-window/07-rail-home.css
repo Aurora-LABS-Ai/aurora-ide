@@ -1,0 +1,685 @@
+/* Section header (Pinned label / Projects toggle + sort). */
+.agw-rail-section-label {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--agw-text-subtle);
+  padding: 8px 6px 4px;
+}
+/* STICKY to the rail scroller's top edge: while you're anywhere inside the
+ * (possibly very long) expanded projects list, the header — and with it the
+ * scope toggle and the order button — stays one click away, instead of the
+ * old footer pill waiting below the last row. It can pin because it is a
+ * direct child of the scroller, NOT inside the section's overflow-hidden
+ * Collapse (which would disable sticky). Solid rail paint: rows scroll under
+ * it while pinned; the hairline seam reads as a plain section rule at rest. */
+.agw-rail-section {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 4px 4px 2px;
+  background: var(--agw-rail-paint);
+  box-shadow: 0 1px 0 var(--agw-border);
+}
+.agw-rail-section-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 4px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  cursor: pointer;
+  outline: none;
+}
+.agw-rail-section-toggle:hover {
+  color: var(--agw-text);
+}
+.agw-rail-section-toggle:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-rail-sort {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-rail-sort:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-rail-sort:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* Collapse / expand all projects — icon-only sibling of the sort button. */
+.agw-rail-collapse-all {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-rail-collapse-all svg {
+  transition: transform 0.12s ease;
+}
+.agw-rail-collapse-all:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-rail-collapse-all:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+/* Project row — a container holding the main (expand) button + a hover pencil. */
+.agw-rail-project {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  border-radius: var(--agw-radius-md);
+  transition: background 0.12s ease;
+}
+.agw-rail-project:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-rail-project-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 4px 0 8px;
+  border: none;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  text-align: left;
+  outline: none;
+}
+/* Two-line project label: name on top, "N chats · 2d ago" beneath. */
+/* Right-side meta on a project row: the chat-count badge at rest, swapping to
+   the relative last-active time on hover (full date lives in the row tooltip).
+   Single fixed slot so the row never reflows between the two. */
+.agw-rail-project-meta {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 20px;
+  margin-left: 6px;
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+}
+.agw-rail-project-count {
+  display: inline-flex;
+}
+.agw-rail-project-age {
+  display: none;
+  white-space: nowrap;
+}
+/* On row hover, reveal the relative time in place of the count. */
+.agw-rail-project:hover .agw-rail-project-age {
+  display: inline-flex;
+}
+.agw-rail-project:hover .agw-rail-project-count {
+  display: none;
+}
+/* Stale projects (untouched ≥ 30 days) recede at rest, full strength on hover. */
+.agw-rail-project[data-stale]:not(:hover) .agw-rail-project-main {
+  opacity: 0.6;
+}
+.agw-rail-project-main:hover {
+  color: var(--agw-text);
+}
+.agw-rail-project[data-active] .agw-rail-project-main {
+  color: var(--agw-text);
+}
+.agw-rail-project-main:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-rail-project-caret {
+  flex-shrink: 0;
+  color: var(--agw-text-subtle);
+  transition: transform 0.12s ease;
+}
+.agw-rail-project-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* New-chat pencil — hidden until the project row is hovered. */
+.agw-rail-newchat {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 4px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-rail-project:hover .agw-rail-newchat {
+  opacity: 1;
+}
+.agw-rail-newchat:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-rail-newchat:focus-visible {
+  opacity: 1;
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* Nested chats under an open project — indented with a quiet guide line. */
+.agw-rail-chats {
+  margin: 1px 0 4px 15px;
+  padding-left: 6px;
+  border-left: 1px solid var(--agw-border);
+}
+.agw-rail-empty {
+  padding: 7px 8px;
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text-subtle);
+}
+
+/* Scope toggle in the sticky section header — "8 of 21" while previewing,
+ * "Show less" while expanded. Same chip register as the order button beside
+ * it: the two are one family of view controls sharing one corner. */
+.agw-rail-scope {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 7px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-rail-scope:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-rail-scope:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+/* Home ghost wordmark — the new-chat landing brands itself with a giant
+ * "aurora" watermark above the composer (OpenCode-style), lit like standing
+ * characters on a stage: a rim-lit gradient (bright crown softening to
+ * visible feet) + a faint overhead light pool + a floor contact shadow the
+ * letters stand on. Every stop is a fraction of the theme's text colour, so
+ * the effect follows Appearance retheming in dark AND light palettes.
+ * Sizing is container-relative (cqi), NOT viewport-relative: the wordmark
+ * lives in the conversation pane, and vw ignores the rails — at narrower
+ * pane widths vw sizing overflowed and sliced the last letter. 31cqi keeps
+ * the ~2.86em-wide word at ~89% of the column with clear air both sides. */
+.agw-home-column {
+  container-type: inline-size;
+}
+.agw-home-wordmark {
+  /* Wordmark light — all timing in one place.
+     One full cycle is 7s: each glyph lights for ~0.8s of it (the 0→4→11%
+     keyframe head) and the remaining ~6.2s is the rest. 6 glyphs stepped
+     0.13s apart means the light crosses the word in ~0.8s, then the mark sits
+     still until the next pass. */
+  --agw-home-lit-cycle: 7s;
+  --agw-home-lit-step: 0.13s;
+  --agw-home-lit-lead: 0.35s;
+
+  position: relative; /* containing block for the pool + floor shadow */
+  z-index: 0; /* own stacking context: they can't slip behind ancestor paints */
+  font-size: min(248px, 31cqi);
+  font-weight: var(--agw-fw-display);
+  letter-spacing: -0.03em;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+  margin: clamp(16px, 4vh, 36px) 0 clamp(32px, 6vh, 64px);
+}
+/* The gradient lives on the span; the pseudo-element lighting sits behind
+ * it. No drop-shadow filter: the fill is 84-95% transparent, so a shadow
+ * bleeding through the glyphs turns them into dark silhouettes — grounding
+ * comes from the ::after floor shadow UNDER the letters instead. */
+.agw-home-wordmark > span {
+  /* inline-BLOCK, not inline: the overlay below is absolutely positioned, and
+     an inline box split across line boxes gives it an ambiguous containing
+     block. A single glyph lays out identically either way. */
+  display: inline-block;
+  position: relative;
+  color: transparent;
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--agw-text) 16%, transparent) 0%,
+    color-mix(in srgb, var(--agw-text) 8%, transparent) 48%,
+    color-mix(in srgb, var(--agw-text) 5%, transparent) 92%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+/* Arrival light — a BRIGHT DUPLICATE of each glyph, faded in and out.
+ *
+ * The obvious implementation (animate a registered `@property` percentage
+ * inside the `color-mix()` above) needs three separate things to hold: the
+ * property registration, a calc() percentage inside color-mix, and the engine
+ * re-resolving `background-image` every frame. Any one failing silently
+ * produces a mark that never lights — which is exactly what it did. This
+ * version animates nothing but `opacity` on a normally-painted duplicate, so
+ * it has one failure mode instead of three, and the compositor handles it.
+ *
+ * `content: attr(data-glyph)` keeps the letter out of the accessibility tree
+ * twice over: generated content is not exposed, and the whole mark is already
+ * aria-hidden. */
+.agw-home-wordmark > span::after {
+  content: attr(data-glyph);
+  position: absolute;
+  inset: 0;
+  color: color-mix(in srgb, var(--agw-text) 88%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  /* LOOPS, with a long rest between passes, rather than firing once on mount.
+     A single pass is the better resting design, but it is unverifiable: it is
+     over ~1.5s after the window paints, so "I never saw it" and "it is broken"
+     look identical — which is exactly how this went wrong three times. A
+     cycle that repeats every few seconds can always be confirmed by waiting.
+     The rest is what keeps it from reading as a loading skeleton; drop
+     --agw-home-lit-rest to 0 for a continuous shimmer, or set the animation to
+     `1 both` for the one-shot. */
+  animation: agw-home-lit var(--agw-home-lit-cycle) linear infinite;
+  animation-delay: calc(
+    var(--agw-home-lit-lead) + var(--agw-lit-i, 0) * var(--agw-home-lit-step)
+  );
+}
+
+/* One glyph's turn occupies only the head of the cycle; the rest of the
+ * timeline is the pause. CSS has no `repeat-delay`, so the pause has to live
+ * inside the keyframes — hence the flat tail. */
+@keyframes agw-home-lit {
+  0% {
+    opacity: 0;
+  }
+  4% {
+    opacity: 1;
+  }
+  11% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* The wordmark is decoration; it is the first thing to go. */
+@media (prefers-reduced-motion: reduce) {
+  .agw-home-wordmark > span::after {
+    animation: none;
+  }
+}
+/* Workspace scope line — sits under the mark, above the composer.
+ * Quiet by construction: it orients, it is not an action. The folder name
+ * carries the weight; its parent path trails behind at label size so the eye
+ * lands on the project, not the drive letter. */
+/* Home screen project switcher — the row naming the workspace this window acts
+ * on, and the control for changing it.
+ *
+ * Ghost at rest: no fill, no border. The home screen's job is to invite the
+ * first message, so the scope line must not compete with the composer. The chip
+ * surface appears on hover/focus, which is also where the affordance is
+ * revealed — and unlike the static label this replaced, the pressable look is
+ * now a promise the row actually keeps. */
+.agw-projsw-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 clamp(14px, 2.2vh, 22px);
+  min-width: 0;
+}
+.agw-projsw {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  /* Capped, so a deep project path cannot stretch the chip across the column.
+     Past this the path truncates — it is the disambiguator, not the label. */
+  max-width: min(100%, 460px);
+  min-width: 0;
+  padding: 5px 8px 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-family: inherit;
+  font-size: var(--agw-fs-label);
+  line-height: 1.4;
+  cursor: pointer;
+  transition:
+    background 0.13s ease,
+    border-color 0.13s ease,
+    color 0.13s ease;
+}
+.agw-projsw:hover,
+.agw-projsw[data-open] {
+  background: var(--agw-surface);
+  border-color: var(--agw-border-strong);
+}
+.agw-projsw:focus-visible {
+  outline: none;
+  background: var(--agw-surface);
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* Same yield order as the menu rows: the path shrinks to nothing before the
+   project name loses a character. */
+.agw-projsw-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--agw-text);
+  font-weight: var(--agw-fw-medium);
+  font-size: var(--agw-fs-ui);
+}
+.agw-projsw-path {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Behind the name in the hierarchy — present to disambiguate two folders of
+     the same name, not to be read. */
+  color: var(--agw-text-subtle);
+}
+.agw-projsw-chev {
+  display: inline-flex;
+  flex: none;
+  color: var(--agw-text-subtle);
+  transition:
+    color 0.13s ease,
+    transform 0.13s ease;
+}
+.agw-projsw:hover .agw-projsw-chev,
+.agw-projsw:focus-visible .agw-projsw-chev {
+  color: var(--agw-text-muted);
+}
+.agw-projsw[data-open] .agw-projsw-chev {
+  transform: rotate(180deg);
+  color: var(--agw-text-muted);
+}
+
+/* The menu. Portaled to `.agw-root`, so it is positioned in viewport
+ * coordinates and needs its own elevation — it floats over the transcript
+ * rather than sitting in it, hence a popover shadow and a SOLID fill. */
+.agw-projmenu {
+  position: fixed;
+  z-index: 60;
+  max-height: min(52vh, 420px);
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: 10px;
+  background: var(--agw-surface-elevated);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 42%);
+  animation: agw-projmenu-in 0.12s ease-out both;
+}
+.agw-projmenu:focus {
+  outline: none;
+}
+/* The filter box. Same recipe as `.agw-model-search` (icon + borderless input
+ * in a bordered row, fixed height, only the list scrolls), sized down to this
+ * menu's tighter 4px frame. No focus halo — the caret and fill are the
+ * affordance, and the field is focused the moment the menu opens. */
+.agw-projmenu-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  align-self: stretch;
+  box-sizing: border-box;
+  height: 30px;
+  margin: 2px 2px 6px;
+  padding: 0 8px;
+  border: 1px solid var(--agw-border);
+  border-radius: 7px;
+  background: var(--agw-surface);
+  color: var(--agw-text-subtle);
+}
+.agw-projmenu-search input {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  color: var(--agw-text);
+  font-family: inherit;
+  font-size: var(--agw-fs-label);
+}
+.agw-projmenu-search input::placeholder {
+  color: var(--agw-text-subtle);
+}
+/* An empty filter result says so where the rows would be — quiet, and the
+ * "Add project…" row below stays live, so the dead end still has a way out. */
+.agw-projmenu-none {
+  padding: 10px 8px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+.agw-projmenu-list {
+  min-height: 0;
+  overflow-y: auto;
+  /* Rows truncate; they never scroll sideways. A horizontal scrollbar in a
+     menu means the row layout failed, and it hides the end of every name
+     behind a gesture nobody makes in a dropdown. */
+  overflow-x: hidden;
+}
+.agw-projmenu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-family: inherit;
+  font-size: var(--agw-fs-label);
+  text-align: left;
+  cursor: pointer;
+}
+/* Keyboard and pointer share one highlight — the active row is the same row
+ * whichever input is driving, so there is never a second, competing cursor. */
+.agw-projmenu-row[data-active] {
+  background: #ffffff0f;
+}
+.agw-projmenu-row[data-current] .agw-projmenu-name {
+  color: var(--agw-accent);
+}
+/* The name is the thing you are choosing by, so it keeps its space and only
+   truncates when it alone overruns the row. */
+.agw-projmenu-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--agw-text);
+  font-weight: var(--agw-fw-medium);
+  font-size: var(--agw-fs-ui);
+}
+/* `flex-basis: 0` is what makes the path yield FIRST: it claims only leftover
+   space, so it can never push the name out of the row — it just gets shorter,
+   down to nothing, before the name gives up a single character. */
+.agw-projmenu-path {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--agw-text-subtle);
+}
+/* `AgentIcon` sets `flex-shrink: 0` itself, so the glyphs need nothing here. */
+.agw-projmenu-check {
+  margin-left: auto;
+  display: inline-flex;
+  flex: none;
+  color: var(--agw-accent);
+}
+/* "Add project…" is separated because it creates something rather than
+   selecting among what exists. */
+.agw-projmenu-add {
+  margin-top: 4px;
+  padding-top: 9px;
+  border-top: 1px solid var(--agw-border);
+  border-radius: 0 0 7px 7px;
+  flex: none;
+}
+@keyframes agw-projmenu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-projmenu {
+    animation: none;
+  }
+  .agw-projsw-chev {
+    transition: color 0.13s ease;
+  }
+}
+
+/* Faint pool of overhead light the letters stand in. */
+.agw-home-wordmark::before {
+  content: "";
+  position: absolute;
+  inset: -32% -14%;
+  background: radial-gradient(
+    52% 56% at 50% 36%,
+    color-mix(in srgb, var(--agw-text) 4.5%, transparent) 0%,
+    transparent 72%
+  );
+  z-index: -1;
+}
+/* Floor contact shadow — the "ground" the characters stand on. Weaker in
+ * the light theme (same philosophy as --agw-shadow-pop). */
+.agw-home-wordmark::after {
+  content: "";
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  top: 98%;
+  height: 22%;
+  background: radial-gradient(
+    50% 55% at 50% 0%,
+    rgba(0, 0, 0, 0.38) 0%,
+    transparent 70%
+  );
+  z-index: -1;
+}
+.agw-root[data-appearance="light"] .agw-home-wordmark::after {
+  background: radial-gradient(
+    50% 55% at 50% 0%,
+    rgba(0, 0, 0, 0.12) 0%,
+    transparent 70%
+  );
+}
+
+/* Suggestion starter — a PLAIN row (no box), divider between rows, à la Codex.
+ * The composer owns the only "card" surface; starters are just tappable text. */
+.agw-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 13px 6px;
+  border: none;
+  border-bottom: 1px solid var(--agw-border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-body);
+  cursor: pointer;
+  transition: color 0.12s ease;
+  outline: none;
+}
+.agw-suggestion:last-child {
+  border-bottom: none;
+}
+/* Starter labels are full sentences carrying the project name, so a narrow pane
+ * WILL wrap them. The glyph must hold its size and the label must be allowed to
+ * shrink, or the icon is squashed to a sliver on the first wrap. */
+.agw-suggestion-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--agw-text-subtle);
+}
+.agw-suggestion-label {
+  min-width: 0;
+  line-height: 1.45;
+  /* A long unbroken project/folder name must break rather than overflow. */
+  overflow-wrap: anywhere;
+}
+.agw-suggestion:hover {
+  color: var(--agw-text);
+}
+.agw-suggestion:focus-visible {
+  border-radius: var(--agw-radius-sm);
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+

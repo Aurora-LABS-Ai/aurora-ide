@@ -1,0 +1,406 @@
+/* ── Files tab (right dock) ───────────────────────────────────────────
+ * Standalone workspace browser: filter bar + lazy tree + read-only viewer.
+ * No IDE explorer reuse; themed entirely with --agw-* tokens. */
+
+/* Toolbar */
+.agw-files-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px 8px 10px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-files-search {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--agw-radius-sm);
+  /* Derived quiet fill — stays visible on any dock colour the user picks. */
+  background: var(--agw-state-quiet);
+  border: 1px solid var(--agw-border);
+  /* No focus glow — deliberately flat (the input owns no halo). */
+}
+.agw-files-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-family: var(--agw-font-ui);
+}
+.agw-files-input::placeholder {
+  color: var(--agw-text-subtle);
+}
+.agw-files-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.agw-files-clear:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-files-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  outline: none;
+}
+.agw-files-tool:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+  border-color: var(--agw-border-strong);
+}
+.agw-files-tool:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+/* Tree rows */
+.agw-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 26px;
+  padding-right: 8px;
+  border: none;
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-ui);
+  font-family: var(--agw-font-ui);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-tree-row:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-tree-row[data-selected] {
+  background: var(--agw-surface-elevated);
+  color: var(--agw-text);
+}
+.agw-tree-row:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+.agw-tree-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  flex-shrink: 0;
+  color: var(--agw-text-subtle);
+  transition: transform 0.12s ease;
+}
+.agw-tree-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-tree-hint {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+
+/* Fuzzy-filter result rows: name in front, dim path trailing. */
+.agw-files-result {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  overflow: hidden;
+}
+.agw-files-result-name {
+  flex-shrink: 0;
+  color: var(--agw-text);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-files-result-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  font-family: var(--agw-font-code);
+}
+
+/* Empty / no-project state */
+.agw-files-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+}
+
+/* ── Read-only file viewer ─────────────────────────────────────────── */
+.agw-fv-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 38px;
+  flex-shrink: 0;
+  padding: 0 8px 0 6px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-fv-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-fv-back:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-fv-back:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-fv-crumb {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+}
+.agw-fv-crumb-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--agw-text-subtle);
+}
+.agw-fv-crumb-name {
+  flex-shrink: 0;
+  color: var(--agw-text);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-fv-openide {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  flex-shrink: 0;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  outline: none;
+}
+.agw-fv-openide:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+  border-color: var(--agw-border-strong);
+}
+.agw-fv-openide:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+/* Viewer body: line-number gutter + highlighted code, both scroll together. */
+.agw-fv-code {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: auto;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-ui);
+  line-height: 1.55;
+}
+.agw-fv-gutter {
+  flex-shrink: 0;
+  padding: 10px 0;
+  text-align: right;
+  user-select: none;
+  color: var(--agw-text-subtle);
+  background: var(--agw-surface);
+  border-right: 1px solid var(--agw-border);
+}
+.agw-fv-ln {
+  padding: 0 10px 0 12px;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+.agw-fv-pre {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 10px 14px;
+  white-space: pre;
+  tab-size: 2;
+  color: var(--agw-text);
+}
+.agw-fv-pre code {
+  font-family: inherit;
+  background: none;
+}
+.agw-fv-bigicon {
+  width: 34px;
+  height: 34px;
+  opacity: 0.85;
+}
+
+/* Preview / Raw toggle (markdown only) — a compact segmented control. */
+.agw-fv-seg {
+  display: inline-flex;
+  flex-shrink: 0;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  overflow: hidden;
+}
+.agw-fv-seg button {
+  height: 24px;
+  padding: 0 9px;
+  border: none;
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-fv-seg button + button {
+  border-left: 1px solid var(--agw-border);
+}
+.agw-fv-seg button:hover {
+  color: var(--agw-text);
+}
+.agw-fv-seg button[data-active] {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-fv-seg button:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+
+/* Markdown preview body — centered reading column over the dock surface. */
+.agw-fv-mdwrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.agw-fv-mdinner {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 22px 26px 44px;
+}
+
+/* Image preview stage — checkerboard backdrop so transparency reads clearly. */
+.agw-fv-imagewrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background-color: var(--agw-surface);
+  background-image:
+    linear-gradient(45deg, var(--agw-border) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--agw-border) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--agw-border) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--agw-border) 75%);
+  background-size: 18px 18px;
+  background-position: 0 0, 0 9px, 9px -9px, -9px 0;
+}
+.agw-fv-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--agw-radius-sm);
+  box-shadow: 0 1px 14px rgba(0, 0, 0, 0.28);
+  cursor: zoom-in;
+}
+.agw-fv-image[data-actual] {
+  max-width: none;
+  max-height: none;
+  margin: auto;
+  cursor: zoom-out;
+}
+.agw-fv-imagemeta {
+  position: absolute;
+  bottom: 10px;
+  right: 12px;
+  padding: 3px 8px;
+  border-radius: var(--agw-radius-pill);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* Tiny spinner shared by tree + viewer loading states. */
+.agw-fv-spinner {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 2px solid var(--agw-border-strong);
+  border-top-color: var(--agw-accent);
+  animation: agw-spin 0.7s linear infinite;
+}
+.agw-tree-spin {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+}
+@keyframes agw-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+

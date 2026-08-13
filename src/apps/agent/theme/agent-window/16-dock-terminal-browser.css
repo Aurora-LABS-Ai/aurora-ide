@@ -1,0 +1,528 @@
+/* ── Terminal tab (right dock) ─────────────────────────────────────────
+ * Native multi-session PTY terminal (xterm). Session pills + new menu. */
+.agw-term-root {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--agw-conversation);
+}
+.agw-term-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 34px;
+  flex-shrink: 0;
+  padding: 0 6px 0 8px;
+  border-bottom: 1px solid var(--agw-border);
+  background: var(--agw-dock-paint);
+}
+/* The tab strip scrolls horizontally once the pills outrun it.
+ *
+ * It always could — but the scrollbar was hidden outright and a vertical wheel
+ * does not reach a horizontal scroller on its own, so with a dozen terminals
+ * open there was no way to get at the ones past the edge. The bar is 34px tall
+ * and the pills are 24px, which is why the scrollbar is 3px and lives in the
+ * remaining space rather than stealing height from the row. */
+.agw-term-sessions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* Chains to the pane behind it otherwise: a wheel past the last pill would
+     scroll the transcript instead of stopping at the end of the strip. */
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.15s ease;
+}
+/* Visible on approach, invisible at rest — a permanent bar under a row of tabs
+   reads as a second border. */
+.agw-term-sessions:hover,
+.agw-term-sessions:focus-within {
+  scrollbar-color: var(--agw-border-strong) transparent;
+}
+.agw-term-sessions::-webkit-scrollbar {
+  height: 3px;
+}
+.agw-term-sessions::-webkit-scrollbar-track {
+  background: transparent;
+}
+.agw-term-sessions::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: transparent;
+}
+.agw-term-sessions:hover::-webkit-scrollbar-thumb,
+.agw-term-sessions:focus-within::-webkit-scrollbar-thumb {
+  background: var(--agw-border-strong);
+}
+/* No sessions left. Same anatomy as `.agw-canvas-empty` so the dock's three
+ * tabs read as one system, with an action added: this is a state the user
+ * reaches by CLOSING something, so the way back has to be in front of them. */
+.agw-term-empty {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 28px;
+  color: var(--agw-text-subtle);
+  text-align: center;
+}
+.agw-term-empty strong {
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-term-empty span {
+  max-width: 34ch;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+}
+.agw-term-empty-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-surface);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.agw-term-empty-cta:hover {
+  background: var(--agw-hover-paint);
+  border-color: var(--agw-border-strong);
+}
+/* Focus stays inside the control's own border, never a detached ring. */
+.agw-term-empty-cta:focus-visible {
+  outline: none;
+  border-color: var(--agw-accent);
+  background: var(--agw-hover-paint);
+}
+
+/* A terminal that could not start says so, in the pane where it would have
+   been. The alternative was an empty black rectangle. */
+.agw-term-fail {
+  padding: 14px 16px;
+  font-size: var(--agw-fs-ui);
+  line-height: 1.5;
+  color: var(--agw-removed);
+}
+/* Session tabs — "lifted card" (probe 03).
+ *
+ * At rest a tab is nothing: no fill, no border. Only the ACTIVE one becomes an
+ * object, and it is built from three things rather than a lighter rectangle —
+ * a top-light gradient, a 1px inner gloss along its top edge, and a soft drop
+ * shadow. That combination is what reads as a raised plate on a near-black
+ * strip; a flat fill only ever reads as "a bit brighter".
+ *
+ * The hairline is COOL-TINTED (`rgba(176,199,217,…)`), not white alpha. Flat
+ * neutral borders are the single biggest tell of generated dark UI, and at 24px
+ * this one line does most of the work.
+ *
+ * Nothing moves on hover, deliberately: in a strip that can hold a dozen tabs,
+ * movement under the pointer makes the whole row feel unstable. */
+.agw-term-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding-right: 2px;
+  border: 1px solid transparent;
+  border-radius: var(--agw-radius-sm);
+  background: none;
+  color: var(--agw-text-muted);
+  flex-shrink: 0;
+  max-width: 160px;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+.agw-term-pill:hover {
+  background: color-mix(in srgb, var(--agw-text) 6%, transparent);
+  color: var(--agw-text);
+}
+.agw-term-pill[data-active] {
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--agw-text) 15%, transparent),
+    color-mix(in srgb, var(--agw-text) 8%, transparent)
+  );
+  border-color: rgba(176, 199, 217, 0.16);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.09), 0 2px 6px rgba(0, 0, 0, 0.45);
+  color: var(--agw-text);
+}
+/* Light mode has no near-black to lift off, so the gloss line and the heavy
+   shadow would read as grime. Same shape, paper weight. */
+.agw-root[data-appearance="light"] .agw-term-pill[data-active] {
+  background: var(--agw-surface);
+  border-color: var(--agw-border-strong);
+  box-shadow: 0 1px 2px rgba(16, 22, 33, 0.1);
+}
+.agw-term-pill-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 24px;
+  padding: 0 4px 0 8px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  font-family: var(--agw-font-code);
+  cursor: pointer;
+  outline: none;
+}
+.agw-term-pill-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The live dot glows (probe 05). This is the one piece of decoration here that
+ * carries information rather than mood: it makes "this shell is running"
+ * legible across the whole strip at a glance, and the active tab's is brighter
+ * because that is the one you are looking at. A stopped session has no glow at
+ * all — the absence is the signal. */
+.agw-term-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--agw-added);
+  /* Kept faint on purpose. At full strength a 6px dot with a bright halo reads
+     as an LED bolted onto the tab; the job is only to separate "running" from
+     "stopped" at a glance, and a hint of light does that. */
+  box-shadow: 0 0 3px color-mix(in srgb, var(--agw-added) 22%, transparent);
+}
+.agw-term-pill[data-active] .agw-term-dot {
+  box-shadow: 0 0 4px color-mix(in srgb, var(--agw-added) 36%, transparent);
+}
+.agw-term-dot[data-dead],
+.agw-term-pill[data-active] .agw-term-dot[data-dead] {
+  background: var(--agw-text-subtle);
+  box-shadow: none;
+}
+.agw-term-pill-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.agw-term-pill:hover .agw-term-pill-close,
+.agw-term-pill[data-active] .agw-term-pill-close {
+  opacity: 1;
+}
+.agw-term-pill-close:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+
+/* The xterm host. Padding gives the shell some breathing room; xterm's own
+ * canvas/rows fill the rest. */
+.agw-term-surface {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 8px 4px 10px;
+  overflow: hidden;
+  background: var(--agw-conversation);
+}
+.agw-term-surface .xterm {
+  height: 100%;
+}
+.agw-term-surface .xterm-viewport {
+  background: transparent !important;
+  scrollbar-width: thin;
+  scrollbar-color: var(--agw-scroll-thumb) transparent;
+}
+
+/* ── Browser tab (right dock) ──────────────────────────────────────────
+ * Toolbar (React) over a body region where a native child webview is pinned. */
+.agw-br-root {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--agw-conversation);
+}
+.agw-br-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 40px;
+  flex-shrink: 0;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--agw-border);
+  background: var(--agw-dock-paint);
+}
+.agw-br-nav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-br-nav:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-br-nav:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-br-address {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--agw-radius-pill);
+  /* Derived quiet fill — also used by the settings search box. */
+  background: var(--agw-state-quiet);
+  border: 1px solid var(--agw-border);
+}
+.agw-br-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-family: var(--agw-font-ui);
+}
+.agw-br-input::placeholder {
+  color: var(--agw-text-subtle);
+}
+.agw-br-address:focus-within {
+  border-color: var(--agw-ring);
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* ── The halo — the agent is driving this page right now ─────────────
+ *
+ * The page is a native webview that paints ABOVE every pixel of DOM, so a ring
+ * drawn around the page area would be invisible; insetting the webview to make
+ * room for one would resize the viewport mid-action and change what the agent
+ * is measuring. The toolbar's bottom edge is the only border of the page area
+ * Aurora can still draw on, so that seam IS the halo: it lights up and casts a
+ * short glow down over the top of the page.
+ *
+ * Only ever on while a browser tool is actually running (see
+ * `tools/browser/halo.rs`). A permanent badge would be true all session and
+ * would therefore say nothing. */
+.agw-br-bar[data-agw-driving] {
+  border-bottom-color: color-mix(in srgb, var(--agw-accent) 55%, transparent);
+  box-shadow: 0 3px 12px -4px color-mix(in srgb, var(--agw-accent) 55%, transparent);
+}
+.agw-br-driving {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* Shrinkable, never growing: the address text gives up room for this, and no
+   * button in the bar may move when it appears. */
+  flex: 0 1 auto;
+  min-width: 0;
+  padding-left: 8px;
+  border-left: 1px solid var(--agw-border);
+  color: var(--agw-accent);
+}
+.agw-br-driving-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--agw-accent);
+  animation: agw-br-driving-pulse 1.4s ease-in-out infinite;
+}
+.agw-br-driving-label {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@keyframes agw-br-driving-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--agw-accent) 45%, transparent);
+  }
+  50% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--agw-accent) 0%, transparent);
+  }
+}
+/* ── Emulated screen size ────────────────────────────────────────────
+ * The webview is sized to the emulated device, so the panel around it shows.
+ * Darker than the page area so the device reads as a device sitting on a
+ * stage, not as a page that failed to fill the panel. */
+.agw-br-body[data-agw-stage] {
+  background: var(--agw-canvas);
+}
+.agw-br-frame-chip {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-hover-paint);
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* The dock tab's own cue, for when the user is looking at another tab. */
+.agw-tabpill-browser {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.agw-tabpill-browser[data-agw-driving] {
+  color: var(--agw-accent);
+  animation: agw-br-driving-pulse 1.4s ease-in-out infinite;
+}
+/* Reduced motion keeps the accent — colour is the state, the pulse only draws
+ * the eye to it — and drops the throb. */
+@media (prefers-reduced-motion: reduce) {
+  .agw-br-driving-dot,
+  .agw-tabpill-browser[data-agw-driving] {
+    animation: none;
+  }
+}
+
+/* The native webview covers this; a subtle backdrop shows while it loads or on
+ * non-Tauri (web preview) where the embed never attaches. */
+.agw-br-body {
+  flex: 1;
+  min-height: 0;
+  background: var(--agw-conversation);
+}
+
+/* ── Inspector picks in the TRANSCRIPT bubble ──────────────────────────────
+ * The composer stages picks as inline `.agw-pill-sel` pills; this rounded chip
+ * form is the sent-message rendering in the user bubble. */
+.agw-sel-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--agw-radius-pill);
+  background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+  max-width: 220px;
+}
+.agw-sel-tag {
+  font-family: var(--agw-font-code);
+  color: var(--agw-accent);
+  flex-shrink: 0;
+}
+.agw-sel-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--agw-text-muted);
+}
+/* Provenance tag in the `/` picker rows — sits between the name and the id. */
+.agw-cmd-source {
+  flex-shrink: 0;
+  font-size: var(--agw-fs-micro);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+  opacity: 0.8;
+}
+
+/* ── Browser address-bar suggestions dropdown ─────────────────────────── */
+.agw-br-address {
+  position: relative;
+}
+.agw-br-suggest {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 5px;
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-popover-surface);
+  border: 1px solid var(--agw-border);
+  box-shadow: var(--agw-shadow-pop);
+  animation: agw-pop-in 0.12s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.agw-br-sugg-head {
+  padding: 6px 9px 3px;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+.agw-br-sugg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+  outline: none;
+}
+.agw-br-sugg:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-br-sugg-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-ui);
+}
+.agw-br-sugg-label {
+  flex-shrink: 0;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+

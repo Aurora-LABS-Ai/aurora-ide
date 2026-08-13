@@ -248,6 +248,7 @@ mod tests {
                     thread_id: "s".into(),
                     workspace_root: Some(tmp.path().to_path_buf()),
                     cancel_token: CancellationToken::new(),
+                    spill_dir: None,
                 },
             )
             .await

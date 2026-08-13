@@ -56,6 +56,10 @@ import type {
 import { previewThreadArtifactPatch } from "@/apps/agent/services/artifacts/agent-artifacts";
 import { describeMermaidError, validateMermaidSource } from "@/apps/agent/services/artifacts/mermaid-artifacts";
 import {
+  listTerminalSessions,
+  readTerminalSession,
+} from "@/apps/agent/services/terminal/terminal-sessions";
+import {
   executeTeamLeadTool,
   isTeamLeadTool,
   type TeamToolContext,
@@ -74,6 +78,12 @@ import {
 const AURORA_FRONTEND_TOOLS = new Set<string>([
   "aurora_skill_search",
   "aurora_skill_load",
+  // The user's terminals live in this window — their xterm buffers are here,
+  // not in Rust — so reading them is necessarily a frontend tool. Both are
+  // read-only: they observe output that already exists and can neither run a
+  // command nor type into a live shell.
+  "terminal_list",
+  "terminal_read",
   // Interactive prompt. Auto-approved because the prompt UI *is* the consent —
   // it can't mutate anything, it just collects the user's answer and blocks the
   // turn until they respond (or skip).
@@ -106,6 +116,73 @@ export function shouldAutoApproveAuroraFrontendTool(toolName: string): boolean {
   // modals. Each mutation still lands in Rust via the guarded `team_*`
   // commands, and execution is hard-gated on `teamEnabled`.
   return AURORA_FRONTEND_TOOLS.has(toolName) || isTeamLeadTool(toolName);
+}
+
+/**
+ * `terminal_list` — the user's open terminals in this window.
+ *
+ * Empty is a real answer, not a failure: it means nothing is open, and saying
+ * so plainly stops the model retrying or inventing a session id.
+ */
+function runTerminalList(): string {
+  const sessions = listTerminalSessions();
+  return JSON.stringify({
+    success: true,
+    count: sessions.length,
+    terminals: sessions,
+    message:
+      sessions.length === 0
+        ? "The user has no terminal open in Aurora right now."
+        : `${sessions.length} terminal(s) open in Aurora's right rail.`,
+  });
+}
+
+interface TerminalReadArgs {
+  id?: unknown;
+  scope?: unknown;
+  head_lines?: unknown;
+  tail_lines?: unknown;
+}
+
+/** `terminal_read` — one session's output, head + tail, elision stated. */
+function runTerminalRead(rawArgs: unknown): string {
+  const args = (rawArgs ?? {}) as TerminalReadArgs;
+  const id = typeof args.id === "string" ? args.id.trim() : "";
+  if (!id) {
+    return JSON.stringify({
+      success: false,
+      error: "`id` is required. Call `terminal_list` for the open terminals and their ids.",
+    });
+  }
+
+  const scope = args.scope === "all" ? "all" : "last_command";
+  const toCount = (value: unknown, fallback: number): number =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0
+      ? Math.min(500, Math.floor(value))
+      : fallback;
+
+  const result = readTerminalSession(id, {
+    scope,
+    headLines: toCount(args.head_lines, 40),
+    tailLines: toCount(args.tail_lines, 40),
+  });
+
+  if (!result) {
+    // Name the ones that DO exist: an id that has gone stale is the common
+    // case (the user closed that tab), and the recovery is right there.
+    const open = listTerminalSessions().map((s) => `${s.id} (${s.title})`);
+    return JSON.stringify({
+      success: false,
+      error: `No terminal \`${id}\` is open in Aurora.`,
+      open_terminals: open,
+      hint:
+        open.length === 0
+          ? "The user has no terminal open."
+          : "Use one of `open_terminals`, or call `terminal_list` again.",
+    });
+  }
+
+  return JSON.stringify({ success: true, ...result });
 }
 
 interface SkillSearchArgs {
@@ -485,6 +562,10 @@ export async function executeAuroraFrontendTool(
       return runSkillSearch(args, ctx?.workspacePath ?? null);
     case "aurora_skill_load":
       return runSkillLoad(args, ctx?.workspacePath ?? null);
+    case "terminal_list":
+      return runTerminalList();
+    case "terminal_read":
+      return runTerminalRead(args);
     case "ask_question":
       return runAskQuestion(args);
     case "present_artifact":

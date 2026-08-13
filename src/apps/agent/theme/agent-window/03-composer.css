@@ -1,0 +1,685 @@
+/* ── Model selector ───────────────────────────────────────────────────
+ * Trigger pill (avatar + label + chevron) + a structured popover
+ * (header · search · grouped rich rows · footer). All `--agw-*`. */
+.agw-model-trigger {
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  /* Borderless on the composer — relies on the hover fill. */
+  border: none;
+}
+/* Reasoning effort of the selected model, shown inline on the trigger so the
+   chosen level is visible without opening the picker. Just accent-tinted text —
+   no pill/wrapper, so it reads as part of the label, not a chip. */
+.agw-model-trigger-effort {
+  flex-shrink: 0;
+  color: var(--agw-accent);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: 0.02em;
+}
+/* Leading mode glyph on the trigger — gives the pill identity and shows the
+   Agent/Plan posture at a glance (shield = agent, book = plan → warning-tinted). */
+.agw-model-trigger-mode {
+  flex-shrink: 0;
+  color: var(--agw-text-muted);
+}
+.agw-model-trigger[data-plan] .agw-model-trigger-mode {
+  color: var(--agw-warning);
+}
+
+/* ── Streaming state: the chip tells you the model is generating ──────────────
+   While the open chat streams, the model name dims to muted and a bright light
+   sweeps across it, and a diagonal shine travels UP the mode glyph (bottom
+   corner → top corner) — a real shimmer masked to the icon's strokes, not a
+   pulse. */
+.agw-model-trigger-modewrap {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  /* Which glyph the shine is masked to (swaps with mode). */
+  --agw-mode-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3l6.5 6-6.5 12-6.5-12z'/%3E%3Cpath d='M5.5 9h13'/%3E%3Cpath d='M12 3v18'/%3E%3C/svg%3E");
+}
+.agw-model-trigger[data-plan] .agw-model-trigger-modewrap {
+  --agw-mode-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 5.5A2.5 2.5 0 0 1 6.5 3H12v16H6.5A2.5 2.5 0 0 0 4 21z'/%3E%3Cpath d='M20 5.5A2.5 2.5 0 0 0 17.5 3H12v16h5.5A2.5 2.5 0 0 1 20 21z'/%3E%3C/svg%3E");
+}
+.agw-model-trigger-shine {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  /* Diagonal bright band; the mask limits it to the glyph strokes. */
+  background: linear-gradient(58deg, transparent 36%, #fff 50%, transparent 64%);
+  background-size: 260% 260%;
+  -webkit-mask: var(--agw-mode-mask) center / contain no-repeat;
+  mask: var(--agw-mode-mask) center / contain no-repeat;
+}
+.agw-model-trigger[data-streaming] .agw-model-trigger-shine {
+  opacity: 1;
+  animation: agw-model-icon-shimmer 1.9s ease-in-out infinite;
+}
+/* Bottom-left corner → top-right corner. */
+@keyframes agw-model-icon-shimmer {
+  from {
+    background-position: 0% 100%;
+  }
+  to {
+    background-position: 100% 0%;
+  }
+}
+.agw-root[data-reduce-motion] .agw-model-trigger-shine {
+  display: none;
+}
+
+.agw-model-trigger-name {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: var(--agw-fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agw-model-selector {
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+}
+
+/* The composer dock at the bottom of the conversation column.
+ * NB: no `overflow-x: hidden` here — that would force overflow-y to `auto` and
+ * clip the model selector's upward dropdown. */
+.agw-composer-dock {
+  position: relative;
+  flex-shrink: 0;
+  min-width: 0;
+  padding: 16px 16px 8px;
+  background: var(--agw-conversation);
+}
+
+/* ── The docked stack ──────────────────────────────────────────────────────
+ * The checklist, the background processes and the queued message are three
+ * independent components, but to the user they are one surface attached to
+ * the composer. `.agw-dock-card` marks them as members of that stack.
+ *
+ * Each one hides its bottom 12px behind the element below it, which reads
+ * correctly only when that element is the composer: the composer is opaque,
+ * so it paints over the strip and the card appears to rise from behind it.
+ * Stacked against each other they instead tuck into each other — two identical
+ * headers, doubled edges, and a card whose bottom is swallowed by its
+ * neighbour. It reads as a pile rather than a panel.
+ *
+ * So: a card followed by another card JOINS to it — no tuck, square joint,
+ * one hairline between the sections. Only the last card tucks, and only the
+ * composer is ever behind it. */
+/* The cards take their tint from the composer family (model selector, context
+   tooltip) further down the file, so all of them move together. They do NOT
+   take its backdrop blur: those popovers float over the scrolling transcript,
+   while these sit on the dock's own opaque background — a blur there would
+   cost a compositing layer per card and change nothing on screen. */
+.agw-composer-dock > .agw-dock-card:has(+ .agw-dock-card) {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.agw-composer-dock > .agw-dock-card + .agw-dock-card {
+  /* The seam between two separate concerns. It carries the card's own edge
+     colour on purpose: a fainter line reads as a rendering artefact, while
+     this one reads as a deliberate break between sections. */
+  border-top: 1px solid var(--agw-border-strong);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+/* The suggestion drum breaks the tuck for a different reason: it is
+ * deliberately chrome-less and mask-faded, so it hides nothing. A card tucked
+ * behind it shows its own bottomless edge, and the drum's neighbouring rows
+ * (which straddle the container by design) paint straight over the card.
+ *
+ * With the drum up, the last card closes itself instead of tucking. Only the
+ * last — the joints above it stay square. `data-drum` is set by
+ * ConversationPane, which already knows whether the drum will render. */
+.agw-composer-dock[data-drum] > .agw-dock-card:not(:has(+ .agw-dock-card)) {
+  margin-bottom: 6px;
+  padding-bottom: 0;
+  border-bottom: 1px solid var(--agw-border-strong);
+  border-bottom-left-radius: var(--agw-radius-lg);
+  border-bottom-right-radius: var(--agw-radius-lg);
+}
+
+/* Composer rows own their layout HERE, not via Tailwind utilities in the JSX —
+ * this module is `--agw-*` / plain-CSS only (see agent-window/README.md) so the
+ * whole window restyles from one stylesheet and never depends on the IDE's
+ * Tailwind build. */
+.agw-composer-band {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 6px;
+}
+.agw-composer-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 8px 6px;
+}
+.agw-composer-actions-row,
+.agw-composer-actions {
+  min-width: 0;
+}
+.agw-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 34px);
+  justify-content: flex-end;
+}
+/* Mic + waveform cluster inside the actions row. */
+.agw-composer-speech {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.agw-composer-actions .agw-icon-btn {
+  flex-shrink: 0;
+}
+@keyframes agw-model-name-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+.agw-model-trigger[data-streaming] .agw-model-trigger-name {
+  background: linear-gradient(
+    90deg,
+    var(--agw-text-muted) 0%,
+    var(--agw-text-muted) 42%,
+    var(--agw-text) 50%,
+    var(--agw-text-muted) 58%,
+    var(--agw-text-muted) 100%
+  );
+  background-size: 300% 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: agw-model-name-shimmer 2.4s linear infinite;
+}
+/* Reduce motion: no shimmer, no icon shine — just the plain chip. */
+.agw-root[data-reduce-motion] .agw-model-trigger[data-streaming] .agw-model-trigger-name {
+  background: none;
+  -webkit-text-fill-color: var(--agw-text);
+  color: var(--agw-text);
+}
+.agw-model-menu {
+  display: flex;
+  flex-direction: column;
+  /* 384px could not hold a real name. With 49 models across 18 providers the
+   * ids that actually need telling apart ("…GPT-5.6 Luna (2x usage)" vs
+   * "…GPT 5.6 Sol") differ at the END — exactly what an ellipsis removes. */
+  width: 440px;
+  max-width: min(520px, calc(100vw - 24px));
+  max-height: 420px;
+  padding: 0;
+  overflow: hidden;
+}
+.agw-model-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  padding: 11px 13px 9px;
+  border-bottom: 1px solid var(--agw-border);
+}
+
+.agw-model-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 9px 11px 6px;
+  padding: 0 9px;
+  height: 32px;
+  /* Never let the menu's flex layout shrink the search box vertically when the
+   * list is tall — keep it a fixed 32px row; only the list scrolls. */
+  flex: 0 0 auto;
+  /* Stretch to the menu width regardless of content, so the input never
+   * collapses to icon-width on first paint (looking like a square). */
+  align-self: stretch;
+  box-sizing: border-box;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-surface);
+  color: var(--agw-text-subtle);
+}
+/* No focus halo — deliberate. The cursor + fill are the only affordance.
+ * `width:100%` + `min-width:0` means the field fills its row without relying on
+ * flex-grow (which can collapse before the first reflow). */
+.agw-model-search input {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-md);
+}
+.agw-model-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* Always reserve the scrollbar gutter so rows don't reflow (and the menu
+   * doesn't "breathe") when the list toggles between scrollable and empty. */
+  scrollbar-gutter: stable;
+  padding: 4px 6px 6px;
+}
+
+/* Provider section (and the Recent strip) in the model picker. */
+.agw-model-group + .agw-model-group {
+  margin-top: 4px;
+}
+.agw-model-group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--agw-text-subtle);
+  padding: 7px 8px 4px;
+}
+.agw-model-group-count {
+  font-weight: var(--agw-fw-medium);
+  opacity: 0.75;
+}
+.agw-model-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  /* Menu-row labels read at FULL text strength at rest (Codex-style) —
+     hover/selected change the background, not gray→white text. Secondary
+     info stays quiet via .agw-model-sub. Same rule applies to every
+     dropdown row: .agw-menu-item, .agw-csel-item, .agw-mention-item,
+     .agw-qp-opt. */
+  color: var(--agw-text);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+
+.agw-model-item:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-model-item[data-active] {
+  /* Calm, neutral selected fill (no accent box) — the accent check is the only
+     colored cue. Stronger than hover so it still reads as selected. */
+  background: color-mix(in srgb, var(--agw-text) 9%, transparent);
+  border-color: transparent;
+  color: var(--agw-text);
+}
+.agw-model-item:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-model-meta {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.agw-model-name {
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Name + capability badges share one line; the name flexes/ellipsizes while the
+   badges keep their intrinsic width. */
+.agw-model-nameline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+/* Capability badge (Vision / Tools) — quiet, outline chip, accent-neutral. */
+/* Capability glyphs — they live in the CONTROL cluster, not next to the name.
+ *
+ * They used to sit beside the name with `flex-shrink: 0` while the name itself
+ * shrank, so every pixel a narrow menu was short came out of the only text that
+ * identifies the row: three different models all rendered "RESPONSE-GPT…" with
+ * VISION and TOOLS beside them at full width. Decoration was pinned, identity
+ * was negotiable.
+ *
+ * Words became glyphs for a second reason: a label true of nearly every row
+ * carries no information while still charging full width, and a column of
+ * outlined chips beside a column of toggles gave metadata the same weight as
+ * the model being chosen. */
+.agw-model-cap {
+  flex-shrink: 0;
+  color: var(--agw-text-subtle);
+}
+.agw-model-cap svg {
+  color: var(--agw-text-muted);
+}
+/* Right cluster — inline reasoning control + active check. */
+.agw-model-controls {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.agw-model-reason {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Effort chip — shows the current level; click cycles it. */
+.agw-model-effort {
+  height: 18px;
+  padding: 0 7px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: transparent;
+  color: var(--agw-accent);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+  outline: none;
+}
+.agw-model-effort:hover {
+  background: color-mix(in srgb, var(--agw-accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--agw-accent) 40%, transparent);
+}
+.agw-model-effort:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* Budget models: the chip is the same `.agw-model-effort` pill (so budget and
+   effort rows keep identical heights); this wrapper just anchors its popover. */
+.agw-model-reason-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* ── Thinking-budget popover ─────────────────────────────────────────────────
+ * PORTALED to `.agw-root` (`.agw-model-menu` clips with `overflow: hidden`, so
+ * an in-row absolute panel would be cut off). Member of the composer popover
+ * family — the tint rule below gives it the same premium glass as the model
+ * and mention pickers. */
+.agw-bud-pop {
+  z-index: 1000;
+  padding: 12px;
+  /* Same glass + entrance as `.agw-menu` / `.agw-mention`; the composer-family
+     rule near the end of this file supplies the tint. */
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  backdrop-filter: blur(24px) saturate(140%);
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-lg);
+  background: var(--agw-popover-surface);
+  box-shadow: var(--agw-shadow-pop);
+  animation: agw-pop-in 0.12s cubic-bezier(0.2, 0.9, 0.3, 1);
+  cursor: default;
+}
+.agw-bud-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.agw-bud-title {
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-bud-value {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-md);
+  color: var(--agw-accent);
+  font-variant-numeric: tabular-nums;
+}
+/* The track paints its own fill from `--agw-bud-pct` (set inline) so the filled
+   portion reads as "spent" without relying on `accent-color`, which can't be
+   split into two colors. */
+.agw-bud-range {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 18px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.agw-bud-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: var(--agw-radius-pill);
+  background: linear-gradient(
+    to right,
+    var(--agw-accent) var(--agw-bud-pct, 50%),
+    var(--agw-control-muted) var(--agw-bud-pct, 50%)
+  );
+}
+.agw-bud-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: var(--agw-text);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--agw-text) 30%, transparent);
+  transition: transform 0.12s ease;
+}
+.agw-bud-range:hover::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+.agw-bud-range:focus-visible {
+  outline: none;
+}
+.agw-bud-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px var(--agw-ring);
+}
+.agw-bud-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+.agw-bud-presets {
+  display: flex;
+  gap: 4px;
+  margin-top: 11px;
+}
+.agw-bud-preset {
+  flex: 1;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  outline: none;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.agw-bud-preset:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-bud-preset[data-on] {
+  background: color-mix(in srgb, var(--agw-accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--agw-accent) 45%, transparent);
+  color: var(--agw-accent);
+}
+.agw-bud-preset:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+.agw-bud-hint {
+  margin: 10px 0 0;
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text-subtle);
+}
+.agw-bud-hint[data-tone="warn"] {
+  color: var(--agw-warning);
+}
+
+/* Compact reasoning switch — same token scheme as .agw-switch, smaller. */
+.agw-mswitch {
+  position: relative;
+  flex-shrink: 0;
+  width: 30px;
+  height: 17px;
+  padding: 0;
+  border: none;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-control-muted);
+  cursor: pointer;
+  transition: background 0.18s ease;
+  outline: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agw-text) 6%, transparent);
+}
+.agw-mswitch-knob {
+  position: absolute;
+  top: 2.5px;
+  left: 2.5px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--agw-text);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--agw-text) 30%, transparent);
+  transition: transform 0.18s cubic-bezier(0.34, 1.4, 0.6, 1), background 0.18s ease;
+}
+.agw-mswitch[data-on] {
+  background: var(--agw-accent);
+}
+.agw-mswitch[data-on] .agw-mswitch-knob {
+  transform: translateX(13px);
+  background: var(--agw-on-accent);
+}
+.agw-mswitch:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* Agent/Plan mode toggle in the picker header — a compact 2-segment control.
+   Agent segment tints accent; Plan segment tints warning (read-only posture). */
+.agw-model-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-surface);
+}
+.agw-model-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 9px;
+  border: none;
+  border-radius: var(--agw-radius-pill);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-model-mode-btn svg {
+  flex-shrink: 0;
+}
+.agw-model-mode-btn:hover {
+  color: var(--agw-text);
+}
+.agw-model-mode-btn[data-active] {
+  background: color-mix(in srgb, var(--agw-accent) 18%, transparent);
+  color: var(--agw-accent);
+}
+.agw-model-mode-btn[data-mode="plan"][data-active] {
+  background: color-mix(in srgb, var(--agw-warning) 18%, transparent);
+  color: var(--agw-warning);
+}
+.agw-model-mode-btn:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* Provider name on Recent rows — renders inline after the capability chips, so
+ * a Recent row is the same height as a provider-grouped row. It yields space
+ * before the model name does (the name is the identifying label). */
+/* Provider name, shown ONLY in the Selected and Recent strips — everywhere else
+ * a section header already states it and repeating it per row is noise.
+ *
+ * The absurd shrink factor is load-bearing: this is the part of the row that
+ * can be sacrificed, so it must lose width long before the model name does.
+ * Equal shrink is what let secondary text truncate the primary text. */
+.agw-model-sub {
+  flex: 0 1000000 auto;
+  min-width: 0;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-model-empty {
+  padding: 22px 12px;
+  text-align: center;
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text-subtle);
+}
+.agw-model-foot {
+  flex: 0 0 auto;
+  padding: 8px 13px;
+  border-top: 1px solid var(--agw-border);
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+
+/* Composer textarea + rail search placeholders use the muted token. */
+.agw-root textarea::placeholder,
+.agw-root input::placeholder {
+  color: var(--agw-text-subtle);
+}
+
+/* Dropdown / menu item (model selector + future menus). Background lives in CSS
+ * (not inline) so :hover can win; the active row opts in via aria-selected. */
+.agw-menu-item {
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-menu-item:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-menu-item[aria-selected="true"] {
+  background: var(--agw-surface);
+  color: var(--agw-text);
+}
+.agw-menu-item:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+

@@ -88,10 +88,11 @@ impl ToolExecutor for MultiFileReadTool {
             let path = entry.as_str().ok_or_else(|| {
                 ToolError::InvalidInput("each entry of `paths` must be a string".into())
             })?;
-            let abs = match super::resolve_path_for_read(
+            let abs = match super::resolve_path_for_read_with_spill(
                 path,
                 ctx.workspace_root.as_deref(),
                 ctx.allow_outside_workspace,
+                ctx.spill_dir.as_deref(),
             ) {
                 Ok(abs) => abs,
                 Err(ToolError::Execution(err)) => {
@@ -304,6 +305,7 @@ mod tests {
             thread_id: "s".into(),
             workspace_root: workspace,
             cancel_token: CancellationToken::new(),
+            spill_dir: None,
         }
     }
 

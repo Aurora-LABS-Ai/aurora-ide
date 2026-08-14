@@ -1,0 +1,303 @@
+/* ── Live tool marks ───────────────────────────────────────────────────────
+ * A running tool no longer spins a generic ring beside a mark that sits still.
+ * The mark itself works: a scan passes down it, and the one element that DOES
+ * the thing moves — the pencil writes, the lens sweeps the page, the prompt
+ * caret blinks, the globe's meridians turn.
+ *
+ * Two halves, and the split is the whole design:
+ *
+ *   the SCAN is universal.  One rule, every glyph in the set, including MCP
+ *   tools nobody drew a mark for. Nothing ever looks unfinished.
+ *   the PART is per glyph.  AgentIcon tags one element with `data-part` (see
+ *   its module doc for the vocabulary); the timing lives here.
+ *
+ * Colour: none. The mark rests at --agw-text-muted and rises to --agw-text —
+ * the same two colours .agw-shimmer (08-transcript-flow.css) already uses on
+ * the label beside it. An accent here would make the icon the loudest thing
+ * in a row whose job is to be scannable.
+ *
+ * Tempo: --agw-glyph-beat. One beat = one pass of the scan AND one stroke of
+ * work, so the two halves never drift apart or beat against each other.
+ */
+
+.agw-tool-glyph {
+  /* The scan copy is absolutely positioned over the base, so the host has to
+     be the containing block. `inline-flex` keeps the box exactly the icon's
+     size — AgentIcon already sets flex-shrink: 0 inline. */
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  line-height: 0;
+}
+
+.agw-tool-glyph-scan {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* An <svg> clips at its own box, and these glyphs are drawn to fill their
+ * 24-unit viewBox — so any part that MOVES can be sheared by an edge it was
+ * already touching. `search` proved it: its lens is a centred r=6.4 circle
+ * whose stroked top sits at 3.85, and the sweep lifts it 5.4, putting the top
+ * of the circle outside the box where it came back with a flat cut across it.
+ * The amplitudes below are kept inside the box on their own; this is the
+ * guarantee that a future glyph tagged with a part can't reintroduce the bug.
+ * Cost is nothing: the row is a flex line with 8px gaps, so a fraction of a
+ * pixel of bleed has nothing to collide with. */
+.agw-tool-glyph svg {
+  overflow: visible;
+}
+
+.agw-tool-glyph[data-live] {
+  --agw-glyph-beat: 1.67s;
+  /* Pinned, not inherited: .agw-tool-head goes to --agw-text on hover, which
+     would raise the base to the scan's own colour and erase the sweep exactly
+     when the pointer is on the row. */
+  color: var(--agw-text-muted);
+}
+
+/* The scan. A soft band, masked over a full-strength copy of the mark, so the
+   glyph is never dimmer than it is at rest — the light is added, not removed.
+   Mask-repeat defaults to `repeat`, and the band sits in the middle of a
+   200%-tall tile, so each pass flows into the next with no reset. */
+.agw-tool-glyph[data-live] .agw-tool-glyph-scan {
+  color: var(--agw-text);
+  -webkit-mask-image: linear-gradient(180deg, transparent 34%, #000 50%, transparent 66%);
+  mask-image: linear-gradient(180deg, transparent 34%, #000 50%, transparent 66%);
+  -webkit-mask-size: 100% 200%;
+  mask-size: 100% 200%;
+  animation: agw-glyph-scan var(--agw-glyph-beat) linear infinite;
+}
+
+@keyframes agw-glyph-scan {
+  from {
+    -webkit-mask-position: 0 200%;
+    mask-position: 0 200%;
+  }
+  to {
+    -webkit-mask-position: 0 0%;
+    mask-position: 0 0%;
+  }
+}
+
+/* The working part sits at full text strength in BOTH copies: it is the thing
+   the row is about, so it stays legible between passes of the scan. */
+.agw-tool-glyph[data-live] [data-part] {
+  color: var(--agw-text);
+  /* Percentage transform-origins on an SVG child resolve against the viewBox
+     unless the box is redefined; fill-box makes `center` mean the element's
+     own centre, which is what every keyframe below assumes. */
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* ── the vocabulary ──────────────────────────────────────────────────────── */
+
+.agw-tool-glyph[data-live] [data-part="nib"] {
+  animation: agw-glyph-nib var(--agw-glyph-beat) ease-in-out infinite;
+}
+.agw-tool-glyph[data-live] [data-part="line"] {
+  /* pathLength normalises every stroke to 1, so ONE dash rule fits a 3-unit
+     text line and a 19-unit divider without measuring either. */
+  stroke-dasharray: 1;
+  animation: agw-glyph-write var(--agw-glyph-beat) ease-in-out infinite;
+}
+.agw-tool-glyph[data-live] [data-part="line"] ~ [data-part="line"] {
+  animation-delay: calc(var(--agw-glyph-beat) * 0.12);
+}
+/* A check that lands. Same draw as `line` — a tick IS a stroke writing itself —
+   but held back a beat-fraction so a row's text writes first and the mark
+   confirming it arrives after, which is the order the eye expects. */
+.agw-tool-glyph[data-live] [data-part="tick"] {
+  stroke-dasharray: 1;
+  animation: agw-glyph-write var(--agw-glyph-beat) ease-in-out infinite;
+  animation-delay: calc(var(--agw-glyph-beat) * 0.18);
+}
+.agw-tool-glyph[data-live] [data-part="lens"] {
+  animation: agw-glyph-lens var(--agw-glyph-beat) ease-in-out infinite;
+}
+.agw-tool-glyph[data-live] [data-part="caret"] {
+  animation: agw-glyph-caret var(--agw-glyph-beat) steps(1, end) infinite;
+}
+.agw-tool-glyph[data-live] [data-part="pulse"] {
+  animation: agw-glyph-pulse var(--agw-glyph-beat) ease-in-out infinite;
+}
+.agw-tool-glyph[data-live] [data-part="flow"] {
+  animation: agw-glyph-flow var(--agw-glyph-beat) ease-in-out infinite;
+}
+/* Sequence, not chorus: each further sibling starts a beat-fraction later, so
+   `flow` reads as travelling along the mark rather than blinking all at once. */
+.agw-tool-glyph[data-live] [data-part="flow"] ~ [data-part="flow"] {
+  animation-delay: calc(var(--agw-glyph-beat) * 0.11);
+}
+.agw-tool-glyph[data-live] [data-part="flow"] ~ [data-part="flow"] ~ [data-part="flow"] {
+  animation-delay: calc(var(--agw-glyph-beat) * 0.22);
+}
+.agw-tool-glyph[data-live] [data-part="travel"] {
+  animation: agw-glyph-travel var(--agw-glyph-beat) ease-in-out infinite;
+}
+.agw-tool-glyph[data-live] [data-part="travel-y"] {
+  animation: agw-glyph-travel-y var(--agw-glyph-beat) ease-in-out infinite;
+}
+.agw-tool-glyph[data-live] [data-part="turn"] {
+  animation: agw-glyph-turn var(--agw-glyph-beat) ease-in-out infinite;
+}
+.agw-tool-glyph[data-live] [data-part="turn-b"] {
+  /* The globe's second meridian, in counter-phase — together they read as one
+     sphere rotating rather than two arcs squashing. */
+  animation: agw-glyph-turn-b var(--agw-glyph-beat) ease-in-out infinite;
+}
+
+@keyframes agw-glyph-nib {
+  0% {
+    transform: translate(-2.4px, 2.4px);
+  }
+  45% {
+    transform: translate(1.8px, -1.8px);
+  }
+  60% {
+    transform: translate(1.8px, -1.8px);
+  }
+  100% {
+    transform: translate(-2.4px, 2.4px);
+  }
+}
+
+@keyframes agw-glyph-write {
+  0% {
+    stroke-dashoffset: 1;
+  }
+  45% {
+    stroke-dashoffset: 0;
+  }
+  60% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: 1;
+  }
+}
+
+/* Travel is bounded by the WORST case, not the roomiest one. Four glyphs share
+ * this part: three hold the lens low over a document and could climb further,
+ * but `search` is the bare magnifier, centred, with only 3.85 units of clearance
+ * above its stroked edge. 3.4 keeps every one of them inside the box, and at a
+ * 16px render the difference between a 3.6px sweep and a 2.3px one is nothing
+ * next to a mark that visibly loses its top. */
+@keyframes agw-glyph-lens {
+  0% {
+    transform: translate(0, 0);
+  }
+  45% {
+    transform: translate(-1px, -3.4px);
+  }
+  55% {
+    transform: translate(-1px, -3.4px);
+  }
+  100% {
+    transform: translate(0, 0);
+  }
+}
+
+@keyframes agw-glyph-caret {
+  0%,
+  48% {
+    opacity: 1;
+  }
+  49%,
+  100% {
+    opacity: 0.25;
+  }
+}
+
+@keyframes agw-glyph-pulse {
+  0%,
+  100% {
+    transform: scale(0.74);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes agw-glyph-flow {
+  0%,
+  100% {
+    opacity: 0.32;
+  }
+  45% {
+    opacity: 1;
+  }
+}
+
+@keyframes agw-glyph-travel {
+  0%,
+  100% {
+    transform: translateX(-1.4px);
+  }
+  50% {
+    transform: translateX(1.4px);
+  }
+}
+
+@keyframes agw-glyph-travel-y {
+  0%,
+  100% {
+    transform: translateY(-1.4px);
+  }
+  50% {
+    transform: translateY(1.4px);
+  }
+}
+
+@keyframes agw-glyph-turn {
+  0%,
+  100% {
+    transform: scaleX(1);
+  }
+  50% {
+    transform: scaleX(0.18);
+  }
+}
+
+@keyframes agw-glyph-turn-b {
+  0%,
+  100% {
+    transform: scaleX(0.18);
+  }
+  50% {
+    transform: scaleX(1);
+  }
+}
+
+/* Reduce motion — AURORA'S OWN SWITCH ONLY (Appearance → Reduce motion).
+ *
+ * Deliberately NOT `@media (prefers-reduced-motion: reduce)`. This window
+ * animates its transcript unconditionally by house rule (the note in
+ * 08-transcript-flow.css records why), so the label shimmer, the row fade and
+ * the card dropdowns all keep running when the OS asks for less motion. A
+ * single element obeying the OS therefore does not read as restraint — it
+ * reads as broken: measured on the owner's machine, where Windows reports
+ * SPI_GETCLIENTAREAANIMATION = false, the media-query version of this block
+ * silently switched the whole feature off while the shimmer 8px away carried
+ * on, and the running row lost its only live sign.
+ *
+ * The in-app switch is an explicit choice about THIS window, so it is the one
+ * that counts. Scoped to these marks — never a blanket `animation: none` under
+ * .agw-root, which zeroed every transition in the window once before. The
+ * result is the frozen bright mark: a live row still reads as live, it just
+ * holds still. The scan copy goes rather than freezing mid-pass, which would
+ * leave a permanent bright band across a third of the glyph. */
+.agw-root[data-reduce-motion] .agw-tool-glyph[data-live] {
+  color: var(--agw-text);
+}
+.agw-root[data-reduce-motion] .agw-tool-glyph[data-live] .agw-tool-glyph-scan {
+  display: none;
+}
+.agw-root[data-reduce-motion] .agw-tool-glyph[data-live] [data-part] {
+  animation: none;
+  stroke-dasharray: none;
+}

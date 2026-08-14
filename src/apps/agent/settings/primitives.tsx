@@ -12,7 +12,15 @@
  *   </SettingsSection>
  */
 
-import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 
@@ -204,6 +212,18 @@ export interface SegmentOption<T extends string> {
   tone?: "success" | "warning" | "danger" | "neutral";
 }
 
+/**
+ * Selection is drawn by ONE pill that travels to the chosen option, not by each
+ * button painting its own fill. The difference is that the control shows where
+ * the selection went — the same reason the switch above animates its knob
+ * rather than swapping two pictures.
+ *
+ * The pill is measured, never guessed: labels are user-facing text and scale
+ * with Interface text size, so any hard-coded geometry drifts the moment either
+ * changes. Measurement is from bounding rects (offsetLeft's reference edge
+ * differs by engine) minus the container's own border, because an absolutely
+ * positioned child is placed against the padding box.
+ */
 export function AgwSegmented<T extends string>({
   value,
   options,
@@ -215,8 +235,72 @@ export function AgwSegmented<T extends string>({
   onChange: (next: T) => void;
   ariaLabel: string;
 }) {
+  const groupRef = useRef<HTMLDivElement>(null);
+  const [pill, setPill] = useState<{ x: number; w: number } | null>(null);
+  // The option list is almost always an inline literal, so its identity changes
+  // every render. Keying on the values themselves is what stops the effect
+  // below from tearing down and rebuilding its observer each time.
+  const optionKey = options.map((o) => o.value).join(" ");
+  // The FIRST placement must not animate, or every segmented control in
+  // Settings flies in from the left edge when the page mounts. Transitions are
+  // switched on one frame after the pill has been put where it belongs.
+  const [ready, setReady] = useState(false);
+
+  useLayoutEffect(() => {
+    const group = groupRef.current;
+    if (!group) return;
+
+    const measure = () => {
+      const active = group.querySelector<HTMLElement>(".agw-seg-btn[data-active]");
+      if (!active) {
+        setPill(null);
+        return;
+      }
+      const box = group.getBoundingClientRect();
+      const target = active.getBoundingClientRect();
+      const x = target.left - box.left - group.clientLeft;
+      const w = target.width;
+      // Same numbers must not produce a new object — this runs on every render
+      // and on every observed resize, and a fresh object each time would spin.
+      setPill((prev) => (prev && prev.x === x && prev.w === w ? prev : { x, w }));
+    };
+
+    measure();
+    // Labels ellipsize as the row narrows, and Interface text size can change
+    // under us — both move the pill without any prop changing.
+    const observer = new ResizeObserver(measure);
+    observer.observe(group);
+    for (const child of Array.from(group.children)) {
+      if (child instanceof HTMLElement) observer.observe(child);
+    }
+    return () => observer.disconnect();
+    // Selection and the option set are the only things that move the pill on
+    // their own; every other cause is a size change, which the observer sees.
+  }, [value, optionKey]);
+
+  useEffect(() => {
+    if (!pill || ready) return;
+    const frame = requestAnimationFrame(() => setReady(true));
+    return () => cancelAnimationFrame(frame);
+  }, [pill, ready]);
+
   return (
-    <div className="agw-seg" role="radiogroup" aria-label={ariaLabel}>
+    <div className="agw-seg" role="radiogroup" aria-label={ariaLabel} ref={groupRef}>
+      {pill && (
+        <span
+          className="agw-seg-thumb"
+          data-ready={ready || undefined}
+          // Decoration: the selected state is already carried by aria-checked
+          // on the button underneath, so this must not reach the a11y tree.
+          aria-hidden
+          style={
+            {
+              "--agw-seg-thumb-x": `${pill.x}px`,
+              "--agw-seg-thumb-w": `${pill.w}px`,
+            } as React.CSSProperties
+          }
+        />
+      )}
       {options.map((opt) => (
         <button
           key={opt.value}

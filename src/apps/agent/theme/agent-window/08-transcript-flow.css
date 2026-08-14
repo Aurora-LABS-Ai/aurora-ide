@@ -244,7 +244,8 @@
   border: 1px solid var(--agw-border-strong);
   border-bottom: none;
   border-radius: var(--agw-radius-lg) var(--agw-radius-lg) 0 0;
-  background: var(--agw-surface);
+  background: var(--agw-card-paint);
+  /* Flat for the same reason as .agw-tasks — it is attached to the composer. */
   overflow: hidden;
 }
 .agw-queued-head {
@@ -316,7 +317,8 @@
   border: 1px solid color-mix(in srgb, var(--agw-accent) 24%, var(--agw-border));
   border-radius: var(--agw-radius-md);
   outline: none;
-  background: var(--agw-surface);
+  background: var(--agw-card-paint);
+  box-shadow: var(--agw-control-lift);
   color: var(--agw-text);
   text-align: left;
   cursor: pointer;

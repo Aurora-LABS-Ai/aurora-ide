@@ -203,9 +203,10 @@
      model list inside it does (header + connection stay pinned). Content-driven
      height up to the cap, so a short list keeps the pane short (no dead space). */
   max-height: calc(100dvh - 250px);
-  border: 1px solid var(--agw-border);
+  border: 1px solid var(--agw-card-line);
   border-radius: var(--agw-set-r-card);
-  background: var(--agw-surface);
+  background: var(--agw-card-paint);
+  box-shadow: var(--agw-set-shadow);
   padding: 18px;
 }
 .agw-prov-detail-empty {

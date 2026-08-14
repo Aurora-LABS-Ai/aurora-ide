@@ -54,6 +54,45 @@
   --agw-rail-paint: var(--agw-rail);
   --agw-dock-paint: var(--agw-dock);
 
+  /* ── Depth aliases (Appearance → Interface) ──────────────────────────────
+   * Same PAINT-alias contract as the frame above: cards read these, never
+   * --agw-surface / --agw-border directly, so the whole window's sense of
+   * depth is four values instead of forty rules.
+   *
+   * The values HERE are CLASSIC — --agw-card-paint IS --agw-surface and both
+   * lifts are `none`, so on classic nothing about the window changes.
+   * `[data-ui="v2"]` below re-points them.
+   *
+   * V2 is not "add a shadow". It TRADES fill contrast for elevation: the
+   * card fill moves back toward the canvas and the border loses a third of its
+   * alpha, then a three-part shadow does the separating — a 1px top light-catch
+   * so the card has an edge that catches light, a tight contact shadow, and a
+   * wide ambient one with heavy negative spread so it pools UNDER the card
+   * rather than haloing around it. A quieter card that is clearly lifted reads
+   * as material; a loud card with a drop shadow reads as a sticker.
+   *
+   * --agw-control-lift is the same idea one tier down, for raised CONTROLS
+   * (settings buttons, the back button). Contact shadow only: a button is a
+   * small object close to the surface, and the full card recipe on one makes
+   * it look like it detached. */
+  --agw-card-paint: var(--agw-surface);
+  --agw-card-line: var(--agw-border);
+  --agw-card-lift: none;
+  --agw-card-lift-hover: none;
+  --agw-control-lift: none;
+
+  /* Material grain — the cheapest thing that stops a flat near-black reading as
+   * plastic. A tiled, desaturated fractal-noise tile carried as a data URI: no
+   * asset, no request, identical in both windows. `none` on classic.
+   *
+   * It goes on the two GROUNDS (this element and the settings page), not on
+   * every card, for two reasons. It is a background-IMAGE rather than a blended
+   * overlay — a full-window mix-blend-mode layer would drag the whole window
+   * into one blended stacking context, a real compositing cost for a texture
+   * nobody consciously sees. And a ground is the only thing large enough for a
+   * 160px tile to read as material; on a 40px-tall row it is just dirt. */
+  --agw-grain: none;
+
   /* The PAINT alias for hover fills. EVERY hover in this file uses this, never
    * --agw-hover directly, so a surface that needs a different hover strength
    * can re-point the alias once and have all its rows follow.
@@ -139,7 +178,11 @@
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  background: var(--agw-canvas);
+  /* Split from the `background` shorthand so the grain can ride as a second
+   * layer without every theme having to restate the fill. Classic leaves
+   * --agw-grain at `none`, which is a no-op background-image. */
+  background-color: var(--agw-canvas);
+  background-image: var(--agw-grain);
   color: var(--agw-text);
   font-family: var(--agw-font-ui);
   font-size: var(--agw-fs-body);
@@ -179,6 +222,58 @@
    * so transcript text is copyable; interactive controls opt back out below. */
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* ── V2: depth ──────────────────────────────────────────────────────────────
+ * V2's paint half. It re-points the aliases declared above and sets NO colour
+ * of its own, which is why it composes with every theme — a user's own colours
+ * stay their colours, they just gain a light-catch, a shadow and a grain.
+ * (V2's layout half lives with the page it restructures — see the Providers
+ * rules in 22-settings-providers-detail.css.)
+ *
+ * The fills are color-mix toward the user's OWN canvas rather than fixed
+ * alphas, so a card lands the same distance from the page whatever background
+ * that theme (or the user's Window frame picker) is set to. */
+.agw-root[data-ui="v2"] {
+  --agw-card-paint: color-mix(in srgb, var(--agw-surface) 55%, var(--agw-canvas));
+  --agw-card-line: color-mix(in srgb, var(--agw-border) 62%, transparent);
+  --agw-card-lift:
+    inset 0 1px 0 rgb(255 255 255 / 4.5%),
+    0 1px 2px rgb(0 0 0 / 18%),
+    0 6px 16px -10px rgb(0 0 0 / 30%);
+  --agw-card-lift-hover:
+    inset 0 1px 0 rgb(255 255 255 / 6%),
+    0 2px 4px rgb(0 0 0 / 20%),
+    0 10px 24px -10px rgb(0 0 0 / 38%);
+  --agw-control-lift:
+    inset 0 1px 0 rgb(255 255 255 / 4%),
+    0 1px 2px rgb(0 0 0 / 16%);
+
+  /* 160px tile, fractalNoise desaturated to grey and laid down at 4.5% — the
+   * grain has to be felt, not seen. `stitchTiles` is what makes the repeat
+   * seamless; without it every tile edge draws a visible seam across the
+   * window. Encoded for a CSS url(): `#` must be %23 or the parser reads the
+   * rest of the value as a fragment. */
+  --agw-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.72' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23g)' opacity='0.045'/%3E%3C/svg%3E");
+}
+
+/* Light themes invert the light-catch's job. On a dark surface the top edge is
+ * the only part catching light, so a 4.5% white line reads as a bevel; on a
+ * light surface that same line is invisible and the shadow has to carry it
+ * alone — near-opaque white above, and far softer, cooler shadows below (a
+ * black shadow at dark-mode strength on a white card reads as dirt). */
+.agw-root[data-appearance="light"][data-ui="v2"] {
+  --agw-card-lift:
+    inset 0 1px 0 rgb(255 255 255 / 90%),
+    0 1px 2px rgb(16 22 33 / 5%),
+    0 8px 20px -12px rgb(16 22 33 / 14%);
+  --agw-card-lift-hover:
+    inset 0 1px 0 rgb(255 255 255 / 100%),
+    0 2px 4px rgb(16 22 33 / 7%),
+    0 12px 26px -12px rgb(16 22 33 / 20%);
+  --agw-control-lift:
+    inset 0 1px 0 rgb(255 255 255 / 80%),
+    0 1px 2px rgb(16 22 33 / 6%);
 }
 
 .agw-root *,

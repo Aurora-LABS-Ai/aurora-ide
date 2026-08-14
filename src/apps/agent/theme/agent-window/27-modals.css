@@ -316,10 +316,31 @@
 .agw-bubble-body {
   min-width: 0;
 }
+
+/* How many lines survive the clamp. A bare NUMBER on the root, on purpose:
+ * `MessageBubble` reads this same property back out of the computed style to
+ * decide whether the chevron is worth showing, so the painted clamp and the
+ * measured threshold cannot drift apart (they were two hand-synced constants
+ * before, with a comment asking the next person to keep them equal).
+ *
+ * A PINNED question gets half as many. With sticky-user on, the bubble stops
+ * being a message you read and becomes a header the whole reply scrolls under —
+ * its job is to remind you what you asked, and six lines of it ate a fifth of
+ * the window for the length of the answer. Three lines still carry the ask; the
+ * chevron and the card's own scroll are there for the rest. */
+.agw-root {
+  --agw-bubble-clamp-lines: 6;
+}
+.agw-root[data-transcript-sticky-user] {
+  --agw-bubble-clamp-lines: 3;
+}
+
 .agw-bubble-body[data-collapsed] {
-  /* Six lines at the bubble's ACTUAL leading — must track the user-tunable
-   * line-height token or the clamp cuts mid-line when it's customized. */
-  max-height: calc(1em * var(--agw-msg-user-line-height, 1.6) * 6);
+  /* At the bubble's ACTUAL leading — must track the user-tunable line-height
+   * token or the clamp cuts mid-line when it's customized. */
+  max-height: calc(
+    1em * var(--agw-msg-user-line-height, 1.6) * var(--agw-bubble-clamp-lines, 6)
+  );
   overflow: hidden;
   /* Fades the cut line so the clamp reads as "continues" rather than "ends". */
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);

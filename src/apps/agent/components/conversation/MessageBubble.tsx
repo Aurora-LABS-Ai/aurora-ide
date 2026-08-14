@@ -254,9 +254,14 @@ const CopyAction: React.FC<{ text: string }> = ({ text }) => {
 };
 
 /**
- * Lines of a long user message kept visible while collapsed. Must match the
- * `calc(1.55em * 6)` clamp on `.agw-bubble-body[data-collapsed]` — the CSS owns
- * the height, this only decides when the chevron is worth showing.
+ * Fallback for the number of lines a long user message keeps while collapsed.
+ *
+ * The real value is `--agw-bubble-clamp-lines`, declared on `.agw-root` in the
+ * stylesheet and halved for pinned questions — the measurement below reads it
+ * back out of the computed style rather than restating it, so the height that
+ * gets painted and the threshold that decides whether the chevron appears can
+ * never disagree. This constant only covers the case where no stylesheet is
+ * attached at all (jsdom in tests).
  */
 const USER_BUBBLE_CLAMP_LINES = 6;
 
@@ -284,14 +289,20 @@ const CollapsibleBubbleBody: React.FC<{ children: React.ReactNode }> = ({
     if (!el) return;
 
     const measure = () => {
-      const lineHeight = Number.parseFloat(getComputedStyle(el).lineHeight);
+      const style = getComputedStyle(el);
+      const lineHeight = Number.parseFloat(style.lineHeight);
       // A non-numeric `line-height: normal` has no reliable px value; fall back
       // to the bubble's own defaults, 14px × 1.6 (`msgUserFontSize` /
       // `msgUserLineHeight` in themes.ts), so the estimate stays in range.
       const line = Number.isFinite(lineHeight) ? lineHeight : 22.4;
+      // The clamp itself, straight from the stylesheet — it is 6 normally and 3
+      // once the pinned treatment is on, and reading it means this measurement
+      // follows that automatically instead of being told about it.
+      const declared = Number.parseFloat(style.getPropertyValue("--agw-bubble-clamp-lines"));
+      const lines = Number.isFinite(declared) && declared > 0 ? declared : USER_BUBBLE_CLAMP_LINES;
       // +1px absorbs sub-pixel rounding, which otherwise shows a chevron that
       // expands to reveal nothing.
-      const next = el.scrollHeight > line * USER_BUBBLE_CLAMP_LINES + 1;
+      const next = el.scrollHeight > line * lines + 1;
       setOverflows(next);
       // Widening the window can make an expanded message fit again. Drop the
       // expanded flag with it, so it doesn't silently reappear expanded the

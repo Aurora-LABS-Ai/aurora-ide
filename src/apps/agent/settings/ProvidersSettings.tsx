@@ -389,10 +389,12 @@ const ApiKeyPoolEditor: React.FC<{
           <button
             type="button"
             className="agw-prov-icon-btn"
+            aria-label={reveal ? "Hide backup keys" : "Show backup keys"}
+            aria-pressed={reveal}
             title={reveal ? "Hide keys" : "Show keys"}
             onClick={() => setReveal((v) => !v)}
           >
-            <AgentIcon name={reveal ? "inspect" : "browser"} size={14} />
+            <AgentIcon name={reveal ? "eye-off" : "eye"} size={14} />
           </button>
         )}
       </div>
@@ -972,9 +974,15 @@ const ProviderDetail: React.FC<{
                 type="button"
                 className="agw-prov-icon-btn"
                 onClick={() => setShowKey((v) => !v)}
-                title={showKey ? "Hide" : "Show"}
+                // The icon names the ACTION, not the current state: while the
+                // key is visible the button hides it, so it wears the struck
+                // eye. aria-pressed is what tells a screen reader which way
+                // the toggle currently sits.
+                aria-label={showKey ? "Hide API key" : "Show API key"}
+                aria-pressed={showKey}
+                title={showKey ? "Hide API key" : "Show API key"}
               >
-                <AgentIcon name={showKey ? "inspect" : "browser"} size={14} />
+                <AgentIcon name={showKey ? "eye-off" : "eye"} size={14} />
               </button>
             </div>
           </label>

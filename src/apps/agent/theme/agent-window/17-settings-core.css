@@ -33,7 +33,11 @@
   flex: 1;
   min-height: 0;
   min-width: 0;
-  background: var(--agw-canvas);
+  /* Split fill from grain for the same reason .agw-root is — settings paints
+   * its own ground, so without this the window's texture would stop at the
+   * settings boundary. */
+  background-color: var(--agw-canvas);
+  background-image: var(--agw-grain);
 
   /* Premium, heavyweight design language — real depth, generous padding.
      Deliberately NOT the IDE's tight hairline look. Scoped here so the whole
@@ -49,9 +53,23 @@
   --agw-set-r-card: var(--agw-radius-lg);
   --agw-set-r-inner: var(--agw-radius-sm);
   /* Cards sit FLAT — defined by border + surface contrast, not a drop shadow
-     (a heavy shadow made them look like they float above the page). */
+     (a heavy shadow made them look like they float above the page).
+
+     This stays the classic default; Appearance → Interface → V2 re-points both
+     onto the window's depth aliases. Settings owns its own shadow names rather
+     than reading --agw-card-lift at each card, so the surface keeps the single
+     tuning point this block exists to be. */
   --agw-set-shadow: none;
   --agw-set-shadow-soft: none;
+  /* Pointing at a CARD that answers. Only cards that are themselves clickable
+     read it; a static panel has nothing to respond to. */
+  --agw-set-shadow-hover: none;
+}
+
+.agw-root[data-ui="v2"] .agw-settings {
+  --agw-set-shadow: var(--agw-card-lift);
+  --agw-set-shadow-soft: var(--agw-control-lift);
+  --agw-set-shadow-hover: var(--agw-card-lift-hover);
 }
 
 /* ── Left nav ─────────────────────────────────────────────────────────── */
@@ -381,9 +399,9 @@
 }
 .agw-set-panel {
   overflow: hidden;
-  border: 1px solid var(--agw-border);
+  border: 1px solid var(--agw-card-line);
   border-radius: var(--agw-set-r-card);
-  background: var(--agw-surface);
+  background: var(--agw-card-paint);
   box-shadow: var(--agw-set-shadow);
 }
 
@@ -542,6 +560,7 @@
 
 /* ── Segmented control ────────────────────────────────────────────────── */
 .agw-seg {
+  position: relative; /* the travelling pill is placed against this */
   display: inline-flex;
   padding: 3px;
   gap: 2px;
@@ -555,7 +574,43 @@
   width: fit-content;
   max-width: 100%;
 }
+/* The selected pill — ONE element that travels, rather than a fill switching
+   off one button and on another. The inset matches .agw-seg's 3px padding, so
+   it lands exactly on the buttons' box.
+
+   Animating transform + width (not `left`) keeps the move on the compositor.
+   Width has to be in there: the options are words, so the pill genuinely
+   changes size between "V2" and "Agent window" and a fixed-width slide would
+   snap its edges. The curve is the window's decelerating house curve — the
+   pill leaves quickly and settles, which is what makes it read as landing on
+   the choice rather than drifting toward it. */
+.agw-seg-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 0;
+  width: var(--agw-seg-thumb-w, 0);
+  transform: translateX(var(--agw-seg-thumb-x, 0));
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-state-selected);
+  box-shadow: 0 1px 3px color-mix(in srgb, #000 28%, transparent);
+  pointer-events: none;
+}
+/* Set one frame after the first measurement. Without it the pill animates from
+   the left edge to its resting place every time Settings mounts. */
+.agw-seg-thumb[data-ready] {
+  transition:
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    width 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.agw-root[data-reduce-motion] .agw-seg-thumb {
+  transition: none;
+}
+
 .agw-seg-btn {
+  /* Above the pill, so the label reads on top of it rather than under. */
+  position: relative;
+  z-index: 1;
   height: 24px;
   padding: 0 14px;
   border: none;
@@ -576,21 +631,24 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.agw-seg-btn:hover {
+/* Hover/press fills belong to the UNSELECTED options only — the selected one
+   already has the pill, and its own fill would paint over it (the buttons sit
+   above the pill so their labels stay readable). */
+.agw-seg-btn:hover:not([data-active]) {
   color: var(--agw-text);
   background: color-mix(in srgb, var(--agw-hover-paint) 55%, transparent);
 }
-.agw-seg-btn:active {
+.agw-seg-btn:active:not([data-active]) {
   color: var(--agw-text);
   background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 8%);
 }
 .agw-seg-btn:focus-visible {
   box-shadow: 0 0 0 2px var(--agw-ring);
 }
+/* Selection is the pill plus full-strength text. No fill and no shadow here —
+   both moved onto .agw-seg-thumb so they can travel. */
 .agw-seg-btn[data-active] {
-  background: var(--agw-state-selected);
   color: var(--agw-text);
-  box-shadow: 0 1px 3px color-mix(in srgb, #000 28%, transparent);
 }
 .agw-seg-btn[data-active][data-tone="success"] {
   color: var(--agw-added);
@@ -600,13 +658,6 @@
 }
 .agw-seg-btn[data-active][data-tone="danger"] {
   color: var(--agw-removed);
-}
-/* The active pill's own shadow would otherwise override the focus ring
-   (equal specificity, later in the file) — layer both. */
-.agw-seg-btn[data-active]:focus-visible {
-  box-shadow:
-    0 1px 3px color-mix(in srgb, #000 28%, transparent),
-    0 0 0 2px var(--agw-ring);
 }
 
 /* ── Pill ─────────────────────────────────────────────────────────────── */

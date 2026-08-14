@@ -21,6 +21,24 @@ import { applyContrast } from "@/apps/agent/theme/color";
 
 export type AgentTokenKey = keyof AgentThemeTokens;
 
+/**
+ * Which generation of the agent window's design is drawn.
+ *
+ * `classic` — what the window has always rendered. FROZEN: it keeps its
+ *   current look and stops receiving design work, so it never needs to be
+ *   re-verified alongside every future change.
+ * `v2` — the newer look. Cards give up fill contrast and gain elevation (a
+ *   light-catch, a contact shadow, a soft ambient one) plus a faint grain, and
+ *   the densest pages are restructured — Providers moves to a pinned header
+ *   with Connection / Models tabs instead of one long centred column.
+ *
+ * It is NOT a theme. It rides on top of whichever theme is active: every
+ * colour stays the user's. And it is presentation only — same fields, same
+ * actions, same stored values in both, so a bug report never has to begin with
+ * "which look are you on?".
+ */
+export type AgentUiVersion = "classic" | "v2";
+
 /** The canonical token-key list, derived from the default theme. */
 export const AGENT_TOKEN_KEYS = Object.keys(
   AGENT_THEMES[DEFAULT_AGENT_THEME_ID].tokens,
@@ -39,6 +57,8 @@ interface AgentThemeState {
   customizations: Record<string, Partial<AgentThemeTokens>>;
   /** Frosted, semi-transparent left rail / dock. */
   translucentSidebar: boolean;
+  /** Which design generation the window draws. Composes with every theme. */
+  uiVersion: AgentUiVersion;
   /** 0–100, 50 = neutral. Scales foreground/line separation. */
   contrast: number;
   /** Honor reduced motion (disables non-essential animation). */
@@ -80,6 +100,7 @@ interface AgentThemeState {
    */
   resetTypography: () => void;
   setTranslucentSidebar: (v: boolean) => void;
+  setUiVersion: (v: AgentUiVersion) => void;
   setContrast: (v: number) => void;
   setReduceMotion: (v: boolean) => void;
   setSyntaxHighlighting: (v: boolean) => void;
@@ -104,6 +125,7 @@ export const useAgentThemeStore = create<AgentThemeState>()(
       customThemes: {},
       customizations: {},
       translucentSidebar: false,
+      uiVersion: "classic",
       contrast: DEFAULT_CONTRAST,
       reduceMotion: false,
       syntaxHighlighting: true,
@@ -148,6 +170,7 @@ export const useAgentThemeStore = create<AgentThemeState>()(
             customizations: next,
             contrast: DEFAULT_CONTRAST,
             translucentSidebar: false,
+            uiVersion: "classic" as const,
             reduceMotion: false,
             syntaxHighlighting: true,
             railGlide: true,
@@ -170,6 +193,7 @@ export const useAgentThemeStore = create<AgentThemeState>()(
         }),
 
       setTranslucentSidebar: (v) => set({ translucentSidebar: v }),
+      setUiVersion: (v) => set({ uiVersion: v }),
       setContrast: (v) => set({ contrast: Math.max(0, Math.min(100, Math.round(v))) }),
       setReduceMotion: (v) => set({ reduceMotion: v }),
       setSyntaxHighlighting: (v) => set({ syntaxHighlighting: v }),
@@ -248,6 +272,7 @@ export const useAgentThemeStore = create<AgentThemeState>()(
         customThemes: s.customThemes,
         customizations: s.customizations,
         translucentSidebar: s.translucentSidebar,
+        uiVersion: s.uiVersion,
         contrast: s.contrast,
         reduceMotion: s.reduceMotion,
         syntaxHighlighting: s.syntaxHighlighting,

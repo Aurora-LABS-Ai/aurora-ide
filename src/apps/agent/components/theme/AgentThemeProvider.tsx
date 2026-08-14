@@ -33,6 +33,7 @@ export const AgentThemeProvider: React.FC<AgentThemeProviderProps> = ({
   const customizations = useAgentThemeStore((s) => s.customizations);
   const contrast = useAgentThemeStore((s) => s.contrast);
   const translucentSidebar = useAgentThemeStore((s) => s.translucentSidebar);
+  const uiVersion = useAgentThemeStore((s) => s.uiVersion);
   const reduceMotion = useAgentThemeStore((s) => s.reduceMotion);
   const transcriptSpine = useAgentThemeStore((s) => s.transcriptSpine);
   const transcriptStickyUser = useAgentThemeStore((s) => s.transcriptStickyUser);
@@ -55,6 +56,12 @@ export const AgentThemeProvider: React.FC<AgentThemeProviderProps> = ({
       data-agent-theme={theme.id}
       data-appearance={theme.appearance}
       data-translucent={translucentSidebar || undefined}
+      // The design generation. It re-points paint aliases and re-lays-out the
+      // densest pages, but never touches a colour of its own — so it composes
+      // with whatever theme and token overrides resolved above rather than
+      // being a theme. Omitted on classic, so the extra selectors only cost
+      // anything for users who opted in.
+      data-ui={uiVersion === "v2" ? "v2" : undefined}
       data-reduce-motion={reduceMotion || undefined}
       // Set here, on the root, rather than per row: the spine is a property of
       // the whole transcript, and toggling one attribute high up re-styles every

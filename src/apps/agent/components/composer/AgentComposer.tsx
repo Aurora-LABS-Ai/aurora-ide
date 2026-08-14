@@ -26,6 +26,11 @@ import {
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { ModelSelector } from "@/apps/agent/components/composer/ModelSelector";
 import { ComposerMenu } from "@/apps/agent/components/composer/ComposerMenu";
+import {
+  ComposerPlusMenu,
+  type PlusMenuItem,
+} from "@/apps/agent/components/composer/ComposerPlusMenu";
+import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 import { ComposerRail } from "@/apps/agent/components/composer-rail/ComposerRail";
 import {
   invalidateFileIndex,
@@ -412,6 +417,9 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     window.setTimeout(() => setVisionWarn(null), 4000);
   };
 
+  // Reveals the dock on the Browser tab — the `+` menu's route to picking an
+  // element, since the inspector itself lives inside that panel.
+  const openTab = useAgentWorkspaceStore((s) => s.openTab);
   // Elements picked with the Browser inspector — inline pills, attached on send.
   const selected = useAgentSelectionStore((s) => s.selected);
   const removeSelected = useAgentSelectionStore((s) => s.remove);
@@ -1032,6 +1040,65 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     document.execCommand("insertText", false, (needsSpace ? " " : "") + text);
     handleInput();
   };
+
+  /**
+   * Open the `@` or `/` picker from the `+` menu by TYPING its character, not
+   * by calling into the picker state.
+   *
+   * Both pickers key off what sits before the caret (MENTION_RE / SLASH_RE), so
+   * inserting the character is the whole gesture: detection, ranking, the
+   * escape hatch of deleting it again, and every rule about pills and caret
+   * placement all come along unchanged. Driving `setMention`/`setSlash`
+   * directly would open a menu with no trigger character behind it — the first
+   * keystroke would close it again, and picking a row would splice a pill into
+   * text that never asked for one.
+   *
+   * `insertTranscript` already inserts at the caret with a leading space when
+   * one is needed, which is exactly what both regexes require (line start or
+   * whitespace before the character).
+   */
+  const openPicker = (trigger: "@" | "/") => {
+    editorRef.current?.focus();
+    insertTranscript(trigger);
+  };
+
+  const plusItems = useMemo<PlusMenuItem[]>(
+    () => [
+      {
+        id: "files",
+        label: "Files & images",
+        hint: "Pick from this computer",
+        icon: "upload",
+        run: () => void openFilePicker(),
+      },
+      {
+        id: "mention",
+        label: "Mention",
+        hint: "A workspace file or an open terminal",
+        icon: "at",
+        run: () => openPicker("@"),
+      },
+      {
+        id: "actions",
+        label: "Actions",
+        hint: "Skills, rules and MCP commands",
+        icon: "slash",
+        run: () => openPicker("/"),
+      },
+      {
+        id: "browser",
+        label: "Browser",
+        hint: "Open the browser panel to pick an element",
+        icon: "browser",
+        run: () => openTab("browser"),
+      },
+    ],
+    // openFilePicker / openPicker close over refs and stable store actions, and
+    // are redefined every render; listing them would rebuild this list on each
+    // keystroke for no behavioural difference.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [openTab],
+  );
   const {
     speechEnabled,
     isRecording: micRecording,
@@ -1401,18 +1468,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
 
         {/* Bottom action row — attach (left) · reasoning + speech + send (right). */}
         <div className="agw-composer-actions-row">
-          <button
-            type="button"
-            className="agw-icon-btn"
-            title="Attach a file"
-            aria-label="Attach a file"
-            onClick={(e) => {
-              e.stopPropagation();
-              void openFilePicker();
-            }}
-          >
-            <AgentIcon name="plus" size={17} />
-          </button>
+          <ComposerPlusMenu items={plusItems} />
           <div className="agw-composer-actions">
           {modelSelectorPosition === "bottom" && (
             <ModelSelector align="right" streaming={sending} threadId={composerThreadId} />

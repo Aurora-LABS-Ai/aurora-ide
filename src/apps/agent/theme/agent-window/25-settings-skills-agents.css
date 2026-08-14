@@ -9,7 +9,7 @@
   justify-content: space-between;
   gap: 18px;
   padding: 18px 20px;
-  border: 1px solid var(--agw-border);
+  border: 1px solid var(--agw-card-line);
   border-radius: var(--agw-set-r-card, 14px);
   box-shadow: var(--agw-set-shadow);
   background:
@@ -18,12 +18,12 @@
       color-mix(in srgb, var(--agw-added) 9%, transparent) 0%,
       transparent 55%
     ),
-    var(--agw-surface);
+    var(--agw-card-paint);
   transition: opacity 0.18s ease;
 }
 .agw-skill-hero[data-off] {
   opacity: 0.62;
-  background: var(--agw-surface);
+  background: var(--agw-card-paint);
 }
 .agw-skill-hero-main {
   min-width: 0;
@@ -207,16 +207,18 @@
   gap: 6px;
   padding: 13px 14px;
   text-align: left;
-  border: 1px solid var(--agw-border);
+  border: 1px solid var(--agw-card-line);
   border-radius: var(--agw-radius-md);
-  background: var(--agw-surface);
+  background: var(--agw-card-paint);
+  box-shadow: var(--agw-set-shadow);
   cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease;
+  transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
 }
 /* Hover reads through colour only — no translateY lift. A card that jumps on
  * hover makes a dense grid feel unstable as the pointer crosses it. */
 .agw-skill-card:hover:not([data-disabled]) {
   border-color: color-mix(in srgb, var(--agw-text) 20%, transparent);
+  box-shadow: var(--agw-set-shadow-hover);
   background: var(--agw-hover-paint);
 }
 .agw-skill-card[data-on] {

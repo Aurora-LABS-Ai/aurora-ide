@@ -541,7 +541,7 @@ export const PreferencesSettings: React.FC = () => {
                   style={{ width: 244 }}
                 />
                 <AgwButton
-                  icon={showTitleKey ? "inspect" : "browser"}
+                  icon={showTitleKey ? "eye-off" : "eye"}
                   onClick={() => setShowTitleKey((v) => !v)}
                 >
                   {showTitleKey ? "Hide" : "Show"}

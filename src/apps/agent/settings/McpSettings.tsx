@@ -640,10 +640,16 @@ const ServerCard: React.FC<{
                         <button
                           type="button"
                           className="agw-prov-icon-btn agw-mcp-eye"
+                          aria-label={
+                            showEnv
+                              ? "Hide environment variable values"
+                              : "Show environment variable values"
+                          }
+                          aria-pressed={showEnv}
                           title={showEnv ? "Hide values" : "Show values"}
                           onClick={() => setShowEnv((v) => !v)}
                         >
-                          <AgentIcon name={showEnv ? "inspect" : "browser"} size={13} />
+                          <AgentIcon name={showEnv ? "eye-off" : "eye"} size={13} />
                         </button>
                       </span>
                       <div className="agw-mcp-code">

@@ -1,5 +1,98 @@
 # Aurora IDE — Working Memory
 
+## 2026-08-14 — A running tool animates its OWN mark; the spinner is gone from the row
+- **Two halves, deliberately split.** The SCAN is universal (`33-tool-glyph-motion.css`, new
+  partial): a masked full-strength copy of the glyph sits over the base and a soft band passes
+  DOWN it, so every mark — including MCP tools nobody drew for — reads as live from one rule. The
+  PART is per glyph: `AgentIcon` tags the one element that does the work with `data-part`, and the
+  stylesheet owns the timing. Geometry and motion never learn each other's details. Vocabulary is
+  fixed at 9 (`nib line lens caret pulse flow travel travel-y turn`, + `turn-b` counter-phase);
+  83 elements tagged, all 37 marks `toolIcon()` can return covered except `files` (one indivisible
+  path — it rides the scan alone, same as an un-tagged MCP mark).
+- **No accent.** The mark rests at `--agw-text-muted` and rises to `--agw-text` — the two colours
+  `.agw-shimmer` already uses on the label beside it. Owner's call; a tint scheme was probed
+  (part-only / by-consequence / by-family) and is still OPEN, not rejected.
+- Beat is **1.67s** (the 2.5s shimmer at the 1.5× the owner picked), one var, one pass of the scan
+  = one stroke of work, so the halves cannot drift. `line`/`tick` parts carry `pathLength={1}` so a
+  single dash rule writes a 3-unit text line and a 19-unit divider at the same speed.
+- **The status column is EMPTY while running** (the ✓/✕ box keeps its 16px, so nothing shifts). A
+  spinner 8px from an animated glyph is two things saying one thing. Canvas-launch cards keep theirs.
+- Reduce-motion comes from **Aurora's own switch only**, never `@media (prefers-reduced-motion)` —
+  the OS reports reduce on the owner's machine, and honouring it here switched the whole feature
+  off while the shimmer 8px away kept running (see lesson.md). It freezes the mark BRIGHT and drops
+  the scan copy; never a blanket `animation: none` under `.agw-root`.
+- Probe: `C:\Users\Alvan\Documents\aurora-tool-running-state-designs.html` (11 motion variants +
+  7 tint schemes). VERIFIED: tsc 0, eslint clean, 568 tests / 64 files, `pnpm build`.
+  **NOT runtime-verified — needs eyes in `tauri:dev`.**
+
+## 2026-08-13 (6th) — Composer `+` opens a menu; Providers V2 layout built then PULLED
+- **`+` is no longer a shortcut to the OS file picker.** New `ComposerPlusMenu.tsx`: Files & images
+  (the old behaviour, now one row) · Mention · Actions · Browser. Chrome is the PROJECT SWITCHER's,
+  class for class (`.agw-projmenu` + rows + portal-into-`.agw-root`) — owner's explicit ask, two
+  menus on one screen must be the same object. Dropped its filter box (4 fixed rows). Opens UPWARD,
+  placed by `bottom` from the trigger's top edge, so it never needs measuring first.
+- **Mention/Actions rows TYPE `@` / `/` into the editor; they never call `setMention`/`setSlash`.**
+  Both pickers key off `MENTION_RE`/`SLASH_RE` matching the text before the caret, so inserting the
+  character brings detection, ranking, pill splicing and the delete-it-again escape hatch along
+  unchanged. Driving the state directly opens a menu with no trigger behind it. Reuses
+  `insertTranscript`, whose leading-space rule is exactly what both regexes need.
+- New icons `at` / `slash` (the trigger characters as themselves — the row teaches the shortcut it
+  replaces) and `eye` / `eye-off`. **The globe was the reveal icon on FOUR password fields**
+  (`? "inspect" : "browser"`) — providers key, backup keys, MCP env, title-model key. All now eye +
+  `aria-pressed`; a test fails if that pair comes back.
+- **Providers V2 (pinned header + Connection/Models tabs) was built, shipped and REVERTED the same
+  session.** It fixed the fold and the 880px dead gutters, but the owner's actual complaint was the
+  DOUBLED SIDEBAR (settings nav 232px + provider rail 248px = 480px of chrome doing one job), and
+  the probe never listed that as a fault so none of its four variants addressed it. Two real bugs
+  found while it was live, worth knowing if it is ever rebuilt: `.agw-prov-conn` is a GRID, so as a
+  `flex: 1` tab body `align-content` defaulted to `stretch` and poured ~90px into every field gap;
+  and moving Delete inside that grid made it a grid ITEM whose divider stopped mid-row
+  (`grid-column: 1 / -1`). A test now asserts NO `data-ui` in the providers CSS or `uiVersion` in
+  its TSX, so half of it cannot creep back.
+- Candidate when it is revisited (owner has not chosen): drop the provider rail entirely and make
+  the provider name a filterable dropdown in the header — the same `.agw-projmenu` component — which
+  is the only option that actually removes the second rail. Probe:
+  `C:\Users\Alvan\Documents\aurora-providers-layout-designs.html`.
+- VERIFIED: tsc 0, eslint clean, 562 tests / 63 files, `vite build`. NOT runtime-verified.
+
+## 2026-08-13 (5th) — Appearance → Interface (Classic / V2); segmented pill now travels
+> Renamed the same day: shipped as "Surface depth — Flat / Raised", then became **Interface —
+> Classic / V2** when the owner wanted layout bound to it. A control named for depth that also
+> restructures a page is lying, so the NAME moved up a level rather than the scope creeping under
+> the old one. `classic` is FROZEN: it keeps today's rendering and stops receiving design work, so
+> future changes never need verifying twice.
+- **V2 is a SWITCH OVER the themes, never a theme.** `uiVersion` pref → `data-ui="v2"`
+  on `.agw-root` → re-points five paint aliases declared in `01-root.css`
+  (`--agw-card-paint/-line/-lift/-lift-hover`, `--agw-control-lift`, `--agw-grain`). Flat resolves
+  them to the exact pre-existing tokens, so off is a byte-equivalent no-op. Raised TRADES fill
+  contrast for elevation — the card fill color-mixes 55% back toward the user's own `--agw-canvas`
+  and the border drops to 62% alpha, then a three-part shadow separates (1px top light-catch,
+  tight contact, wide ambient at -10px spread so it pools under rather than haloing). Light
+  appearance gets its own inverted light-catch. A test pins both halves: flat must equal the raw
+  tokens, and the raised block may set NOTHING but those six aliases.
+- Settings cards ride the pre-existing `--agw-set-shadow` / `-soft` hooks on `.agw-settings`
+  (one bridge rule), so no per-card shadow edits. Cards converted to the aliases: set-panel,
+  set-tile, set-group, mcp-card, appr-card, skill-card/-hero, prov-detail, atlas, proj-stats,
+  tasks, queued, canvas-launch, composer-surface.
+- **Deliberately NOT lifted:** tool cards (08-transcript-flow.css documents them as un-boxed
+  timeline entries on purpose), and `.agw-tasks`/`.agw-queued` — those are ATTACHED to the
+  composer (no bottom border, tuck 12px behind it), so a shadow would draw a seam through one
+  object. Attached surfaces stay flat; free-standing ones lift.
+- Grain is on the two GROUNDS only (`.agw-root`, `.agw-settings`), as a `background-image` data
+  URI, never a `mix-blend-mode` overlay — that would pull the whole window into one blended
+  stacking context. Reference for the whole look: QuantumHub client's Agent Studio
+  (`apps/quantumhub-client/src/renderer`), whose `--shadow-premium` is the same three-part recipe.
+- **`AgwSegmented` selection is now ONE travelling pill** (`.agw-seg-thumb`), measured from
+  bounding rects minus `clientLeft` (an absolutely positioned child sits against the padding box,
+  and `offsetLeft`'s reference edge differs by engine). Animates transform AND width — the options
+  are words, so the pill genuinely resizes. `data-ready` is set one frame after the first measure
+  or every control flies in from the left on mount; ResizeObserver covers label ellipsis and
+  Interface-text-size changes. Active buttons lost their own fill/shadow (both moved to the pill)
+  and hover/press are now scoped `:not([data-active])` — the buttons sit above the pill, so an
+  active-button fill would paint over it.
+- VERIFIED: tsc 0, eslint clean on touched files, 560 frontend tests / 63 files, `vite build`.
+  **NOT runtime-verified** — needs eyes in `tauri:dev`; there is no browser bridge in this session.
+
 ## 2026-08-13 (4th) — Temperature is per-model now; the "..." rows were the provider
 - **Temperature moved to the model row** (schema **v22**, `provider_models.temperature`, NULL =
   inherit). Chain is model → provider `defaultTemperature` → `DEFAULT_TEMPERATURE` **0.8**, resolved
@@ -512,6 +605,19 @@ it produced a false dependency edge on a real case). All wired end to end.
   turns it would invalidate that same cached prefix. A slightly stale map is free; `code` is the
   live source. Budget is in TOKENS — `DEFAULT_BUDGET_TOKENS = 5_000`, hard cap `MAX_BUDGET_TOKENS
   = 10_000` (owner's range). Persisted JSONL stays verbatim; only the request body carries it.
+
+## 2026-08-14 — Aurora improvement audit in progress
+- Plan: map the current frontend/backend ownership and product surfaces; inspect tests, CI, runtime
+  verification gaps, stale documentation, and known open defects; then rank improvements by user
+  impact, confidence gain, and implementation risk.
+- Initial signal: the source has moved to `src/apps/{agent,ide}` + `src/kernel`, while README and
+  architecture docs still advertise retired paths/tools. Treat documentation drift as evidence of
+  release-process weakness, not as the architecture itself.
+- Audit result: frontend tests are strong (568/568), but CI runs only the frontend build; full ESLint
+  is 1,427 findings and runtime verification is repeatedly deferred. Highest-leverage next work is
+  a reproducible Windows quality gate, then splitting `useSettingsStore` and shrinking runtime seams.
+- Product gaps worth prioritising after trust: disk-truth Review + rollback/forking, transcript search,
+  and desktop-app inspection. Do not start another visual polish pass before these reliability loops.
 - **RESUME FROM `DOCS/code-index-handoff.md`** — full wiring, the qg-probe verification recipe, and
   the open items. Read its §5 first.
 - LIVE-VERIFIED in tauri:dev against quantumhub-client: `definition` line-exact, `usages` ambiguity

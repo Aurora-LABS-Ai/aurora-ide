@@ -17,6 +17,7 @@ import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
 import {
   DEFAULT_RAIL_GLIDE_MS,
   useAgentThemeStore,
+  type AgentUiVersion,
   type AgentTokenKey,
 } from "@/apps/agent/store/ui/useAgentThemeStore";
 import {
@@ -239,6 +240,7 @@ export const AppearanceSettings: React.FC = () => {
   const customThemes = useAgentThemeStore((s) => s.customThemes);
   const customizations = useAgentThemeStore((s) => s.customizations);
   const translucentSidebar = useAgentThemeStore((s) => s.translucentSidebar);
+  const uiVersion = useAgentThemeStore((s) => s.uiVersion);
   const contrast = useAgentThemeStore((s) => s.contrast);
   const reduceMotion = useAgentThemeStore((s) => s.reduceMotion);
   const syntaxHighlighting = useAgentThemeStore((s) => s.syntaxHighlighting);
@@ -251,6 +253,7 @@ export const AppearanceSettings: React.FC = () => {
   const resetCustomizations = useAgentThemeStore((s) => s.resetCustomizations);
   const resetTypography = useAgentThemeStore((s) => s.resetTypography);
   const setTranslucentSidebar = useAgentThemeStore((s) => s.setTranslucentSidebar);
+  const setUiVersion = useAgentThemeStore((s) => s.setUiVersion);
   const setContrast = useAgentThemeStore((s) => s.setContrast);
   const setReduceMotion = useAgentThemeStore((s) => s.setReduceMotion);
   const setSyntaxHighlighting = useAgentThemeStore((s) => s.setSyntaxHighlighting);
@@ -291,6 +294,7 @@ export const AppearanceSettings: React.FC = () => {
     hasOverrides ||
     contrast !== 50 ||
     translucentSidebar ||
+    uiVersion !== "classic" ||
     reduceMotion ||
     !syntaxHighlighting ||
     !railGlide ||
@@ -545,6 +549,20 @@ export const AppearanceSettings: React.FC = () => {
               { value: "round", label: "Round" },
             ]}
             onChange={(p) => setTokens(RADIUS_PRESETS[p])}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Interface"
+          hint="V2 is Aurora's newer look: cards give up some fill and lift off the page instead — a soft shadow, a lit top edge, a faint grain — and dense pages are restructured, so Providers gets a pinned header with Connection and Models tabs. Same settings and same actions in both, and your colours are untouched."
+        >
+          <AgwSegmented<AgentUiVersion>
+            value={uiVersion}
+            ariaLabel="Interface"
+            options={[
+              { value: "classic", label: "Classic" },
+              { value: "v2", label: "V2" },
+            ]}
+            onChange={setUiVersion}
           />
         </SettingsRow>
         <SettingsRow label="Translucent sidebar" hint="Frosted, semi-transparent rail and dock.">

@@ -175,6 +175,13 @@
  * (background processes, tasks) and they vanish behind it. The picker moving
  * DOWN is safe; the box moving UP is not. */
 .agw-composer-surface {
+  /* Resting lift. The composer keeps its full border strength in every depth
+     mode — it is the one control the user is always aiming at, so it stays the
+     most defined object on screen and gains the shadow on top rather than
+     trading contrast for it like the cards do. The picker rule below replaces
+     this outright while the @ / menu is open: at that moment the box must cast
+     UP onto the panel behind it, not sit on its own. */
+  box-shadow: var(--agw-card-lift);
   transition: box-shadow 0.17s cubic-bezier(0, 0, 0.2, 1);
 }
 .agw-composer:has(.agw-mention) .agw-composer-surface {

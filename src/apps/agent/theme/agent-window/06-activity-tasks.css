@@ -167,7 +167,11 @@
   border: 1px solid var(--agw-border-strong);
   border-bottom: none; /* hidden behind the composer */
   border-radius: var(--agw-radius-lg) var(--agw-radius-lg) 0 0;
-  background: var(--agw-surface);
+  background: var(--agw-card-paint);
+  /* No lift, in raised or flat. This panel is ATTACHED to the composer — it
+     has no bottom border and tucks 12px behind it — so a shadow would either
+     be swallowed by the composer or draw a seam between two halves of one
+     object. Attached surfaces stay flat; free-standing ones lift. */
   overflow: hidden;
 }
 /* ── Background processes (shell_spawn) ───────────────────────────────────

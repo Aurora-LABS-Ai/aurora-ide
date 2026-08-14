@@ -58,9 +58,12 @@
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 16px 12px;
   padding: 14px 16px;
-  border: 1px solid var(--agw-border);
+  border: 1px solid var(--agw-card-line);
   border-radius: var(--agw-radius-md);
-  background: var(--agw-surface);
+  background: var(--agw-card-paint);
+  /* Reads --agw-card-lift directly, not the --agw-set-* names: project stats
+     is a DOCK panel, and those are declared on .agw-settings. */
+  box-shadow: var(--agw-card-lift);
 }
 
 .agw-proj-stat {

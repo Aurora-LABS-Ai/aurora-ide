@@ -548,6 +548,21 @@ clean 199ms runtime verification of the typing-assist engine.
 - Prefer `rustfmt --edition 2021 <touched files>` here. A crate-wide `cargo fmt --check` currently reports many
   unrelated pre-existing formatting differences, so it is not a useful completion gate for a focused change.
 
+## The owner's Windows asks for REDUCED MOTION — never gate a feature on it (2026-08-14)
+- Measured: `SystemParametersInfo(SPI_GETCLIENTAREAANIMATION)` returns **false** on this machine, so
+  WebView2 matches `@media (prefers-reduced-motion: reduce)` permanently. Any rule behind that query
+  is DEAD CODE in the owner's own window — and worse, it silently disables whatever it guards.
+- It cost a round trip on the live tool marks: the reduce branch hid the scan copy and zeroed every
+  part animation, so the new feature shipped invisible while the label shimmer beside it (which has
+  no such guard) kept running. Reported as "the text shimmers but the icon doesn't animate".
+- Rule: the agent window animates its transcript UNCONDITIONALLY (08-transcript-flow.css records
+  why). Motion belongs behind **Appearance → Reduce motion** (`.agw-root[data-reduce-motion]`) —
+  an explicit choice about this window — not behind the OS query. One element obeying the OS while
+  its neighbours ignore it does not read as restraint, it reads as broken.
+- Diagnostic worth reusing: a still screenshot cannot prove motion is absent. Confirm the running
+  build first (dev server on 5173 serving the rule, process start time after the build), THEN check
+  the OS accessibility flags before suspecting the CSS.
+
 ## Tool-call icons must stay naked (2026-07-11)
 - "Give the icons life" did not authorize colored tiles. The semantic-color wrapper made dense tool rows heavier
   and visually noisy. Keep tool glyphs unwrapped and neutral unless the user approves a concrete replacement design.

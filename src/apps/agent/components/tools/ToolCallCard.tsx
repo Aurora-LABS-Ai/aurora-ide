@@ -783,15 +783,28 @@ const StandardToolCallCard: React.FC<{
         onMouseDown={disarmSelectionBeforeClick}
         onClick={() => hasDetail && toggle()}
       >
+        {/* While the call is running the status column is EMPTY on purpose: the
+            mark beside it is the live sign now (33-tool-glyph-motion.css), and
+            a spinner 8px from an animated glyph is two things saying one thing.
+            The box keeps its 16px, so nothing shifts when the ✓ lands. */}
         <span className={`agw-tool-dot agw-tool-dot-${status}`}>
-          {status === "running" ? (
-            <span className="agw-spinner" aria-hidden />
-          ) : (
-            DOT_ICON[status] && <AgentIcon name={DOT_ICON[status]!} size={13} strokeWidth={2.6} />
-          )}
+          {DOT_ICON[status] && <AgentIcon name={DOT_ICON[status]!} size={13} strokeWidth={2.6} />}
         </span>
 
-        <AgentIcon name={icon} size={16} strokeWidth={1.5} />
+        {/* Two copies while live: the mark itself, and a full-strength copy the
+            scan is masked over. Only mounted for the running state, so a settled
+            transcript carries no extra nodes. */}
+        <span className="agw-tool-glyph" data-live={status === "running" ? "" : undefined}>
+          <AgentIcon name={icon} size={16} strokeWidth={1.5} />
+          {status === "running" && (
+            <AgentIcon
+              name={icon}
+              size={16}
+              strokeWidth={1.5}
+              className="agw-tool-glyph-scan"
+            />
+          )}
+        </span>
 
         <span
           style={{

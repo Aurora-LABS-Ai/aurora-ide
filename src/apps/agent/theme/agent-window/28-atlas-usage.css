@@ -8,9 +8,10 @@
    absorbs the remaining space and owns the scroll. */
 .agw-atlas {
   flex: 0 0 auto;
-  border: 1px solid var(--agw-border);
+  border: 1px solid var(--agw-card-line);
   border-radius: var(--agw-radius-md);
-  background: var(--agw-surface);
+  background: var(--agw-card-paint);
+  box-shadow: var(--agw-set-shadow);
   overflow: hidden;
   margin-bottom: 16px;
 }

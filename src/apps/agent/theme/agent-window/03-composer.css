@@ -683,3 +683,75 @@
   box-shadow: 0 0 0 2px var(--agw-ring);
 }
 
+
+/* ── The `+` menu ─────────────────────────────────────────────────────────
+ * Deliberately built ON `.agw-projmenu` (see ComposerPlusMenu) rather than as
+ * a second popover recipe — surface, radius, shadow, rows and highlight all
+ * come from the project switcher, so the two menus on the home screen are
+ * visibly the same object. Only what genuinely differs is restated here.
+ *
+ * The entrance follows the PLACEMENT, which the menu picks from the room below
+ * its trigger: on the home screen the composer is centred and the menu drops
+ * down (arriving from above, the inherited keyframe); in a conversation the
+ * composer is on the floor and it grows upward, so it has to arrive from below
+ * instead. A menu that slides the opposite way to the direction it opened in
+ * reads as a glitch even when nobody can say why. */
+.agw-plusmenu[data-place="up"] {
+  animation-name: agw-plusmenu-in;
+}
+@keyframes agw-plusmenu-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-plusmenu {
+    animation: none;
+  }
+}
+
+/* "Add context" — a group label, not a row. It is the one piece of chrome the
+   project menu has no equivalent for: that menu's job is stated by the trigger
+   you clicked, this one lists four unrelated things and needs to say what they
+   have in common. */
+.agw-plusmenu-head {
+  padding: 6px 8px 5px;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+
+/* Rows are two lines here (label + what it does), so they align to the top of
+   the text block instead of centring on it — a centred icon beside a two-line
+   row floats between them. */
+.agw-plusmenu-row {
+  align-items: flex-start;
+  padding: 8px;
+  color: var(--agw-text-muted);
+}
+.agw-plusmenu-row > svg {
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+.agw-plusmenu-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.agw-plusmenu-row .agw-projmenu-name {
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text);
+}
+.agw-plusmenu-hint {
+  font-size: var(--agw-fs-micro);
+  line-height: 1.4;
+  color: var(--agw-text-subtle);
+}

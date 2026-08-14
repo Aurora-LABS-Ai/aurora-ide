@@ -16,6 +16,30 @@
  *   • stroke = currentColor, fill = none (so it inherits text color)
  *   • round caps + joins for a soft, modern feel
  *   • small solid accents (dots) opt into fill via `fill="currentColor"`
+ *
+ * `data-part` — THE WORKING PART.
+ *
+ * A running tool card animates its own mark instead of a generic spinner (see
+ * 33-tool-glyph-motion.css). A glyph declares which of its elements does the
+ * work by tagging them, and the stylesheet owns the motion — geometry lives
+ * here, timing lives there, and neither file has to know the other's details.
+ *
+ * The vocabulary is deliberately small; a new glyph picks from it rather than
+ * inventing a movement:
+ *
+ *   nib       an implement that travels a short diagonal   (pencil, pen, cursor)
+ *   line      a stroke that writes itself                  (a line of text, a URL)
+ *   lens      a magnifier that sweeps across the mark      (search, read, watch)
+ *   caret     a prompt caret that blinks                   (shells)
+ *   pulse     an element that swells and settles           (+ , ✕ , a node, a pupil)
+ *   flow      siblings that light in sequence              (edges, rows, dots)
+ *   travel    a nudge along x                              (arrows pointing right)
+ *   travel-y  a nudge along y                              (arrows pointing down)
+ *   turn      a half-disc / meridian that turns             (globe, contrast)
+ *
+ * A glyph with nothing worth nominating is fine: it still gets the scan that
+ * passes over every live mark, which is what carries un-tagged glyphs and every
+ * MCP tool nobody drew for.
  */
 
 import React from "react";
@@ -99,6 +123,9 @@ export type AgentIconName =
   | "database"
   | "sort"
   | "eye"
+  | "eye-off"
+  | "at"
+  | "slash"
   | "refine"
   | "facet"
   | "book-open";
@@ -132,7 +159,7 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   "panel-right": (
     <>
       <rect x="3.25" y="4.25" width="17.5" height="15.5" rx="2.6" />
-      <line x1="15" y1="4.75" x2="15" y2="19.25" />
+      <line x1="15" y1="4.75" x2="15" y2="19.25" pathLength={1} data-part="line" />
     </>
   ),
 
@@ -179,8 +206,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   // Search.
   search: (
     <>
-      <circle cx="11" cy="11" r="6.4" />
-      <path d="M20 20l-4.3-4.3" />
+      <circle cx="11" cy="11" r="6.4" data-part="lens" />
+      <path d="M20 20l-4.3-4.3" data-part="lens" />
     </>
   ),
 
@@ -253,8 +280,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   "design-guidelines": (
     <>
       <path d="M5 5h14v14H5z" />
-      <path d="M14 2.5v19" />
-      <path d="M2.5 9.5h19" />
+      <path d="M14 2.5v19" data-part="travel" />
+      <path d="M2.5 9.5h19" data-part="travel-y" />
     </>
   ),
 
@@ -263,8 +290,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     <>
       <path d="M8 3.5h5.5L18 8v10.5A1.5 1.5 0 0 1 16.5 20h-9A1.5 1.5 0 0 1 6 18.5v-13A1.5 1.5 0 0 1 7.5 4z" />
       <path d="M13.5 3.5V8H18" />
-      <path d="M9.5 13.5h5" />
-      <path d="M12 11v5" />
+      <path d="M9.5 13.5h5" data-part="pulse" />
+      <path d="M12 11v5" data-part="pulse" />
     </>
   ),
 
@@ -274,9 +301,9 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <path d="M6 3.5h6.5L16 7v4.3" />
       <path d="M12.5 3.5V7H16" />
       <path d="M6 3.5v17h6" />
-      <path d="M8.8 11h3.3" />
-      <circle cx="16.2" cy="16.2" r="3.4" />
-      <path d="m18.7 18.7 2.3 2.3" />
+      <path d="M8.8 11h3.3" pathLength={1} data-part="line" />
+      <circle cx="16.2" cy="16.2" r="3.4" data-part="lens" />
+      <path d="m18.7 18.7 2.3 2.3" data-part="lens" />
     </>
   ),
 
@@ -285,8 +312,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     <>
       <path d="M8 3.5h5.5L18 8v10.5A1.5 1.5 0 0 1 16.5 20h-9A1.5 1.5 0 0 1 6 18.5v-13A1.5 1.5 0 0 1 7.5 4z" />
       <path d="M13.5 3.5V8H18" />
-      <path d="M12 11.3v5.4" />
-      <path d="M9.3 14h5.4" />
+      <path d="M12 11.3v5.4" data-part="pulse" />
+      <path d="M9.3 14h5.4" data-part="pulse" />
     </>
   ),
 
@@ -295,8 +322,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     <>
       <path d="M8 3.5h5.5L18 8v4.2" />
       <path d="M8 3.5A1.5 1.5 0 0 0 6 5v13.5A1.5 1.5 0 0 0 7.5 20H10" />
-      <path d="M8.8 12.2h3" />
-      <path d="M15.7 12.5l1.9 1.9-4.4 4.4-2.4.5.5-2.4z" />
+      <path d="M8.8 12.2h3" pathLength={1} data-part="line" />
+      <path d="M15.7 12.5l1.9 1.9-4.4 4.4-2.4.5.5-2.4z" data-part="nib" />
     </>
   ),
 
@@ -305,8 +332,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     <>
       <path d="M7 4h4.8L15 7.2V11" />
       <path d="M7 4A1.45 1.45 0 0 0 5.55 5.45V18.55A1.45 1.45 0 0 0 7 20h3.2" />
-      <path d="M12.5 16.5h6" />
-      <path d="M16 14l2.5 2.5L16 19" />
+      <path d="M12.5 16.5h6" pathLength={1} data-part="line" />
+      <path d="M16 14l2.5 2.5L16 19" data-part="travel" />
     </>
   ),
 
@@ -315,8 +342,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     <>
       <path d="M8 3.5h5.5L18 8v10.5A1.5 1.5 0 0 1 16.5 20h-9A1.5 1.5 0 0 1 6 18.5v-13A1.5 1.5 0 0 1 7.5 4z" />
       <path d="M13.5 3.5V8H18" />
-      <path d="M10 12.4l4 4" />
-      <path d="M14 12.4l-4 4" />
+      <path d="M10 12.4l4 4" data-part="pulse" />
+      <path d="M14 12.4l-4 4" data-part="pulse" />
     </>
   ),
 
@@ -328,13 +355,13 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   // (grep's magnifier) and from `workspace-tree` at 16px.
   "code-index": (
     <>
-      <circle cx="16.5" cy="12" r="3" fill="currentColor" stroke="none" />
+      <circle cx="16.5" cy="12" r="3" fill="currentColor" stroke="none" data-part="pulse" />
       <circle cx="5" cy="5.5" r="1.6" />
       <circle cx="5" cy="12" r="1.6" />
       <circle cx="5" cy="18.5" r="1.6" />
-      <path d="M6.6 5.9L13.6 10.6" />
-      <path d="M6.6 12h6.9" />
-      <path d="M6.6 18.1l7-4.7" />
+      <path d="M6.6 5.9L13.6 10.6" data-part="flow" />
+      <path d="M6.6 12h6.9" data-part="flow" />
+      <path d="M6.6 18.1l7-4.7" data-part="flow" />
     </>
   ),
 
@@ -343,8 +370,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <circle cx="6.5" cy="6" r="2" />
       <path d="M6.5 8v10h3.5" />
       <path d="M6.5 12h3.5" />
-      <circle cx="13" cy="12" r="1.6" />
-      <circle cx="13" cy="18" r="1.6" />
+      <circle cx="13" cy="12" r="1.6" data-part="flow" />
+      <circle cx="13" cy="18" r="1.6" data-part="flow" />
       <circle cx="18.5" cy="6.5" r="0.9" fill="currentColor" stroke="none" opacity="0.4" />
     </>
   ),
@@ -352,9 +379,9 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   "process-stop": (
     <>
       <rect x="3.5" y="4.5" width="17" height="15" rx="2.2" />
-      <path d="M7.5 9.5l3 2.5-3 2.5" />
-      <path d="M14.5 10.5l4 4" />
-      <path d="M18.5 10.5l-4 4" />
+      <path d="M7.5 9.5l3 2.5-3 2.5" data-part="caret" />
+      <path d="M14.5 10.5l4 4" data-part="pulse" />
+      <path d="M18.5 10.5l-4 4" data-part="pulse" />
     </>
   ),
 
@@ -370,10 +397,10 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   "terminal-watch": (
     <>
       <rect x="2.5" y="4" width="19" height="16" rx="2.5" />
-      <path d="M6.5 9.5l2.5 2-2.5 2" />
-      <path d="M11.5 13.5h3" />
-      <circle cx="16.5" cy="15" r="3.6" />
-      <path d="M19.2 17.6L21.5 20" />
+      <path d="M6.5 9.5l2.5 2-2.5 2" data-part="caret" />
+      <path d="M11.5 13.5h3" pathLength={1} data-part="line" />
+      <circle cx="16.5" cy="15" r="3.6" data-part="lens" />
+      <path d="M19.2 17.6L21.5 20" data-part="lens" />
     </>
   ),
 
@@ -390,20 +417,20 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     <>
       <path d="M3.75 6h15.5" />
       <path d="M3.75 11h15.5" />
-      <path d="M3.75 16h7.5" />
+      <path d="M3.75 16h7.5" pathLength={1} data-part="line" />
       <path d="M16.5 13v6.5" />
-      <path d="M13.6 17l2.9 2.9 2.9-2.9" />
+      <path d="M13.6 17l2.9 2.9 2.9-2.9" data-part="travel-y" />
     </>
   ),
 
   "process-list": (
     <>
       <circle cx="5" cy="6.5" r="1" fill="currentColor" stroke="none" opacity="0.7" />
-      <path d="M9 6.5h11" />
+      <path d="M9 6.5h11" data-part="flow" />
       <circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" opacity="0.5" />
-      <path d="M9 12h11" />
+      <path d="M9 12h11" data-part="flow" />
       <circle cx="5" cy="17.5" r="1" fill="currentColor" stroke="none" opacity="0.3" />
-      <path d="M9 17.5h7" />
+      <path d="M9 17.5h7" data-part="flow" />
     </>
   ),
 
@@ -412,8 +439,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <path d="M8 3.5h5.5L18 8v10.5A1.5 1.5 0 0 1 16.5 20h-9A1.5 1.5 0 0 1 6 18.5v-13A1.5 1.5 0 0 1 7.5 4z" />
       <path d="M13.5 3.5V8H18" />
       <path d="M9 12h6" />
-      <path d="M9 15h3" />
-      <path d="M14.2 17l1.4 1.4 3-3" />
+      <path d="M9 15h3" pathLength={1} data-part="line" />
+      <path d="M14.2 17l1.4 1.4 3-3" pathLength={1} data-part="tick" />
     </>
   ),
 
@@ -430,19 +457,19 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     <>
       <path d="M4.75 4.5h8a2 2 0 0 1 2 2v4.4" />
       <path d="M4.75 4.5A1.5 1.5 0 0 0 3.25 6v13a1.5 1.5 0 0 1 1.5-1.5h6" />
-      <path d="M7.25 8.5h4.5" />
-      <circle cx="16.6" cy="15.1" r="3.7" />
-      <path d="M19.3 17.8l2.2 2.2" />
+      <path d="M7.25 8.5h4.5" pathLength={1} data-part="line" />
+      <circle cx="16.6" cy="15.1" r="3.7" data-part="lens" />
+      <path d="M19.3 17.8l2.2 2.2" data-part="lens" />
     </>
   ),
 
   "task-list": (
     <>
-      <rect x="4" y="5" width="3" height="3" rx="0.7" />
+      <rect x="4" y="5" width="3" height="3" rx="0.7" data-part="flow" />
       <path d="M10 6.5h10" />
-      <rect x="4" y="10.5" width="3" height="3" rx="0.7" />
+      <rect x="4" y="10.5" width="3" height="3" rx="0.7" data-part="flow" />
       <path d="M10 12h10" />
-      <rect x="4" y="16" width="3" height="3" rx="0.7" />
+      <rect x="4" y="16" width="3" height="3" rx="0.7" data-part="flow" />
       <path d="M10 17.5h7" />
     </>
   ),
@@ -457,22 +484,22 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
    */
   checklist: (
     <>
-      <path d="M3.6 6.4l1.6 1.6 3-3.2" />
+      <path d="M3.6 6.4l1.6 1.6 3-3.2" pathLength={1} data-part="tick" />
       <path d="M11 6h9.4" />
-      <path d="M3.6 12.6h4.2" />
+      <path d="M3.6 12.6h4.2" pathLength={1} data-part="line" />
       <path d="M11 12h9.4" />
       <path d="M3.6 18.2h4.2" />
-      <path d="M11 18h6" />
+      <path d="M11 18h6" pathLength={1} data-part="line" />
     </>
   ),
 
   "browser-click": (
     <>
-      <path d="M9.5 9.5l10 3.5-4.5 2-2 4.5z" />
-      <path d="M14.8 14.8l3.7 3.7" />
-      <path d="M9 5.5v-2" />
-      <path d="M5.5 9h-2" />
-      <path d="M6 6 4.5 4.5" />
+      <path d="M9.5 9.5l10 3.5-4.5 2-2 4.5z" data-part="nib" />
+      <path d="M14.8 14.8l3.7 3.7" data-part="nib" />
+      <path d="M9 5.5v-2" data-part="pulse" />
+      <path d="M5.5 9h-2" data-part="pulse" />
+      <path d="M6 6 4.5 4.5" data-part="pulse" />
     </>
   ),
 
@@ -483,15 +510,15 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <circle cx="11" cy="11" r="0.8" fill="currentColor" stroke="none" opacity="0.7" />
       <circle cx="14.5" cy="11" r="0.8" fill="currentColor" stroke="none" opacity="0.7" />
       <circle cx="17.5" cy="11" r="0.8" fill="currentColor" stroke="none" opacity="0.4" />
-      <path d="M8 14.5h8" />
+      <path d="M8 14.5h8" pathLength={1} data-part="line" />
     </>
   ),
 
   "browser-scroll": (
     <>
       <path d="M12 4v16" opacity="0.5" />
-      <path d="m8.5 7.5 3.5-3.5 3.5 3.5" />
-      <path d="m8.5 16.5 3.5 3.5 3.5-3.5" />
+      <path d="m8.5 7.5 3.5-3.5 3.5 3.5" data-part="travel-y" />
+      <path d="m8.5 16.5 3.5 3.5 3.5-3.5" data-part="travel-y" />
       <circle cx="18.5" cy="12" r="0.9" fill="currentColor" stroke="none" opacity="0.4" />
     </>
   ),
@@ -499,7 +526,7 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   "browser-screenshot": (
     <>
       <path d="M3.5 8.5H7l2-3h6l2 3h3.5v10H3.5z" />
-      <circle cx="12" cy="13" r="3.2" />
+      <circle cx="12" cy="13" r="3.2" data-part="pulse" />
       <circle cx="12" cy="13" r="0.9" fill="currentColor" stroke="none" opacity="0.7" />
       <circle cx="18.2" cy="10.6" r="0.7" fill="currentColor" stroke="none" opacity="0.4" />
     </>
@@ -516,18 +543,18 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     <>
       <rect x="2.75" y="4.75" width="18.5" height="14.5" rx="2.5" />
       <path d="M2.75 9h18.5" />
-      <path d="M8 14.5h6.5" />
-      <path d="M12.4 12.1l2.4 2.4-2.4 2.4" />
+      <path d="M8 14.5h6.5" pathLength={1} data-part="line" />
+      <path d="M12.4 12.1l2.4 2.4-2.4 2.4" data-part="travel" />
     </>
   ),
 
   "browser-key": (
     <>
       <rect x="2.5" y="6.25" width="19" height="11.5" rx="2.4" />
-      <circle cx="7" cy="10.6" r="0.85" fill="currentColor" stroke="none" />
-      <circle cx="12" cy="10.6" r="0.85" fill="currentColor" stroke="none" />
-      <circle cx="17" cy="10.6" r="0.85" fill="currentColor" stroke="none" />
-      <path d="M8 14.4h8" />
+      <circle cx="7" cy="10.6" r="0.85" fill="currentColor" stroke="none" data-part="flow" />
+      <circle cx="12" cy="10.6" r="0.85" fill="currentColor" stroke="none" data-part="flow" />
+      <circle cx="17" cy="10.6" r="0.85" fill="currentColor" stroke="none" data-part="flow" />
+      <path d="M8 14.4h8" pathLength={1} data-part="line" />
     </>
   ),
 
@@ -537,7 +564,7 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     <>
       <rect x="2.5" y="5.5" width="12.5" height="12.5" rx="2.2" />
       <path d="M2.5 9h12.5" />
-      <rect x="16.75" y="9.5" width="4.75" height="10.5" rx="1.6" />
+      <rect x="16.75" y="9.5" width="4.75" height="10.5" rx="1.6" data-part="pulse" />
     </>
   ),
 
@@ -547,8 +574,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     <>
       <rect x="2.75" y="4.75" width="18.5" height="14.5" rx="2.5" />
       <path d="M2.75 9h18.5" />
-      <path d="M6.25 12.3h5" />
-      <path d="M9.25 15.6h6.5" />
+      <path d="M6.25 12.3h5" data-part="flow" />
+      <path d="M9.25 15.6h6.5" data-part="flow" />
     </>
   ),
 
@@ -602,8 +629,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     <>
       <circle cx="12" cy="12" r="8.3" />
       <path d="M3.7 12h16.6" />
-      <path d="M12 3.7c2.6 2.5 2.6 14.1 0 16.6" />
-      <path d="M12 3.7c-2.6 2.5-2.6 14.1 0 16.6" />
+      <path d="M12 3.7c2.6 2.5 2.6 14.1 0 16.6" data-part="turn" />
+      <path d="M12 3.7c-2.6 2.5-2.6 14.1 0 16.6" data-part="turn-b" />
     </>
   ),
 
@@ -611,8 +638,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   terminal: (
     <>
       <rect x="3.25" y="4.5" width="17.5" height="15" rx="2.6" />
-      <path d="M7.5 9.5l3 3-3 3" />
-      <path d="M13 15.5h4" />
+      <path d="M7.5 9.5l3 3-3 3" data-part="caret" />
+      <path d="M13 15.5h4" pathLength={1} data-part="line" />
     </>
   ),
 
@@ -640,8 +667,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   alert: (
     <>
       <path d="M12 4.4L21 19.6H3z" />
-      <path d="M12 10v4.2" />
-      <path d="M12 17.1v.05" />
+      <path d="M12 10v4.2" data-part="pulse" />
+      <path d="M12 17.1v.05" data-part="pulse" />
     </>
   ),
 
@@ -690,8 +717,11 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   // Inspect element — a pencil (pick / annotate a node on the page).
   inspect: (
     <>
-      <path d="M14.4 6.1l3.5 3.5" />
-      <path d="M16.1 4.4a1.9 1.9 0 0 1 2.7 0l0.8 0.8a1.9 1.9 0 0 1 0 2.7L8.2 18.9l-4.2 1 1-4.2z" />
+      <path d="M14.4 6.1l3.5 3.5" data-part="nib" />
+      <path
+        d="M16.1 4.4a1.9 1.9 0 0 1 2.7 0l0.8 0.8a1.9 1.9 0 0 1 0 2.7L8.2 18.9l-4.2 1 1-4.2z"
+        data-part="nib"
+      />
     </>
   ),
 
@@ -702,8 +732,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   help: (
     <>
       <path d="M7 4h10a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3h-6l-4 3.2V15a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3z" />
-      <path d="M10.2 8.5a1.9 1.9 0 0 1 3.6.85c0 1.25-1.8 1.55-1.8 2.75" />
-      <circle cx="12" cy="13.6" r="0.55" fill="currentColor" stroke="none" />
+      <path d="M10.2 8.5a1.9 1.9 0 0 1 3.6.85c0 1.25-1.8 1.55-1.8 2.75" pathLength={1} data-part="line" />
+      <circle cx="12" cy="13.6" r="0.55" fill="currentColor" stroke="none" data-part="pulse" />
     </>
   ),
 
@@ -802,7 +832,7 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   contrast: (
     <>
       <circle cx="12" cy="12" r="8.25" />
-      <path d="M12 3.75a8.25 8.25 0 0 1 0 16.5Z" fill="currentColor" stroke="none" />
+      <path d="M12 3.75a8.25 8.25 0 0 1 0 16.5Z" fill="currentColor" stroke="none" data-part="turn" />
     </>
   ),
 
@@ -828,8 +858,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     <>
       <path d="M5 4.5h9.5a2 2 0 0 1 2 2V19a1.5 1.5 0 0 0-1.5-1.5H5z" />
       <path d="M5 4.5A1.5 1.5 0 0 0 3.5 6v13A1.5 1.5 0 0 1 5 17.5" />
-      <path d="M8 8.5h5.5" />
-      <path d="M8 11.5h5.5" />
+      <path d="M8 8.5h5.5" pathLength={1} data-part="line" />
+      <path d="M8 11.5h5.5" pathLength={1} data-part="line" />
     </>
   ),
 
@@ -887,13 +917,13 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   // protocol). Used for every `mcp_*` tool-call header.
   mcp: (
     <>
-      <circle cx="12" cy="12" r="2.3" />
+      <circle cx="12" cy="12" r="2.3" data-part="pulse" />
       <circle cx="6" cy="6" r="1.7" />
       <circle cx="18" cy="6" r="1.7" />
       <circle cx="12" cy="19" r="1.7" />
-      <path d="M10.37 10.37 7.2 7.2" />
-      <path d="M13.63 10.37 16.8 7.2" />
-      <path d="M12 14.3v3" />
+      <path d="M10.37 10.37 7.2 7.2" data-part="flow" />
+      <path d="M13.63 10.37 16.8 7.2" data-part="flow" />
+      <path d="M12 14.3v3" data-part="flow" />
     </>
   ),
 
@@ -908,11 +938,42 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     </>
   ),
 
-  // Eye — vision capability badge in the model row.
+  // Eye — vision capability badge in the model row, and "reveal" on the API
+  // key field.
   eye: (
     <>
       <path d="M2.75 12S6.25 5.5 12 5.5 21.25 12 21.25 12 17.75 18.5 12 18.5 2.75 12 2.75 12z" />
+      <circle cx="12" cy="12" r="2.6" data-part="pulse" />
+    </>
+  ),
+
+  // Eye with a rule through it — "hide" on the API key field. Deliberately the
+  // SAME outline and pupil as `eye` plus one stroke, so the pair reads as one
+  // control changing state instead of two unrelated glyphs. (Before this
+  // existed the field used `browser`, a globe, which said nothing about
+  // revealing anything.)
+  "eye-off": (
+    <>
+      <path d="M2.75 12S6.25 5.5 12 5.5 21.25 12 21.25 12 17.75 18.5 12 18.5 2.75 12 2.75 12z" />
       <circle cx="12" cy="12" r="2.6" />
+      <path d="M4.5 19.5 19.5 4.5" />
+    </>
+  ),
+
+  // The two composer TRIGGER CHARACTERS, drawn as themselves. The `+` menu's
+  // Mention and Actions rows do nothing but type `@` and `/` into the editor,
+  // so the glyph that names each row is the character it inserts — the row
+  // teaches the shortcut it replaces instead of hiding it behind a metaphor.
+  at: (
+    <>
+      <circle cx="12" cy="12" r="3.9" />
+      <path d="M15.9 8.1v5.2a2.85 2.85 0 0 0 5.7 0v-1.3A9.6 9.6 0 1 0 17.9 19.6" />
+    </>
+  ),
+  slash: (
+    <>
+      <rect x="3.25" y="3.25" width="17.5" height="17.5" rx="4.2" />
+      <path d="M13.9 7.6 10.1 16.4" />
     </>
   ),
 };

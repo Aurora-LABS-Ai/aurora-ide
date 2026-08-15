@@ -251,7 +251,9 @@
   flex-shrink: 0;
 }
 
-/* Status / summary text (e.g. "+12  -3", "In Progress", error reason). */
+/* Outcome text (e.g. "+12  -3", "Read 142 lines", "Failed"). Short by
+ * contract: a failure's own sentence goes to the dropdown, because the ellipsis
+ * below turns anything longer than the row into a clipped half-word. */
 .agw-tool-summary {
   font-size: var(--agw-fs-label);
   font-variant-numeric: tabular-nums;

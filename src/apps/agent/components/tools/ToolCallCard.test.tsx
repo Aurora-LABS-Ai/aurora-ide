@@ -632,6 +632,68 @@ describe("ToolCallCard streamed file targets", () => {
     expect(header).toBeDefined();
     expect(header).not.toContain(error);
     expect(header).toContain("4.1s");
-    expect(html).toContain(error);
+  });
+
+  /**
+   * The structured-failure path: the tool answers `success: false` with a whole
+   * sentence, which used to be planted in the header's summary slot and clipped
+   * mid-word behind an ellipsis. The row states the outcome; the sentence and
+   * its recovery hint belong to the dropdown.
+   */
+  it("states only the outcome on the row when a tool reports a reasoned failure", () => {
+    const error = "Replacement 3: Could not find the specified text in the original file snapshot.";
+    const hint = "The text still needs to match the current file content exactly.";
+    const html = renderToStaticMarkup(
+      <ToolCallCard
+        isActivelyStreaming
+        call={{
+          id: "edit-failed",
+          name: "search_replace",
+          arguments: JSON.stringify({ path: "src-tauri/src/mod.rs" }),
+          result: JSON.stringify({ success: false, error, hint }),
+        }}
+      />,
+    );
+    const header = html.match(/<button[^>]*class="agw-tool-head"[\s\S]*?<\/button>/)?.[0];
+
+    expect(header).toBeDefined();
+    expect(header).not.toContain("Could not find the specified text");
+    expect(header).toContain("Failed");
+    // The filename still earns its place on the row — it says WHICH file.
+    expect(header).toContain("mod.rs");
+  });
+
+  it("leaves a failed card collapsed until the reader opens it, like every other tool", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    mountedContainer = document.createElement("div");
+    document.body.appendChild(mountedContainer);
+    mountedRoot = createRoot(mountedContainer);
+
+    const error = "Replacement 3: Could not find the specified text in the original file snapshot.";
+    await act(async () => {
+      mountedRoot!.render(
+        // Mid-turn: the case that used to force itself open and then stay open
+        // for the rest of the turn.
+        <ToolCallCard
+          isActivelyStreaming
+          call={{
+            id: "edit-failed-collapse",
+            name: "search_replace",
+            arguments: JSON.stringify({ path: "src-tauri/src/mod.rs" }),
+            result: JSON.stringify({ success: false, error }),
+          }}
+        />,
+      );
+    });
+
+    const head = mountedContainer.querySelector<HTMLButtonElement>(".agw-tool-head");
+    expect(head).not.toBeNull();
+    expect(head!.getAttribute("aria-expanded")).toBe("false");
+    expect(mountedContainer.textContent).not.toContain("Could not find the specified text");
+
+    // …and it is still one click from the full reason.
+    await act(async () => head!.click());
+    expect(head!.getAttribute("aria-expanded")).toBe("true");
+    expect(mountedContainer.textContent).toContain(error);
   });
 });

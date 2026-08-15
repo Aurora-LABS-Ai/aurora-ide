@@ -151,11 +151,16 @@
  * this module is `--agw-*` / plain-CSS only (see agent-window/README.md) so the
  * whole window restyles from one stylesheet and never depends on the IDE's
  * Tailwind build. */
+/* Top band — only rendered when the model selector is top-positioned. Padding
+ * is deliberately tighter than a normal row: this band is pure overhead against
+ * the composer's height budget, and the 28px pill inside it already carries its
+ * own optical padding. See `.agw-ce-wrap[data-top-selector]` for the other half
+ * of keeping both layouts the same height. */
 .agw-composer-band {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px 6px;
+  padding: 6px 10px 4px;
 }
 .agw-composer-actions-row {
   display: flex;

@@ -2,6 +2,40 @@
 
 Append 2-4 lines per mistake / broken assumption / project-specific warning.
 
+## 2026-08-15 — An HTTP status can lie; the body is what happened
+- A relay answered **HTTP 400** with `"type":"upstream_unavailable"` / `上游服务暂时不可用…请稍后重试`
+  — its own dead upstream, reported as a client error. `map_status_error` sent every non-401/429/5xx
+  to `InvalidRequest` (not retryable), so a 503-in-disguise became "Something Went Wrong" and the
+  user pressed Retry by hand. Gateways fronting a provider pool do this routinely: from their HTTP
+  layer the request "could not be served", so it was bad.
+- 4xx is now classified by BODY (`body_names_request_fault` first, then `body_names_upstream_fault`
+  → `Provider`, which the existing 3-attempt backoff already retries). Request-fault wins outright:
+  context overflow and tool-pairing 400s carry retry-flavoured prose but are conditions Aurora must
+  FIX (compact / `repair_tool_pairing`), and a thread malformed on disk 400s forever.
+- Cheap to err toward retrying HERE and only here: a 4xx is rejected before generation, so the extra
+  attempt bills no tokens. That is NOT true of the compaction retry, whose whole cost is the request.
+  Same method as `openclaude`'s `classifyOpenAIHttpFailure`, which reads 400 bodies for quota /
+  context overflow / tool incompatibility instead of trusting the number.
+
+## 2026-08-15 — A context budget expressed as a % of the window is a bug waiting for a big model
+- Owner: "if the context window is 385k and i compact how it become 200k? it should be under 50k".
+  Correct. `COMPACT_TAIL_PCT = 30` sized the preserved verbatim tail at **30% of the window** —
+  60k on a 200k model (fine), **330k on the 1.1M model** (absurd). Compaction did exactly as told:
+  382k → 204k, then billed 204k on every request after. Nothing was wrong with the arithmetic.
+- RULE: how much recent history a model needs to resume is a property of the WORK, not of the
+  window it runs in. `openclaude` makes every one of these an absolute number — preserved segment
+  40k, post-compact file restore 50k, skills 25k, autocompact buffer 30k — and its standard
+  `/compact` keeps **no** verbatim tail at all (`compact.ts:676`; fixtures: 10,000 → 500).
+  Aurora now: `COMPACT_TAIL_MAX_TOKENS = 40_000`, floored by `window / 4` for small models, so the
+  window can only ever make the budget SMALLER.
+- Two reporting bugs rode along, both the same shape — **Aurora's own number wearing someone
+  else's label**. The post-compaction projection was written into `byThread` flagged
+  `estimated: true`, so the ring announced "this provider didn't report token usage" one second
+  after it had, and zeroed the cache fields so the 55%-cache-hit row vanished. And the manual
+  `/compact` path never called `invalidateBreakdown`, so the summarization charge — the largest
+  single request in a long chat — never appeared in "This chat" (`$23.715 · 29 requests`,
+  identical before and after).
+
 ## 2026-08-13 (3rd) — How long a request took to FAIL tells you what failed
 - I diagnosed a provider HTTP 500 as our request shape (5 screenshots ≈ 4.7 MB per turn, three
   consecutive `user` messages) and was wrong on both counts: replayed against the live endpoint,
@@ -144,7 +178,12 @@ Append 2-4 lines per mistake / broken assumption / project-specific warning.
   a per-file `success:false` inside a 10-file read is a partial result, and marking the call failed
   would misreport the 9 that worked.
 - Corollary: a failed card that shows its error only in a closed dropdown is barely better. State
-  the reason on the row.
+  the OUTCOME on the row.
+  **REVISED 2026-08-15** — this was read as "put the error sentence on the row", and the row is one
+  line beside a filename. `success:false` messages are whole sentences ("Replacement 3: Could not
+  find the specified text in the original file snapshot."), so they arrived clipped mid-word behind
+  an ellipsis: too long for the row, too short to act on. The row now says `Failed` in the same slot
+  every other tool uses for its outcome; the sentence and its recovery hint live in the dropdown.
 
 ## 2026-08-10 — An explicit `@filename` is the scope, not a nearby document with a similar topic
 - The user pointed to `@CODE-INDEX-OUTLINE-FINDING.md`; I opened `DOCS/code-index-handoff.md` instead

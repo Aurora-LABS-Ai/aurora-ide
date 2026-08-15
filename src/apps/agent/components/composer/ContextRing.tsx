@@ -231,6 +231,13 @@ export const ContextRing: React.FC = () => {
   const liveUsage = useAgentContextStore((s) =>
     currentThreadId ? s.byThread[currentThreadId] : undefined,
   );
+  // Set only in the gap between a compaction rewriting the context and the
+  // first request measured against the new shape. Aurora's own arithmetic, and
+  // labelled as such — it is a different claim from "the provider reported
+  // nothing", which is what conflating the two used to make the card say.
+  const projectedTokens = useAgentContextStore((s) =>
+    currentThreadId ? s.projectedByThread[currentThreadId] : undefined,
+  );
 
   // Primitive selectors only — returning the object from `getLLMConfig()` /
   // `getResolvedActiveModel()` would hand zustand a fresh reference each render
@@ -378,12 +385,18 @@ export const ContextRing: React.FC = () => {
   const cacheReadTokens = usage?.cacheReadTokens ?? 0;
   const cacheWriteTokens = usage?.cacheWriteTokens ?? 0;
   const completionTokens = usage?.completionTokens ?? 0;
-  const usedTokens =
+  const measuredTokens =
     promptTokens + cacheWriteTokens + cacheReadTokens + completionTokens;
+  // A fresh compaction outranks the last measurement: that request described a
+  // context that no longer exists. Holds only until the next real response.
+  const isProjected = typeof projectedTokens === "number";
+  const usedTokens = isProjected ? projectedTokens : measuredTokens;
   // Local tiktoken estimate (provider didn't report usage) → prefix everything
   // with `~` and add a clarifying note so the number never reads as exact.
+  // A projection is approximate too, but for a different reason, and the two
+  // must never share a caption — one is about the provider, one is about us.
   const isEstimated = usage?.estimated === true;
-  const approx = isEstimated ? "~" : "";
+  const approx = isEstimated || isProjected ? "~" : "";
 
   if (!currentThreadId || usedTokens === 0) return null;
 
@@ -406,14 +419,17 @@ export const ContextRing: React.FC = () => {
   const totalInput = promptTokens + cacheWriteTokens + cacheReadTokens;
   const cacheHitPct =
     totalInput > 0 ? Math.round((cacheReadTokens / totalInput) * 100) : 0;
-  const hasCacheHits = cacheReadTokens > 0;
+  // Suppressed while projecting: those hits belong to a request built from a
+  // context that compaction has since replaced, so reporting them beside the
+  // new size would describe two different conversations as one.
+  const hasCacheHits = cacheReadTokens > 0 && !isProjected;
 
   return (
     <div
       ref={attachRoot}
       className="agw-ctx-ring"
       role="img"
-      aria-label={`Context used ${isEstimated ? "approximately " : ""}${pct}%`}
+      aria-label={`Context used ${isEstimated || isProjected ? "approximately " : ""}${pct}%`}
       tabIndex={0}
       onMouseEnter={() => {
         place();
@@ -478,13 +494,22 @@ export const ContextRing: React.FC = () => {
             <div className="agw-ctx-sub">
               {approx}{formatTokens(usedTokens)} / {formatTokens(total)} tokens
             </div>
-            {isEstimated && (
+            {isProjected ? (
               <div
                 className="agw-ctx-sub"
                 style={{ color: "var(--agw-text-subtle)", marginTop: 4, fontStyle: "italic" }}
               >
-                Estimated — this provider didn't report token usage
+                Projected after compacting — exact from the next message
               </div>
+            ) : (
+              isEstimated && (
+                <div
+                  className="agw-ctx-sub"
+                  style={{ color: "var(--agw-text-subtle)", marginTop: 4, fontStyle: "italic" }}
+                >
+                  Estimated — this provider didn't report token usage
+                </div>
+              )
             )}
 
             {hasCacheHits && (

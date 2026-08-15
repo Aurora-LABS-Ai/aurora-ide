@@ -65,8 +65,110 @@ pub fn map_status_error(status: u16, body: String) -> ApiError {
         401 => ApiError::Unauthorized,
         429 => ApiError::RateLimit,
         500..=599 => ApiError::Provider(message),
+        // A 4xx normally means "the request is wrong", and re-sending
+        // identical bytes cannot make it right — which is exactly why
+        // `InvalidRequest` is not retryable. The exception is a gateway
+        // reporting its OWN upstream failure with a client-error status: that
+        // is a 5xx wearing the wrong number, and it clears on its own.
+        //
+        // So classify by the BODY, the way `openclaude`'s
+        // `classifyOpenAIHttpFailure` reads 400 bodies for quota / context
+        // overflow / tool incompatibility rather than trusting the status
+        // alone. The request-fault check gets the first and final say.
+        400..=499 => {
+            let lower = body.to_lowercase();
+            if !body_names_request_fault(&lower) && body_names_upstream_fault(&lower, &body) {
+                ApiError::Provider(message)
+            } else {
+                ApiError::InvalidRequest(message)
+            }
+        }
         _ => ApiError::InvalidRequest(message),
     }
+}
+
+/// Whether a 4xx body describes a fault in the REQUEST — something that will
+/// be byte-identical on the next attempt and rejected identically.
+///
+/// Checked first, and it wins outright. Several of these carry retry-flavoured
+/// prose ("please try again with a shorter prompt") that would otherwise read
+/// as transient, and the two that matter most are conditions Aurora has to
+/// *fix* rather than wait out: an overflowing context is compaction's job, and
+/// a broken tool pairing is `repair_tool_pairing`'s. A thread malformed on
+/// disk 400s forever — three attempts at it is three times the wait for the
+/// same dead end, plus two more misleading lines in the log.
+fn body_names_request_fault(lower: &str) -> bool {
+    // Context overflow.
+    lower.contains("context length")
+        || lower.contains("context_length")
+        || lower.contains("maximum context")
+        || lower.contains("too many tokens")
+        || lower.contains("request too large")
+        || lower.contains("prompt is too long")
+        || lower.contains("input length")
+        // Tool pairing / tool-calling shape.
+        || lower.contains("tool_use")
+        || lower.contains("tool_result")
+        || lower.contains("tool_call")
+        // The model or the parameters are wrong.
+        || lower.contains("unknown model")
+        || lower.contains("model_not_found")
+        || lower.contains("does not exist")
+        || lower.contains("unsupported parameter")
+        || lower.contains("unknown parameter")
+        || lower.contains("unrecognized")
+        || lower.contains("extra_forbidden")
+        // Money. Waiting does not add credit.
+        || lower.contains("quota")
+        || lower.contains("billing")
+        || lower.contains("credit")
+        || lower.contains("insufficient")
+        || lower.contains("payment required")
+}
+
+/// Whether a 4xx body describes a transient fault UPSTREAM of the endpoint we
+/// called — the gateway's own problem, reported with a client-error status.
+///
+/// Aggregating gateways (OpenRouter-likes, "smart routing" relays, anything
+/// fronting a pool of real providers) answer 400 rather than 502/503 more
+/// often than they should: from their HTTP layer's point of view the request
+/// could not be served, so it was "bad". The status describes their
+/// bookkeeping; the body describes what actually happened. Verbatim, from a
+/// real turn:
+///
+/// ```text
+/// HTTP 400 {"type":"upstream_unavailable",
+///           "code":"upstream_unavailable",
+///           "message":"上游服务暂时不可用。…请稍后重试。"}
+/// ```
+///
+/// That is a 503 with the wrong number on it. It cleared on the next attempt,
+/// but the user had to notice the failure and press Retry by hand.
+///
+/// Being wrong in the retry direction is cheap here: a 4xx is rejected before
+/// generation, so the extra attempt bills no tokens. The price of a false
+/// positive is the backoff delay, bounded by `MAX_STREAM_ATTEMPTS`.
+fn body_names_upstream_fault(lower: &str, body: &str) -> bool {
+    lower.contains("upstream_unavailable")
+        || lower.contains("upstream_error")
+        || lower.contains("no healthy upstream")
+        || lower.contains("service_unavailable")
+        || lower.contains("temporarily unavailable")
+        || lower.contains("temporarily_unavailable")
+        || lower.contains("bad_gateway")
+        || lower.contains("bad gateway")
+        || lower.contains("overloaded")
+        || lower.contains("try again later")
+        || lower.contains("retry later")
+        || (lower.contains("upstream") && lower.contains("unavailable"))
+        // Relays that answer in Chinese often carry no ASCII marker at all:
+        // 上游服务 (upstream service), 暂时不可用 (temporarily unavailable),
+        // 请稍后重试 (please retry shortly). Matched against the original
+        // body — `to_lowercase` leaves CJK alone, but reading it here says
+        // plainly that these are not case-folded strings.
+        || body.contains("上游服务")
+        || body.contains("暂时不可用")
+        || body.contains("请稍后重试")
 }
 
 /// Map a [`reqwest::Error`] to [`ApiError`]. Connection / timeout / IO
@@ -2358,6 +2460,70 @@ mod tests {
             ApiError::InvalidRequest(msg) => assert!(msg.contains("400")),
             other => panic!("expected InvalidRequest, got {other:?}"),
         }
+    }
+
+    /// The body that started this: a relay reporting its own dead upstream
+    /// with a 400. Aurora surfaced it as "Something Went Wrong" and made the
+    /// user press Retry; it is a 503 with the wrong number on it.
+    const UPSTREAM_UNAVAILABLE_400: &str = concat!(
+        r#"{"error":{"message":"上游服务暂时不可用。 原因：上游服务、网络链路或代理返回异常响应。"#,
+        r#" 解决方案：请稍后重试。如当前使用智能路由，请先重试。","type":"upstream_unavailable","#,
+        r#""param":"","code":"upstream_unavailable"}}"#,
+    );
+
+    #[test]
+    fn a_gateway_reporting_its_own_dead_upstream_with_a_400_is_retried() {
+        match map_status_error(400, UPSTREAM_UNAVAILABLE_400.into()) {
+            ApiError::Provider(msg) => assert!(msg.contains("400")),
+            other => panic!("expected Provider (retryable), got {other:?}"),
+        }
+        assert!(map_status_error(400, UPSTREAM_UNAVAILABLE_400.into()).is_retryable());
+    }
+
+    #[test]
+    fn transient_4xx_bodies_are_recognised_in_either_language() {
+        for body in [
+            r#"{"error":{"code":"upstream_unavailable"}}"#,
+            r#"{"error":{"message":"no healthy upstream"}}"#,
+            r#"{"error":{"message":"Service temporarily unavailable, try again later"}}"#,
+            r#"{"error":{"type":"bad_gateway"}}"#,
+            r#"{"error":{"message":"All providers are overloaded"}}"#,
+            "上游服务暂时不可用",
+        ] {
+            assert!(
+                map_status_error(400, body.into()).is_retryable(),
+                "should have been retried: {body}",
+            );
+        }
+    }
+
+    /// The half that protects the user's money and their patience. Each of
+    /// these is byte-identical on the next attempt — and the first two are
+    /// conditions Aurora repairs itself rather than waits out.
+    #[test]
+    fn a_400_about_the_request_itself_is_never_retried() {
+        for body in [
+            // Retry-flavoured prose on a permanent fault — the case that makes
+            // the request-fault check have to run first.
+            r#"{"error":{"message":"prompt is too long: 412000 tokens. Please try again later."}}"#,
+            r#"{"error":{"message":"tool_use ids were found without tool_result blocks"}}"#,
+            r#"{"error":{"message":"messages with role 'tool' must be a response to a tool_call"}}"#,
+            r#"{"error":{"message":"The model `gpt-9` does not exist"}}"#,
+            r#"{"error":{"message":"Unsupported parameter: 'temperature'"}}"#,
+            r#"{"error":{"message":"You exceeded your current quota. Please retry later."}}"#,
+            r#"{"error":{"message":"insufficient credit"}}"#,
+        ] {
+            assert!(
+                !map_status_error(400, body.into()).is_retryable(),
+                "should NOT have been retried: {body}",
+            );
+        }
+    }
+
+    #[test]
+    fn an_unremarkable_400_still_surfaces_immediately() {
+        assert!(!map_status_error(400, r#"{"error":"bad request"}"#.into()).is_retryable());
+        assert!(!map_status_error(404, "not found".into()).is_retryable());
     }
 
     #[test]

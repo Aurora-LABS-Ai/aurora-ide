@@ -1,17 +1,10 @@
-//! Aurora agent runtime — Phase 2.1.
+//! Aurora agent runtime.
 //!
-//! This module defines the wire types, in-memory session model, IPC
-//! envelope shapes, error type, **and** the trait surfaces + agent
-//! loop for the Rust agent runtime that replaces the TypeScript agent
-//! loop in `src/services/agent-service.ts`.
-//!
-//! ## Phase status
-//!
-//! Phase 1 (types-only) and Phase 2.1 (trait surfaces + agent loop
-//! skeleton + JSONL persistence) have landed. Phase 2.2 will plug the
-//! existing `provider_kernel` behind [`api_client::StreamingApiClient`]
-//! and add the `agent_chat_v2` Tauri command. Phase 2.3 swaps the
-//! frontend onto the new IPC.
+//! The Rust agent runtime: wire types, in-memory session model, IPC
+//! envelope shapes, error type, trait surfaces, and the agent loop
+//! that replaced the TypeScript agent loop — which now survives only
+//! as a thin composing façade at
+//! `src/apps/agent/services/runtime/agent-service.ts`.
 //!
 //! ## Layout
 //!
@@ -30,17 +23,13 @@
 //! - [`tool_executor`] — `ToolExecutor` trait, `ToolContext`,
 //!   `ToolError`, `ToolRegistry`.
 //! - [`conversation`] — `ConversationRuntime::run_turn` agent loop.
-//! - [`bridge`] — Phase 2.3 `FrontendBridgeExecutor` and
-//!   `BridgeRouter` plumbing that lets the runtime delegate any
-//!   advertised tool back to the Tauri frontend via a one-shot
-//!   request/response channel.
+//! - [`bridge`] — `FrontendBridgeExecutor` and `BridgeRouter` plumbing
+//!   that lets the runtime delegate any advertised tool back to the
+//!   Tauri frontend via a one-shot request/response channel.
 //! - [`team`] — Agent Team foundation (shared brain + TeamBus). The
 //!   `~/.aurora/projects/<projectId>/` workspace store and the channel
 //!   persist+broadcast pipe. See
 //!   `DOCS/aurora-agent-team-ground-truth.md`.
-//!
-//! See `docs/plan/rust-agent-migration.md` for the master plan and
-//! the per-phase briefs.
 
 // `#![allow(dead_code)]` is intentionally kept: the runtime ships a
 // large public-API surface (variants of `MessageRole`, `ContentBlock`,

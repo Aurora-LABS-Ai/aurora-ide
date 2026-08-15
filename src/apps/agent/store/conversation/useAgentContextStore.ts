@@ -77,6 +77,19 @@ interface AgentContextState {
   /** Whole-conversation cost basis, read from the transcript. */
   breakdownByThread: Record<string, ThreadUsageBreakdown>;
   /**
+   * Aurora's own projection of the next request's size, set when a compaction
+   * has just rewritten the context and no measured request covers the new
+   * shape yet.
+   *
+   * Deliberately NOT written into {@link byThread}. That record is what the
+   * PROVIDER reported, and stamping our own arithmetic into it — flagged
+   * `estimated` — made the ring announce "this provider didn't report token
+   * usage" one second after it had, and wiped the cache-hit telemetry with it.
+   * A projection is a different claim from a missing measurement and has to
+   * live somewhere else to be said honestly. Cleared by the next real usage.
+   */
+  projectedByThread: Record<string, number>;
+  /**
    * Threads whose stored breakdown no longer matches the transcript (a turn
    * finished since it was read). Re-fetched lazily when the card next opens,
    * so a background turn on another chat costs nothing until you look.
@@ -85,6 +98,8 @@ interface AgentContextState {
 
   /** Record the latest response's usage (called from `onUsage`). */
   setUsage: (threadId: string, usage: TokenUsage) => void;
+  /** Record the post-compaction projection (see {@link projectedByThread}). */
+  setProjectedUsage: (threadId: string, tokens: number) => void;
   /** Start a fresh turn accumulator. */
   beginTurn: (threadId: string) => void;
   /** Add one API response to the in-flight turn's running cost. */
@@ -109,9 +124,20 @@ export const useAgentContextStore = create<AgentContextState>((set, get) => ({
   liveTurnByThread: {},
   breakdownByThread: {},
   staleBreakdowns: {},
+  projectedByThread: {},
 
   setUsage: (threadId, usage) =>
-    set((s) => ({ byThread: { ...s.byThread, [threadId]: usage } })),
+    set((s) => ({
+      byThread: { ...s.byThread, [threadId]: usage },
+      // A measurement supersedes a projection — the request the projection
+      // was anticipating has now actually happened and been counted.
+      projectedByThread: dropKey(s.projectedByThread, threadId),
+    })),
+
+  setProjectedUsage: (threadId, tokens) =>
+    set((s) => ({
+      projectedByThread: { ...s.projectedByThread, [threadId]: tokens },
+    })),
 
   beginTurn: (threadId) =>
     set((s) => ({ liveTurnByThread: { ...s.liveTurnByThread, [threadId]: [] } })),
@@ -156,5 +182,6 @@ export const useAgentContextStore = create<AgentContextState>((set, get) => ({
       liveTurnByThread: dropKey(s.liveTurnByThread, threadId),
       breakdownByThread: dropKey(s.breakdownByThread, threadId),
       staleBreakdowns: dropKey(s.staleBreakdowns, threadId),
+      projectedByThread: dropKey(s.projectedByThread, threadId),
     })),
 }));

@@ -267,8 +267,10 @@
 .agw-ce {
   /* ▶ Resting text-area height. The placeholder stays pinned at the top; raising
      this grows the composer DOWNWARD (the bottom bar moves down), not from the
-     top. Grows further with content up to max-height. */
-  min-height: 44px;
+     top. Grows further with content up to max-height.
+     A variable because the top-selector layout overrides it — see
+     `.agw-ce-wrap[data-top-selector]` below. */
+  min-height: var(--agw-ce-min-h, 44px);
   max-height: 200px;
   overflow-y: auto;
   outline: none;
@@ -301,8 +303,22 @@
   position: relative;
   padding: 16px 12px 8px;
 }
+/* ── Where the selector lives must not change how TALL the composer is ───────
+   Moving the selector to the top adds a whole band (38px) and previously gave
+   back only the 12px of editor padding below — so picking "top" silently grew
+   the resting composer by ~30px and left the bottom row with a hole in its
+   middle where the selector used to sit. Two rows of chrome, one row of
+   purpose.
+
+   The 44px resting editor is breathing room: two lines' worth of space under a
+   one-line placeholder. With a band overhead the box already has presence, so
+   the top layout rests at exactly ONE line and spends the rest on the band.
+   `1.55em` resolves against `.agw-ce`'s own font-size and line-height, so it
+   stays one line at every `--agw-ui-text-scale` step — the reason this is not
+   a hardcoded 24px. */
 .agw-ce-wrap[data-top-selector] {
   padding-top: 4px;
+  --agw-ce-min-h: 1.55em;
 }
 .agw-ce-wrap[data-top-selector] .agw-ce-placeholder {
   top: 4px;

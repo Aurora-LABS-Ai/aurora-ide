@@ -676,10 +676,17 @@ const StandardToolCallCard: React.FC<{
 
   const summary = useMemo(() => {
     if (status === "running") return ""; // the shimmer line speaks for a live call
-    // A failure states its reason on the row. It used to be dropdown-only, so a
-    // failed call collapsed to a bare name with no hint of what went wrong —
-    // and once the turn ended it collapsed by default, hiding the error behind
-    // a click nobody knew to make.
+    // A failure's own sentence is usually a paragraph — "Replacement 3: Could
+    // not find the specified text in the original file snapshot." — and this
+    // slot is one line beside a filename. It arrived clipped mid-word behind an
+    // ellipsis, which is the shape of an error message without being one: too
+    // long to sit on the row, too short to act on.
+    //
+    // So the row states the OUTCOME, in the same slot every other tool uses for
+    // its outcome ("Read 142 lines", "+18 −4"), and the dropdown states the
+    // reason in full — where there is room for the recovery step these messages
+    // almost always end with, and which is the part actually worth reading.
+    if (status === "failed") return "Failed";
     return parsed.summary || "";
   }, [status, parsed.summary]);
 
@@ -701,16 +708,19 @@ const StandardToolCallCard: React.FC<{
       parsed.screenshot?.base64,
   );
   const hasDetail = hasResult || argChips.length > 0 || !!streamingPreview || showLiveShell;
-  // Collapsed by DEFAULT — including while a tool is running. A running/settled
-  // card is a quiet one-line row; the user clicks it open to inspect args, the
-  // live write stream, or the result. A failure that happens LIVE (this turn is
-  // still streaming) defaults open so its error is visible without a click —
-  // but a failed card loaded from history (or once the turn ends) collapses back
-  // like everything else, so old failures don't stay stuck open. `override` wins.
-  // A running shell command does NOT auto-open: live output is there for
-  // whoever opens the card, but a command starting must never expand the
-  // transcript on its own. Only a live failure does, as before.
-  const defaultOpen = status === "failed" && isActivelyStreaming;
+  // Collapsed by DEFAULT in every state — running, done, and failed alike. A
+  // tool card is a quiet one-line row until the reader asks for more; they click
+  // it open to inspect args, the live write stream, or the result.
+  //
+  // A live failure used to default open. It read as helpful and behaved as the
+  // opposite: the card expanded mid-turn, shoved everything after it down the
+  // screen, and then STAYED expanded for the rest of the turn while the agent
+  // recovered and moved on — one card permanently louder than the work that
+  // followed it. Nothing else in the transcript opens itself, and a failure the
+  // agent has already worked around is not an exception worth making. The ✗ and
+  // the "Failed" label carry the state on the row; the reason is one click away,
+  // like every other result. `override` wins.
+  const defaultOpen = false;
   const open = (override ?? defaultOpen) && hasDetail;
   const toggle = () => setOverride(!(override ?? defaultOpen));
   const selectFileTarget = (event: React.SyntheticEvent, index: number) => {

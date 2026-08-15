@@ -1,5 +1,65 @@
 # Aurora IDE — Working Memory
 
+## 2026-08-15 — `read_lints` implementation traced and verified
+- Rust-owned `tools/shell_editor_todo/read_lints.rs` runs project-wide `tsc -b`, `cargo check`, Ruff/compileall, or direct `node --check`; requested paths select checker families and only filter diagnostic lines, not checker scope.
+- The `agent_read_lints` frontend event is debug-only; Rust returns the real output. The legacy frontend metadata still incorrectly describes Monaco/open-file diagnostics. Focused implementation suite: 12/12 passed.
+
+## 2026-08-15 — agent_runtime module doc de-phased (comments only)
+- Removed the "Phase 2.1" header, the "Phase status" block (2.2/2.3 futures long since shipped), the
+  "Phase 2.3" label on the bridge bullet, and the dead `docs/plan/rust-agent-migration.md` reference
+  (glob confirms no such file exists). Intro now calls the TS loop "a thin composing façade" and points
+  at its real path `src/apps/agent/services/runtime/agent-service.ts`. Comments-only; no compile check run.
+
+## 2026-08-15 — Architecture overview written for the agent window (no code changed)
+- Read-only survey of the whole repo to answer "explain the architecture". Verbatim findings,
+  for the next time someone asks: Tauri 2 desktop shell, ONE React bundle (`src/App.tsx`) routed
+  by pathname — `/` = IDE (`MainLayout`), `/agent-window` = agent window (`AgentWindow`); both
+  share `src/kernel/` (stores, IPC runtime, shared UI) and `src/bridge/` (agent↔IDE event glue).
+- Agent loop lives in RUST: `agent_runtime/` (ConversationRuntime::run_turn in conversation.rs,
+  ~7.2k lines) behind the `agent_chat_v2` Tauri command; the TS `AgentService` is a documented
+  thin façade composing prompt/context/tools then delegating to `AgentRuntimeClient` over 4 IPC
+  channels (`agent_event`, `agent_tool_pending`, `agent_turn_complete`, `agent_turn_error`).
+  Tool execution is split: 41 Rust-builtin tools in `tools/*` buckets (10 file/search + 7
+  shell/todo + 16 browser + plan/design/canvas/transcript/code_intel/diagnostics) vs frontend
+  bridge tools (skills, team, MCP, ask_question) resolved via `agent_post_tool_result`.
+- Persistence: sessions are JSONL files (NOT the db) under `%LOCALAPPDATA%\AuroraIDE\sessions`,
+  owned solely by `SessionStore` inside `AgentRegistry`; SQLite `aurora.db` holds settings,
+  workspace/editor state, providers, themes, tool permissions. Backend also hosts `code_index`
+  (tree-sitter structural index behind the `code` tool + repo map), `context` engine (legacy,
+  IDE-seeded), `plans`, `checkpoints`, `undo_redo`, `mcp` (rmcp), `team` (TeamBus brain in
+  `~/.aurora/projects/<id>`), `browser_runtime` (native child-webview BrowserManager), `shell`
+  (profile discovery), `typing_assist` + `prompt_refine` (local GGUF composer helpers).
+
+## 2026-08-15 — A failed tool card is a card like any other: quiet row, closed by default
+
+Two reversals of the 2026-08-11 pass, both flowing from one misread of "state the reason on the
+row". `ToolCallCard` puts **`Failed`** in the outcome slot instead of `parsed.summary`, and
+`defaultOpen` is now plainly `false` — a live failure no longer forces itself open and then stays
+open for the rest of the turn while the agent recovers around it. `success:false` messages are whole
+sentences, and the slot is one line beside a filename, so the row was showing a clipped half-word.
+The ✗ plus the label carry the state; the sentence and its recovery hint are one click away where
+there is room for them. `tool-result.ts` still sets `summary` from the error for other consumers —
+the card is what changed.
+
+## 2026-08-15 — Compaction budgets are absolute token counts, never window fractions
+
+`COMPACT_TAIL_MAX_TOKENS = 40_000` (`conversation.rs`) is the verbatim tail a compaction keeps,
+floored by `COMPACT_TAIL_WINDOW_DIVISOR` (`window / 4`) so a small model scales down and a large
+one never scales up. It replaces `COMPACT_TAIL_PCT = 30`, which authorised a 330k tail on the 1.1M
+model. Sized against `openclaude`, where every budget is a number (40k preserved segment, 50k file
+restore, 25k skills, 30k autocompact buffer) and standard `/compact` keeps no tail at all.
+
+The ring now separates **measured** from **projected**: `useAgentContextStore.projectedByThread`
+holds Aurora's post-compaction estimate and is cleared by the next real `setUsage`. It used to be
+written into `byThread` as `estimated: true`, which is the flag for "the provider reported
+nothing" — a different claim, and a false one. Cache-hit telemetry is suppressed while projecting
+(those hits belong to a context that no longer exists). Manual `/compact` now invalidates the cost
+breakdown in its `finally`, the way `sendTurn` always did.
+
+Still open, same area: `compaction_cut` can only cut at a **user message**, so a chat with 3 long
+user turns has 3 possible cut points. Cutting at a tool-result boundary inside a turn is the next
+step (`repair_tool_pairing` already keeps such a cut valid).
+
 ## 2026-08-14 — A running tool animates its OWN mark; the spinner is gone from the row
 - **Two halves, deliberately split.** The SCAN is universal (`33-tool-glyph-motion.css`, new
   partial): a masked full-strength copy of the glyph sits over the base and a soft band passes
@@ -332,6 +392,8 @@ Three fixes from one reported transcript (the in-window agent editing Aurora its
   partial result, not a failed call) drives the status; `parseToolResult` now summarises with the
   tool's own error + hint. Failures also state their reason on the collapsed row (they were
   dropdown-only, so a failed card showed a bare name).
+  **SUPERSEDED 2026-08-15** — the row shows `Failed`, not the reason; the reason is dropdown-only
+  again, and a failed card no longer defaults open. See the 2026-08-15 entry.
 - **Tool groups auto-collapse once they stop being the live edge** (`isLastRow` from MessageBubble).
   An explicit click still wins in both directions until the turn ends.
 - `design_guidelines`/`canvas_guidelines` had no `toolIcon` mapping and fell through to `diff` — the
@@ -1348,3 +1410,12 @@ strings must be re-derived via `textOf()` because a string cannot be un-appended
 dropped fragment is gone from the transcript but still in Copy and the reload fallback. The marker
 is transient and never persisted; a recovered hiccup is meant to leave no trace at all.
 **Not visually verified** — reproducing it needs a real mid-stream drop.
+
+## 2026-08-15 — Shell discovery and persistence traced (read-only)
+- Machine scanning is owned by `src-tauri/src/shell/discovery.rs`; it imports Windows Terminal profiles, PATH, registry, and well-known locations, then verifies each candidate by execution.
+- The registry is persisted as JSON under SQLite `app_settings` key `shell_profiles`; `commands/shell_profiles.rs` also installs the same snapshot in process memory for tool and PTY resolution.
+- Agent tools resolve through `src-tauri/src/shell/mod.rs`; the Agent Window PTY goes through `shell_interactive_config`, so executable paths are not guessed in the frontend.
+
+## 2026-08-15 — Code-index false `scan` usages investigation
+- Plan: reproduce the reported `in_file` query with a minimal same-name fixture, trace reference extraction/import resolution through `store::resolve` and `references_to`, then fix the narrowest owning layer.
+- Add a regression that prevents unrelated same-name calls from being attributed to the selected definition, then run focused Rust checks before broader validation.

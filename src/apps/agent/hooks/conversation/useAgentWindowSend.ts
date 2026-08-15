@@ -648,13 +648,12 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           content: JSON.stringify({ beforeTokens, afterTokens, running: false }),
         }));
       }
-      useAgentContextStore.getState().setUsage(threadId, {
-        promptTokens: afterTokens,
-        completionTokens: 0,
-        totalTokens: afterTokens,
-        cacheReadTokens: 0,
-        estimated: true,
-      });
+      // Drop the ring to the post-compaction size immediately; the next real
+      // request replaces it with a measurement. Recorded as a PROJECTION, not
+      // as usage — overwriting the provider's own numbers with ours made the
+      // card claim the provider had reported nothing and erased the cache-hit
+      // row along with it.
+      useAgentContextStore.getState().setProjectedUsage(threadId, afterTokens);
     };
 
     try {
@@ -681,6 +680,13 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       console.error("[agent-window] manual compaction failed:", error);
     } finally {
       runningAgents.delete(threadId);
+      // The summarization request carried the whole head of the conversation
+      // — routinely the single largest charge in a long chat. `sendTurn` marks
+      // the cost basis stale in its own `finally`; this path never did, so the
+      // card kept serving its pre-compaction copy and the charge appeared
+      // nowhere in Aurora. In `finally` for the same reason as there: a failed
+      // compaction still spent the tokens it spent.
+      useAgentContextStore.getState().invalidateBreakdown(threadId);
       await store.refreshThreads();
       store.endTurn(threadId);
     }
@@ -1382,14 +1388,9 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
               compactionEventId = null;
             }
             // Drop the ring immediately to the post-compaction size; the next
-            // real usage event refines it. Flagged estimated (our number).
-            useAgentContextStore.getState().setUsage(threadId, {
-              promptTokens: afterTokens,
-              completionTokens: 0,
-              totalTokens: afterTokens,
-              cacheReadTokens: 0,
-              estimated: true,
-            });
+            // real usage event replaces it with a measurement. Recorded as a
+            // PROJECTION rather than as usage — see `setProjectedUsage`.
+            useAgentContextStore.getState().setProjectedUsage(threadId, afterTokens);
           },
           onToolCall: (tc) => {
             setActivity(describeToolActivity(tc.function.name, tc.function.arguments || ""));

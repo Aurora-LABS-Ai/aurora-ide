@@ -1180,7 +1180,7 @@ impl ConversationRuntime {
 
         let projected = self.projected_request_tokens(session);
 
-        // A user-boundary cut preserving ~COMPACT_TAIL_PCT of the window
+        // A user-boundary cut preserving at most `compact_tail_budget` tokens
         // verbatim. `None` => transcript too short to compact safely.
         let Some(cut) = compaction_cut(session.messages(), window, self.config.reasoning_replay)
         else {
@@ -2577,9 +2577,39 @@ fn shrink_json_strings(value: &mut serde_json::Value) {
     }
 }
 
-/// Fraction (percent) of the context window preserved verbatim as the recent
-/// "tail" when compacting. Everything older is replaced by the LLM summary.
-const COMPACT_TAIL_PCT: u32 = 30;
+/// How much recent conversation survives a compaction, word for word.
+/// Everything older is replaced by the summary.
+///
+/// An ABSOLUTE token count, and deliberately not a fraction of the context
+/// window. It used to be 30% of the window, which reads as reasonable at 200k
+/// (a 60k tail) and is indefensible at 1.1M, where it authorises a 330k tail —
+/// a real chat compacted a 382k request down to 204k and reported that as
+/// done. Nothing was broken in the arithmetic; the budget was simply enormous.
+///
+/// What the model needs in front of it to resume is a property of the WORK,
+/// not of the window the work happens to be running in. A 1M-context model
+/// does not need six times more recent history than a 200k one to pick up
+/// where it left off — it just tolerates the waste for longer, silently, at
+/// full price on every subsequent request.
+///
+/// `openclaude` reached the same conclusion and every budget it carries is a
+/// number rather than a ratio: its preserved segment caps at 40k, post-compact
+/// file restore at 50k, skills at 25k, the auto-compact buffer at 30k. Its
+/// standard `/compact` keeps no verbatim tail at all.
+const COMPACT_TAIL_MAX_TOKENS: u32 = 40_000;
+
+/// Ceiling on the tail as a share of the window, for models where
+/// [`COMPACT_TAIL_MAX_TOKENS`] would be most of the context (or more than all
+/// of it). A 32k model gets an 8k tail; every model at 160k and up gets the
+/// full 40k. This is the only place the window still has a say, and it can
+/// only ever make the budget SMALLER.
+const COMPACT_TAIL_WINDOW_DIVISOR: u32 = 4;
+
+/// The verbatim-tail budget for a given window: at most
+/// [`COMPACT_TAIL_MAX_TOKENS`], and never more than a quarter of the window.
+fn compact_tail_budget(window: u32) -> u32 {
+    COMPACT_TAIL_MAX_TOKENS.min(window / COMPACT_TAIL_WINDOW_DIVISOR)
+}
 
 /// System prompt for the summarization call. Drives an LLM summary (not a
 /// deterministic template) — fidelity over a generous budget is the whole
@@ -2837,17 +2867,20 @@ fn apply_compaction(
 }
 
 /// Pick the message index to cut at when compacting: the OLDEST `User`
-/// boundary whose verbatim tail still fits within [`COMPACT_TAIL_PCT`] of the
-/// window (maximising preserved recent context up to the cap). Falls back to
-/// the newest user boundary that still leaves a non-empty head if even the
-/// last turn exceeds the cap. Returns `None` when no safe cut exists (fewer
-/// than two user turns) so the caller skips compaction.
+/// boundary whose verbatim tail still fits [`compact_tail_budget`]
+/// (maximising preserved recent context up to the cap). Falls back to the
+/// newest user boundary that still leaves a non-empty head if even the last
+/// turn exceeds the cap. Returns `None` when no safe cut exists (fewer than
+/// two user turns) so the caller skips compaction.
+///
+/// The budget is an absolute token count — see [`COMPACT_TAIL_MAX_TOKENS`]
+/// for why it must not scale with the window.
 fn compaction_cut(
     messages: &[ConversationMessage],
     window: u32,
     replay: ReasoningReplay,
 ) -> Option<usize> {
-    let target = (u64::from(window) * u64::from(COMPACT_TAIL_PCT) / 100) as u32;
+    let target = compact_tail_budget(window);
     let per: Vec<u32> = messages
         .iter()
         .map(|m| estimate_message_tokens(m, replay))
@@ -6883,6 +6916,52 @@ src/
             session.append_message(assistant_with_text(&big, turn * 2 + 1));
         }
         session
+    }
+
+    /// The verbatim tail is bounded by an absolute token budget, never by a
+    /// share of the window.
+    ///
+    /// This is the regression. The budget used to be 30% of the window, so a
+    /// 1.1M-context chat was authorised to keep a 330k tail — compaction took
+    /// a 382k request down to 204k, called it done, and the user paid to send
+    /// 204k on every request afterwards. The arithmetic was never wrong; the
+    /// number it was given was.
+    #[test]
+    fn the_preserved_tail_is_capped_in_tokens_not_in_window_share() {
+        let big = FILLER_60.repeat(40);
+        let mut messages = Vec::new();
+        for turn in 0..60 {
+            messages.push(user_with_text(&big, turn * 2));
+            messages.push(assistant_with_text(&big, turn * 2 + 1));
+        }
+        let total: u32 = messages
+            .iter()
+            .map(|m| estimate_message_tokens(m, ReasoningReplay::Dropped))
+            .fold(0, u32::saturating_add);
+        assert!(
+            total > 2 * COMPACT_TAIL_MAX_TOKENS,
+            "the fixture has to be big enough for the cap to bite (got {total})",
+        );
+
+        let tail_for = |window: u32| -> u32 {
+            let cut = compaction_cut(&messages, window, ReasoningReplay::Dropped)
+                .expect("a transcript this long always has a safe cut");
+            messages[cut..]
+                .iter()
+                .map(|m| estimate_message_tokens(m, ReasoningReplay::Dropped))
+                .fold(0, u32::saturating_add)
+        };
+
+        // The window that produced the bug. 30% of it was 330,000 tokens.
+        assert!(
+            tail_for(1_100_000) <= COMPACT_TAIL_MAX_TOKENS,
+            "a huge window must not authorise a huge tail",
+        );
+        // Every window large enough for the flat cap cuts in the SAME place —
+        // the window no longer has a vote in how much history survives.
+        assert_eq!(tail_for(1_100_000), tail_for(200_000));
+        // A window too small for the flat cap scales down, and only down.
+        assert!(tail_for(32_000) <= 32_000 / COMPACT_TAIL_WINDOW_DIVISOR);
     }
 
     #[tokio::test]
